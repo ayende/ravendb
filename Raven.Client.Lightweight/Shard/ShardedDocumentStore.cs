@@ -110,7 +110,7 @@ namespace Raven.Client.Shard
 		}
 #endif
 
-#if !SILVERLIGHT
+#if !SILVERLIGHT && !NET_3_5
 		/// <summary>
 		/// Opens the async session.
 		/// </summary>
@@ -119,7 +119,9 @@ namespace Raven.Client.Shard
 		{
 			throw new NotSupportedException("Shared document store doesn't support async operations");
 		}
+#endif
 
+#if !SILVERLIGHT
 		/// <summary>
 		/// Opens the session.
 		/// </summary>
