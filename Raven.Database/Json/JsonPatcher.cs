@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Newtonsoft.Json.Linq;
 using Raven.Database.Exceptions;
 using Raven.Http.Exceptions;
@@ -107,14 +108,27 @@ namespace Raven.Database.Json
                     }
                     break;
                 case JTokenType.Array:
-					var position = patchCmd.Position;
-					if (position == null)
-                         throw new InvalidOperationException("Cannot modify value from  '" + propName +
-                                                             "' because position element does not exists or not an integer");
-                    var value = property.Value.Value<JArray>()[position];
-					foreach (var cmd in nestedCommands)
-					{
-                    	new JsonPatcher(value.Value<JObject>()).Apply(cmd);
+                    var position = patchCmd.Position;
+                    var allPositionsIsSelected = patchCmd.AllPositions.HasValue ? patchCmd.AllPositions.Value : false;
+                    if (position == null && !allPositionsIsSelected)
+                        throw new InvalidOperationException("Cannot modify value from  '" + propName +
+                                                            "' because position element does not exists or not an integer and allPositions is not set");
+                    var valueList = new List<JToken>();
+                    if (allPositionsIsSelected)
+                    {
+                        valueList.AddRange(property.Value.Value<JArray>());
+                    }
+                    else
+                    {
+                        valueList.Add(property.Value.Value<JArray>()[position]);
+                    }
+
+                    foreach (var value in valueList)
+                    {
+                        foreach (var cmd in nestedCommands)
+                        {
+                            new JsonPatcher(value.Value<JObject>()).Apply(cmd);
+                        }
                     }
             		break;
                 default:
