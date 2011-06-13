@@ -3,6 +3,7 @@
 //     Copyright (c) Hibernating Rhinos LTD. All rights reserved.
 // </copyright>
 //-----------------------------------------------------------------------
+using System;
 using System.Web;
 using Raven.Database;
 using Raven.Database.Config;
@@ -19,14 +20,19 @@ namespace Raven.Web
 		static readonly DocumentDatabase database;
 		static readonly HttpServer server;
 
+		public static Action<RavenConfiguration> AlterConfiguration;
+
 		static ForwardToRavenRespondersFactory()
 		{
 			lock (locker)
 			{
 				if (database != null)
 					return;
-				
+
 				ravenConfiguration.LoadLoggingSettings();
+
+				if (AlterConfiguration != null)
+					AlterConfiguration(ravenConfiguration);
 
 				database = new DocumentDatabase(ravenConfiguration);
 				database.SpinBackgroundWorkers();
