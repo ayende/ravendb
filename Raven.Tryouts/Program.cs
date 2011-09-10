@@ -12,6 +12,7 @@ using Raven.Database.Impl;
 using Raven.Json.Linq;
 using Raven.Tests.Bugs;
 using Raven.Tests.Faceted;
+using Raven.Tests.Patching;
 
 namespace Raven.Tryouts
 {
@@ -24,8 +25,17 @@ namespace Raven.Tryouts
 
 			//MemoryTest();
 
-			var temp = new FacetedIndex();
-			temp.CanPerformFacetedSearch_Embedded();
+            //var temp = new FacetedIndex();
+            //Console.WriteLine("Performing Embedded test");
+            //temp.CanPerformFacetedSearch_Embedded();
+            
+            //Console.WriteLine("\nPerforming Remote test");
+            //temp.CanPerformFacetedSearch_Remotely();
+
+            var temp = new AdvancedPatching();
+            temp.CanApplyBasicScriptAsPatch();
+            //temp.CanPerformAdvancedPatching_Embedded();
+            //temp.CanPerformAdvancedPatching_Remotely();
 		}
 
 		private static void MemoryTest()

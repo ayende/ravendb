@@ -68,6 +68,9 @@
       <SpecificVersion>False</SpecificVersion>
       <HintPath>..\SharedLibs\ICSharpCode.NRefactory.dll</HintPath>
     </Reference>
+    <Reference Include="IronJS">
+      <HintPath>..\SharedLibs\IronJS.dll</HintPath>
+    </Reference>
     <Reference Include="Lucene.Net, Version=2.3.2.1, Culture=neutral, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
       <HintPath>..\SharedLibs\Lucene.Net.dll</HintPath>
@@ -136,6 +139,7 @@
     <Compile Include="Indexing\ReducingExecuter.cs" />
     <Compile Include="Indexing\TaskSchedulerWithCustomPriority.cs" />
     <Compile Include="Indexing\TasksExecuter.cs" />
+    <Compile Include="Json\AdvancedJsonPatcher.cs" />
     <Compile Include="Linq\Ast\CaptureQueryParameterNamesVisitor.cs" />
     <Compile Include="Linq\Ast\ThrowOnInvalidMethodCalls.cs" />
     <Compile Include="Linq\Ast\TransformNullCoalasingOperatorTransformer.cs" />
@@ -423,6 +427,8 @@
     </BootstrapperPackage>
   </ItemGroup>
   <ItemGroup>
+    <EmbeddedResource Include="Json\ToJson.js" />
+    <EmbeddedResource Include="Json\Map.js" />
     <Content Include="Server\WebUI\studio_not_found.html" />
     <Content Include="Server\WebUI\studio.html" />
     <Content Include="Server\WebUI\raven-data.ico" />
