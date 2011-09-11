@@ -564,6 +564,7 @@
     <Compile Include="MultiGet\MultiGetProfiling.cs" />
     <Compile Include="MultiGet\MultiGetQueries.cs" />
     <Compile Include="MultiGet\MultiGetSecurity.cs" />
+    <Compile Include="Patching\AdvancedPatching.cs" />
     <Compile Include="Patching\MetadataPatching.cs" />
     <Compile Include="Queries\ParameterisedDynamicQuery.cs" />
     <Compile Include="Querying\IndexedUser.cs" />
