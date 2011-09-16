@@ -111,7 +111,7 @@ namespace Raven.Client.Embedded
 
 		private JsonDocument EnsureLocalDate(JsonDocument jsonDocument)
 		{
-	  if(jsonDocument == null)
+	if(jsonDocument == null)
 		return null;
 			if (jsonDocument.LastModified != null)
 				jsonDocument.LastModified = jsonDocument.LastModified.Value.ToLocalTime();
@@ -503,17 +503,17 @@ namespace Raven.Client.Embedded
 		{
 			CurrentOperationContext.Headers.Value = OperationsHeaders;
 			return database.ExecuteGetTermsQuery(index, field, fromValue, pageSize);
-	 
+	
 		}
 
-	    /// <summary>
-	    /// Using the given Index, calculate the facets as per the specified doc
-	    /// </summary>
-	    /// <param name="index"></param>
-	    /// <param name="query"></param>
-	    /// <param name="facetSetupDoc"></param>
-	    /// <returns></returns>
-	    public IDictionary<string, IEnumerable<FacetValue>> GetFacets(string index, IndexQuery query, string facetSetupDoc)
+		/// <summary>
+		/// Using the given Index, calculate the facets as per the specified doc
+		/// </summary>
+		/// <param name="index"></param>
+		/// <param name="query"></param>
+		/// <param name="facetSetupDoc"></param>
+		/// <returns></returns>
+		public IDictionary<string, IEnumerable<FacetValue>> GetFacets(string index, IndexQuery query, string facetSetupDoc)
 		{
 			CurrentOperationContext.Headers.Value = OperationsHeaders;
 			return database.ExecuteGetTermsQuery(index, query, facetSetupDoc);
@@ -527,6 +527,35 @@ namespace Raven.Client.Embedded
 		public void Patch(string key, PatchRequest[] patches)
 		{
 			Patch(key, patches, null);
+		}
+
+		/// <summary>
+		/// Sends a patch request for a specific document, ignoring the document's Etag
+		/// </summary>
+		/// <param name="key">Id of the document to patch</param>
+		/// <param name="patchScript">Javascript code to use to patch the doc</param>
+		public void Patch(string key, string patchScript)
+		{
+			Patch(key, patchScript, null);
+		}
+
+		/// <summary>
+		/// Sends a patch request for a specific document, ignoring the document's Etag
+		/// </summary>
+		/// <param name="key">Id of the document to patch</param>
+		/// <param name="patchScript">Javascript code to use to patch the doc</param>
+		/// <param name="etag">Require specific Etag [null to ignore]</param>
+		public void Patch(string key, string patchScript, Guid? etag)
+		{
+			Batch(new[]
+					{
+						new AdvancedPatchCommandData 
+								{ 
+									Key = key,  
+									PatchScript = patchScript, 
+									Etag = etag
+								}
+					});
 		}
 
 		/// <summary>

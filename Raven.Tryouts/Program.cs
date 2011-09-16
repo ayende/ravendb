@@ -25,17 +25,17 @@ namespace Raven.Tryouts
 
 			//MemoryTest();
 
-            //var temp = new FacetedIndex();
-            //Console.WriteLine("Performing Embedded test");
-            //temp.CanPerformFacetedSearch_Embedded();
-            
-            //Console.WriteLine("\nPerforming Remote test");
-            //temp.CanPerformFacetedSearch_Remotely();
+			//var temp = new FacetedIndex();
+			//Console.WriteLine("Performing Embedded test");
+			//temp.CanPerformFacetedSearch_Embedded();
 
-            var temp = new AdvancedPatching();
-            temp.CanApplyBasicScriptAsPatch();
-            //temp.CanPerformAdvancedPatching_Embedded();
-            //temp.CanPerformAdvancedPatching_Remotely();
+			//Console.WriteLine("\nPerforming Remote test");
+			//temp.CanPerformFacetedSearch_Remotely();
+
+			var temp = new AdvancedPatching();
+			//temp.CanApplyBasicScriptAsPatch();
+			temp.CanPerformAdvancedPatching_Embedded();
+			//temp.CanPerformAdvancedPatching_Remotely();
 		}
 
 		private static void MemoryTest()
@@ -60,21 +60,21 @@ namespace Raven.Tryouts
 				using (var session = documentStore.OpenSession())
 				{
 					var testFoo = new Foo
-									  {
-										  Data = data,
-										  List = list,
-										  Counter = 0
-									  };
+									{
+										Data = data,
+										List = list,
+										Counter = 0
+									};
 					var bytes = RavenJObject.FromObject(testFoo).ToBytes();
-					//json = RavenJObject.FromObject(testFoo).ToString();                    
+					//json = RavenJObject.FromObject(testFoo).ToString();
 					Console.WriteLine("Doc as BinaryJson is {0} bytes ({1:0.00}K or {2:0.00} MB)",
-									  bytes.Length, bytes.Length / 1024.0, bytes.Length / 1024.0 / 1024.0);
+									bytes.Length, bytes.Length / 1024.0, bytes.Length / 1024.0 / 1024.0);
 					session.Store(testFoo);
 					session.SaveChanges();
 
 					//var highestId = session.Query<Foo>()
 					//                    .Customize(x => x.WaitForNonStaleResults())
-					//                    .OrderByDescending(x => x.Id)                                        
+					//                    .OrderByDescending(x => x.Id)
 					//                    .FirstOrDefault();
 					//Console.WriteLine("Highest Id: " + highestId.Id);
 				}
@@ -83,17 +83,17 @@ namespace Raven.Tryouts
 				using (var csvlog = new StreamWriter("log.csv"))
 				{
 					csvlog.WriteLine("{0}, {1}, {2}, {3}, {4}, {5}, {6}",
-									 "Elapsed", "Counter", "Private Mem (MB)", "Total .NET Mem (MB)",
-									 "Doc store size (MB)", "Insert Time (ms)", "Query Time (ms)");
+									"Elapsed", "Counter", "Private Mem (MB)", "Total .NET Mem (MB)",
+									"Doc store size (MB)", "Insert Time (ms)", "Query Time (ms)");
 					var counter = 0;
 					while (!Console.KeyAvailable)
 					{
 						var foo = new Foo
-									  {
-										  Data = data,
-										  List = list,
-										  Counter = ++counter
-									  };
+									{
+										Data = data,
+										List = list,
+										Counter = ++counter
+									};
 
 						// Insert
 						Stopwatch insertTimer = Stopwatch.StartNew();
@@ -161,9 +161,9 @@ namespace Raven.Tryouts
 						var statsTimer = Stopwatch.StartNew();
 						var memoryStats =
 							String.Format("{0} {1} {2} private {3:0.00} MB, .NET managed {4:0.00} MB, store {5:0.00} MB",
-										  DateTime.Now.ToLongTimeString(), sw.ElapsedMilliseconds, counter,
-										  Process.GetCurrentProcess().PrivateMemorySize64 / 1024.0 / 1024.0,
-										  gcSize, docStoreSize);
+										DateTime.Now.ToLongTimeString(), sw.ElapsedMilliseconds, counter,
+										Process.GetCurrentProcess().PrivateMemorySize64 / 1024.0 / 1024.0,
+										gcSize, docStoreSize);
 						var docDbStats = documentStore.DocumentDatabase.Statistics;
 						var timingStats = String.Format("        {0}, insert took {1} ms, query {2} ms ({3} sub-queries), gc {4} ms",
 														counter, insertTimer.ElapsedMilliseconds,
@@ -176,13 +176,13 @@ namespace Raven.Tryouts
 						textLog.WriteLine(timingStats);
 						textLog.Flush();
 						csvlog.WriteLine("{0}, {1}, {2:0.00}, {3:0.00}, {4:0.00}, {5:0.00}, {6:0.00}, {7}",
-										 sw.Elapsed, counter,
-										 Process.GetCurrentProcess().PrivateMemorySize64 / 1024.0 / 1024.0,
-										 GC.GetTotalMemory(false) / 1024.0 / 1024.0,
-										 docStoreSize,
-										 insertTimer.ElapsedMilliseconds,
-										 queryTimer.ElapsedMilliseconds,
-										 subQueryCount);
+										sw.Elapsed, counter,
+										Process.GetCurrentProcess().PrivateMemorySize64 / 1024.0 / 1024.0,
+										GC.GetTotalMemory(false) / 1024.0 / 1024.0,
+										docStoreSize,
+										insertTimer.ElapsedMilliseconds,
+										queryTimer.ElapsedMilliseconds,
+										subQueryCount);
 						csvlog.Flush();
 						statsTimer.Stop();
 						Console.WriteLine("Took {0} ms to collect and log stats", statsTimer.ElapsedMilliseconds);

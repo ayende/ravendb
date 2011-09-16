@@ -1083,7 +1083,7 @@ Failed to get in touch with any of the " + 1 + threadSafeCopy.Count + " Raven in
 			var multiGetOperation = new MultiGetOperation(this, convention, url, requests);
 
 			var httpJsonRequest = jsonRequestFactory.CreateHttpJsonRequest(this, multiGetOperation.RequestUri, "POST",
-																		   credentials, convention);
+																		credentials, convention);
 
 			var requestsForServer = multiGetOperation.PreparingForCachingRequest(jsonRequestFactory);
 
@@ -1177,6 +1177,16 @@ Failed to get in touch with any of the " + 1 + threadSafeCopy.Count + " Raven in
 		}
 
 		/// <summary>
+		/// Sends a patch request for a specific document, ignoring the document's Etag
+		/// </summary>
+		/// <param name="key">Id of the document to patch</param>
+		/// <param name="patchScript">Javascript code to use to patch the doc</param>
+		public void Patch(string key, string patchScript)
+		{
+			throw new NotImplementedException();
+		}
+
+		/// <summary>
 		/// Sends a patch request for a specific document
 		/// </summary>
 		/// <param name="key">Id of the document to patch</param>
@@ -1185,14 +1195,25 @@ Failed to get in touch with any of the " + 1 + threadSafeCopy.Count + " Raven in
 		public void Patch(string key, PatchRequest[] patches, Guid? etag)
 		{
 			Batch(new[]
-			      	{
-			      		new PatchCommandData
-			      			{
-			      				Key = key,
-			      				Patches = patches,
-			      				Etag = etag
-			      			}
-			      	});
+					{
+						new PatchCommandData
+							{
+								Key = key,
+								Patches = patches,
+								Etag = etag
+							}
+					});
+		}
+
+		/// <summary>
+		/// Sends a patch request for a specific document, ignoring the document's Etag
+		/// </summary>
+		/// <param name="key">Id of the document to patch</param>
+		/// <param name="patchScript">Javascript code to use to patch the doc</param>
+		/// <param name="etag">Require specific Etag [null to ignore]</param>
+		public void Patch(string key, string patchScript, Guid? etag)
+		{
+			throw new NotImplementedException();
 		}
 
 		/// <summary>
