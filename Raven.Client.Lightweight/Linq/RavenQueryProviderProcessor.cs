@@ -808,8 +808,20 @@ namespace Raven.Client.Linq
 
 		private void VisitOrderBy(LambdaExpression expression, bool descending)
 		{
-			var propertyInfo = ((MemberExpression)expression.Body).Member as PropertyInfo;
-			var fieldInfo = ((MemberExpression)expression.Body).Member as FieldInfo;
+			MemberExpression memberExpression;
+
+			if (expression.Body is UnaryExpression)
+			{
+				var unaryExpression = (UnaryExpression) expression.Body;
+				memberExpression = (MemberExpression) unaryExpression.Operand;
+			}
+			else
+			{
+				memberExpression = (MemberExpression) expression.Body;
+			}
+
+			var propertyInfo = memberExpression.Member as PropertyInfo;
+			var fieldInfo = memberExpression.Member as FieldInfo;
 			var expressionMemberInfo = GetMember(expression.Body);
 			var type = propertyInfo != null
 						? propertyInfo.PropertyType
