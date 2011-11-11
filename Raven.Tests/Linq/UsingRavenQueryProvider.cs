@@ -25,6 +25,8 @@ using System.Diagnostics;
 
 namespace Raven.Tests.Linq
 {
+	using System.Linq.Expressions;
+
 	public class UsingRavenQueryProvider
 	{
 		[Fact]
@@ -755,5 +757,31 @@ namespace Raven.Tests.Linq
 			}
 		}
 
+		[Fact]
+		public void Can_Perform_OrderBy_Using_Reflection_Query()
+		{
+			using (var store = new EmbeddableDocumentStore() { RunInMemory = true })
+			{
+				store.Initialize();
+				using (var s = store.OpenSession())
+				{
+					s.Store(new OrderItem { Id = Guid.NewGuid(), Quantity = 2 });
+					s.Store(new OrderItem { Id = Guid.NewGuid(), Quantity = 1 });
+					s.SaveChanges();
+				}
+
+				using (var s = store.OpenSession())
+				{
+					var priorityProperty = typeof(OrderItem).GetProperty("Quantity");
+					var query = s.Query<OrderItem>();
+					var param = Expression.Parameter(typeof(OrderItem), typeof(OrderItem).Name);
+					var converted = Expression.Convert(Expression.Property(param, priorityProperty.Name), typeof(object));
+					var sortExpression = Expression.Lambda<Func<OrderItem, object>>(converted, param);
+					var items = query.OrderBy(sortExpression).ToArray();
+
+					Assert.Equal(items[0].Quantity, 1);
+				}
+			}
+		}
 	}
 }
