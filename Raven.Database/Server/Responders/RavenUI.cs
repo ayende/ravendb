@@ -40,7 +40,7 @@ namespace Raven.Database.Server.Responders
 				return;
 			}
 			var docPath = context.GetRequestUrl().Replace("/raven/", "");
-			context.WriteEmbeddedFile(ResourceStore.GetType().Assembly,Settings.WebDir, docPath);
+			context.WriteEmbeddedFile(ResourceStore.GetType().Assembly,Settings.WebDir, docPath, false);
 		}
 	}
 }
