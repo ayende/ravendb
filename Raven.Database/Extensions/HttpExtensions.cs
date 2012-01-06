@@ -389,26 +389,25 @@ namespace Raven.Database.Extensions
 			return context.Request.Headers["If-None-Match"] == etag.ToString();
 		}
 
-		public static void WriteEmbeddedFile(this IHttpContext context, Assembly asm, string ravenPath, string docPath)
+		public static void WriteEmbeddedFile(this IHttpContext context, Assembly asm, string ravenPath, string docPath, bool useCaching = true)
 		{
 			var filePath = Path.Combine(ravenPath, docPath);
 			context.Response.ContentType = GetContentType(docPath);
-			switch (File.Exists(filePath))
-			{
-				case false:
-					WriteEmbeddedFile(context, asm, docPath);
-					break;
-				default:
-					WriteFile(context, filePath);
-					break;
-			}
+            if (File.Exists(filePath))
+            {
+                WriteFile(context, filePath, useCaching);
+            }
+            else
+            {
+                WriteEmbeddedFile(context, asm, docPath, useCaching);
+            }
 		}
 
-		private static void WriteEmbeddedFile(this IHttpContext context, Assembly asm, string docPath)
+		private static void WriteEmbeddedFile(this IHttpContext context, Assembly asm, string docPath, bool useCaching = true)
 		{
 			byte[] bytes;
 			var etagValue = context.Request.Headers["If-None-Match"] ?? context.Request.Headers["If-Match"];
-			if (etagValue == EmbeddedLastChangedDate)
+			if (etagValue == EmbeddedLastChangedDate && useCaching)
 			{
 				context.SetStatusToNotModified();
 				return;
@@ -427,11 +426,11 @@ namespace Raven.Database.Extensions
 			context.Response.OutputStream.Write(bytes, 0, bytes.Length);
 		}
 
-		public static void WriteFile(this IHttpContext context, string filePath)
+		public static void WriteFile(this IHttpContext context, string filePath, bool useCaching = true)
 		{
 			var etagValue = context.Request.Headers["If-None-Match"] ?? context.Request.Headers["If-None-Match"];
 			var fileEtag = File.GetLastWriteTimeUtc(filePath).ToString("G");
-			if (etagValue == fileEtag)
+			if (etagValue == fileEtag && useCaching)
 			{
 				context.SetStatusToNotModified();
 				return;
