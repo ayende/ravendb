@@ -8,6 +8,7 @@ using System.ComponentModel.Composition;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -306,36 +307,66 @@ namespace Raven.Database
 		{
 			if (disposed)
 				return;
-			AppDomain.CurrentDomain.DomainUnload -= DomainUnloadOrProcessExit;
-			AppDomain.CurrentDomain.ProcessExit -= DomainUnloadOrProcessExit;
-		    disposed = true;
-			workContext.StopWork();
-			foreach (var value in ExtensionsState.Values.OfType<IDisposable>())
+
+			var exceptionAggregator = new ExceptionAggregator(log, "Could not properly dispose of DatabaseDocument");
+
+			exceptionAggregator.Execute(() =>
 			{
-				value.Dispose();
-			}
-			foreach (var shouldDispose in toDispose)
+				AppDomain.CurrentDomain.DomainUnload -= DomainUnloadOrProcessExit;
+				AppDomain.CurrentDomain.ProcessExit -= DomainUnloadOrProcessExit;
+				disposed = true;
+				workContext.StopWork();
+			});
+			
+			exceptionAggregator.Execute(() =>
 			{
-				shouldDispose.Dispose();
-			}
+				foreach (var value in ExtensionsState.Values.OfType<IDisposable>())
+				{
+					exceptionAggregator.Execute(value.Dispose);
+				}
+			});
+			
+			exceptionAggregator.Execute(() =>
+			{
+				foreach (var shouldDispose in toDispose)
+				{
+					exceptionAggregator.Execute(shouldDispose.Dispose);
+				}
+			});
 
-			if (tasksBackgroundTask != null)
-				tasksBackgroundTask.Wait(); 
-			if (indexingBackgroundTask != null)
-				indexingBackgroundTask.Wait();
-			if (reducingBackgroundTask != null)
-				reducingBackgroundTask.Wait();
+			exceptionAggregator.Execute(() =>
+			{
+				if (tasksBackgroundTask != null)
+					tasksBackgroundTask.Wait(); 
+			});
+			exceptionAggregator.Execute(() =>
+			{
+				if (indexingBackgroundTask != null)
+					indexingBackgroundTask.Wait();
+			});
+			exceptionAggregator.Execute(() =>
+			{
+				if (reducingBackgroundTask != null)
+					reducingBackgroundTask.Wait();
+			});
 
-			var disposable = backgroundTaskScheduler as IDisposable;
-			if (disposable != null)
-				disposable.Dispose();
+			exceptionAggregator.Execute(() =>
+			{
+				var disposable = backgroundTaskScheduler as IDisposable;
+				if (disposable != null)
+					disposable.Dispose();
+			});
 
-			TransactionalStorage.Dispose();
-			IndexStorage.Dispose();
+			exceptionAggregator.Execute(TransactionalStorage.Dispose);
+			exceptionAggregator.Execute(IndexStorage.Dispose);
 
-		    Configuration.Dispose();
-			disableAllTriggers.Dispose();
-			workContext.Dispose();
+			exceptionAggregator.Execute(Configuration.Dispose);
+			exceptionAggregator.Execute(disableAllTriggers.Dispose);
+			exceptionAggregator.Execute(workContext.Dispose);
+
+
+
+			exceptionAggregator.ThrowIfNeeded();
 		}
 
 		public void StopBackgroundWokers()
@@ -673,6 +704,10 @@ namespace Raven.Database
 			}
 		}
 
+		// only one index can be created at any given time
+		// the method already handle attempts to create the same index, so we don't have to 
+		// worry about this.
+		[MethodImpl(MethodImplOptions.Synchronized)]
 		public string PutIndex(string name, IndexDefinition definition)
 		{
 			definition.Name = name = IndexDefinitionStorage.FixupIndexName(name);
