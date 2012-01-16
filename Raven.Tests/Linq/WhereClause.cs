@@ -203,7 +203,7 @@ namespace Raven.Tests.Linq
 			var q = from user in indexedUsers
 					where user.Name.Contains("ayende")
 					select user;
-			Assert.Equal("Name:ayende", q.ToString());
+			Assert.Equal("Name:*ayende*", q.ToString());
 		}
 
 		[Fact]
@@ -216,7 +216,7 @@ namespace Raven.Tests.Linq
 
 
 			Assert.NotNull(q);
-			Assert.Equal("Name:ayende", q.ToString());
+			Assert.Equal("Name:*ayende*", q.ToString());
 		}
 
 		[Fact]
@@ -228,7 +228,7 @@ namespace Raven.Tests.Linq
 					select x;
 
 			Assert.NotNull(q);
-			Assert.Equal("Name:ayende", q.ToString());
+			Assert.Equal("Name:*ayende*", q.ToString());
 		}
 
 		[Fact]
@@ -240,7 +240,7 @@ namespace Raven.Tests.Linq
 					select x;
 
 			Assert.NotNull(q);
-			Assert.Equal("Name:ayende", q.ToString());
+			Assert.Equal("Name:*ayende*", q.ToString());
 		}
 
 		[Fact]
@@ -277,7 +277,7 @@ namespace Raven.Tests.Linq
 			var q = from user in indexedUsers
 					where user.Name.Contains(ayende)
 					select user;
-			Assert.Equal("Name:ayende1", q.ToString());
+			Assert.Equal("Name:*ayende1*", q.ToString());
 		}
 
 		[Fact]
@@ -296,7 +296,7 @@ namespace Raven.Tests.Linq
 			var q = from user in indexedUsers
 					where user.Name.Contains("ayende") && user.Email.Contains("ayende@ayende.com")
 					select user;
-			Assert.Equal("Name:ayende AND Email:ayende@ayende.com", q.ToString());
+			Assert.Equal("Name:*ayende* AND Email:*ayende@ayende.com*", q.ToString());
 		}
 
 		[Fact]
@@ -306,7 +306,7 @@ namespace Raven.Tests.Linq
 			var q = from user in indexedUsers
 					where user.Name.Contains("ayende") || user.Email.Contains("ayende@ayende.com")
 					select user;
-			Assert.Equal("Name:ayende OR Email:ayende@ayende.com", q.ToString());
+			Assert.Equal("Name:*ayende* OR Email:*ayende@ayende.com*", q.ToString());
 		}
 
 		[Fact]
