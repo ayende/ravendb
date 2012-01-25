@@ -9,11 +9,13 @@ using System.Web.Hosting;
 using Raven.Database;
 using Raven.Database.Config;
 using Raven.Database.Server;
+using NLog;
 
 namespace Raven.Web
 {
 	public class ForwardToRavenRespondersFactory : IHttpHandlerFactory
 	{
+		private static Logger log = LogManager.GetCurrentClassLogger();
 		internal static DocumentDatabase database;
 		internal static HttpServer server;
 		private static readonly object locker = new object();
@@ -47,6 +49,8 @@ namespace Raven.Web
 			{
 				if (database != null)
 					return;
+					
+				log.Debug("Initializing Raven forwarders factory on first request"); 
 
 				try
 				{
@@ -78,6 +82,7 @@ namespace Raven.Web
 
 		public static void Shutdown()
 		{
+			log.Debug("Shutting down Raven forwarders factory"); 
 			lock (locker)
 			{
 				if (server != null)
