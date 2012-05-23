@@ -4,7 +4,7 @@ using Raven.Json.Linq;
 
 namespace Raven.Bundles.Quotas.Size.Triggers
 {
-	public class DatabaseSizeQoutaForAttachmentsPutTrigger : AbstractAttachmentPutTrigger
+	public class DatabaseSizeQuotaForAttachmentsPutTrigger : AbstractAttachmentPutTrigger
 	{
 		public override VetoResult AllowPut(string key, Stream data, RavenJObject metadata)
 		{

@@ -51,13 +51,13 @@
       <Link>Properties\CommonAssemblyInfo.cs</Link>
     </Compile>
     <Compile Include="Documents\DocQuotaConfiguration.cs" />
-    <Compile Include="Documents\Triggers\DatabaseCountDocumentDeleteTrigger.cs" />
-    <Compile Include="Documents\Triggers\DatabaseCountQoutaForDocumentsPutTrigger.cs" />
+    <Compile Include="Documents\Triggers\DocumentCountQuotaForDocumentDeleteTrigger.cs" />
+    <Compile Include="Documents\Triggers\DocumentCountQuotaForDocumentsPutTrigger.cs" />
     <Compile Include="Size\SizeQuotaConfiguration.cs" />
-    <Compile Include="Size\Triggers\DatabaseSizeAttachmentDeleteTrigger.cs" />
-    <Compile Include="Size\Triggers\DatabaseSizeDocumentDeleteTrigger.cs" />
-    <Compile Include="Size\Triggers\DatabaseSizeQoutaForAttachmentsPutTrigger.cs" />
-    <Compile Include="Size\Triggers\DatabaseSizeQoutaForDocumentsPutTrigger.cs" />
+    <Compile Include="Size\Triggers\DatabaseSizeQuotaForAttachmentDeleteTrigger.cs" />
+    <Compile Include="Size\Triggers\DatabaseSizeQuotaForDocumentDeleteTrigger.cs" />
+    <Compile Include="Size\Triggers\DatabaseSizeQuotaForAttachmentsPutTrigger.cs" />
+    <Compile Include="Size\Triggers\DatabaseSizeQuotaForDocumentsPutTrigger.cs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\Raven.Abstractions\Raven.Abstractions.csproj">
