@@ -8,6 +8,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 
 using Lucene.Net.Analysis;
+using Lucene.Net.QueryParsers;
 using Lucene.Net.Search;
 using Version = Lucene.Net.Util.Version;
 
@@ -17,6 +18,7 @@ namespace Raven.Database.Indexing
 	{
 		static readonly Regex untokenizedQuery = new Regex(@"([\w\d_]+?):\s*(\[\[.+?\]\])", RegexOptions.Compiled);
 		static readonly Regex searchQuery = new Regex(@"([\w\d_]+?):\s*(\<\<.+?\>\>)(^[\d.]+)?", RegexOptions.Compiled);
+		static readonly Regex dateQuery = new Regex(@"([\w\d_]+?):\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7})", RegexOptions.Compiled);
 
 		public static Query BuildQuery(string query, PerFieldAnalyzerWrapper analyzer)
 		{
@@ -25,19 +27,52 @@ namespace Raven.Database.Indexing
 
 		public static Query BuildQuery(string query, string defaultField, PerFieldAnalyzerWrapper analyzer)
 		{
+			var originalQuery = query;
 			Analyzer keywordAnalyzer = new KeywordAnalyzer();
 			try
 			{
 				var queryParser = new RangeQueryParser(Version.LUCENE_29, defaultField ?? string.Empty, analyzer);
 				query = PreProcessUntokenizedTerms(query, queryParser);
 				query = PreProcessSearchTerms(query);
+				query = PreProcessDateTerms(query, queryParser);
 				queryParser.SetAllowLeadingWildcard(true); // not the recommended approach, should rather use ReverseFilter
 				return queryParser.Parse(query);
+			}
+			catch (ParseException pe)
+			{
+				if (originalQuery == query)
+					throw new ParseException("Could not parse: '" + query +"'", pe);
+				throw new ParseException("Could not parse modified query: '" + query + "' original was: '" + originalQuery +"'", pe);
+
 			}
 			finally
 			{
 				keywordAnalyzer.Close();
 			}
+		}
+
+		private static string PreProcessDateTerms(string query, RangeQueryParser queryParser)
+		{
+			var searchMatches = dateQuery.Matches(query);
+			if (searchMatches.Count < 1)
+				return query;
+
+			var queryStringBuilder = new StringBuilder(query);
+			for (var i = searchMatches.Count - 1; i >= 0; i--) // reversing the scan so we won't affect positions of later items
+			{
+				var searchMatch = searchMatches[i];
+				var field = searchMatch.Groups[1].Value;
+				var termReplacement = searchMatch.Groups[2].Value;
+
+				var replaceToken = queryParser.ReplaceToken(field, termReplacement);
+				queryStringBuilder.Remove(searchMatch.Index, searchMatch.Length);
+				queryStringBuilder
+					.Insert(searchMatch.Index, field)
+					.Insert(searchMatch.Index + field.Length, ":")
+					.Insert(searchMatch.Index + field.Length + 1, replaceToken);
+			}
+
+			return queryStringBuilder.ToString();
 		}
 
 		private static string PreProcessSearchTerms(string query)
@@ -47,7 +82,7 @@ namespace Raven.Database.Indexing
 				return query;
 
 			var queryStringBuilder = new StringBuilder(query);
-			for (var i = searchMatches.Count-1; i >= 0; i--) // reversing the scan so we won't affect positions of later items
+			for (var i = searchMatches.Count - 1; i >= 0; i--) // reversing the scan so we won't affect positions of later items
 			{
 				var searchMatch = searchMatches[i];
 				var field = searchMatch.Groups[1].Value;
@@ -74,8 +109,8 @@ namespace Raven.Database.Indexing
 					}
 
 					var termQuery = new StringBuilder().Append(field).Append(':').Append(term).Append(boost).Append(' ');
-					len+=termQuery.Length;
-					queryStringBuilder.Insert(searchMatch.Index+1, termQuery);
+					len += termQuery.Length;
+					queryStringBuilder.Insert(searchMatch.Index + 1, termQuery);
 				}
 				queryStringBuilder.Insert(len, ')');
 			}
@@ -101,7 +136,7 @@ namespace Raven.Database.Indexing
 				// specify that term for this field should not be tokenized
 				var value = match.Groups[2].Value;
 
-				var rawTerm = value.Substring(2, value.Length-4);
+				var rawTerm = value.Substring(2, value.Length - 4);
 				queryParser.SetUntokenized(match.Groups[1].Value, Unescape(rawTerm));
 
 				var term = match.Groups[2];
@@ -127,7 +162,7 @@ namespace Raven.Database.Indexing
 			return sb.ToString();
 		}
 
-			public static string Unescape(string term)
+		public static string Unescape(string term)
 		{
 			// method doesn't allocate a StringBuilder unless the string requires unescaping
 			// also this copies chunks of the original string into the StringBuilder which
@@ -147,7 +182,7 @@ namespace Raven.Database.Indexing
 			for (int i = start; i < length; i++)
 			{
 				char ch = term[i];
-				if(prev != '\\')
+				if (prev != '\\')
 				{
 					prev = ch;
 					continue;
@@ -177,10 +212,10 @@ namespace Raven.Database.Indexing
 							if (buffer == null)
 							{
 								// allocate builder with headroom
-								buffer = new StringBuilder(length*2);
+								buffer = new StringBuilder(length * 2);
 							}
 							// append any leading substring
-							buffer.Append(term, start, i - start-1);
+							buffer.Append(term, start, i - start - 1);
 
 							buffer.Append(ch);
 							start = i + 1;
@@ -191,7 +226,7 @@ namespace Raven.Database.Indexing
 
 			if (buffer == null)
 			{
-				if(isPhrase)
+				if (isPhrase)
 					return term.Substring(1, term.Length - 2);
 				// no changes required
 				return term;

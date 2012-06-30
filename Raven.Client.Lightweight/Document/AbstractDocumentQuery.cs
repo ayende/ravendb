@@ -13,7 +13,7 @@ using System.Linq.Expressions;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
-#if !NET_3_5
+#if !NET35
 using Raven.Client.Connection.Async;
 using System.Threading.Tasks;
 using Raven.Client.Document.Batches;
@@ -26,7 +26,7 @@ using Raven.Client.Exceptions;
 using Raven.Client.Linq;
 using Raven.Client.Listeners;
 using Raven.Json.Linq;
-using Newtonsoft.Json.Linq;
+using Raven.Imports.Newtonsoft.Json.Linq;
 using Raven.Abstractions.Extensions;
 using Raven.Abstractions.Indexing;
 using Raven.Abstractions.Linq;
@@ -51,7 +51,7 @@ namespace Raven.Client.Document
 		/// </summary>
 		protected readonly IDatabaseCommands theDatabaseCommands;
 #endif
-#if !NET_3_5
+#if !NET35
 		/// <summary>
 		/// Async database commands to use
 		/// </summary>
@@ -161,7 +161,7 @@ namespace Raven.Client.Document
 		}
 #endif
 
-#if !NET_3_5
+#if !NET35
 		/// <summary>
 		///   Grant access to the async database commands
 		/// </summary>
@@ -203,7 +203,7 @@ namespace Raven.Client.Document
 		}
 
 		protected Action<QueryResult> afterQueryExecutedCallback;
-		private Guid? cutoffEtag;
+		protected Guid? cutoffEtag;
 
 		private TimeSpan DefaultTimeout
 		{
@@ -215,7 +215,7 @@ namespace Raven.Client.Document
 			}
 		}
 
-#if !SILVERLIGHT && !NET_3_5
+#if !SILVERLIGHT && !NET35
 		/// <summary>
 		///   Initializes a new instance of the <see cref = "DocumentQuery{T}" /> class.
 		/// </summary>
@@ -236,7 +236,7 @@ namespace Raven.Client.Document
 #if !SILVERLIGHT
 									 IDatabaseCommands databaseCommands,
 #endif
-#if !NET_3_5
+#if !NET35
 									 IAsyncDatabaseCommands asyncDatabaseCommands,
 #endif
 									 string indexName,
@@ -250,7 +250,7 @@ namespace Raven.Client.Document
 			this.queryListeners = queryListeners;
 			this.indexName = indexName;
 			this.theSession = theSession;
-#if !NET_3_5
+#if !NET35
 			this.theAsyncDatabaseCommands = asyncDatabaseCommands;
 #endif
 			this.AfterQueryExecuted(queryStats.UpdateQueryStats);
@@ -269,7 +269,7 @@ namespace Raven.Client.Document
 #if !SILVERLIGHT
 			theDatabaseCommands = other.theDatabaseCommands;
 #endif
-#if !NET_3_5
+#if !NET35
 			theAsyncDatabaseCommands = other.theAsyncDatabaseCommands;
 #endif
 			indexName = other.indexName;
@@ -312,7 +312,16 @@ namespace Raven.Client.Document
 			WaitForNonStaleResults(waitTimeout);
 			return this;
 		}
-		
+
+		/// <summary>
+		/// When using spatial queries, instruct the query to sort by the distance from the origin point
+		/// </summary>
+		IDocumentQueryCustomization IDocumentQueryCustomization.SortByDistance()
+		{
+			OrderBy(Constants.DistanceFieldName);
+			return this;
+		}
+
 		/// <summary>
 		///   Filter matches to be inside the specified radius
 		/// </summary>
@@ -435,14 +444,13 @@ namespace Raven.Client.Document
 			ExecuteActualQuery();
 		}
 
-		protected void ClearSortHints(IDatabaseCommands shardDbCommands)
+		protected void ClearSortHints(IDatabaseCommands dbCommands)
 		{
-			foreach (var key in shardDbCommands.OperationsHeaders.AllKeys.Where(key => key.StartsWith("SortHint")).ToArray())
+			foreach (var key in dbCommands.OperationsHeaders.AllKeys.Where(key => key.StartsWith("SortHint")).ToArray())
 			{
-				shardDbCommands.OperationsHeaders.Remove(key);
+				dbCommands.OperationsHeaders.Remove(key);
 			}
 		}
-
 
 		protected virtual void ExecuteActualQuery()
 		{
@@ -464,7 +472,17 @@ namespace Raven.Client.Document
 		}
 #endif
 
-#if !NET_3_5 && !SILVERLIGHT
+#if !NET35
+		protected void ClearSortHints(IAsyncDatabaseCommands dbCommands)
+		{
+			foreach (var key in dbCommands.OperationsHeaders.Keys.Where(key => key.StartsWith("SortHint")).ToArray())
+			{
+				dbCommands.OperationsHeaders.Remove(key);
+			}
+		}
+#endif
+
+#if !NET35 && !SILVERLIGHT
 
 		/// <summary>
 		/// Register the query as a lazy query in the session and return a lazy
@@ -498,7 +516,7 @@ namespace Raven.Client.Document
 
 #endif
 
-#if !NET_3_5
+#if !NET35
 
 		/// <summary>
 		///   Gets the query result
@@ -514,14 +532,11 @@ namespace Raven.Client.Document
 			}
 		}
 
-		private Task<QueryOperation> InitAsync()
+		protected virtual Task<QueryOperation> InitAsync()
 		{
 			if (queryOperation != null)
-				return TaskResult(queryOperation);
-			foreach (var key in AsyncDatabaseCommands.OperationsHeaders.Keys.Where(key => key.StartsWith("SortHint")).ToArray())
-			{
-				AsyncDatabaseCommands.OperationsHeaders.Remove(key);
-			}
+				return CompletedTask.With(queryOperation);
+			ClearSortHints(AsyncDatabaseCommands);
 			ExecuteBeforeQueryListeners();
 
 			queryOperation = InitializeQueryOperation((key, val) => AsyncDatabaseCommands.OperationsHeaders[key] = val);
@@ -620,7 +635,7 @@ namespace Raven.Client.Document
 		}
 #endif
 
-#if !NET_3_5
+#if !NET35
 	 
 		private Task<Tuple<QueryOperation,IList<T>>> ProcessEnumerator(Task<QueryOperation> task)
 		{
@@ -1399,7 +1414,7 @@ If you really want to do in memory filtering on the data returned from the query
 
 		#endregion
 
-#if !NET_3_5
+#if !NET35
 		protected virtual Task<QueryOperation> ExecuteActualQueryAsync()
 		{
 			using(queryOperation.EnterQueryContext())
@@ -1434,12 +1449,6 @@ If you really want to do in memory filtering on the data returned from the query
 			return taskComplectionSource.Task;
 		}
 
-		private static Task<TResult> TaskResult<TResult>(TResult value)
-		{
-			var taskComplectionSource = new TaskCompletionSource<TResult>();
-			taskComplectionSource.SetResult(value);
-			return taskComplectionSource.Task;
-		}
 #endif
 	 
 		/// <summary>
@@ -1545,17 +1554,18 @@ If you really want to do in memory filtering on the data returned from the query
 
 			if (type == typeof(DateTime))
 			{
-				return DateTools.DateToString(((DateTime)whereParams.Value), DateTools.Resolution.MILLISECOND);
+				var val = (DateTime)whereParams.Value;
+				return val.ToString(Default.DateTimeFormatsToWrite);
+			}
+			if (type == typeof(DateTimeOffset))
+			{
+				var val = (DateTimeOffset)whereParams.Value;
+				return val.UtcDateTime.ToString(Default.DateTimeFormatsToWrite);
 			}
 			
 			if(type == typeof(decimal))
 			{
 				return RavenQuery.Escape(((double)((decimal)whereParams.Value)).ToString(CultureInfo.InvariantCulture), false, false);
-			}
-
-			if (type == typeof(DateTimeOffset))
-			{
-				return DateTools.DateToString(((DateTimeOffset)whereParams.Value).UtcDateTime, DateTools.Resolution.MILLISECOND);
 			}
 
 			if(whereParams.FieldName == Constants.DocumentIdFieldName && whereParams.Value is string == false)
@@ -1580,9 +1590,9 @@ If you really want to do in memory filtering on the data returned from the query
 				return Constants.EmptyStringNotAnalyzed;
 
 			if (whereParams.Value is DateTime)
-				return DateTools.DateToString(((DateTime)whereParams.Value), DateTools.Resolution.MILLISECOND);
+				return ((DateTime)whereParams.Value).ToString(Default.DateTimeFormatsToWrite);
 			if (whereParams.Value is DateTimeOffset)
-				return DateTools.DateToString(((DateTimeOffset)whereParams.Value).UtcDateTime, DateTools.Resolution.MILLISECOND);
+				return ((DateTimeOffset)whereParams.Value).UtcDateTime.ToString(Default.DateTimeFormatsToWrite);
 
 			if (whereParams.FieldName == Constants.DocumentIdFieldName && whereParams.Value is string == false)
 			{
@@ -1652,7 +1662,7 @@ If you really want to do in memory filtering on the data returned from the query
 			return this;
 		}
 
-#if !NET_3_5
+#if !NET35
 		/// <summary>
 		/// Returns a list of results for a query asynchronously. 
 		/// </summary>

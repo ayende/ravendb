@@ -1,4 +1,4 @@
-﻿#if !NET_3_5
+﻿#if !NET35
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -23,14 +23,14 @@ namespace Raven.Client.Document
 		/// </summary>
 		public AsyncDocumentQuery(InMemoryDocumentSessionOperations session,
 #if !SILVERLIGHT
-	IDatabaseCommands databaseCommands,
+			IDatabaseCommands databaseCommands,
 #endif
-	IAsyncDatabaseCommands asyncDatabaseCommands, string indexName, string[] projectionFields, IDocumentQueryListener[] queryListeners)
-			: base(session,
+			IAsyncDatabaseCommands asyncDatabaseCommands, string indexName, string[] projectionFields, IDocumentQueryListener[] queryListeners)
+			: base(session, 
 #if !SILVERLIGHT
-	databaseCommands,
+			databaseCommands, 
 #endif
-	asyncDatabaseCommands, indexName, projectionFields, queryListeners)
+			asyncDatabaseCommands, indexName, projectionFields, queryListeners)
 		{
 		}
 
@@ -593,6 +593,14 @@ namespace Raven.Client.Document
 			return this;
 		}
 
+		/// <summary>
+		/// Selects all the projection fields directly from the index
+		/// </summary>
+		/// <typeparam name="TProjection">The type of the projection.</typeparam>
+		public virtual IAsyncDocumentQuery<TProjection> SelectFields<TProjection>()
+		{
+			return SelectFields<TProjection>(typeof (TProjection).GetProperties().Select(x => x.Name).ToArray());
+		}
 
 		/// <summary>
 		/// Selects the specified fields directly from the index
@@ -603,12 +611,12 @@ namespace Raven.Client.Document
 		{
 			var asyncDocumentQuery = new AsyncDocumentQuery<TProjection>(theSession,
 #if !SILVERLIGHT
-	theDatabaseCommands,
+																		 theDatabaseCommands,
 #endif
-#if !NET_3_5
-	theAsyncDatabaseCommands,
+#if !NET35
+																		 theAsyncDatabaseCommands,
 #endif
-	indexName, fields, queryListeners)
+																		 indexName, fields, queryListeners)
 										{
 											pageSize = pageSize,
 											theQueryText = new StringBuilder(theQueryText.ToString()),

@@ -10,8 +10,7 @@ using Raven.Abstractions.Data;
 using Raven.Client.Connection;
 using Raven.Client.Linq;
 using Raven.Client.Listeners;
-using Raven.Client.Extensions;
-#if !NET_3_5
+#if !NET35
 using Raven.Client.Connection.Async;
 #endif
 
@@ -29,7 +28,7 @@ namespace Raven.Client.Document
 #if !SILVERLIGHT
 			, IDatabaseCommands databaseCommands
 #endif 
-#if !NET_3_5
+#if !NET35
 			, IAsyncDatabaseCommands asyncDatabaseCommands
 #endif
 			, string indexName, string[] projectionFields, IDocumentQueryListener[] queryListeners)
@@ -37,7 +36,7 @@ namespace Raven.Client.Document
 #if !SILVERLIGHT
 			, databaseCommands
 #endif
-#if !NET_3_5
+#if !NET35
 			, asyncDatabaseCommands
 #endif
 			, indexName, projectionFields, queryListeners)
@@ -53,6 +52,14 @@ namespace Raven.Client.Document
 			
 		}
 
+		/// <summary>
+		/// Selects the projection fields directly from the index
+		/// </summary>
+		/// <typeparam name="TProjection">The type of the projection.</typeparam>
+		public IDocumentQuery<TProjection> SelectFields<TProjection>()
+		{
+			return SelectFields<TProjection>(typeof (TProjection).GetProperties().Select(x => x.Name).ToArray());
+		}
 
 		/// <summary>
 		/// Selects the specified fields directly from the index
@@ -65,7 +72,7 @@ namespace Raven.Client.Document
 #if !SILVERLIGHT
 			                                                   theDatabaseCommands,
 #endif
-#if !NET_3_5
+#if !NET35
 			                                                   theAsyncDatabaseCommands,
 #endif
 			                                                   indexName, fields,
@@ -76,6 +83,7 @@ namespace Raven.Client.Document
 				start = start,
 				timeout = timeout,
 				cutoff = cutoff,
+				cutoffEtag = cutoffEtag,
 				queryStats = queryStats,
 				theWaitForNonStaleResults = theWaitForNonStaleResults,
 				sortByHints = sortByHints,
@@ -324,7 +332,7 @@ namespace Raven.Client.Document
 		}
 
 		/// <summary>
-		///   Matches exact value
+		/// 	Matches exact value
 		/// </summary>
 		/// <remarks>
 		///   Defaults to NotAnalyzed
@@ -348,7 +356,7 @@ namespace Raven.Client.Document
 		}
 
 		/// <summary>
-		///   Matches exact value
+		/// 	Matches exact value
 		/// </summary>
 		/// <remarks>
 		///   Defaults to allow wildcards only if analyzed

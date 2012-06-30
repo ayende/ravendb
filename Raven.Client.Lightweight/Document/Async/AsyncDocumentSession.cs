@@ -3,20 +3,18 @@
 //     Copyright (c) Hibernating Rhinos LTD. All rights reserved.
 // </copyright>
 //-----------------------------------------------------------------------
-#if !NET_3_5
+#if !NET35
 
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
-using System.Net;
 using System.Threading.Tasks;
-using NLog;
 using Raven.Abstractions.Data;
 using Raven.Client.Connection.Async;
 using Raven.Client.Document.SessionOperations;
+using Raven.Client.Extensions;
 using Raven.Client.Indexes;
-using Raven.Client.Listeners;
 using Raven.Client.Util;
 
 namespace Raven.Client.Document.Async
@@ -26,8 +24,10 @@ namespace Raven.Client.Document.Async
 	/// <summary>
 	/// Implementation for async document session 
 	/// </summary>
-	public class AsyncDocumentSession : InMemoryDocumentSessionOperations, IAsyncDocumentSession, IAsyncAdvancedSessionOperations, IDocumentQueryGenerator
+	public class AsyncDocumentSession : InMemoryDocumentSessionOperations, IAsyncDocumentSessionImpl, IAsyncAdvancedSessionOperations, IDocumentQueryGenerator
 	{
+		private AsyncDocumentKeyGeneration asyncDocumentKeyGeneration;
+
 		/// <summary>
 		/// Initializes a new instance of the <see cref="AsyncDocumentSession"/> class.
 		/// </summary>
@@ -38,6 +38,8 @@ namespace Raven.Client.Document.Async
 			: base(documentStore, listeners, id)
 		{
 			AsyncDatabaseCommands = asyncDatabaseCommands;
+			GenerateDocumentKeysOnStore = false;
+			asyncDocumentKeyGeneration = new AsyncDocumentKeyGeneration(this, entitiesAndMetadata.TryGetValue, (key, entity, metadata) => key);
 		}
 
 		/// <summary>
@@ -213,14 +215,34 @@ namespace Raven.Client.Document.Async
 		/// <returns></returns>
 		public Task SaveChangesAsync()
 		{
-			var cachingScope = EntitiesToJsonCachingScope();
-			var data = PrepareForSaveChanges();
-			return AsyncDatabaseCommands.BatchAsync(data.Commands.ToArray())
-				.ContinueWith(task =>
+			return asyncDocumentKeyGeneration.GenerateDocumentKeysForSaveChanges()
+				.ContinueWith(keysTask =>
 				{
-					UpdateBatchResults(task.Result, data);
-					cachingScope.Dispose();
-				});
+					keysTask.AssertNotFailed();
+
+					var cachingScope = EntitiesToJsonCachingScope();
+					try
+					{
+						var data = PrepareForSaveChanges();
+						return AsyncDatabaseCommands.BatchAsync(data.Commands.ToArray())
+							.ContinueWith(task =>
+							{
+								try
+								{
+									UpdateBatchResults(task.Result, data);
+								}
+								finally
+								{
+									cachingScope.Dispose();
+								}
+							});
+					}
+					catch
+					{
+						cachingScope.Dispose();
+						throw;
+					}
+				}).Unwrap();
 		}
 
 		/// <summary>
@@ -288,7 +310,7 @@ namespace Raven.Client.Document.Async
 #if !SILVERLIGHT
 				null,
 #endif
-			Advanced.AsyncDatabaseCommands),
+			AsyncDatabaseCommands),
 				ravenQueryStatistics,
 				indexName,
 				null,
@@ -296,7 +318,7 @@ namespace Raven.Client.Document.Async
 #if !SILVERLIGHT
 				null,
 #endif
-				Advanced.AsyncDatabaseCommands);
+				AsyncDatabaseCommands);
 		}
 
 		/// <summary>
@@ -313,6 +335,21 @@ namespace Raven.Client.Document.Async
 		public IAsyncDocumentQuery<T> AsyncQuery<T>(string indexName)
 		{
 			return AsyncLuceneQuery<T>(indexName);
+		}
+
+		protected override string GenerateKey(object entity)
+		{
+			throw new NotSupportedException("Async session cannot generate keys syncronously");
+		}
+
+		protected override void RememberEntityForDocumentKeyGeneration(object entity)
+		{
+			asyncDocumentKeyGeneration.Add(entity);
+		}
+
+		protected override Task<string> GenerateKeyAsync(object entity)
+		{
+			return Conventions.AsyncDocumentKeyGenerator(AsyncDatabaseCommands, entity);
 		}
 	}
 }

@@ -10,7 +10,8 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using NLog;
-using Newtonsoft.Json.Linq;
+using Raven.Database.Server;
+using Raven.Imports.Newtonsoft.Json.Linq;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
 using Raven.Bundles.Replication.Data;
@@ -23,6 +24,8 @@ using Raven.Json.Linq;
 
 namespace Raven.Bundles.Replication.Responders
 {
+	[ExportMetadata("Bundle", "Replication")]
+	[InheritedExport(typeof(AbstractRequestResponder))]
 	public class DocumentReplicationResponder : RequestResponder
 	{
 		private readonly Logger log = LogManager.GetCurrentClassLogger();
@@ -121,6 +124,7 @@ namespace Raven.Bundles.Replication.Responders
 				return;
 			}
 
+			metadata[ReplicationConstants.RavenReplicationConflictDocument] = true;
 			var newDocumentConflictId = id + "/conflicts/" + HashReplicationIdentifier(metadata);
 			metadata.Add(ReplicationConstants.RavenReplicationConflict, RavenJToken.FromObject(true));
 			actions.Documents.AddDocument(newDocumentConflictId, null, document, metadata);

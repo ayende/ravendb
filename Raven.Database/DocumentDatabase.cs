@@ -16,7 +16,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Transactions;
-using Newtonsoft.Json;
+using Raven.Imports.Newtonsoft.Json;
 using NLog;
 using Raven.Abstractions;
 using Raven.Abstractions.Commands;
@@ -356,17 +356,17 @@ namespace Raven.Database
 			});
 
 			if (TransactionalStorage != null)
-				exceptionAggregator.Execute(TransactionalStorage.Dispose);
+			exceptionAggregator.Execute(TransactionalStorage.Dispose);
 			if (IndexStorage != null)
-				exceptionAggregator.Execute(IndexStorage.Dispose);
+			exceptionAggregator.Execute(IndexStorage.Dispose);
 
 			if (Configuration != null)
-				exceptionAggregator.Execute(Configuration.Dispose);
+			exceptionAggregator.Execute(Configuration.Dispose);
 
 			exceptionAggregator.Execute(disableAllTriggers.Dispose);
 
 			if (workContext != null)
-				exceptionAggregator.Execute(workContext.Dispose);
+			exceptionAggregator.Execute(workContext.Dispose);
 
 
 
@@ -450,7 +450,7 @@ namespace Raven.Database
 
 		public PutResult Put(string key, Guid? etag, RavenJObject document, RavenJObject metadata, TransactionInformation transactionInformation)
 		{
-			if (string.IsNullOrEmpty(key))
+			if (string.IsNullOrWhiteSpace(key))
 			{
 				// we no longer sort by the key, so it doesn't matter
 				// that the key is no longer sequential
@@ -985,8 +985,8 @@ namespace Raven.Database
 			if (name == null) throw new ArgumentNullException("name");
 			name = name.Trim();
 			
-			if (Encoding.Unicode.GetByteCount(name) >= 255)
-				throw new ArgumentException("The key must be a maximum of 255 bytes in Unicode, 127 characters", "name");
+			if (Encoding.Unicode.GetByteCount(name) >= 2048)
+				throw new ArgumentException("The key must be a maximum of 2,048 bytes in Unicode, 1,024 characters", "name");
 
 			Guid newEtag = Guid.Empty;
 			TransactionalStorage.Batch(actions =>
@@ -1109,13 +1109,7 @@ namespace Raven.Database
 						indexName => new RavenJObject
 							{
 								{"name", new RavenJValue(indexName) },
-								{"definition", RavenJObject.FromObject(IndexDefinitionStorage.GetIndexDefinition(indexName), new JsonSerializer
-								{
-									Converters =
-										{
-											new JsonEnumConverter(),
-										}
-								})}
+								{"definition", RavenJObject.FromObject(IndexDefinitionStorage.GetIndexDefinition(indexName))}
 							}));
 		}
 

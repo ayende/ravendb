@@ -10,20 +10,23 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using NLog;
-using Newtonsoft.Json.Linq;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
 using Raven.Bundles.Replication.Data;
 using Raven.Bundles.Replication.Plugins;
 using Raven.Database.Extensions;
+using Raven.Database.Server;
 using Raven.Database.Server.Abstractions;
 using Raven.Database.Server.Responders;
 using Raven.Database.Storage;
+using Raven.Imports.Newtonsoft.Json.Linq;
 using Raven.Json.Linq;
 using System.Linq;
 
 namespace Raven.Bundles.Replication.Responders
 {
+	[ExportMetadata("Bundle", "Replication")]
+	[InheritedExport(typeof(AbstractRequestResponder))]
 	public class AttachmentReplicationResponder : RequestResponder
 	{
 		private Logger log = LogManager.GetCurrentClassLogger();

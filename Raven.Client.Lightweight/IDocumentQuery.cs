@@ -5,7 +5,7 @@
 //-----------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
-#if !NET_3_5
+#if !NET35
 using System.Threading.Tasks;
 #endif
 using Raven.Abstractions.Data;
@@ -26,6 +26,12 @@ namespace Raven.Client
 		/// <param name="fields">The fields.</param>
 		IDocumentQuery<TProjection> SelectFields<TProjection>(params string[] fields);
 
+		/// <summary>
+		/// Selects the projection fields directly from the index
+		/// </summary>
+		/// <typeparam name="TProjection">The type of the projection.</typeparam>
+		IDocumentQuery<TProjection> SelectFields<TProjection>();
+
 
 #if !SILVERLIGHT
 		/// <summary>
@@ -36,7 +42,7 @@ namespace Raven.Client
 		QueryResult QueryResult { get; }
 #endif
 
-#if !NET_3_5
+#if !NET35
 		/// <summary>
 		/// Register the query as a lazy query in the session and return a lazy
 		/// instance that will evaluate the query only when needed

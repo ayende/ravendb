@@ -6,7 +6,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
-using Newtonsoft.Json.Linq;
+using Raven.Imports.Newtonsoft.Json.Linq;
 using Raven.Abstractions;
 using Raven.Abstractions.Commands;
 using Raven.Abstractions.Data;
@@ -52,6 +52,19 @@ namespace Raven.Tests.Storage
 			var dbs = db.GetDocumentsWithIdStartingWith("Raven/Databases/", 0, 10);
 
 			Assert.Equal(4, dbs.Length);
+		}
+
+		[Fact]
+		public void WhenPutAnIdWithASpace_IdWillBeAGuid()
+		{
+			db.Put(" ", null, new RavenJObject { { "a", "b" } }, new RavenJObject(), null);
+
+			var doc = db.GetDocuments(0, 10, null)
+				.OfType<RavenJObject>()
+				.Single();
+			var id = doc["@metadata"].Value<string>("@id");
+			Assert.False(string.IsNullOrWhiteSpace(id));
+			Assert.DoesNotThrow(() => new Guid(id)); 
 		}
 
 		[Fact]

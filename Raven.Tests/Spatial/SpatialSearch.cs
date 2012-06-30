@@ -58,9 +58,29 @@ namespace Raven.Tests.Spatial
 
 		[Theory]
 		[CriticalCultures]
-		public void Can_do_spatial_search_with_client_api2(CultureInfo cultureInfo)
+		public void Can_do_spatial_search_with_client_api3(CultureInfo cultureInfo)
 		{
 			using(new TemporaryCulture(cultureInfo))
+			using (var store = NewDocumentStore())
+			{
+				new SpatialIdx().Execute(store);
+
+				using (var session = store.OpenSession())
+				{
+					var matchingVenues = session.Query<Event, SpatialIdx>()
+						.Customize(x => x
+						                	.WithinRadiusOf(5, 38.9103000, -77.3942)
+						                	.WaitForNonStaleResultsAsOfNow()
+						);
+
+					Assert.Equal(" Lat: 38.9103 Lng: -77.3942 Radius: 5", matchingVenues.ToString());
+				}
+			}
+		}
+
+		[Fact]
+		public void Can_do_spatial_search_with_client_api2()
+		{
 			using (var store = NewDocumentStore())
 			{
 				new SpatialIdx().Execute(store);
@@ -113,8 +133,8 @@ namespace Raven.Tests.Spatial
 					for (int i = 0; i < events.Count; i++)
 					{
 						Assert.Equal(expectedOrder[i], events[i].Venue);
-					}
 				}
+			}
 
 				using (var session = store.OpenSession())
 				{
@@ -133,7 +153,7 @@ namespace Raven.Tests.Spatial
 					{
 						Assert.Equal(expectedOrder[i], events[i].Venue);
 					}
-				}
+		}
 			}
 		}
 

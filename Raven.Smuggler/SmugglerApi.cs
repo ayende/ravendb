@@ -9,12 +9,12 @@ using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Text;
-using Newtonsoft.Json;
 using Raven.Abstractions.Connection;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
 using Raven.Abstractions.Smuggler;
 using Raven.Client.Extensions;
+using Raven.Imports.Newtonsoft.Json;
 using Raven.Json.Linq;
 
 namespace Raven.Smuggler

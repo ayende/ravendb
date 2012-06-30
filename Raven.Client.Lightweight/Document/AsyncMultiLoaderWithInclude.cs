@@ -1,4 +1,4 @@
-#if !NET_3_5
+#if !NET35
 //-----------------------------------------------------------------------
 // <copyright file="MultiLoaderWithInclude.cs" company="Hibernating Rhinos LTD">
 //     Copyright (c) Hibernating Rhinos LTD. All rights reserved.
@@ -20,7 +20,7 @@ namespace Raven.Client.Document
 	/// </summary>
 	public class AsyncMultiLoaderWithInclude<T> : IAsyncLoaderWithInclude<T>
 	{
-		private readonly AsyncDocumentSession session;
+		private readonly IAsyncDocumentSessionImpl session;
 		private readonly List<string> includes = new List<string>();
 
 		/// <summary>
@@ -83,7 +83,7 @@ namespace Raven.Client.Document
 		/// Initializes a new instance of the <see cref="AsyncMultiLoaderWithInclude{T}"/> class.
 		/// </summary>
 		/// <param name="session">The session.</param>
-		public AsyncMultiLoaderWithInclude(AsyncDocumentSession session)
+		public AsyncMultiLoaderWithInclude(IAsyncDocumentSessionImpl session)
 		{
 			this.session = session;
 		}

@@ -10,15 +10,14 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Linq;
 using Lucene.Net.Documents;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
+using Raven.Imports.Newtonsoft.Json;
+using Raven.Imports.Newtonsoft.Json.Linq;
 using Raven.Abstractions;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Indexing;
 using Raven.Abstractions.Linq;
 using Raven.Database.Extensions;
 using Raven.Json.Linq;
-using DateTools = Lucene.Net.Documents.DateTools;
 
 namespace Raven.Database.Indexing
 {
@@ -101,10 +100,9 @@ namespace Raven.Database.Indexing
 							 Field.Index.NOT_ANALYZED_NO_NORMS);
 				yield break;
 			}
-			var dynamicNullObject = value as DynamicNullObject;
-			if (ReferenceEquals(dynamicNullObject, null) == false)
+			if (value is DynamicNullObject)
 			{
-				if((dynamicNullObject ).IsExplicitNull)
+				if(((DynamicNullObject)value).IsExplicitNull)
 				{
 					yield return CreateFieldWithCaching(name, Constants.NullValue, storage,
 					                                    Field.Index.NOT_ANALYZED_NO_NORMS);
@@ -160,26 +158,13 @@ namespace Raven.Database.Indexing
 			if (Equals(fieldIndexingOptions, Field.Index.NOT_ANALYZED) ||
 			    Equals(fieldIndexingOptions, Field.Index.NOT_ANALYZED_NO_NORMS))// explicitly not analyzed
 			{
-				if (value is DateTime)
-				{
-				    var val = (DateTime) value;
-					var postFix = val.Kind == DateTimeKind.Utc ? "Z" : "";
-					yield return CreateFieldWithCaching(name, val.ToString(Default.DateTimeFormatsToWrite) + postFix, storage,
-									   indexDefinition.GetIndex(name, Field.Index.NOT_ANALYZED_NO_NORMS));
-				}
-				else if(value is DateTimeOffset)
-				{
-					var val = (DateTimeOffset)value;
-					yield return CreateFieldWithCaching(name, val.ToString(Default.DateTimeOffsetFormatsToWrite), storage,
-									   indexDefinition.GetIndex(name, Field.Index.NOT_ANALYZED_NO_NORMS));
-				}
-				else
+				// date time and date time offset have the same structure fo analyzed and not analyzed.
+				if (!(value is DateTime) && !(value is DateTimeOffset))
 				{
 					yield return CreateFieldWithCaching(name, value.ToString(), storage,
-										   indexDefinition.GetIndex(name, Field.Index.NOT_ANALYZED_NO_NORMS));
+					                                    indexDefinition.GetIndex(name, Field.Index.NOT_ANALYZED_NO_NORMS));
+					yield break;
 				}
-				yield break;
-			    
 			}
 			if (value is string) 
 			{
@@ -191,15 +176,15 @@ namespace Raven.Database.Indexing
 
 			if (value is DateTime)
 			{
-				yield return CreateFieldWithCaching(name, DateTools.DateToString((DateTime)value, DateTools.Resolution.MILLISECOND),
-					storage,
-					indexDefinition.GetIndex(name, Field.Index.NOT_ANALYZED_NO_NORMS));
+				var val = (DateTime)value;
+				yield return CreateFieldWithCaching(name, val.ToString(Default.DateTimeFormatsToWrite), storage,
+						   indexDefinition.GetIndex(name, Field.Index.NOT_ANALYZED_NO_NORMS));
 			}
 			else if (value is DateTimeOffset)
 			{
-				yield return CreateFieldWithCaching(name, DateTools.DateToString(((DateTimeOffset)value).UtcDateTime, DateTools.Resolution.MILLISECOND),
-					storage,
-					indexDefinition.GetIndex(name, Field.Index.NOT_ANALYZED_NO_NORMS));
+				var val = (DateTimeOffset)value;
+				yield return CreateFieldWithCaching(name, val.UtcDateTime.ToString(Default.DateTimeFormatsToWrite), storage,
+						   indexDefinition.GetIndex(name, Field.Index.NOT_ANALYZED_NO_NORMS));
 			}
 			else if(value is bool)
 			{
@@ -276,7 +261,7 @@ namespace Raven.Database.Indexing
 			}
 		}
 
-		private static bool ShouldTreatAsEnumerable(object itemsToIndex)
+		public static bool ShouldTreatAsEnumerable(object itemsToIndex)
 	    {
 			if (itemsToIndex == null)
 				return false;

@@ -5,8 +5,9 @@ using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
-using Newtonsoft.Json;
+using Raven.Abstractions.Json;
 using Raven.Json.Linq;
+using Raven.Imports.Newtonsoft.Json;
 
 namespace Raven.Abstractions.Smuggler
 {
@@ -286,7 +287,7 @@ namespace Raven.Abstractions.Smuggler
 				var attachmentExportInfo =
 					new JsonSerializer
 						{
-							Converters = { new TrivialJsonToJsonJsonConverter() }
+							Converters = { new JsonToJsonConverter() }
 						}.Deserialize<AttachmentExportInfo>(new RavenJTokenReader(item));
 				ShowProgress("Importing attachment {0}", attachmentExportInfo.Key);
 

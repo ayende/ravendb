@@ -49,7 +49,7 @@ namespace Raven.Client.Linq
 		/// </summary>
 		IRavenQueryProvider For<S>();
 
-#if !NET_3_5
+#if !NET35
 		/// <summary>
 		/// Convert the Linq query to a Lucene query
 		/// </summary>

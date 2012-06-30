@@ -10,11 +10,11 @@ using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
-using Newtonsoft.Json;
 using Raven.Abstractions.Data;
 using Raven.Client.Connection;
 using Raven.Client.Document;
 using Raven.Client.Indexes;
+using Raven.Imports.Newtonsoft.Json;
 using Raven.Json.Linq;
 
 namespace Raven.Client.Linq
@@ -174,6 +174,10 @@ namespace Raven.Client.Linq
 
 		private void VisitAndAlso(BinaryExpression andAlso)
 		{
+			if (TryHandleBetween(andAlso))
+				return;
+
+
 			if (subClauseDepth > 0) luceneQuery.OpenSubclause();
 			subClauseDepth++;
 
@@ -183,6 +187,64 @@ namespace Raven.Client.Linq
 
 			subClauseDepth--;
 			if (subClauseDepth > 0) luceneQuery.CloseSubclause();
+		}
+
+		private bool TryHandleBetween(BinaryExpression andAlso)
+		{
+			// x.Foo > 100 && x.Foo < 200
+			// x.Foo < 200 && x.Foo > 100 
+			// 100 < x.Foo && 200 > x.Foo
+			// 200 > x.Foo && 100 < x.Foo 
+
+			var isPossibleBetween =
+				(andAlso.Left.NodeType == ExpressionType.GreaterThan && andAlso.Right.NodeType == ExpressionType.LessThan) ||
+				(andAlso.Left.NodeType == ExpressionType.GreaterThanOrEqual && andAlso.Right.NodeType == ExpressionType.LessThanOrEqual) ||
+				(andAlso.Left.NodeType == ExpressionType.LessThan && andAlso.Right.NodeType == ExpressionType.GreaterThan) ||
+				(andAlso.Left.NodeType == ExpressionType.LessThanOrEqual && andAlso.Right.NodeType == ExpressionType.GreaterThan);
+
+			if (isPossibleBetween == false)
+				return false;
+
+			var leftMember = GetMemberForBetween((BinaryExpression) andAlso.Left);
+			var rightMember = GetMemberForBetween((BinaryExpression)andAlso.Right);
+
+			if (leftMember == null || rightMember == null)
+				return false;
+
+			// both must be on the same property
+			if (leftMember.Item1.Path != rightMember.Item1.Path)
+				return false;
+
+			var min = (andAlso.Left.NodeType == ExpressionType.LessThan ||
+			           andAlso.Left.NodeType == ExpressionType.LessThanOrEqual)
+			          	? rightMember.Item2
+			          	: leftMember.Item2;
+			var max = (andAlso.Left.NodeType == ExpressionType.LessThan ||
+					   andAlso.Left.NodeType == ExpressionType.LessThanOrEqual)
+						? leftMember.Item2
+						: rightMember.Item2;
+
+			if (andAlso.Left.NodeType == ExpressionType.GreaterThanOrEqual || andAlso.Left.NodeType == ExpressionType.LessThanOrEqual)
+				luceneQuery.WhereBetweenOrEqual(leftMember.Item1.Path, min, max);
+			else
+				luceneQuery.WhereBetween(leftMember.Item1.Path, min, max);
+
+			return true;
+		}
+
+		private Tuple<ExpressionInfo, object> GetMemberForBetween(BinaryExpression binaryExpression)
+		{
+			if (IsMemberAccessForQuerySource(binaryExpression.Left))
+			{
+				var expressionInfo = GetMember(binaryExpression.Left);
+				return Tuple.Create(expressionInfo, GetValueFromExpression(binaryExpression.Right, expressionInfo.Type));
+			}
+			if (IsMemberAccessForQuerySource(binaryExpression.Right))
+			{
+				var expressionInfo = GetMember(binaryExpression.Right);
+				return Tuple.Create(expressionInfo, GetValueFromExpression(binaryExpression.Left, expressionInfo.Type));
+			}
+			return null;
 		}
 
 		private void VisitOrElse(BinaryExpression orElse)
@@ -390,15 +452,39 @@ namespace Raven.Client.Linq
 			{
 				var memberExpression = GetMemberExpression(expression);
 
+				// we truncate the nullable .Value because in json all values are nullable
+				if (memberExpression.Member.Name == "Value" &&
+					Nullable.GetUnderlyingType(memberExpression.Expression.Type) != null)
+				{
+					GetPath(memberExpression.Expression, out path, out memberType, out isNestedPath);
+					return;
+				}
+
+
 				AssertNoComputation(memberExpression);
 
 				path = memberExpression.ToString();
+#if !NET35
+				var props = memberExpression.Member.GetCustomAttributes(false)
+					.Where(x => x.GetType().Name == "JsonPropertyAttribute")
+					.ToArray();
+				if (props.Length != 0)
+				{
+					string propertyName = ((dynamic) props[0]).PropertyName;
+					if (string.IsNullOrEmpty(propertyName) == false)
+					{
+						path = path.Substring(0, path.Length - memberExpression.Member.Name.Length) +
+						       propertyName;
+					}
+				}
+#else
 				var props = memberExpression.Member.GetCustomAttributes(typeof(JsonPropertyAttribute), false);
 				if (props.Length != 0)
 				{
 					path = path.Substring(0, path.Length - memberExpression.Member.Name.Length) +
 					       ((JsonPropertyAttribute) props[0]).PropertyName;
 				}
+#endif
 				isNestedPath = memberExpression.Expression is MemberExpression;
 				memberType = memberExpression.Member.GetMemberType();
 			}
@@ -417,7 +503,7 @@ namespace Raven.Client.Linq
 					case ExpressionType.Add:
 					case ExpressionType.And:
 					case ExpressionType.AndAlso:
-#if !NET_3_5
+#if !NET35
 					case ExpressionType.AndAssign:
 					case ExpressionType.Decrement:
 					case ExpressionType.Increment:
@@ -449,7 +535,7 @@ namespace Raven.Client.Linq
 		{
 			var unaryExpression = expression as UnaryExpression;
 			if (unaryExpression != null)
-				expression = unaryExpression.Operand;
+				return GetMemberExpression(unaryExpression.Operand);
 
 			var lambdaExpression = expression as LambdaExpression;
 			if (lambdaExpression != null)
@@ -534,7 +620,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
 		{
 			if (IsMemberAccessForQuerySource(expression.Left) == false && IsMemberAccessForQuerySource(expression.Right))
 			{
-				VisitLessThanOrEqual(Expression.LessThanOrEqual(expression.Right, expression.Left));
+				VisitLessThan(Expression.LessThan(expression.Right, expression.Left));
 				return;
 			}
 			var memberInfo = GetMember(expression.Left);
@@ -549,7 +635,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
 		{
 			if (IsMemberAccessForQuerySource(expression.Left) == false && IsMemberAccessForQuerySource(expression.Right))
 			{
-				VisitLessThan(Expression.LessThan(expression.Right, expression.Left));
+				VisitLessThanOrEqual(Expression.LessThanOrEqual(expression.Right, expression.Left));
 				return;
 			}
 
@@ -565,7 +651,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
 		{
 			if (IsMemberAccessForQuerySource(expression.Left) == false && IsMemberAccessForQuerySource(expression.Right))
 			{
-				VisitGreaterThanOrEqual(Expression.GreaterThanOrEqual(expression.Right, expression.Left));
+				VisitGreaterThan(Expression.GreaterThan(expression.Right, expression.Left));
 				return;
 			}
 			var memberInfo = GetMember(expression.Left);
@@ -580,7 +666,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
 		{
 			if (IsMemberAccessForQuerySource(expression.Left) == false && IsMemberAccessForQuerySource(expression.Right))
 			{
-				VisitGreaterThan(Expression.GreaterThan(expression.Right, expression.Left));
+				VisitGreaterThanOrEqual(Expression.GreaterThanOrEqual(expression.Right, expression.Left));
 				return;
 			}
 			var memberInfo = GetMember(expression.Left);
@@ -899,6 +985,17 @@ The recommended method is to use full text search (mark the field as Analyzed an
 						VisitCount();
 						break;
 					}
+				case "LongCount":
+					{
+						VisitExpression(expression.Arguments[0]);
+						if (expression.Arguments.Count == 2)
+						{
+							VisitExpression(((UnaryExpression)expression.Arguments[1]).Operand);
+						}
+
+						VisitLongCount();
+						break;
+					}
 				case "Distinct":
 					luceneQuery.GroupBy(AggregationOperation.Distinct);
 					VisitExpression(expression.Arguments[0]);
@@ -1014,6 +1111,10 @@ The recommended method is to use full text search (mark the field as Analyzed an
 			if (identityProperty != null && identityProperty.Name == docField)
 			{
 				FieldsToFetch.Add(Constants.DocumentIdFieldName);
+				if (identityProperty.Name != renamedField)
+				{
+					docField = Constants.DocumentIdFieldName;
+				}
 			}
 			else
 			{
@@ -1021,6 +1122,14 @@ The recommended method is to use full text search (mark the field as Analyzed an
 			}
 			if(docField != renamedField)
 			{
+				if(identityProperty == null)
+				{
+					var idPropName = luceneQuery.DocumentConvention.FindIdentityPropertyNameFromEntityName(luceneQuery.DocumentConvention.GetTypeTagName(typeof (T)));
+					if(docField == idPropName)
+					{
+						FieldsToRename[Constants.DocumentIdFieldName] = renamedField;
+					}
+				}
 				FieldsToRename[docField] = renamedField;
 			}
 		}
@@ -1051,8 +1160,14 @@ The recommended method is to use full text search (mark the field as Analyzed an
 
 		private void VisitCount()
 		{
-			luceneQuery.Take(1);
+			luceneQuery.Take(0);
 			queryType = SpecialQueryType.Count;
+		}
+
+		private void VisitLongCount()
+		{
+			luceneQuery.Take(0);
+			queryType = SpecialQueryType.LongCount;
 		}
 
 		private void VisitSingle()
@@ -1209,7 +1324,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
 			return q;
 		}
 
-#if !NET_3_5
+#if !NET35
 		/// <summary>
 		/// Gets the lucene query.
 		/// </summary>
@@ -1274,7 +1389,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
 			for (int index = 0; index < queryResult.Results.Count; index++)
 			{
 				var result = queryResult.Results[index];
-				var safeToModify = result.CreateSnapshot();
+				var safeToModify = (RavenJObject)result.CreateSnapshot();
 				bool changed = false;
 				foreach (var rename in FieldsToRename)
 				{
@@ -1341,8 +1456,17 @@ The recommended method is to use full text search (mark the field as Analyzed an
 						var queryResultAsync = finalQuery.QueryResult;
 						return queryResultAsync.TotalResults;
 					}
+				case SpecialQueryType.LongCount:
+					{
+						var queryResultAsync = finalQuery.QueryResult;
+						return (long)queryResultAsync.TotalResults;
+					}
 #else
 				case SpecialQueryType.Count:
+					{
+						throw new NotImplementedException("not done yet");
+					}
+				case SpecialQueryType.LongCount:
 					{
 						throw new NotImplementedException("not done yet");
 					}
@@ -1378,6 +1502,10 @@ The recommended method is to use full text search (mark the field as Analyzed an
 			/// </summary>
 			Count,
 			/// <summary>
+			/// Get count of items for the query as an Int64
+			/// </summary>
+			LongCount,
+			/// <summary>
 			/// Get only the first item
 			/// </summary>
 			First,
@@ -1392,7 +1520,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
 			/// <summary>
 			/// Get only the first item (or throw if there are more than one) or null if empty
 			/// </summary>
-			SingleOrDefault
+			SingleOrDefault,
 		}
 
 		#endregion

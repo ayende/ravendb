@@ -1,4 +1,3 @@
-#if !SILVERLIGHT
 //-----------------------------------------------------------------------
 // <copyright file="ReplicationInformer.cs" company="Hibernating Rhinos LTD">
 //     Copyright (c) Hibernating Rhinos LTD. All rights reserved.
@@ -6,6 +5,7 @@
 //-----------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.IO.IsolatedStorage;
 using System.Linq;
@@ -13,33 +13,41 @@ using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
-#if !NET_3_5
+#if !NET35
 using System.Threading.Tasks;
 #endif
-using NLog;
 using Raven.Abstractions;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
+using Raven.Abstractions.Logging;
 using Raven.Abstractions.Replication;
 using Raven.Client.Document;
+using System.Net;
+using System.Net.Sockets;
+#if SILVERLIGHT
+using Raven.Client.Silverlight.Connection.Async;
+using Raven.Client.Silverlight.MissingFromSilverlight;
+#endif
 
 namespace Raven.Client.Connection
 {
+	
+
 	/// <summary>
 	/// Replication and failover management on the client side
 	/// </summary>
 	public class ReplicationInformer : IDisposable
 	{
-		private readonly Logger log = LogManager.GetCurrentClassLogger();
+		private readonly ILog log = LogProvider.GetCurrentClassLogger();
 
 		private bool firstTime = true;
-		private readonly DocumentConvention conventions;
+		protected readonly DocumentConvention conventions;
 		private const string RavenReplicationDestinations = "Raven/Replication/Destinations";
-		private DateTime lastReplicationUpdate = DateTime.MinValue;
+		protected DateTime lastReplicationUpdate = DateTime.MinValue;
 		private readonly object replicationLock = new object();
 		private List<string> replicationDestinations = new List<string>();
 		private static readonly List<string> Empty = new List<string>();
-		private int readStripingBase;
+		protected int readStripingBase;
 
 		/// <summary>
 		/// Notify when the failover status changed
@@ -70,14 +78,17 @@ namespace Raven.Client.Connection
 			this.conventions = conventions;
 		}
 
-#if !NET_3_5
-		private readonly System.Collections.Concurrent.ConcurrentDictionary<string, IntHolder> failureCounts = new System.Collections.Concurrent.ConcurrentDictionary<string, IntHolder>();
-		private Task refreshReplicationInformationTask;
+#if !NET35 && !SILVERLIGHT
+		private readonly System.Collections.Concurrent.ConcurrentDictionary<string, FailureCounter> failureCounts = new System.Collections.Concurrent.ConcurrentDictionary<string, FailureCounter>();
 #else
-		private readonly Dictionary<string, IntHolder> failureCounts = new Dictionary<string, IntHolder>();
+		private readonly Dictionary<string, FailureCounter> failureCounts = new Dictionary<string, FailureCounter>();
 #endif
 
-#if NET_3_5
+#if !NET35
+		private Task refreshReplicationInformationTask;
+#endif
+
+#if NET35
 		/// <summary>
 		/// Updates the replication information if needed.
 		/// </summary>
@@ -122,7 +133,11 @@ namespace Raven.Client.Connection
 		/// Updates the replication information if needed.
 		/// </summary>
 		/// <param name="serverClient">The server client.</param>
+#if SILVERLIGHT
+		public Task UpdateReplicationInformationIfNeeded(AsyncServerClient serverClient)
+#else
 		public Task UpdateReplicationInformationIfNeeded(ServerClient serverClient)
+#endif
 		{
 			if (conventions.FailoverBehavior == FailoverBehavior.FailImmediately)
 				return new CompletedTask();
@@ -165,9 +180,15 @@ namespace Raven.Client.Connection
 		}
 #endif
 
-		private class IntHolder
+		private class FailureCounter
 		{
 			public int Value;
+			public DateTime LastCheck;
+
+			public FailureCounter()
+			{
+				LastCheck = DateTime.UtcNow;
+			}
 		}
 
 
@@ -182,28 +203,34 @@ namespace Raven.Client.Connection
 		/// <summary>
 		/// Should execute the operation using the specified operation URL
 		/// </summary>
-		public bool ShouldExecuteUsing(string operationUrl, int currentRequest, string method, bool primary)
+		public virtual bool ShouldExecuteUsing(string operationUrl, int currentRequest, string method, bool primary)
 		{
 			if (primary == false)
 				AssertValidOperation(method);
 
-			IntHolder value = GetHolder(operationUrl);
-			if (value.Value > 1000)
+			var failureCounter = GetHolder(operationUrl);
+			if (failureCounter.Value == 0)
+				return true;
+
+			var floor = Math.Floor(Math.Log10(failureCounter.Value) + 1);
+			var repeats = Math.Pow(10, floor);
+
+			if (failureCounter.Value % repeats == 0)
 			{
-				return currentRequest % 1000 == 0;
+				failureCounter.LastCheck = SystemTime.UtcNow;
+				return true;
 			}
-			if (value.Value > 100)
+
+			if ((SystemTime.UtcNow - failureCounter.LastCheck) > conventions.MaxFailoverCheckPeriod)
 			{
-				return currentRequest % 100 == 0;
+				failureCounter.LastCheck = SystemTime.UtcNow;
+				return true;
 			}
-			if (value.Value > 10)
-			{
-				return currentRequest % 10 == 0;
-			}
+
 			return true;
 		}
 
-		private void AssertValidOperation(string method)
+		protected void AssertValidOperation(string method)
 		{
 			switch (conventions.FailoverBehaviorWithoutFlags)
 			{
@@ -215,7 +242,7 @@ namespace Raven.Client.Connection
 					return;
 				case FailoverBehavior.FailImmediately:
 					var allowReadFromAllServers = (conventions.FailoverBehavior & FailoverBehavior.ReadFromAllServers) ==
-					                              FailoverBehavior.ReadFromAllServers;
+												  FailoverBehavior.ReadFromAllServers;
 					if (allowReadFromAllServers && method == "GET")
 						return;
 					break;
@@ -225,21 +252,21 @@ namespace Raven.Client.Connection
 												conventions.FailoverBehavior);
 		}
 
-		private IntHolder GetHolder(string operationUrl)
+		private FailureCounter GetHolder(string operationUrl)
 		{
-#if !NET_3_5
-			return failureCounts.GetOrAdd(operationUrl, new IntHolder());
+#if !NET35 && !SILVERLIGHT
+			return failureCounts.GetOrAdd(operationUrl, new FailureCounter());
 #else
-	// need to compensate for 3.5 not having concnurrent dic.
+			// need to compensate for 3.5 not having concnurrent dic.
 
-			IntHolder value;
-			if(failureCounts.TryGetValue(operationUrl, out value) == false)
+			FailureCounter value;
+			if (failureCounts.TryGetValue(operationUrl, out value) == false)
 			{
-				lock(replicationLock)
+				lock (replicationLock)
 				{
-					if(failureCounts.TryGetValue(operationUrl, out value) == false)
+					if (failureCounts.TryGetValue(operationUrl, out value) == false)
 					{
-						failureCounts[operationUrl] = value = new IntHolder();
+						failureCounts[operationUrl] = value = new FailureCounter();
 					}
 				}
 			}
@@ -254,8 +281,8 @@ namespace Raven.Client.Connection
 		/// <param name="operationUrl">The operation URL.</param>
 		public bool IsFirstFailure(string operationUrl)
 		{
-			IntHolder value = GetHolder(operationUrl);
-			return Thread.VolatileRead(ref value.Value) == 0;
+			FailureCounter value = GetHolder(operationUrl);
+			return value.Value == 0;
 		}
 
 		/// <summary>
@@ -264,9 +291,9 @@ namespace Raven.Client.Connection
 		/// <param name="operationUrl">The operation URL.</param>
 		public void IncrementFailureCount(string operationUrl)
 		{
-			IntHolder value = GetHolder(operationUrl);
+			FailureCounter value = GetHolder(operationUrl);
 			var current = Interlocked.Increment(ref value.Value);
-			if(current == 1)// first failure
+			if (current == 1)// first failure
 			{
 				FailoverStatusChanged(this, new FailoverStatusChangedEventArgs
 				{
@@ -281,6 +308,51 @@ namespace Raven.Client.Connection
 		/// Expert use only.
 		/// </summary>
 		[MethodImpl(MethodImplOptions.Synchronized)]
+#if SILVERLIGHT
+		public Task RefreshReplicationInformation(AsyncServerClient commands)
+		{
+			var serverHash = GetServerHash(commands);
+			return commands.DirectGetAsync(commands.Url, RavenReplicationDestinations).ContinueWith((Task<JsonDocument> getTask) =>
+			{
+				JsonDocument document;
+				if (getTask.Status == TaskStatus.RanToCompletion)
+				{
+					document = getTask.Result;
+					failureCounts[commands.Url] = new FailureCounter(); // we just hit the master, so we can reset its failure count
+				}
+				else
+				{
+					log.ErrorException("Could not contact master for new replication information", getTask.Exception);
+					document = TryLoadReplicationInformationFromLocalCache(serverHash);
+				}
+
+
+				if (document == null)
+				{
+					lastReplicationUpdate = SystemTime.UtcNow; // checked and not found
+					return;
+				}
+
+				TrySavingReplicationInformationToLocalCache(serverHash, document);
+
+				var replicationDocument = document.DataAsJson.JsonDeserialization<ReplicationDocument>();
+				replicationDestinations = replicationDocument.Destinations.Select(x => x.Url)
+					// filter out replication destination that don't have the url setup, we don't know how to reach them
+					// so we might as well ignore them. Probably private replication destination (using connection string names only)
+					.Where(x => x != null)
+					.ToList();
+				foreach (var replicationDestination in replicationDestinations)
+				{
+					FailureCounter value;
+					if (failureCounts.TryGetValue(replicationDestination, out value))
+						continue;
+					failureCounts[replicationDestination] = new FailureCounter();
+				}
+
+				lastReplicationUpdate = SystemTime.UtcNow;
+			});
+		}
+#else
 		public void RefreshReplicationInformation(ServerClient commands)
 		{
 			var serverHash = GetServerHash(commands);
@@ -289,7 +361,7 @@ namespace Raven.Client.Connection
 			try
 			{
 				document = commands.DirectGet(commands.Url, RavenReplicationDestinations);
-				failureCounts[commands.Url] = new IntHolder(); // we just hit the master, so we can reset its failure count
+				failureCounts[commands.Url] = new FailureCounter(); // we just hit the master, so we can reset its failure count
 			}
 			catch (Exception e)
 			{
@@ -308,6 +380,7 @@ namespace Raven.Client.Connection
 
 			lastReplicationUpdate = SystemTime.UtcNow;
 		}
+#endif
 
 		private void UpdateReplicationInformationFromDocument(JsonDocument document)
 		{
@@ -319,18 +392,27 @@ namespace Raven.Client.Connection
 				.ToList();
 			foreach (var replicationDestination in replicationDestinations)
 			{
-				IntHolder value;
+				FailureCounter value;
 				if (failureCounts.TryGetValue(replicationDestination, out value))
 					continue;
-				failureCounts[replicationDestination] = new IntHolder();
+				failureCounts[replicationDestination] = new FailureCounter();
 			}
+		}
+
+		private IsolatedStorageFile GetIsolatedStorageFileForReplicationInformation()
+		{
+#if SILVERLIGHT
+			return IsolatedStorageFile.GetUserStoreForSite();
+#else
+			return IsolatedStorageFile.GetMachineStoreForDomain();
+#endif
 		}
 
 		private JsonDocument TryLoadReplicationInformationFromLocalCache(string serverHash)
 		{
 			try
 			{
-				using (var machineStoreForApplication = IsolatedStorageFile.GetMachineStoreForDomain())
+				using (var machineStoreForApplication = GetIsolatedStorageFileForReplicationInformation())
 				{
 					var path = "RavenDB Replication Information For - " + serverHash;
 
@@ -354,7 +436,7 @@ namespace Raven.Client.Connection
 		{
 			try
 			{
-				using (var machineStoreForApplication = IsolatedStorageFile.GetMachineStoreForDomain())
+				using (var machineStoreForApplication = GetIsolatedStorageFileForReplicationInformation())
 				{
 					var path = "RavenDB Replication Information For - " + serverHash;
 					using (var stream = new IsolatedStorageFileStream(path, FileMode.Create, machineStoreForApplication))
@@ -369,6 +451,12 @@ namespace Raven.Client.Connection
 			}
 		}
 
+#if SILVERLIGHT
+		private static string GetServerHash(AsyncServerClient commands)
+		{
+			return BitConverter.ToString(MD5Core.GetHash(Encoding.UTF8.GetBytes(commands.Url)));
+		}
+#else
 		private static string GetServerHash(ServerClient commands)
 		{
 			using (var md5 = MD5.Create())
@@ -376,7 +464,7 @@ namespace Raven.Client.Connection
 				return BitConverter.ToString(md5.ComputeHash(Encoding.UTF8.GetBytes(commands.Url)));
 			}
 		}
-
+#endif
 
 		/// <summary>
 		/// Resets the failure count for the specified URL
@@ -384,10 +472,10 @@ namespace Raven.Client.Connection
 		/// <param name="operationUrl">The operation URL.</param>
 		public void ResetFailureCount(string operationUrl)
 		{
-			IntHolder value = GetHolder(operationUrl);
-			var oldVal = value.Value;
-			Thread.VolatileWrite(ref value.Value, 0);
-			if(oldVal != 0)
+			var value = GetHolder(operationUrl);
+			var oldVal = Interlocked.Exchange(ref value.Value, 0);
+			value.LastCheck = DateTime.UtcNow;
+			if (oldVal != 0)
 			{
 				FailoverStatusChanged(this,
 					new FailoverStatusChangedEventArgs
@@ -403,9 +491,292 @@ namespace Raven.Client.Connection
 			return Interlocked.Increment(ref readStripingBase);
 		}
 
-		public void Dispose()
+		#region ExecuteWithReplication
+
+		public virtual T ExecuteWithReplication<T>(string method, string primaryUrl, int currentRequest, int currentReadStripingBase, Func<string, T> operation)
 		{
-#if !NET_3_5
+			T result;
+			var localReplicationDestinations = ReplicationDestinations; // thread safe copy
+
+			var shouldReadFromAllServers = ((conventions.FailoverBehavior & FailoverBehavior.ReadFromAllServers) == FailoverBehavior.ReadFromAllServers);
+			if (shouldReadFromAllServers && method == "GET")
+			{
+				var replicationIndex = currentReadStripingBase % (localReplicationDestinations.Count + 1);
+				// if replicationIndex == destinations count, then we want to use the master
+				// if replicationIndex < 0, then we were explicitly instructed to use the master
+				if (replicationIndex < localReplicationDestinations.Count && replicationIndex >= 0)
+				{
+					// if it is failing, ignore that, and move to the master or any of the replicas
+					if (ShouldExecuteUsing(localReplicationDestinations[replicationIndex], currentRequest, method, false))
+					{
+						if (TryOperation(operation, localReplicationDestinations[replicationIndex], true, out result))
+							return result;
+					}
+				}
+			}
+
+			if (ShouldExecuteUsing(primaryUrl, currentRequest, method, true))
+			{
+				if (TryOperation(operation, primaryUrl, true, out result))
+					return result;
+				if (IsFirstFailure(primaryUrl) && TryOperation(operation, primaryUrl, localReplicationDestinations.Count > 0, out result))
+					return result;
+				IncrementFailureCount(primaryUrl);
+			}
+
+			for (var i = 0; i < localReplicationDestinations.Count; i++)
+			{
+				var replicationDestination = localReplicationDestinations[i];
+				if (ShouldExecuteUsing(replicationDestination, currentRequest, method, false) == false)
+					continue;
+				if (TryOperation(operation, replicationDestination, true, out result))
+					return result;
+				if (IsFirstFailure(replicationDestination) && TryOperation(operation, replicationDestination, localReplicationDestinations.Count > i + 1, out result))
+					return result;
+				IncrementFailureCount(replicationDestination);
+			}
+			// this should not be thrown, but since I know the value of should...
+			throw new InvalidOperationException(@"Attempted to connect to master and all replicas have failed, giving up.
+There is a high probability of a network problem preventing access to all the replicas.
+Failed to get in touch with any of the " + (1 + localReplicationDestinations.Count) + " Raven instances.");
+		}
+
+		protected virtual bool TryOperation<T>(Func<string, T> operation, string operationUrl, bool avoidThrowing, out T result)
+		{
+			try
+			{
+				result = operation(operationUrl);
+				ResetFailureCount(operationUrl);
+				return true;
+			}
+			catch (WebException e)
+			{
+				if (avoidThrowing == false)
+					throw;
+				result = default(T);
+				if (IsServerDown(e))
+					return false;
+				throw;
+			}
+		}
+		#endregion
+
+#if !NET35
+		#region ExecuteWithReplicationAsync
+
+		public Task<T> ExecuteWithReplicationAsync<T>(string method, string primaryUrl, int currentRequest, int currentReadStripingBase, Func<string, Task<T>> operation)
+		{
+			return ExecuteWithReplicationAsync(new ExecuteWithReplicationState<T>(method, primaryUrl, currentRequest, currentReadStripingBase, operation));
+		}
+
+		private Task<T> ExecuteWithReplicationAsync<T>(ExecuteWithReplicationState<T> state)
+		{
+			switch (state.State)
+			{
+				case ExecuteWithReplicationStates.Start:
+					state.ReplicationDestinations = ReplicationDestinations;
+
+					var shouldReadFromAllServers = ((conventions.FailoverBehavior & FailoverBehavior.ReadFromAllServers) ==
+													FailoverBehavior.ReadFromAllServers);
+					if (shouldReadFromAllServers && state.Method == "GET")
+					{
+						var replicationIndex = state.ReadStripingBase % (state.ReplicationDestinations.Count + 1);
+						// if replicationIndex == destinations count, then we want to use the master
+						// if replicationIndex < 0, then we were explicitly instructed to use the master
+						if (replicationIndex < state.ReplicationDestinations.Count && replicationIndex >= 0)
+						{
+							// if it is failing, ignore that, and move to the master or any of the replicas
+							if (ShouldExecuteUsing(state.ReplicationDestinations[replicationIndex], state.CurrentRequest, state.Method, false))
+							{
+								return AttemptOperationAndOnFailureCallExecuteWithReplication(state.ReplicationDestinations[replicationIndex],
+																							  state.With(ExecuteWithReplicationStates.AfterTryingWithStripedServer));
+							}
+						}
+					}
+
+					goto case ExecuteWithReplicationStates.AfterTryingWithStripedServer;
+				case ExecuteWithReplicationStates.AfterTryingWithStripedServer:
+
+					if (!ShouldExecuteUsing(state.PrimaryUrl, state.CurrentRequest, state.Method, true))
+						goto case ExecuteWithReplicationStates.TryAllServers; // skips both checks
+
+					return AttemptOperationAndOnFailureCallExecuteWithReplication(state.PrimaryUrl,
+																					state.With(ExecuteWithReplicationStates.AfterTryingWithDefaultUrl));
+
+				case ExecuteWithReplicationStates.AfterTryingWithDefaultUrl:
+					if (IsFirstFailure(state.PrimaryUrl))
+						return AttemptOperationAndOnFailureCallExecuteWithReplication(state.PrimaryUrl,
+																					  state.With(ExecuteWithReplicationStates.AfterTryingWithDefaultUrlTwice));
+
+					goto case ExecuteWithReplicationStates.AfterTryingWithDefaultUrlTwice;
+				case ExecuteWithReplicationStates.AfterTryingWithDefaultUrlTwice:
+
+					IncrementFailureCount(state.PrimaryUrl);
+
+					goto case ExecuteWithReplicationStates.TryAllServers;
+				case ExecuteWithReplicationStates.TryAllServers:
+
+					// The following part (cases ExecuteWithReplicationStates.TryAllServers, and ExecuteWithReplicationStates.TryAllServersSecondAttempt)
+					// is a for loop, rolled out using goto and nested calls of the method in continuations
+					state.LastAttempt++;
+					if (state.LastAttempt >= state.ReplicationDestinations.Count)
+						goto case ExecuteWithReplicationStates.AfterTryingAllServers;
+
+					var destination = state.ReplicationDestinations[state.LastAttempt];
+					if (!ShouldExecuteUsing(destination, state.CurrentRequest, state.Method, false))
+					{
+						// continue the next iteration of the loop
+						goto case ExecuteWithReplicationStates.TryAllServers;
+					}
+
+					return AttemptOperationAndOnFailureCallExecuteWithReplication(destination,
+																				  state.With(ExecuteWithReplicationStates.TryAllServersSecondAttempt));
+				case ExecuteWithReplicationStates.TryAllServersSecondAttempt:
+					destination = state.ReplicationDestinations[state.LastAttempt];
+					if (IsFirstFailure(destination))
+						return AttemptOperationAndOnFailureCallExecuteWithReplication(destination,
+																					  state.With(ExecuteWithReplicationStates.TryAllServersFailedTwice));
+
+					goto case ExecuteWithReplicationStates.TryAllServersFailedTwice;
+				case ExecuteWithReplicationStates.TryAllServersFailedTwice:
+					IncrementFailureCount(state.ReplicationDestinations[state.LastAttempt]);
+
+					// continue the next iteration of the loop
+					goto case ExecuteWithReplicationStates.TryAllServers;
+
+				case ExecuteWithReplicationStates.AfterTryingAllServers:
+					throw new InvalidOperationException(@"Attempted to connect to master and all replicas have failed, giving up.
+There is a high probability of a network problem preventing access to all the replicas.
+Failed to get in touch with any of the " + (1 + state.ReplicationDestinations.Count) + " Raven instances.");
+
+				default:
+					throw new InvalidOperationException("Invalid ExecuteWithReplicationState " + state);
+			}
+		}
+
+		protected virtual Task<T> AttemptOperationAndOnFailureCallExecuteWithReplication<T>(string url, ExecuteWithReplicationState<T> state)
+		{
+			Task<Task<T>> finalTask = state.Operation(url).ContinueWith(task =>
+			{
+				switch (task.Status)
+				{
+					case TaskStatus.RanToCompletion:
+						var tcs = new TaskCompletionSource<T>();
+						tcs.SetResult(task.Result);
+						return tcs.Task;
+
+					case TaskStatus.Canceled:
+						tcs = new TaskCompletionSource<T>();
+						tcs.SetCanceled();
+						return tcs.Task;
+
+					case TaskStatus.Faulted:
+						Debug.Assert(task.Exception != null);
+						if (IsServerDown(task.Exception))
+							return ExecuteWithReplicationAsync(state);
+
+						tcs = new TaskCompletionSource<T>();
+						tcs.SetException(task.Exception);
+						return tcs.Task;
+
+					default:
+						throw new InvalidOperationException("Unknown task status in AttemptOperationAndOnFailureCallExecuteWithReplication");
+				}
+			});
+			return finalTask.Unwrap();
+		}
+
+		protected class ExecuteWithReplicationState<T>
+		{
+			public ExecuteWithReplicationState(string method, string primaryUrl, int currentRequest, int readStripingBase, Func<string, Task<T>> operation)
+			{
+				Method = method;
+				PrimaryUrl = primaryUrl;
+				CurrentRequest = currentRequest;
+				ReadStripingBase = readStripingBase;
+				Operation = operation;
+
+				State = ExecuteWithReplicationStates.Start;
+			}
+
+			public readonly string Method;
+			public readonly Func<string, Task<T>> Operation;
+			public readonly string PrimaryUrl;
+			public readonly int CurrentRequest;
+			public readonly int ReadStripingBase;
+
+			public ExecuteWithReplicationStates State = ExecuteWithReplicationStates.Start;
+			public int LastAttempt = -1;
+			public List<string> ReplicationDestinations;
+
+			public ExecuteWithReplicationState<T> With(ExecuteWithReplicationStates state)
+			{
+				State = state;
+				return this;
+			}
+		}
+
+		protected enum ExecuteWithReplicationStates
+		{
+			Start,
+			AfterTryingWithStripedServer,
+			AfterTryingWithDefaultUrl,
+			TryAllServers,
+			AfterTryingAllServers,
+			TryAllServersSecondAttempt,
+			TryAllServersFailedTwice,
+			AfterTryingWithDefaultUrlTwice
+		}
+
+		#endregion
+#endif
+
+		protected virtual bool IsServerDown(Exception e)
+		{
+#if !NET35
+			var aggregateException = e as AggregateException;
+			if (aggregateException != null)
+			{
+				e = aggregateException.ExtractSingleInnerException();
+			}
+#endif
+			var webException = (e as WebException) ?? (e.InnerException as WebException);
+			if(webException != null)
+			{
+				switch (webException.Status)
+				{
+#if !NET35 && !SILVERLIGHT
+					case WebExceptionStatus.NameResolutionFailure:
+					case WebExceptionStatus.ReceiveFailure:
+					case WebExceptionStatus.PipelineFailure:
+					case WebExceptionStatus.ConnectionClosed:
+					case WebExceptionStatus.Timeout:
+#endif		
+					case WebExceptionStatus.ConnectFailure:
+					case WebExceptionStatus.SendFailure:
+						return true;
+				}
+
+				var httpWebResponse = webException.Response as HttpWebResponse;
+				if(httpWebResponse != null)
+				{
+					switch (httpWebResponse.StatusCode)
+					{
+						case HttpStatusCode.RequestTimeout:
+						case HttpStatusCode.BadGateway:
+						case HttpStatusCode.ServiceUnavailable:
+						case HttpStatusCode.GatewayTimeout:
+							return true;
+					}
+				}
+			}
+			return e.InnerException is SocketException ||
+				e.InnerException is IOException;
+		}
+
+		public virtual void Dispose()
+		{
+#if !NET35
 			var replicationInformationTaskCopy = refreshReplicationInformationTask;
 			if (replicationInformationTaskCopy != null)
 				replicationInformationTaskCopy.Wait();
@@ -428,4 +799,3 @@ namespace Raven.Client.Connection
 		public string Url { get; set; }
 	}
 }
-#endif

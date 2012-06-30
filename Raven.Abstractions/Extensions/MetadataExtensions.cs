@@ -8,7 +8,7 @@ using System.Collections.Specialized;
 using System.Globalization;
 using System.Linq;
 using System.Text;
-using Newtonsoft.Json;
+using Raven.Imports.Newtonsoft.Json;
 using System;
 using Raven.Abstractions.Data;
 using Raven.Json.Linq;
@@ -31,6 +31,7 @@ namespace Raven.Abstractions.Extensions
 		{
 			// Raven internal headers
 			"Raven-Server-Build",
+			"Raven-Client-Version",
 			"Non-Authoritative-Information",
 			"Raven-Timer-Request",
 			"Raven-Authenticated-User",
@@ -226,7 +227,7 @@ namespace Raven.Abstractions.Extensions
 				if (val.StartsWith("["))
 					return RavenJArray.Parse(val);
 				DateTime result;
-				if (DateTime.TryParseExact(val, new[]{"r","o"}, CultureInfo.InvariantCulture, DateTimeStyles.None, out result))
+				if (DateTime.TryParseExact(val, Default.DateTimeFormatsToRead, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out result))
 					return new RavenJValue(result);
 				return new RavenJValue(val);
 

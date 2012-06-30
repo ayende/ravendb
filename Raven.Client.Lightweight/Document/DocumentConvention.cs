@@ -10,12 +10,13 @@ using System.Net;
 using System.Reflection;
 using System.Runtime.Serialization.Formatters;
 using System.Text;
-#if !NET_3_5
+#if !NET35
 using System.Threading.Tasks;
+using Raven.Client.Connection.Async;
 #endif
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
-using Newtonsoft.Json.Serialization;
+using Raven.Imports.Newtonsoft.Json;
+using Raven.Imports.Newtonsoft.Json.Linq;
+using Raven.Imports.Newtonsoft.Json.Serialization;
 using Raven.Abstractions;
 using Raven.Abstractions.Json;
 using Raven.Client.Connection;
@@ -53,6 +54,8 @@ namespace Raven.Client.Document
 				new Int32Converter(),
 				new Int64Converter(),
 			};
+			MaxFailoverCheckPeriod = TimeSpan.FromMinutes(5);
+			DisableProfiling = true;
 			EnlistInDistributedTransactions = true;
 			UseParallelMultiGet = true;
 			DefaultQueryingConsistency = ConsistencyOptions.MonotonicRead;
@@ -79,18 +82,19 @@ namespace Raven.Client.Document
 			};
 			MaxNumberOfRequestsPerSession = 30;
 			ApplyReduceFunction = DefaultApplyReduceFunction;
+			ReplicationInformerFactory = url=> new ReplicationInformer(this);
 			CustomizeJsonSerializer = serializer => { };
-			FindIdValuePartForValueTypeConversion = (entity, id) => id.Split(new[] {IdentityPartsSeparator}, StringSplitOptions.RemoveEmptyEntries) .Last();
+			FindIdValuePartForValueTypeConversion = (entity, id) => id.Split(new[] { IdentityPartsSeparator }, StringSplitOptions.RemoveEmptyEntries).Last();
 		}
 
 		private IEnumerable<object> DefaultApplyReduceFunction(
-			Type indexType, 
-			Type resultType, 
-			IEnumerable<object> results, 
+			Type indexType,
+			Type resultType,
+			IEnumerable<object> results,
 			Func<Func<IEnumerable<object>, IEnumerable>> generateTransformResults)
 		{
 			Func<IEnumerable<object>, IEnumerable> compile;
-			if(compiledReduceCache.TryGetValue(indexType, out compile) == false)
+			if (compiledReduceCache.TryGetValue(indexType, out compile) == false)
 			{
 				compile = generateTransformResults();
 				compiledReduceCache = new Dictionary<Type, Func<IEnumerable<object>, IEnumerable>>(compiledReduceCache)
@@ -112,7 +116,7 @@ namespace Raven.Client.Document
 		public static string DefaultTransformTypeTagNameToDocumentKeyPrefix(string typeTagName)
 		{
 			var count = typeTagName.Count(char.IsUpper);
-			
+
 			if (count <= 1) // simple name, just lower case it
 				return typeTagName.ToLowerInvariant();
 
@@ -127,7 +131,7 @@ namespace Raven.Client.Document
 		///<returns></returns>
 		public string DefaultFindFullDocumentKeyFromNonStringIdentifier(object id, Type type, bool allowNull)
 		{
-			var converter = IdentityTypeConvertors.FirstOrDefault(x=>x.CanConvertFrom(id.GetType()));
+			var converter = IdentityTypeConvertors.FirstOrDefault(x => x.CanConvertFrom(id.GetType()));
 			var tag = GetTypeTagName(type);
 			if (tag != null)
 			{
@@ -206,10 +210,10 @@ namespace Raven.Client.Document
 
 			if (t.Name.Contains("<>"))
 				return null;
-			if(t.IsGenericType)
+			if (t.IsGenericType)
 			{
 				var name = t.GetGenericTypeDefinition().Name;
-				if(name.Contains('`'))
+				if (name.Contains('`'))
 				{
 					name = name.Substring(0, name.IndexOf('`'));
 				}
@@ -241,15 +245,23 @@ namespace Raven.Client.Document
 			return FindTypeTagName(type) ?? DefaultTypeTagName(type);
 		}
 
+#if !SILVERLIGHT
 		/// <summary>
 		/// Generates the document key.
 		/// </summary>
 		/// <param name="entity">The entity.</param>
 		/// <returns></returns>
-		public string GenerateDocumentKey(object entity)
+		public string GenerateDocumentKey(IDatabaseCommands databaseCommands,object entity)
 		{
-			return DocumentKeyGenerator(entity);
+			return DocumentKeyGenerator(databaseCommands,entity);
 		}
+#endif
+#if !NET35
+		public Task<string> GenerateDocumentKeyAsync(IAsyncDatabaseCommands databaseCommands,object entity)
+		{
+			return AsyncDocumentKeyGenerator(databaseCommands,entity);
+		}
+#endif
 
 		/// <summary>
 		/// Gets the identity property.
@@ -265,7 +277,7 @@ namespace Raven.Client.Document
 
 			var identityProperty = GetPropertiesForType(type).FirstOrDefault(FindIdentityProperty);
 
-			if (identityProperty!= null && identityProperty.DeclaringType != type)
+			if (identityProperty != null && identityProperty.DeclaringType != type)
 			{
 				var propertyInfo = identityProperty.DeclaringType.GetProperty(identityProperty.Name);
 				identityProperty = propertyInfo ?? identityProperty;
@@ -350,12 +362,20 @@ namespace Raven.Client.Document
 		/// Get or sets the function to get the identity property name from the entity name
 		/// </summary>
 		public Func<string, string> FindIdentityPropertyNameFromEntityName { get; set; }
-
+#if !SILVERLIGHT
 		/// <summary>
 		/// Gets or sets the document key generator.
 		/// </summary>
 		/// <value>The document key generator.</value>
-		public Func<object, string> DocumentKeyGenerator { get; set; }
+		public Func<IDatabaseCommands,object, string> DocumentKeyGenerator { get; set; }
+#endif
+#if !NET35
+		/// <summary>
+		/// Gets or sets the document key generator.
+		/// </summary>
+		/// <value>The document key generator.</value>
+		public Func<IAsyncDatabaseCommands,object, Task<string>> AsyncDocumentKeyGenerator { get; set; }
+#endif
 
 		/// <summary>
 		/// Instruct RavenDB to parallel Multi Get processing 
@@ -371,6 +391,7 @@ namespace Raven.Client.Document
 		{
 			var jsonSerializer = new JsonSerializer
 			{
+				DateParseHandling = DateParseHandling.None,
 				ObjectCreationHandling = ObjectCreationHandling.Replace,
 				ContractResolver = JsonContractResolver,
 				TypeNameHandling = TypeNameHandling.Auto,
@@ -386,18 +407,18 @@ namespace Raven.Client.Document
 						new JsonNumericConverter<double>(double.TryParse),
 						new JsonNumericConverter<short>(short.TryParse),
 						new JsonMultiDimensionalArrayConverter(),
-#if !NET_3_5 && !SILVERLIGHT
+#if !NET35 && !SILVERLIGHT
 						new JsonDynamicConverter()
 #endif
 					}
 			};
 
-			for (var i = Default.Converters.Length -1; i >= 0; i--)
+			for (var i = Default.Converters.Length - 1; i >= 0; i--)
 			{
 				jsonSerializer.Converters.Insert(0, Default.Converters[i]);
 			}
 
-			if(SaveEnumsAsIntegers)
+			if (SaveEnumsAsIntegers)
 			{
 				var converter = jsonSerializer.Converters.FirstOrDefault(x => x is JsonEnumConverter);
 				if (converter != null)
@@ -429,7 +450,7 @@ namespace Raven.Client.Document
 		/// </summary>
 		public Func<HttpWebResponse, Action<HttpWebRequest>> HandleUnauthorizedResponse { get; set; }
 
-#if !NET_3_5
+#if !NET35
 		/// <summary>
 		/// Begins handling of unauthenticated responses, usually by authenticating against the oauth server
 		/// in async manner
@@ -472,10 +493,25 @@ namespace Raven.Client.Document
 		/// </summary>
 		public ApplyReduceFunctionFunc ApplyReduceFunction { get; set; }
 
+
+		/// <summary>
+		/// This is called to provide replication behavior for the client. You can customize 
+		/// this to inject your own replication / failover logic.
+		/// </summary>
+		public Func<string, ReplicationInformer> ReplicationInformerFactory { get; set; }
+
+
 		public FailoverBehavior FailoverBehaviorWithoutFlags
 		{
 			get { return FailoverBehavior & (~FailoverBehavior.ReadFromAllServers); }
 		}
+
+		/// <summary>
+		/// The maximum amount of time that we will wait before checking
+		/// that a failed node is still up or not.
+		/// Default: 5 minutes
+		/// </summary>
+		public TimeSpan MaxFailoverCheckPeriod { get; set; }
 	}
 
 
