@@ -33,7 +33,7 @@ namespace Raven.Tests
 
 		private string path;
 
-		public EmbeddableDocumentStore NewDocumentStore(string storageType = "munin", bool inMemory = true, int? allocatedMemory = null)
+		public EmbeddableDocumentStore NewDocumentStore(string storageType = "munin", bool inMemory = true, int? allocatedMemory = null, bool deleteExisting = true)
 		{
 			path = Path.GetDirectoryName(Assembly.GetAssembly(typeof(DocumentStoreServerTests)).CodeBase);
 			path = Path.Combine(path, "TestDb").Substring(6);
@@ -52,7 +52,7 @@ namespace Raven.Tests
 			ModifyStore(documentStore);
 			ModifyConfiguration(documentStore.Configuration);
 
-			if (documentStore.Configuration.RunInMemory == false)
+			if (documentStore.Configuration.RunInMemory == false && deleteExisting)
 				IOExtensions.DeleteDirectory(path);
 			documentStore.Initialize();
 
@@ -221,6 +221,9 @@ namespace Raven.Tests
 		{
 			IOExtensions.DeleteDirectory(DbName);
 			IOExtensions.DeleteDirectory(DbDirectory);
+
+			// Delete tenants created using the EnsureDatabaseExists method.
+			IOExtensions.DeleteDirectory("Tenants");
 		}
 
 		public double Timer(Action action)
@@ -234,8 +237,7 @@ namespace Raven.Tests
 
 		public virtual void Dispose()
 		{
-			// Delete tenants created using the EnsureDatabaseExists method.
-			IOExtensions.DeleteDirectory("Tenants");
+			ClearDatabaseDirectory();
 		}
 	}
 }

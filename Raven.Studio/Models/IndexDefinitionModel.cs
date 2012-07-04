@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows.Input;
-using Newtonsoft.Json;
+using Raven.Imports.Newtonsoft.Json;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Indexing;
 using Raven.Studio.Commands;
@@ -12,11 +12,12 @@ using Raven.Studio.Messages;
 
 namespace Raven.Studio.Models
 {
-	public class IndexDefinitionModel : ViewModel, IHasPageTitle
+	public class IndexDefinitionModel : PageViewModel, IHasPageTitle
 	{
 		private readonly Observable<DatabaseStatistics> statistics;
 		private IndexDefinition index;
 		private string originalIndex;
+	    private bool isNewIndex;
 
 		public IndexDefinitionModel()
 		{
@@ -35,6 +36,12 @@ namespace Raven.Studio.Models
 		private void UpdateFromIndex(IndexDefinition indexDefinition)
 		{
 			index = indexDefinition;
+
+            if (index.Maps.Count == 0)
+            {
+                index.Maps.Add("");
+            }
+
 			Maps.Set(index.Maps.Select(x => new MapItem {Text = x}));
 
 			ShowReduce = Reduce != null;
@@ -53,7 +60,11 @@ namespace Raven.Studio.Models
 			var urlParser = new UrlParser(parameters);
 			if (urlParser.GetQueryParam("mode") == "new")
 			{
-				Header = "Create an Index";
+			    IsNewIndex = true;
+				Header = "New Index";
+
+                UpdateFromIndex(new IndexDefinition());
+
 				return;
 			}
 
@@ -61,17 +72,19 @@ namespace Raven.Studio.Models
 			if (string.IsNullOrWhiteSpace(name))
 				HandleIndexNotFound(null);
 
-			Header = "Edit Index: " + name;
+			Header = name;
+            IsNewIndex = false;
+
 			DatabaseCommands.GetIndexAsync(name)
-				.ContinueOnSuccessInTheUIThread(index1 =>
+				.ContinueOnUIThread(task =>
 				                   {
-				                   	if (index1 == null)
+                                       if (task.IsFaulted || task.Result == null)
 				                   	{
 										HandleIndexNotFound(name);
 				                   		return;
 				                   	}
 									originalIndex = JsonConvert.SerializeObject(index);
-									UpdateFromIndex(index1);
+									    UpdateFromIndex(task.Result);
 				                   }).Catch();
 		}
 
@@ -330,16 +343,29 @@ namespace Raven.Studio.Models
 				var mapIndexes = (from mapItem in index.Maps where mapItem.Text == "" select index.Maps.IndexOf(mapItem)).ToList();
 				mapIndexes.Sort();
 
-				for (int i = mapIndexes.Count - 1; i >= 0; i++)
+				for (int i = mapIndexes.Count - 1; i >= 0; i--)
 				{
 					index.Maps.RemoveAt(mapIndexes[i]);
 				}
 
 					ApplicationModel.Current.AddNotification(new Notification("saving index " + index.Name));
 				DatabaseCommands.PutIndexAsync(index.Name, index.index, true)
-					.ContinueOnSuccess(() => ApplicationModel.Current.AddNotification(new Notification("index " + index.Name + " saved")))
+					.ContinueOnSuccess(() =>
+					                       {
+					                           ApplicationModel.Current.AddNotification(
+					                               new Notification("index " + index.Name + " saved"));
+					                           PutIndexNameInUrl(index.Name);
+					                       })
 					.Catch();
 			}
+
+		    private void PutIndexNameInUrl(string name)
+		    {
+		        if (index.IsNewIndex || index.Header != name)
+		        {
+		            UrlUtil.Navigate("/indexes/" + name, true);
+		        }
+		    }
 		}
 
 		private class ResetIndexCommand : Command
@@ -370,7 +396,7 @@ namespace Raven.Studio.Models
 
 			public override bool CanExecute(object parameter)
 			{
-				return index != null && string.IsNullOrWhiteSpace(index.Name) == false;
+				return index != null && index.IsNewIndex == false;
 			}
 
 			public override void Execute(object parameter)
@@ -383,11 +409,22 @@ namespace Raven.Studio.Models
 			{
 				DatabaseCommands
 					.DeleteIndexAsync(index.Name)
-					.ContinueOnSuccessInTheUIThread(() =>
+			        .ContinueOnUIThread(t =>
 					                                	{
+			                                    if (t.IsFaulted)
+			                                    {
 					                                		ApplicationModel.Current.AddNotification(
-					                                			new Notification("index " + index.Name + " successfully deleted"));
+			                                            new Notification("index " + index.Name +
+			                                                             " could not be deleted", NotificationLevel.Error,
+			                                                             t.Exception));
+			                                    }
+			                                    else
+			                                    {
+			                                        ApplicationModel.Current.AddNotification(
+			                                            new Notification("index " + index.Name +
+			                                                             " successfully deleted"));
 					                                		UrlUtil.Navigate("/indexes");
+			                                    }
 					                                	});
 			}
 		}
@@ -426,5 +463,15 @@ namespace Raven.Studio.Models
 		{
 			get { return "Edit Index"; }
 		}
+
+	    public bool IsNewIndex
+	    {
+	        get { return isNewIndex; }
+            set
+            {
+                isNewIndex = value;
+                OnPropertyChanged(() => IsNewIndex);
+            }
+	    }
 	}
 }

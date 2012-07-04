@@ -28,7 +28,7 @@ namespace Raven.Bundles.Tests.Replication
 				session.SaveChanges();
 			}
 
-			WaitForReplication(store2);
+			WaitForReplication(store2, "companies/1");
 
 			servers[0].Dispose();
 
@@ -56,7 +56,7 @@ namespace Raven.Bundles.Tests.Replication
 				session.SaveChanges();
 			}
 
-			WaitForReplication(store2);
+			WaitForReplication(store2, "companies/1");
 
 			servers[0].Dispose();
 
@@ -84,7 +84,7 @@ namespace Raven.Bundles.Tests.Replication
 				session.SaveChanges();
 			}
 
-			WaitForReplication(store2);
+			WaitForReplication(store2, "companies/1");
 
 			servers[0].Dispose();
 
@@ -118,7 +118,7 @@ namespace Raven.Bundles.Tests.Replication
 				session.SaveChanges();
 			}
 
-			WaitForReplication(store2);
+			WaitForReplication(store2, "companies/1");
 
 			servers[0].Dispose();
 
@@ -131,18 +131,6 @@ namespace Raven.Bundles.Tests.Replication
 			}
 		}
 
-		private void WaitForReplication(IDocumentStore store2)
-		{
-			for (int i = 0; i < RetriesCount; i++)
-			{
-				using (var session = store2.OpenSession())
-				{
-					var company = session.Load<Company>("companies/1");
-					if (company != null)
-						break;
-					Thread.Sleep(100);
-				}
-			}
-		}
+		
 	}
 }

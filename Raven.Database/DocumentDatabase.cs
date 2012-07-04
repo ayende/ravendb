@@ -16,7 +16,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Transactions;
-using Newtonsoft.Json;
+using Raven.Imports.Newtonsoft.Json;
 using NLog;
 using Raven.Abstractions;
 using Raven.Abstractions.Commands;
@@ -97,6 +97,7 @@ namespace Raven.Database
 		/// </summary>
 		public ConcurrentDictionary<object, object> ExtensionsState { get; private set; }
 
+		public TaskScheduler BackgroundTaskScheduler { get { return backgroundTaskScheduler; } }
 
 		private readonly ThreadLocal<bool> disableAllTriggers = new ThreadLocal<bool>(() => false);
 		private System.Threading.Tasks.Task indexingBackgroundTask;
@@ -356,17 +357,17 @@ namespace Raven.Database
 			});
 
 			if (TransactionalStorage != null)
-				exceptionAggregator.Execute(TransactionalStorage.Dispose);
+			exceptionAggregator.Execute(TransactionalStorage.Dispose);
 			if (IndexStorage != null)
-				exceptionAggregator.Execute(IndexStorage.Dispose);
+			exceptionAggregator.Execute(IndexStorage.Dispose);
 
 			if (Configuration != null)
-				exceptionAggregator.Execute(Configuration.Dispose);
+			exceptionAggregator.Execute(Configuration.Dispose);
 
 			exceptionAggregator.Execute(disableAllTriggers.Dispose);
 
 			if (workContext != null)
-				exceptionAggregator.Execute(workContext.Dispose);
+			exceptionAggregator.Execute(workContext.Dispose);
 
 
 
@@ -450,7 +451,7 @@ namespace Raven.Database
 
 		public PutResult Put(string key, Guid? etag, RavenJObject document, RavenJObject metadata, TransactionInformation transactionInformation)
 		{
-			if (string.IsNullOrEmpty(key))
+			if (string.IsNullOrWhiteSpace(key))
 			{
 				// we no longer sort by the key, so it doesn't matter
 				// that the key is no longer sequential
@@ -925,6 +926,25 @@ namespace Raven.Database
 			return attachment;
 		}
 
+		public IEnumerable<AttachmentInformation> GetStaticsStartingWith(string idPrefix, int start, int pageSize)
+		{
+			if (idPrefix == null) throw new ArgumentNullException("idPrefix");
+			IEnumerable<AttachmentInformation> attachments = null;
+			TransactionalStorage.Batch(actions =>
+			{
+				attachments = actions.Attachments.GetAttachmentsStartingWith(idPrefix, start, pageSize)
+					.Select(information =>
+					{
+						var processAttachmentReadVetoes = ProcessAttachmentReadVetoes(information);
+						ExecuteAttachmentReadTriggers(processAttachmentReadVetoes);
+						return processAttachmentReadVetoes;
+					})
+					.Where(x => x != null)
+					.ToList();
+			});
+			return attachments;
+		}
+
 		private Attachment ProcessAttachmentReadVetoes(string name, Attachment attachment)
 		{
 			if (attachment == null)
@@ -980,13 +1000,68 @@ namespace Raven.Database
 			}
 		}
 
+
+		private AttachmentInformation ProcessAttachmentReadVetoes(AttachmentInformation attachment)
+		{
+			if (attachment == null)
+				return null;
+
+			var foundResult = false;
+			foreach (var attachmentReadTriggerLazy in AttachmentReadTriggers)
+			{
+				if (foundResult)
+					break;
+				var attachmentReadTrigger = attachmentReadTriggerLazy.Value;
+				var readVetoResult = attachmentReadTrigger.AllowRead(attachment.Key, null, attachment.Metadata,
+																	 ReadOperation.Load);
+				switch (readVetoResult.Veto)
+				{
+					case ReadVetoResult.ReadAllow.Allow:
+						break;
+					case ReadVetoResult.ReadAllow.Deny:
+						attachment.Size = 0;
+						attachment.Metadata = new RavenJObject
+												{
+													{
+														"Raven-Read-Veto",
+														new RavenJObject
+															{
+																{"Reason", readVetoResult.Reason},
+																{"Trigger", attachmentReadTrigger.ToString()}
+															}
+														}
+												};
+						foundResult = true;
+						break;
+					case ReadVetoResult.ReadAllow.Ignore:
+						attachment = null;
+						foundResult = true;
+						break;
+					default:
+						throw new ArgumentOutOfRangeException(readVetoResult.Veto.ToString());
+				}
+			}
+			return attachment;
+		}
+
+		private void ExecuteAttachmentReadTriggers(AttachmentInformation information)
+		{
+			if (information == null)
+				return;
+
+			foreach (var attachmentReadTrigger in AttachmentReadTriggers)
+			{
+				attachmentReadTrigger.Value.OnRead(information);
+			}
+		}
+
 		public Guid PutStatic(string name, Guid? etag, Stream data, RavenJObject metadata)
 		{
 			if (name == null) throw new ArgumentNullException("name");
 			name = name.Trim();
 			
-			if (Encoding.Unicode.GetByteCount(name) >= 255)
-				throw new ArgumentException("The key must be a maximum of 255 bytes in Unicode, 127 characters", "name");
+			if (Encoding.Unicode.GetByteCount(name) >= 2048)
+				throw new ArgumentException("The key must be a maximum of 2,048 bytes in Unicode, 1,024 characters", "name");
 
 			Guid newEtag = Guid.Empty;
 			TransactionalStorage.Batch(actions =>
@@ -1078,19 +1153,21 @@ namespace Raven.Database
 			return list;
 		}
 
-		public AttachmentInformation[] GetAttachments(int start, int pageSize, Guid? etag)
+		public AttachmentInformation[] GetAttachments(int start, int pageSize, Guid? etag, string startsWith)
 		{
-			AttachmentInformation[] documents = null;
+			AttachmentInformation[] attachments = null;
 
 			TransactionalStorage.Batch(actions =>
 			{
-				if (etag == null)
-					documents = actions.Attachments.GetAttachmentsByReverseUpdateOrder(start).Take(pageSize).ToArray();
+				if (string.IsNullOrEmpty(startsWith) == false)
+					attachments = actions.Attachments.GetAttachmentsStartingWith(startsWith, start, pageSize).ToArray();
+				else if (etag != null)
+					attachments = actions.Attachments.GetAttachmentsAfter(etag.Value, pageSize).ToArray();
 				else
-					documents = actions.Attachments.GetAttachmentsAfter(etag.Value, pageSize).ToArray();
+					attachments = actions.Attachments.GetAttachmentsByReverseUpdateOrder(start).Take(pageSize).ToArray();
 
 			});
-			return documents;
+			return attachments;
 		}
 
 		public RavenJArray GetIndexNames(int start, int pageSize)
@@ -1109,13 +1186,7 @@ namespace Raven.Database
 						indexName => new RavenJObject
 							{
 								{"name", new RavenJValue(indexName) },
-								{"definition", RavenJObject.FromObject(IndexDefinitionStorage.GetIndexDefinition(indexName), new JsonSerializer
-								{
-									Converters =
-										{
-											new JsonEnumConverter(),
-										}
-								})}
+								{"definition", RavenJObject.FromObject(IndexDefinitionStorage.GetIndexDefinition(indexName))}
 							}));
 		}
 

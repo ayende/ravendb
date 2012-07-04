@@ -78,10 +78,21 @@ namespace Raven.Database.Indexing
 			{
 				NumberOfItemsToIndexInSingleBatch = Math.Min(MaxNumberOfItems,
 															 NumberOfItemsToIndexInSingleBatch * 2);
-				return;
 			}
+		}
 
-
+		public long MaximumSizeAllowedToFetchFromStorage
+		{
+			get
+			{
+				// we take just a bit more to account for indexing costs as well
+				var sizeToKeepFree = context.Configuration.AvailableMemoryForRaisingIndexBatchSizeLimit*1.33;
+				// if we just loaded > 128 MB to index, that is big enough for right now
+				// remember, this value refer to just the data on disk, not including
+				// the memory to do the actual indexing
+				double sizeInMB = Math.Min(128, Math.Max(8, MemoryStatistics.AvailableMemory - sizeToKeepFree));
+				return (long)sizeInMB * 1024 * 1024;
+			}
 		}
 
 		private bool ReduceBatchSizeIfCloseToMemoryCeiling()

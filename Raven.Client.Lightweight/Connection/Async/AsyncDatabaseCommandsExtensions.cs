@@ -1,4 +1,4 @@
-#if !NET_3_5
+#if !NET35
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
@@ -39,7 +39,7 @@ namespace Raven.Client.Connection.Async
 					return cmds.MultiGetAsync(termRequests)
 						.ContinueWith(termsResultsTask => termsResultsTask.Result.Select((t, i) => new NameAndCount
 						{
-							Count = RavenJObject.Parse(t.Result).Value<int>("TotalResults"),
+							Count = t.Result.Value<int>("TotalResults"),
 							Name = terms[i]
 						}).ToArray());
 				})

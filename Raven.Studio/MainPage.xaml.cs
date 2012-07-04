@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Navigation;
 using Raven.Studio.Behaviors;
 using Raven.Studio.Infrastructure;
+using Raven.Studio.Models;
 
 namespace Raven.Studio
 {
@@ -14,6 +15,11 @@ namespace Raven.Studio
 		{
 			InitializeComponent();
 		}
+
+	    public void Refresh()
+	    {
+	       ContentFrame.Refresh();
+	    }
 
 		// After the Frame navigates, ensure the HyperlinkButton representing the current page is selected
 		private void ContentFrame_Navigated(object sender, NavigationEventArgs e)
@@ -63,7 +69,7 @@ namespace Raven.Studio
 		private void ContentFrame_NavigationFailed(object sender, NavigationFailedEventArgs e)
 		{
 			e.Handled = true;
-			ErrorPresenter.Show(e.Exception, null, string.Format("Could not load page: {0}", e.Uri));
+            ApplicationModel.Current.AddErrorNotification(e.Exception, string.Format("Could not load page: {0}", e.Uri));
 		}
 	}
 }

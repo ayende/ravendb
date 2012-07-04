@@ -3,7 +3,7 @@
 //     Copyright (c) Hibernating Rhinos LTD. All rights reserved.
 // </copyright>
 //-----------------------------------------------------------------------
-#if !NET_3_5
+#if !NET35
 
 using System;
 using System.Collections.Generic;
@@ -177,7 +177,7 @@ namespace Raven.Client.Connection.Async
 		/// <summary>
 		/// Gets the list of databases from the server asynchronously
 		/// </summary>
-		Task<string[]> GetDatabaseNamesAsync(int pageSize);
+		Task<string[]> GetDatabaseNamesAsync(int pageSize, int start = 0);
 
 		/// <summary>
 		/// Puts the attachment with the specified key asynchronously
@@ -239,6 +239,11 @@ namespace Raven.Client.Connection.Async
 		Task StartBackupAsync(string backupLocation);
 
 		Task<JsonDocument[]> StartsWithAsync(string keyPrefix, int start, int pageSize);
+
+		/// <summary>
+		/// Force the database commands to read directly from the master, unless there has been a failover.
+		/// </summary>
+		void ForceReadFromMaster();
 	}
 }
 #endif

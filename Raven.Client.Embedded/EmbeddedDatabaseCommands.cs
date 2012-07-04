@@ -9,7 +9,8 @@ using System.Collections.Specialized;
 using System.IO;
 using System.Linq;
 using System.Net;
-using Newtonsoft.Json.Linq;
+using Raven.Database.Data;
+using Raven.Imports.Newtonsoft.Json.Linq;
 using Raven.Abstractions.Commands;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
@@ -199,6 +200,26 @@ namespace Raven.Client.Embedded
 		}
 
 		/// <summary>
+		/// Get the attachment information for the attachments with the same idprefix
+		/// </summary>
+		public IEnumerable<Attachment> GetAttachmentHeadersStartingWith(string idPrefix, int start, int pageSize)
+		{
+			CurrentOperationContext.Headers.Value = OperationsHeaders;
+			return database.GetStaticsStartingWith(idPrefix, start, pageSize)
+				.Select(x => new Attachment
+				{
+					Etag = x.Etag,
+					Metadata = x.Metadata,
+					Size = x.Size,
+					Key = x.Key,
+					Data = () =>
+					{
+						throw new InvalidOperationException("Cannot get attachment data from an attachment header");
+					}
+				});
+		}
+
+		/// <summary>
 		/// Retrieves the attachment metadata with the specified key, not the actual attachmet
 		/// </summary>
 		/// <param name="key">The key.</param>
@@ -211,7 +232,7 @@ namespace Raven.Client.Embedded
 				return null;
 			attachment.Data = () =>
 			{
-				throw new InvalidOperationException("");
+				throw new InvalidOperationException("Cannot get attachment data from an attachment header");
 			};
 			return attachment;
 		}
@@ -231,7 +252,7 @@ namespace Raven.Client.Embedded
 		/// Get tenant database names (Server/Client mode only)
 		/// </summary>
 		/// <returns></returns>
-		public string[] GetDatabaseNames(int pageSize)
+		public string[] GetDatabaseNames(int pageSize, int start = 0)
 		{
 			throw new InvalidOperationException("Embedded mode does not support multi-tenancy");
 		}
@@ -348,6 +369,9 @@ namespace Raven.Client.Embedded
 						.Select(x => x["@metadata"].Value<string>("@id"))
 						.Where(x => x != null)
 					); 
+
+			if (includes != null)
+			{
 			var includeCmd = new AddIncludesCommand(database, TransactionInformation,
 			                                        (etag, doc) => queryResult.Includes.Add(doc), includes, loadedIds);
 
@@ -359,6 +383,7 @@ namespace Raven.Client.Embedded
 			includeCmd.AlsoInclude(queryResult.IdsToInclude);
 
 			EnsureLocalDate(queryResult.Includes);
+			}
 
 			return queryResult;
 		}
@@ -407,11 +432,16 @@ namespace Raven.Client.Embedded
 					.Select(x => EnsureLocalDate(x).ToJson())
 					.ToList(),
 			};
+			
+			if (includes != null)
+			{
 			var includeCmd = new AddIncludesCommand(database, TransactionInformation, (etag, doc) => multiLoadResult.Includes.Add(doc), includes, new HashSet<string>(ids));
 			foreach (var jsonDocument in multiLoadResult.Results)
 			{
 				includeCmd.Execute(jsonDocument);
 			}
+			}
+
 			return multiLoadResult;
 		}
 
@@ -668,7 +698,7 @@ namespace Raven.Client.Embedded
 		/// </summary>
 		/// <param name="key">The key.</param>
 		/// <returns>
-		/// The document metadata for the specifed document, or null if the document does not exist
+		/// The document metadata for the specified document, or null if the document does not exist
 		/// </returns>
 		public JsonDocumentMetadata Head(string key)
 		{
@@ -678,7 +708,7 @@ namespace Raven.Client.Embedded
 		}
 
 		/// <summary>
-		/// Perform a single POST requst containing multiple nested GET requests
+		/// Perform a single POST request containing multiple nested GET requests
 		/// </summary>
 		public GetResponse[] MultiGet(GetRequest[] requests)
 		{

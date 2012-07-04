@@ -226,19 +226,26 @@ namespace Raven.Storage.Esent.StorageActions
 		}
 
 
-		public IEnumerable<JsonDocument> GetDocumentsAfter(Guid etag, int take)
+		public IEnumerable<JsonDocument> GetDocumentsAfter(Guid etag, int take, long? maxSize = null)
 		{
 			Api.JetSetCurrentIndex(session, Documents, "by_etag");
 			Api.MakeKey(session, Documents, etag.TransformToValueForEsentSorting(), MakeKeyGrbit.NewKey);
 			if (Api.TrySeek(session, Documents, SeekGrbit.SeekGT) == false)
-				return Enumerable.Empty<JsonDocument>();
-			var optimizer = new OptimizedIndexReader(Session, Documents, take);
+				yield break;
+			long totalSize = 0;
+			int count = 0;
 			do
 			{
-				optimizer.Add();
-			} while (Api.TryMoveNext(session, Documents) && optimizer.Count < take);
-
-			return optimizer.Select(ReadCurrentDocument);
+				var readCurrentDocument = ReadCurrentDocument();
+				totalSize += readCurrentDocument.SerializedSizeOnDisk;
+				if(maxSize != null && totalSize > maxSize.Value)
+				{
+					yield return readCurrentDocument;
+					yield break;
+				}
+				yield return readCurrentDocument;
+				count++;
+			} while (Api.TryMoveNext(session, Documents) && count < take);
 		}
 
 
@@ -272,8 +279,8 @@ namespace Raven.Storage.Esent.StorageActions
 
 		public Guid AddDocument(string key, Guid? etag, RavenJObject data, RavenJObject metadata)
 		{
-			if (key != null && Encoding.Unicode.GetByteCount(key) >= 255)
-				throw new ArgumentException(string.Format("The key must be a maximum of 255 bytes in Unicode, 127 characters, key is: '{0}'", key), "key");
+			if (key != null && Encoding.Unicode.GetByteCount(key) >= 2048)
+				throw new ArgumentException(string.Format("The key must be a maximum of 2,048 bytes in Unicode, 1,024 characters, key is: '{0}'", key), "key");
 
 			Api.JetSetCurrentIndex(session, Documents, "by_key");
 			Api.MakeKey(session, Documents, key, Encoding.Unicode, MakeKeyGrbit.NewKey);

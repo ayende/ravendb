@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Linq;
 
-#if !NET_3_5
+#if !NET35
 namespace Raven.Abstractions.Extensions
 {
 	///<summary>

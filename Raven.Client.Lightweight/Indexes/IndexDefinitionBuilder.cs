@@ -135,7 +135,7 @@ namespace Raven.Client.Indexes
 			return indexDefinition;
 		}
 
-#if !NET_3_5
+#if !NET35
 		private static bool ContainsWhereEntityIs(Expression body)
 		{
 			var whereEntityIsVisitor = new WhereEntityIsVisitor();
@@ -166,7 +166,7 @@ namespace Raven.Client.Indexes
 			var result = new Dictionary<string, TValue>();
 			foreach (var value in input)
 			{
-				var propertyPath = value.Key.ToPropertyPath("_");
+				var propertyPath = value.Key.ToPropertyPath('_');
 				result[propertyPath] = value.Value;
 			}
 			return result;

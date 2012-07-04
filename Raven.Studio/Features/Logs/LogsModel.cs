@@ -16,7 +16,7 @@ using System.Linq;
 
 namespace Raven.Studio.Features.Logs
 {
-	public class LogsModel : ViewModel
+	public class LogsModel : PageViewModel
 	{
 		public BindableCollection<LogItem> Logs { get; private set; }
 		public BindableCollection<LogItem> DisplayedLogs { get; private set; }
@@ -32,7 +32,7 @@ namespace Raven.Studio.Features.Logs
 
 		protected override Task LoadedTimerTickedAsync()
 		{
-			if (IsLogsEnabled == false)
+			if (IsLogsEnabled == false || Database.Value == null)
 				return null;
 
 			return DatabaseCommands.GetLogsAsync(showErrorsOnly)

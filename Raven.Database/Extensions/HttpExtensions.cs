@@ -10,9 +10,10 @@ using System.Reflection;
 using System.Security.Principal;
 using System.Text;
 using System.Text.RegularExpressions;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Bson;
-using Newtonsoft.Json.Linq;
+using Raven.Abstractions.Json;
+using Raven.Imports.Newtonsoft.Json;
+using Raven.Imports.Newtonsoft.Json.Bson;
+using Raven.Imports.Newtonsoft.Json.Linq;
 using Raven.Abstractions;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
@@ -46,7 +47,7 @@ namespace Raven.Database.Extensions
 		public static RavenJObject ReadJson(this IHttpContext context)
 		{
 			using (var streamReader = new StreamReader(context.Request.InputStream, GetRequestEncoding(context)))
-			using (var jsonReader = new JsonTextReader(streamReader))
+			using (var jsonReader = new RavenJsonTextReader(streamReader))
 				return RavenJObject.Load(jsonReader);
 		}
 
@@ -55,7 +56,7 @@ namespace Raven.Database.Extensions
 			using (var streamReader = new StreamReader(context.Request.InputStream, GetRequestEncoding(context)))
 			{
 				var readToEnd = streamReader.ReadToEnd();
-				using (var jsonReader = new JsonTextReader(new StringReader(readToEnd)))
+				using (var jsonReader = new RavenJsonTextReader(new StringReader(readToEnd)))
 				{
 					var result = JsonExtensions.CreateDefaultJsonSerializer();
 
@@ -67,7 +68,7 @@ namespace Raven.Database.Extensions
 		public static RavenJArray ReadJsonArray(this IHttpContext context)
 		{
 			using (var streamReader = new StreamReader(context.Request.InputStream, GetRequestEncoding(context)))
-			using (var jsonReader = new JsonTextReader(streamReader))
+			using (var jsonReader = new RavenJsonTextReader(streamReader))
 				return RavenJArray.Load(jsonReader);
 		}
 
@@ -88,7 +89,7 @@ namespace Raven.Database.Extensions
 
 		public static void WriteJson(this IHttpContext context, object obj)
 		{
-			WriteJson(context, RavenJToken.FromObject(obj, JsonExtensions.CreateDefaultJsonSerializer()));
+			WriteJson(context, RavenJToken.FromObject(obj));
 		}
 
 		public static void WriteJson(this IHttpContext context, RavenJToken obj)
@@ -166,7 +167,7 @@ namespace Raven.Database.Extensions
 				context.Response.StatusCode = headers.Value<int>("@Http-Status-Code");
 				context.Response.StatusDescription = headers.Value<string>("@Http-Status-Description");
 			}
-			context.Response.AddHeader("ETag", etag.ToString());
+			context.WriteETag(etag);
 		}
 
 		private static string GetHeaderValue(RavenJToken header)
@@ -397,7 +398,19 @@ namespace Raven.Database.Extensions
 
 		public static bool MatchEtag(this IHttpContext context, Guid etag)
 		{
-			return context.Request.Headers["If-None-Match"] == etag.ToString();
+			return EtagHeaderToGuid(context) == etag;
+		}
+
+		internal static Guid EtagHeaderToGuid(IHttpContext context)
+		{
+			var responseHeader = context.Request.Headers["If-None-Match"];
+			if (string.IsNullOrEmpty(responseHeader))
+				return Guid.NewGuid();
+
+			if (responseHeader[0] == '\"')
+				return new Guid(responseHeader.Substring(1, responseHeader.Length - 2));
+
+			return new Guid(responseHeader);
 		}
 
 		public static void WriteEmbeddedFile(this IHttpContext context, string ravenPath, string docPath)
@@ -431,7 +444,7 @@ namespace Raven.Database.Extensions
 				}
 				bytes = resource.ReadData();
 			}
-			context.Response.AddHeader("ETag", currentFileEtag);
+			context.WriteETag(currentFileEtag);
 			context.Response.OutputStream.Write(bytes, 0, bytes.Length);
 		}
 
@@ -444,8 +457,25 @@ namespace Raven.Database.Extensions
 				context.SetStatusToNotModified();
 				return;
 			}
-			context.Response.AddHeader("ETag", fileEtag);
+			context.WriteETag(fileEtag);
 			context.Response.WriteFile(filePath);
+		}
+
+
+		public static void WriteETag(this IHttpContext context, Guid etag)
+		{
+			context.WriteETag(etag.ToString());
+		}
+		public static void WriteETag(this IHttpContext context, string etag)
+		{
+			var clientVersion = context.Request.Headers["Raven-Client-Version"];
+			if (string.IsNullOrEmpty(clientVersion))
+			{
+				context.Response.AddHeader("ETag", etag);
+				return;
+			}
+
+			context.Response.AddHeader("ETag", "\"" + etag + "\"");
 		}
 
 		public static bool IsAdministrator(this IPrincipal principal)
@@ -453,9 +483,19 @@ namespace Raven.Database.Extensions
 			if (principal == null)
 				return false;
 
+
 			var windowsPrincipal = principal as WindowsPrincipal;
 			if (windowsPrincipal != null)
+			{
+				// if the request was made using the same user as RavenDB is running as, we consider this
+				// to be an administrator request
+
+				var current = WindowsIdentity.GetCurrent();
+				if (current != null && current.User == ((WindowsIdentity)windowsPrincipal.Identity).User)
+					return true;
+
 				return windowsPrincipal.IsInRole(WindowsBuiltInRole.Administrator);
+			}
 
 			return principal.IsInRole("Administrators");
 		}

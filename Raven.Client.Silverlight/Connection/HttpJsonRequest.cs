@@ -10,11 +10,12 @@ using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Browser;
+using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
 using Ionic.Zlib;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
+using Raven.Imports.Newtonsoft.Json;
+using Raven.Imports.Newtonsoft.Json.Linq;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
 using Raven.Client.Connection;
@@ -39,6 +40,7 @@ namespace Raven.Client.Silverlight.Connection
 		internal HttpWebRequest webRequest;
 		private byte[] postedData;
 		private int retries;
+		public static readonly string ClientVersion = new AssemblyName(typeof(HttpJsonRequest).Assembly.FullName).Version.ToString();
 
 		private Task RecreateWebRequest(Action<HttpWebRequest> result)
 		{
@@ -79,6 +81,8 @@ namespace Raven.Client.Silverlight.Connection
 			tcs.SetResult(null);
 			WaitForTask = tcs.Task;
 
+			webRequest.Headers["Raven-Client-Version"] = ClientVersion;
+			
 			WriteMetadata(metadata);
 			webRequest.Method = method;
 			if (method != "GET")

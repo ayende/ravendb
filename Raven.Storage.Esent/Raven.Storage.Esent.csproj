@@ -41,10 +41,6 @@
     <Reference Include="Esent.Interop">
       <HintPath>..\SharedLibs\Esent.Interop.dll</HintPath>
     </Reference>
-    <Reference Include="Newtonsoft.Json, Version=4.0.8.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed, processorArchitecture=MSIL">
-      <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\packages\Newtonsoft.Json.4.0.8\lib\net40\Newtonsoft.Json.dll</HintPath>
-    </Reference>
     <Reference Include="NLog">
       <HintPath>..\packages\NLog.2.0.0.2000\lib\net40\NLog.dll</HintPath>
     </Reference>
@@ -67,21 +63,8 @@
     <Compile Include="Backup\RestoreOperation.cs" />
     <Compile Include="EsentExtension.cs" />
     <Compile Include="SchemaCreator.cs" />
-    <Compile Include="SchemaUpdates\From35To36.cs" />
-    <Compile Include="SchemaUpdates\From34To35.cs" />
-    <Compile Include="SchemaUpdates\From32To33.cs" />
-    <Compile Include="SchemaUpdates\From29To30.cs" />
-    <Compile Include="SchemaUpdates\From21To22.cs" />
-    <Compile Include="SchemaUpdates\From22To23.cs" />
-    <Compile Include="SchemaUpdates\From23To24.cs" />
-    <Compile Include="SchemaUpdates\From24To25.cs" />
-    <Compile Include="SchemaUpdates\From25To26.cs" />
-    <Compile Include="SchemaUpdates\From26To27.cs" />
-    <Compile Include="SchemaUpdates\From27To28.cs" />
-    <Compile Include="SchemaUpdates\From28To29.cs" />
-    <Compile Include="SchemaUpdates\From30To32.cs" />
-    <Compile Include="SchemaUpdates\From33To34.cs" />
     <Compile Include="SchemaUpdates\ISchemaUpdate.cs" />
+    <Compile Include="SchemaUpdates\SchemaUpdaterHelper.cs" />
     <Compile Include="StorageActionsAccessor.cs" />
     <Compile Include="StorageActions\DocumentStorageActions.cs" />
     <Compile Include="StorageActions\Documents.cs" />

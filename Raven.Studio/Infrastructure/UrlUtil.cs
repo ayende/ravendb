@@ -17,10 +17,15 @@ namespace Raven.Studio.Infrastructure
 
 		private static void Navigate(Uri source)
 		{
-			Execute.OnTheUI(() => Application.Current.Host.NavigationState = source.ToString());
+			Application.Current.Host.NavigationState = source.ToString();
 		}
 
-		public static void Navigate(string url, bool dontOpenNewTag = false)
+        private static void Refresh()
+        {
+            (Application.Current.RootVisual as MainPage).Refresh();
+        }
+
+		public static void Navigate(string url, bool dontOpenNewTab = false, bool forceRefresh = false)
 		{
 			if (url == null)
 				return;
@@ -29,13 +34,20 @@ namespace Raven.Studio.Infrastructure
 
 			Execute.OnTheUI(() =>
 			                	{
-									if (Keyboard.Modifiers == ModifierKeys.Control && dontOpenNewTag == false)
+									if (Keyboard.Modifiers == ModifierKeys.Control && dontOpenNewTab == false)
 			                		{
 			                			OpenUrlOnANewTab(url);
 										return;
 			                		}
 
-			                		Navigate((new Uri(url, UriKind.Relative)));
+                                    if (Url == url && forceRefresh)
+                                    {
+                                        Refresh();
+                                    }
+                                    else
+                                    {
+                                        Navigate((new Uri(url, UriKind.Relative)));
+                                    }
 			                	});
 		}
 

@@ -1,4 +1,4 @@
-﻿#if !NET_3_5
+﻿#if !NET35
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -47,7 +47,7 @@ namespace Raven.Client.Document.Batches
 				                                    response.Result);
 			}
 
-			var result = RavenJObject.Parse(response.Result);
+			var result = (RavenJObject)response.Result;
 			Result = result.JsonDeserialization<IDictionary<string, IEnumerable<FacetValue>>>();
 		}
 
@@ -56,8 +56,8 @@ namespace Raven.Client.Document.Batches
 		{
 			var result = new Dictionary<string, IEnumerable<FacetValue>>();
 
-			IEnumerable<IGrouping<string, KeyValuePair<string, IEnumerable<FacetValue>>>> list = responses.Select(response => RavenJObject.Parse(response.Result))
-				.SelectMany(jsonResult => jsonResult.JsonDeserialization<IDictionary<string, IEnumerable<FacetValue>>>())
+			IEnumerable<IGrouping<string, KeyValuePair<string, IEnumerable<FacetValue>>>> list = responses.Select(response => response.Result)
+				.SelectMany(jsonResult => ((RavenJObject)jsonResult).JsonDeserialization<IDictionary<string, IEnumerable<FacetValue>>>())
 				.GroupBy(x => x.Key);
 
 			foreach (var facet in list)

@@ -82,7 +82,11 @@ namespace Raven.Client.Connection
 		/// <returns></returns>
 		Attachment GetAttachment(string key);
 
-
+		/// <summary>
+		/// Gets the attachments starting with the specified prefix
+		/// </summary>
+		IEnumerable<Attachment> GetAttachmentHeadersStartingWith(string idPrefix, int start, int pageSize);
+		
 		/// <summary>
 		/// Retrieves the attachment metadata with the specified key, not the actual attachmet
 		/// </summary>
@@ -102,7 +106,7 @@ namespace Raven.Client.Connection
 		/// Returns the names of all tenant databases on the RavenDB server
 		/// </summary>
 		/// <returns>List of tenant database names</returns>
-		string[] GetDatabaseNames(int pageSize);
+		string[] GetDatabaseNames(int pageSize, int start = 0);
 
 		/// <summary>
 		/// Returns the names of all indexes that exist on the server

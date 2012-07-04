@@ -28,6 +28,7 @@ namespace Raven.Backup
 			}
 			catch (Exception e)
 			{
+				Console.WriteLine("Could not understand arguemnts");
 				Console.WriteLine(e.Message);
 				PrintUsage(optionSet);
 				return;
@@ -56,7 +57,7 @@ namespace Raven.Backup
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine(ex.Message);
+				Console.WriteLine(ex);
 			}
 
 			if (doReadKeyOnExit) Console.ReadKey();

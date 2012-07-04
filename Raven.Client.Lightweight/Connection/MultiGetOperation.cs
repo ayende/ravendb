@@ -2,7 +2,7 @@ using System;
 using System.Collections.Specialized;
 using System.Linq;
 using System.Net;
-using Newtonsoft.Json;
+using Raven.Imports.Newtonsoft.Json;
 using Raven.Abstractions.Data;
 using Raven.Client.Connection.Profiling;
 using Raven.Client.Document;
@@ -67,7 +67,7 @@ namespace Raven.Client.Connection
 		{
 			if (allRequestsCanBeServedFromAggressiveCache) // can be fully served from aggressive cache
 			{
-				jsonRequestFactory.InvokeLogRequest(holdProfilingInformation, new RequestResultArgs
+				jsonRequestFactory.InvokeLogRequest(holdProfilingInformation, () => new RequestResultArgs
 				{
 					DurationMilliseconds = httpJsonRequest.CalculateDuration(),
 					Method = httpJsonRequest.webRequest.Method,
@@ -99,7 +99,7 @@ namespace Raven.Client.Connection
 					{
 						responses[i].Headers[header] = cachedData[i].Headers[header];
 					}
-					responses[i].Result = cachedData[i].Data;
+					responses[i].Result = cachedData[i].Data.CloneToken();
 					jsonRequestFactory.IncrementCachedRequests();
 				}
 				else

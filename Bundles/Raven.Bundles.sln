@@ -1,10 +1,8 @@
-Microsoft Visual Studio Solution File, Format Version 11.00
+Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio 2010
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Raven.Bundles.Tests", "Raven.Bundles.Tests\Raven.Bundles.Tests.csproj", "{35CFAB1C-7934-4481-AC0D-7102F7DEE7F8}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Raven.Bundles.Versioning", "Raven.Bundles.Versioning\Raven.Bundles.Versioning.csproj", "{22BCC20F-FC1F-4523-A717-77CDF8519C1D}"
-EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Raven.Bundles.Replication", "Raven.Bundles.Replication\Raven.Bundles.Replication.csproj", "{2EA316E8-629A-45C2-80B8-48F9CDB5BF57}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Raven.Database", "..\Raven.Database\Raven.Database.csproj", "{212823CD-25E1-41AC-92D1-D6DF4D53FC85}"
 EndProject
@@ -57,8 +55,6 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Raven.Bundles.UniqueConstra
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Raven.Client.UniqueConstraints", "Raven.Client.UniqueConstraints\Raven.Client.UniqueConstraints.csproj", "{D185331D-2B7C-4251-8EBE-140EDE1FAB9F}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Raven.StressTests", "..\Raven.StressTests\Raven.StressTests.csproj", "{005A5143-4E38-424B-A2D1-25EF88DA05CB}"
-EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Raven.Bundles.IndexedProperties", "Raven.Bundles.IndexedProperties\Raven.Bundles.IndexedProperties.csproj", "{012F5E7B-DDC3-4B8C-BA39-1394536D58BE}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Raven.Tests", "..\Raven.Tests\Raven.Tests.csproj", "{267AC60C-751E-42E9-AA18-66035DEFF63A}"
@@ -95,16 +91,6 @@ Global
 		{22BCC20F-FC1F-4523-A717-77CDF8519C1D}.Release|Mixed Platforms.ActiveCfg = Release|Any CPU
 		{22BCC20F-FC1F-4523-A717-77CDF8519C1D}.Release|Mixed Platforms.Build.0 = Release|Any CPU
 		{22BCC20F-FC1F-4523-A717-77CDF8519C1D}.Release|x86.ActiveCfg = Release|Any CPU
-		{2EA316E8-629A-45C2-80B8-48F9CDB5BF57}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{2EA316E8-629A-45C2-80B8-48F9CDB5BF57}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{2EA316E8-629A-45C2-80B8-48F9CDB5BF57}.Debug|Mixed Platforms.ActiveCfg = Debug|Any CPU
-		{2EA316E8-629A-45C2-80B8-48F9CDB5BF57}.Debug|Mixed Platforms.Build.0 = Debug|Any CPU
-		{2EA316E8-629A-45C2-80B8-48F9CDB5BF57}.Debug|x86.ActiveCfg = Debug|Any CPU
-		{2EA316E8-629A-45C2-80B8-48F9CDB5BF57}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{2EA316E8-629A-45C2-80B8-48F9CDB5BF57}.Release|Any CPU.Build.0 = Release|Any CPU
-		{2EA316E8-629A-45C2-80B8-48F9CDB5BF57}.Release|Mixed Platforms.ActiveCfg = Release|Any CPU
-		{2EA316E8-629A-45C2-80B8-48F9CDB5BF57}.Release|Mixed Platforms.Build.0 = Release|Any CPU
-		{2EA316E8-629A-45C2-80B8-48F9CDB5BF57}.Release|x86.ActiveCfg = Release|Any CPU
 		{212823CD-25E1-41AC-92D1-D6DF4D53FC85}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{212823CD-25E1-41AC-92D1-D6DF4D53FC85}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{212823CD-25E1-41AC-92D1-D6DF4D53FC85}.Debug|Mixed Platforms.ActiveCfg = Debug|Any CPU
@@ -325,16 +311,6 @@ Global
 		{D185331D-2B7C-4251-8EBE-140EDE1FAB9F}.Release|Mixed Platforms.ActiveCfg = Release|Any CPU
 		{D185331D-2B7C-4251-8EBE-140EDE1FAB9F}.Release|Mixed Platforms.Build.0 = Release|Any CPU
 		{D185331D-2B7C-4251-8EBE-140EDE1FAB9F}.Release|x86.ActiveCfg = Release|Any CPU
-		{005A5143-4E38-424B-A2D1-25EF88DA05CB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{005A5143-4E38-424B-A2D1-25EF88DA05CB}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{005A5143-4E38-424B-A2D1-25EF88DA05CB}.Debug|Mixed Platforms.ActiveCfg = Debug|Any CPU
-		{005A5143-4E38-424B-A2D1-25EF88DA05CB}.Debug|Mixed Platforms.Build.0 = Debug|Any CPU
-		{005A5143-4E38-424B-A2D1-25EF88DA05CB}.Debug|x86.ActiveCfg = Debug|Any CPU
-		{005A5143-4E38-424B-A2D1-25EF88DA05CB}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{005A5143-4E38-424B-A2D1-25EF88DA05CB}.Release|Any CPU.Build.0 = Release|Any CPU
-		{005A5143-4E38-424B-A2D1-25EF88DA05CB}.Release|Mixed Platforms.ActiveCfg = Release|Any CPU
-		{005A5143-4E38-424B-A2D1-25EF88DA05CB}.Release|Mixed Platforms.Build.0 = Release|Any CPU
-		{005A5143-4E38-424B-A2D1-25EF88DA05CB}.Release|x86.ActiveCfg = Release|Any CPU
 		{012F5E7B-DDC3-4B8C-BA39-1394536D58BE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{012F5E7B-DDC3-4B8C-BA39-1394536D58BE}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{012F5E7B-DDC3-4B8C-BA39-1394536D58BE}.Debug|Mixed Platforms.ActiveCfg = Debug|Any CPU
