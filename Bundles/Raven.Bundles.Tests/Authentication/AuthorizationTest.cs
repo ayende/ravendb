@@ -42,7 +42,6 @@ namespace Raven.Bundles.Tests.Authentication
 						Catalog = {Catalogs = {new AssemblyCatalog(typeof (AuthenticationUser).Assembly)}},
 						DataDirectory = "Data",
 						RunInUnreliableYetFastModeThatIsNotSuitableForProduction = true,
-						AuthenticationMode = "oauth",
 						Port = 8079,
 						OAuthTokenCertificate = database::Raven.Database.Config.CertGenerator.GenerateNewCertificate("RavenDB.Test")
 					},
