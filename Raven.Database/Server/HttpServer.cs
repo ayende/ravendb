@@ -34,8 +34,6 @@ using Raven.Database.Impl;
 using Raven.Database.Plugins.Builtins.Tenants;
 using Raven.Database.Server.Abstractions;
 using Raven.Database.Server.Security;
-using Raven.Database.Server.Security.OAuth;
-using Raven.Database.Server.Security.Windows;
 using Raven.Database.Util;
 using Raven.Imports.SignalR;
 using Raven.Imports.SignalR.Hosting.Self;
@@ -136,18 +134,7 @@ namespace Raven.Database.Server
 				responder.Value.Initialize(() => currentDatabase.Value, () => currentConfiguration.Value, () => currentTenantId.Value, this);
 			}
 
-			switch (configuration.AuthenticationMode.ToLowerInvariant())
-			{
-				case "windows":
-					requestAuthorizer = new WindowsRequestAuthorizer();
-					break;
-				case "oauth":
-					requestAuthorizer = new OAuthRequestAuthorizer();
-					break;
-				default:
-					throw new InvalidOperationException(
-						string.Format("Unknown AuthenticationMode {0}. Options are Windows and OAuth", configuration.AuthenticationMode));
-			}
+			requestAuthorizer = new MixedModeAuthorizer();
 
 			requestAuthorizer.Initialize(() => currentDatabase.Value, () => currentConfiguration.Value, () => currentTenantId.Value, this);
 		}
