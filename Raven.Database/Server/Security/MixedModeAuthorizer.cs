@@ -43,14 +43,14 @@ namespace Raven.Database.Server.Security
 				return true;
 
 			var getRequest = IsGetRequest(ctx.Request.HttpMethod, requestUrl);
-			Action onRejectingRequest;
-			var isInvalidUser = IsInvalidWindowsUser(ctx, out onRejectingRequest) ||
-								IsInvalidOAuthUser(ctx, getRequest == false, out onRejectingRequest);
+			int statusCode = 401;
+			var isInvalidUser = IsInvalidWindowsUser(ctx) &&
+								IsInvalidOAuthUser(ctx, getRequest == false, ref statusCode);
 
 			if (server.SystemConfiguration.AnonymousUserAccessMode == AnonymousUserAccessMode.None &&
 				isInvalidUser)
 			{
-				onRejectingRequest();
+				SendUnauthorizedResponse(ctx, statusCode);
 				return false;
 			}
 
@@ -60,7 +60,7 @@ namespace Raven.Database.Server.Security
 				isInvalidUser &&
 				IsGetRequest(httpRequest.HttpMethod, httpRequest.Url.AbsolutePath) == false)
 			{
-				onRejectingRequest();
+				SendUnauthorizedResponse(ctx, statusCode);
 				return false;
 			}
 
@@ -72,37 +72,42 @@ namespace Raven.Database.Server.Security
 			return true;
 		}
 
-		private bool IsInvalidOAuthUser(IHttpContext ctx, bool writeAccess,  out Action onRejectingRequest)
+		private static void SendUnauthorizedResponse(IHttpContext ctx, int statusCode)
+		{
+			ctx.Response.StatusCode = statusCode;
+			ctx.Response.AddHeader("WWW-Authenticate", "Negotiate");
+			ctx.Response.AddHeader("WWW-Authenticate", "NTLM");
+		}
+
+		private bool IsInvalidOAuthUser(IHttpContext ctx, bool writeAccess, ref int statusCode)
 		{
 			var token = GetToken(ctx);
 
 			if (token == null)
 			{
-				onRejectingRequest = () => 
-					WriteAuthorizationChallenge(ctx, 401, "invalid_request", "The access token is required");
+				WriteAuthorizationChallenge(ctx, "invalid_request", "The access token is required");
 				return true;
 			}
 
 			AccessTokenBody tokenBody;
 			if (!AccessToken.TryParseBody(Settings.OAuthTokenCertificate, token, out tokenBody))
 			{
-				onRejectingRequest = () =>
-					WriteAuthorizationChallenge(ctx, 401, "invalid_token", "The access token is invalid");
+				WriteAuthorizationChallenge(ctx, "invalid_token", "The access token is invalid");
 
 				return true;
 			}
 
 			if (tokenBody.IsExpired())
 			{
-				onRejectingRequest = () =>
-					WriteAuthorizationChallenge(ctx, 401, "invalid_token", "The access token is expired");
+				WriteAuthorizationChallenge(ctx, "invalid_token", "The access token is expired");
 
 				return true;
 			}
 
 			if (!tokenBody.IsAuthorized(TenantId, writeAccess))
 			{
-				onRejectingRequest = () => WriteAuthorizationChallenge(ctx, 403, "insufficient_scope",
+				statusCode = 403;
+				WriteAuthorizationChallenge(ctx, "insufficient_scope",
 									writeAccess ?
 									"Not authorized for read/write access for tenant " + TenantId :
 									"Not authorized for tenant " + TenantId);
@@ -111,14 +116,11 @@ namespace Raven.Database.Server.Security
 			}
 
 			ctx.User = new OAuthPrincipal(tokenBody, TenantId);
-			onRejectingRequest = null;
 			return false;
 		}
 
-		private bool IsInvalidWindowsUser(IHttpContext ctx, out Action onRejectingRequest)
+		private bool IsInvalidWindowsUser(IHttpContext ctx)
 		{
-			onRejectingRequest = ctx.SetStatusToUnauthorized;
-			
 			if (ctx.User == null || ctx.User.Identity.IsAuthenticated == false)
 			{
 				return true;
@@ -154,13 +156,12 @@ namespace Raven.Database.Server.Security
 			return token;
 		}
 
-		void WriteAuthorizationChallenge(IHttpContext ctx, int statusCode, string error, string errorDescription)
+		void WriteAuthorizationChallenge(IHttpContext ctx, string error, string errorDescription)
 		{
 			if (string.IsNullOrEmpty(Settings.OAuthTokenServer) == false)
 			{
-				ctx.Response.AddHeader("OAuth-Source", Settings.OAuthTokenServer);
+			    ctx.Response.AddHeader("OAuth-Source", Settings.OAuthTokenServer);
 			}
-			ctx.Response.StatusCode = statusCode;
 			ctx.Response.AddHeader("WWW-Authenticate", string.Format("Bearer realm=\"Raven\", error=\"{0}\",error_description=\"{1}\"", error, errorDescription));
 		}
 	}

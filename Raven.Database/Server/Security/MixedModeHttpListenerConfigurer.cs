@@ -14,7 +14,7 @@ namespace Raven.Database.Server.Security
 	{
 		public void Configure(HttpListener listener, InMemoryRavenConfiguration config)
 		{
-			listener.AuthenticationSchemes = AuthenticationSchemes.Anonymous | AuthenticationSchemes.Basic |
+			listener.AuthenticationSchemes = AuthenticationSchemes.Anonymous | 
 			                                 AuthenticationSchemes.IntegratedWindowsAuthentication;
 			listener.AuthenticationSchemeSelectorDelegate = AuthenticationSchemeSelectorDelegate;
 		}
@@ -22,15 +22,23 @@ namespace Raven.Database.Server.Security
 		private AuthenticationSchemes AuthenticationSchemeSelectorDelegate(HttpListenerRequest request)
 		{
 			if (NeverSecret.Urls.Contains(request.Url.AbsolutePath, StringComparer.InvariantCultureIgnoreCase))
-				return AuthenticationSchemes.Anonymous; 
-			
+				return AuthenticationSchemes.Anonymous;
+
 			if (request.RawUrl.StartsWith("/OAuth/AccessToken", StringComparison.InvariantCultureIgnoreCase))
 			{
 				// only here we support basic auth
 				return AuthenticationSchemes.Basic | AuthenticationSchemes.Anonymous;
 			}
 
-			return AuthenticationSchemes.Anonymous | AuthenticationSchemes.IntegratedWindowsAuthentication;
+			var authHeader = request.Headers["Authorization"];
+
+			if (string.IsNullOrEmpty(authHeader) == false)
+			{
+				if (authHeader.StartsWith("NTLM") || authHeader.StartsWith("Negotiate"))
+					return AuthenticationSchemes.IntegratedWindowsAuthentication;
+			}
+
+			return AuthenticationSchemes.IntegratedWindowsAuthentication ;
 		}
 	}
 }
