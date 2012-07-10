@@ -8,19 +8,30 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Security.Principal;
 using Raven.Abstractions.Data;
-using Raven.Database.Extensions;
+using Raven.Database.Config;
 using Raven.Database.Server.Abstractions;
 using Raven.Database.Server.Security.OAuth;
 
 namespace Raven.Database.Server.Security
 {
-	public class MixedModeAuthorizer : AbstractRequestAuthorizer
+	public class MixedModeAuthorizer
 	{
 		private readonly List<string> requiredGroups = new List<string>();
 		private readonly List<string> requiredUsers = new List<string>();
 
-		protected override void Initialize()
+		private Func<InMemoryRavenConfiguration> settings;
+		private Func<DocumentDatabase> database;
+		protected HttpServer server;
+
+		public DocumentDatabase ResourceStore { get { return database(); } }
+		public InMemoryRavenConfiguration Settings { get { return settings(); } }
+
+		public void Initialize(Func<DocumentDatabase> databaseGetter, Func<InMemoryRavenConfiguration> settingsGetter, HttpServer theServer)
 		{
+			server = theServer;
+			database = databaseGetter;
+			settings = settingsGetter;
+
 			var requiredGroupsString = server.Configuration.Settings["Raven/Authorization/Windows/RequiredGroups"];
 			if (requiredGroupsString != null)
 			{
@@ -36,10 +47,16 @@ namespace Raven.Database.Server.Security
 			}
 		}
 
-		public override bool Authorize(IHttpContext ctx)
+		public static bool IsGetRequest(string httpMethod, string requestPath)
 		{
-			var requestUrl = ctx.GetRequestUrl();
-			if (NeverSecret.Urls.Contains(requestUrl, StringComparer.InvariantCultureIgnoreCase))
+			return (httpMethod == "GET" || httpMethod == "HEAD") ||
+				   httpMethod == "POST" && (requestPath == "/multi_get/" || requestPath == "/multi_get");
+		}
+
+		public bool Authorize(IAuthenticationContext ctx)
+		{
+			var requestUrl = ctx.RequestUrl;
+			if (NeverSecret.Urls.Contains(requestUrl))
 				return true;
 
 			var getRequest = IsGetRequest(ctx.Request.HttpMethod, requestUrl);
@@ -72,14 +89,18 @@ namespace Raven.Database.Server.Security
 			return true;
 		}
 
-		private static void SendUnauthorizedResponse(IHttpContext ctx, int statusCode)
+		private static void SendUnauthorizedResponse(IAuthenticationContext ctx, int statusCode)
 		{
-			ctx.Response.StatusCode = statusCode;
-			ctx.Response.AddHeader("WWW-Authenticate", "Negotiate");
-			ctx.Response.AddHeader("WWW-Authenticate", "NTLM");
+			ctx.RegisterResponse(response =>
+			{
+				response.StatusCode = statusCode;
+				response.AddHeader("WWW-Authenticate", "Negotiate");
+				response.AddHeader("WWW-Authenticate", "NTLM");
+				response.AddHeader("WWW-Authenticate", "Bearer realm=\"Raven\", error=\"invalid_token\",error_description=\"The access token is invalid\"");
+			});
 		}
 
-		private bool IsInvalidOAuthUser(IHttpContext ctx, bool writeAccess, ref int statusCode)
+		private bool IsInvalidOAuthUser(IAuthenticationContext ctx, bool writeAccess, ref int statusCode)
 		{
 			var token = GetToken(ctx);
 
@@ -104,22 +125,26 @@ namespace Raven.Database.Server.Security
 				return true;
 			}
 
-			if (!tokenBody.IsAuthorized(TenantId, writeAccess))
+			string tenantId;
+			HttpServer.TryGetTenantId(ctx.Request.RawUrl, out tenantId);
+			
+			ctx.User = new OAuthPrincipal(tokenBody, tenantId);
+
+			if (!tokenBody.IsAuthorized(tenantId, writeAccess))
 			{
 				statusCode = 403;
 				WriteAuthorizationChallenge(ctx, "insufficient_scope",
 									writeAccess ?
-									"Not authorized for read/write access for tenant " + TenantId :
-									"Not authorized for tenant " + TenantId);
+									"Not authorized for read/write access for tenant " + tenantId :
+									"Not authorized for tenant " + tenantId);
 
 				return true;
 			}
 
-			ctx.User = new OAuthPrincipal(tokenBody, TenantId);
 			return false;
 		}
 
-		private bool IsInvalidWindowsUser(IHttpContext ctx)
+		private bool IsInvalidWindowsUser(IAuthenticationContext ctx)
 		{
 			if (ctx.User == null || ctx.User.Identity.IsAuthenticated == false)
 			{
@@ -142,7 +167,7 @@ namespace Raven.Database.Server.Security
 			return false;
 		}
 
-		static string GetToken(IHttpContext ctx)
+		static string GetToken(IAuthenticationContext ctx)
 		{
 			const string bearerPrefix = "Bearer ";
 
@@ -156,13 +181,25 @@ namespace Raven.Database.Server.Security
 			return token;
 		}
 
-		void WriteAuthorizationChallenge(IHttpContext ctx, string error, string errorDescription)
+		void WriteAuthorizationChallenge(IAuthenticationContext ctx, string error, string errorDescription)
 		{
-			if (string.IsNullOrEmpty(Settings.OAuthTokenServer) == false)
+			ctx.RegisterResponse(response =>
 			{
-			    ctx.Response.AddHeader("OAuth-Source", Settings.OAuthTokenServer);
-			}
-			ctx.Response.AddHeader("WWW-Authenticate", string.Format("Bearer realm=\"Raven\", error=\"{0}\",error_description=\"{1}\"", error, errorDescription));
+				if (string.IsNullOrEmpty(Settings.OAuthTokenServer) == false)
+				{
+					response.AddHeader("OAuth-Source", Settings.OAuthTokenServer);
+				}
+				response.AddHeader("WWW-Authenticate", string.Format("Bearer realm=\"Raven\", error=\"{0}\",error_description=\"{1}\"", error, errorDescription));
+			});	
 		}
+	}
+
+	public interface IAuthenticationContext
+	{
+		string RequestUrl { get;  }
+		IHttpRequest Request { get; }
+		IPrincipal User { get; set; }
+
+		void RegisterResponse(Action<IHttpResponse> action);
 	}
 }

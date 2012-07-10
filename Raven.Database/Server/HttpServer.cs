@@ -14,6 +14,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Net;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -46,7 +47,7 @@ namespace Raven.Database.Server
 		private const int MaxConcurrentRequests = 192;
 		public DocumentDatabase SystemDatabase { get; private set; }
 		public InMemoryRavenConfiguration SystemConfiguration { get; private set; }
-		readonly AbstractRequestAuthorizer requestAuthorizer;
+		readonly MixedModeAuthorizer requestAuthorizer;
 
 		public event Action<InMemoryRavenConfiguration> SetupTenantDatabaseConfiguration = delegate { };
 
@@ -136,7 +137,12 @@ namespace Raven.Database.Server
 
 			requestAuthorizer = new MixedModeAuthorizer();
 
-			requestAuthorizer.Initialize(() => currentDatabase.Value, () => currentConfiguration.Value, () => currentTenantId.Value, this);
+			requestAuthorizer.Initialize(() => currentDatabase.Value, () => currentConfiguration.Value, this);
+
+			foreach (var configureHttpListener in ConfigureHttpListeners)
+			{
+				configureHttpListener.Value.Initialize(requestAuthorizer);
+			}
 		}
 
 		private void OnDatabaseNotifications(object sender, ChangeNotification changeNotification)
@@ -673,10 +679,41 @@ namespace Raven.Database.Server
 			CurrentOperationContext.Headers.Value = new NameValueCollection(ctx.Request.Headers);
 			CurrentOperationContext.Headers.Value[Constants.RavenAuthenticatedUser] = "";
 			CurrentOperationContext.User.Value = null;
+			var authCtx = new HttpContextAuthorizationContext(ctx);
 			if (ctx.RequiresAuthentication &&
-				requestAuthorizer.Authorize(ctx) == false)
+				requestAuthorizer.Authorize(authCtx) == false)
 				return false;
 			return true;
+		}
+
+		private class HttpContextAuthorizationContext : IAuthenticationContext
+		{
+			private readonly IHttpContext context;
+			public HttpContextAuthorizationContext(IHttpContext context)
+			{
+				this.context = context;
+			}
+
+			public string RequestUrl
+			{
+				get { return context.GetRequestUrl(); }
+			}
+
+			public IHttpRequest Request
+			{
+				get { return context.Request; }
+			}
+
+			public IPrincipal User
+			{
+				get { return context.User; }
+				set { context.User = value; }
+			}
+
+			public void RegisterResponse(Action<IHttpResponse> action)
+			{
+				action(context.Response);
+			}
 		}
 
 		private void ResetThreadLocalState()
@@ -725,43 +762,53 @@ namespace Raven.Database.Server
 		private string SetupRequestToProperDatabase(IHttpContext ctx)
 		{
 			var requestUrl = ctx.GetRequestUrlForTenantSelection();
-			var match = databaseQuery.Match(requestUrl);
+			string tenantId;
 
-			if (match.Success == false)
+			Match match;
+			if (TryGetTenantId(requestUrl, out tenantId, out match) == false)
 			{
-				currentTenantId.Value = Constants.DefaultDatabase;
+				currentTenantId.Value = Constants.SystemDatabase;
 				currentDatabase.Value = SystemDatabase;
 				currentConfiguration.Value = SystemConfiguration;
 				databaseLastRecentlyUsed.AddOrUpdate("System", SystemTime.Now, (s, time) => SystemTime.Now);
 				return null;
 			}
+			
+			DocumentDatabase resourceStore;
+			if (TryGetOrCreateResourceStore(tenantId, out resourceStore) == false)
+				throw new BadRequestException("Could not find a database named: " + tenantId);
+
+			databaseLastRecentlyUsed.AddOrUpdate(tenantId, SystemTime.Now, (s, time) => SystemTime.Now);
+
+			if (string.IsNullOrEmpty(Configuration.VirtualDirectory) == false && Configuration.VirtualDirectory != "/")
+			{
+				ctx.AdjustUrl(Configuration.VirtualDirectory + match.Value);
+			}
 			else
 			{
-				var tenantId = match.Groups[1].Value;
-				DocumentDatabase resourceStore;
-				if (TryGetOrCreateResourceStore(tenantId, out resourceStore))
-				{
-					databaseLastRecentlyUsed.AddOrUpdate(tenantId, SystemTime.Now, (s, time) => SystemTime.Now);
-
-					if (string.IsNullOrEmpty(Configuration.VirtualDirectory) == false && Configuration.VirtualDirectory != "/")
-					{
-						ctx.AdjustUrl(Configuration.VirtualDirectory + match.Value);
-					}
-					else
-					{
-						ctx.AdjustUrl(match.Value);
-					}
-					currentTenantId.Value = tenantId;
-					currentDatabase.Value = resourceStore;
-					currentConfiguration.Value = resourceStore.Configuration;
-
-					return requestUrl.Substring(1, match.Groups[1].Index + match.Groups[1].Length);
-				}
-				else
-				{
-					throw new BadRequestException("Could not find a database named: " + tenantId);
-				}
+				ctx.AdjustUrl(match.Value);
 			}
+			currentTenantId.Value = tenantId;
+			currentDatabase.Value = resourceStore;
+			currentConfiguration.Value = resourceStore.Configuration;
+
+			return requestUrl.Substring(1, match.Groups[1].Index + match.Groups[1].Length);
+		}
+
+		public static bool TryGetTenantId(string requestUrl, out string tenantId)
+		{
+			Match _;
+			return TryGetTenantId(requestUrl, out tenantId, out _);
+		}
+
+		private static bool TryGetTenantId(string requestUrl, out string tenantId, out Match match)
+		{
+			tenantId = Constants.SystemDatabase;
+			match = databaseQuery.Match(requestUrl);
+			if (match.Success == false)
+				return false;
+			tenantId = match.Groups[1].Value;
+			return true;
 		}
 
 		public void LockDatabase(string tenantId, Action actionToTake)
