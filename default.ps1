@@ -428,7 +428,7 @@ task CreateNugetPackageFineGrained {
 	New-Item $nuget_dir\RavenDB.Server -Type directory | Out-Null
 	Copy-Item $base_dir\NuGet\RavenDB.Server.nuspec $nuget_dir\RavenDB.Server\RavenDB.Server.nuspec
 	@("BouncyCastle.Crypto.???", "Esent.Interop.???", "ICSharpCode.NRefactory.???", "Lucene.Net.???", "Lucene.Net.Contrib.Spatial.???", "Spatial4n.Core.???",
-		"Lucene.Net.Contrib.SpellChecker.???", "NewtonSoft.Json.???", "NLog.???", "Raven.Abstractions.???", "Raven.Database.???",
+		"Lucene.Net.Contrib.SpellChecker.???", "NLog.???", "Raven.Abstractions.???", "Raven.Database.???",
 		"Raven.Imports.SignalR.???", "Raven.Imports.SignalR.Hosting.Common.???", "Raven.Imports.SignalR.Hosting.Self.???",  "Raven.Server.???",
 		"Raven.Backup.???", "Raven.Smuggler.???", "Raven.Studio.xap") |% { Copy-Item "$build_dir\$_" $nuget_dir\RavenDB.Server }	
 
