@@ -6,6 +6,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Text;
 using Raven.Bundles.Tests.Expiration;
 using Raven.Bundles.Tests.Replication;
@@ -17,11 +18,9 @@ namespace Raven.Bundles.Tryouts
 	{
 		static void Main(string[] args)
 		{
-			Console.WriteLine("starting...");
-			using (var x = new David())
-			{
-				x.Can_replicate_between_two_instances_create_delete_create_quickly();
-			}
+			var wr = WebRequest.Create("http://localhost:8080");
+			wr.Credentials = CredentialCache.DefaultCredentials;
+			wr.GetResponse();
 		}
 	}
 }

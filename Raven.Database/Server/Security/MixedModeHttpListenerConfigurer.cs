@@ -14,7 +14,8 @@ namespace Raven.Database.Server.Security
 	{
 		public void Configure(HttpListener listener, InMemoryRavenConfiguration config)
 		{
-			listener.AuthenticationSchemes = AuthenticationSchemes.Anonymous | 
+			listener.AuthenticationSchemes = AuthenticationSchemes.Anonymous |
+			                                 AuthenticationSchemes.Basic |
 			                                 AuthenticationSchemes.IntegratedWindowsAuthentication;
 			listener.AuthenticationSchemeSelectorDelegate = AuthenticationSchemeSelectorDelegate;
 		}
@@ -38,7 +39,7 @@ namespace Raven.Database.Server.Security
 					return AuthenticationSchemes.IntegratedWindowsAuthentication;
 			}
 
-			return AuthenticationSchemes.IntegratedWindowsAuthentication ;
+			return AuthenticationSchemes.Anonymous;
 		}
 	}
 }

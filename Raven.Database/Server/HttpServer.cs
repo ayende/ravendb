@@ -798,6 +798,8 @@ namespace Raven.Database.Server
 				throw new InvalidOperationException("Database '" + tenantId + "' is currently locked and cannot be accessed");
 
 			var config = CreateTenantConfiguration(tenantId);
+			if (config == null)
+				return false;
 
 			database = ResourcesStoresCache.GetOrAddAtomically(tenantId, s =>
 			{

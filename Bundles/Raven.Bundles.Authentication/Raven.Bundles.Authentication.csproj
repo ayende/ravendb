@@ -55,7 +55,6 @@
     </Compile>
     <Compile Include="AuthenticationUser.cs" />
     <Compile Include="AuthorizeClient.cs" />
-    <Compile Include="EnsureAtLeastOneUserExists.cs" />
     <Compile Include="UserDatabaseAccess.cs" />
   </ItemGroup>
   <ItemGroup>

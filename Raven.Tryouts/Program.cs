@@ -11,21 +11,45 @@ namespace Raven.Tryouts
 	{
 		static void Main(string[] args)
 		{
-			var webRequest = (HttpWebRequest)WebRequest.Create("http://localhost:8080/admin/compact?database=test");
-			webRequest.Method = "POST";
-			webRequest.UseDefaultCredentials = true;
-			webRequest.Credentials = CredentialCache.DefaultCredentials;
-			webRequest.ContentLength = 0;
-			try
+			var listener = new HttpListener
+			              	{
+			              		Prefixes = {"http://+:8080/"},
+								AuthenticationSchemes = 
+									AuthenticationSchemes.IntegratedWindowsAuthentication | 
+									AuthenticationSchemes.Anonymous,
+								AuthenticationSchemeSelectorDelegate = request =>
+								                                       	{
+								                                       		var authHeader = request.Headers["Authorization"];
+																			if(string.IsNullOrEmpty(authHeader))
+																				return AuthenticationSchemes.Anonymous;
+																			if (authHeader.StartsWith("NTLM") ||
+																				authHeader.StartsWith("Negotiate"))
+																				return AuthenticationSchemes.IntegratedWindowsAuthentication;
+																			return AuthenticationSchemes.Anonymous | AuthenticationSchemes.IntegratedWindowsAuthentication;
+								                                       	}
+			              	};
+
+			listener.Start();
+
+			while (true)
 			{
-				webRequest.GetResponse();
-				Console.WriteLine("DONE");
+				var ctx = listener.GetContext();
+				Console.WriteLine("Request!");
+
+				if(ctx.Request.QueryString["secret"] == "pass" || ctx.User != null)
+				{
+					Console.WriteLine("Success " + ctx.User.Identity.Name);
+					ctx.Response.StatusCode = 200;
+					ctx.Response.Close();
+					continue;
+				}
+
+				ctx.Response.AddHeader("WWW-Authenticate", "Negotiate");
+				ctx.Response.AddHeader("WWW-Authenticate", "NTLM");
+
+				ctx.Response.StatusCode = 401;
+				ctx.Response.Close();
 			}
-			catch(WebException we)
-			{
-				Console.WriteLine(new StreamReader((we.Response.GetResponseStream())).ReadToEnd());
-			}
-			Console.ReadLine();
 		}
 	}
 }
