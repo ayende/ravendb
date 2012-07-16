@@ -286,7 +286,7 @@ Failed to get in touch with any of the " + (1 + threadSafeCopy.Count) + " Raven 
 			var conflictIds = conflictsDoc.Value<RavenJArray>("Conflicts").Select(x => x.Value<string>()).ToArray();
 
 			return new ConflictException("Conflict detected on " + key +
-			                            ", conflict must be resolved before the document will be accessible")
+										", conflict must be resolved before the document will be accessible")
 			{
 				ConflictedVersionIds = conflictIds,
 				Etag = new Guid(etag)
@@ -1128,14 +1128,15 @@ Failed to get in touch with any of the " + (1 + threadSafeCopy.Count) + " Raven 
 		}
 
 		/// <summary>
-		/// Perform a set based deletes using the specified index, not allowing the operation
+		/// Perform a set based update using the specified index, not allowing the operation
 		/// if the index is stale
 		/// </summary>
 		/// <param name="indexName">Name of the index.</param>
-		/// <param name="queryToDelete">The query to delete.</param>
-		public void DeleteByIndex(string indexName, IndexQuery queryToDelete)
+		/// <param name="queryToUpdate">The query to update.</param>
+		/// <param name="patch">The patch request to use (using JavaScript)</param>
+		public void UpdateByIndex(string indexName, IndexQuery queryToUpdate, AdvancedPatchRequest patch)
 		{
-			DeleteByIndex(indexName, queryToDelete, false);
+			UpdateByIndex(indexName, queryToUpdate, patch, false);
 		}
 
 		/// <summary>
@@ -1147,14 +1148,33 @@ Failed to get in touch with any of the " + (1 + threadSafeCopy.Count) + " Raven 
 		/// <param name="allowStale">if set to <c>true</c> [allow stale].</param>
 		public void UpdateByIndex(string indexName, IndexQuery queryToUpdate, PatchRequest[] patchRequests, bool allowStale)
 		{
-			ExecuteWithReplication<object>("PATCH", operationUrl =>
+			var requestData = new RavenJArray(patchRequests.Select(x => x.ToJson())).ToString(Formatting.Indented);
+			UpdateByIndexImpl(indexName, queryToUpdate, allowStale, requestData, "PATCH");
+		}
+
+		/// <summary>
+		/// Perform a set based update using the specified index
+		/// </summary>
+		/// <param name="indexName">Name of the index.</param>
+		/// <param name="queryToUpdate">The query to update.</param>
+        /// <param name="patch">The patch request to use (using JavaScript)</param>
+		/// <param name="allowStale">if set to <c>true</c> [allow stale].</param>
+		public void UpdateByIndex(string indexName, IndexQuery queryToUpdate, AdvancedPatchRequest patch, bool allowStale)
+		{
+			var requestData = RavenJObject.FromObject(patch).ToString(Formatting.Indented);
+			UpdateByIndexImpl(indexName, queryToUpdate, allowStale, requestData, "ADVANCEDPATCH"); //or "PATCH"
+		}
+
+		private void UpdateByIndexImpl(string indexName, IndexQuery queryToUpdate, bool allowStale, String requestData, String method)
+		{
+			ExecuteWithReplication<object>(method, operationUrl =>
 			{
 				string path = queryToUpdate.GetIndexQueryUrl(operationUrl, indexName, "bulk_docs") + "&allowStale=" + allowStale;
 				var request = jsonRequestFactory.CreateHttpJsonRequest(
-					new CreateHttpJsonRequestParams(this, path, "PATCH", credentials, convention)
+					new CreateHttpJsonRequestParams(this, path, method, credentials, convention)
 						.AddOperationHeaders(OperationsHeaders));
-				
-				request.Write(new RavenJArray(patchRequests.Select(x => x.ToJson())).ToString(Formatting.Indented));
+								
+				request.Write(requestData);
 				try
 				{
 					request.ReadResponseJson();
@@ -1170,6 +1190,16 @@ Failed to get in touch with any of the " + (1 + threadSafeCopy.Count) + " Raven 
 			});
 		}
 
+		/// <summary>
+		/// Perform a set based deletes using the specified index, not allowing the operation
+		/// if the index is stale
+		/// </summary>
+		/// <param name="indexName">Name of the index.</param>
+		/// <param name="queryToDelete">The query to delete.</param>
+		public void DeleteByIndex(string indexName, IndexQuery queryToDelete)
+		{
+			DeleteByIndex(indexName, queryToDelete, false);
+		}
 
 		/// <summary>
 		/// Returns a list of suggestions based on the specified suggestion query.
@@ -1369,6 +1399,16 @@ Failed to get in touch with any of the " + (1 + threadSafeCopy.Count) + " Raven 
 		}
 
 		/// <summary>
+		/// Sends a patch request for a specific document, ignoring the document's Etag
+		/// </summary>
+		/// <param name="key">Id of the document to patch</param>
+		/// <param name="patch">The patch request to use (using JavaScript)</param>
+		public void Patch(string key, AdvancedPatchRequest patch)
+		{
+			Patch(key, patch, null);
+		}
+
+		/// <summary>
 		/// Sends a patch request for a specific document
 		/// </summary>
 		/// <param name="key">Id of the document to patch</param>
@@ -1377,14 +1417,33 @@ Failed to get in touch with any of the " + (1 + threadSafeCopy.Count) + " Raven 
 		public void Patch(string key, PatchRequest[] patches, Guid? etag)
 		{
 			Batch(new[]
-			      	{
-			      		new PatchCommandData
-			      			{
-			      				Key = key,
-			      				Patches = patches,
-			      				Etag = etag
-			      			}
-			      	});
+					{
+						new PatchCommandData
+							{
+								Key = key,
+								Patches = patches,
+								Etag = etag
+							}
+					});
+		}
+
+		/// <summary>
+		/// Sends a patch request for a specific document, ignoring the document's Etag
+		/// </summary>
+		/// <param name="key">Id of the document to patch</param>
+		/// <param name="patch">The patch request to use (using JavaScript)</param>
+		/// <param name="etag">Require specific Etag [null to ignore]</param>
+		public void Patch(string key, AdvancedPatchRequest patch, Guid? etag)
+		{
+			Batch(new[]
+					{
+						new AdvancedPatchCommandData
+							{
+								Key = key,
+								Patch = patch,
+								Etag = etag
+							}
+					});
 		}
 
 		/// <summary>
@@ -1394,8 +1453,6 @@ Failed to get in touch with any of the " + (1 + threadSafeCopy.Count) + " Raven 
 		{
 			return jsonRequestFactory.DisableAllCaching();
 		}
-
-
 
 		#endregion
 

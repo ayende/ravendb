@@ -26,7 +26,7 @@ namespace Raven.Database.Server.Responders
 
 		public override string[] SupportedVerbs
 		{
-			get { return new[] {"GET", "DELETE", "PUT", "PATCH", "HEAD"}; }
+			get { return new[] {"GET", "DELETE", "PUT", "PATCH", "ADVANCEDPATCH", "HEAD"}; }
 		}
 
 		public override void Respond(IHttpContext context)
@@ -64,6 +64,11 @@ namespace Raven.Database.Server.Responders
 						default:
 							throw new ArgumentOutOfRangeException("Value " + patchResult + " is not understood");
 					}
+					break;
+				case "ADVANCEDPATCH":
+					//TODO fix this so that AdvancedPatching works in single doc mode (not batches)
+					//Not sure how to write a test to exercise this though (Patch and UpdateByIndex in Server/Client go via DocumentBatch.cs)
+					var advPatchRequestJson = context.ReadJsonArray();
 					break;
 			}
 		}
