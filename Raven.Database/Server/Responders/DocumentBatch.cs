@@ -26,14 +26,14 @@ namespace Raven.Database.Server.Responders
 
 		public override string[] SupportedVerbs
 		{
-			get { return new[] { "POST", "PATCH", "DELETE" }; }
+			get { return new[] { "POST", "PATCH", "ADVANCEDPATCH", "DELETE" }; }
 		}
 
 		public override void Respond(IHttpContext context)
 		{
 			var databaseBulkOperations = new DatabaseBulkOperations(Database, GetRequestTransaction(context));
 			switch (context.Request.HttpMethod)
-			{                
+			{
 				case "POST":
 					Batch(context);
 					break;
@@ -45,6 +45,12 @@ namespace Raven.Database.Server.Responders
 					var patchRequests = patchRequestJson.Cast<RavenJObject>().Select(PatchRequest.FromJson).ToArray();
 					OnBulkOperation(context, (index, query, allowStale) =>
 						databaseBulkOperations.UpdateByIndex(index, query, patchRequests, allowStale));
+					break;
+				case "ADVANCEDPATCH":
+					var advPatchRequestJson = context.ReadJsonObject<RavenJObject>();
+					var advPatch = AdvancedPatchRequest.FromJson(advPatchRequestJson);
+					OnBulkOperation(context, (index, query, allowStale) =>
+						databaseBulkOperations.UpdateByIndex(index, query, advPatch, allowStale));
 					break;
 			}
 		}
@@ -64,7 +70,6 @@ namespace Raven.Database.Server.Responders
 			var array = batchOperation(index, indexQuery, allowStale);
 
 			context.WriteJson(array);
-
 		}
 		
 		private void Batch(IHttpContext context)
@@ -73,12 +78,12 @@ namespace Raven.Database.Server.Responders
 
 			var transactionInformation = GetRequestTransaction(context);
 			var commands = (from RavenJObject jsonCommand in jsonCommandArray
-			                select CommandDataFactory.CreateCommand(jsonCommand, transactionInformation))
+							select CommandDataFactory.CreateCommand(jsonCommand, transactionInformation))
 				.ToArray();
 
 			context.Log(log => log.Debug(()=>
 			{
-				if(commands.Length > 15) // this is probably an import method, we will input minimal information, to avoid filling up the log
+				if (commands.Length > 15) // this is probably an import method, we will input minimal information, to avoid filling up the log
 				{
 					return "\tExecuted " + string.Join(", ", commands.GroupBy(x => x.Method).Select(x => string.Format("{0:#,#;;0} {1} operations", x.Count(), x.Key)));
 				}
