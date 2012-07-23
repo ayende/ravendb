@@ -97,6 +97,7 @@ namespace Raven.Database
 		/// </summary>
 		public ConcurrentDictionary<object, object> ExtensionsState { get; private set; }
 
+		public TaskScheduler BackgroundTaskScheduler { get { return backgroundTaskScheduler; } }
 
 		private readonly ThreadLocal<bool> disableAllTriggers = new ThreadLocal<bool>(() => false);
 		private System.Threading.Tasks.Task indexingBackgroundTask;
@@ -470,7 +471,7 @@ namespace Raven.Database
 				{
 					if (key.EndsWith("/"))
 					{
-						key += GetNextIdentityValueWithoutOverritingOnExistingDocuments(key, actions, transactionInformation);
+						key += GetNextIdentityValueWithoutOverwritingOnExistingDocuments(key, actions, transactionInformation);
 					}
 					if (transactionInformation == null)
 					{
@@ -501,7 +502,7 @@ namespace Raven.Database
 			};
 		}
 
-		private long GetNextIdentityValueWithoutOverritingOnExistingDocuments(string key, IStorageActionsAccessor actions, TransactionInformation transactionInformation)
+		private long GetNextIdentityValueWithoutOverwritingOnExistingDocuments(string key, IStorageActionsAccessor actions, TransactionInformation transactionInformation)
 		{
 			long nextIdentityValue;
 			do
@@ -1120,7 +1121,25 @@ namespace Raven.Database
 							}));
 		}
 
+		public PatchResult ApplyPatch(string docId, Guid? etag, AdvancedPatchRequest patch, TransactionInformation transactionInformation)
+		{
+			return ApplyPatchInternal(docId, etag, transactionInformation, jsonDoc =>
+			{
+				return new AdvancedJsonPatcher(jsonDoc).Apply(patch);
+			});
+		}
+
 		public PatchResult ApplyPatch(string docId, Guid? etag, PatchRequest[] patchDoc, TransactionInformation transactionInformation)
+		{
+			return ApplyPatchInternal(docId, etag, transactionInformation, jsonDoc =>
+			{
+				return new JsonPatcher(jsonDoc).Apply(patchDoc);
+			});
+		}
+
+		private PatchResult ApplyPatchInternal(string docId, Guid? etag,
+												TransactionInformation transactionInformation,
+												Func<RavenJObject, RavenJObject> patcher)
 		{
 			if (docId == null) throw new ArgumentNullException("docId");
 			docId = docId.Trim();
@@ -1147,15 +1166,14 @@ namespace Raven.Database
 					}
 					else
 					{
-						var jsonDoc = doc.ToJson();
-						new JsonPatcher(jsonDoc).Apply(patchDoc);
+						var jsonDoc = patcher(doc.ToJson());
 						try
 						{
 							Put(doc.Key, doc.Etag, jsonDoc, jsonDoc.Value<RavenJObject>("@metadata"), transactionInformation);
 						}
 						catch (ConcurrencyException)
 						{
-							if(retries-- > 0)
+							if (retries-- > 0)
 							{
 								shouldRetry = true;
 								return;
@@ -1178,10 +1196,10 @@ namespace Raven.Database
 
 			var commandDatas = commands.ToArray();
 			int retries = 128;
-			var shouldLock = commandDatas.Any(x=>x is PutCommandData || x is PatchCommandData);
-			var shouldRetryIfGotConcurrencyError = commandDatas.All(x => x is PatchCommandData);
+			var shouldLock = commandDatas.Any(x => (x is PutCommandData || x is PatchCommandData || x is AdvancedPatchCommandData));
+			var shouldRetryIfGotConcurrencyError = commandDatas.All(x => (x is PatchCommandData || x is AdvancedPatchCommandData));
 			bool shouldRetry = false;
-			if(shouldLock)
+			if (shouldLock)
 				Monitor.Enter(putSerialLock);
 			try
 			{

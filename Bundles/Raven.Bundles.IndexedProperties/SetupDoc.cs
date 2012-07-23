@@ -1,7 +1,10 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 
+#if !CLIENT
+namespace Raven.Bundles.IndexedProperties
+#else
 namespace Raven.Client.IndexedProperties
+#endif
 {
 	public class SetupDoc
 	{

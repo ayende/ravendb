@@ -26,7 +26,7 @@ namespace Raven.Database.Server.Responders
 
 		public override string[] SupportedVerbs
 		{
-			get { return new[] {"GET", "DELETE", "PUT", "PATCH", "HEAD"}; }
+			get { return new[] {"GET", "DELETE", "PUT", "PATCH", "ADVANCEDPATCH", "HEAD"}; }
 		}
 
 		public override void Respond(IHttpContext context)
@@ -52,19 +52,30 @@ namespace Raven.Database.Server.Responders
 					var patchRequestJson = context.ReadJsonArray();
 					var patchRequests = patchRequestJson.Cast<RavenJObject>().Select(PatchRequest.FromJson).ToArray();
 					var patchResult = Database.ApplyPatch(docId, context.GetEtag(), patchRequests, GetRequestTransaction(context));
-					switch (patchResult)
-					{
-						case PatchResult.DocumentDoesNotExists:
-							context.SetStatusToNotFound();
-							break;
-						case PatchResult.Patched:
-							context.Response.AddHeader("Location", Database.Configuration.GetFullUrl("/docs/" + docId));
-							context.WriteJson(new {Patched = true});
-							break;
-						default:
-							throw new ArgumentOutOfRangeException("Value " + patchResult + " is not understood");
-					}
+					ProcessPatchResult(context, docId, patchResult);
 					break;
+				case "ADVANCEDPATCH":
+					var advPatchRequestJson = context.ReadJsonObject<RavenJObject>();
+					var advPatch = AdvancedPatchRequest.FromJson(advPatchRequestJson);
+					var advPatchResult = Database.ApplyPatch(docId, context.GetEtag(), advPatch, GetRequestTransaction(context));
+					ProcessPatchResult(context, docId, advPatchResult);
+					break;
+			}
+		}
+
+		private void ProcessPatchResult(IHttpContext context, string docId, PatchResult patchResult)
+		{
+			switch (patchResult)
+			{
+				case PatchResult.DocumentDoesNotExists:
+					context.SetStatusToNotFound();
+					break;
+				case PatchResult.Patched:
+					context.Response.AddHeader("Location", Database.Configuration.GetFullUrl("/docs/" + docId));
+					context.WriteJson(new {Patched = true});
+					break;
+				default:
+					throw new ArgumentOutOfRangeException("Value " + patchResult + " is not understood");
 			}
 		}
 
