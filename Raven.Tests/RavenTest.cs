@@ -4,6 +4,7 @@
 // </copyright>
 //-----------------------------------------------------------------------
 using System;
+using System.ComponentModel.Composition.Hosting;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -11,18 +12,25 @@ using System.Reflection;
 using System.Threading;
 using NLog;
 using Raven.Abstractions;
+using Raven.Abstractions.Data;
+using Raven.Abstractions.Extensions;
+using Raven.Abstractions.MEF;
 using Raven.Client;
 using Raven.Client.Document;
 using Raven.Client.Embedded;
 using Raven.Client.Indexes;
+using Raven.Database;
 using Raven.Database.Config;
 using Raven.Database.Extensions;
+using Raven.Database.Impl;
+using Raven.Database.Plugins;
 using Raven.Database.Server;
+using Raven.Database.Storage;
 using Raven.Database.Util;
 using Raven.Json.Linq;
 using Raven.Server;
-using Raven.Storage.Managed;
 using Raven.Tests.Document;
+using Xunit;
 
 namespace Raven.Tests
 {
@@ -30,41 +38,122 @@ namespace Raven.Tests
 	{
 		protected const string DbDirectory = @".\TestDb\";
 		protected const string DbName = DbDirectory + @"DocDb.esb";
-
 		private string path;
 
-		public EmbeddableDocumentStore NewDocumentStore(string storageType = "munin", bool inMemory = true, int? allocatedMemory = null)
+		static RavenTest()
 		{
-			path = Path.GetDirectoryName(Assembly.GetAssembly(typeof(DocumentStoreServerTests)).CodeBase);
+			File.Delete("test.log");
+		}
+
+		public EmbeddableDocumentStore NewDocumentStoreRestart()
+		{
+			return NewDocumentStoreInternal(deleteDirectory: false);
+		}
+
+		public EmbeddableDocumentStore NewDocumentStore()
+		{
+			return NewDocumentStoreInternal(deleteDirectory: true);
+		}
+
+		public EmbeddableDocumentStore NewDocumentStore(CompositionContainer container)
+		{
+			return NewDocumentStoreInternal(deleteDirectory: true, container: container);
+		}
+
+		public EmbeddableDocumentStore NewDocumentStore(AggregateCatalog catalog)
+		{
+			return NewDocumentStoreInternal(deleteDirectory: true, catalog: catalog);
+		}
+
+		private EmbeddableDocumentStore NewDocumentStoreInternal(bool deleteDirectory, CompositionContainer container = null, AggregateCatalog catalog = null)
+		{
+			string defaultStorageType = null;
+
+			path = Path.GetDirectoryName(Assembly.GetAssembly(typeof (DocumentStoreServerTests)).CodeBase);
 			path = Path.Combine(path, "TestDb").Substring(6);
 
+			if(!string.IsNullOrEmpty(System.Environment.GetEnvironmentVariable("raventest_storage_engine")))
+				defaultStorageType = System.Environment.GetEnvironmentVariable("raventest_storage_engine");
+
 			var documentStore = new EmbeddableDocumentStore
-									{
-										Configuration =
-											{
-												DataDirectory = path,
-												RunInUnreliableYetFastModeThatIsNotSuitableForProduction = true,
-												DefaultStorageTypeName = storageType,
-												RunInMemory = storageType == "munin" && inMemory,
-											}
-									};
-
-			ModifyStore(documentStore);
-			ModifyConfiguration(documentStore.Configuration);
-
-			if (documentStore.Configuration.RunInMemory == false)
-				IOExtensions.DeleteDirectory(path);
-			documentStore.Initialize();
-
-			CreateDefaultIndexes(documentStore);
-
-			if (allocatedMemory != null && inMemory)
 			{
-				var transactionalStorage = ((TransactionalStorage)documentStore.DocumentDatabase.TransactionalStorage);
-				transactionalStorage.EnsureCapacity(allocatedMemory.Value);
-			}
+				Configuration =
+				{
+					DefaultStorageTypeName = defaultStorageType,
+					DataDirectory = path,
+					RunInUnreliableYetFastModeThatIsNotSuitableForProduction = true,
+					RunInMemory = false,
+					Container = container,
+				}
+			};
 
-			return documentStore;
+			if(catalog != null)
+				documentStore.Configuration.Catalog = catalog;
+
+			try
+			{
+				ModifyStore(documentStore);
+				ModifyConfiguration(documentStore.Configuration);
+
+				if(deleteDirectory)
+					IOExtensions.DeleteDirectory(path);
+
+				documentStore.Initialize();
+
+				CreateDefaultIndexes(documentStore);
+
+				return documentStore;
+			}
+			catch
+			{
+				// We must dispose of this object in exceptional cases, otherwise this test will break all the following tests.
+				if (documentStore != null)
+					documentStore.Dispose();
+				throw;
+			}
+		}
+
+		public ITransactionalStorage NewTransactionalStorage()
+		{
+			ITransactionalStorage newTransactionalStorage;
+			string storageType = null;
+
+			if(!string.IsNullOrEmpty(System.Environment.GetEnvironmentVariable("raventest_storage_engine")))
+				storageType = System.Environment.GetEnvironmentVariable("raventest_storage_engine");
+			else
+				storageType = System.Configuration.ConfigurationManager.AppSettings["Raven/StorageEngine"];
+
+			if(storageType == "munin")
+				newTransactionalStorage = new Raven.Storage.Managed.TransactionalStorage(new RavenConfiguration { DataDirectory = DbDirectory, }, () => { });
+			else
+				newTransactionalStorage = new Raven.Storage.Esent.TransactionalStorage(new RavenConfiguration { DataDirectory = DbDirectory, }, () => { });
+
+			newTransactionalStorage.Initialize(new DummyUuidGenerator(), new OrderedPartCollection<AbstractDocumentCodec>());
+			return newTransactionalStorage;
+		}
+
+		protected void WaitForBackup(DocumentDatabase db, bool checkError)
+		{
+			while (true)
+			{
+				var jsonDocument = db.Get(BackupStatus.RavenBackupStatusDocumentKey, null);
+				if (jsonDocument == null)
+					break;
+
+				var backupStatus = jsonDocument.DataAsJson.JsonDeserialization<BackupStatus>();
+				if (backupStatus.IsRunning == false)
+				{
+					if (checkError)
+					{
+						var firstOrDefault = backupStatus.Messages.FirstOrDefault(x => x.Severity == BackupStatus.BackupMessageSeverity.Error);
+						if (firstOrDefault != null)
+							Assert.False(true, firstOrDefault.Message);
+					}
+
+					return;
+				}
+				Thread.Sleep(50);
+			}
 		}
 
 		protected virtual void CreateDefaultIndexes(IDocumentStore documentStore)
@@ -77,9 +166,14 @@ namespace Raven.Tests
 
 		}
 
-		static public void WaitForUserToContinueTheTest(EmbeddableDocumentStore documentStore)
+		protected virtual void ModifyStore(DocumentStore documentStore)
 		{
-			if (Debugger.IsAttached == false)
+
+		}
+
+		static public void WaitForUserToContinueTheTest(EmbeddableDocumentStore documentStore, bool debug = true)
+		{
+			if (debug && Debugger.IsAttached == false)
 				return;
 
 			documentStore.DatabaseCommands.Put("Pls Delete Me", null,
@@ -96,7 +190,7 @@ namespace Raven.Tests
 				do
 				{
 					Thread.Sleep(100);
-				} while (documentStore.DatabaseCommands.Get("Pls Delete Me") != null && Debugger.IsAttached);
+				} while (documentStore.DatabaseCommands.Get("Pls Delete Me") != null && (debug  == false || Debugger.IsAttached));
 			}
 		}
 
@@ -190,7 +284,6 @@ namespace Raven.Tests
 
 		public RavenTest()
 		{
-
 			BoundedMemoryTarget boundedMemoryTarget = null;
 			if (LogManager.Configuration != null && LogManager.Configuration.AllTargets != null)
 			{
@@ -219,8 +312,29 @@ namespace Raven.Tests
 
 		protected void ClearDatabaseDirectory()
 		{
-			IOExtensions.DeleteDirectory(DbName);
-			IOExtensions.DeleteDirectory(DbDirectory);
+			bool isRetry = false;
+
+			while (true)
+			{
+				try
+				{
+					IOExtensions.DeleteDirectory(DbName);
+					IOExtensions.DeleteDirectory(DbDirectory);
+
+					// Delete tenants created using the EnsureDatabaseExists method.
+					IOExtensions.DeleteDirectory("Tenants");
+					break;
+				}
+				catch (IOException)
+				{
+					if (isRetry)
+						throw;
+
+					GC.Collect();
+					GC.WaitForPendingFinalizers();
+					isRetry = true;
+				}
+			}
 		}
 
 		public double Timer(Action action)
@@ -232,10 +346,24 @@ namespace Raven.Tests
 			return timeTaken.TotalMilliseconds;
 		}
 
+		public IDocumentStore NewRemoteDocumentStore()
+		{
+			var ravenDbServer = GetNewServer();
+			var store = new DocumentStore
+			{
+				Url = "http://localhost:8079"
+			};
+
+			store.AfterDispose += (sender, args) => ravenDbServer.Dispose();
+			ModifyStore(store);
+			return store.Initialize();
+		}
+
 		public virtual void Dispose()
 		{
-			// Delete tenants created using the EnsureDatabaseExists method.
-			IOExtensions.DeleteDirectory("Tenants");
+			ClearDatabaseDirectory();
+			GC.Collect(2);
+			GC.WaitForPendingFinalizers();
 		}
 	}
 }

@@ -67,13 +67,13 @@ namespace Raven.Tests.MailingList
 			[Fact]
 			public void ShouldMatchMakeFacetsOnLocation()
 			{
-				IDictionary<string, IEnumerable<FacetValue>> facetvalues;
+				FacetResults facetvalues;
 
 				using (var s = Store.OpenSession())
 				{
 					var index = typeof(ByVehicle).Name;
 
-					facetvalues = s.Advanced.DatabaseCommands.GetFacets(
+					facetvalues = Store.DatabaseCommands.GetFacets(
 						index: index,
 						query: new SpatialIndexQuery()
 						{
@@ -85,7 +85,7 @@ namespace Raven.Tests.MailingList
 				}
 
 				Assert.NotNull(facetvalues);
-				Assert.Equal(2, facetvalues["Make"].Count());
+				Assert.Equal(2, facetvalues.Results["Make"].Values.Count());
 			}
 		}
 

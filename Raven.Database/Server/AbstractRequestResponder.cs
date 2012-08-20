@@ -26,15 +26,15 @@ namespace Raven.Database.Server
 
 		protected AbstractRequestResponder()
 		{
-			urlMatcher = new Regex(UrlPattern);
+			urlMatcher = new Regex(UrlPattern, RegexOptions.IgnoreCase | RegexOptions.Compiled);
 			supportedVerbsCached = SupportedVerbs;
 		}
 
 		public abstract string UrlPattern { get; }
 		public abstract string[] SupportedVerbs { get; }
 
-		public DocumentDatabase DefaultResourceStore { get { return server.DefaultResourceStore; } }
-		public DocumentDatabase ResourceStore { get { return database(); } }
+		public DocumentDatabase SystemDatabase { get { return server.SystemDatabase; } }
+		public DocumentDatabase Database { get { return database(); } }
 		public InMemoryRavenConfiguration Settings { get { return settings(); } }
 		public string TenantId { get { return tenantId(); } }
 

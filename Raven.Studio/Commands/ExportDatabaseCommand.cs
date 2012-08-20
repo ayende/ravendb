@@ -5,8 +5,8 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Controls;
 using Ionic.Zlib;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
+using Raven.Imports.Newtonsoft.Json;
+using Raven.Imports.Newtonsoft.Json.Linq;
 using Raven.Client.Silverlight.Connection;
 using Raven.Json.Linq;
 using Raven.Studio.Features.Tasks;
@@ -38,8 +38,8 @@ namespace Raven.Studio.Commands
 			var saveFile = new SaveFileDialog
 						   {
 							   DefaultFileName = string.Format("Dump of {0}, {1}", ApplicationModel.Database.Value.Name, DateTimeOffset.Now.ToString("MMM dd yyyy HH-mm", CultureInfo.InvariantCulture)),
-							   DefaultExt = ".raven.dump",
-							   Filter = "Raven Dumps|*.raven.dump",
+							   DefaultExt = ".ravendump",
+							   Filter = "Raven Dumps|*.ravendump;*.raven.dump",
 						   };
 
 			if (saveFile.ShowDialog() != true)
@@ -68,7 +68,7 @@ namespace Raven.Studio.Commands
 		private Task ReadIndexes(int totalCount)
 		{
 			var url = ("/indexes/?start=" + totalCount + "&pageSize=" + BatchSize).NoCache();
-			var request = DatabaseCommands.CreateRequest(url, "GET");
+			var request = DatabaseCommands.CreateRequest( "GET", url);
 			return request.ReadResponseJsonAsync()
 				.ContinueOnSuccess(documents =>
 									{
@@ -101,7 +101,7 @@ namespace Raven.Studio.Commands
 		private Task ReadDocuments(Guid lastEtag, int totalCount)
 		{
 			var url = ("/docs/?pageSize=" + BatchSize + "&etag=" + lastEtag).NoCache();
-			var request = DatabaseCommands.CreateRequest(url, "GET");
+			var request = DatabaseCommands.CreateRequest("GET", url);
 			return request.ReadResponseJsonAsync()
 				.ContinueOnSuccess(docs =>
 									{

@@ -8,9 +8,12 @@ using System.Configuration;
 using System.Data;
 using System.Data.Common;
 using System.Data.SqlClient;
+using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 using Lucene.Net.Documents;
+using Raven.Abstractions;
+using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
 using Raven.Bundles.IndexReplication.Data;
 using Raven.Database.Json;
@@ -30,10 +33,10 @@ namespace Raven.Bundles.IndexReplication
 			var destination = document.DataAsJson.JsonDeserialization<IndexReplicationDestination>();
 
 			var connectionString = ConfigurationManager.ConnectionStrings[destination.ConnectionStringName];
-			if(connectionString == null)
+			if (connectionString == null)
 				throw new InvalidOperationException("Could not find a connection string name: " + destination.ConnectionStringName);
-			if(connectionString.ProviderName == null)
-				throw new InvalidOperationException("Connection string name '"+destination.ConnectionStringName+"' must specify the provider name");
+			if (connectionString.ProviderName == null)
+				throw new InvalidOperationException("Connection string name '" + destination.ConnectionStringName + "' must specify the provider name");
 
 			var providerFactory = DbProviderFactories.GetFactory(connectionString.ProviderName);
 
@@ -61,7 +64,7 @@ namespace Raven.Bundles.IndexReplication
 			{
 				get
 				{
-					if(connection.State != ConnectionState.Open)
+					if (connection.State != ConnectionState.Open)
 					{
 						connection.Open();
 						tx = connection.BeginTransaction(IsolationLevel.ReadCommitted);
@@ -105,33 +108,43 @@ namespace Raven.Bundles.IndexReplication
 						var numericfield = document.GetFieldable(String.Concat(mapping.Key, "_Range"));
 						if (numericfield != null)
 							field = numericfield;
-						
-						if (field == null)
+
+						if (field == null || field.StringValue() == Constants.NullValue)
 							parameter.Value = DBNull.Value;
-						else if(field is NumericField)
+						else if (field is NumericField)
 						{
-							var numField = (NumericField) field;
+							var numField = (NumericField)field;
 							parameter.Value = numField.GetNumericValue();
 						}
 						else
 						{
 							var stringValue = field.StringValue();
-							if(datePattern.IsMatch(stringValue))
+							if (datePattern.IsMatch(stringValue))
 							{
 								try
 								{
 									parameter.Value = DateTools.StringToDate(stringValue);
 								}
-								catch 
+								catch
 								{
 									parameter.Value = stringValue;
 								}
 							}
 							else
 							{
-								parameter.Value = stringValue;
+								DateTime time;
+								if (DateTime.TryParseExact(stringValue, Default.DateTimeFormatsToRead, CultureInfo.InvariantCulture,
+														   DateTimeStyles.None, out time))
+								{
+									parameter.Value = time;
+								}
+								else
+								{
+									parameter.Value = stringValue;
+								}
 							}
 						}
+
 						cmd.Parameters.Add(parameter);
 						sb.Append(parameter.ParameterName).Append(", ");
 					}
@@ -144,7 +157,7 @@ namespace Raven.Bundles.IndexReplication
 
 			public override void OnIndexEntryDeleted(string entryKey)
 			{
-				using(var cmd = Connection.CreateCommand())
+				using (var cmd = Connection.CreateCommand())
 				{
 					cmd.Transaction = tx;
 					var parameter = cmd.CreateParameter();

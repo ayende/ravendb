@@ -6,7 +6,8 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
-using Newtonsoft.Json.Linq;
+using Raven.Client.Embedded;
+using Raven.Imports.Newtonsoft.Json.Linq;
 using Raven.Abstractions;
 using Raven.Abstractions.Commands;
 using Raven.Abstractions.Data;
@@ -21,21 +22,20 @@ using System.Linq;
 
 namespace Raven.Tests.Storage
 {
-	public class GeneralStorage : AbstractDocumentStorageTest
+	public class GeneralStorage : RavenTest
 	{
+		private readonly EmbeddableDocumentStore store;
 		private readonly DocumentDatabase db;
 
 		public GeneralStorage()
 		{
-			db = new DocumentDatabase(new RavenConfiguration
-			{
-				DataDirectory = DataDir,
-			});
+			store = NewDocumentStore();
+			db = store.DocumentDatabase;
 		}
 
 		public override void Dispose()
 		{
-			db.Dispose();
+			store.Dispose();
 			base.Dispose();
 		}
 
@@ -49,9 +49,22 @@ namespace Raven.Tests.Storage
 			db.Put("Raven/Databases/Db", null, new RavenJObject { { "a", "b" } }, new RavenJObject(), null);
 			db.Put("Raven/Database", null, new RavenJObject { { "a", "b" } }, new RavenJObject(), null);
 
-			var dbs = db.GetDocumentsWithIdStartingWith("Raven/Databases/", 0, 10);
+			var dbs = db.GetDocumentsWithIdStartingWith("Raven/Databases/",null, 0, 10);
 
 			Assert.Equal(4, dbs.Length);
+		}
+
+		[Fact]
+		public void WhenPutAnIdWithASpace_IdWillBeAGuid()
+		{
+			db.Put(" ", null, new RavenJObject { { "a", "b" } }, new RavenJObject(), null);
+
+			var doc = db.GetDocuments(0, 10, null)
+				.OfType<RavenJObject>()
+				.Single();
+			var id = doc["@metadata"].Value<string>("@id");
+			Assert.False(string.IsNullOrWhiteSpace(id));
+			Assert.DoesNotThrow(() => new Guid(id)); 
 		}
 
 		[Fact]
@@ -308,6 +321,7 @@ namespace Raven.Tests.Storage
 
 			db.TransactionalStorage.Batch(actions => Assert.Equal(1, actions.Documents.GetDocumentsCount()));
 		}
+
 
 
 		[Fact]

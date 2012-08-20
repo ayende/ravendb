@@ -101,6 +101,15 @@ namespace Raven.Abstractions.Data
 		public string DefaultField { get; set; }
 
 		/// <summary>
+		/// Changes the default operator mode we use for queries.
+		/// When set to Or a query such as 'Name:John Age:18' will be interpreted as:
+		///  Name:John OR Age:18
+		/// When set to And the queyr will be interpreted as:
+		///	 Name:John AND Age:18
+		/// </summary>
+		public QueryOperator DefaultOperator { get; set; }
+
+		/// <summary>
 		/// If set to true, RavenDB won't execute the transform results function
 		/// returning just the raw results instead
 		/// </summary>
@@ -135,6 +144,13 @@ namespace Raven.Abstractions.Data
 			return path.ToString();
 		}
 
+        public string GetQueryString()
+        {
+            var sb = new StringBuilder();
+            AppendQueryString(sb);
+            return sb.ToString();
+        }
+
 		public void AppendQueryString(StringBuilder path)
 		{
 			path
@@ -153,7 +169,15 @@ namespace Raven.Abstractions.Data
 			{
 				path.Append("&defaultField=").Append(Uri.EscapeDataString(DefaultField));
 			}
+
+			if (DefaultOperator != QueryOperator.Or)
+				path.Append("&operator=AND");
 			
+            if (SkipTransformResults)
+            {
+                path.Append("&skipTransformResults=true");
+            }
+
 			if (Cutoff != null)
 			{
 				var cutOffAsString =
@@ -185,5 +209,11 @@ namespace Raven.Abstractions.Data
 		{
 			return (IndexQuery)MemberwiseClone();
 		}
+	}
+
+	public enum QueryOperator
+	{
+		Or,
+		And
 	}
 }

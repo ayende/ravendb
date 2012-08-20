@@ -62,7 +62,7 @@ namespace Raven.Bundles.Tests.Authentication
 				}
 			}
 
-			var oAuthClientCredentialsTokenResponder = embeddedStore.HttpServer.RequestResponders.OfType<database::Raven.Database.Server.Security.OAuth.OAuthClientCredentialsTokenResponder>().First();
+			var oAuthClientCredentialsTokenResponder = embeddedStore.DocumentDatabase.RequestResponders.OfType<database::Raven.Database.Server.Security.OAuth.OAuthClientCredentialsTokenResponder>().First();
 			Assert.Equal(1, oAuthClientCredentialsTokenResponder.NumberOfTokensIssued);
 		}
 
@@ -74,8 +74,7 @@ namespace Raven.Bundles.Tests.Authentication
 			using (var session = store.OpenAsyncSession())
 			{
 				session.Store(new { Name = "Sprite", Age = 321 });
-				var saveChangesAsync = session.SaveChangesAsync();
-				var webException = (WebException)Assert.Throws<AggregateException>(() => saveChangesAsync.Wait()).ExtractSingleInnerException();
+				var webException = (WebException)Assert.Throws<AggregateException>(() => session.SaveChangesAsync().Wait()).ExtractSingleInnerException();
 				Assert.Equal(HttpStatusCode.Unauthorized, ((HttpWebResponse) webException.Response).StatusCode);
 			}
 		}

@@ -1,6 +1,6 @@
 using System;
 using System.IO;
-using Newtonsoft.Json;
+using Raven.Imports.Newtonsoft.Json;
 using NLog;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
@@ -22,7 +22,7 @@ namespace Raven.Bundles.Authentication
 			if (string.Equals(database.Configuration.AuthenticationMode, "OAuth", StringComparison.InvariantCultureIgnoreCase) == false)
 				return; // we don't care if we aren't using oauth
 
-			var array = database.GetDocumentsWithIdStartingWith("Raven/Users/", 0, 1);
+			var array = database.GetDocumentsWithIdStartingWith("Raven/Users/", null, 0, 1);
 			if (array.Length > 0)
 				return; // there is already at least one user in there
 

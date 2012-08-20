@@ -1,6 +1,6 @@
 ﻿using System;
 using System.Globalization;
-using Newtonsoft.Json;
+using Raven.Imports.Newtonsoft.Json;
 
 namespace Raven.Abstractions.Json
 {
@@ -33,14 +33,7 @@ namespace Raven.Abstractions.Json
 			}
 			if (reader.Value == null)
 				return null;
-			try
-			{
-				return Convert.ChangeType(reader.Value, typeof(T), CultureInfo.InvariantCulture);
-			}
-			catch (Exception e)
-			{
-				throw new InvalidOperationException("Could not convert '" + reader.Value + "' to " + objectType.Name, e);
-			}
+			return Convert.ChangeType(reader.Value, typeof(T), CultureInfo.InvariantCulture);
 		}
 
 		public override bool CanConvert(Type objectType)

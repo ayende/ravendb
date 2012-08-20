@@ -10,8 +10,9 @@ using System.ComponentModel.Composition;
 using System.Text;
 using System.Globalization;
 using System.Text.RegularExpressions;
+using System.Threading;
 using Lucene.Net.Documents;
-using Newtonsoft.Json.Linq;
+using Raven.Imports.Newtonsoft.Json.Linq;
 using Raven.Abstractions.Indexing;
 using Raven.Abstractions.Linq;
 using System.Linq;
@@ -90,7 +91,7 @@ namespace Raven.Database.Linq
 		protected AbstractViewGenerator()
 		{
 			MapDefinitions = new List<IndexingFunc>();
-			ForEntityNames = new HashSet<string>();
+			ForEntityNames = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
 			Stores = new Dictionary<string, FieldStorage>();
 			Indexes = new Dictionary<string, FieldIndexing>();
 		}
@@ -102,40 +103,6 @@ namespace Raven.Database.Linq
 			var anonymousObjectToLuceneDocumentConverter = new AnonymousObjectToLuceneDocumentConverter(indexDefinition);
 
 			return anonymousObjectToLuceneDocumentConverter.CreateFields(name, value, stored ? Field.Store.YES : Field.Store.NO);
-		}
-
-		protected IEnumerable<dynamic> Hierarchy(object source, string name)
-		{
-			var djo = (DynamicJsonObject)source;
-			foreach (var item in ((IEnumerable)djo.GetValue(name)))
-			{
-				yield return item;
-				foreach (var subItem in Hierarchy(item, name))
-				{
-					yield return subItem;
-				}
-			}
-		}
-
-		protected IEnumerable<dynamic> Recurse(object item, Func<dynamic ,dynamic> func)
-		{
-			if (item == null)
-				return Enumerable.Empty<dynamic>();
-
-			var resultsOrdered = new List<dynamic>();
-
-			var results = new HashSet<object>();
-			item = func(item);
-			while (item != null)
-			{
-				if (results.Add(item) == false)
-					break;
-
-				resultsOrdered.Add(item);
-				item = func(item);
-			}
-
-			return new DynamicList(resultsOrdered.ToArray());
 		}
 
 		public void AddQueryParameterForMap(string field)
@@ -155,6 +122,7 @@ namespace Raven.Database.Linq
 
 		public virtual bool ContainsFieldOnMap(string field)
 		{
+			if (field.EndsWith("_Range")) field = field.Substring(0, field.Length - 6);
 			if (ReduceDefinition == null)
 				return fields.Contains(field);
 			return mapFields.Contains(field);
@@ -174,6 +142,11 @@ namespace Raven.Database.Linq
 		protected void AddMapDefinition(IndexingFunc mapDef)
 		{
 			MapDefinitions.Add(mapDef);
+		}
+		
+		protected IEnumerable<dynamic> Recurse(object item, Func<dynamic, dynamic> func)
+		{
+			return new RecursiveFunction(item, func).Execute();
 		}
 	}
 }

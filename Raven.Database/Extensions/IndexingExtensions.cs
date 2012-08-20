@@ -10,6 +10,7 @@ using Lucene.Net.Analysis;
 using Lucene.Net.Analysis.Standard;
 using Lucene.Net.Documents;
 using Lucene.Net.Search;
+using Lucene.Net.Util;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Indexing;
 using Raven.Database.Indexing.Sorting;
@@ -45,10 +46,16 @@ namespace Raven.Database.Extensions
 			FieldIndexing value;
 			if (self.Indexes.TryGetValue(name, out value) == false)
 			{
-				string ignored;
-				if (self.Analyzers.TryGetValue(name, out ignored))
-					return Field.Index.ANALYZED;// if there is a custom analyzer, the value should be analyzed
-				return defaultIndex;
+				if(self.Indexes.TryGetValue(Constants.AllFields, out value) == false)
+				{
+					string ignored;
+					if (self.Analyzers.TryGetValue(name, out ignored) ||
+						self.Analyzers.TryGetValue(Constants.AllFields, out ignored))
+					{
+						return Field.Index.ANALYZED; // if there is a custom analyzer, the value should be analyzed
+					}
+					return defaultIndex;
+				}
 			}
 			switch (value)
 			{
@@ -71,15 +78,17 @@ namespace Raven.Database.Extensions
 				return defaultStorage;
 			FieldStorage value;
 			if (self.Stores.TryGetValue(name, out value) == false)
-				return defaultStorage;
+			{
+				// do we have a overriding default?
+				if (self.Stores.TryGetValue(Constants.AllFields, out value) == false)
+					return defaultStorage;
+			}
 			switch (value)
 			{
 				case FieldStorage.Yes:
 					return Field.Store.YES;
 				case FieldStorage.No:
 					return Field.Store.NO;
-				case FieldStorage.Compress:
-					return Field.Store.COMPRESS;
 				default:
 					throw new ArgumentOutOfRangeException();
 			}
@@ -110,21 +119,31 @@ namespace Raven.Database.Extensions
 								var sortOptions = GetSortOption(indexDefinition, sortedField.Field);
 								if (sortOptions == null || sortOptions == SortOptions.None)
 									return new SortField(sortedField.Field, CultureInfo.InvariantCulture, sortedField.Descending);
+							
 								return new SortField(sortedField.Field, (int)sortOptions.Value, sortedField.Descending);
+							
 							})
 							.ToArray());
 		}
+
 
 		public static SortOptions? GetSortOption(this IndexDefinition self, string name)
 		{
 			SortOptions value;
 			if (self.SortOptions.TryGetValue(name, out value))
+			{
 				return value;
-			
+			}
+			if (self.SortOptions.TryGetValue(Constants.AllFields, out value))
+				return value;
+
 			if (name.EndsWith("_Range"))
 			{
 				string nameWithoutRange = name.Substring(0, name.Length - "_Range".Length);
 				if (self.SortOptions.TryGetValue(nameWithoutRange, out value))
+					return value;
+
+				if (self.SortOptions.TryGetValue(Constants.AllFields, out value))
 					return value;
 			}
 			if (CurrentOperationContext.Headers.Value == null)

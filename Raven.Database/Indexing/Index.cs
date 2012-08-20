@@ -10,6 +10,7 @@ using System.Collections.Generic;
 using System.ComponentModel.Composition;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using Lucene.Net.Analysis;
 using Lucene.Net.Analysis.Standard;
 using Lucene.Net.Documents;
@@ -17,6 +18,7 @@ using Lucene.Net.Index;
 using Lucene.Net.Search;
 using Lucene.Net.Store;
 using NLog;
+using Raven.Abstractions;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Indexing;
 using Raven.Abstractions.Linq;
@@ -28,7 +30,6 @@ using Raven.Database.Linq;
 using Raven.Database.Plugins;
 using Raven.Database.Storage;
 using Raven.Json.Linq;
-using Spatial4n.Core.Query;
 using Version = Lucene.Net.Util.Version;
 
 namespace Raven.Database.Indexing
@@ -43,12 +44,19 @@ namespace Raven.Database.Indexing
 		private readonly List<Document> currentlyIndexDocuments = new List<Document>();
 		private Directory directory;
 		protected readonly IndexDefinition indexDefinition;
+		private volatile string waitReason;
+		/// <summary>
+		/// Note, this might be written to be multiple threads at the same time
+		/// We don't actually care for exact timing, it is more about general feeling
+		/// </summary>
+		private DateTime? lastQueryTime;
+
 		private int docCountSinceLastOptimization;
 
 		private readonly ConcurrentDictionary<string, IIndexExtension> indexExtensions =
 			new ConcurrentDictionary<string, IIndexExtension>();
 
-		protected readonly string name;
+		internal readonly string name;
 
 		private readonly AbstractViewGenerator viewGenerator;
 		private readonly InMemoryRavenConfiguration configuration;
@@ -56,7 +64,6 @@ namespace Raven.Database.Indexing
 		private volatile bool disposed;
 		private IndexWriter indexWriter;
 		private readonly IndexSearcherHolder currentIndexSearcherHolder = new IndexSearcherHolder();
-
 
 		protected Index(Directory directory, string name, IndexDefinition indexDefinition, AbstractViewGenerator viewGenerator, InMemoryRavenConfiguration configuration)
 		{
@@ -83,12 +90,30 @@ namespace Raven.Database.Indexing
 		/// </summary>
 		public abstract bool IsMapReduce { get; }
 
-		
+		public DateTime? LastQueryTime
+		{
+			get
+			{
+				return lastQueryTime;
+			}
+		}
+
 
 		public void Dispose()
 		{
-			lock (writeLock)
+			try
 			{
+				// this is here so we can give good logs in the case of a long shutdown process
+				if(Monitor.TryEnter(writeLock, 100) == false)
+				{
+					var localReason = waitReason;
+					if(localReason !=null)
+						logIndexing.Warn("Waiting for {0} to complete before disposing of index {1}, that might take a while if the server is very busy",
+						 localReason, name);
+					
+					Monitor.Enter(writeLock);
+				}
+
 				disposed = true;
 				foreach (var indexExtension in indexExtensions)
 				{
@@ -132,6 +157,10 @@ namespace Raven.Database.Indexing
 					logIndexing.ErrorException("Error when closing the directory", e);
 				}
 			}
+			finally
+			{
+				Monitor.Exit(writeLock);
+			}
 		}
 
 		public void Flush()
@@ -140,10 +169,19 @@ namespace Raven.Database.Indexing
 			{
 				if (disposed)
 					return;
-				if (indexWriter == null) 
+				if (indexWriter == null)
 					return;
-
-				indexWriter.Commit();
+				
+				try
+				{
+					
+					waitReason = "Flush";
+					indexWriter.Commit();
+				}
+				finally
+				{
+					waitReason = null;
+				}
 			}
 		}
 
@@ -152,7 +190,15 @@ namespace Raven.Database.Indexing
 			if (docCountSinceLastOptimization <= 2048) return;
 			lock (writeLock)
 			{
-				indexWriter.Optimize();
+				waitReason = "Merge / Optimize";
+				try
+				{
+					indexWriter.Optimize();
+				}
+				finally
+				{
+					waitReason = null;
+				}
 				docCountSinceLastOptimization = 0;
 			}
 		}
@@ -171,10 +217,15 @@ namespace Raven.Database.Indexing
 			};
 		}
 
-		public static RavenJObject CreateDocumentFromFields(Document document, IEnumerable<string> fieldsToFetch)
+		public static RavenJObject CreateDocumentFromFields(Document document, FieldsToFetch fieldsToFetch)
 		{
 			var documentFromFields = new RavenJObject();
-			var q = fieldsToFetch
+			IEnumerable<string> fields = fieldsToFetch.Fields;
+
+			if (fieldsToFetch.FetchAllStoredFields)
+				fields = fields.Concat(document.GetFields().Cast<Fieldable>().Select(x => x.Name()));
+
+			var q = fields
 				.SelectMany(name => document.GetFields(name) ?? new Field[0])
 				.Where(x => x != null)
 				.Where(
@@ -228,6 +279,7 @@ namespace Raven.Database.Indexing
 				Analyzer searchAnalyzer = null;
 				try
 				{
+					waitReason = "Write";
 					try
 					{
 						searchAnalyzer = CreateAnalyzer(new LowerCaseKeywordAnalyzer(), toDispose);
@@ -276,6 +328,7 @@ namespace Raven.Database.Indexing
 					{
 						dispose();
 					}
+					waitReason = null;
 				}
 				if (shouldRecreateSearcher)
 					RecreateSearcher();
@@ -335,12 +388,17 @@ namespace Raven.Database.Indexing
 		public PerFieldAnalyzerWrapper CreateAnalyzer(Analyzer defaultAnalyzer, ICollection<Action> toDispose, bool forQuerying = false)
 		{
 			toDispose.Add(defaultAnalyzer.Close);
+
+			string value;
+			if (indexDefinition.Analyzers.TryGetValue(Constants.AllFields, out value))
+			{
+				defaultAnalyzer = IndexingExtensions.CreateAnalyzerInstance(Constants.AllFields, value);
+				toDispose.Add(defaultAnalyzer.Close);
+			}
 			var perFieldAnalyzerWrapper = new PerFieldAnalyzerWrapper(defaultAnalyzer);
 			foreach (var analyzer in indexDefinition.Analyzers)
 			{
 				Analyzer analyzerInstance = IndexingExtensions.CreateAnalyzerInstance(analyzer.Key, analyzer.Value);
-				if (analyzerInstance == null)
-					continue;
 				toDispose.Add(analyzerInstance.Close);
 
 				if (forQuerying)
@@ -384,7 +442,7 @@ namespace Raven.Database.Indexing
 		protected IEnumerable<object> RobustEnumerationIndex(IEnumerable<object> input, IEnumerable<IndexingFunc> funcs,
 															IStorageActionsAccessor actions, WorkContext context, IndexingWorkStats stats)
 		{
-			return new RobustEnumerator(context.Configuration.MaxNumberOfItemsToIndexInSingleBatch)
+			return new RobustEnumerator(context, context.Configuration.MaxNumberOfItemsToIndexInSingleBatch)
 			{
 				BeforeMoveNext = () => stats.IndexingAttempts++,
 				CancelMoveNext = () => stats.IndexingAttempts--,
@@ -409,7 +467,7 @@ namespace Raven.Database.Indexing
 			IndexingWorkStats stats)
 		{
 			// not strictly accurate, but if we get that many errors, probably an error anyway.
-			return new RobustEnumerator(context.Configuration.MaxNumberOfItemsToIndexInSingleBatch)
+			return new RobustEnumerator(context, context.Configuration.MaxNumberOfItemsToIndexInSingleBatch)
 			{
 				BeforeMoveNext = () => stats.ReduceAttempts++,
 				CancelMoveNext = () => stats.ReduceAttempts--,
@@ -435,7 +493,7 @@ namespace Raven.Database.Indexing
 															IStorageActionsAccessor actions, WorkContext context)
 		{
 			// not strictly accurate, but if we get that many errors, probably an error anyway.
-			return new RobustEnumerator(context.Configuration.MaxNumberOfItemsToIndexInSingleBatch)
+			return new RobustEnumerator(context, context.Configuration.MaxNumberOfItemsToIndexInSingleBatch)
 			{
 				BeforeMoveNext = () => { }, // don't care
 				CancelMoveNext = () => { }, // don't care
@@ -510,6 +568,16 @@ namespace Raven.Database.Indexing
 				if (newAnalyzer != analyzer)
 					newAnalyzer.Close();
 			}
+		}
+
+		public void MarkQueried()
+		{
+			lastQueryTime = SystemTime.UtcNow;
+		}
+
+		public void MarkQueried(DateTime time)
+		{
+			lastQueryTime = time;
 		}
 
 		public IIndexExtension GetExtension(string indexExtensionKey)
@@ -600,6 +668,8 @@ namespace Raven.Database.Indexing
 				logIndexing.Debug("Indexing on {0} result in index {1} gave document: {2}", key, name,
 								sb.ToString());
 			}
+
+
 		}
 
 
@@ -630,6 +700,7 @@ namespace Raven.Database.Indexing
 
 			public IEnumerable<IndexQueryResult> Query()
 			{
+				parent.MarkQueried();
 				using (IndexStorage.EnsureInvariantCulture())
 				{
 					AssertQueryDoesNotContainFieldsThatAreNotIndexes();
@@ -656,7 +727,7 @@ namespace Raven.Database.Indexing
 							indexQuery.TotalSize.Value = search.TotalHits;
 
 							RecordResultsAlreadySeenForDistinctQuery(indexSearcher, search, start, pageSize);
-							
+
 							for (var i = start; (i - start) < pageSize && i < search.ScoreDocs.Length; i++)
 							{
 								Document document = indexSearcher.Doc(search.ScoreDocs[i].doc);
@@ -681,8 +752,8 @@ namespace Raven.Database.Indexing
 			private Query ApplyIndexTriggers(Query luceneQuery)
 			{
 				luceneQuery = indexQueryTriggers.Aggregate(luceneQuery,
-				                                           (current, indexQueryTrigger) =>
-				                                           indexQueryTrigger.Value.ProcessQuery(parent.name, current, indexQuery));
+														   (current, indexQueryTrigger) =>
+														   indexQueryTrigger.Value.ProcessQuery(parent.name, current, indexQuery));
 				return luceneQuery;
 			}
 
@@ -704,7 +775,7 @@ namespace Raven.Database.Indexing
 						int intersectMatches = 0, skippedResultsInCurrentLoop = 0;
 						int previousBaseQueryMatches = 0, currentBaseQueryMatches = 0;
 
-						var firstSubLuceneQuery = ApplyIndexTriggers(GetLuceneQuery(subQueries[0], indexQuery.DefaultField));
+						var firstSubLuceneQuery = ApplyIndexTriggers(GetLuceneQuery(subQueries[0], indexQuery));
 
 						//Do the first sub-query in the normal way, so that sorting, filtering etc is accounted for
 						var search = ExecuteQuery(indexSearcher, firstSubLuceneQuery, 0, pageSizeBestGuess, indexQuery);
@@ -726,7 +797,7 @@ namespace Raven.Database.Indexing
 
 							for (int i = 1; i < subQueries.Length; i++)
 							{
-								var luceneSubQuery = ApplyIndexTriggers(GetLuceneQuery(subQueries[i], indexQuery.DefaultField));
+								var luceneSubQuery = ApplyIndexTriggers(GetLuceneQuery(subQueries[i], indexQuery));
 								indexSearcher.Search(luceneSubQuery, null, intersectionCollector);
 							}
 
@@ -838,7 +909,7 @@ namespace Raven.Database.Indexing
 
 			public Query GetLuceneQuery()
 			{
-				var q = GetLuceneQuery(indexQuery.Query, indexQuery.DefaultField);
+				var q = GetLuceneQuery(indexQuery.Query, indexQuery);
 				var spatialIndexQuery = indexQuery as SpatialIndexQuery;
 				if (spatialIndexQuery != null)
 				{
@@ -853,8 +924,8 @@ namespace Raven.Database.Indexing
 				return q;
 			}
 
-			private Query GetLuceneQuery(string query, string defaultField)
-			{				
+			private Query GetLuceneQuery(string query, IndexQuery indexQuery)
+			{
 				Query luceneQuery;
 				if (String.IsNullOrEmpty(query))
 				{
@@ -878,7 +949,7 @@ namespace Raven.Database.Indexing
 							}
 							return parent.CreateAnalyzer(newAnalyzer, toDispose, true);
 						});
-						luceneQuery = QueryBuilder.BuildQuery(query, defaultField, searchAnalyzer);
+						luceneQuery = QueryBuilder.BuildQuery(query, indexQuery, searchAnalyzer);
 					}
 					finally
 					{

@@ -1,10 +1,30 @@
 ﻿using System;
 using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Controls;
 
 namespace Raven.Studio.Features.Input
 {
-	public class AskUser
+	public static class AskUser
 	{
+		public static Task<T> ShowAsync<T>(this T window) where T : ChildWindow
+		{
+			var tcs = new TaskCompletionSource<T>();
+
+			window.Closed += (sender, args) =>
+			{
+				if (window.DialogResult == true)
+					tcs.SetResult(window);
+				else
+					tcs.SetCanceled();
+			};
+
+			window.Show();
+
+			return tcs.Task;
+		}
+
+
 		public static Task<string> QuestionAsync(string title, string question)
 		{
 			var dataContext = new InputModel
@@ -58,5 +78,10 @@ namespace Raven.Studio.Features.Input
 
 			return tcs.Task;
 		}
+
+        public static bool Confirmation(string title, string question)
+        {
+            return MessageBox.Show(question, title, MessageBoxButton.OKCancel) == MessageBoxResult.OK;
+        }
 	}
 }
