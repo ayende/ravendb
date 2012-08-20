@@ -7,6 +7,7 @@ using System;
 using System.IO;
 using System.Net;
 using NDesk.Options;
+using Raven.Abstractions;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Smuggler;
 
@@ -33,7 +34,7 @@ namespace Raven.Smuggler
 			            			                                                                     	{
 			            			                                                                     		try
 			            			                                                                     		{
-			            			                                                                     			options.OperateOnTypes = (ItemType) Enum.Parse(typeof (ItemType), value);
+			            			                                                                     			options.OperateOnTypes = options.ItemTypeParser(value);
 			            			                                                                     		}
 			            			                                                                     		catch (Exception e)
 			            			                                                                     		{
@@ -49,6 +50,8 @@ namespace Raven.Smuggler
 			            			"filter:{=}", "Filter documents by a document property" + Environment.NewLine +
 			            			              "Usage example: Property-Name=Value", (key, val) => options.Filters[key] = val
 			            			},
+								{"timeout:", "The timeout to use for requests", s => options.Timeout = int.Parse(s) },
+								{"batch-size:", "The batch size for requests", s => options.BatchSize = int.Parse(s) },
 			            		{"d|database:", "The database to operate on. If no specified, the operations will be on the default database.", value => connectionStringOptions.DefaultDatabase = value},
 			            		{"u|user|username:", "The username to use when the database requires the client to authenticate.", value => Credentials.UserName = value},
 			            		{"p|pass|password:", "The password to use when the database requires the client to authenticate.", value => Credentials.Password = value},
@@ -110,7 +113,7 @@ namespace Raven.Smuggler
 				incremental = true;
 			}
 
-			var smugglerApi = new SmugglerApi(connectionStringOptions);
+			var smugglerApi = new SmugglerApi(options,connectionStringOptions);
 
 			try
 			{
@@ -169,7 +172,7 @@ Usage:
 	- Export a local instance to dump.raven:
 		Raven.Smuggler out http://localhost:8080/ dump.raven
 
-Command line options:", DateTime.UtcNow.Year);
+Command line options:", SystemTime.UtcNow.Year);
 
 			optionSet.WriteOptionDescriptions(Console.Out);
 			Console.WriteLine();

@@ -1,4 +1,4 @@
-﻿#if !NET_3_5
+﻿#if !NET35
 using System;
 using System.Collections.Specialized;
 using System.Net;
@@ -54,12 +54,13 @@ namespace Raven.Client.Document.Batches
 			{
 				headers[header.Key] = header.Value;
 			}
-			var jsonDocument = SerializationHelper.DeserializeJsonDocument(key, RavenJObject.Parse(response.Result), headers, (HttpStatusCode)response.Status);
+			var jsonDocument = SerializationHelper.DeserializeJsonDocument(key, response.Result, headers, (HttpStatusCode)response.Status);
 			HandleResponse(jsonDocument);
 		}
 
 		private void HandleResponse(JsonDocument jsonDocument)
 		{
+
 			RequiresRetry = loadOperation.SetResult(jsonDocument);
 			if (RequiresRetry == false)
 				Result = loadOperation.Complete<T>();

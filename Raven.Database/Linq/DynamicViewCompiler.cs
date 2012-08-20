@@ -17,6 +17,7 @@ using Raven.Database.Extensions;
 using System.Linq;
 using Raven.Database.Linq.Ast;
 using Raven.Database.Plugins;
+using Raven.Database.Util;
 
 namespace Raven.Database.Linq
 {
@@ -49,10 +50,37 @@ namespace Raven.Database.Linq
 			{
 				this.basePath = Path.Combine(basePath, "TemporaryIndexDefinitionsAsSource");
 				if (Directory.Exists(this.basePath) == false)
+				{
 					Directory.CreateDirectory(this.basePath);
+				}
+				else
+				{
+					MaybeCleanupDirectory(this.basePath);
+				}
 			}
 			this.name = MonoHttpUtility.UrlEncode(name);
 		    RequiresSelectNewAnonymousType = true;
+		}
+
+		private static readonly ConcurrentSet<string> paths = new ConcurrentSet<string>(StringComparer.InvariantCultureIgnoreCase);
+
+		private static void MaybeCleanupDirectory(string path)
+		{
+			if (paths.TryAdd(path) == false)
+				return;
+
+			foreach (var file in Directory.GetFiles(path, "*.dll"))
+			{
+				try
+				{
+					File.Delete(file);
+				}
+				catch (Exception)
+				{
+					// failure here is expected, this is probably another index that is currently
+					// live that is locking the file, we will get it next restart
+				}
+			}
 		}
 
 		public string CompiledQueryText { get; set; }
@@ -204,6 +232,8 @@ Additional fields	: {4}", indexDefinition.Maps.First(),
 				translatorDeclaration = QueryParsingUtils.GetVariableDeclarationForLinqMethods(indexDefinition.TransformResults,requiresSelectNewAnonymousType: false);
 			}
 
+			translatorDeclaration.AcceptVisitor(new ThrowOnInvalidMethodCallsForTransformResults(), null);
+
 
 			// this.Translator = (Database,results) => from doc in results ...;
 			ctor.Body.AddChild(new ExpressionStatement(
@@ -314,7 +344,7 @@ Additional fields	: {4}", indexDefinition.Maps.First(),
 			        string.Format(
 			            @"The result type is not consistent across map and reduce:
 Common fields: {0}
-Map	only fields   : {1}
+Map only fields   : {1}
 Reduce only fields: {2}
 ",
 			            string.Join(", ", mapFields.Intersect(reduceFields).OrderBy(x => x)),
@@ -382,12 +412,18 @@ Reduce only fields: {2}
 				if (objectInitializer.CreateExpressions.OfType<NamedArgumentExpression>().Any(x => x.Name == Constants.DocumentIdFieldName))
 					return false;
 
-				objectInitializer.CreateExpressions.Add(
-					new NamedArgumentExpression
-					{
-						Name = Constants.DocumentIdFieldName,
-						Expression = new MemberReferenceExpression(identifierExpression, Constants.DocumentIdFieldName)
-					});
+
+				objectCreateExpression.ObjectInitializer = new CollectionInitializerExpression(objectInitializer.CreateExpressions.ToList())
+				{
+					CreateExpressions =
+						{
+							new NamedArgumentExpression
+							{
+								Name = Constants.DocumentIdFieldName,
+								Expression = new MemberReferenceExpression(identifierExpression, Constants.DocumentIdFieldName)
+							}
+						}
+				};
 
 				return true;
 			}
@@ -413,6 +449,17 @@ Reduce only fields: {2}
 					new IndexerExpression(new IdentifierExpression("__document"), new List<Expression> { new PrimitiveExpression("@metadata", "@metadata") }),
 					new List<Expression> { new PrimitiveExpression(Constants.RavenEntityName, Constants.RavenEntityName) }
 					);
+
+				// string.Equals(doc["@metadata"]["Raven-Entity-Name"], "Blogs", StringComparison.InvariantCultureIgnoreCase)
+				var binaryOperatorExpression =
+					new InvocationExpression(
+						new MemberReferenceExpression(new TypeReferenceExpression(new TypeReference("string", true)), "Equals"),
+						new List<Expression>
+						{
+							metadata,
+							new PrimitiveExpression(mre.MemberName, mre.MemberName),
+							new MemberReferenceExpression(new TypeReferenceExpression(new TypeReference(typeof(StringComparison).FullName)),"InvariantCultureIgnoreCase")
+						});
 				var whereMethod = new InvocationExpression(new MemberReferenceExpression(mre.TargetObject, "Where"),
 				                                           new List<Expression>
 				                                           {
@@ -422,11 +469,7 @@ Reduce only fields: {2}
 				                                           			{
 				                                           				new ParameterDeclarationExpression(null, "__document")
 				                                           			},
-				                                           		ExpressionBody = new BinaryOperatorExpression(
-				                                           			metadata,
-				                                           			BinaryOperatorType.Equality,
-				                                           			new PrimitiveExpression(mre.MemberName, mre.MemberName)
-				                                           			)
+				                                           		ExpressionBody = binaryOperatorExpression
 				                                           	}
 				                                           });
 
@@ -452,15 +495,21 @@ Reduce only fields: {2}
 					new IndexerExpression(new IdentifierExpression(queryExpression.FromClause.Identifier), new List<Expression> { new PrimitiveExpression("@metadata", "@metadata") }),
 					new List<Expression> { new PrimitiveExpression(Constants.RavenEntityName, Constants.RavenEntityName) }
 					);
-				queryExpression.MiddleClauses.Insert(0, 
+
+				// string.Equals(doc["@metadata"]["Raven-Entity-Name"], "Blogs", StringComparison.InvariantCultureIgnoreCase)
+				var binaryOperatorExpression =
+					new InvocationExpression(
+						new MemberReferenceExpression(new TypeReferenceExpression(new TypeReference("string", true)), "Equals"),
+						new List<Expression>
+						{
+							metadata,
+							new PrimitiveExpression(mre.MemberName, mre.MemberName),
+							new MemberReferenceExpression(new TypeReferenceExpression(new TypeReference(typeof(StringComparison).FullName)),"InvariantCultureIgnoreCase")
+						});
+				queryExpression.MiddleClauses.Insert(0,
 				                                     new QueryExpressionWhereClause
 				                                     {
-				                                     	Condition = 
-				                                     		new BinaryOperatorExpression(
-				                                     		metadata,
-				                                     		BinaryOperatorType.Equality,
-				                                     		new PrimitiveExpression(mre.MemberName, mre.MemberName)
-				                                     		)
+														 Condition = binaryOperatorExpression
 				                                     });
 			}
 			var selectOrGroupClause = queryExpression.SelectOrGroupClause;

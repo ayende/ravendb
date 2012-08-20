@@ -36,7 +36,7 @@ namespace Raven.Database.Extensions
 				}
 				catch (IOException)
 				{
-					foreach (var childDir in Directory.GetDirectories(directory))
+					foreach (var childDir in Directory.GetDirectories(directory, "*", SearchOption.AllDirectories))
 					{
 						try
 						{
@@ -51,6 +51,9 @@ namespace Raven.Database.Extensions
 					}
 					if (i == retries-1)// last try also failed
 						throw;
+
+					GC.Collect();
+					GC.WaitForPendingFinalizers();
 					Thread.Sleep(100);
 				}
 			}

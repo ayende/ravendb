@@ -1,6 +1,6 @@
 ﻿using System;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
+using Raven.Imports.Newtonsoft.Json;
+using Raven.Imports.Newtonsoft.Json.Linq;
 using Raven.Abstractions.Linq;
 using Raven.Json.Linq;
 
@@ -10,9 +10,9 @@ namespace Raven.Abstractions.Json
 	{
 		public override void WriteJson(JsonWriter writer, object value, JsonSerializer serializer)
 		{
-			if (value is RavenJObject)
-				((RavenJObject)value).WriteTo(writer);
-#if !NET_3_5
+			if (value is RavenJToken)
+				((RavenJToken)value).WriteTo(writer);
+#if !NET35
 			else if(value is DynamicNullObject)
 				writer.WriteNull();
 			else
@@ -32,8 +32,8 @@ namespace Raven.Abstractions.Json
 
 		public override bool CanConvert(Type objectType)
 		{
-			return objectType == typeof(RavenJObject)
-#if !NET_3_5
+			return objectType == typeof(RavenJToken) || objectType.IsSubclassOf(typeof(RavenJToken))
+#if !NET35
 				|| objectType == typeof(DynamicJsonObject) || objectType == typeof(DynamicNullObject)
 #endif
 				;

@@ -15,7 +15,7 @@ using Raven.Json.Linq;
 
 namespace Raven.Database.Server.Responders
 {
-	public class Queries : RequestResponder
+	public class Queries : AbstractRequestResponder
 	{
 		public override string UrlPattern
 		{
@@ -79,7 +79,7 @@ namespace Raven.Database.Server.Responders
 				return;
 			}
 
-			context.Response.AddHeader("ETag", computedEtag.ToString());
+			context.WriteETag(computedEtag);
 			context.WriteJson(result);
 		}
 	}

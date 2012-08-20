@@ -8,46 +8,59 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 #if !SILVERLIGHT
+using System.Text.RegularExpressions;
 using System.Transactions;
 #endif
 using System.Text;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
-using Newtonsoft.Json.Serialization;
+using Raven.Abstractions.Util;
+using Raven.Imports.Newtonsoft.Json;
+using Raven.Imports.Newtonsoft.Json.Linq;
+using Raven.Imports.Newtonsoft.Json.Serialization;
 using Raven.Abstractions.Commands;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Exceptions;
 using Raven.Abstractions.Extensions;
+using Raven.Abstractions.Logging;
 using Raven.Abstractions.Linq;
 using Raven.Client.Connection;
 using Raven.Client.Exceptions;
 using Raven.Client.Util;
 using Raven.Json.Linq;
 
-#if !NET_3_5
+#if !NET35
 using System.Dynamic;
 using Microsoft.CSharp.RuntimeBinder;
+using System.Threading.Tasks;
+using Raven.Abstractions.Json;
 
 #endif
 
 namespace Raven.Client.Document
 {
+
 	/// <summary>
 	/// Abstract implementation for in memory session operations
 	/// </summary>
 	public abstract class InMemoryDocumentSessionOperations : IDisposable
 	{
+		protected bool GenerateDocumentKeysOnStore = true;
+
 		/// <summary>
 		/// The session id 
 		/// </summary>
 		public Guid Id { get; private set; }
 
-		protected static readonly NLog.Logger log = NLog.LogManager.GetCurrentClassLogger();
+		protected static readonly ILog log = LogProvider.GetCurrentClassLogger();
 
 		/// <summary>
 		/// The entities waiting to be deleted
 		/// </summary>
 		protected readonly HashSet<object> deletedEntities = new HashSet<object>(ObjectReferenceEqualityComparerer<object>.Default);
+
+		/// <summary>
+		/// Entities whose id we already know do not exists, because they are a missing include, or a missing load, etc.
+		/// </summary>
+		protected readonly HashSet<string> knownMissingIds = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
 
 #if !SILVERLIGHT
 		private bool hasEnlisted;
@@ -193,12 +206,14 @@ namespace Raven.Client.Document
 			{
 				string id;
 				if (TryGetIdFromInstance(instance, out id)
-#if !NET_3_5
+#if !NET35
 					|| (instance is IDynamicMetaObjectProvider &&
 					   TryGetIdFromDynamic(instance, out id))
 #endif
 )
 				{
+					AssertNoNonUniqueInstance(instance, id);
+
 					var jsonDocument = GetJsonDocument(id);
 					entitiesByKey[id] = instance;
 					entitiesAndMetadata[instance] = value = new DocumentMetadata
@@ -231,6 +246,16 @@ namespace Raven.Client.Document
 		{
 			return entitiesByKey.ContainsKey(id);
 		}
+
+		/// <summary>
+		/// Returns whatever a document with the specified id is deleted 
+		/// or known to be missing
+		/// </summary>
+		public bool IsDeleted(string id)
+		{
+			return knownMissingIds.Contains(id);
+		}
+
 
 		/// <summary>
 		/// Gets the document id.
@@ -357,7 +382,7 @@ more responsive application.
 				OriginalValue = document,
 				Metadata = metadata,
 				OriginalMetadata = (RavenJObject)metadata.CloneToken(),
-				ETag = new Guid(etag),
+				ETag = HttpExtensions.EtagHeaderToGuid(etag),
 				Key = key
 			};
 			entitiesByKey[key] = entity;
@@ -384,12 +409,14 @@ more responsive application.
 		/// <param name="entity">The entity.</param>
 		public void Delete<T>(T entity)
 		{
+			if(ReferenceEquals(entity,null)) throw new ArgumentNullException("entity");
 			DocumentMetadata value;
 			if (entitiesAndMetadata.TryGetValue(entity, out value) == false)
 				throw new InvalidOperationException(entity + " is not associated with the session, cannot delete unknown entity instance");
 			if (value.OriginalMetadata.ContainsKey(Constants.RavenReadOnly) && value.OriginalMetadata.Value<bool>(Constants.RavenReadOnly))
 				throw new InvalidOperationException(entity + " is marked as read only and cannot be deleted");
 			deletedEntities.Add(entity);
+			knownMissingIds.Add(value.Key);
 		}
 
 
@@ -418,7 +445,7 @@ more responsive application.
 			if (Equals(entity, default(T)))
 			{
 				entity = documentFound.Deserialize<T>(Conventions);
-#if !NET_3_5
+#if !NET35
 				var document = entity as RavenJObject;
 				if (document != null)
 				{
@@ -448,7 +475,7 @@ more responsive application.
 			var identityProperty = documentStore.Conventions.GetIdentityProperty(entityType);
 			if (identityProperty == null)
 			{
-#if !NET_3_5
+#if !NET35
 				if (entity is IDynamicMetaObjectProvider)
 				{
 					TrySetIdOnynamic(entity, id);
@@ -554,26 +581,13 @@ more responsive application.
 
 			if (id == null)
 			{
-#if !NET_3_5
-				if (entity is IDynamicMetaObjectProvider)
+				if (GenerateDocumentKeysOnStore)
 				{
-					if (TryGetIdFromDynamic(entity, out id) == false)
-					{
-						id = Conventions.DocumentKeyGenerator(entity);
-
-						if (id != null)
-						{
-							// Store it back into the Id field so the client has access to to it                    
-							TrySetIdOnynamic(entity, id);
-						}
-					}
+					id = GenerateDocumentKeyForStorage(entity);
 				}
 				else
-#endif
 				{
-					id = GetOrGenerateDocumentKey(entity);
-
-					TrySetIdentity(entity, id);
+					RememberEntityForDocumentKeyGeneration(entity);
 				}
 			}
 			else
@@ -591,8 +605,69 @@ more responsive application.
 			var metadata = new RavenJObject();
 			if (tag != null)
 				metadata.Add(Constants.RavenEntityName, tag);
+			if (id != null)
+				knownMissingIds.Remove(id);
 			StoreEntityInUnitOfWork(id, entity, etag, metadata, forceConcurrencyCheck);
 		}
+
+		protected string GenerateDocumentKeyForStorage(object entity)
+		{
+			string id;
+#if !NET35
+			if (entity is IDynamicMetaObjectProvider)
+			{
+				if (TryGetIdFromDynamic(entity, out id) == false)
+				{
+					id = GenerateKey(entity);
+					// If we generated a new id, store it back into the Id field so the client has access to to it                    
+					if (id != null)
+						TrySetIdOnynamic(entity, id);
+				}
+				return id;
+			}
+#endif
+
+			id = GetOrGenerateDocumentKey(entity);
+			TrySetIdentity(entity, id);
+			return id;
+		}
+
+		protected abstract string GenerateKey(object entity);
+
+		protected virtual void RememberEntityForDocumentKeyGeneration(object entity)
+		{
+			throw new NotImplementedException("You cannot set GenerateDocumentKeysOnStore to false without implementing RememberEntityForDocumentKeyGeneration");
+		}
+
+#if !NET35
+		protected internal Task<string> GenerateDocumentKeyForStorageAsync(object entity)
+		{
+			if (entity is IDynamicMetaObjectProvider)
+			{
+				string id;
+				if (TryGetIdFromDynamic(entity, out id))
+					return CompletedTask.With(id);
+				else
+					return GenerateKeyAsync(entity)
+						.ContinueWith(task =>
+						{
+							// If we generated a new id, store it back into the Id field so the client has access to to it                    
+							if (task.Result != null)
+								TrySetIdOnynamic(entity, task.Result);
+							return task.Result;
+						});
+			}
+			
+			return GetOrGenerateDocumentKeyAsync(entity)
+				.ContinueWith(task =>
+				{
+					TrySetIdentity(entity, task.Result);
+					return task.Result;
+				});
+		}
+
+		protected abstract Task<string> GenerateKeyAsync(object entity);
+#endif
 
 		protected virtual void StoreEntityInUnitOfWork(string id, object entity, Guid? etag, RavenJObject metadata, bool forceConcurrencyCheck)
 		{
@@ -630,7 +705,7 @@ more responsive application.
 			if (id == null)
 			{
 				// Generate the key up front
-				id = Conventions.GenerateDocumentKey(entity);
+				id = GenerateKey(entity);
 
 			}
 
@@ -638,6 +713,27 @@ more responsive application.
 				throw new InvalidOperationException("Cannot use value '" + id + "' as a document id because it begins with a '/'");
 			return id;
 		}
+
+#if !NET35
+		protected Task<string> GetOrGenerateDocumentKeyAsync(object entity)
+		{
+			string id;
+			TryGetIdFromInstance(entity, out id);
+
+			Task<string> generator =
+				id != null
+				? CompletedTask.With(id)
+				: GenerateKeyAsync(entity);
+
+			return generator.ContinueWith(task =>
+			{
+				if (task.Result != null && task.Result.StartsWith("/"))
+					throw new InvalidOperationException("Cannot use value '" + id + "' as a document id because it begins with a '/'");
+
+				return task.Result;
+			});
+		}
+#endif
 
 		/// <summary>
 		/// Attempts to get the document key from an instance 
@@ -660,7 +756,7 @@ more responsive application.
 			return false;
 		}
 
-#if !NET_3_5
+#if !NET35
 		private static bool TryGetIdFromDynamic(dynamic entity, out string id)
 		{
 			try
@@ -958,7 +1054,7 @@ more responsive application.
 		private void SetClrType(Type entityType, RavenJObject metadata)
 		{
 			if (
-#if !NET_3_5
+#if !NET35
 				entityType == typeof(DynamicJsonObject) ||
 #endif
 				entityType == typeof(RavenJObject)) // dynamic types
@@ -1230,6 +1326,29 @@ more responsive application.
 				}
 				return sb.ToString();
 			});
+		}
+
+		public void RegisterMissing(string id)
+		{
+			knownMissingIds.Add(id);
+		}
+
+		public void RegisterMissingIncludes(IEnumerable<RavenJObject> results, IEnumerable<string> includes)
+		{
+			if (includes == null || includes.Count() == 0)
+				return;
+
+			foreach (var result in results)
+			{
+				foreach (var include in includes)
+				{
+					IncludesUtil.Include(result, include, id =>
+					{
+						if (IsLoaded(id) == false)
+							RegisterMissing(id);
+					});
+				}
+			}
 		}
 	}
 }

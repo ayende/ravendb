@@ -8,7 +8,7 @@ using System.Threading;
 
 namespace Raven.Abstractions.MEF
 {
-#if !NET_3_5
+#if !NET35
 	public class OrderedPartCollection<T> : ICollection<Lazy<T, IPartMetadata>>, INotifyCollectionChanged
 	{
 		private readonly ObservableCollection<Lazy<T, IPartMetadata>> inner = new ObservableCollection<Lazy<T, IPartMetadata>>();
@@ -95,6 +95,12 @@ namespace Raven.Abstractions.MEF
 		public TAccumulate Aggregate<TAccumulate>(TAccumulate seed, Func<TAccumulate, T, TAccumulate> func)
 		{
 			return this.Aggregate(seed, (accumulate, lazy) => func(accumulate,lazy.Value));
+		}
+
+
+		public TAccumulate ReverseAggregate<TAccumulate>(TAccumulate seed, Func<TAccumulate, T, TAccumulate> func)
+		{
+			return this.Reverse().Aggregate(seed, (accumulate, lazy) => func(accumulate, lazy.Value));
 		}
 
 		public void Apply(Action<T> action)

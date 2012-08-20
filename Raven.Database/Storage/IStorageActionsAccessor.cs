@@ -12,12 +12,13 @@ namespace Raven.Database.Storage
 		ITransactionStorageActions Transactions { get; }
 		IDocumentStorageActions Documents { get; }
 		IQueueStorageActions Queue { get; }
+		IListsStorageActions Lists { get; }
 		ITasksStorageActions Tasks { get; }
 		IStalenessStorageActions Staleness{ get; }
 		IAttachmentsStorageActions Attachments { get; }
 		IIndexingStorageActions Indexing { get; }
 		IGeneralStorageActions General { get; }
-		IMappedResultsStorageAction MappedResults { get; }
+		IMappedResultsStorageAction MapReduce { get; }
 		event Action OnCommit;
 		bool IsWriteConflict(Exception exception);
 		T GetTask<T>(Func<T, bool> predicate, T newTask) where T : Tasks.Task;

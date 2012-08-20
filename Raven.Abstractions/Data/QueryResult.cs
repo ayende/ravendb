@@ -73,6 +73,11 @@ namespace Raven.Abstractions.Data
 		public bool NonAuthoritativeInformation { get; set; }
 
 		/// <summary>
+		/// The timestamp of the last time the index was queried
+		/// </summary>
+		public bool LastQueryTime { get; set; }
+
+		/// <summary>
 		/// Initializes a new instance of the <see cref="QueryResult"/> class.
 		/// </summary>
 		public QueryResult()
@@ -103,8 +108,8 @@ namespace Raven.Abstractions.Data
 		{
 			return new QueryResult
 			{
-				Results = new List<RavenJObject>(Results.Select(x => x.CreateSnapshot())),
-				Includes = new List<RavenJObject>(Includes.Select(x => x.CreateSnapshot())),
+				Results = new List<RavenJObject>(Results.Select(x => (RavenJObject)x.CreateSnapshot())),
+				Includes = new List<RavenJObject>(Includes.Select(x => (RavenJObject)x.CreateSnapshot())),
 				IndexEtag = IndexEtag,
 				IndexName = IndexName,
 				IndexTimestamp = IndexTimestamp,

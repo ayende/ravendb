@@ -1,31 +1,52 @@
 ﻿using System;
 using System.Diagnostics;
-using System.Globalization;
 using System.IO;
-using System.Net;
-using Raven.Client.Document;
+using System.Linq;
+using Raven.Client.Embedded;
+using Raven.Client.Indexes;
+using Raven.Database.Extensions;
+using Raven.Client.Linq;
+using Raven.Tests.Bugs;
 
 namespace Raven.Tryouts
 {
-	class Program
+	public class Program
 	{
-		static void Main(string[] args)
+		public static void Main()
 		{
-			var webRequest = (HttpWebRequest)WebRequest.Create("http://localhost:8080/admin/compact?database=test");
-			webRequest.Method = "POST";
-			webRequest.UseDefaultCredentials = true;
-			webRequest.Credentials = CredentialCache.DefaultCredentials;
-			webRequest.ContentLength = 0;
-			try
+			IOExtensions.DeleteDirectory("Logs");
+			using (var x = new MultiOutputReduce())
 			{
-				webRequest.GetResponse();
-				Console.WriteLine("DONE");
+				x.CanGetCorrectResultsFromAllItems();
 			}
-			catch(WebException we)
+
+		}
+
+		public class Person
+		{
+			public string State { get; set; }
+		}
+		public class Population
+		{
+			public int Count { get; set; }
+			public string State { get; set; }
+
+			public override string ToString()
 			{
-				Console.WriteLine(new StreamReader((we.Response.GetResponseStream())).ReadToEnd());
+				return string.Format("Count: {0}, State: {1}", Count, State);
 			}
-			Console.ReadLine();
+		}
+		public class PopulationByState : AbstractIndexCreationTask<Person, Population>
+		{
+			public PopulationByState()
+			{
+				Map = people => from person in people
+								select new { person.State, Count = 1 };
+				Reduce = results => from result in results
+									group result by result.State
+										into g
+										select new { State = g.Key, Count = g.Sum(x => x.Count) };
+			}
 		}
 	}
 }

@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
+using Raven.Imports.Newtonsoft.Json;
+using Raven.Imports.Newtonsoft.Json.Linq;
 
 namespace Raven.Json.Linq
 {
@@ -130,6 +130,11 @@ namespace Raven.Json.Linq
 						throw new JsonWriterException("Unexpected token: " + token);
 				}
 			}
+		}
+
+		public override void WriteRaw(string json)
+		{
+			throw new NotSupportedException();
 		}
 
 		#region WriteValue methods

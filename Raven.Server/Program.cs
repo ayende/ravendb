@@ -5,6 +5,7 @@
 //-----------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
+using System.Configuration;
 using System.Configuration.Install;
 using System.Diagnostics;
 using System.IO;
@@ -13,6 +14,7 @@ using System.Reflection;
 using System.Security.Principal;
 using System.ServiceProcess;
 using System.Xml;
+using System.Xml.Linq;
 using NDesk.Options;
 using NLog.Config;
 using Raven.Abstractions;
@@ -138,6 +140,22 @@ namespace Raven.Server
 					}},
 				{"dest=|destination=", "The {0:path} of the new new database", value => restoreLocation = value},
 				{"src=|source=", "The {0:path} of the backup", value => backupLocation = value},
+				{"encrypt-self-config", "Encrypt the RavenDB configuration file", file =>
+						{
+							actionToTake = () => ProtectConfiguration(AppDomain.CurrentDomain.SetupInformation.ConfigurationFile);
+				        }},
+				{"encrypt-config=", "Encrypt the specified {0:configuration file}", file =>
+						{
+							actionToTake = () => ProtectConfiguration(file);
+				        }},
+				{"decrypt-self-config", "Decrypt the RavenDB configuration file", file =>
+						{
+							actionToTake = () => UnprotectConfiguration(AppDomain.CurrentDomain.SetupInformation.ConfigurationFile);
+				        }},
+				{"decrypt-config=", "Decrypt the specified {0:configuration file}", file =>
+						{
+							actionToTake = () => UnprotectConfiguration(file);
+				        }}
 			};
 
 
@@ -162,6 +180,39 @@ namespace Raven.Server
 
 		}
 
+		private static void ProtectConfiguration(string file)
+		{
+			if (string.Equals(Path.GetExtension(file), ".config", StringComparison.InvariantCultureIgnoreCase))
+				file = Path.GetFileNameWithoutExtension(file);
+
+			var configuration = ConfigurationManager.OpenExeConfiguration(file);
+			var names = new[] {"appSettings", "connectionStrings"};
+
+			foreach (var section in names.Select(configuration.GetSection))
+			{
+				section.SectionInformation.ProtectSection("RsaProtectedConfigurationProvider");
+				section.SectionInformation.ForceSave = true;
+			}
+
+			configuration.Save(ConfigurationSaveMode.Full);
+		}
+
+		private static void UnprotectConfiguration(string file)
+		{
+			if (string.Equals(Path.GetExtension(file), ".config", StringComparison.InvariantCultureIgnoreCase))
+				file = Path.GetFileNameWithoutExtension(file);
+
+			var configuration = ConfigurationManager.OpenExeConfiguration(file);
+			var names = new[] { "appSettings", "connectionStrings" };
+
+			foreach (var section in names.Select(configuration.GetSection))
+			{
+				section.SectionInformation.UnprotectSection();
+				section.SectionInformation.ForceSave = true;
+			}
+			configuration.Save(ConfigurationSaveMode.Full);
+		}
+
 		private static void PrintConfig()
 		{
 			Console.WriteLine(
@@ -173,7 +224,7 @@ Copyright (C) 2008 - {0} - Hibernating Rhinos
 ----------------------------------------
 Configuration options:
 ",
-				SystemTime.Now.Year);
+				SystemTime.UtcNow.Year);
 
 			foreach (var configOptionDoc in ConfigOptionDocs.OptionsDocs)
 			{
@@ -271,7 +322,7 @@ Configuration options:
 				if (File.Exists(path))
 				{
 					Console.WriteLine("Loading data from: {0}", path);
-					new SmugglerApi(new RavenConnectionStringOptions {Url = ravenConfiguration.ServerUrl}).ImportData(new SmugglerOptions {File = path});
+					new SmugglerApi(new SmugglerOptions(), new RavenConnectionStringOptions {Url = ravenConfiguration.ServerUrl}).ImportData(new SmugglerOptions {File = path});
 				}
 
 				Console.WriteLine("Raven is ready to process requests. Build {0}, Version {1}", DocumentDatabase.BuildVersion, DocumentDatabase.ProductVersion);
@@ -302,14 +353,14 @@ Configuration options:
 			bool? done = null;
 			var actions = new Dictionary<string,Action>
 			{
-				{"cls", () => Console.Clear()},
+				{"cls", TryClearingConsole},
 				{
 					"reset", () =>
 					{
-						Console.Clear();
+						TryClearingConsole();
 						done = true;
 					}
-					},
+				},
 				{
 					"gc", () =>
 					{
@@ -345,6 +396,18 @@ Configuration options:
 			}
 		}
 
+		private static void TryClearingConsole()
+		{
+			try
+			{
+				Console.Clear();
+			}
+			catch (IOException)
+			{
+				// redirected output, probably, ignoring
+			}
+		}
+
 		private static void WriteInteractiveOptions(Dictionary<string, Action> actions)
 		{
 			Console.WriteLine("Available commands: {0}", string.Join(", ", actions.Select(x => x.Key)));
@@ -360,7 +423,7 @@ Document Database for the .Net Platform
 Copyright (C) 2008 - {0} - Hibernating Rhinos
 ----------------------------------------
 Command line ptions:",
-				SystemTime.Now.Year);
+				SystemTime.UtcNow.Year);
 
 			optionSet.WriteOptionDescriptions(Console.Out);
 
@@ -435,7 +498,7 @@ Enjoy...
 			else
 			{
 				ManagedInstallerClass.InstallHelper(new[] { Assembly.GetExecutingAssembly().Location });
-				SetRecoveryOptions("RavenDB");
+				SetRecoveryOptions(ProjectInstaller.SERVICE_NAME);
 				var startController = new ServiceController(ProjectInstaller.SERVICE_NAME);
 				startController.Start();
 			}

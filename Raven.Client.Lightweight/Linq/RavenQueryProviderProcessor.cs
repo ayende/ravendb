@@ -10,12 +10,13 @@ using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
-using Newtonsoft.Json;
 using Raven.Abstractions.Data;
 using Raven.Client.Connection;
 using Raven.Client.Document;
 using Raven.Client.Indexes;
+using Raven.Imports.Newtonsoft.Json;
 using Raven.Json.Linq;
+using Raven.Abstractions.Extensions;
 
 namespace Raven.Client.Linq
 {
@@ -38,6 +39,8 @@ namespace Raven.Client.Linq
 		private Type newExpressionType;
 		private string currentPath = string.Empty;
 		private int subClauseDepth;
+
+		private LinqPathProvider linqPathProvider;
 		/// <summary>
 		/// The index name
 		/// </summary>
@@ -72,6 +75,7 @@ namespace Raven.Client.Linq
 			this.indexName = indexName;
 			this.afterQueryExecuted = afterQueryExecuted;
 			this.customizeQuery = customizeQuery;
+			linqPathProvider = new LinqPathProvider(queryGenerator.Conventions);
 		}
 
 		/// <summary>
@@ -174,6 +178,10 @@ namespace Raven.Client.Linq
 
 		private void VisitAndAlso(BinaryExpression andAlso)
 		{
+			if (TryHandleBetween(andAlso))
+				return;
+
+
 			if (subClauseDepth > 0) luceneQuery.OpenSubclause();
 			subClauseDepth++;
 
@@ -183,6 +191,69 @@ namespace Raven.Client.Linq
 
 			subClauseDepth--;
 			if (subClauseDepth > 0) luceneQuery.CloseSubclause();
+		}
+
+		private bool TryHandleBetween(BinaryExpression andAlso)
+		{
+			// x.Foo > 100 && x.Foo < 200
+			// x.Foo < 200 && x.Foo > 100 
+			// 100 < x.Foo && 200 > x.Foo
+			// 200 > x.Foo && 100 < x.Foo 
+
+			var isPossibleBetween =
+				(andAlso.Left.NodeType == ExpressionType.GreaterThan && andAlso.Right.NodeType == ExpressionType.LessThan) ||
+				(andAlso.Left.NodeType == ExpressionType.GreaterThanOrEqual && andAlso.Right.NodeType == ExpressionType.LessThanOrEqual) ||
+				(andAlso.Left.NodeType == ExpressionType.LessThan && andAlso.Right.NodeType == ExpressionType.GreaterThan) ||
+				(andAlso.Left.NodeType == ExpressionType.LessThanOrEqual && andAlso.Right.NodeType == ExpressionType.GreaterThan);
+
+			if (isPossibleBetween == false)
+				return false;
+
+			var leftMember = GetMemberForBetween((BinaryExpression) andAlso.Left);
+			var rightMember = GetMemberForBetween((BinaryExpression)andAlso.Right);
+
+			if (leftMember == null || rightMember == null)
+				return false;
+
+			// both must be on the same property
+			if (leftMember.Item1.Path != rightMember.Item1.Path)
+				return false;
+
+			var min = (andAlso.Left.NodeType == ExpressionType.LessThan ||
+			           andAlso.Left.NodeType == ExpressionType.LessThanOrEqual)
+			          	? rightMember.Item2
+			          	: leftMember.Item2;
+			var max = (andAlso.Left.NodeType == ExpressionType.LessThan ||
+					   andAlso.Left.NodeType == ExpressionType.LessThanOrEqual)
+						? leftMember.Item2
+						: rightMember.Item2;
+
+			if (andAlso.Left.NodeType == ExpressionType.GreaterThanOrEqual || andAlso.Left.NodeType == ExpressionType.LessThanOrEqual)
+				luceneQuery.WhereBetweenOrEqual(leftMember.Item1.Path, min, max);
+			else
+				luceneQuery.WhereBetween(leftMember.Item1.Path, min, max);
+
+			return true;
+		}
+
+		private Tuple<ExpressionInfo, object> GetMemberForBetween(BinaryExpression binaryExpression)
+		{
+			if (IsMemberAccessForQuerySource(binaryExpression.Left))
+			{
+				var expressionInfo = GetMember(binaryExpression.Left);
+				return Tuple.Create(expressionInfo, GetValueFromExpression(binaryExpression.Right, expressionInfo.Type));
+			}
+			if (IsMemberAccessForQuerySource(binaryExpression.Right))
+			{
+				var expressionInfo = GetMember(binaryExpression.Right);
+				return Tuple.Create(expressionInfo, GetValueFromExpression(binaryExpression.Left, expressionInfo.Type));
+			}
+			return null;
+		}
+
+		private object GetValueFromExpression(Expression expression, Type type)
+		{
+			return linqPathProvider.GetValueFromExpression(expression, type);
 		}
 
 		private void VisitOrElse(BinaryExpression orElse)
@@ -346,132 +417,26 @@ namespace Raven.Client.Linq
 				return new ExpressionInfo(currentPath, parameterExpression.Type, false);
 			}
 
-			string path;
-			Type memberType;
-			bool isNestedPath;
-			GetPath(expression, out path, out memberType, out isNestedPath);
+			var result = linqPathProvider.GetPath(expression);
 
 			//for standard queries, we take just the last part. But for dynamic queries, we take the whole part
-			path = path.Substring(path.IndexOf('.') + 1);
+			result.Path = result.Path.Substring(result.Path.IndexOf('.') + 1);
 
 			if (expression.NodeType == ExpressionType.ArrayLength)
-				path += ".Length";
+				result.Path += ".Length";
 
-			var propertyName = indexName == null || indexName.StartsWith("dynamic/", StringComparison.OrdinalIgnoreCase) 
-				? queryGenerator.Conventions.FindPropertyNameForDynamicIndex(typeof(T), indexName, CurrentPath, path) 
-				: queryGenerator.Conventions.FindPropertyNameForIndex(typeof(T), indexName, CurrentPath, path);
-			return new ExpressionInfo(propertyName, memberType, isNestedPath);
+			var propertyName = indexName == null || indexName.StartsWith("dynamic/", StringComparison.OrdinalIgnoreCase)
+				? queryGenerator.Conventions.FindPropertyNameForDynamicIndex(typeof(T), indexName, CurrentPath, result.Path)
+				: queryGenerator.Conventions.FindPropertyNameForIndex(typeof(T), indexName, CurrentPath, result.Path);
+			return new ExpressionInfo(propertyName, result.MemberType, result.IsNestedPath);
 		}
 
-		/// <summary>
-		/// Get the path from the expression, including considering dictionary calls
-		/// </summary>
-		protected void GetPath(Expression expression, out string path, out Type memberType, out bool isNestedPath)
-		{
-			var callExpression = expression as MethodCallExpression;
-			if (callExpression != null)
-			{
-				if (callExpression.Method.Name != "get_Item")
-					throw new InvalidOperationException("Cannot understand how to translate " + callExpression);
-
-				string parentPath;
-				Type ignoredType;
-				bool ignoredNestedPath;
-				GetPath(callExpression.Object, out parentPath, out ignoredType, out ignoredNestedPath);
-
-
-				memberType = callExpression.Method.ReturnType;
-				isNestedPath = false;
-				path = parentPath + "." +
-					   GetValueFromExpression(callExpression.Arguments[0], callExpression.Method.GetParameters()[0].ParameterType);
-
-			}
-			else
-			{
-				var memberExpression = GetMemberExpression(expression);
-
-				AssertNoComputation(memberExpression);
-
-				path = memberExpression.ToString();
-				var props = memberExpression.Member.GetCustomAttributes(typeof(JsonPropertyAttribute), false);
-				if (props.Length != 0)
-				{
-					path = path.Substring(0, path.Length - memberExpression.Member.Name.Length) +
-					       ((JsonPropertyAttribute) props[0]).PropertyName;
-				}
-				isNestedPath = memberExpression.Expression is MemberExpression;
-				memberType = memberExpression.Member.GetMemberType();
-			}
-		}
-
-		private void AssertNoComputation(MemberExpression memberExpression)
-		{
-			var cur = memberExpression;
-
-			while (cur != null)
-			{
-				switch (cur.Expression.NodeType)
-				{
-					case ExpressionType.Call:
-					case ExpressionType.Invoke:
-					case ExpressionType.Add:
-					case ExpressionType.And:
-					case ExpressionType.AndAlso:
-#if !NET_3_5
-					case ExpressionType.AndAssign:
-					case ExpressionType.Decrement:
-					case ExpressionType.Increment:
-					case ExpressionType.PostDecrementAssign:
-					case ExpressionType.PostIncrementAssign:
-					case ExpressionType.PreDecrementAssign:
-					case ExpressionType.PreIncrementAssign:
-					case ExpressionType.AddAssign:
-					case ExpressionType.AddAssignChecked:
-					case ExpressionType.AddChecked:
-					case ExpressionType.Index:
-					case ExpressionType.Assign:
-					case ExpressionType.Block:
-#endif
-					case ExpressionType.Conditional:
-					case ExpressionType.ArrayIndex:
-
-						throw new ArgumentException("Invalid computation: " + memberExpression +
-						                            ". You cannot use computation (only simple member expression are allowed) in RavenDB queries.");
-				}
-				cur = cur.Expression as MemberExpression;
-			}
-		}
-
-		/// <summary>
-		/// Get the member expression from the expression
-		/// </summary>
-		protected MemberExpression GetMemberExpression(Expression expression)
-		{
-			var unaryExpression = expression as UnaryExpression;
-			if (unaryExpression != null)
-				expression = unaryExpression.Operand;
-
-			var lambdaExpression = expression as LambdaExpression;
-			if (lambdaExpression != null)
-				return GetMemberExpression(lambdaExpression.Body);
-
-			var memberExpression = expression as MemberExpression;
-
-			if(memberExpression == null)
-			{
-				throw new InvalidOperationException("Could not understand how to translate '" + expression + "' to a RavenDB query." +
-				                                    Environment.NewLine +
-				                                    "Are you trying to do computation during the query?" + Environment.NewLine +
-													"RavenDB doesn't allow computation during the query, computation is only allowed during index. Consider moving the operation to an index.");
-			}
-
-			return memberExpression;	
-		}
-
+		
+		
 		private void VisitEquals(MethodCallExpression expression)
 		{
 			var memberInfo = GetMember(expression.Object);
-			bool isAnalyzed;
+			bool isAnalyzed = true;
 
 			if (expression.Arguments.Count == 2 &&
 				expression.Arguments[1].NodeType == ExpressionType.Constant &&
@@ -492,10 +457,6 @@ namespace Raven.Client.Linq
 					default:
 						throw new ArgumentOutOfRangeException();
 				}
-			}
-			else
-			{
-				isAnalyzed = memberInfo.Type != typeof(string);
 			}
 			luceneQuery.WhereEquals(new WhereParams
 			{
@@ -534,7 +495,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
 		{
 			if (IsMemberAccessForQuerySource(expression.Left) == false && IsMemberAccessForQuerySource(expression.Right))
 			{
-				VisitLessThanOrEqual(Expression.LessThanOrEqual(expression.Right, expression.Left));
+				VisitLessThan(Expression.LessThan(expression.Right, expression.Left));
 				return;
 			}
 			var memberInfo = GetMember(expression.Left);
@@ -549,7 +510,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
 		{
 			if (IsMemberAccessForQuerySource(expression.Left) == false && IsMemberAccessForQuerySource(expression.Right))
 			{
-				VisitLessThan(Expression.LessThan(expression.Right, expression.Left));
+				VisitLessThanOrEqual(Expression.LessThanOrEqual(expression.Right, expression.Left));
 				return;
 			}
 
@@ -565,7 +526,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
 		{
 			if (IsMemberAccessForQuerySource(expression.Left) == false && IsMemberAccessForQuerySource(expression.Right))
 			{
-				VisitGreaterThanOrEqual(Expression.GreaterThanOrEqual(expression.Right, expression.Left));
+				VisitGreaterThan(Expression.GreaterThan(expression.Right, expression.Left));
 				return;
 			}
 			var memberInfo = GetMember(expression.Left);
@@ -580,7 +541,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
 		{
 			if (IsMemberAccessForQuerySource(expression.Left) == false && IsMemberAccessForQuerySource(expression.Right))
 			{
-				VisitGreaterThan(Expression.GreaterThan(expression.Right, expression.Left));
+				VisitGreaterThanOrEqual(Expression.GreaterThanOrEqual(expression.Right, expression.Left));
 				return;
 			}
 			var memberInfo = GetMember(expression.Left);
@@ -678,17 +639,17 @@ The recommended method is to use full text search (mark the field as Analyzed an
 					VisitExpression(expression.Arguments[0]);
 					var expressionInfo = GetMember(expression.Arguments[1]);
 					object value;
-					if (GetValueFromExpressionWithoutConversion(expression.Arguments[2], out value) == false)
+					if (LinqPathProvider.GetValueFromExpressionWithoutConversion(expression.Arguments[2], out value) == false)
 					{
 						throw new InvalidOperationException("Could not extract value from " + expression);
 					}
 					var searchTerms = (string) value;
-					if (GetValueFromExpressionWithoutConversion(expression.Arguments[3], out value) == false)
+					if (LinqPathProvider.GetValueFromExpressionWithoutConversion(expression.Arguments[3], out value) == false)
 					{
 						throw new InvalidOperationException("Could not extract value from " + expression);
 					}
 					var boost = (decimal) value;
-					if (GetValueFromExpressionWithoutConversion(expression.Arguments[4], out value) == false)
+					if (LinqPathProvider.GetValueFromExpressionWithoutConversion(expression.Arguments[4], out value) == false)
 					{
 						throw new InvalidOperationException("Could not extract value from " + expression);
 					}
@@ -702,7 +663,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
 						luceneQuery.NegateNext();
 					}
 
-					if (GetValueFromExpressionWithoutConversion(expression.Arguments[5], out value) == false)
+					if (LinqPathProvider.GetValueFromExpressionWithoutConversion(expression.Arguments[5], out value) == false)
 					{
 						throw new InvalidOperationException("Could not extract value from " + expression);
 					}
@@ -899,6 +860,17 @@ The recommended method is to use full text search (mark the field as Analyzed an
 						VisitCount();
 						break;
 					}
+				case "LongCount":
+					{
+						VisitExpression(expression.Arguments[0]);
+						if (expression.Arguments.Count == 2)
+						{
+							VisitExpression(((UnaryExpression)expression.Arguments[1]).Operand);
+						}
+
+						VisitLongCount();
+						break;
+					}
 				case "Distinct":
 					luceneQuery.GroupBy(AggregationOperation.Distinct);
 					VisitExpression(expression.Arguments[0]);
@@ -920,7 +892,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
 
 		private void VisitOrderBy(LambdaExpression expression, bool descending)
 		{
-			var memberExpression = GetMemberExpression(expression.Body);
+			var memberExpression = linqPathProvider.GetMemberExpression(expression.Body);
 			var propertyInfo = memberExpression.Member as PropertyInfo;
 			var fieldInfo = memberExpression.Member as FieldInfo;
 			var expressionMemberInfo = GetMember(expression.Body);
@@ -950,7 +922,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
 					break;
 				case ExpressionType.MemberAccess:
 					MemberExpression memberExpression = ((MemberExpression)body);
-					AddToFieldsToFetch(memberExpression.Member.Name, memberExpression.Member.Name);
+					AddToFieldsToFetch(memberExpression.ToPropertyPath('_'), memberExpression.Member.Name);
 					if(insideSelect == false)
 					{
 						FieldsToRename[memberExpression.Member.Name] = null;
@@ -966,7 +938,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
 						var field = newExpression.Arguments[index] as MemberExpression;
 						if(field == null)
 							continue;
-						var expression = GetMemberExpression(newExpression.Arguments[index]);
+						var expression = linqPathProvider.GetMemberExpression(newExpression.Arguments[index]);
 						var renamedField = GetSelectPath(expression);
 						AddToFieldsToFetch(renamedField, newExpression.Members[index].Name);
 					}
@@ -981,7 +953,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
 						if (field == null)
 							continue;
 
-						var expression = GetMemberExpression(field.Expression);
+						var expression = linqPathProvider.GetMemberExpression(field.Expression);
 						var renamedField = GetSelectPath(expression);
 
 						AddToFieldsToFetch(renamedField, field.Member.Name);
@@ -1014,6 +986,10 @@ The recommended method is to use full text search (mark the field as Analyzed an
 			if (identityProperty != null && identityProperty.Name == docField)
 			{
 				FieldsToFetch.Add(Constants.DocumentIdFieldName);
+				if (identityProperty.Name != renamedField)
+				{
+					docField = Constants.DocumentIdFieldName;
+				}
 			}
 			else
 			{
@@ -1021,6 +997,14 @@ The recommended method is to use full text search (mark the field as Analyzed an
 			}
 			if(docField != renamedField)
 			{
+				if(identityProperty == null)
+				{
+					var idPropName = luceneQuery.DocumentConvention.FindIdentityPropertyNameFromEntityName(luceneQuery.DocumentConvention.GetTypeTagName(typeof (T)));
+					if(docField == idPropName)
+					{
+						FieldsToRename[Constants.DocumentIdFieldName] = renamedField;
+					}
+				}
 				FieldsToRename[docField] = renamedField;
 			}
 		}
@@ -1051,8 +1035,14 @@ The recommended method is to use full text search (mark the field as Analyzed an
 
 		private void VisitCount()
 		{
-			luceneQuery.Take(1);
+			luceneQuery.Take(0);
 			queryType = SpecialQueryType.Count;
+		}
+
+		private void VisitLongCount()
+		{
+			luceneQuery.Take(0);
+			queryType = SpecialQueryType.LongCount;
 		}
 
 		private void VisitSingle()
@@ -1089,108 +1079,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
 			return expression.Path;
 		}
 
-		/// <summary>
-		/// Get the actual value from the expression
-		/// </summary>
-		protected object GetValueFromExpression(Expression expression, Type type)
-		{
-			if (expression == null)
-				throw new ArgumentNullException("expression");
-
-			// Get object
-			object value;
-			if (GetValueFromExpressionWithoutConversion(expression, out value))
-			{
-				if (type.IsEnum && (value is IEnumerable == false) && // skip arrays, lists
-					queryGenerator.Conventions.SaveEnumsAsIntegers == false)
-				{
-					return Enum.GetName(type, value);
-				}
-				return value;
-			}
-			throw new InvalidOperationException("Can't extract value from expression of type: " + expression.NodeType);
-		}
-
-		private static bool GetValueFromExpressionWithoutConversion(Expression expression, out object value)
-		{
-			switch (expression.NodeType)
-			{
-				case ExpressionType.Constant:
-					value = ((ConstantExpression)expression).Value;
-					return true;
-				case ExpressionType.MemberAccess:
-					value = GetMemberValue(((MemberExpression)expression));
-					return true;
-				case ExpressionType.New:
-					var newExpression = ((NewExpression)expression);
-					value = Activator.CreateInstance(newExpression.Type, newExpression.Arguments.Select(e =>
-					{
-						object o;
-						if (GetValueFromExpressionWithoutConversion(e, out o))
-							return o;
-						throw new InvalidOperationException("Can't extract value from expression of type: " + expression.NodeType);
-					}).ToArray());
-					return true;
-				case ExpressionType.Lambda:
-					value = ((LambdaExpression)expression).Compile().DynamicInvoke();
-					return true;
-				case ExpressionType.Call:
-					value = Expression.Lambda(expression).Compile().DynamicInvoke();
-					return true;
-				case ExpressionType.Convert:
-					var unaryExpression = ((UnaryExpression) expression);
-					if (TypeSystem.IsNullableType(unaryExpression.Type))
-						return GetValueFromExpressionWithoutConversion(unaryExpression.Operand, out value);
-					value = Expression.Lambda(expression).Compile().DynamicInvoke();
-					return true;
-				case ExpressionType.NewArrayInit:
-					var expressions = ((NewArrayExpression)expression).Expressions;
-					var values = new object[expressions.Count];
-					value = null;
-					if (expressions.Where((t, i) => !GetValueFromExpressionWithoutConversion(t, out values[i])).Any())
-						return false;
-					value = values;
-					return true;
-				default:
-					value = null;
-					return false;
-			}
-		}
-
-		private static object GetMemberValue(MemberExpression memberExpression)
-		{
-			object obj = null;
-
-			if (memberExpression == null)
-				throw new ArgumentNullException("memberExpression");
-
-			// Get object
-			if (memberExpression.Expression is ConstantExpression)
-				obj = ((ConstantExpression)memberExpression.Expression).Value;
-			else if (memberExpression.Expression is MemberExpression)
-				obj = GetMemberValue((MemberExpression)memberExpression.Expression);
-			//Fix for the issue here http://github.com/ravendb/ravendb/issues/#issue/145
-			//Needed to allow things like ".Where(x => x.TimeOfDay > DateTime.MinValue)", where Expression is null
-			//(applies to DateTime.Now as well, where "Now" is a property
-			//can just leave obj as it is because it's not used below (because Member is a MemberInfo), so won't cause a problem
-			else if (memberExpression.Expression != null)
-				throw new NotSupportedException("Expression type not supported: " + memberExpression.Expression.GetType().FullName);
-
-			// Get value
-			var memberInfo = memberExpression.Member;
-			if (memberInfo is PropertyInfo)
-			{
-				var property = (PropertyInfo)memberInfo;
-				return property.GetValue(obj, null);
-			}
-			if (memberInfo is FieldInfo)
-			{
-				var value = Expression.Lambda(memberExpression).Compile().DynamicInvoke();
-				return value;
-			}
-			throw new NotSupportedException("MemberInfo type not supported: " + memberInfo.GetType().FullName);
-		}
-
+	
 		/// <summary>
 		/// Gets the lucene query.
 		/// </summary>
@@ -1209,7 +1098,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
 			return q;
 		}
 
-#if !NET_3_5
+#if !NET35
 		/// <summary>
 		/// Gets the lucene query.
 		/// </summary>
@@ -1251,7 +1140,15 @@ The recommended method is to use full text search (mark the field as Analyzed an
 #if !SILVERLIGHT
 		private object ExecuteQuery<TProjection>()
 		{
-			var finalQuery = ((IDocumentQuery<T>)luceneQuery).SelectFields<TProjection>(FieldsToFetch.ToArray());
+			var renamedFields = FieldsToFetch.Select(field =>
+			{
+				string value;
+				if (FieldsToRename.TryGetValue(field, out value) && value != null)
+					return value;
+				return field;
+			}).ToArray();
+
+			var finalQuery = ((IDocumentQuery<T>) luceneQuery).SelectFields<TProjection>(FieldsToFetch.ToArray(), renamedFields);
 
 
 			if (FieldsToRename.Count > 0)
@@ -1274,7 +1171,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
 			for (int index = 0; index < queryResult.Results.Count; index++)
 			{
 				var result = queryResult.Results[index];
-				var safeToModify = result.CreateSnapshot();
+				var safeToModify = (RavenJObject)result.CreateSnapshot();
 				bool changed = false;
 				foreach (var rename in FieldsToRename)
 				{
@@ -1341,8 +1238,17 @@ The recommended method is to use full text search (mark the field as Analyzed an
 						var queryResultAsync = finalQuery.QueryResult;
 						return queryResultAsync.TotalResults;
 					}
+				case SpecialQueryType.LongCount:
+					{
+						var queryResultAsync = finalQuery.QueryResult;
+						return (long)queryResultAsync.TotalResults;
+					}
 #else
 				case SpecialQueryType.Count:
+					{
+						throw new NotImplementedException("not done yet");
+					}
+				case SpecialQueryType.LongCount:
 					{
 						throw new NotImplementedException("not done yet");
 					}
@@ -1378,6 +1284,10 @@ The recommended method is to use full text search (mark the field as Analyzed an
 			/// </summary>
 			Count,
 			/// <summary>
+			/// Get count of items for the query as an Int64
+			/// </summary>
+			LongCount,
+			/// <summary>
 			/// Get only the first item
 			/// </summary>
 			First,
@@ -1392,7 +1302,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
 			/// <summary>
 			/// Get only the first item (or throw if there are more than one) or null if empty
 			/// </summary>
-			SingleOrDefault
+			SingleOrDefault,
 		}
 
 		#endregion
