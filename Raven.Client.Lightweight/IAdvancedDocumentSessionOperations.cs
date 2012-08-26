@@ -143,5 +143,10 @@ namespace Raven.Client
 		/// </summary>
 		/// <param name="commands">The commands to be executed</param>
 		void Defer(params ICommandData[] commands);
+
+		/// <summary>
+		/// Gets the entities tracked by the session that have changes.
+		/// </summary>
+		IEnumerable<object> ChangedEntities { get; }
 	}
 }
