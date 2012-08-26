@@ -301,6 +301,17 @@ namespace Raven.Client.Document
 			return EntityChanged(entity, value);
 		}
 
+		/// <summary>
+		/// Gets the entities tracked by the session that have changes.
+		/// </summary>
+		public IEnumerable<object> ChangedEntities
+		{
+			get
+			{
+				return entitiesByKey.Values.Where(HasChanged);
+			}
+		}
+
 		public void IncrementRequestCount()
 		{
 			if (++NumberOfRequests > MaxNumberOfRequestsPerSession)
