@@ -2,113 +2,112 @@
 using Raven.Abstractions.Indexing;
 using Raven.Client.Embedded;
 using Raven.Client.Indexes;
-using Raven.Client.Linq;
 using Raven.Client.Linq.Indexing;
-using Raven.Database.Indexing;
 using Xunit;
 
 namespace Raven.Tests.MailingList
 {
-	public class Maxime : RavenTest
-	{
-		[Fact]
-		public void WithingRadiusOf_Should_Not_Break_Relevance()
-		{
-			using (var store = NewDocumentStore())
-			using (var session = store.OpenSession())
-			{
-				new PlacesByTermsAndLocation().Execute(store);
+    public class Maxime : RavenTest
+    {
+        [Fact]
+        public void Spatial_Search_Should_Integrate_Distance_As_A_Boost_Factor()
+        {
+            var store = new EmbeddableDocumentStore { RunInMemory = true }.Initialize();
+            store.ExecuteIndex(new SpatialIndex());
 
-				var place1 = new Place("Université du Québec à Montréal")
-				{
-					Id = "places/1",
-					Description = "L'Université du Québec à Montréal (UQAM) est une université francophone, publique et urbaine de Montréal, dans la province du Québec au Canada.",
-					Latitude = 45.50955,
-					Longitude = -73.569131
-				};
+            using (var session = store.OpenSession())
+            {
+                session.Store(new SpatialEntity(45.70955, -73.569131)
+                {
+                    Id = "se/1",
+                    Name = "Universite du Quebec a Montreal",
+                    Description = "UQAM",
+                });
 
-				var place2 = new Place("UQAM")
-				{
-					Id = "places/2",
-					Description = "L'Université du Québec à Montréal (UQAM) est une université francophone, publique et urbaine de Montréal, dans la province du Québec au Canada.",
-					Latitude = 45.50955,
-					Longitude = -73.569131
-				};
+                session.Store(new SpatialEntity(45.50955, -73.569131)
+                {
+                    Id = "se/2",
+                    Name = "UQAM",
+                    Description = "Universite du Quebec a Montreal",
+                });
 
-				session.Store(place1);
-				session.Store(place2);
+                session.Store(new SpatialEntity(45.60955, -73.569131)
+                {
+                    Id = "se/3",
+                    Name = "UQAM",
+                    Description = "Universite du Quebec a Montreal",
+                });
 
-				session.SaveChanges();
+                session.SaveChanges();
+            }
 
-				// places/2: perfect match + boost
-				var terms = "UQAM";
-				RavenQueryStatistics stats;
-				var places = session.Advanced.LuceneQuery<Place, PlacesByTermsAndLocation>()
-					.WaitForNonStaleResults()
-					.Statistics(out stats)
-					.WithinRadiusOf(500, 45.54545, -73.63908)
-					.Where("(Name:(" + terms + ") OR Terms:(" + terms + "))")
-					.Take(10)
-					.ToList();
+            WaitForIndexing(store);
 
-				WaitForUserToContinueTheTest(store);
-				Assert.Equal("places/2", places[0].Id);
-				// places/1: perfect match + boost
-				terms = "Université Québec Montréal";
-				places = session.Advanced.LuceneQuery<Place, PlacesByTermsAndLocation>()
-					.WaitForNonStaleResults()
-					.Statistics(out stats)
-					.WithinRadiusOf(500, 45.54545, -73.63908)
-					.Where("(Name:(" + terms + ") OR Terms:(" + terms + "))")
-					.Take(10)
-					.ToList();
+            using (var session = store.OpenSession())
+            {
+                //var ctx = SpatialContext.GEO_KM;
+                //var shape = ctx.MakeCircle(ctx.MakePoint(-73.569131, 45.50955), 500);
+                //var circle = ctx.ToString(shape);
 
-				Assert.Equal("places/1", places[0].Id);
-			}
-		}
+                //var lon = DistanceUtils.NormLonDEG(45.50955);
+                //var lng = DistanceUtils.NormLatDEG(-73.569131);
 
-		public class Place
-		{
-			public Place(string name)
-			{
-				Name = name;
-			}
+                var results = session.Advanced.LuceneQuery<SpatialEntity>("SpatialIndex")
+                    .Where("Name: UQAM OR Description: UQAM")
+                    //.RelatesToShape(Constants.DefaultSpatialFieldName, circle, SpatialRelation.Within)
+                    .WithinRadiusOf(500, 45.50955, -73.569133)
+                    //.SortByDistance()
+                    .ToList();
 
-			public string Id { get; set; }
-			public string Name { get; set; }
-			public string Description { get; set; }
-			public string Address { get; set; }
-			public double Latitude { get; set; }
-			public double Longitude { get; set; }
-		}
+                Assert.True(results[0].Id == "se/2");
+                Assert.True(results[1].Id == "se/3");
+                Assert.True(results[2].Id == "se/1");
+            }
 
-		public class PlacesByTermsAndLocation : AbstractIndexCreationTask<Place, PlacesByTermsAndLocation.PlaceQuery>
-		{
-			public class PlaceQuery
-			{
-				public string Name { get; set; }
-				public string Terms { get; set; }
-			}
+            store.Dispose();
+        }
 
-			public PlacesByTermsAndLocation()
-			{
-				Map = boards =>
-					  from b in boards
-					  select new
-					  {
-						  Name = b.Name.Boost(3),
-						  Terms = new
-						  {
-							  b.Description,
-							  b.Address
-						  },
-						  _ = SpatialGenerate(b.Latitude, b.Longitude)
-					  };
+        public class SpatialIndex : AbstractIndexCreationTask<SpatialEntity>
+        {
+            public SpatialIndex()
+            {
+                Map =
+                    entities =>
+                    from e in entities
+                    select new
+                    {
+                        Name = e.Name.Boost(3),
+                        e.Description,
+                        _ = SpatialGenerate(e.Latitude, e.Longitude)
+                        //_ = SpatialGenerate(Constants.DefaultSpatialFieldName, e.Location, SpatialSearchStrategy.QuadPrefixTree, 24)
+                    };
 
-				Index(p => p.Name, FieldIndexing.Analyzed);
-				Index(p => p.Terms, FieldIndexing.Analyzed);
+                Index(e => e.Name, FieldIndexing.Analyzed);
+                Index(e => e.Description, FieldIndexing.Analyzed);
+            }
+        }
 
-			}
-		} 
-	}
+        public class SpatialEntity
+        {
+            public SpatialEntity() { }
+
+            public SpatialEntity(double latitude, double longitude)
+            {
+                Latitude = latitude;
+                Longitude = longitude;
+
+                //var ctx = SpatialContext.GEO_KM;
+                //var shape = ctx.MakePoint(longitude, latitude);
+
+                //Location = ctx.ToString(shape);
+            }
+
+            public string Id { get; set; }
+            public string Name { get; set; }
+            public string Description { get; set; }
+            public double Latitude { get; set; }
+            public double Longitude { get; set; }
+            //public string Location { get; set; }
+        }
+    }
 }
