@@ -5,7 +5,7 @@
 //-----------------------------------------------------------------------
 using System;
 using System.Diagnostics;
-using Newtonsoft.Json.Linq;
+using Raven.Imports.Newtonsoft.Json.Linq;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
 using Raven.Database.Data;
@@ -17,7 +17,7 @@ using Raven.Json.Linq;
 
 namespace Raven.Database.Server.Responders
 {
-	public class Document : RequestResponder
+	public class Document : AbstractRequestResponder
 	{
 		public override string UrlPattern
 		{
@@ -26,7 +26,7 @@ namespace Raven.Database.Server.Responders
 
 		public override string[] SupportedVerbs
 		{
-			get { return new[] {"GET", "DELETE", "PUT", "PATCH", "HEAD"}; }
+			get { return new[] {"GET", "DELETE", "PUT", "PATCH", "EVAL", "HEAD"}; }
 		}
 
 		public override void Respond(IHttpContext context)
@@ -52,20 +52,31 @@ namespace Raven.Database.Server.Responders
 					var patchRequestJson = context.ReadJsonArray();
 					var patchRequests = patchRequestJson.Cast<RavenJObject>().Select(PatchRequest.FromJson).ToArray();
 					var patchResult = Database.ApplyPatch(docId, context.GetEtag(), patchRequests, GetRequestTransaction(context));
-					switch (patchResult)
-					{
-						case PatchResult.DocumentDoesNotExists:
-							context.SetStatusToNotFound();
-							break;
-						case PatchResult.Patched:
-							context.Response.AddHeader("Location", Database.Configuration.GetFullUrl("/docs/" + docId));
-							context.WriteJson(new {Patched = true});
-							break;
-						default:
-							throw new ArgumentOutOfRangeException("Value " + patchResult + " is not understood");
-					}
+					ProcessPatchResult(context, docId, patchResult, null);
+					break;
+				case "EVAL":
+					var advPatchRequestJson = context.ReadJsonObject<RavenJObject>();
+					var advPatch = ScriptedPatchRequest.FromJson(advPatchRequestJson);
+					var advPatchResult = Database.ApplyPatch(docId, context.GetEtag(), advPatch, GetRequestTransaction(context));
+					ProcessPatchResult(context, docId, advPatchResult.Item1, advPatchResult.Item2);
 					break;
 			}
+		}
+
+		private void ProcessPatchResult(IHttpContext context, string docId, PatchResult patchResult, object debug)
+		{
+				switch (patchResult)
+				{
+					case PatchResult.DocumentDoesNotExists:
+						context.SetStatusToNotFound();
+						break;
+					case PatchResult.Patched:
+						context.Response.AddHeader("Location", Database.Configuration.GetFullUrl("/docs/" + docId));
+						context.WriteJson(new {Patched = true, Debug = debug});
+						break;
+					default:
+						throw new ArgumentOutOfRangeException("Value " + patchResult + " is not understood");
+				}
 		}
 
 		private void Get(IHttpContext context, string docId)
@@ -151,7 +162,7 @@ namespace Raven.Database.Server.Responders
 		{
 			var json = context.ReadJson();
 			context.SetStatusToCreated("/docs/" + docId);
-			var putResult = Database.Put(docId, context.GetEtag(), json, context.Request.Headers.FilterHeaders(isServerDocument: true), GetRequestTransaction(context));
+			var putResult = Database.Put(docId, context.GetEtag(), json, context.Request.Headers.FilterHeaders(), GetRequestTransaction(context));
 			context.WriteJson(putResult);
 		}
 	}

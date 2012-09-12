@@ -24,17 +24,31 @@ namespace Raven.Database.Indexing
 	
 	public class RangeQueryParser : QueryParser
 	{
-		static readonly Regex rangeValue = new Regex(@"^[\w\d]x[-\w\d.]+$", RegexOptions.Compiled);
+		public static readonly Regex NumerciRangeValue = new Regex(@"^[\w\d]x[-\w\d.]+$", RegexOptions.Compiled);
 
-		private Dictionary<string,HashSet<string>> untokenized = new Dictionary<string, HashSet<string>>();
+		private readonly Dictionary<string, HashSet<string>> untokenized = new Dictionary<string, HashSet<string>>();
+		private readonly Dictionary<Tuple<string,string>, string> replacedTokens = new Dictionary<Tuple<string, string>, string>();
 
 		public RangeQueryParser(Version matchVersion, string f, Analyzer a)
 			: base(matchVersion, f, a)
 		{
 		}
 
-		public override Query GetFieldQuery(string field, string queryText)
+		public string ReplaceToken(string fieldName, string replacement)
 		{
+			var tokenReplacement = Guid.NewGuid().ToString("n");
+
+			replacedTokens[Tuple.Create(fieldName, tokenReplacement)] = replacement;
+
+			return tokenReplacement;
+		}
+
+		protected override Query GetFieldQuery(string field, string queryText)
+		{
+			string value;
+			if (replacedTokens.TryGetValue(Tuple.Create(field, queryText), out value))
+				return new TermQuery(new Term(field, value));
+
 			HashSet<string> set;
 			if(untokenized.TryGetValue(field, out set))
 			{
@@ -48,15 +62,15 @@ namespace Raven.Database.Indexing
 				&& !queryText.EndsWith(@"\*")
 				&& queryText.Contains(" "))
 			{ 
-				var analyzer = GetAnalyzer();
+				var analyzer = Analyzer;
 				var tokenStream = analyzer.ReusableTokenStream(field, new StringReader(queryText.Substring(0, queryText.Length-1)));
 				var sb = new StringBuilder();
 				while (tokenStream.IncrementToken())
 				{
-					var attribute = (TermAttribute)tokenStream.GetAttribute(typeof(TermAttribute));
+					var attribute = (TermAttribute) tokenStream.GetAttribute<ITermAttribute>();
 					if (sb.Length != 0)
 						sb.Append(' ');
-					sb.Append(attribute.Term());
+					sb.Append(attribute.Term);
 				}
 				var prefix = new Term(field, sb.ToString());
 				return new PrefixQuery(prefix);
@@ -79,7 +93,7 @@ namespace Raven.Database.Indexing
 			if (upper == "NULL" || upper == "*")
 				upper = null;
 
-			if ( (lower == null || !rangeValue.IsMatch(lower)) && (upper == null || !rangeValue.IsMatch(upper)))
+			if ( (lower == null || !NumerciRangeValue.IsMatch(lower)) && (upper == null || !NumerciRangeValue.IsMatch(upper)))
 			{
 				return NewRangeQuery(field, lower, upper, inclusive);
 			}

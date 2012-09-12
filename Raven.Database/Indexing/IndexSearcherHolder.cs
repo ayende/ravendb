@@ -1,8 +1,10 @@
 using System;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using Lucene.Net.Search;
 using Raven.Abstractions.Extensions;
+using Raven.Json.Linq;
 
 namespace Raven.Database.Indexing
 {
@@ -27,6 +29,37 @@ namespace Raven.Database.Indexing
 
 		public IDisposable GetSearcher(out IndexSearcher searcher)
 		{
+			var indexSearcherHoldingState = GetCurrentStateHolder();
+			try
+			{
+				searcher = indexSearcherHoldingState.IndexSearcher;
+				return indexSearcherHoldingState;
+			}
+			catch (Exception)
+			{
+				indexSearcherHoldingState.Dispose();
+				throw;
+			}
+		}
+
+		public IDisposable GetSearcherAndTermDocs(out IndexSearcher searcher, out RavenJObject[] termDocs)
+		{
+			var indexSearcherHoldingState = GetCurrentStateHolder();
+			try
+			{
+				searcher = indexSearcherHoldingState.IndexSearcher;
+				termDocs = indexSearcherHoldingState.GetOrCreateTerms();
+				return indexSearcherHoldingState;
+			}
+			catch (Exception)
+			{
+				indexSearcherHoldingState.Dispose();
+				throw;
+			}
+		}
+
+		private IndexSearcherHoldingState GetCurrentStateHolder()
+		{
 			while (true)
 			{
 				var state = current;
@@ -37,10 +70,10 @@ namespace Raven.Database.Indexing
 					continue;
 				}
 
-				searcher = state.IndexSearcher;
 				return state;
 			}
 		}
+
 
 		private class IndexSearcherHoldingState : IDisposable
 		{
@@ -48,6 +81,7 @@ namespace Raven.Database.Indexing
 
 			public volatile bool ShouldDispose;
 			public int Usage;
+			private RavenJObject[] readEntriesFromIndex;
 
 			public IndexSearcherHoldingState(IndexSearcher indexSearcher)
 			{
@@ -70,10 +104,22 @@ namespace Raven.Database.Indexing
 
 			private void DisposeRudely()
 			{
-				var indexReader = IndexSearcher.GetIndexReader();
-				if (indexReader != null)
-					indexReader.Close();
-				IndexSearcher.Close();
+				if (IndexSearcher != null)
+				{
+					using (IndexSearcher)
+					using (IndexSearcher.IndexReader){}
+				}
+			}
+
+			[MethodImpl(MethodImplOptions.Synchronized)]
+			public RavenJObject[] GetOrCreateTerms()
+			{
+				if (readEntriesFromIndex != null)
+					return readEntriesFromIndex;
+
+				var indexReader = IndexSearcher.IndexReader;
+				readEntriesFromIndex = IndexedTerms.ReadEntriesFromIndex(indexReader);
+				return readEntriesFromIndex;
 			}
 		}
 	}

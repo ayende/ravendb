@@ -4,7 +4,8 @@
 //     Copyright (c) Hibernating Rhinos LTD. All rights reserved.
 // </copyright>
 //-----------------------------------------------------------------------
-#if !NET_3_5
+#if !NET35
+using Raven.Abstractions.Data;
 using Raven.Client.Document.Batches;
 using Raven.Client.Connection.Async;
 #endif
@@ -26,23 +27,11 @@ namespace Raven.Client
 		void Refresh<T>(T entity);
 
 		/// <summary>
-		/// Gets the database commands.
-		/// </summary>
-		/// <value>The database commands.</value>
-		IDatabaseCommands DatabaseCommands { get; }
-
-		/// <summary>
 		/// Load documents with the specified key prefix
 		/// </summary>
-		IEnumerable<T> LoadStartingWith<T>(string keyPrefix, int start = 0, int pageSize = 25);
+		IEnumerable<T> LoadStartingWith<T>(string keyPrefix, string matches = null, int start = 0, int pageSize = 25);
 
-#if !NET_3_5
-		/// <summary>
-		/// Gets the async database commands.
-		/// </summary>
-		/// <value>The async database commands.</value>
-		IAsyncDatabaseCommands AsyncDatabaseCommands { get; }
-
+#if !NET35
 		/// <summary>
 		/// Access the lazy operations
 		/// </summary>

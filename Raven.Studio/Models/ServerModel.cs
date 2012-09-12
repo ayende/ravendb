@@ -1,8 +1,12 @@
 ﻿using System;
+using System.ComponentModel;
+using System.IO.IsolatedStorage;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Browser;
+using System.Windows.Threading;
 using Raven.Abstractions.Data;
+using Raven.Client;
 using Raven.Client.Document;
 using Raven.Studio.Commands;
 using Raven.Studio.Infrastructure;
@@ -13,12 +17,12 @@ namespace Raven.Studio.Models
 	{
 		public readonly string Url;
 		private DocumentStore documentStore;
-		private DatabaseModel[] defaultDatabase;
+		private string[] defaultDatabase;
 
 		private string buildNumber;
 		private bool singleTenant;
 
-		
+
 		public DocumentConvention Conventions
 		{
 			get { return this.documentStore.Conventions; }
@@ -38,7 +42,7 @@ namespace Raven.Studio.Models
 		private ServerModel(string url)
 		{
 			Url = url;
-			Databases = new BindableCollection<DatabaseModel>(model => model.Name);
+            Databases = new BindableCollection<string>(name => name);
 			SelectedDatabase = new Observable<DatabaseModel>();
 			License = new Observable<LicensingStatus>();
 			Initialize();
@@ -46,6 +50,11 @@ namespace Raven.Studio.Models
 
 		private void Initialize()
 		{
+			if (DesignerProperties.IsInDesignTool)
+			{
+				return;
+			}
+
 			documentStore = new DocumentStore
 			{
 				Url = Url
@@ -64,41 +73,57 @@ namespace Raven.Studio.Models
 			documentStore.JsonRequestFactory.
 				EnableBasicAuthenticationOverUnsecureHttpEvenThoughPasswordsWouldBeSentOverTheWireInClearTextToBeStolenByHackers =
 				true;
-			
+
 			documentStore.JsonRequestFactory.ConfigureRequest += (o, eventArgs) =>
 			{
 				if (onWebRequest != null)
 					onWebRequest(eventArgs.Request);
 			};
 
-			defaultDatabase = new[] { new DatabaseModel(DatabaseModel.DefaultDatabaseName, documentStore) };
+			defaultDatabase = new[] { Constants.SystemDatabase};
 			Databases.Set(defaultDatabase);
 			SetCurrentDatabase(new UrlParser(UrlUtil.Url));
 
 			DisplayBuildNumber();
 			DisplyaLicenseStatus();
-
-			var changeDatabaseCommand = new ChangeDatabaseCommand();
-			SelectedDatabase.PropertyChanged += (sender, args) =>
-			{
-				if (SelectedDatabase.Value == null)
-					return;
-				var databaseName = SelectedDatabase.Value.Name;
-				Command.ExecuteCommand(changeDatabaseCommand, databaseName);
-			};
+		    TimerTickedAsync();
 		}
 
+		public bool CreateNewDatabase { get; set; }
+		private static bool firstTick = true;
 		public override Task TimerTickedAsync()
 		{
 			if (singleTenant)
 				return null;
 
+			if (SelectedDatabase.Value.HasReplication)
+				SelectedDatabase.Value.UpdateReplicationOnlineStatus();
+
 			return documentStore.AsyncDatabaseCommands.GetDatabaseNamesAsync(1024)
 				.ContinueOnSuccess(names =>
-				{
-					var databaseModels = names.Select(db => new DatabaseModel(db, documentStore));
-					Databases.Match(defaultDatabase.Concat(databaseModels).ToArray());
-				})
+				                   	{
+				                   		Databases.Match(defaultDatabase.Concat(names).ToArray());
+				                   		if (firstTick == false)
+				                   			return;
+
+				                   		firstTick = false;
+				                   		if (names.Length == 0 || (names.Length == 1 && names[0] == Constants.SystemDatabase))
+				                   		{
+				                   			CreateNewDatabase = true;
+				                   		}
+
+				                   		if (string.IsNullOrEmpty(Settings.Instance.SelectedDatabase)) 
+											return;
+
+				                   		var url = new UrlParser(UrlUtil.Url);
+
+										if (Settings.Instance.SelectedDatabase != null && names.Contains(Settings.Instance.SelectedDatabase))
+										{
+											url.SetQueryParam("database", Settings.Instance.SelectedDatabase);
+											SetCurrentDatabase(url);
+											UrlUtil.Navigate(Settings.Instance.LastUrl);
+										}
+				                   	})
 				.Catch();
 		}
 
@@ -107,8 +132,13 @@ namespace Raven.Studio.Models
 			get { return singleTenant; }
 		}
 
+	    public IDocumentStore DocumentStore
+	    {
+	        get { return documentStore; }
+	    }
+
 		public Observable<DatabaseModel> SelectedDatabase { get; private set; }
-		public BindableCollection<DatabaseModel> Databases { get; private set; }
+		public BindableCollection<string> Databases { get; private set; }
 
 		public void Dispose()
 		{
@@ -117,6 +147,11 @@ namespace Raven.Studio.Models
 
 		private static string DetermineUri()
 		{
+			if (DesignerProperties.IsInDesignTool)
+			{
+				return string.Empty;
+			}
+
 			if (HtmlPage.Document.DocumentUri.Scheme == "file")
 			{
 				return "http://localhost:8080";
@@ -137,35 +172,43 @@ namespace Raven.Studio.Models
 		public void SetCurrentDatabase(UrlParser urlParser)
 		{
 			var databaseName = urlParser.GetQueryParam("database");
+
+            if (SelectedDatabase.Value != null && SelectedDatabase.Value.Name == databaseName)
+                return;
+
+            singleTenant = urlParser.GetQueryParam("api-key") != null;
+
+            if (SelectedDatabase.Value != null)
+            {
+                SelectedDatabase.Value.Dispose();
+            }
+
 			if (databaseName == null)
 			{
-				SelectedDatabase.Value = defaultDatabase[0];
-				return;
+				SelectedDatabase.Value = new DatabaseModel(Constants.SystemDatabase, documentStore);
 			}
-			if (SelectedDatabase.Value != null && SelectedDatabase.Value.Name == databaseName)
-				return;
-			var database = Databases.FirstOrDefault(x => x.Name == databaseName);
-			if (database != null)
+            else
 			{
-				SelectedDatabase.Value = database;
-				return;
+                SelectedDatabase.Value = new DatabaseModel(databaseName, documentStore);
 			}
-			singleTenant = urlParser.GetQueryParam("api-key") != null;
-			var databaseModel = new DatabaseModel(databaseName, documentStore);
-			Databases.Add(databaseModel);
-			SelectedDatabase.Value = databaseModel;
+
+            SelectedDatabase.Value.AsyncDatabaseCommands
+                .EnsureSilverlightStartUpAsync()
+                .Catch();
+			if(databaseName != null && databaseName != Constants.SystemDatabase)
+				Settings.Instance.SelectedDatabase = databaseName;
 		}
 
 		private void DisplayBuildNumber()
 		{
-			SelectedDatabase.Value.AsyncDatabaseCommands.GetBuildNumber()
+			SelectedDatabase.Value.AsyncDatabaseCommands.GetBuildNumberAsync()
 				.ContinueOnSuccessInTheUIThread(x => BuildNumber = x.BuildVersion)
 				.Catch();
 		}
 
 		private void DisplyaLicenseStatus()
 		{
-			SelectedDatabase.Value.AsyncDatabaseCommands.GetLicenseStatus()
+			SelectedDatabase.Value.AsyncDatabaseCommands.GetLicenseStatusAsync()
 				.ContinueOnSuccessInTheUIThread(x =>
 				{
 					License.Value = x;

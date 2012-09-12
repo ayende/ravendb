@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.ComponentModel.Composition.Hosting;
 using System.Linq;
 using Lucene.Net.Documents;
-using Newtonsoft.Json.Linq;
+using Raven.Imports.Newtonsoft.Json.Linq;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Indexing;
 using Raven.Abstractions.Linq;
@@ -21,6 +21,7 @@ namespace Raven.Tests.MailingList
 			{
 				AddField("_");
 				MapDefinitions.Add(Map);
+				Init(new IndexDefinition());
 			}
 
 			private IEnumerable<dynamic> Map(IEnumerable<dynamic> source)

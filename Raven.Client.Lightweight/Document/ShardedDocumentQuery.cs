@@ -10,7 +10,7 @@ using System.Linq;
 using System.Text;
 using Raven.Abstractions.Data;
 using System.Threading;
-#if !NET_3_5
+#if !NET35
 using System.Threading.Tasks;
 using Raven.Client.Connection.Async;
 using Raven.Client.Document.Batches;
@@ -56,15 +56,18 @@ namespace Raven.Client.Document
 		/// <summary>
 		/// Initializes a new instance of the <see cref="ShardedDocumentQuery{T}"/> class.
 		/// </summary>
-		public ShardedDocumentQuery(InMemoryDocumentSessionOperations session, Func<ShardRequestData, IList<Tuple<string, IDatabaseCommands>>> getShardsToOperateOn, ShardStrategy shardStrategy, string indexName, string[] projectionFields, IDocumentQueryListener[] queryListeners)
+		public ShardedDocumentQuery(InMemoryDocumentSessionOperations session, Func<ShardRequestData, IList<Tuple<string, IDatabaseCommands>>> getShardsToOperateOn, ShardStrategy shardStrategy, string indexName, string[] fieldsToFetch, string[] projectionFields, IDocumentQueryListener[] queryListeners)
 			: base(session
 #if !SILVERLIGHT
 			, null
 #endif
-#if !NET_3_5
+#if !NET35
 			, null
 #endif
-			, indexName, projectionFields, queryListeners)
+			, indexName, 
+			fieldsToFetch,
+			projectionFields, 
+			queryListeners)
 		{
 			this.getShardsToOperateOn = getShardsToOperateOn;
 			this.shardStrategy = shardStrategy;
@@ -89,13 +92,14 @@ namespace Raven.Client.Document
 			ExecuteActualQuery();
 		}
 
-		public override IDocumentQuery<TProjection> SelectFields<TProjection>(string[] fields)
+		public override IDocumentQuery<TProjection> SelectFields<TProjection>(string[] fields, string[] projections)
 		{
 			var documentQuery = new ShardedDocumentQuery<TProjection>(theSession,
 				getShardsToOperateOn,
 				shardStrategy, 
 				indexName,
 				fields,
+				projections,
 				queryListeners)
 			{
 				pageSize = pageSize,
@@ -103,6 +107,7 @@ namespace Raven.Client.Document
 				start = start,
 				timeout = timeout,
 				cutoff = cutoff,
+				cutoffEtag = cutoffEtag,
 				queryStats = queryStats,
 				theWaitForNonStaleResults = theWaitForNonStaleResults,
 				sortByHints = sortByHints,
@@ -146,7 +151,7 @@ namespace Raven.Client.Document
 				Thread.Sleep(100);
 			}
 
-			AssertNoDuplicateIdsInResults();
+			AssertNoDuplicateIdsInResults(shardQueryOperations);
 
 			var mergedQueryResult = shardStrategy.MergeQueryResults(IndexQuery,
 			                                                        shardQueryOperations.Select(x => x.CurrentQueryResults)
@@ -157,7 +162,7 @@ namespace Raven.Client.Document
 			queryOperation = shardQueryOperations[0];
 		}
 
-		private void AssertNoDuplicateIdsInResults()
+		internal static void AssertNoDuplicateIdsInResults(List<QueryOperation> shardQueryOperations)
 		{
 			var shardsPerId = new Dictionary<string, HashSet<QueryOperation>>(StringComparer.InvariantCultureIgnoreCase);
 
@@ -195,17 +200,17 @@ namespace Raven.Client.Document
 		}
 #endif
 
-#if !NET_3_5
+#if !NET35
 		/// <summary>
 		///   Grant access to the async database commands
 		/// </summary>
 		public override IAsyncDatabaseCommands AsyncDatabaseCommands
 		{
-			get { throw new NotSupportedException("Sharded doesn't support async operations."); }
+			get { throw new NotSupportedException("Sharded has more than one DatabaseCommands to operate on."); }
 		}
 #endif
 
-#if !NET_3_5 && !SILVERLIGHT
+#if !NET35 && !SILVERLIGHT
 
 		/// <summary>
 		/// Register the query as a lazy query in the session and return a lazy
@@ -233,7 +238,7 @@ namespace Raven.Client.Document
 		}
 #endif
 
-#if !NET_3_5
+#if !NET35
 		protected override Task<QueryOperation> ExecuteActualQueryAsync()
 		{
 			throw new NotSupportedException();

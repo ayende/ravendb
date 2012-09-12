@@ -7,7 +7,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Threading;
-using Newtonsoft.Json.Linq;
+using Raven.Imports.Newtonsoft.Json.Linq;
 using NLog;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Indexing;
@@ -97,9 +97,13 @@ namespace Raven.Database.Impl
 				if (indexDefinition.IsMapReduce == false)
 				{
 					bool hasStoredFields = false;
-					foreach (var fieldToFetch in fieldsToFetch)
+					FieldStorage value;
+					if(indexDefinition.Stores.TryGetValue(Constants.AllFields, out value))
 					{
-						FieldStorage value;
+						hasStoredFields = value != FieldStorage.No;
+					}
+					foreach (var fieldToFetch in fieldsToFetch.Fields)
+					{
 						if (indexDefinition.Stores.TryGetValue(fieldToFetch, out value) == false &&
 							value != FieldStorage.No)
 							continue;
@@ -112,12 +116,24 @@ namespace Raven.Database.Impl
 							return null;
 					}
 				}
-				var fieldsToFetchFromDocument = fieldsToFetch.Where(fieldToFetch => queryResult.Projection[fieldToFetch] == null).ToArray();
-				if (fieldsToFetchFromDocument.Length > 0)
+
+				// We have to load the document if user explicitly asked for the id, since 
+				// we normalize the casing for the document id on the index, and we need to return
+				// the id to the user with the same casing they gave us.
+				var fetchingId = fieldsToFetch.Fields.Any(fieldToFetch => fieldToFetch == Constants.DocumentIdFieldName);
+				var fieldsToFetchFromDocument = fieldsToFetch.Fields
+					.Where(fieldToFetch => queryResult.Projection[fieldToFetch] == null)
+					.ToArray();
+				if (fieldsToFetchFromDocument.Length > 0 || fetchingId)
 				{
 					var doc = GetDocumentWithCaching(queryResult.Key);
 					if (doc != null)
 					{
+						if(fetchingId) 
+						{
+							queryResult.Projection[Constants.DocumentIdFieldName] = doc.Key;
+						}
+
 						var result = doc.DataAsJson.SelectTokenWithRavenSyntax(fieldsToFetchFromDocument.ToArray());
 						foreach (var property in result)
 						{
@@ -198,7 +214,7 @@ namespace Raven.Database.Impl
 						       		           	}
 						       	};
 					case ReadVetoResult.ReadAllow.Ignore:
-						log.Debug("Triggered {0} asked us to ignore {1}", readTrigger.Value, document.Key);
+						log.Debug("Trigger {0} asked us to ignore {1}", readTrigger.Value, document.Key);
 						return null;
 					default:
 						throw new ArgumentOutOfRangeException(readVetoResult.Veto.ToString());

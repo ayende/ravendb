@@ -5,12 +5,9 @@
 //-----------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
-using System.Linq;
-#if !NET_3_5
-using System.Threading.Tasks;
-#endif
 using Raven.Abstractions.Data;
 using Raven.Client.Connection;
 using Raven.Client.Document;
@@ -18,6 +15,9 @@ using Raven.Client.Document.Batches;
 
 namespace Raven.Client.Linq
 {
+#if !NET35
+	using System.Threading.Tasks;
+#endif
 
 	///<summary>
 	/// Extensions to the linq syntax
@@ -28,7 +28,7 @@ namespace Raven.Client.Linq
 		/// <summary>
 		/// Query the facets results for this query using the specified facet document
 		/// </summary>
-		public static IDictionary<string, IEnumerable<FacetValue>> ToFacets<T>(this IQueryable<T> queryable, string facetDoc)
+		public static FacetResults ToFacets<T>(this IQueryable<T> queryable, string facetDoc)
 		{
 			var ravenQueryInspector = ((IRavenQueryInspector)queryable);
 			var query = ravenQueryInspector.ToString();
@@ -39,8 +39,8 @@ namespace Raven.Client.Linq
 
 #endif
 
-#if !NET_3_5 && !SILVERLIGHT
-		public static Lazy<IDictionary<string, IEnumerable<FacetValue>>> ToFacetsLazy<T>(this IQueryable<T> queryable, string facetDoc)
+#if !NET35 && !SILVERLIGHT
+		public static Lazy<FacetResults> ToFacetsLazy<T>(this IQueryable<T> queryable, string facetDoc)
 		{
 			var ravenQueryInspector = ((IRavenQueryInspector)queryable);
 			var query = ravenQueryInspector.ToString();
@@ -48,18 +48,18 @@ namespace Raven.Client.Linq
 			var lazyOperation = new LazyFacetsOperation(ravenQueryInspector.IndexQueried, facetDoc, new IndexQuery { Query = query });
 
 			var documentSession = ((DocumentSession)ravenQueryInspector.Session);
-			return documentSession.AddLazyOperation<IDictionary<string, IEnumerable<FacetValue>>>(lazyOperation, null);
+			return documentSession.AddLazyOperation<FacetResults>(lazyOperation, null);
 		}
 #endif
 
-#if !NET_3_5
+#if !NET35
 
 
 
 		/// <summary>
 		/// Query the facets results for this query using the specified facet document
 		/// </summary>
-		public static Task<IDictionary<string, IEnumerable<FacetValue>>> ToFacetsAsync<T>(this IQueryable<T> queryable, string facetDoc)
+		public static Task<FacetResults> ToFacetsAsync<T>(this IQueryable<T> queryable, string facetDoc)
 		{
 			var ravenQueryInspector = ((RavenQueryInspector<T>)queryable);
 			var query = ravenQueryInspector.ToString();
@@ -127,7 +127,7 @@ namespace Raven.Client.Linq
 			SetSuggestionQueryFieldAndTerm(ravenQueryInspector, query);
 			return ravenQueryInspector.DatabaseCommands.Suggest(ravenQueryInspector.IndexQueried, query);
 		}
-#if !NET_3_5
+#if !NET35
 		/// <summary>
 		/// Lazy Suggest alternative values for the queried term
 		/// </summary>
@@ -162,7 +162,7 @@ namespace Raven.Client.Linq
 			query.Field = lastEqualityTerm.Key;
 			query.Term = lastEqualityTerm.Value;
 		}
-#if !NET_3_5
+#if !NET35
 		/// <summary>
 		/// Suggest alternative values for the queried term
 		/// </summary>
@@ -188,7 +188,10 @@ namespace Raven.Client.Linq
 		/// Perform a search for documents which fields that match the searchTerms.
 		/// If there is more than a single term, each of them will be checked independently.
 		/// </summary>
-		public static IRavenQueryable<T> Search<T>(this IRavenQueryable<T> self, Expression<Func<T, object>> fieldSelector, string searchTerms, decimal boost = 1, SearchOptions options = SearchOptions.Or, EscapeQueryOptions escapeQueryOptions = EscapeQueryOptions.EscapeAll)
+		public static IRavenQueryable<T> Search<T>(this IRavenQueryable<T> self, Expression<Func<T, object>> fieldSelector, string searchTerms,
+				decimal boost = 1, 
+				SearchOptions options = SearchOptions.Guess, 
+				EscapeQueryOptions escapeQueryOptions = EscapeQueryOptions.EscapeAll)
 		{
 			var currentMethod = (MethodInfo)MethodBase.GetCurrentMethod();
 			Expression expression = self.Expression;
@@ -205,7 +208,7 @@ namespace Raven.Client.Linq
 			return (IRavenQueryable<T>)queryable;
 		}
 
-#if !NET_3_5
+#if !NET35
 		/// <summary>
 		/// Register the query as a lazy query in the session and return a lazy
 		/// instance that will evaluate the query only when needed

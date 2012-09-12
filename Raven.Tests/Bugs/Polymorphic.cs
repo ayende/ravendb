@@ -4,12 +4,12 @@
 // </copyright>
 //-----------------------------------------------------------------------
 using System.Collections.Generic;
-using Newtonsoft.Json;
+using Raven.Imports.Newtonsoft.Json;
 using Xunit;
 
 namespace Raven.Tests.Bugs
 {
-	public class Polymorphic : LocalClientTest
+	public class Polymorphic : RavenTest
 	{
 		public interface IVegetable
 		{

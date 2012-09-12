@@ -4,15 +4,17 @@
 // </copyright>
 //-----------------------------------------------------------------------
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using Raven.Abstractions.Connection;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
+using Raven.Abstractions.Util;
+using Raven.Client.Changes;
 using Raven.Client.Connection;
 using Raven.Client.Extensions;
-using Raven.Client.Connection.Profiling;
-#if !NET_3_5
+#if !NET35
 using System.Collections.Concurrent;
 using Raven.Client.Connection.Async;
 using System.Threading.Tasks;
@@ -25,8 +27,11 @@ using System.Net.Browser;
 using Raven.Client.Listeners;
 using Raven.Client.Silverlight.Connection;
 using Raven.Client.Silverlight.Connection.Async;
+using System.Collections.Generic;
+using Raven.Client.Util;
+
 #else
-using Raven.Client.Listeners;
+
 #endif
 
 namespace Raven.Client.Document
@@ -42,7 +47,10 @@ namespace Raven.Client.Document
 		[ThreadStatic]
 		protected static Guid? currentSessionId;
 
-#if !SILVERLIGHT
+#if SILVERLIGHT
+		private readonly Dictionary<string, ReplicationInformer> replicationInformers = new Dictionary<string, ReplicationInformer>(StringComparer.InvariantCultureIgnoreCase);
+		private readonly object replicationInformersLocker = new object();
+#else
 		/// <summary>
 		/// Generate new instance of database commands
 		/// </summary>
@@ -50,6 +58,8 @@ namespace Raven.Client.Document
 
 		private readonly ConcurrentDictionary<string, ReplicationInformer> replicationInformers = new ConcurrentDictionary<string, ReplicationInformer>(StringComparer.InvariantCultureIgnoreCase);
 #endif
+
+		private readonly AtomicDictionary<IDatabaseChanges> databaseChanges = new AtomicDictionary<IDatabaseChanges>(StringComparer.InvariantCultureIgnoreCase);
 
 		private HttpJsonRequestFactory jsonRequestFactory;
 
@@ -92,7 +102,7 @@ namespace Raven.Client.Document
 
 #endif
 
-#if !NET_3_5
+#if !NET35
 		private Func<IAsyncDatabaseCommands> asyncDatabaseCommandsGenerator;
 		/// <summary>
 		/// Gets the async database commands.
@@ -239,15 +249,35 @@ namespace Raven.Client.Document
 #if DEBUG
 			GC.SuppressFinalize(this);
 #endif
-			
-			if (jsonRequestFactory != null)
-				jsonRequestFactory.Dispose();
-#if !SILVERLIGHT
+
+
+			var tasks = new List<Task>();
+			foreach (var databaseChange in databaseChanges)
+			{
+				var remoteDatabaseChanges = databaseChange.Value as RemoteDatabaseChanges;
+				if(remoteDatabaseChanges != null)
+				{
+					tasks.Add(remoteDatabaseChanges.DisposeAsync());
+				}
+				else
+				{
+					using(databaseChange.Value as IDisposable){}
+				}
+			}
+
 			foreach (var replicationInformer in replicationInformers)
 			{
 				replicationInformer.Value.Dispose();
 			}
-#endif
+
+			// try to wait until all the async disposables are completed
+			Task.WaitAll(tasks.ToArray(), TimeSpan.FromSeconds(3));
+
+			// if this is still going, we continue with disposal, it is for grace only, anyway
+
+			if (jsonRequestFactory != null)
+				jsonRequestFactory.Dispose();
+
 			WasDisposed = true;
 			var afterDispose = AfterDispose;
 			if (afterDispose != null)
@@ -296,8 +326,8 @@ namespace Raven.Client.Document
 			{
 				var session = new DocumentSession(this, listeners, sessionId,
 					SetupCommands(DatabaseCommands, options.Database, options.Credentials, options)
-#if !NET_3_5
-, SetupCommandsAsync(AsyncDatabaseCommands, options.Database, options.Credentials)
+#if !NET35
+, SetupCommandsAsync(AsyncDatabaseCommands, options.Database, options.Credentials, options)
 #endif
 );
 				AfterSessionCreated(session);
@@ -319,18 +349,19 @@ namespace Raven.Client.Document
 				databaseCommands.ForceReadFromMaster();
 			return databaseCommands;
 		}
+#endif
 
-#if !NET_3_5
-		private static IAsyncDatabaseCommands SetupCommandsAsync(IAsyncDatabaseCommands databaseCommands, string database, ICredentials credentialsForSession)
+#if !NET35
+		private static IAsyncDatabaseCommands SetupCommandsAsync(IAsyncDatabaseCommands databaseCommands, string database, ICredentials credentialsForSession, OpenSessionOptions options)
 		{
 			if (database != null)
 				databaseCommands = databaseCommands.ForDatabase(database);
 			if (credentialsForSession != null)
 				databaseCommands = databaseCommands.With(credentialsForSession);
+			if (options.ForceReadFromMaster)
+				databaseCommands.ForceReadFromMaster();
 			return databaseCommands;
 		}
-#endif
-
 #endif
 
 		/// <summary>
@@ -350,32 +381,37 @@ namespace Raven.Client.Document
 #endif
 			try
 			{
-#if !NET_3_5
-				if (Conventions.DisableProfiling == false)
-				{
-					jsonRequestFactory.LogRequest += profilingContext.RecordAction;
-				}
-#endif
+				InitializeProfiling();
+
 				InitializeInternal();
 
 				InitializeSecurity();
 
+#if !SILVERLIGHT
 				if (Conventions.DocumentKeyGenerator == null)// don't overwrite what the user is doing
 				{
-#if !SILVERLIGHT
-					var generator = new MultiTypeHiLoKeyGenerator(databaseCommandsGenerator(), 32);
-					Conventions.DocumentKeyGenerator = entity => generator.GenerateDocumentKey(Conventions, entity);
-#else
+					var generator = new MultiTypeHiLoKeyGenerator(32);
+					Conventions.DocumentKeyGenerator = (databaseCommands, entity) => generator.GenerateDocumentKey(databaseCommands, Conventions, entity);
+				}
+#endif
 
-					Conventions.DocumentKeyGenerator = entity =>
+#if !NET35 
+				if (Conventions.AsyncDocumentKeyGenerator == null && asyncDatabaseCommandsGenerator != null)
+				{
+#if !SILVERLIGHT
+					var generator = new AsyncMultiTypeHiLoKeyGenerator(32);
+					Conventions.AsyncDocumentKeyGenerator = (commands, entity) => generator.GenerateDocumentKeyAsync(commands, Conventions, entity);
+#else
+					Conventions.AsyncDocumentKeyGenerator = (commands, entity) =>
 					{
 						var typeTagName = Conventions.GetTypeTagName(entity.GetType());
 						if (typeTagName == null)
-							return Guid.NewGuid().ToString();
-						return typeTagName + "/" + Guid.NewGuid();
+							return CompletedTask.With(Guid.NewGuid().ToString());
+						return CompletedTask.With(typeTagName + "/" + Guid.NewGuid());
 					};
 #endif
 				}
+#endif
 			}
 			catch (Exception)
 			{
@@ -395,6 +431,16 @@ namespace Raven.Client.Document
 			return this;
 		}
 
+		public void InitializeProfiling()
+		{
+#if !NET35
+			if (Conventions.DisableProfiling == false)
+			{
+				jsonRequestFactory.LogRequest += profilingContext.RecordAction;
+			}
+#endif
+		}
+
 		private void InitializeSecurity()
 		{
 			if (Conventions.HandleUnauthorizedResponse != null)
@@ -407,9 +453,10 @@ namespace Raven.Client.Document
 					return;
 
 				SetHeader(args.Request.Headers, "Authorization", currentOauthToken);
-
 			};
+			
 #if !SILVERLIGHT
+			
 			Conventions.HandleUnauthorizedResponse = (response) =>
 			{
 				var oauthSource = response.Headers["OAuth-Source"];
@@ -428,7 +475,7 @@ namespace Raven.Client.Document
 				}
 			};
 #endif
-#if !NET_3_5
+#if !NET35
 			Conventions.HandleUnauthorizedResponseAsync = unauthorizedResponse =>
 			{
 				var oauthSource = unauthorizedResponse.Headers["OAuth-Source"];
@@ -483,10 +530,28 @@ namespace Raven.Client.Document
 			if (string.IsNullOrEmpty(ApiKey) == false)
 				SetHeader(authRequest.Headers, "Api-Key", ApiKey);
 
-			if (oauthSource.StartsWith("https", StringComparison.InvariantCultureIgnoreCase) == false &&
-			   jsonRequestFactory.EnableBasicAuthenticationOverUnsecureHttpEvenThoughPasswordsWouldBeSentOverTheWireInClearTextToBeStolenByHackers == false)
+			if (authRequest.RequestUri.Scheme.Equals("https", StringComparison.InvariantCultureIgnoreCase) == false &&
+			   jsonRequestFactory.EnableBasicAuthenticationOverUnsecureHttpEvenThoughPasswordsWouldBeSentOverTheWireInClearTextToBeStolenByHackers == false && 
+			   IsLocalHost(authRequest) == false)
+			{
 				throw new InvalidOperationException(BasicOAuthOverHttpError);
+			}
 			return authRequest;
+		}
+
+		private bool IsLocalHost(HttpWebRequest authRequest)
+		{
+			var host = authRequest.RequestUri.DnsSafeHost;
+			if (host.Equals("localhost"))
+				return true;
+#if !SILVERLIGHT
+			if (Environment.MachineName.Equals(host, StringComparison.InvariantCultureIgnoreCase))
+				return true;
+#endif
+			if (host == "::1" || host == "127.0.0.1")
+				return true;
+			return false;
+
 		}
 
 		/// <summary>
@@ -515,19 +580,19 @@ namespace Raven.Client.Document
 				return new ServerClient(databaseUrl, Conventions, credentials, GetReplicationInformerForDatabase, null, jsonRequestFactory, currentSessionId);
 			};
 #endif
-#if !NET_3_5
+#if !NET35
 #if SILVERLIGHT
 			// required to ensure just a single auth dialog
-			var task = jsonRequestFactory.CreateHttpJsonRequest(this, (Url + "/docs?pageSize=0").NoCache(), "GET", credentials, Conventions)
-				.ExecuteRequest();
+			var task = jsonRequestFactory.CreateHttpJsonRequest(new CreateHttpJsonRequestParams(this, (Url + "/docs?pageSize=0").NoCache(), "GET", credentials, Conventions))
+				.ExecuteRequestAsync();
 #endif
 			asyncDatabaseCommandsGenerator = () =>
 			{
 
 #if SILVERLIGHT
-				var asyncServerClient = new AsyncServerClient(Url, Conventions, credentials, jsonRequestFactory, currentSessionId, task);
+				var asyncServerClient = new AsyncServerClient(Url, Conventions, credentials, jsonRequestFactory, currentSessionId, task, GetReplicationInformerForDatabase, null);
 #else
-				var asyncServerClient = new AsyncServerClient(Url, Conventions, credentials, jsonRequestFactory, currentSessionId);
+				var asyncServerClient = new AsyncServerClient(Url, Conventions, credentials, jsonRequestFactory, currentSessionId, GetReplicationInformerForDatabase, null);
 #endif
 				if (string.IsNullOrEmpty(DefaultDatabase))
 					return asyncServerClient;
@@ -535,8 +600,8 @@ namespace Raven.Client.Document
 			};
 #endif
 		}
-
-#if !SILVERLIGHT
+		
+		
 		public ReplicationInformer GetReplicationInformerForDatabase(string dbName = null)
 		{
 			var key = Url;
@@ -545,9 +610,21 @@ namespace Raven.Client.Document
 			{
 				key = MultiDatabase.GetRootDatabaseUrl(Url) + "/databases/" + dbName;
 			}
-			return replicationInformers.GetOrAddAtomically(key, s => new ReplicationInformer(Conventions));
-		}
+#if SILVERLIGHT
+			lock (replicationInformersLocker)
+			{
+				ReplicationInformer result;
+				if (!replicationInformers.TryGetValue(key, out result))
+				{
+					result = Conventions.ReplicationInformerFactory(key);
+					replicationInformers.Add(key, result);
+				}
+				return result;
+			}
+#else
+			return replicationInformers.GetOrAdd(key, Conventions.ReplicationInformerFactory);
 #endif
+		}
 
 		/// <summary>
 		/// Setup the context for no aggressive caching
@@ -568,6 +645,31 @@ namespace Raven.Client.Document
 			// TODO: with silverlight, we don't currently support aggressive caching
 			return new DisposableAction(() => { });
 #endif
+		}
+
+		/// <summary>
+		/// Subscribe to change notifications from the server
+		/// </summary>
+		public override IDatabaseChanges Changes(string database = null)
+		{
+			AssertInitialized();
+
+			return databaseChanges.GetOrAdd(database ?? DefaultDatabase, 
+				CreateDatabaseChanges);
+		}
+
+		protected virtual IDatabaseChanges CreateDatabaseChanges(string database)
+		{
+			if (string.IsNullOrEmpty(Url))
+				throw new InvalidOperationException("Changes API requires usage of server/client");
+
+			database = database ?? DefaultDatabase;
+
+			var dbUrl = MultiDatabase.GetRootDatabaseUrl(Url);
+			if (string.IsNullOrEmpty(database) == false)
+				dbUrl = dbUrl + "/databases/" + database;
+
+			return new RemoteDatabaseChanges(dbUrl, credentials, jsonRequestFactory, Conventions, () => databaseChanges.Remove(database));
 		}
 
 		/// <summary>
@@ -596,10 +698,11 @@ namespace Raven.Client.Document
 #endif
 		}
 
-#if !NET_3_5
+#if !NET35
 
 		private IAsyncDocumentSession OpenAsyncSessionInternal(IAsyncDatabaseCommands asyncDatabaseCommands)
 		{
+			AssertInitialized();
 			EnsureNotClosed();
 
 			var sessionId = Guid.NewGuid();
@@ -625,7 +728,7 @@ namespace Raven.Client.Document
 		/// <returns></returns>
 		public override IAsyncDocumentSession OpenAsyncSession()
 		{
-			return OpenAsyncSessionInternal(AsyncDatabaseCommands);
+			return OpenAsyncSession(new OpenSessionOptions());
 		}
 
 		/// <summary>
@@ -634,7 +737,15 @@ namespace Raven.Client.Document
 		/// <returns></returns>
 		public override IAsyncDocumentSession OpenAsyncSession(string databaseName)
 		{
-			return OpenAsyncSessionInternal(AsyncDatabaseCommands.ForDatabase(databaseName));
+			return OpenAsyncSession(new OpenSessionOptions
+			{
+				Database = databaseName
+			});
+		}
+
+		public IAsyncDocumentSession OpenAsyncSession(OpenSessionOptions options)
+		{
+			return OpenAsyncSessionInternal(SetupCommandsAsync(AsyncDatabaseCommands, options.Database, options.Credentials, options));
 		}
 
 #endif

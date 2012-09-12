@@ -8,9 +8,11 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using System.Reactive.Linq;
 using System.Threading.Tasks;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
+using Raven.Abstractions.Indexing;
 using Raven.Client.Connection;
 using Raven.Client.Linq;
 using Raven.Studio.Controls.Editors;
@@ -18,6 +20,7 @@ using Raven.Studio.Features.Documents;
 using Raven.Studio.Infrastructure;
 using Raven.Studio.Models;
 using Raven.Client.Extensions;
+using Raven.Studio.Extensions;
 
 namespace Raven.Studio.Features.Query
 {
@@ -31,37 +34,62 @@ namespace Raven.Studio.Features.Query
 			this.model = model;
 		}
 
-		public override void Execute(object _)
+		public override void Execute(object parameter)
 		{
-			query = model.Query.Value;
+			query = model.Query;
 			ClearRecentQuery();
 			model.RememberHistory();
 
-			model.DocumentsResult.Value = new DocumentsModel
-			                              {
-			                              	SkipAutoRefresh = true,
-			                              	ShowEditControls = false,
-			                              	Header = "Results",
-			                              	CustomFetchingOfDocuments = GetFetchDocumentsMethod, 
-											Pager = {IsSkipBasedOnTheUrl = false},
-			                              };
-			model.DocumentsResult.Value.ForceTimerTicked();
+			Observable.FromEventPattern<VirtualCollectionSourceChangedEventArgs>(
+				h => model.CollectionSource.CollectionChanged += h, h => model.CollectionSource.CollectionChanged -= h)
+				.Where(p => p.EventArgs.ChangeType == ChangeType.Refresh)
+				.Take(1)
+				.ObserveOnDispatcher()
+				.Subscribe(_ =>
+							   {
+								   if (model.CollectionSource.Count == 0)
+								   {
+									   SuggestResults();
+								   }
+							   });
+
+            model.DocumentsResult.SetPriorityColumns(GetRelevantFields());
+		    var templateQuery = CreateTemplateQuery();
+		    model.QueryUrl = templateQuery.GetIndexQueryUrl("", model.IndexName, "indexes");
+			var url = ApplicationModel.Current.Server.Value.Url;
+			if (url.EndsWith("/") == false)
+				url += "/";
+			if (model.Database.Value.Name != Constants.SystemDatabase)
+				url += "databases/" + model.Database.Value.Name;
+			model.FullQueryUrl = templateQuery.GetIndexQueryUrl(url, model.IndexName, "indexes");
+		    model.CollectionSource.UpdateQuery(model.IndexName, templateQuery);  
 		}
+
+	    private IList<string> GetRelevantFields()
+	    {
+	        return model.QueryDocument.GetTextOfAllTokensMatchingType("Field").Select(t => t.TrimEnd(':').Trim())
+	            .Concat(
+	                model.SortBy
+                    .Where(s => !string.IsNullOrEmpty(s.Value))
+                    .Select(s => s.Value.EndsWith("DESC") ? s.Value.Substring(0, s.Value.Length - 5) : s.Value))
+	            .Distinct()
+                .SelectMany(f => f.Contains("_") ? new[] {f, f.Replace("_", ".")} : new[] { f}) // if the field name contains underscores, it is likely referring to a property 
+	            .ToList();
+	    }
 
 		private void ClearRecentQuery()
 		{
-			model.Error = null;
+			model.ClearQueryError();
 			model.Suggestions.Clear();
 		}
 
-		private Task GetFetchDocumentsMethod(DocumentsModel documentsModel)
+		private IndexQuery CreateTemplateQuery()
 		{
 			var q = new IndexQuery
-			{
-				Start = model.DocumentsResult.Value.Pager.Skip,
-				PageSize = model.DocumentsResult.Value.Pager.PageSize,
-				Query = query,
-			};
+						{
+							Query = query,
+							DefaultOperator = model.DefualtOperator
+						};
 
 			if (model.SortBy != null && model.SortBy.Count > 0)
 			{
@@ -80,67 +108,31 @@ namespace Raven.Studio.Features.Query
 				q.SortedFields = sortedFields.ToArray();
 			}
 
-			if (model.IsSpatialQuerySupported && 
+			if (model.ShowFields)
+			{
+				q.FieldsToFetch = new[] { Constants.AllFields };
+			}
+
+			q.DebugOptionGetIndexEntries = model.ShowEntries;
+			
+			q.SkipTransformResults = model.SkipTransformResults;
+			if (model.IsSpatialQuerySupported &&
 				model.Latitude.HasValue && model.Longitude.HasValue)
 			{
 				q = new SpatialIndexQuery(q)
-					{
-						Latitude = model.Latitude.Value,
-						Longitude = model.Longitude.Value,
-						Radius = model.Radius.HasValue ? model.Radius.Value : 1,
-					};
+						{
+							QueryShape = SpatialIndexQuery.GetQueryShapeFromLatLon(model.Latitude.Value, model.Longitude.Value, model.Radius.HasValue ? model.Radius.Value : 1),
+							SpatialRelation = SpatialRelation.Within,
+							SpatialFieldName = Constants.DefaultSpatialFieldName,
+							DefaultOperator = model.DefualtOperator
+						};
 			}
-
-			var queryStartTime = DateTime.Now.Ticks;
-			var queryEndtime = DateTime.MinValue.Ticks;
-			return DatabaseCommands.QueryAsync(model.IndexName, q, null)
-				.ContinueWith(task =>
-				{
-					queryEndtime = DateTime.Now.Ticks;
-					return task;
-				})
-				.Unwrap()
-				.ContinueOnSuccessInTheUIThread(qr =>
-				{
-					model.QueryTime = new TimeSpan(queryEndtime - queryStartTime);
-					model.Results = new RavenQueryStatistics
-					{
-						IndexEtag = qr.IndexEtag,
-						IndexName = qr.IndexName,
-						IndexTimestamp = qr.IndexTimestamp,
-						IsStale = qr.IsStale,
-						SkippedResults = qr.SkippedResults,
-						Timestamp = DateTime.Now,
-						TotalResults = qr.TotalResults
-					};
-					var viewableDocuments = qr.Results.Select(obj => new ViewableDocument(obj.ToJsonDocument())).ToArray();
-					
-					var documetsIds = new List<string>();
-					ProjectionData.Projections.Clear();
-					foreach (var viewableDocument in viewableDocuments)
-					{
-						var id = string.IsNullOrEmpty(viewableDocument.Id) == false ? viewableDocument.Id : Guid.NewGuid().ToString();
-
-						if (string.IsNullOrEmpty(viewableDocument.Id))
-							ProjectionData.Projections.Add(id, viewableDocument);
-
-						documetsIds.Add(id);
-
-						viewableDocument.NeighborsIds = documetsIds;
-					}
-					
-					documentsModel.Documents.Match(viewableDocuments);
-					documentsModel.Pager.TotalResults.Value = qr.TotalResults;
-
-					if (qr.TotalResults == 0)
-						SuggestResults();
-				})
-				.CatchIgnore<WebException>(ex => model.Error = ex.SimplifyError());
+			return q;
 		}
 
 		private void SuggestResults()
 		{
-			foreach (var fieldAndTerm in QueryEditor.GetCurrentFieldsAndTerms(model.Query.Value))
+			foreach (var fieldAndTerm in model.GetCurrentFieldsAndTerms())
 			{
 				DatabaseCommands.SuggestAsync(model.IndexName, new SuggestionQuery {Field = fieldAndTerm.Field, Term = fieldAndTerm.Term, MaxSuggestions = 10})
 					.ContinueOnSuccessInTheUIThread(result => model.Suggestions.AddRange(

@@ -14,16 +14,11 @@ using Raven.Studio.Infrastructure;
 
 namespace Raven.Studio
 {
-	public partial class Documents : View
+	public partial class Documents : PageView
 	{
 		public Documents()
 		{
 			InitializeComponent();
-		}
-
-		// Executes when the user navigates to this page.
-		protected override void OnNavigatedTo(NavigationEventArgs e)
-		{
 		}
 	}
 }

@@ -8,6 +8,7 @@ using System.ServiceModel;
 using System.Threading;
 using System.Xml;
 using NLog;
+using Raven.Abstractions;
 using Rhino.Licensing.Discovery;
 
 namespace Rhino.Licensing
@@ -48,7 +49,7 @@ namespace Rhino.Licensing
 		private readonly string publicKey;
 		private readonly Timer nextLeaseTimer;
 		private bool disableFutureChecks;
-		private bool currentlyValidatingSubscriptionLicense;
+		private bool currentlyValidatingLicense;
 		private readonly DiscoveryHost discoveryHost;
 		private DiscoveryClient discoveryClient;
 		private readonly Guid senderId = Guid.NewGuid();
@@ -61,11 +62,7 @@ namespace Rhino.Licensing
 		/// <summary>
 		/// Gets the expiration date of the license
 		/// </summary>
-		public DateTime ExpirationDate
-		{
-			get;
-			private set;
-		}
+		public DateTime ExpirationDate { get; private set; }
 
 		/// <summary>
 		/// How to behave when using the same license multiple times
@@ -95,74 +92,64 @@ namespace Rhino.Licensing
 		/// <summary>
 		/// Gets or Sets the endpoint address of the subscription service
 		/// </summary>
-		public string SubscriptionEndpoint
-		{
-			get;
-			set;
-		}
+		public string SubscriptionEndpoint { get; set; }
 
 		/// <summary>
 		/// Gets the Type of the license
 		/// </summary>
-		public LicenseType LicenseType
-		{
-			get;
-			private set;
-		}
+		public LicenseType LicenseType { get; private set; }
 
 		/// <summary>
 		/// Gets the Id of the license holder
 		/// </summary>
-		public Guid UserId
-		{
-			get;
-			private set;
-		}
+		public Guid UserId { get; private set; }
 
 		/// <summary>
 		/// Gets the name of the license holder
 		/// </summary>
-		public string Name
-		{
-			get;
-			private set;
-		}
+		public string Name { get; private set; }
 
 		/// <summary>
 		/// Gets or Sets Floating license support
 		/// </summary>
-		public bool DisableFloatingLicenses
-		{
-			get;
-			set;
-		}
+		public bool DisableFloatingLicenses { get; set; }
 
 		/// <summary>
 		/// Gets extra license information
 		/// </summary>
-		public IDictionary<string, string> LicenseAttributes
-		{
-			get;
-			private set;
-		}
+		public IDictionary<string, string> LicenseAttributes { get; private set; }
 
 		/// <summary>
 		/// Gets or Sets the license content
 		/// </summary>
-		protected abstract string License
-		{
-			get;
-			set;
-		}
+		protected abstract string License { get; set; }
 
 		private void LeaseLicenseAgain(object state)
 		{
+			if (License == null)
+				return;
+
 			var client = discoveryClient;
 			if (client != null)
 				client.PublishMyPresence();
 
-			if (HasExistingLicense())
+			try
+			{
+				if (IsLicenseValid())
+					return;
+			}
+			catch (RhinoLicensingException)
+			{
+				try
+				{
+					RaiseLicenseInvalidated();
+				}
+				catch (InvalidOperationException)
+				{
+					/* continue to RaiseLicenseInvalidated */
+				}
 				return;
+			}
 
 			RaiseLicenseInvalidated();
 		}
@@ -173,12 +160,12 @@ namespace Rhino.Licensing
 			if (licenseInvalidated == null)
 				throw new InvalidOperationException("License was invalidated, but there is no one subscribe to the LicenseInvalidated event");
 			licenseInvalidated(LicenseType == LicenseType.Floating
-								? InvalidationType.CannotGetNewLicense
-								: InvalidationType.TimeExpired);
+			                   	? InvalidationType.CannotGetNewLicense
+			                   	: InvalidationType.TimeExpired);
 		}
 
 		/// <summary>
-		/// Creates a license validator with specfied public key.
+		/// Creates a license validator with specified public key.
 		/// </summary>
 		/// <param name="publicKey">public key</param>
 		protected AbstractLicenseValidator(string publicKey)
@@ -207,17 +194,28 @@ namespace Rhino.Licensing
 					if (Environment.UserName == clientDiscoveredEventArgs.UserName)
 						return;
 					break;
+				case MultipleLicenseUsage.Deny:
+					if (Environment.UserName == clientDiscoveredEventArgs.UserName &&
+						Environment.MachineName == clientDiscoveredEventArgs.MachineName)
+						return;
+					break;
+				default:
+					throw new ArgumentOutOfRangeException("invalid MultipleLicenseUsageBehavior: " + MultipleLicenseUsageBehavior);
 			}
 			var client = discoveryClient;
 			if (client != null)
 			{
-				client.PublishMyPresence();			
+				client.PublishMyPresence();
 			}
 			RaiseLicenseInvalidated();
 			var onMultipleLicensesWereDiscovered = MultipleLicensesWereDiscovered;
 			if (onMultipleLicensesWereDiscovered != null)
 			{
 				onMultipleLicensesWereDiscovered(this, clientDiscoveredEventArgs);
+			}
+			else
+			{
+				throw new InvalidOperationException("Multiple licenses were discovered, but no one is handling the MultipleLicensesWereDiscovered event");
 			}
 		}
 
@@ -248,12 +246,12 @@ namespace Rhino.Licensing
 		public virtual void AssertValidLicense(Action onValidLicense)
 		{
 			LicenseAttributes.Clear();
-			if (HasExistingLicense())
+			if (IsLicenseValid())
 			{
 				onValidLicense();
-				
+
 				if (MultipleLicenseUsageBehavior == MultipleLicenseUsage.AllowSameLicense)
-					return; 
+					return;
 
 				try
 				{
@@ -274,7 +272,7 @@ namespace Rhino.Licensing
 			throw new LicenseNotFoundException("Could not find a valid license.");
 		}
 
-		private bool HasExistingLicense()
+		private bool IsLicenseValid()
 		{
 			try
 			{
@@ -291,9 +289,13 @@ namespace Rhino.Licensing
 
 				bool result;
 				if (LicenseType == LicenseType.Subscription)
-					result = ValidateSubscription();
+					result = ValidateLicense();
 				else
-					result = DateTime.UtcNow < ExpirationDate;
+				{
+					result = SystemTime.UtcNow < ExpirationDate;
+					if (result)
+						result = ValidateLicense();
+				}
 
 				if (result)
 					ValidateUsingNetworkTime();
@@ -311,13 +313,13 @@ namespace Rhino.Licensing
 			}
 		}
 
-		private bool ValidateSubscription()
+		private bool ValidateLicense()
 		{
-			if ((ExpirationDate - DateTime.UtcNow).TotalDays > 4)
+			if ((ExpirationDate - SystemTime.UtcNow).TotalDays > 4)
 				return true;
 
-			if (currentlyValidatingSubscriptionLicense)
-				return DateTime.UtcNow < ExpirationDate;
+			if (currentlyValidatingLicense)
+				return SystemTime.UtcNow < ExpirationDate;
 
 			if (SubscriptionEndpoint == null)
 				throw new InvalidOperationException("Subscription endpoints are not supported for this license validator");
@@ -336,14 +338,14 @@ namespace Rhino.Licensing
 
 		private bool ValidateWithoutUsingSubscriptionLeasing()
 		{
-			currentlyValidatingSubscriptionLicense = true;
+			currentlyValidatingLicense = true;
 			try
 			{
-				return HasExistingLicense();
+				return IsLicenseValid();
 			}
 			finally
 			{
-				currentlyValidatingSubscriptionLicense = false;
+				currentlyValidatingLicense = false;
 			}
 		}
 
@@ -354,6 +356,20 @@ namespace Rhino.Licensing
 			{
 				var newLicense = service.LeaseLicense(License);
 				TryOverwritingWithNewLicense(newLicense);
+			}
+			catch (FaultException ex)
+			{
+				var message = ex.Message;
+				if (message.StartsWith("The order has been cancelled"))
+					throw new LicenseExpiredException(message);
+				if (message.StartsWith("Invalid license"))
+				{
+					// Ignore.	
+				}
+			}
+			catch (Exception e)
+			{
+				Logger.Error("Could not re-lease subscription license", e);
 			}
 			finally
 			{
@@ -406,10 +422,10 @@ namespace Rhino.Licensing
 				if (time > ExpirationDate)
 					RaiseLicenseInvalidated();
 			}
-			, () =>
-			{
-				/* ignored */
-			});
+			                  , () =>
+			                  {
+			                  	/* ignored */
+			                  });
 		}
 
 		/// <summary>
@@ -417,6 +433,7 @@ namespace Rhino.Licensing
 		/// </summary>
 		public virtual void RemoveExistingLicense()
 		{
+			discoveryHost.Stop();
 		}
 
 		/// <summary>
@@ -455,8 +472,7 @@ namespace Rhino.Licensing
 					if (node == null)
 					{
 						Logger.Warn("Invalid license, floating license without license server public key:\r\n{0}", License);
-						throw new InvalidOperationException(
-							"Invalid license file format, floating license without license server public key");
+						throw new InvalidOperationException("Invalid license file format, floating license without license server public key");
 					}
 					return ValidateFloatingLicense(node.InnerText);
 				}
@@ -502,7 +518,7 @@ namespace Rhino.Licensing
 					Environment.MachineName,
 					Environment.UserName,
 					clientId);
-				((ICommunicationObject)licensingService).Close();
+				((ICommunicationObject) licensingService).Close();
 				success = true;
 				if (leasedLicense == null)
 				{
@@ -523,7 +539,7 @@ namespace Rhino.Licensing
 				if (validLicense)
 				{
 					//setup next lease
-					var time = (ExpirationDate.AddMinutes(-5) - DateTime.UtcNow);
+					var time = (ExpirationDate.AddMinutes(-5) - SystemTime.UtcNow);
 					Logger.Debug("Will lease license again at {0}", time);
 					if (disableFutureChecks == false)
 						nextLeaseTimer.Change(time, time);
@@ -533,7 +549,7 @@ namespace Rhino.Licensing
 			finally
 			{
 				if (success == false)
-					((ICommunicationObject)licensingService).Abort();
+					((ICommunicationObject) licensingService).Abort();
 			}
 		}
 
@@ -564,7 +580,7 @@ namespace Rhino.Licensing
 				return false;
 			}
 
-			LicenseType = (LicenseType)Enum.Parse(typeof(LicenseType), licenseType.Value);
+			LicenseType = (LicenseType) Enum.Parse(typeof (LicenseType), licenseType.Value);
 
 			XmlNode name = doc.SelectSingleNode("/license/name/text()");
 			if (name == null)
@@ -596,7 +612,7 @@ namespace Rhino.Licensing
 			nsMgr.AddNamespace("sig", "http://www.w3.org/2000/09/xmldsig#");
 
 			var signedXml = new SignedXml(doc);
-			var sig = (XmlElement)doc.SelectSingleNode("//sig:Signature", nsMgr);
+			var sig = (XmlElement) doc.SelectSingleNode("//sig:Signature", nsMgr);
 			if (sig == null)
 			{
 				Logger.Warn("Could not find this signature node on license:\r\n{0}", License);

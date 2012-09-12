@@ -4,7 +4,7 @@ using Xunit;
 
 namespace Raven.Tests.Bugs.MultiMap
 {
-	public class Errors : LocalClientTest
+	public class Errors : RavenTest
 	{
 		[Fact]
 		public void MultiMapsMustHaveSameOutput()
@@ -51,7 +51,7 @@ Additional fields	: Title", exception.Message);
 				Assert.Equal(
 					@"The result type is not consistent across map and reduce:
 Common fields: Title
-Map	only fields   : 
+Map only fields   : 
 Reduce only fields: Count
 ",
 					exception.Message);

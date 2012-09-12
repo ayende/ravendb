@@ -7,11 +7,11 @@ using System.Linq;
 using System.Linq.Expressions;
 using System.Text;
 using Raven.Abstractions.Data;
+using Raven.Abstractions.Indexing;
 using Raven.Client.Connection;
 using Raven.Client.Linq;
 using Raven.Client.Listeners;
-using Raven.Client.Extensions;
-#if !NET_3_5
+#if !NET35
 using Raven.Client.Connection.Async;
 #endif
 
@@ -29,18 +29,18 @@ namespace Raven.Client.Document
 #if !SILVERLIGHT
 			, IDatabaseCommands databaseCommands
 #endif 
-#if !NET_3_5
+#if !NET35
 			, IAsyncDatabaseCommands asyncDatabaseCommands
 #endif
-			, string indexName, string[] projectionFields, IDocumentQueryListener[] queryListeners)
+, string indexName, string[] fieldsToFetch, string[] projectionFields, IDocumentQueryListener[] queryListeners)
 			: base(session
 #if !SILVERLIGHT
 			, databaseCommands
 #endif
-#if !NET_3_5
+#if !NET35
 			, asyncDatabaseCommands
 #endif
-			, indexName, projectionFields, queryListeners)
+			, indexName, fieldsToFetch, projectionFields, queryListeners)
 		{
 		}
 
@@ -53,22 +53,41 @@ namespace Raven.Client.Document
 			
 		}
 
+		/// <summary>
+		/// Selects the projection fields directly from the index
+		/// </summary>
+		/// <typeparam name="TProjection">The type of the projection.</typeparam>
+		public IDocumentQuery<TProjection> SelectFields<TProjection>()
+		{
+			var props = typeof (TProjection).GetProperties().Select(x => x.Name).ToArray();
+			return SelectFields<TProjection>(props, props);
+		}
 
 		/// <summary>
 		/// Selects the specified fields directly from the index
 		/// </summary>
 		/// <typeparam name="TProjection">The type of the projection.</typeparam>
-		/// <param name="fields">The fields.</param>
-		public virtual IDocumentQuery<TProjection> SelectFields<TProjection>(string[] fields)
+		public IDocumentQuery<TProjection> SelectFields<TProjection>(params string[] fields)
+		{
+			return SelectFields<TProjection>(fields, fields);
+		}
+
+		/// <summary>
+		/// Selects the specified fields directly from the index
+		/// </summary>
+		/// <typeparam name="TProjection">The type of the projection.</typeparam>
+		public virtual IDocumentQuery<TProjection> SelectFields<TProjection>(string[] fields, string[] projections)
 		{
 			var documentQuery = new DocumentQuery<TProjection>(theSession,
 #if !SILVERLIGHT
 			                                                   theDatabaseCommands,
 #endif
-#if !NET_3_5
+#if !NET35
 			                                                   theAsyncDatabaseCommands,
 #endif
-			                                                   indexName, fields,
+			                                                   indexName, 
+															   fields,
+															   projections,
 			                                                   queryListeners)
 			{
 				pageSize = pageSize,
@@ -76,6 +95,7 @@ namespace Raven.Client.Document
 				start = start,
 				timeout = timeout,
 				cutoff = cutoff,
+				cutoffEtag = cutoffEtag,
 				queryStats = queryStats,
 				theWaitForNonStaleResults = theWaitForNonStaleResults,
 				sortByHints = sortByHints,
@@ -86,9 +106,10 @@ namespace Raven.Client.Document
 				transformResultsFunc = transformResultsFunc,
 				includes = new HashSet<string>(includes),
 				isSpatialQuery = isSpatialQuery,
-				lat = lat,
-				lng = lng,
-				radius = radius,
+				spatialFieldName = spatialFieldName,
+				queryShape = queryShape,
+				spatialRelation = spatialRelation,
+				distanceErrorPct = distanceErrorPct,
 			};
 			documentQuery.AfterQueryExecuted(afterQueryExecutedCallback);
 			return documentQuery;
@@ -123,7 +144,7 @@ namespace Raven.Client.Document
 		/// <param name = "descending">if set to <c>true</c> [descending].</param>
 		public IDocumentQuery<T> AddOrder<TValue>(Expression<Func<T, TValue>> propertySelector, bool descending)
 		{
-			AddOrder(propertySelector.GetPropertyName(), descending);
+			AddOrder(GetMemberQueryPath(propertySelector.Body), descending);
 			return this;
 		}
 
@@ -194,7 +215,7 @@ namespace Raven.Client.Document
 		/// </summary>
 		public IDocumentQuery<T> Search<TValue>(Expression<Func<T, TValue>> propertySelector, string searchTerms)
 		{
-			Search(propertySelector.GetPropertyName(), searchTerms);
+			Search(GetMemberQueryPath(propertySelector.Body), searchTerms);
 			return this;
 		}
 
@@ -218,7 +239,7 @@ namespace Raven.Client.Document
 		///</remarks>
 		public IDocumentQuery<T> GroupBy<TValue>(AggregationOperation aggregationOperation, params Expression<Func<T, TValue>>[] groupPropertySelectors)
 		{
-			GroupBy(aggregationOperation, groupPropertySelectors.Select(x => x.GetPropertyName()).ToArray());
+			GroupBy(aggregationOperation, groupPropertySelectors.Select(GetMemberQueryPath).ToArray());
 			return this;
 		}
 
@@ -244,6 +265,12 @@ namespace Raven.Client.Document
 		IDocumentQuery<T> IDocumentQueryBase<T, IDocumentQuery<T>>.UsingDefaultField(string field)
 		{
 			UsingDefaultField(field);
+			return this;
+		}
+
+		IDocumentQuery<T> IDocumentQueryBase<T, IDocumentQuery<T>>.UsingDefaultOperator(QueryOperator queryOperator)
+		{
+			UsingDefaultOperator(queryOperator);
 			return this;
 		}
 
@@ -324,14 +351,14 @@ namespace Raven.Client.Document
 		}
 
 		/// <summary>
-		///   Matches exact value
+		/// 	Matches exact value
 		/// </summary>
 		/// <remarks>
 		///   Defaults to NotAnalyzed
 		/// </remarks>
 		public IDocumentQuery<T> WhereEquals<TValue>(Expression<Func<T, TValue>> propertySelector, TValue value)
 		{
-			WhereEquals(propertySelector.GetPropertyName(), value);
+			WhereEquals(GetMemberQueryPath(propertySelector.Body), value);
 			return this;
 		}
 
@@ -348,14 +375,14 @@ namespace Raven.Client.Document
 		}
 
 		/// <summary>
-		///   Matches exact value
+		/// 	Matches exact value
 		/// </summary>
 		/// <remarks>
 		///   Defaults to allow wildcards only if analyzed
 		/// </remarks>
 		public IDocumentQuery<T> WhereEquals<TValue>(Expression<Func<T, TValue>> propertySelector, TValue value, bool isAnalyzed)
 		{
-			WhereEquals(propertySelector.GetPropertyName(), value, isAnalyzed);
+			WhereEquals(GetMemberQueryPath(propertySelector.Body), value, isAnalyzed);
 			return this;
 		}
 
@@ -367,37 +394,6 @@ namespace Raven.Client.Document
 			WhereEquals(whereEqualsParams);
 			return this;
 		}
-
-		/// <summary>
-		/// 	Matches substrings of the field
-		/// </summary>
-		[Obsolete("Avoid using WhereContains(), use Search() instead")]
-		IDocumentQuery<T> IDocumentQueryBase<T, IDocumentQuery<T>>.WhereContains(string fieldName, object value)
-		{
-			WhereContains(fieldName, value);
-			return this;
-		}
-
-		/// <summary>
-		/// 	Matches substrings of the field
-		/// </summary>
-		[Obsolete("Avoid using WhereContains(), use Search() instead")]
-		IDocumentQuery<T> IDocumentQueryBase<T, IDocumentQuery<T>>.WhereContains(string fieldName, params object[] values)
-		{
-			WhereContains(fieldName, values);
-			return this;
-		}
-
-		/// <summary>
-		/// 	Matches substrings of the field
-		/// </summary>
-		[Obsolete("Avoid using WhereContains(), use Search() instead")]
-		IDocumentQuery<T> IDocumentQueryBase<T, IDocumentQuery<T>>.WhereContains(string fieldName, IEnumerable<object> values)
-		{
-			WhereContains(fieldName, values);
-			return this;
-		}
-
 
 		/// <summary>
 		/// Check that the field has one of the specified value
@@ -413,7 +409,7 @@ namespace Raven.Client.Document
 		/// </summary>
 		public IDocumentQuery<T> WhereIn<TValue>(Expression<Func<T, TValue>> propertySelector, IEnumerable<TValue> values)
 		{
-			WhereIn(propertySelector.GetPropertyName(), values.Cast<object>());
+			WhereIn(GetMemberQueryPath(propertySelector.Body), values.Cast<object>());
 			return this;
 		}
 
@@ -435,7 +431,7 @@ namespace Raven.Client.Document
 		/// <param name = "value">The value.</param>
 		public IDocumentQuery<T> WhereStartsWith<TValue>(Expression<Func<T, TValue>> propertySelector, TValue value)
 		{
-			WhereStartsWith(propertySelector.GetPropertyName(), value);
+			WhereStartsWith(GetMemberQueryPath(propertySelector.Body), value);
 			return this;
 		}
 
@@ -457,7 +453,7 @@ namespace Raven.Client.Document
 		/// <param name = "value">The value.</param>
 		public IDocumentQuery<T> WhereEndsWith<TValue>(Expression<Func<T, TValue>> propertySelector, TValue value)
 		{
-			WhereEndsWith(propertySelector.GetPropertyName(), value);
+			WhereEndsWith(GetMemberQueryPath(propertySelector.Body), value);
 			return this;
 		}
 
@@ -481,7 +477,7 @@ namespace Raven.Client.Document
 		/// <param name = "end">The end.</param>
 		public IDocumentQuery<T> WhereBetween<TValue>(Expression<Func<T, TValue>> propertySelector, TValue start, TValue end)
 		{
-			WhereBetween(propertySelector.GetPropertyName(), start, end);
+			WhereBetween(GetMemberQueryPath(propertySelector.Body), start, end);
 			return this;
 		}
 
@@ -505,7 +501,7 @@ namespace Raven.Client.Document
 		/// <param name = "end">The end.</param>
 		public IDocumentQuery<T> WhereBetweenOrEqual<TValue>(Expression<Func<T, TValue>> propertySelector, TValue start, TValue end)
 		{
-			WhereBetweenOrEqual(propertySelector.GetPropertyName(), start, end);
+			WhereBetweenOrEqual(GetMemberQueryPath(propertySelector.Body), start, end);
 			return this;
 		}
 
@@ -527,7 +523,7 @@ namespace Raven.Client.Document
 		/// <param name = "value">The value.</param>
 		public IDocumentQuery<T> WhereGreaterThan<TValue>(Expression<Func<T, TValue>> propertySelector, TValue value)
 		{
-			WhereGreaterThan(propertySelector.GetPropertyName(), value);
+			WhereGreaterThan(GetMemberQueryPath(propertySelector.Body), value);
 			return this;
 		}
 
@@ -549,7 +545,7 @@ namespace Raven.Client.Document
 		/// <param name = "value">The value.</param>
 		public IDocumentQuery<T> WhereGreaterThanOrEqual<TValue>(Expression<Func<T, TValue>> propertySelector, TValue value)
 		{
-			WhereGreaterThanOrEqual(propertySelector.GetPropertyName(), value);
+			WhereGreaterThanOrEqual(GetMemberQueryPath(propertySelector.Body), value);
 			return this;
 		}
 
@@ -571,7 +567,7 @@ namespace Raven.Client.Document
 		/// <param name = "value">The value.</param>
 		public IDocumentQuery<T> WhereLessThan<TValue>(Expression<Func<T, TValue>> propertySelector, TValue value)
 		{
-			WhereLessThan(propertySelector.GetPropertyName(), value);
+			WhereLessThan(GetMemberQueryPath(propertySelector.Body), value);
 			return this;
 		}
 
@@ -593,7 +589,7 @@ namespace Raven.Client.Document
 		/// <param name = "value">The value.</param>
 		public IDocumentQuery<T> WhereLessThanOrEqual<TValue>(Expression<Func<T, TValue>> propertySelector, TValue value)
 		{
-			WhereLessThanOrEqual(propertySelector.GetPropertyName(), value);
+			WhereLessThanOrEqual(GetMemberQueryPath(propertySelector.Body), value);
 			return this;
 		}
 
@@ -666,7 +662,17 @@ namespace Raven.Client.Document
 		/// <param name="longitude">The longitude.</param>
 		public IDocumentQuery<T> WithinRadiusOf(double radius, double latitude, double longitude)
 		{
-			return (IDocumentQuery<T>) GenerateQueryWithinRadiusOf(radius, latitude, longitude);
+			return (IDocumentQuery<T>) GenerateQueryWithinRadiusOf(Constants.DefaultSpatialFieldName, radius, latitude, longitude);
+		}
+
+		public IDocumentQuery<T> WithinRadiusOf(string fieldName, double radius, double latitude, double longitude)
+		{
+			return (IDocumentQuery<T>)GenerateQueryWithinRadiusOf(fieldName, radius, latitude, longitude);
+		}
+
+		public IDocumentQuery<T> RelatesToShape(string fieldName, string shapeWKT, SpatialRelation rel, double distanceErrorPct = 0.025)
+		{
+			return (IDocumentQuery<T>)GenerateSpatialQueryData(fieldName, shapeWKT, rel, distanceErrorPct);
 		}
 
 		/// <summary>
@@ -675,12 +681,18 @@ namespace Raven.Client.Document
 		/// <param name = "radius">The radius.</param>
 		/// <param name = "latitude">The latitude.</param>
 		/// <param name = "longitude">The longitude.</param>
-		protected override object GenerateQueryWithinRadiusOf(double radius, double latitude, double longitude)
+		protected override object GenerateQueryWithinRadiusOf(string fieldName, double radius, double latitude, double longitude, double distanceErrorPct = 0.025)
+		{
+			return GenerateSpatialQueryData(fieldName, SpatialIndexQuery.GetQueryShapeFromLatLon(latitude, longitude, radius), SpatialRelation.Within, distanceErrorPct);
+		}
+
+		protected override object GenerateSpatialQueryData(string fieldName, string shapeWKT, SpatialRelation relation, double distanceErrorPct)
 		{
 			isSpatialQuery = true;
-			this.radius = radius;
-			lat = latitude;
-			lng = longitude;
+			spatialFieldName = fieldName;
+			queryShape = shapeWKT;
+			spatialRelation = relation;
+			this.distanceErrorPct = distanceErrorPct;
 			return this;
 		}
 
@@ -713,7 +725,7 @@ namespace Raven.Client.Document
 		/// <param name = "propertySelectors">Property selectors for the fields.</param>
 		public IDocumentQuery<T> OrderBy<TValue>(params Expression<Func<T, TValue>>[] propertySelectors)
 		{
-			OrderBy(propertySelectors.Select(x => x.GetPropertyName()).ToArray());
+			OrderBy(propertySelectors.Select(GetMemberQueryPath).ToArray());
 			return this;
 		}
 
@@ -816,7 +828,7 @@ namespace Raven.Client.Document
 		{
 			var trim = QueryText.ToString().Trim();
 			if(isSpatialQuery)
-				return string.Format(CultureInfo.InvariantCulture, "{0} Lat: {1} Lng: {2} Radius: {3}", trim, lat, lng, radius);
+				return string.Format(CultureInfo.InvariantCulture, "{0} SpatialField: {1} QueryShape: {2} Relation: {3}", trim, spatialFieldName, queryShape, spatialRelation);
 			return trim;
 		}
 	}

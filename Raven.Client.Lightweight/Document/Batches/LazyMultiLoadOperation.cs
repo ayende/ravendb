@@ -1,4 +1,4 @@
-﻿#if !NET_3_5
+﻿#if !NET35
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -51,7 +51,7 @@ namespace Raven.Client.Document.Batches
 		{
 			var list = new List<MultiLoadResult>(
 				from response in responses
-				let result = RavenJObject.Parse(response.Result)
+				let result = response.Result
 				select new MultiLoadResult
 				{
 					Includes = result.Value<RavenJArray>("Includes").Cast<RavenJObject>().ToList(),
@@ -86,7 +86,7 @@ namespace Raven.Client.Document.Batches
 
 		public void HandleResponse(GetResponse response)
 		{
-			var result = RavenJObject.Parse(response.Result);
+			var result = response.Result;
 
 			var multiLoadResult = new MultiLoadResult
 			{

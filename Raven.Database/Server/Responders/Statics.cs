@@ -9,7 +9,7 @@ using Raven.Database.Server.Abstractions;
 
 namespace Raven.Database.Server.Responders
 {
-	public class Statics : RequestResponder
+	public class Statics : AbstractRequestResponder
 	{
 		public override string UrlPattern
 		{
@@ -25,7 +25,9 @@ namespace Raven.Database.Server.Responders
 		{
 			var array = Database.GetAttachments(context.GetStart(), 
 			                                   context.GetPageSize(Database.Configuration.MaxPageSize),
-			                                   context.GetEtagFromQueryString());
+			                                   context.GetEtagFromQueryString(),
+											   context.Request.QueryString["startsWith"],
+											   long.MaxValue);
 			context.WriteJson(array);
 		}
 	}

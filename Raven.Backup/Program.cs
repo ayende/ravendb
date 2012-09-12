@@ -1,5 +1,6 @@
 ﻿using System;
 using NDesk.Options;
+using Raven.Abstractions;
 
 namespace Raven.Backup
 {
@@ -28,6 +29,7 @@ namespace Raven.Backup
 			}
 			catch (Exception e)
 			{
+				Console.WriteLine("Could not understand arguemnts");
 				Console.WriteLine(e.Message);
 				PrintUsage(optionSet);
 				return;
@@ -56,7 +58,7 @@ namespace Raven.Backup
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine(ex.Message);
+				Console.WriteLine(ex);
 			}
 
 			if (doReadKeyOnExit) Console.ReadKey();
@@ -70,7 +72,7 @@ Backup utility for RavenDB
 ----------------------------------------
 Copyright (C) 2008 - {0} - Hibernating Rhinos
 ----------------------------------------
-Command line options:", DateTime.UtcNow.Year);
+Command line options:", SystemTime.UtcNow.Year);
 
 			optionSet.WriteOptionDescriptions(Console.Out);
 

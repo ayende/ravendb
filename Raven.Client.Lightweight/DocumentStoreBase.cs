@@ -5,17 +5,22 @@ using System.Collections.Specialized;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
+using Raven.Client.Changes;
 using Raven.Client.Connection;
 using Raven.Client.Connection.Profiling;
+using Raven.Client.Extensions;
 using Raven.Client.Indexes;
 using Raven.Client.Listeners;
 using Raven.Client.Document;
 #if SILVERLIGHT
 using Raven.Client.Silverlight.Connection;
 #endif
-#if !NET_3_5
+#if !NET35
 using Raven.Client.Connection.Async;
+using Raven.Client.Util;
+
 #endif
 
 namespace Raven.Client
@@ -37,7 +42,14 @@ namespace Raven.Client
 		/// </summary>
 		public bool WasDisposed { get; protected set; }
 
-		public abstract IDisposable AggressivelyCacheFor(TimeSpan cahceDuration);
+		/// <summary>
+		/// Subscribe to change notifications from the server
+		/// </summary>
+
+		public abstract IDisposable AggressivelyCacheFor(TimeSpan cacheDuration);
+
+		public abstract IDatabaseChanges Changes(string database = null);
+
 		public abstract IDisposable DisableAggressiveCaching();
 		
 #if !SILVERLIGHT
@@ -53,7 +65,7 @@ namespace Raven.Client
 		public abstract HttpJsonRequestFactory JsonRequestFactory { get; }
 		public abstract string Identifier { get; set; }
 		public abstract IDocumentStore Initialize();
-#if !NET_3_5
+#if !NET35
 		public abstract IAsyncDatabaseCommands AsyncDatabaseCommands { get; }
 		public abstract IAsyncDocumentSession OpenAsyncSession();
 		public abstract IAsyncDocumentSession OpenAsyncSession(string database);
@@ -134,7 +146,7 @@ namespace Raven.Client
 				{
 					if (lastEtag == null)
 					{
-						lastEtag = new DocumentStore.EtagHolder
+						lastEtag = new EtagHolder
 						{
 							Bytes = newEtag,
 							Etag = etag.Value
@@ -158,7 +170,7 @@ namespace Raven.Client
 					return;
 				}
 
-				lastEtag = new DocumentStore.EtagHolder
+				lastEtag = new EtagHolder
 				{
 					Etag = etag.Value,
 					Bytes = newEtag
@@ -232,7 +244,7 @@ namespace Raven.Client
 		///</summary>
 		public event Action<InMemoryDocumentSessionOperations> SessionCreatedInternal;
 
-#if !NET_3_5
+#if !NET35
 		protected readonly ProfilingContext profilingContext = new ProfilingContext();
 #endif
 
@@ -252,7 +264,7 @@ namespace Raven.Client
 		/// </summary>
 		public ProfilingInformation GetProfilingInformationFor(Guid id)
 		{
-#if !NET_3_5
+#if !NET35
 			return profilingContext.TryGet(id);
 #else
 			return null;

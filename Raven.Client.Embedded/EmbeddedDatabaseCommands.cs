@@ -9,7 +9,8 @@ using System.Collections.Specialized;
 using System.IO;
 using System.Linq;
 using System.Net;
-using Newtonsoft.Json.Linq;
+using Raven.Database.Data;
+using Raven.Imports.Newtonsoft.Json.Linq;
 using Raven.Abstractions.Commands;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
@@ -97,9 +98,14 @@ namespace Raven.Client.Embedded
 		/// <summary>
 		/// Gets documents for the specified key prefix
 		/// </summary>
-		public JsonDocument[] StartsWith(string keyPrefix, int start, int pageSize)
+		public JsonDocument[] StartsWith(string keyPrefix, string matches, int start, int pageSize, bool metadataOnly = false)
 		{
-			var documentsWithIdStartingWith = database.GetDocumentsWithIdStartingWith(keyPrefix, start, pageSize);
+			pageSize = Math.Min(pageSize, database.Configuration.MaxPageSize);
+
+			// metadata only is NOT supported for embedded, nothing to save on the data transfers, so not supporting 
+			// this
+
+			var documentsWithIdStartingWith = database.GetDocumentsWithIdStartingWith(keyPrefix, matches, start, pageSize);
 			return SerializationHelper.RavenJObjectsToJsonDocuments(documentsWithIdStartingWith.OfType<RavenJObject>()).ToArray();
 		}
 
@@ -117,7 +123,7 @@ namespace Raven.Client.Embedded
 
 		private JsonDocument EnsureLocalDate(JsonDocument jsonDocument)
 		{
-			if(jsonDocument == null)
+			if (jsonDocument == null)
 				return null;
 			if (jsonDocument.LastModified != null)
 				jsonDocument.LastModified = jsonDocument.LastModified.Value.ToLocalTime();
@@ -199,6 +205,28 @@ namespace Raven.Client.Embedded
 		}
 
 		/// <summary>
+		/// Get the attachment information for the attachments with the same idprefix
+		/// </summary>
+		public IEnumerable<Attachment> GetAttachmentHeadersStartingWith(string idPrefix, int start, int pageSize)
+		{
+			pageSize = Math.Min(pageSize, database.Configuration.MaxPageSize);
+
+			CurrentOperationContext.Headers.Value = OperationsHeaders;
+			return database.GetStaticsStartingWith(idPrefix, start, pageSize)
+				.Select(x => new Attachment
+				{
+					Etag = x.Etag,
+					Metadata = x.Metadata,
+					Size = x.Size,
+					Key = x.Key,
+					Data = () =>
+					{
+						throw new InvalidOperationException("Cannot get attachment data from an attachment header");
+					}
+				});
+		}
+
+		/// <summary>
 		/// Retrieves the attachment metadata with the specified key, not the actual attachmet
 		/// </summary>
 		/// <param name="key">The key.</param>
@@ -211,7 +239,7 @@ namespace Raven.Client.Embedded
 				return null;
 			attachment.Data = () =>
 			{
-				throw new InvalidOperationException("");
+				throw new InvalidOperationException("Cannot get attachment data from an attachment header");
 			};
 			return attachment;
 		}
@@ -231,7 +259,7 @@ namespace Raven.Client.Embedded
 		/// Get tenant database names (Server/Client mode only)
 		/// </summary>
 		/// <returns></returns>
-		public string[] GetDatabaseNames(int pageSize)
+		public string[] GetDatabaseNames(int pageSize, int start = 0)
 		{
 			throw new InvalidOperationException("Embedded mode does not support multi-tenancy");
 		}
@@ -291,7 +319,7 @@ namespace Raven.Client.Embedded
 		{
 			CurrentOperationContext.Headers.Value = OperationsHeaders;
 			if (overwrite == false && database.IndexStorage.Indexes.Contains(name))
-				throw new InvalidOperationException("Cannot put index: " + name + ", index already exists"); 
+				throw new InvalidOperationException("Cannot put index: " + name + ", index already exists");
 			return database.PutIndex(name, definition);
 		}
 
@@ -327,10 +355,13 @@ namespace Raven.Client.Embedded
 		/// <param name="index">The index.</param>
 		/// <param name="query">The query.</param>
 		/// <param name="includes">The includes are ignored for this implementation.</param>
-		public QueryResult Query(string index, IndexQuery query, string[] includes)
+		/// <param name="metadataOnly">Load just the document metadata</param>
+		public QueryResult Query(string index, IndexQuery query, string[] includes, bool metadataOnly = false)
 		{
 			query.PageSize = Math.Min(query.PageSize, database.Configuration.MaxPageSize);
 			CurrentOperationContext.Headers.Value = OperationsHeaders;
+
+			// metadataOnly is not supported for embedded
 
 			if (index.StartsWith("dynamic/", StringComparison.InvariantCultureIgnoreCase) || index.Equals("dynamic", StringComparison.InvariantCultureIgnoreCase))
 			{
@@ -347,18 +378,22 @@ namespace Raven.Client.Embedded
 						.Where(x => x["@metadata"] != null)
 						.Select(x => x["@metadata"].Value<string>("@id"))
 						.Where(x => x != null)
-					); 
-			var includeCmd = new AddIncludesCommand(database, TransactionInformation,
-			                                        (etag, doc) => queryResult.Includes.Add(doc), includes, loadedIds);
+					);
 
-			foreach (var result in queryResult.Results)
+			if (includes != null)
 			{
-				includeCmd.Execute(result);
+				var includeCmd = new AddIncludesCommand(database, TransactionInformation,
+														(etag, doc) => queryResult.Includes.Add(doc), includes, loadedIds);
+
+				foreach (var result in queryResult.Results)
+				{
+					includeCmd.Execute(result);
+				}
+
+				includeCmd.AlsoInclude(queryResult.IdsToInclude);
+
+				EnsureLocalDate(queryResult.Includes);
 			}
-
-			includeCmd.AlsoInclude(queryResult.IdsToInclude);
-
-			EnsureLocalDate(queryResult.Includes);
 
 			return queryResult;
 		}
@@ -368,10 +403,10 @@ namespace Raven.Client.Embedded
 			foreach (var doc in docs)
 			{
 				RavenJToken metadata;
-				if(doc.TryGetValue(Constants.Metadata, out metadata) == false || metadata.Type != JTokenType.Object)
+				if (doc.TryGetValue(Constants.Metadata, out metadata) == false || metadata.Type != JTokenType.Object)
 					continue;
 				var lastModified = metadata.Value<DateTime?>(Constants.LastModified);
-				if(lastModified == null || lastModified.Value.Kind == DateTimeKind.Local)
+				if (lastModified == null || lastModified.Value.Kind == DateTimeKind.Local)
 					continue;
 
 				((RavenJObject)metadata)[Constants.LastModified] = lastModified.Value.ToLocalTime();
@@ -384,7 +419,7 @@ namespace Raven.Client.Embedded
 		/// <param name="name">The name.</param>
 		public void DeleteIndex(string name)
 		{
-			CurrentOperationContext.Headers.Value = OperationsHeaders; 
+			CurrentOperationContext.Headers.Value = OperationsHeaders;
 			database.DeleteIndex(name);
 		}
 
@@ -393,25 +428,32 @@ namespace Raven.Client.Embedded
 		/// </summary>
 		/// <param name="ids">The ids.</param>
 		/// <param name="includes">The includes.</param>
+		/// <param name="metadataOnly">Load just the document metadata</param>
 		/// <returns></returns>
-		public MultiLoadResult Get(string[] ids, string[] includes)
+		public MultiLoadResult Get(string[] ids, string[] includes, bool metadataOnly = false)
 		{
 			CurrentOperationContext.Headers.Value = OperationsHeaders;
+
+			// metadata only is not supported for embedded
 
 			var multiLoadResult = new MultiLoadResult
 			{
 				Results = ids
 					.Select(id => database.Get(id, TransactionInformation))
-					.Where(document => document != null)
 					.ToArray()
-					.Select(x => EnsureLocalDate(x).ToJson())
+					.Select(x => x == null ? null : EnsureLocalDate(x).ToJson())
 					.ToList(),
 			};
-			var includeCmd = new AddIncludesCommand(database, TransactionInformation, (etag, doc) => multiLoadResult.Includes.Add(doc), includes, new HashSet<string>(ids));
-			foreach (var jsonDocument in multiLoadResult.Results)
+
+			if (includes != null)
 			{
-				includeCmd.Execute(jsonDocument);
+				var includeCmd = new AddIncludesCommand(database, TransactionInformation, (etag, doc) => multiLoadResult.Includes.Add(doc), includes, new HashSet<string>(ids));
+				foreach (var jsonDocument in multiLoadResult.Results)
+				{
+					includeCmd.Execute(jsonDocument);
+				}
 			}
+
 			return multiLoadResult;
 		}
 
@@ -425,7 +467,7 @@ namespace Raven.Client.Embedded
 			{
 				commandData.TransactionInformation = TransactionInformation;
 			}
-			CurrentOperationContext.Headers.Value = OperationsHeaders; 
+			CurrentOperationContext.Headers.Value = OperationsHeaders;
 			return database.Batch(commandDatas);
 		}
 
@@ -445,7 +487,7 @@ namespace Raven.Client.Embedded
 		/// <param name="txId">The tx id.</param>
 		public void Rollback(Guid txId)
 		{
-			CurrentOperationContext.Headers.Value = OperationsHeaders; 
+			CurrentOperationContext.Headers.Value = OperationsHeaders;
 			database.Rollback(txId);
 		}
 
@@ -456,7 +498,7 @@ namespace Raven.Client.Embedded
 		/// <returns></returns>
 		public byte[] PromoteTransaction(Guid fromTxId)
 		{
-			CurrentOperationContext.Headers.Value = OperationsHeaders; 
+			CurrentOperationContext.Headers.Value = OperationsHeaders;
 			return database.PromoteTransaction(fromTxId);
 		}
 
@@ -466,7 +508,7 @@ namespace Raven.Client.Embedded
 		/// <param name="resourceManagerId">The resource manager Id for this transaction</param>
 		/// <param name="txId">The tx id.</param>
 		/// <param name="recoveryInformation">The recovery information.</param>
-		public void StoreRecoveryInformation(Guid resourceManagerId,Guid txId, byte[] recoveryInformation)
+		public void StoreRecoveryInformation(Guid resourceManagerId, Guid txId, byte[] recoveryInformation)
 		{
 			CurrentOperationContext.Headers.Value = OperationsHeaders;
 			var jObject = new RavenJObject
@@ -516,6 +558,46 @@ namespace Raven.Client.Embedded
 		}
 
 		/// <summary>
+		/// Perform a set based update using the specified index, not allowing the operation
+		/// if the index is stale
+		/// </summary>
+		/// <param name="indexName">Name of the index.</param>
+		/// <param name="queryToUpdate">The query to update.</param>
+		/// <param name="patch">The patch request to use (using JavaScript)</param>
+		public void UpdateByIndex(string indexName, IndexQuery queryToUpdate, ScriptedPatchRequest patch)
+		{
+			UpdateByIndex(indexName, queryToUpdate, patch, false);
+		}
+
+		/// <summary>
+		/// Perform a set based update using the specified index.
+		/// </summary>
+		/// <param name="indexName">Name of the index.</param>
+		/// <param name="queryToUpdate">The query to update.</param>
+		/// <param name="patchRequests">The patch requests.</param>
+		/// <param name="allowStale">if set to <c>true</c> [allow stale].</param>
+		public void UpdateByIndex(string indexName, IndexQuery queryToUpdate, PatchRequest[] patchRequests, bool allowStale)
+		{
+			CurrentOperationContext.Headers.Value = OperationsHeaders;
+			var databaseBulkOperations = new DatabaseBulkOperations(database, TransactionInformation);
+			databaseBulkOperations.UpdateByIndex(indexName, queryToUpdate, patchRequests, allowStale);
+		}
+
+		/// <summary>
+		/// Perform a set based update using the specified index
+		/// </summary>
+		/// <param name="indexName">Name of the index.</param>
+		/// <param name="queryToUpdate">The query to update.</param>
+		/// <param name="patch">The patch request to use (using JavaScript)</param>
+		/// <param name="allowStale">if set to <c>true</c> [allow stale].</param>
+		public void UpdateByIndex(string indexName, IndexQuery queryToUpdate, ScriptedPatchRequest patch, bool allowStale)
+		{
+			CurrentOperationContext.Headers.Value = OperationsHeaders;
+			var databaseBulkOperations = new DatabaseBulkOperations(database, RavenTransactionAccessor.GetTransactionInformation());
+			databaseBulkOperations.UpdateByIndex(indexName, queryToUpdate, patch, allowStale);
+		}
+
+		/// <summary>
 		/// Perform a set based deletes using the specified index, not allowing the operation
 		/// if the index is stale
 		/// </summary>
@@ -538,21 +620,6 @@ namespace Raven.Client.Embedded
 			var databaseBulkOperations = new DatabaseBulkOperations(database, TransactionInformation);
 			databaseBulkOperations.DeleteByIndex(indexName, queryToDelete, allowStale);
 		}
-
-		/// <summary>
-		/// Perform a set based update using the specified index.
-		/// </summary>
-		/// <param name="indexName">Name of the index.</param>
-		/// <param name="queryToUpdate">The query to update.</param>
-		/// <param name="patchRequests">The patch requests.</param>
-		/// <param name="allowStale">if set to <c>true</c> [allow stale].</param>
-		public void UpdateByIndex(string indexName, IndexQuery queryToUpdate, PatchRequest[] patchRequests, bool allowStale)
-		{
-			CurrentOperationContext.Headers.Value = OperationsHeaders;
-			var databaseBulkOperations = new DatabaseBulkOperations(database, TransactionInformation);
-			databaseBulkOperations.UpdateByIndex(indexName, queryToUpdate, patchRequests, allowStale);
-		}
-
 
 		/// <summary>
 		/// Create a new instance of <see cref="IDatabaseCommands"/> that will interacts
@@ -593,17 +660,17 @@ namespace Raven.Client.Embedded
 		{
 			CurrentOperationContext.Headers.Value = OperationsHeaders;
 			return database.ExecuteGetTermsQuery(index, field, fromValue, pageSize);
-	 
+
 		}
 
-	    /// <summary>
-	    /// Using the given Index, calculate the facets as per the specified doc
-	    /// </summary>
-	    /// <param name="index"></param>
-	    /// <param name="query"></param>
-	    /// <param name="facetSetupDoc"></param>
-	    /// <returns></returns>
-	    public IDictionary<string, IEnumerable<FacetValue>> GetFacets(string index, IndexQuery query, string facetSetupDoc)
+		/// <summary>
+		/// Using the given Index, calculate the facets as per the specified doc
+		/// </summary>
+		/// <param name="index"></param>
+		/// <param name="query"></param>
+		/// <param name="facetSetupDoc"></param>
+		/// <returns></returns>
+		public FacetResults GetFacets(string index, IndexQuery query, string facetSetupDoc)
 		{
 			CurrentOperationContext.Headers.Value = OperationsHeaders;
 			return database.ExecuteGetTermsQuery(index, query, facetSetupDoc);
@@ -617,6 +684,16 @@ namespace Raven.Client.Embedded
 		public void Patch(string key, PatchRequest[] patches)
 		{
 			Patch(key, patches, null);
+		}
+
+		/// <summary>
+		/// Sends a patch request for a specific document, ignoring the document's Etag
+		/// </summary>
+		/// <param name="key">Id of the document to patch</param>
+		/// <param name="patch">The patch request to use (using JavaScript)</param>
+		public void Patch(string key, ScriptedPatchRequest patch)
+		{
+			Patch(key, patch, null);
 		}
 
 		/// <summary>
@@ -635,6 +712,25 @@ namespace Raven.Client.Embedded
 								Patches = patches,
 								Etag = etag
 							}
+					});
+		}
+
+		/// <summary>
+		/// Sends a patch request for a specific document, ignoring the document's Etag
+		/// </summary>
+		/// <param name="key">Id of the document to patch</param>
+		/// <param name="patch">The patch request to use (using JavaScript)</param>
+		/// <param name="etag">Require specific Etag [null to ignore]</param>
+		public void Patch(string key, ScriptedPatchRequest patch, Guid? etag)
+		{
+			Batch(new[]
+					{
+						new ScriptedPatchCommandData 
+								{ 
+									Key = key,  
+									Patch = patch,
+									Etag = etag
+								}
 					});
 		}
 
@@ -668,7 +764,7 @@ namespace Raven.Client.Embedded
 		/// </summary>
 		/// <param name="key">The key.</param>
 		/// <returns>
-		/// The document metadata for the specifed document, or null if the document does not exist
+		/// The document metadata for the specified document, or null if the document does not exist
 		/// </returns>
 		public JsonDocumentMetadata Head(string key)
 		{
@@ -678,7 +774,7 @@ namespace Raven.Client.Embedded
 		}
 
 		/// <summary>
-		/// Perform a single POST requst containing multiple nested GET requests
+		/// Perform a single POST request containing multiple nested GET requests
 		/// </summary>
 		public GetResponse[] MultiGet(GetRequest[] requests)
 		{

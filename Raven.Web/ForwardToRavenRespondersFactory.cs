@@ -4,12 +4,15 @@
 // </copyright>
 //-----------------------------------------------------------------------
 using System;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Web;
 using System.Web.Hosting;
 using NLog;
 using Raven.Database;
 using Raven.Database.Config;
 using Raven.Database.Server;
+using Raven.Database.Server.Abstractions;
 
 namespace Raven.Web
 {
@@ -23,11 +26,36 @@ namespace Raven.Web
 
 		public class ReleaseRavenDBWhenAppDomainIsTornDown : IRegisteredObject
 		{
+			private Task shutdownTask;
+
 			public void Stop(bool immediate)
 			{
-				Shutdown();
+				if (shutdownTask == null)
+				{
+					lock (this)
+					{
+						Thread.MemoryBarrier();
+						if (shutdownTask == null)
+						{
+							shutdownTask = Task.Factory.StartNew(Shutdown)
+								.ContinueWith(_ =>
+								              	{
+								              		GC.KeepAlive(_.Exception); // ensure no unobserved exception
+								              		HostingEnvironment.UnregisterObject(this);
+								              	});
+						}
+					}
+				}
+				
+				if (immediate)
+				{
+					shutdownTask.Wait();
+					// we already called this from the task's continue with, but
+					// let us make sure that this is called _before_ we return 
+					// from this method when immediate = true.
 				HostingEnvironment.UnregisterObject(this);
 			}
+		}
 		}
 
 		public IHttpHandler GetHandler(HttpContext context, string requestType, string url, string pathTranslated)
@@ -36,6 +64,14 @@ namespace Raven.Web
 				throw new InvalidOperationException("Database has not been initialized properly");
 			if (server == null)
 				throw new InvalidOperationException("Server has not been initialized properly");
+
+			var reqUrl = UrlExtension.GetRequestUrlFromRawUrl(context.Request.RawUrl, database.Configuration);
+
+			if (HttpServer.ChangesQuery.IsMatch(reqUrl))
+			{
+				return new ChangesCurrentDatabaseForwardingHandler(server);
+			}
+
 
 			return new ForwardToRavenResponders(server);
 		}

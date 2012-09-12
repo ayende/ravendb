@@ -3,7 +3,7 @@
 // //     Copyright (c) Hibernating Rhinos LTD. All rights reserved.
 // // </copyright>
 // //-----------------------------------------------------------------------
-#if !NET_3_5
+#if !NET35
 using System;
 using System.Collections.Generic;
 using System.Dynamic;
@@ -770,7 +770,7 @@ namespace Raven.Client.Indexes
 					var enumType = node.Value.GetType();
 					if (TypeExistsOnServer(enumType))
 					{
-						Out(enumType.FullName);
+						Out(enumType.FullName.Replace("+", "."));
 						Out('.');
 						Out(s);
 						return node;
@@ -799,6 +799,10 @@ namespace Raven.Client.Indexes
 				return true;
 
 			if (type.Assembly == typeof(RavenJObject).Assembly)
+				return true;
+
+			if (type.Assembly.FullName.StartsWith("Lucene.Net") &&
+				type.Assembly.FullName.Contains("PublicKeyToken=85089178b9ac3181")) 
 				return true;
 
 			return false;
@@ -1006,7 +1010,7 @@ namespace Raven.Client.Indexes
 			}
 			Out(" => ");
 			var body = node.Body;
-			if(castLambdas)
+			if (castLambdas)
 			{
 				switch (body.NodeType)
 				{
@@ -1041,7 +1045,16 @@ namespace Raven.Client.Indexes
 				{
 					Out(", ");
 				}
-				Out(node.Initializers[num].ToString());
+				Out("{");
+				bool first = true;
+				foreach (var expression in node.Initializers[num].Arguments)
+				{
+					if (first == false)
+						Out(", ");
+					first = false;
+					Visit(expression);
+				}
+				Out("}");
 				num++;
 			}
 			Out("}");
@@ -1196,9 +1209,6 @@ namespace Raven.Client.Indexes
 					case "AsDocument":
 						Visit(node.Arguments[0]);
 						return node;
-					case "Hierarchy":
-						VisitHierarchy(node, expression);
-						return node;
 				}
 				if (expression.Type == typeof(IClientSideDatabase))
 				{
@@ -1286,40 +1296,18 @@ namespace Raven.Client.Indexes
 					case "OrderBy":
 					case "OrderByDescending":
 					case "DefaultIfEmpty":
-					case "Count":
 					case "First":
 					case "FirstOrDefault":
 					case "Single":
 					case "SingleOrDefault":
 					case "Last":
 					case "LastOrDefault":
-					case "Sum":
 					case "Reverse":
 						return true;
 				}
 				return false;
 			}
 			return true;
-		}
-
-		private void VisitHierarchy(MethodCallExpression node, Expression expression)
-		{
-			Out("Hierarchy(");
-			Visit(expression);
-			Out(", ");
-			var path = node.Arguments.Last();
-			if (path.NodeType == ExpressionType.Lambda)
-			{
-				var body = ((LambdaExpression)path).Body;
-				Out("\"");
-				Out(((MemberExpression)body).Member.Name);
-				Out("\"");
-			}
-			else
-			{
-				Visit(path);
-			}
-			Out(")");
 		}
 
 		/// <summary>
@@ -1331,7 +1319,8 @@ namespace Raven.Client.Indexes
 		/// </returns>
 		protected override Expression VisitNew(NewExpression node)
 		{
-			Out("new " + node.Type.Name);
+			Out("new ");
+			VisitType(node.Type);
 			Out("(");
 			for (var i = 0; i < node.Arguments.Count; i++)
 			{
@@ -1348,7 +1337,7 @@ namespace Raven.Client.Indexes
 					if (constantExpression != null && constantExpression.Value == null)
 					{
 						Out("(");
-						Out(GetMemberType(node.Members[i]).FullName);
+						VisitType(GetMemberType(node.Members[i]));
 						Out(")");
 					}
 				}
@@ -1357,6 +1346,71 @@ namespace Raven.Client.Indexes
 			}
 			Out(")");
 			return node;
+		}
+
+		private static readonly Dictionary<Type, string> wellKnownTypes = new Dictionary<Type, string>
+		{
+			{typeof (object), "object"},
+			{typeof (string), "string"},
+			{typeof (int), "int"},
+			{typeof (long), "long"},
+			{typeof (float), "float"},
+			{typeof (double), "double"},
+			{typeof (decimal), "decimal"},
+			{typeof (bool), "bool"},
+			{typeof (char), "char"},
+			{typeof (byte), "byte"},
+			{typeof (Guid), "Guid"},
+			{typeof (DateTime), "DateTime"},
+			{typeof (DateTimeOffset), "DateTimeOffset"},
+			{typeof (TimeSpan), "TimeSpan"},
+		};
+		private void VisitType(Type type)
+		{
+			if (type.IsGenericType == false || CheckIfAnonymousType(type))
+			{
+				if(type.IsArray)
+				{
+					VisitType(type.GetElementType());
+					Out("[");
+					for (int i = 0; i < type.GetArrayRank()-1; i++)
+					{
+						Out(",");
+					}
+					Out("]");
+					return;
+				}
+				var nonNullableType = Nullable.GetUnderlyingType(type);
+				if(nonNullableType != null)
+				{
+					VisitType(nonNullableType);
+					Out("?");
+					return;
+				}
+				string value;
+				if(wellKnownTypes.TryGetValue(type, out value))
+				{
+					Out(value);
+					return;
+				}
+				Out(type.Name);
+				return;
+			}
+			var genericArguments = type.GetGenericArguments();
+			var genericTypeDefinition = type.GetGenericTypeDefinition();
+			var lastIndexOfTag = genericTypeDefinition.FullName.LastIndexOf('`');
+
+			Out(genericTypeDefinition.FullName.Substring(0, lastIndexOfTag));
+			Out("<");
+			bool first = true;
+			foreach (var genericArgument in genericArguments)
+			{
+				if (first == false)
+					Out(", ");
+				first = false;
+				VisitType(genericArgument);
+			}
+			Out(">");
 		}
 
 		/// <summary>
@@ -1662,13 +1716,16 @@ namespace Raven.Client.Indexes
 					// we only cast enums and types is mscorlib), we don't support anything else
 					// because the VB compiler like to put converts all over the place, and include
 					// types that we can't really support (only exists on the client)
-					if ((node.Type.IsEnum ||
-						 node.Type.Assembly == typeof(string).Assembly) &&
-						node.Type.IsGenericType == false)
+					var nonNullableType = Nullable.GetUnderlyingType(node.Type) ?? node.Type;
+					if ((nonNullableType.IsEnum ||
+						 nonNullableType.Assembly == typeof(string).Assembly) &&
+						 (nonNullableType.IsGenericType == false))
 					{
 						Out("(");
 						Out("(");
-						Out(node.Type.FullName);
+						Out(nonNullableType.FullName);
+						if (Nullable.GetUnderlyingType(node.Type) != null)
+							Out("?");
 						Out(")");
 					}
 					Out("(");
@@ -1707,9 +1764,10 @@ namespace Raven.Client.Indexes
 					// we only cast enums and types is mscorlib), we don't support anything else
 					// because the VB compiler like to put converts all over the place, and include
 					// types that we can't really support (only exists on the client)
-					if ((node.Type.IsEnum ||
-						 node.Type.Assembly == typeof(string).Assembly) &&
-						node.Type.IsGenericType == false)
+					var nonNullableType = Nullable.GetUnderlyingType(node.Type) ?? node.Type;
+					if ((nonNullableType.IsEnum ||
+						 nonNullableType.Assembly == typeof(string).Assembly) &&
+						nonNullableType.IsGenericType == false)
 					{
 						Out(")");
 					}

@@ -9,7 +9,7 @@ using System.Collections.Specialized;
 using System.Globalization;
 using System.Linq;
 using System.Net;
-using Newtonsoft.Json;
+using Raven.Imports.Newtonsoft.Json;
 using Raven.Abstractions;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
@@ -38,16 +38,17 @@ namespace Raven.Client.Connection
 				var metadata = (RavenJObject)doc["@metadata"];
 				doc.Remove("@metadata");
 				var key = Extract(metadata, "@id", string.Empty);
-				var lastModified = Extract(metadata, Constants.LastModified, SystemTime.Now, (string d) => ConvertToUtcDate(d));
-				var etag = Extract(metadata, "@etag", Guid.Empty, (string g) => new Guid(g));
+				var lastModified = Extract(metadata, Constants.LastModified, SystemTime.UtcNow, (string d) => ConvertToUtcDate(d));
+				var etag = Extract(metadata, "@etag", Guid.Empty, (string g) => HttpExtensions.EtagHeaderToGuid(g));
 				var nai = Extract(metadata, "Non-Authoritative-Information", false, (string b) => Convert.ToBoolean(b));
 				list.Add(new JsonDocument
 					{
 						Key = key,
 						LastModified = lastModified,
 						Etag = etag,
+						TempIndexScore = metadata == null ? null : metadata.Value<float?>("Temp-Index-Score"),
 						NonAuthoritativeInformation = nai,
-						Metadata = metadata.FilterHeaders(isServerDocument: false),
+						Metadata = metadata.FilterHeaders(),
 						DataAsJson = doc,
 					});
 			}
@@ -96,13 +97,13 @@ namespace Raven.Client.Connection
 		/// <summary>
 		/// Translate a result for a query
 		/// </summary>
-		public static QueryResult ToQueryResult(RavenJObject json, string etagHeader)
+		public static QueryResult ToQueryResult(RavenJObject json, Guid etag)
 		{
 			var result = new QueryResult
 			             	{
 			             		IsStale = Convert.ToBoolean(json["IsStale"].ToString()),
 			             		IndexTimestamp = json.Value<DateTime>("IndexTimestamp"),
-			             		IndexEtag = new Guid(etagHeader),
+			             		IndexEtag = etag,
 			             		Results = ((RavenJArray) json["Results"]).Cast<RavenJObject>().ToList(),
 			             		Includes = ((RavenJArray) json["Includes"]).Cast<RavenJObject>().ToList(),
 			             		TotalResults = Convert.ToInt32(json["TotalResults"].ToString()),
@@ -129,7 +130,7 @@ namespace Raven.Client.Connection
 			HttpStatusCode statusCode)
 		{
 			var jsonData = (RavenJObject)requestJson;
-			var meta = headers.FilterHeaders(isServerDocument: false);
+			var meta = headers.FilterHeaders();
 			
 #if !SILVERLIGHT
 			var etag = headers["ETag"];
@@ -143,7 +144,7 @@ namespace Raven.Client.Connection
 				DataAsJson = jsonData,
 				NonAuthoritativeInformation = statusCode == HttpStatusCode.NonAuthoritativeInformation,
 				Key = key,
-				Etag = new Guid(etag),
+				Etag = HttpExtensions.EtagHeaderToGuid(etag),
 				LastModified = DateTime.ParseExact(lastModified, "r", CultureInfo.InvariantCulture).ToLocalTime(),
 				Metadata = meta
 			};
@@ -163,7 +164,7 @@ namespace Raven.Client.Connection
 			RavenJObject meta = null;
 			try
 			{
-				meta = headers.FilterHeaders(isServerDocument: false);
+				meta = headers.FilterHeaders();
 			}
 			catch (JsonReaderException jre)
 			{
@@ -180,7 +181,7 @@ namespace Raven.Client.Connection
 			{
 				NonAuthoritativeInformation = statusCode == HttpStatusCode.NonAuthoritativeInformation,
 				Key = key,
-				Etag = new Guid(etag),
+				Etag = HttpExtensions.EtagHeaderToGuid(etag),
 				LastModified = DateTime.ParseExact(lastModified, "r", CultureInfo.InvariantCulture).ToLocalTime(),
 				Metadata = meta
 			};
