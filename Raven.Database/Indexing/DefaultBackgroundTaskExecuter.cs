@@ -1,19 +1,18 @@
 ﻿using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using NLog;
+using Raven.Abstractions.Logging;
+using Raven.Abstractions.Util;
 using Raven.Database.Config;
-using Raven.Abstractions.Extensions;
 using Raven.Database.Util;
 
 namespace Raven.Database.Indexing
 {
 	public class DefaultBackgroundTaskExecuter : IBackgroundTaskExecuter
 	{
-		private static Logger logger = LogManager.GetCurrentClassLogger();
+		private static readonly ILog logger = LogManager.GetCurrentClassLogger();
 
 		public IList<TResult> Apply<T, TResult>(IEnumerable<T> source, Func<T, TResult> func)
 			where TResult : class
@@ -24,12 +23,12 @@ namespace Raven.Database.Indexing
 				.ToList();
 		}
 
-		private readonly ConcurrentDictionary<TimeSpan, Tuple<Timer, ConcurrentSet<IRepeatedAction>>> timers =
-			new ConcurrentDictionary<TimeSpan, Tuple<Timer, ConcurrentSet<IRepeatedAction>>>();
+		private readonly AtomicDictionary<Tuple<Timer, ConcurrentSet<IRepeatedAction>>> timers =
+			new AtomicDictionary<Tuple<Timer, ConcurrentSet<IRepeatedAction>>>();
 
 		public void Repeat(IRepeatedAction action)
 		{
-			var tuple = timers.GetOrAddAtomically(action.RepeatDuration,
+			var tuple = timers.GetOrAdd(action.RepeatDuration.ToString(),
 			                                      span =>
 			                                      {
 			                                      	var repeatedActions = new ConcurrentSet<IRepeatedAction>
@@ -46,7 +45,7 @@ namespace Raven.Database.Indexing
 
 		private void ExecuteTimer(object state)
 		{
-			var span = (TimeSpan) state;
+			var span = state.ToString();
 			Tuple<Timer, ConcurrentSet<IRepeatedAction>> tuple;
 			if (timers.TryGetValue(span, out tuple) == false)
 				return;
@@ -79,7 +78,11 @@ namespace Raven.Database.Indexing
 		/// Note that we assume that source is a relatively small number, expected to be 
 		/// the number of indexes, not the number of documents.
 		/// </summary>
-		public void ExecuteAll<T>(InMemoryRavenConfiguration configuration, TaskScheduler scheduler, IList<T> source, Action<T, long> action)
+		public void ExecuteAll<T>(
+			InMemoryRavenConfiguration configuration, 
+			TaskScheduler scheduler, 
+			WorkContext context,
+			IList<T> source, Action<T, long> action)
 		{
 			if(configuration.MaxNumberOfParallelIndexTasks == 1)
 			{
@@ -90,11 +93,12 @@ namespace Raven.Database.Indexing
 				}
 				return;
 			}
-
+			context.CancellationToken.ThrowIfCancellationRequested();;
 			var partitioneds = Partition(source, configuration.MaxNumberOfParallelIndexTasks).ToList();
 			int start = 0;
 			foreach (var partitioned in partitioneds)
 			{
+				context.CancellationToken.ThrowIfCancellationRequested(); ;
 				var currentStart = start;
 				Parallel.ForEach(partitioned, new ParallelOptions
 				{

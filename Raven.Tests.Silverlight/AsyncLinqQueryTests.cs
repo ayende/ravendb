@@ -6,7 +6,7 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Raven.Abstractions.Indexing;
 using Raven.Client.Document;
 using Raven.Client.Extensions;
-using Raven.Client.Linq;
+using Raven.Client;
 using Raven.Tests.Document;
 using Raven.Tests.Silverlight.Entities;
 
@@ -283,6 +283,7 @@ namespace Raven.Tests.Silverlight
 			var dbname = GenerateNewDatabaseName();
 			using (var documentStore = new DocumentStore {Url = Url + Port}.Initialize())
 			{
+				documentStore.Conventions.AllowQueriesOnId = true;
 				yield return documentStore.AsyncDatabaseCommands.EnsureDatabaseExistsAsync(dbname);
 
 				var customer = new Customer {Name = "Customer #1", Id = "customer/1", Email = "someone@customer.com"};

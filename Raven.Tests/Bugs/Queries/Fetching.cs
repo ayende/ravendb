@@ -1,4 +1,4 @@
-using Newtonsoft.Json;
+using Raven.Imports.Newtonsoft.Json;
 using Raven.Client.Document;
 using Raven.Json.Linq;
 using Xunit;
@@ -6,7 +6,7 @@ using System.Linq;
 
 namespace Raven.Tests.Bugs.Queries
 {
-	public class Fetching : LocalClientTest
+	public class Fetching : RavenTest
 	{
 		[Fact]
 		public void CanFetchMultiplePropertiesFromCollection()

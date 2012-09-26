@@ -3,69 +3,99 @@
 //     Copyright (c) Hibernating Rhinos LTD. All rights reserved.
 // </copyright>
 //-----------------------------------------------------------------------
-using System.Collections.Generic;
-using System.Linq;
-using Lucene.Net.Documents;
+using System;
+using GeoAPI;
 using Lucene.Net.Search;
 using Lucene.Net.Spatial;
 using Lucene.Net.Spatial.Prefix;
 using Lucene.Net.Spatial.Prefix.Tree;
+using Lucene.Net.Spatial.Queries;
+using Lucene.Net.Spatial.Util;
+using NetTopologySuite;
 using Raven.Abstractions.Data;
-using Spatial4n.Core.Context;
-using Spatial4n.Core.Distance;
-using Spatial4n.Core.Query;
+using Raven.Abstractions.Indexing;
+using Spatial4n.Core.Context.Nts;
+using Spatial4n.Core.Io;
 using Spatial4n.Core.Shapes;
-
+using Point = Spatial4n.Core.Shapes.Point;
+using SpatialRelation = Raven.Abstractions.Indexing.SpatialRelation;
 
 namespace Raven.Database.Indexing
 {
+	[CLSCompliant(false)]
 	public static class SpatialIndex
 	{
-		internal static readonly SpatialContext RavenSpatialContext = new SpatialContext(DistanceUnits.MILES);
-		private static readonly SpatialStrategy<SimpleSpatialFieldInfo> strategy;
-		private static readonly SimpleSpatialFieldInfo fieldInfo;
-		private static readonly int maxLength;
+		internal static readonly NtsSpatialContext Context;
+		internal static NtsShapeReadWriter ShapeReadWriter;
 
 		static SpatialIndex()
 		{
-			maxLength = GeohashPrefixTree.GetMaxLevelsPossible();
-			fieldInfo = new SimpleSpatialFieldInfo(Constants.SpatialFieldName);
-			strategy = new RecursivePrefixTreeStrategy(new GeohashPrefixTree(RavenSpatialContext, maxLength));
+			Context = NtsSpatialContext.GEO_KM;
+			GeometryServiceProvider.Instance = new NtsGeometryServices();
+
+			ShapeReadWriter = new NtsShapeReadWriter(Context);
 		}
 
-		public static IEnumerable<Fieldable> Generate(double? lat, double? lng)
+		public static SpatialStrategy CreateStrategy(string fieldName, SpatialSearchStrategy spatialSearchStrategy,
+		                                             int maxTreeLevel)
 		{
-			Shape shape = RavenSpatialContext.MakePoint(lng ?? 0, lat ?? 0);
-			return strategy.CreateFields(fieldInfo, shape, true, false).Where(f => f != null)
-				.Concat(new[] { new Field(Constants.SpatialShapeFieldName, RavenSpatialContext.ToString(shape), Field.Store.YES, Field.Index.NOT_ANALYZED_NO_NORMS), });
+			switch (spatialSearchStrategy)
+			{
+				case SpatialSearchStrategy.GeohashPrefixTree:
+					return new RecursivePrefixTreeStrategy(new GeohashPrefixTree(Context, maxTreeLevel), fieldName);
+				case SpatialSearchStrategy.QuadPrefixTree:
+					return new RecursivePrefixTreeStrategy(new QuadPrefixTree(Context, maxTreeLevel), fieldName);
+			}
+			return null;
 		}
 
-		/// <summary>
-		/// Make a spatial query
-		/// </summary>
-		/// <param name="lat"></param>
-		/// <param name="lng"></param>
-		/// <param name="radius">Radius, in miles</param>
-		/// <returns></returns>
-		public static Query MakeQuery(double lat, double lng, double radius)
+		public static Query MakeQuery(SpatialStrategy spatialStrategy, string shapeWKT, SpatialRelation relation,
+		                              double distanceErrorPct = 0.025)
 		{
-			return strategy.MakeQuery(new SpatialArgs(SpatialOperation.IsWithin, RavenSpatialContext.MakeCircle(lng, lat, radius)), fieldInfo);
+			SpatialOperation spatialOperation;
+			Shape shape = ShapeReadWriter.ReadShape(shapeWKT);
+			switch (relation)
+			{
+				case SpatialRelation.Within:
+					spatialOperation = SpatialOperation.IsWithin;
+					break;
+				case SpatialRelation.Contains:
+					spatialOperation = SpatialOperation.Contains;
+					break;
+				case SpatialRelation.Disjoint:
+					spatialOperation = SpatialOperation.IsDisjointTo;
+					break;
+				case SpatialRelation.Intersects:
+					spatialOperation = SpatialOperation.Intersects;
+					break;
+				case SpatialRelation.Nearby:
+					var nearbyArgs = new SpatialArgs(SpatialOperation.IsWithin, shape);
+					nearbyArgs.SetDistPrecision(distanceErrorPct);
+					// only sort by this, do not filter
+					return new FunctionQuery(spatialStrategy.MakeValueSource(nearbyArgs));
+				default:
+					throw new ArgumentOutOfRangeException("relation");
+			}
+			var args = new SpatialArgs(spatialOperation, shape);
+			args.SetDistPrecision(distanceErrorPct);
+
+			return spatialStrategy.MakeQuery(args);
 		}
 
-		public static Filter MakeFilter(IndexQuery indexQuery)
+		public static Filter MakeFilter(SpatialStrategy spatialStrategy, IndexQuery indexQuery)
 		{
 			var spatialQry = indexQuery as SpatialIndexQuery;
 			if (spatialQry == null) return null;
 
-			var args = new SpatialArgs(SpatialOperation.IsWithin, RavenSpatialContext.MakeCircle(spatialQry.Longitude, spatialQry.Latitude, spatialQry.Radius));
-			return strategy.MakeFilter(args, fieldInfo);
+			var args = new SpatialArgs(SpatialOperation.IsWithin, ShapeReadWriter.ReadShape(spatialQry.QueryShape));
+			return spatialStrategy.MakeFilter(args);
 		}
 
 		public static double GetDistance(double fromLat, double fromLng, double toLat, double toLng)
 		{
-			var ptFrom = RavenSpatialContext.MakePoint(fromLng, fromLat);
-			var ptTo = RavenSpatialContext.MakePoint(toLng, toLat);
-			return RavenSpatialContext.GetDistCalc().Distance(ptFrom, ptTo);
+			Point ptFrom = Context.MakePoint(fromLng, fromLat);
+			Point ptTo = Context.MakePoint(toLng, toLat);
+			return Context.GetDistCalc().Distance(ptFrom, ptTo);
 		}
 	}
 }

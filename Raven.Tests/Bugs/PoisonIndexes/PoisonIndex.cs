@@ -4,7 +4,7 @@ using System.Linq;
 
 namespace Raven.Tests.Bugs.PoisonIndexes
 {
-	public class PoisonIndex : LocalClientTest
+	public class PoisonIndex : RavenTest
 	{
 		[Fact]
 		public void ShouldNotCauseFailures()
@@ -27,7 +27,6 @@ namespace Raven.Tests.Bugs.PoisonIndexes
 
 					Assert.NotEmpty(session.Query<User>()
 						.Customize(x=>x.WaitForNonStaleResults())
-						.Where(x => x.Id == "users/1")
 						.ToList());
 				}
 			}

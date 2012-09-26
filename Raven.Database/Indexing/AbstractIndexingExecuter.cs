@@ -1,11 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
-using NLog;
 using Raven.Abstractions.Data;
+using Raven.Abstractions.Logging;
 using Raven.Database.Storage;
 using System.Linq;
-using Raven.Database.Tasks;
 using Task = Raven.Database.Tasks.Task;
 using Raven.Abstractions.Extensions;
 
@@ -15,13 +14,14 @@ namespace Raven.Database.Indexing
 	{
 		protected WorkContext context;
 		protected TaskScheduler scheduler;
-		protected static readonly Logger log = LogManager.GetCurrentClassLogger();
+		protected static readonly ILog log = LogManager.GetCurrentClassLogger();
 		protected ITransactionalStorage transactionalStorage;
 		protected int workCounter;
 		protected int lastFlushedWorkCounter;
 		protected BaseBatchSizeAutoTuner autoTuner;
 
-		protected AbstractIndexingExecuter(ITransactionalStorage transactionalStorage, WorkContext context, TaskScheduler scheduler)
+		protected AbstractIndexingExecuter(
+			ITransactionalStorage transactionalStorage, WorkContext context, TaskScheduler scheduler)
 		{
 			this.transactionalStorage = transactionalStorage;
 			this.context = context;
@@ -65,6 +65,11 @@ namespace Raven.Database.Indexing
 						HandleOutOfMemoryException(oome);
 					}
 				}
+				catch (OperationCanceledException)
+				{
+					log.Info("Got rude cancelation of indexing as a result of shutdown, aborting current indexing run");
+					return;
+				}
 				catch (Exception e)
 				{
 					foundWork = true; // we want to keep on trying, anyway, not wait for the timeout or more work
@@ -104,8 +109,12 @@ namespace Raven.Database.Indexing
 				if (task == null)
 					return;
 
+				context.UpdateFoundWork();
+
 				log.Debug("Executing {0}", task);
 				foundWork = true;
+				
+				context.CancellationToken.ThrowIfCancellationRequested();
 
 				try
 				{
@@ -157,6 +166,9 @@ namespace Raven.Database.Indexing
 			if (indexesToWorkOn.Count == 0)
 				return false;
 
+			context.UpdateFoundWork();
+			context.CancellationToken.ThrowIfCancellationRequested();
+
 			using(context.IndexDefinitionStorage.CurrentlyIndexing())
 				ExecuteIndexingWork(indexesToWorkOn);
 
@@ -170,42 +182,5 @@ namespace Raven.Database.Indexing
 		protected abstract void ExecuteIndexingWork(IList<IndexToWorkOn> indexesToWorkOn);
 
 		protected abstract bool IsValidIndex(IndexStats indexesStat);
-
-		protected class ComparableByteArray : IComparable<ComparableByteArray>, IComparable
-		{
-			private readonly byte[] inner;
-
-			public ComparableByteArray(byte[] inner)
-			{
-				this.inner = inner;
-			}
-
-			public int CompareTo(ComparableByteArray other)
-			{
-				if (inner.Length != other.inner.Length)
-					return inner.Length - other.inner.Length;
-				for (int i = 0; i < inner.Length; i++)
-				{
-					if (inner[i] != other.inner[i])
-						return inner[i] - other.inner[i];
-				}
-				return 0;
-			}
-
-			public int CompareTo(object obj)
-			{
-				return CompareTo((ComparableByteArray)obj);
-			}
-
-			public Guid ToGuid()
-			{
-				return new Guid(inner);
-			}
-
-			public override string ToString()
-			{
-				return ToGuid().ToString();
-			}
-		}
 	}
 }

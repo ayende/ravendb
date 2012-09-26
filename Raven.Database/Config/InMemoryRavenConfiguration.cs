@@ -19,6 +19,7 @@ using System.Web;
 using Raven.Abstractions.Data;
 using Raven.Database.Extensions;
 using Raven.Database.Indexing;
+using Raven.Database.Plugins.Catalogs;
 using Raven.Database.Server;
 using Raven.Database.Storage;
 using Raven.Database.Util;
@@ -41,7 +42,9 @@ namespace Raven.Database.Config
 			MaxNumberOfItemsToReduceInSingleBatch = MaxNumberOfItemsToIndexInSingleBatch / 2;
 			InitialNumberOfItemsToIndexInSingleBatch = Environment.Is64BitProcess ? 512 : 256;
 			InitialNumberOfItemsToReduceInSingleBatch = InitialNumberOfItemsToIndexInSingleBatch / 2;
-			MaxIndexingRunLatency = TimeSpan.FromMinutes(1);
+			MaxIndexingRunLatency = TimeSpan.FromMinutes(5);
+
+			CreateTemporaryIndexesForAdHocQueriesIfNeeded = true;
 
 			AvailableMemoryForRaisingIndexBatchSizeLimit = Math.Min(768, MemoryStatistics.TotalPhysicalMemory/2);
 			MaxNumberOfParallelIndexTasks = 8;
@@ -59,6 +62,8 @@ namespace Raven.Database.Config
 
 		public void PostInit()
 		{
+			FilterActiveBundles();
+
 			if (string.Equals(AuthenticationMode, "oauth", StringComparison.InvariantCultureIgnoreCase))
 				SetupOAuth();
 		}
@@ -155,8 +160,11 @@ namespace Raven.Database.Config
 
 			// Data settings
 			RunInMemory = GetConfigurationValue<bool>("Raven/RunInMemory") ?? false;
-			DefaultStorageTypeName = Settings["Raven/StorageTypeName"] ?? Settings["Raven/StorageEngine"] ?? "esent";
+			if(string.IsNullOrEmpty(DefaultStorageTypeName))
+				DefaultStorageTypeName = Settings["Raven/StorageTypeName"] ?? Settings["Raven/StorageEngine"] ?? "esent";
 
+			CreateTemporaryIndexesForAdHocQueriesIfNeeded =
+				GetConfigurationValue<bool>("Raven/CreateTemporaryIndexesForAdHocQueriesIfNeeded") ?? true;
 
 			ResetIndexOnUncleanShutdown = GetConfigurationValue<bool>("Raven/ResetIndexOnUncleanShutdown") ?? false;
 			
@@ -205,7 +213,37 @@ namespace Raven.Database.Config
 			AuthenticationMode = Settings["Raven/AuthenticationMode"] ?? AuthenticationMode ?? "windows";
 
 			AllowLocalAccessWithoutAuthorization = GetConfigurationValue<bool>("Raven/AllowLocalAccessWithoutAuthorization") ?? false;
+
 			PostInit();
+		}
+
+		private void FilterActiveBundles()
+		{
+			var activeBundles = Settings["Raven/ActiveBundles"] ?? "";
+
+			var bundles = activeBundles.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)
+				.Select(x => x.Trim())
+				.ToArray();
+
+			if (container != null)
+				container.Dispose();
+			container = null;
+
+			var bundlesFilteredCatalog = Catalog.Catalogs.OfType<BundlesFilteredCatalog>().FirstOrDefault();
+			if(bundlesFilteredCatalog != null)
+			{
+				bundlesFilteredCatalog.Bundles = bundles;
+				return;
+			}
+
+			var catalog =
+				Catalog.Catalogs.Count == 1
+					? Catalog.Catalogs.First()
+					: new AggregateCatalog(Catalog.Catalogs);
+
+			Catalog.Catalogs.Clear();
+
+			Catalog.Catalogs.Add(new BundlesFilteredCatalog(catalog, bundles));
 		}
 
 		public TaskScheduler CustomTaskScheduler { get; set; }
@@ -537,7 +575,7 @@ namespace Raven.Database.Config
 		public string DataDirectory
 		{
 			get { return dataDirectory; }
-			set { dataDirectory = value.ToFullPath(); }
+			set { dataDirectory = value == null ? null : value.ToFullPath(); }
 		}
 
 		/// <summary>
@@ -545,7 +583,12 @@ namespace Raven.Database.Config
 		/// Allowed values: esent, munin
 		/// Default: esent
 		/// </summary>
-		public string DefaultStorageTypeName { get; set; }
+		public string DefaultStorageTypeName
+		{
+			get { return defaultStorageTypeName; }
+			set { if(!string.IsNullOrEmpty(value)) defaultStorageTypeName = value; }
+		}
+		private string defaultStorageTypeName;
 
 		private bool runInMemory;
 
@@ -611,7 +654,7 @@ namespace Raven.Database.Config
 					var patterns = Settings["Raven/BundlesSearchPattern"] ?? "*.dll";
 					foreach (var pattern in patterns.Split(new[] { ";" }, StringSplitOptions.RemoveEmptyEntries))
 					{
-						Catalog.Catalogs.Add(new DirectoryCatalog(pluginsDirectory, pattern));
+						Catalog.Catalogs.Add(new BuiltinFilteringCatalog(new DirectoryCatalog(pluginsDirectory, pattern)));
 					}
 				}
 			}
@@ -640,6 +683,12 @@ namespace Raven.Database.Config
 		/// The expiration value for documents in the internal managed cache
 		/// </summary>
 		public TimeSpan MemoryCacheExpiration { get; set; }
+
+		/// <summary>
+		/// Controls whatever RavenDB will create temporary indexes 
+		/// for queries that cannot be directed to standard indexes
+		/// </summary>
+		public bool CreateTemporaryIndexesForAdHocQueriesIfNeeded { get; set; }
 
 		public string IndexStoragePath
 		{
@@ -695,7 +744,7 @@ namespace Raven.Database.Config
 
 		public T? GetConfigurationValue<T>(string configName) where T : struct
 		{
-			// explicitly fail if we can convert it
+			// explicitly fail if we can't convert it
 			if (string.IsNullOrEmpty(Settings[configName]) == false)
 				return (T)Convert.ChangeType(Settings[configName], typeof(T));
 			return null;
@@ -707,10 +756,10 @@ namespace Raven.Database.Config
 			switch (storageEngine.ToLowerInvariant())
 			{
 				case "esent":
-					storageEngine = "Raven.Storage.Esent.TransactionalStorage, Raven.Storage.Esent";
+					storageEngine = typeof(Raven.Storage.Esent.TransactionalStorage).AssemblyQualifiedName;
 					break;
 				case "munin":
-					storageEngine = "Raven.Storage.Managed.TransactionalStorage, Raven.Storage.Managed";
+					storageEngine = typeof (Raven.Storage.Managed.TransactionalStorage).AssemblyQualifiedName;
 					break;
 			}
 			var type = Type.GetType(storageEngine);
@@ -718,24 +767,22 @@ namespace Raven.Database.Config
 			if (type == null)
 				throw new InvalidOperationException("Could not find transactional storage type: " + storageEngine);
 
-			Catalog.Catalogs.Add(new AssemblyCatalog(type.Assembly));
-
 			return (ITransactionalStorage)Activator.CreateInstance(type, this, notifyAboutWork);
 		}
 
 		private string SelectStorageEngine()
 		{
 			if (RunInMemory)
-				return "Raven.Storage.Managed.TransactionalStorage, Raven.Storage.Managed";
+				return typeof(Raven.Storage.Managed.TransactionalStorage).AssemblyQualifiedName;
 
 			if (String.IsNullOrEmpty(DataDirectory) == false && Directory.Exists(DataDirectory))
 			{
 				if (File.Exists(Path.Combine(DataDirectory, "Raven.ravendb")))
 				{
-					return "Raven.Storage.Managed.TransactionalStorage, Raven.Storage.Managed";
+					return typeof(Raven.Storage.Managed.TransactionalStorage).AssemblyQualifiedName;
 				}
 				if (File.Exists(Path.Combine(DataDirectory, "Data")))
-					return "Raven.Storage.Esent.TransactionalStorage, Raven.Storage.Esent";
+					return typeof (Raven.Storage.Esent.TransactionalStorage).AssemblyQualifiedName;
 			}
 			return DefaultStorageTypeName;
 		}

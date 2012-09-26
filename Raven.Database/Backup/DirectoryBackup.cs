@@ -5,10 +5,11 @@
 //-----------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
-using NLog;
 using Raven.Abstractions.Data;
+using Raven.Abstractions.Logging;
 using Directory = System.IO.Directory;
 using Raven.Database.Extensions;
 
@@ -27,7 +28,7 @@ namespace Raven.Database.Backup
 		public event Action<string, BackupStatus.BackupMessageSeverity> Notify = delegate { };
 
 		private readonly Dictionary<string, long> fileToSize = new Dictionary<string, long>();
-		private static readonly Logger logger = LogManager.GetCurrentClassLogger();
+		private static readonly ILog logger = LogManager.GetCurrentClassLogger();
 
 		private readonly string source;
 		private readonly string destination;
@@ -124,14 +125,20 @@ namespace Raven.Database.Backup
 					continue; // skip the Lucene lock file
 			   
 				var destFileName = Path.Combine(tempPath, Path.GetFileName(sourceFile));
-				CreateHardLink(
-					destFileName,
-					sourceFile,
-					IntPtr.Zero
-					);
+				var success = CreateHardLink(destFileName, sourceFile, IntPtr.Zero);
 
-				var fileInfo = new FileInfo(destFileName);
-				fileToSize[fileInfo.FullName] = fileInfo.Length;
+				if (success == false)
+					throw new Win32Exception();
+
+				try
+				{
+					var fileInfo = new FileInfo(destFileName);
+					fileToSize[fileInfo.FullName] = fileInfo.Length;
+				}
+				catch (IOException)
+				{
+					// something happened to this file, probably was removed somehow
+				}
 			}
 
 			// we have to do this outside the main loop because we mustn't

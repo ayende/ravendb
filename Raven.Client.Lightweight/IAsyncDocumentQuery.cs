@@ -1,4 +1,4 @@
-﻿#if !NET_3_5
+﻿#if !NET35
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Raven.Abstractions.Data;
@@ -18,6 +18,12 @@ namespace Raven.Client
 		/// <typeparam name="TProjection">The type of the projection.</typeparam>
 		/// <param name="fields">The fields.</param>
 		IAsyncDocumentQuery<TProjection> SelectFields<TProjection>(params string[] fields);
+
+		/// <summary>
+		/// Selects all the projection fields directly from the index
+		/// </summary>
+		/// <typeparam name="TProjection">The type of the projection.</typeparam>
+		IAsyncDocumentQuery<TProjection> SelectFields<TProjection>();
 
 		/// <summary>
 		/// Gets the query result

@@ -1,142 +1,76 @@
-using System.Collections.Generic;
+﻿using System;
 using System.Linq;
-using Raven.Client.Linq;
-using Raven.Tests;
+using Raven.Client.Indexes;
 using Xunit;
 
 namespace Raven.Tests.MailingList
 {
 	public class linmouhong2 : RavenTest
 	{
-		public class Advertiser
+		public class Product
 		{
-			public int Id { get; set; }
-
-			public IList<Shop> Shops { get; private set; }
-
-			public Advertiser()
-			{
-				Shops = new List<Shop>();
-			}
-		}
-
-		public class Shop
-		{
-			public string LoginPlatformId { get; set; }
-
-			public string LoginAccountName { get; set; }
-
-			public string Title { get; set; }
-		}
-
-		public class Microblogger
-		{
-			public int Id { get; set; }
-
-			public string Nick { get; set; }
-
-			public IList<Microblog> Microblogs { get; private set; }
-
-			public Microblogger()
-			{
-				Microblogs = new List<Microblog>();
-			}
-		}
-
-		public class Microblog
-		{
-			public string LoginPlatformId { get; set; }
-
-			public string LoginAccountName { get; set; }
+			public string Id { get; set; }
 
 			public string Name { get; set; }
 
-			public int FansCount { get; set; }
+			public decimal Price { get; set; }
 
-			public int TweetsCount { get; set; }
+			public CategoryReference Category { get; set; }
 		}
 
-		public enum UserType
+		public class CategoryReference
 		{
-			Advertiser = 0,
-			Microblogger = 1
+			public int Id { get; set; }
+
+			public string Name { get; set; }
 		}
 
-		public class LoginIndex : Raven.Client.Indexes.AbstractMultiMapIndexCreationTask<LoginIndexResult>
+		public class ProductIndex : AbstractIndexCreationTask<Product>
 		{
-			public LoginIndex()
+			public ProductIndex()
 			{
-				AddMap<Advertiser>(users => from u in users
-											from shop in u.Shops
-											select new
-											{
-												LoginPlatformId = shop.LoginPlatformId,
-												LoginAccountName = shop.LoginAccountName,
-												UserId = u.Id,
-												UserType = UserType.Advertiser
-											});
+				Map = products => from p in products
+								  select new
+								  {
+									  p.Id,
+									  p.Name,
+									  Category_Id = p.Category.Id,
+									  Category_Name = p.Category.Name
+								  };
 
-				AddMap<Microblogger>(users => from u in users
-											  from blog in u.Microblogs
-											  select new
-											  {
-												  LoginPlatformId = blog.LoginPlatformId,
-												  LoginAccountName = blog.LoginAccountName,
-												  UserId = u.Id,
-												  UserType = UserType.Microblogger
-											  });
+				// Sort(x => x.Category.Id, Raven.Abstractions.Indexing.SortOptions.Int);
 
-				Store(u => u.UserId, Raven.Abstractions.Indexing.FieldStorage.Yes);
-				Store(u => u.UserType, Raven.Abstractions.Indexing.FieldStorage.Yes);
-				Store(u => u.LoginPlatformId, Raven.Abstractions.Indexing.FieldStorage.Yes);
-				Store(u => u.LoginAccountName, Raven.Abstractions.Indexing.FieldStorage.Yes);
-
-				Index(u => u.LoginPlatformId, Raven.Abstractions.Indexing.FieldIndexing.NotAnalyzed);
-				Index(u => u.LoginAccountName, Raven.Abstractions.Indexing.FieldIndexing.NotAnalyzed);
+				Index(x => x.Name, Raven.Abstractions.Indexing.FieldIndexing.Analyzed);
 			}
 		}
-
-		public class LoginIndexResult
-		{
-			public string LoginPlatformId { get; set; }
-
-			public string LoginAccountName { get; set; }
-
-			public string UserId { get; set; }
-
-			public UserType UserType { get; set; }
-		}
-
+	 
 		[Fact]
-		public void CanProject()
+		public void CanQuerySuccessfully()
 		{
-			using(var store = NewDocumentStore())
+			using(var database = NewDocumentStore())
 			{
-				new LoginIndex().Execute(store);
-				var advertiser1 = new Advertiser();
-				advertiser1.Shops.Add(new Shop
+				new ProductIndex().Execute(database);
+				using (var session = database.OpenSession())
 				{
-					Title = "Shop 1",
-					LoginPlatformId = "Ebay",
-					LoginAccountName = "account1"
-				});
-
-				using (var session = store.OpenSession())
-				{
-					session.Store(advertiser1);
+					session.Store(new Product
+					{
+						Name = "Product 1"
+					});
+					session.Store(new Product
+					{
+						Name = "Product 2"
+					});
 					session.SaveChanges();
 				}
 
-				using (var session = store.OpenSession())
+				using (var session = database.OpenSession())
 				{
-					// if I use AsProjection<>, then there's an "Input string was not in correct format" exception.
-					// if I do not use AsProjection<>, then there's an "Invalid cast from Advertiser to LoginIndexResult" exception.
-					var login = session.Query<LoginIndexResult, LoginIndex>()
-						.Customize(x => x.WaitForNonStaleResultsAsOfNow())
-						.AsProjection<LoginIndexResult>()
-						.FirstOrDefault(it => it.LoginPlatformId == "Ebay" && it.LoginAccountName == "account1");
+					var products = session.Query<Product, ProductIndex>()
+											.Customize(x => x.WaitForNonStaleResultsAsOfNow())
+											.OrderBy(x => x.Category.Id)
+											.ToList();
 
-					Assert.Equal(UserType.Advertiser, login.UserType);
+					Assert.NotEmpty(products);
 				}
 			}
 		}

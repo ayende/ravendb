@@ -6,7 +6,8 @@
 using System;
 using System.ComponentModel.Composition.Hosting;
 using Microsoft.CSharp.RuntimeBinder;
-using Newtonsoft.Json;
+using Raven.Client;
+using Raven.Imports.Newtonsoft.Json;
 using Raven.Abstractions.Indexing;
 using Raven.Abstractions.Linq;
 using Raven.Json.Linq;
@@ -19,7 +20,7 @@ using Raven.Client.Linq;
 
 namespace Raven.Tests.Bugs
 {
-	public class Translators : LocalClientTest
+	public class Translators : RavenTest
 	{
 		public class Users : AbstractIndexCreationTask<User>
 		{

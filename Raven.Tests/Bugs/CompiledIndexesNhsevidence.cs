@@ -2,8 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.Composition.Hosting;
+using System.Globalization;
 using System.Linq;
-using Newtonsoft.Json;
+using System.Threading;
+using Raven.Imports.Newtonsoft.Json;
 using NLog;
 using Raven.Abstractions.Indexing;
 using Raven.Client;
@@ -17,13 +19,15 @@ using Xunit;
 
 namespace Raven.Tests.Bugs
 {
+	[CLSCompliant(false)]
 	public class CompiledIndexesNhsevidence : RavenTest
 	{
-		[Fact]
+		[Fact(Skip = "Race condition in munin")]
 		public void CanGetCorrectResults()
 		{
 			for (int x = 0; x < 50; x++)
 			{
+				Environment.SetEnvironmentVariable("Test", x.ToString(CultureInfo.InvariantCulture));
 				using (var store = CreateStore())
 				{
 					for (int i = 0; i < 12; i++)
@@ -41,9 +45,11 @@ namespace Raven.Tests.Bugs
 			{
 				for (int i = 0; i < 6; i++)
 				{
-					int count = session.Advanced.LuceneQuery<object>("view" + (i+1)).WaitForNonStaleResults().QueryResult.TotalResults;
-					
-					Assert.Equal(count, shouldBe);
+					int count = session.Query<object>("view" + (i + 1))
+						.Customize(x => x.WaitForNonStaleResults())
+						.ToList().Count;
+
+					Assert.Equal(shouldBe, count);
 				}
 			}
 		}
@@ -60,8 +66,8 @@ namespace Raven.Tests.Bugs
 						item.Items.Add(new Item()
 						{
 							Id = j + 1,
-							Email = string.Format("rob{0}@text.com", i + 1).PadLeft(200, (char) i),
-							Name = string.Format("rob{0}", i + 1).PadLeft(300, (char) i)
+							Email = string.Format("rob{0}@text.com", i + 1),
+							Name = string.Format("rob{0}", i + 1)
 						});
 					}
 					session.Store(item);
@@ -108,6 +114,7 @@ namespace Raven.Tests.Bugs
 			public List<Item> Items { get; set; }
 		}
 
+		[CLSCompliant(false)]
 		public class TestClassView : AbstractViewGenerator
 		{
 			public TestClassView()
@@ -128,17 +135,7 @@ namespace Raven.Tests.Bugs
 
 			private IEnumerable<dynamic> Reduce(IEnumerable<dynamic> source)
 			{
-				foreach (var o in source)
-				{
-					//Console.WriteLine("{0},{1}",o.__document_id, o.UserId);
-					yield return new
-					{
-						o.__document_id,
-						o.UserId,
-						o.Name,
-						o.Email
-					};
-				}
+				return source;
 			}
 
 			private IEnumerable<dynamic> MapToPaths(IEnumerable<dynamic> source)
@@ -184,7 +181,7 @@ namespace Raven.Tests.Bugs
 			{
 				FindTypeTagName = t => t.GetType() == typeof(TestClass) ? "testclass" : null,
 				MaxNumberOfRequestsPerSession = 3000,
-				DocumentKeyGenerator = doc =>
+				DocumentKeyGenerator = (cmd, doc) =>
 				{
 					if (doc is TestClass)
 						return ((TestClass)doc).Id;

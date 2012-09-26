@@ -5,7 +5,7 @@ using Xunit;
 
 namespace Raven.Tests.Linq
 {
-	public class Any : LocalClientTest
+	public class Any : RavenTest
 	{
 		private class TestDoc
 		{
@@ -48,7 +48,7 @@ namespace Raven.Tests.Linq
 			{
 				using (var session = store.OpenSession())
 				{
-					DateTime dateTime = SystemTime.Now;
+					DateTime dateTime = SystemTime.UtcNow;
 					var query = from a in session.Query<OrderableEntity>()
 													.Customize(x => x.WaitForNonStaleResultsAsOfNow())
 								where dateTime < a.Order

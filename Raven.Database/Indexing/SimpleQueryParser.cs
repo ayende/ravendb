@@ -14,19 +14,19 @@ namespace Raven.Database.Indexing
 {
 	public class SimpleQueryParser
 	{
-		static readonly Regex QueryTerms = new Regex(@"([^\s\(\+\-][\w._,]+)\:", RegexOptions.Compiled);
-
-		static readonly Regex DynamicQueryTerms = new Regex(@"[-+]?([^\(\)\s]*[^\\\s])\:", RegexOptions.Compiled);
+		static readonly Regex queryTerms = new Regex(@"([^\s\(\+\-][\w._,]+?)\:", RegexOptions.Compiled);
+		static readonly Regex dateQuery = new Regex(@"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}", RegexOptions.Compiled);
+		static readonly Regex dynamicQueryTerms = new Regex(@"[-+]?([^\{\}\[\]\(\)\s]*?[^\\\s])\:", RegexOptions.Compiled);
 
 		public static HashSet<string> GetFields(IndexQuery query)
 		{
-			return GetFieldsInternal(query, QueryTerms);
+			return GetFieldsInternal(query, queryTerms);
 		}
 
 		public static HashSet<Tuple<string,string>> GetFieldsForDynamicQuery(IndexQuery query)
 		{
 			var results = new HashSet<Tuple<string,string>>();
-			foreach (var result in GetFieldsInternal(query, DynamicQueryTerms))
+			foreach (var result in GetFieldsInternal(query, dynamicQueryTerms))
 			{
 				if(result == "*")
 					continue;
@@ -44,12 +44,26 @@ namespace Raven.Database.Indexing
 			}
 			if(query.Query == null)
 				return fields;
+			var dates = dateQuery.Matches(query.Query); // we need to exclude dates from this check
 			var queryTermMatches = queryTerms.Matches(query.Query);
 			for (int x = 0; x < queryTermMatches.Count; x++)
 			{
 				Match match = queryTermMatches[x];
 				String field = match.Groups[1].Value;
 
+				var isDate = false;
+				for (int i = 0; i < dates.Count; i++)
+				{
+					if(match.Index < dates[i].Index)
+						continue;
+					if (match.Index >= dates[i].Index + dates[i].Length) 
+						continue;
+
+					isDate = true;
+					break;
+				}
+
+				if (isDate == false)
 				fields.Add(field);
 			}
 			return fields;

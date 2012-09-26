@@ -20,6 +20,7 @@ using Raven.Database.Extensions;
 using Raven.Tests.Indexes;
 using Xunit;
 using System.Linq;
+using TransactionInformation = Raven.Abstractions.Data.TransactionInformation;
 
 namespace Raven.Tests.Document
 {
@@ -47,6 +48,7 @@ namespace Raven.Tests.Document
 				using (var tx = new TransactionScope())
 				{
 					session.Store(company);
+
 					session.SaveChanges();
 
 					using (new TransactionScope(TransactionScopeOption.Suppress))
@@ -226,8 +228,9 @@ namespace Raven.Tests.Document
 																			Indexes = { { x => x.Name, FieldIndexing.NotAnalyzed } }
 																		});
 			var indexDefinition = documentStore.DatabaseCommands.GetIndex("Companies/Name");
-			Assert.Equal(@"docs.Companies
-	.Select(c => new {Name = c.Name})", indexDefinition.Map);
+			Assert.Equal(@"docs.Companies.Select(c => new {
+    Name = c.Name
+})", indexDefinition.Map);
 			Assert.Equal(FieldIndexing.NotAnalyzed, indexDefinition.Indexes["Name"]);
 		}
 

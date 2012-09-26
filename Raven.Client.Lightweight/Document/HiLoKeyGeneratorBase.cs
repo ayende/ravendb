@@ -1,5 +1,6 @@
-using System;
+﻿using System;
 using System.Linq;
+using Raven.Abstractions;
 using Raven.Abstractions.Data;
 using Raven.Client.Connection;
 
@@ -12,8 +13,8 @@ namespace Raven.Client.Document
 
 		protected readonly string tag;
 		protected long capacity;
-		[CLSCompliant(false)]
-		protected volatile Range range;
+		private volatile RangeValue range;
+		
 		protected string lastServerPrefix;
 		protected DateTime lastRequestedUtc;
 
@@ -21,16 +22,16 @@ namespace Raven.Client.Document
 		{
 			this.tag = tag;
 			this.capacity = capacity;
-			this.range = new Range(1, 0);
+			this.range = new RangeValue(1, 0);
 		}
 
 		protected string GetDocumentKeyFromId(DocumentConvention convention, long nextId)
 		{
 			return string.Format("{0}{1}{2}{3}",
-			                     tag,
-			                     convention.IdentityPartsSeparator,
-			                     lastServerPrefix,
-			                     nextId);
+								 tag,
+								 convention.IdentityPartsSeparator,
+								 lastServerPrefix,
+								 nextId);
 		}
 
 		protected long GetMaxFromDocument(JsonDocument document, long minMax)
@@ -54,13 +55,13 @@ namespace Raven.Client.Document
 
 		protected void IncreaseCapacityIfRequired()
 		{
-			var span = DateTime.UtcNow - lastRequestedUtc;
+			var span = SystemTime.UtcNow - lastRequestedUtc;
 			if (span.TotalSeconds < 1)
 			{
 				capacity *= 2;
 			}
 
-			lastRequestedUtc = DateTime.UtcNow;
+			lastRequestedUtc = SystemTime.UtcNow;
 		}
 
 		protected JsonDocument HandleGetDocumentResult(MultiLoadResult documents)
@@ -83,14 +84,20 @@ namespace Raven.Client.Document
 			return jsonDocument;
 		}
 
+		protected RangeValue Range
+		{
+			get { return range; }
+			set { range = value; }
+		}
+
 		[System.Diagnostics.DebuggerDisplay("[{Min}-{Max}]: {Current}")]
-		protected class Range
+		protected class RangeValue
 		{
 			public readonly long Min;
 			public readonly long Max;
 			public long Current;
 
-			public Range(long min, long max)
+			public RangeValue(long min, long max)
 			{
 				this.Min = min;
 				this.Max = max;

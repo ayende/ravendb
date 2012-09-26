@@ -5,6 +5,7 @@ using System.Threading;
 using Raven.Abstractions.Extensions;
 using Raven.Client.Connection.Profiling;
 using Raven.Client.Util;
+using Raven.Json.Linq;
 
 namespace Raven.Client.Connection
 {
@@ -36,15 +37,15 @@ namespace Raven.Client.Connection
 		/// <summary>
 		/// Invoke the LogRequest event
 		/// </summary>
-		internal void InvokeLogRequest(IHoldProfilingInformation sender, RequestResultArgs e)
+		internal void InvokeLogRequest(IHoldProfilingInformation sender, Func<RequestResultArgs> generateRequentResult)
 		{
 			var handler = LogRequest;
 			if (handler != null) 
-				handler(sender, e);
+				handler(sender, generateRequentResult());
 		}
 
 		private readonly int maxNumberOfCachedRequests;
-		private SimpleCache cache;
+		private SimpleCache<CachedRequest> cache;
 
 		internal int NumOfCachedRequests;
 
@@ -54,10 +55,12 @@ namespace Raven.Client.Connection
 		public HttpJsonRequest CreateHttpJsonRequest(CreateHttpJsonRequestParams createHttpJsonRequestParams)
 		{
 			if (disposed)
-				throw new ObjectDisposedException(typeof (HttpJsonRequestFactory).FullName);
+				throw new ObjectDisposedException(typeof(HttpJsonRequestFactory).FullName);
 			var request = new HttpJsonRequest(createHttpJsonRequestParams, this)
 			{
-				ShouldCacheRequest = createHttpJsonRequestParams.Convention.ShouldCacheRequest(createHttpJsonRequestParams.Url)
+				ShouldCacheRequest =
+					createHttpJsonRequestParams.AvoidCachingRequest == false && 
+					createHttpJsonRequestParams.Convention.ShouldCacheRequest(createHttpJsonRequestParams.Url)
 			};
 
 			if (request.ShouldCacheRequest && createHttpJsonRequestParams.Method == "GET" && !DisableHttpCaching)
@@ -72,9 +75,9 @@ namespace Raven.Client.Connection
 
 		internal CachedRequestOp ConfigureCaching(string url, Action<string, string> setHeader)
 		{
-			var cachedRequest = (CachedRequest)cache.Get(url);
+			var cachedRequest = cache.Get(url);
 			if (cachedRequest == null)
-				return new CachedRequestOp{SkipServerCheck = false};
+				return new CachedRequestOp { SkipServerCheck = false };
 			bool skipServerCheck = false;
 			if (AggressiveCacheDuration != null)
 			{
@@ -87,7 +90,7 @@ namespace Raven.Client.Connection
 			}
 
 			setHeader("If-None-Match", cachedRequest.Headers["ETag"]);
-			return new CachedRequestOp {SkipServerCheck = skipServerCheck, CachedRequest = cachedRequest};
+			return new CachedRequestOp { SkipServerCheck = skipServerCheck, CachedRequest = cachedRequest };
 		}
 
 
@@ -100,7 +103,7 @@ namespace Raven.Client.Connection
 			if (cache != null)
 				cache.Dispose();
 
-			cache = new SimpleCache(maxNumberOfCachedRequests);
+			cache = new SimpleCache<CachedRequest>(maxNumberOfCachedRequests);
 			NumOfCachedRequests = 0;
 		}
 
@@ -130,7 +133,7 @@ namespace Raven.Client.Connection
 			ResetCache();
 		}
 
-#if !NET_3_5
+#if !NET35
 		///<summary>
 		/// The aggressive cache duration
 		///</summary>
@@ -178,14 +181,14 @@ namespace Raven.Client.Connection
 #endif
 		private volatile bool disposed;
 
-		internal string GetCachedResponse(HttpJsonRequest httpJsonRequest)
+		internal RavenJToken GetCachedResponse(HttpJsonRequest httpJsonRequest)
 		{
 			if (httpJsonRequest.CachedRequestDetails == null)
 				throw new InvalidOperationException("Cannot get cached response from a request that has no cached information");
 			httpJsonRequest.ResponseStatusCode = HttpStatusCode.NotModified;
 			httpJsonRequest.ResponseHeaders = new NameValueCollection(httpJsonRequest.CachedRequestDetails.Headers);
 			IncrementCachedRequests();
-			return httpJsonRequest.CachedRequestDetails.Data;
+			return httpJsonRequest.CachedRequestDetails.Data.CloneToken();
 		}
 
 		internal void IncrementCachedRequests()
@@ -193,14 +196,16 @@ namespace Raven.Client.Connection
 			Interlocked.Increment(ref NumOfCachedRequests);
 		}
 
-		internal void CacheResponse(string url, string text, NameValueCollection headers)
+		internal void CacheResponse(string url, RavenJToken data, NameValueCollection headers)
 		{
 			if (string.IsNullOrEmpty(headers["ETag"])) 
 				return;
 
+			var clone = data.CloneToken();
+			clone.EnsureSnapshot();
 			cache.Set(url, new CachedRequest
 			{
-				Data = text,
+				Data = clone,
 				Time = DateTimeOffset.Now,
 				Headers = new NameValueCollection(headers)
 			});
@@ -216,7 +221,7 @@ namespace Raven.Client.Connection
 				return;
 		    disposed = true;
 			cache.Dispose();
-#if !NET_3_5
+#if !NET35
 			aggressiveCacheDuration.Dispose();
 			disableHttpCaching.Dispose();
 #endif

@@ -1,31 +1,140 @@
 ﻿using System;
 using System.Diagnostics;
 using System.Globalization;
-using System.IO;
-using System.Net;
+using System.Security.Principal;
+using System.Threading;
+using Raven.Abstractions.Data;
 using Raven.Client.Document;
+using Raven.Database.Extensions;
+using Raven.Database.Util;
+using Raven.Json.Linq;
+using Raven.Munin;
+using Raven.Tests.Bugs;
 
 namespace Raven.Tryouts
 {
-	class Program
+	internal class Program
 	{
-		static void Main(string[] args)
+		private static void Main()
 		{
-			var webRequest = (HttpWebRequest)WebRequest.Create("http://localhost:8080/admin/compact?database=test");
-			webRequest.Method = "POST";
-			webRequest.UseDefaultCredentials = true;
-			webRequest.Credentials = CredentialCache.DefaultCredentials;
-			webRequest.ContentLength = 0;
-			try
+
+			var store = new DocumentStore() { Url = "http://localhost:8080/", DefaultDatabase = "Confabulat" };
+			store.Initialize();
+			for (int i = 0; i < 100; i++)
 			{
-				webRequest.GetResponse();
-				Console.WriteLine("DONE");
+				var sp = Stopwatch.StartNew();
+				store.DatabaseCommands.UpdateByIndex("Raven/DocumentsByEntityName", new IndexQuery { Query = "Tag:Regions" },
+			 new ScriptedPatchRequest
+			 {
+				 Script =
+				 @"this.Test = 'test';"
+
+
+			 }
+				, true);
+				Console.WriteLine(sp.ElapsedMilliseconds);
 			}
-			catch(WebException we)
-			{
-				Console.WriteLine(new StreamReader((we.Response.GetResponseStream())).ReadToEnd());
-			}
-			Console.ReadLine();
 		}
+
+		private static void UseMyData()
+		{
+			using (var d = new MyData(new MemoryPersistentSource()))
+			{
+				using (d.BeginTransaction())
+				{
+					d.Documents.Put(new RavenJObject
+						{
+							{"key", "items/1"},
+							{"id", "items/1"},
+							{"etag", Guid.NewGuid().ToByteArray()},
+						}, new byte[0]);
+					d.Commit();
+				}
+
+				using (d.BeginTransaction())
+				{
+					d.Documents.Put(new RavenJObject
+						{
+							{"key", "items/1"},
+							{"id", "items/1"},
+							{"etag", Guid.NewGuid().ToByteArray()},
+							{"txId", "1234"}
+						}, new byte[0]);
+					d.Transactions.Put(new RavenJObject
+						{
+							{"id", "1234"},
+						}, new byte[0]);
+
+					d.Commit();
+				}
+
+				ThreadPool.QueueUserWorkItem(state =>
+					{
+						d.BeginTransaction();
+						Table.ReadResult readResult = d.Documents.Read(new RavenJObject {{"key", "items/1"}});
+						var txId = readResult.Key.Value<string>("txId");
+
+						Table.ReadResult txResult = d.Transactions.Read(new RavenJObject {{"id", txId}});
+
+						if (txResult == null)
+						{
+							Environment.Exit(1);
+							return;
+						}
+
+						d.Transactions.Remove(txResult.Key);
+
+						var x = ((RavenJObject) readResult.Key.CloneToken());
+						x.Remove("txId");
+
+						d.Documents.UpdateKey(x);
+						d.CommitCurrentTransaction();
+					});
+
+
+				while (true)
+				{
+					using (d.BeginTransaction())
+					{
+						Table.ReadResult readResult = d.Documents.Read(new RavenJObject {{"key", "items/1"}});
+						var txId = readResult.Key.Value<string>("txId");
+
+						if (txId == null)
+						{
+							return;
+						}
+
+						Table.ReadResult txResult = d.Transactions.Read(new RavenJObject {{"id", txId}});
+						if (txResult == null)
+						{
+							Environment.Exit(1);
+							return;
+						}
+
+						d.Commit();
+					}
+				}
+			}
+		}
+	}
+
+	public class MyData : Munin.Database
+	{
+		public MyData(IPersistentSource persistentSource)
+			: base(persistentSource)
+		{
+			Documents = Add(new Table(x => x.Value<string>("key"), "Documents")
+				{
+					{"ByKey", x => x.Value<string>("key")},
+					{"ById", x => x.Value<string>("id")},
+					{"ByEtag", x => new ComparableByteArray(x.Value<byte[]>("etag"))}
+				});
+
+			Transactions = Add(new Table(x => x.Value<string>("txId"), "Transactions"));
+		}
+
+		public Table Transactions { get; set; }
+
+		public Table Documents { get; set; }
 	}
 }

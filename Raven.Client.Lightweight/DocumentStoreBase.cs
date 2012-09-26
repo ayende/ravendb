@@ -5,17 +5,22 @@ using System.Collections.Specialized;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
+using Raven.Client.Changes;
 using Raven.Client.Connection;
 using Raven.Client.Connection.Profiling;
+using Raven.Client.Extensions;
 using Raven.Client.Indexes;
 using Raven.Client.Listeners;
 using Raven.Client.Document;
 #if SILVERLIGHT
 using Raven.Client.Silverlight.Connection;
 #endif
-#if !NET_3_5
+#if !NET35
 using Raven.Client.Connection.Async;
+using Raven.Client.Util;
+
 #endif
 
 namespace Raven.Client
@@ -25,6 +30,11 @@ namespace Raven.Client
 	/// </summary>
 	public abstract class DocumentStoreBase : IDocumentStore
 	{
+		protected DocumentStoreBase()
+		{
+			LastEtagHolder = new GlobalLastEtagHolder();
+		}
+
 		public abstract void Dispose();
 		
 		/// <summary>
@@ -37,7 +47,14 @@ namespace Raven.Client
 		/// </summary>
 		public bool WasDisposed { get; protected set; }
 
-		public abstract IDisposable AggressivelyCacheFor(TimeSpan cahceDuration);
+		/// <summary>
+		/// Subscribe to change notifications from the server
+		/// </summary>
+
+		public abstract IDisposable AggressivelyCacheFor(TimeSpan cacheDuration);
+
+		public abstract IDatabaseChanges Changes(string database = null);
+
 		public abstract IDisposable DisableAggressiveCaching();
 		
 #if !SILVERLIGHT
@@ -53,7 +70,7 @@ namespace Raven.Client
 		public abstract HttpJsonRequestFactory JsonRequestFactory { get; }
 		public abstract string Identifier { get; set; }
 		public abstract IDocumentStore Initialize();
-#if !NET_3_5
+#if !NET35
 		public abstract IAsyncDatabaseCommands AsyncDatabaseCommands { get; }
 		public abstract IAsyncDocumentSession OpenAsyncSession();
 		public abstract IAsyncDocumentSession OpenAsyncSession(string database);
@@ -111,60 +128,9 @@ namespace Raven.Client
 		/// </summary>
 		public Guid ResourceManagerId { get; set; }
 
-		private class EtagHolder
-		{
-			public Guid Etag;
-			public byte[] Bytes;
-		}
-
-		private volatile EtagHolder lastEtag;
-		protected readonly object lastEtagLocker = new object();
+		
 		protected bool initialized;
 
-		internal void UpdateLastWrittenEtag(Guid? etag)
-		{
-			if (etag == null)
-				return;
-
-			var newEtag = etag.Value.ToByteArray();
-
-			if (lastEtag == null)
-			{
-				lock (lastEtagLocker)
-				{
-					if (lastEtag == null)
-					{
-						lastEtag = new DocumentStore.EtagHolder
-						{
-							Bytes = newEtag,
-							Etag = etag.Value
-						};
-						return;
-					}
-				}
-			}
-
-			// not the most recent etag
-			if (Buffers.Compare(lastEtag.Bytes, newEtag) >= 0)
-			{
-				return;
-			}
-
-			lock (lastEtagLocker)
-			{
-				// not the most recent etag
-				if (Buffers.Compare(lastEtag.Bytes, newEtag) >= 0)
-				{
-					return;
-				}
-
-				lastEtag = new DocumentStore.EtagHolder
-				{
-					Etag = etag.Value,
-					Bytes = newEtag
-				};
-			}
-		}
 
 		///<summary>
 		/// Gets the etag of the last document written by any session belonging to this 
@@ -172,10 +138,7 @@ namespace Raven.Client
 		///</summary>
 		public virtual Guid? GetLastWrittenEtag()
 		{
-			var etagHolder = lastEtag;
-			if (etagHolder == null)
-				return null;
-			return etagHolder.Etag;
+			return LastEtagHolder.GetLastWrittenEtag();
 		}
 
 		protected void EnsureNotClosed()
@@ -232,9 +195,12 @@ namespace Raven.Client
 		///</summary>
 		public event Action<InMemoryDocumentSessionOperations> SessionCreatedInternal;
 
-#if !NET_3_5
+#if !NET35
 		protected readonly ProfilingContext profilingContext = new ProfilingContext();
 #endif
+
+
+		public ILastEtagHolder LastEtagHolder { get; set; }
 
 		/// <summary>
 		/// Registers the store listener.
@@ -252,11 +218,12 @@ namespace Raven.Client
 		/// </summary>
 		public ProfilingInformation GetProfilingInformationFor(Guid id)
 		{
-#if !NET_3_5
+#if !NET35
 			return profilingContext.TryGet(id);
 #else
 			return null;
 #endif
 		}
+
 	}
 }

@@ -1,6 +1,7 @@
 using System;
 using System.Globalization;
 using System.Windows.Data;
+using Raven.Abstractions;
 
 namespace Raven.Studio.Infrastructure.Converters
 {
@@ -10,7 +11,10 @@ namespace Raven.Studio.Infrastructure.Converters
 		{
 			if (value is DateTime)
 			{
-				var timeAgo = DateTime.UtcNow - (DateTime)value;
+				var dateTime = (DateTime) value;
+				if(dateTime.Kind != DateTimeKind.Utc)
+					dateTime = dateTime.ToUniversalTime();
+				var timeAgo = SystemTime.UtcNow - dateTime;
 
 				if (timeAgo.TotalDays >= 1)
 					return string.Format("{0:#,#} days ago", timeAgo.TotalDays);

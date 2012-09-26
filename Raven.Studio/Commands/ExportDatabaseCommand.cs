@@ -5,12 +5,13 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Controls;
 using Ionic.Zlib;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
+using Raven.Imports.Newtonsoft.Json;
+using Raven.Imports.Newtonsoft.Json.Linq;
 using Raven.Client.Silverlight.Connection;
 using Raven.Json.Linq;
 using Raven.Studio.Features.Tasks;
 using Raven.Studio.Infrastructure;
+using Raven.Studio.Messages;
 using Raven.Studio.Models;
 using TaskStatus = Raven.Studio.Models.TaskStatus;
 
@@ -36,11 +37,19 @@ namespace Raven.Studio.Commands
 		public override void Execute(object parameter)
 		{
 			var saveFile = new SaveFileDialog
-						   {
-							   DefaultFileName = string.Format("Dump of {0}, {1}", ApplicationModel.Database.Value.Name, DateTimeOffset.Now.ToString("MMM dd yyyy HH-mm", CultureInfo.InvariantCulture)),
-							   DefaultExt = ".raven.dump",
-							   Filter = "Raven Dumps|*.raven.dump",
-						   };
+			{
+				DefaultExt = ".ravendump",
+				Filter = "Raven Dumps|*.ravendump;*.raven.dump",
+			};
+
+			var name = ApplicationModel.Database.Value.Name;
+			var normalizedName = new string(name.Select(ch => Path.GetInvalidPathChars().Contains(ch) ? '_' : ch).ToArray());
+			var defaultFileName = string.Format("Dump of {0}, {1}", normalizedName, DateTimeOffset.Now.ToString("MMM dd yyyy HH-mm", CultureInfo.InvariantCulture));
+			try
+			{
+				saveFile.DefaultFileName = defaultFileName;
+			}
+			catch { }
 
 			if (saveFile.ShowDialog() != true)
 				return;
@@ -49,9 +58,9 @@ namespace Raven.Studio.Commands
 			gZipStream = new GZipStream(stream, CompressionMode.Compress);
 			streamWriter = new StreamWriter(gZipStream);
 			jsonWriter = new JsonTextWriter(streamWriter)
-						 {
-							 Formatting = Formatting.Indented
-						 };
+			{
+				Formatting = Formatting.Indented
+			};
 			taskModel.TaskStatus = TaskStatus.Started;
 			output(String.Format("Exporting to {0}", saveFile.SafeFileName));
 

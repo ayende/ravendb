@@ -3,7 +3,7 @@
 //     Copyright (c) Hibernating Rhinos LTD. All rights reserved.
 // </copyright>
 //-----------------------------------------------------------------------
-#if !NET_3_5
+#if !NET35
 
 using System.Collections.Generic;
 using System.Threading.Tasks;
@@ -16,12 +16,6 @@ namespace Raven.Client
 	/// </summary>
 	public interface IAsyncAdvancedSessionOperations : IAdvancedDocumentSessionOperations
 	{
-		/// <summary>
-		/// Gets the async database commands.
-		/// </summary>
-		/// <value>The async database commands.</value>
-		IAsyncDatabaseCommands AsyncDatabaseCommands { get; }
-
 		/// <summary>
 		/// Load documents with the specified key prefix
 		/// </summary>

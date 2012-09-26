@@ -6,7 +6,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using Newtonsoft.Json;
 
 namespace Raven.Abstractions.Indexing
 {
@@ -122,8 +121,10 @@ namespace Raven.Abstractions.Indexing
 		/// <returns></returns>
 		public bool Equals(IndexDefinition other)
 		{
-			if (ReferenceEquals(null, other)) return false;
-			if (ReferenceEquals(this, other)) return true;
+			if (ReferenceEquals(null, other))
+				return false;
+			if (ReferenceEquals(this, other))
+				return true;
 			return Maps.SequenceEqual(other.Maps) &&
 				Equals(other.Name, Name) &&
 				Equals(other.Reduce, Reduce) &&
@@ -169,8 +170,10 @@ namespace Raven.Abstractions.Indexing
 		/// </returns>
 		public override bool Equals(object obj)
 		{
-			if (ReferenceEquals(null, obj)) return false;
-			if (ReferenceEquals(this, obj)) return true;
+			if (ReferenceEquals(null, obj))
+				return false;
+			if (ReferenceEquals(this, obj))
+				return true;
 			return Equals(obj as IndexDefinition);
 		}
 
@@ -219,10 +222,14 @@ namespace Raven.Abstractions.Indexing
 			get
 			{
 				var name = Name ?? string.Empty;
-				if (name.StartsWith("Temp")) return "Temp";
-				if (name.StartsWith("Auto")) return "Auto";
-				if (IsCompiled) return "Compiled";
-				if (IsMapReduce) return "MapReduce";
+				if (name.StartsWith("Temp"))
+					return "Temp";
+				if (name.StartsWith("Auto"))
+					return "Auto";
+				if (IsCompiled)
+					return "Compiled";
+				if (IsMapReduce)
+					return "MapReduce";
 				return "Map";
 			}
 		}
@@ -249,6 +256,31 @@ namespace Raven.Abstractions.Indexing
 			{
 				Analyzers.Remove(toRemove);
 			}
+		}
+
+		public IndexDefinition Clone()
+		{
+			var indexDefinition = new IndexDefinition
+			{
+				Name = Name,
+				Reduce = Reduce,
+				TransformResults = TransformResults,
+				cachedHashCodeAsBytes = cachedHashCodeAsBytes
+			};
+
+			if (Maps != null)
+				indexDefinition.Maps = new HashSet<string>(Maps);
+			if (Analyzers != null)
+				indexDefinition.Analyzers = new Dictionary<string, string>(Analyzers);
+			if (Fields != null)
+				indexDefinition.Fields = new List<string>(Fields);
+			if (Indexes != null)
+				indexDefinition.Indexes = new Dictionary<string, FieldIndexing>(Indexes);
+			if (SortOptions != null)
+				indexDefinition.SortOptions = new Dictionary<string, SortOptions>(SortOptions);
+			if (Stores != null)
+				indexDefinition.Stores = new Dictionary<string, FieldStorage>(Stores);
+			return indexDefinition;
 		}
 	}
 }

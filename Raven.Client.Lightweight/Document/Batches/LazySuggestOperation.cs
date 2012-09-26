@@ -11,7 +11,7 @@ using Raven.Json.Linq;
 
 namespace Raven.Client.Document.Batches
 {
-#if !NET_3_5
+#if !NET35
 
 	public class LazySuggestOperation : ILazyOperation
 	{
@@ -42,13 +42,13 @@ namespace Raven.Client.Document.Batches
 		public bool RequiresRetry { get; private set; }
 		public void HandleResponse(GetResponse response)
 		{
-			if (response.Status != 200)
+			if (response.Status != 200 && response.Status != 304)
 			{
 				throw new InvalidOperationException("Got an unexpected response code for the request: " + response.Status + "\r\n" +
 													response.Result);
 			}
 
-			var result = RavenJObject.Parse(response.Result);
+			var result = (RavenJObject)response.Result;
 			Result = new SuggestionQueryResult
 			{
 				Suggestions = ((RavenJArray)result["Suggestions"]).Select(x => x.Value<string>()).ToArray(),
@@ -59,11 +59,12 @@ namespace Raven.Client.Document.Batches
 		{
 			var result = new SuggestionQueryResult
 			{
-				Suggestions = responses
-					.Select(item => RavenJObject.Parse(item.Result))
-					.SelectMany(data => ((RavenJArray) data["Suggestions"]).Select(x => x.Value<string>()))
-					.Distinct()
-					.ToArray()
+				Suggestions = (from item in responses
+							   let data = (RavenJObject)item.Result
+							   from suggestion in (RavenJArray)data["Suggestions"]
+							   select suggestion.Value<string>())
+							  .Distinct()
+							  .ToArray()
 			};
 
 			Result = result;
