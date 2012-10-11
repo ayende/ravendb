@@ -207,7 +207,7 @@ namespace Raven.Client
 		/// </summary>
 		/// <param name="documentStoreListener">The document store listener.</param>
 		/// <returns></returns>
-		public IDocumentStore RegisterListener(IDocumentStoreListener documentStoreListener)
+        public DocumentStoreBase RegisterListener(IDocumentStoreListener documentStoreListener)
 		{
 			listeners.StoreListeners = listeners.StoreListeners.Concat(new[] { documentStoreListener }).ToArray();
 			return this;

@@ -21,6 +21,7 @@ using Raven.Client.Indexes;
 #endif
 #if !NET35
 using Raven.Client.Connection.Async;
+using Raven.Client.Listeners;
 using Raven.Client.Util;
 
 #endif
@@ -152,5 +153,30 @@ namespace Raven.Client
 		/// document store
 		///</summary>
 		Guid? GetLastWrittenEtag();
+
+	    /// <summary>
+	    /// Registers the delete listener.
+	    /// </summary>
+	    /// <param name="deleteListener">The delete listener.</param>
+	    /// <returns></returns>
+	    DocumentStoreBase RegisterListener(IDocumentDeleteListener deleteListener);
+
+	    /// <summary>
+	    /// Registers the query listener.
+	    /// </summary>
+	    DocumentStoreBase RegisterListener(IDocumentQueryListener queryListener);
+
+
+	    /// <summary>
+	    /// Registers the convertion listener.
+	    /// </summary>
+	    DocumentStoreBase RegisterListener(IDocumentConversionListener conversionListener);
+
+	    /// <summary>
+	    /// Registers the store listener.
+	    /// </summary>
+	    /// <param name="documentStoreListener">The document store listener.</param>
+	    /// <returns></returns>
+        DocumentStoreBase RegisterListener(IDocumentStoreListener documentStoreListener);
 	}
 }
