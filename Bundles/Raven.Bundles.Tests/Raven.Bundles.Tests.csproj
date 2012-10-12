@@ -81,6 +81,10 @@
     <Compile Include="IndexReplication\FactIfSqlServerIsAvailable.cs" />
     <Compile Include="IndexReplication\ReplicateToSql.cs" />
     <Compile Include="Replication\ReplicationWithOAuth.cs" />
+    <Compile Include="ScriptedTriggers\WhenBothConfigurationsExists.cs" />
+    <Compile Include="ScriptedTriggers\WhenADefaultConfigurationExists.cs" />
+    <Compile Include="ScriptedTriggers\ScriptedTriggerTestBase.cs" />
+    <Compile Include="ScriptedTriggers\WhenAConfigurationExists.cs" />
     <Compile Include="TestUtil.cs" />
     <Compile Include="UniqueConstraints\Bugs\JimBolla.cs" />
     <Compile Include="UniqueConstraints\Bugs\Lars.cs" />
@@ -132,6 +136,10 @@
     <ProjectReference Include="..\Raven.Bundles.IndexReplication\Raven.Bundles.IndexReplication.csproj">
       <Project>{2728BBA7-5142-445E-BAA5-142A25E0666D}</Project>
       <Name>Raven.Bundles.IndexReplication</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\Raven.Bundles.ScriptedTriggers\Raven.Bundles.ScriptedTriggers.csproj">
+      <Project>{03D99339-FD57-4159-B44E-FCE5D6D8BB2A}</Project>
+      <Name>Raven.Bundles.ScriptedTriggers</Name>
     </ProjectReference>
     <ProjectReference Include="..\Raven.Bundles.UniqueConstraints\Raven.Bundles.UniqueConstraints.csproj">
       <Project>{4C026F8A-FB36-4A30-82E9-324D207F6B48}</Project>
