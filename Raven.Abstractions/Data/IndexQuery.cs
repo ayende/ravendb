@@ -26,6 +26,12 @@ namespace Raven.Abstractions.Data
 		}
 
 		/// <summary>
+		/// Gets or sets the index name to query.
+		/// </summary>
+		/// <value>The index name.</value>
+		public string IndexName { get; set; }
+
+		/// <summary>
 		/// Gets or sets the query.
 		/// </summary>
 		/// <value>The query.</value>
@@ -42,6 +48,7 @@ namespace Raven.Abstractions.Data
 		/// </summary>
 		/// <value>The start.</value>
 		public int Start { get; set; }
+
 
 		/// <summary>
 		/// Gets or sets the size of the page.
