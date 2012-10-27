@@ -38,6 +38,9 @@
       <SpecificVersion>False</SpecificVersion>
       <HintPath>..\..\SharedLibs\Lucene.Net.dll</HintPath>
     </Reference>
+    <Reference Include="NLog, Version=2.0.0.0, Culture=neutral, PublicKeyToken=5120e14c03d0593c, processorArchitecture=MSIL">
+      <HintPath>..\..\packages\NLog.2.0.0.2000\lib\net40\NLog.dll</HintPath>
+    </Reference>
     <Reference Include="System" />
     <Reference Include="System.ComponentModel.Composition" />
     <Reference Include="System.Configuration" />
@@ -78,7 +81,11 @@
     <Compile Include="Authorization\Writing.cs" />
     <Compile Include="CascadeDelete\CascadeDelete.cs" />
     <Compile Include="Expiration\WithCascade.cs" />
+    <Compile Include="IndexedProperties\ArrayIndexedPropertyTests.cs" />
+    <Compile Include="IndexedProperties\IndexedPropertiesTests.cs" />
     <Compile Include="IndexedProperties\IndexedProperties.cs" />
+    <Compile Include="IndexedProperties\ObjectArrayIndexedPropertyTests.cs" />
+    <Compile Include="IndexedProperties\SimpleIndexedPropertyTests.cs" />
     <Compile Include="IndexReplication\FactIfSqlServerIsAvailable.cs" />
     <Compile Include="IndexReplication\ReplicateToSql.cs" />
     <Compile Include="Replication\ReplicationWithOAuth.cs" />
@@ -150,6 +157,9 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="App.config" />
+    <None Include="NLog.config">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup />
