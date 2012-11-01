@@ -712,6 +712,13 @@ The recommended method is to use full text search (mark the field as Analyzed an
 					luceneQuery.WhereIn(memberInfo.Path, ((IEnumerable) objects).Cast<object>());
 
 					break;
+				case "OrderByKey":
+					VisitExpression(expression.Arguments[0]);
+					var keys = (string[])GetValueFromExpression(expression.Arguments[1], typeof(string[]));
+					luceneQuery.AndAlso();
+					luceneQuery.OrderByKey(keys);
+					chainedWhere = true;
+					break;
 				default:
 				{
 					throw new NotSupportedException("Method not supported: " + expression.Method.Name);

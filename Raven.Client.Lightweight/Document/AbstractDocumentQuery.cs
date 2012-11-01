@@ -978,6 +978,21 @@ If you really want to do in memory filtering on the data returned from the query
 		}
 
 		/// <summary>
+		/// Applies an initial ordering based on the order within this array of keys.
+		/// </summary>
+		public void OrderByKey(string[] keys) {
+			if(theQueryText.Length > 0 && char.IsWhiteSpace(theQueryText[theQueryText.Length - 1]) == false)
+				theQueryText.Append(" ");
+
+			NegateIfNeeded();
+
+			theQueryText.Append("@orderByKey<>:(")
+				.Append(string.Join(",", keys))
+				.Append(") ");
+		}
+
+
+		/// <summary>
 		///   Matches fields which starts with the specified value.
 		/// </summary>
 		/// <param name = "fieldName">Name of the field.</param>

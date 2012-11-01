@@ -303,5 +303,17 @@ namespace Raven.Client
 			var queryable = self.Provider.CreateQuery (Expression.Call (null, currentMethod.MakeGenericMethod (typeof (T)), expression));
 			return (IOrderedQueryable<T>)queryable;
 		}
+
+		public static IOrderedQueryable<T> OrderByKey<T>(this IQueryable<T> self, params string[] keys) 
+		{
+			var currentMethod = (MethodInfo)MethodBase.GetCurrentMethod();
+			Expression expression = self.Expression;
+			if(expression.Type != typeof(IRavenQueryable<T>)) 
+			{
+				expression = Expression.Convert(expression, typeof(IRavenQueryable<T>));
+			}
+			var queryable = self.Provider.CreateQuery(Expression.Call(null, currentMethod.MakeGenericMethod(typeof(T)), expression, Expression.Constant(keys)));
+			return (IRavenQueryable<T>)queryable;
+		}
 	}
 }

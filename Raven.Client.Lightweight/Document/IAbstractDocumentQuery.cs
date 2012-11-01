@@ -144,6 +144,11 @@ namespace Raven.Client.Document
 		void WhereIn(string fieldName, IEnumerable<object> values);
 
 		/// <summary>
+		/// Applies an initial ordering based on the order within this array of keys.
+		/// </summary>
+		void OrderByKey(string[] keys);
+
+		/// <summary>
 		///   Matches fields which starts with the specified value.
 		/// </summary>
 		/// <param name = "fieldName">Name of the field.</param>

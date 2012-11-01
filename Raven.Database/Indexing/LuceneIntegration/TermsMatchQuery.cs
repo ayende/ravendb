@@ -135,4 +135,13 @@ namespace Raven.Database.Indexing.LuceneIntegration
 			return this;
 		}
 	}
+
+	public class KeyTermsMatchQuery : TermsMatchQuery 
+	{
+		public List<string> SortedMatches { get; private set; }
+		public KeyTermsMatchQuery(string field, IEnumerable<string> matches) : base(field, matches)
+		{
+			SortedMatches = matches.ToList();
+		}
+	}
 }

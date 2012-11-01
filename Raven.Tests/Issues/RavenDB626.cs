@@ -65,6 +65,14 @@ namespace Raven.Tests.Issues
 			Assert.Equal(new[] { "oren eini", "users/1" }, q.Matches);
 		}
 
+		[Fact]
+		public void QueryWithOrderByKey()
+		{
+			var q = (TermsMatchQuery)Parse("@orderByKey<>:(users/1, users/2)");
+			Assert.Equal(Raven.Abstractions.Data.Constants.DocumentIdFieldName, q.Field);
+			Assert.Equal(new[] { "users/1", "users/2" }, q.Matches);
+		}
+
 		private static Query Parse(string q)
 		{
 			using (var defaultAnalyzer = new KeywordAnalyzer())

@@ -27,7 +27,8 @@ namespace Raven.Database.Indexing
 		private static readonly Dictionary<string, Func<string, string[], Query>> queryMethods = new Dictionary<string, Func<string, string[], Query>>(StringComparer.InvariantCultureIgnoreCase)
 		{
 			{"in", (field, args) => new TermsMatchQuery(field, args)},
-			{"emptyIn", (field, args) => new TermsMatchQuery(field, Enumerable.Empty<string>())}
+			{"emptyIn", (field, args) => new TermsMatchQuery(field, Enumerable.Empty<string>())},
+			{"orderByKey", (field, args) => new KeyTermsMatchQuery(Constants.DocumentIdFieldName, args)},
 		};
 
 		public static Query BuildQuery(string query, PerFieldAnalyzerWrapper analyzer)
@@ -90,12 +91,13 @@ namespace Raven.Database.Indexing
 				{
 					c.Query = HandleMethods(c.Query);
 				}
-				var requiresMerging = booleanQuery.Clauses.All(x => x.Query is IRavenLuceneMethodQuery);
-				if (requiresMerging == false)
-					return booleanQuery;
-				var first = (IRavenLuceneMethodQuery) booleanQuery.Clauses[0].Query;
-				var ravenLuceneMethodQuery = booleanQuery.Clauses.Skip(1).Aggregate(first, (methodQuery, clause) => methodQuery.Merge(clause.Query));
-				return (Query)ravenLuceneMethodQuery;
+				return booleanQuery;
+				//var requiresMerging = booleanQuery.Clauses.All(x => x.Query is IRavenLuceneMethodQuery);
+				//if (requiresMerging == false)
+				//	return booleanQuery;
+				//var first = (IRavenLuceneMethodQuery) booleanQuery.Clauses[0].Query;
+				//var ravenLuceneMethodQuery = booleanQuery.Clauses.Skip(1).Aggregate(first, (methodQuery, clause) => methodQuery.Merge(clause.Query));
+				//return (Query)ravenLuceneMethodQuery;
 			}
 
 			return query;
