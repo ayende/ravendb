@@ -58,7 +58,6 @@ namespace Raven.Server
 			});
 			var keepAliveTask = Task.Factory.StartNew(() => 
 			{
-				System.Threading.Thread.Sleep(9000);
 				do 
 				{
 					EventLog.WriteEntry("Requesting additional time for service stop: " + (int)((DateTime.Now - shutdownStart).TotalSeconds) + "s", EventLogEntryType.Information);
