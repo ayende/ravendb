@@ -72,6 +72,10 @@ namespace Raven.Client.Indexes
 		/// </summary>
 		public IDictionary<string, string> AnalyzersStrings { get; set; }
 		/// <summary>
+		/// Asks raven to run this index in memory.
+		/// </summary>
+		public bool RunInMemory { get; set; }
+		/// <summary>
 		/// Initializes a new instance of the <see cref="IndexDefinitionBuilder{TDocument,TReduceResult}"/> class.
 		/// </summary>
 		public IndexDefinitionBuilder()
@@ -102,7 +106,8 @@ namespace Raven.Client.Indexes
 				Indexes = ConvertToStringDictionary(Indexes),
 				Stores = ConvertToStringDictionary(Stores),
 				SortOptions = ConvertToStringDictionary(SortOptions),
-				Analyzers = ConvertToStringDictionary(Analyzers)
+				Analyzers = ConvertToStringDictionary(Analyzers),
+				RunInMemory = RunInMemory,
 			};
 
 			foreach (var indexesString in IndexesStrings)

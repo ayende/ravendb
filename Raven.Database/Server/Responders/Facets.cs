@@ -44,7 +44,7 @@ namespace Raven.Database.Server.Responders
 				return;
 			}
 			context.WriteETag(etag);
-			context.WriteJson(Database.ExecuteGetTermsQuery(index, indexQuery, facetSetupDoc));
+			context.WriteJson(Database.ExecuteGetTermsQuery(index, indexQuery, jsonDocument));
 		}
 
 		private Guid GetFacetsEtag(JsonDocument jsonDocument, string index)

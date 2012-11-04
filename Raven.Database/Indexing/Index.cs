@@ -192,7 +192,6 @@ namespace Raven.Database.Indexing
 
 				try
 				{
-
 					waitReason = "Flush";
 					indexWriter.Commit();
 				}
@@ -200,6 +199,7 @@ namespace Raven.Database.Indexing
 				{
 					waitReason = null;
 				}
+				WriteInMemoryIndexToDiskIfNeeded(context);
 			}
 		}
 
@@ -406,6 +406,19 @@ namespace Raven.Database.Indexing
 			indexWriter.Dispose(true);
 
 			indexWriter = CreateIndexWriter(directory);
+		}
+
+		private void WriteInMemoryIndexToDiskIfNeeded(WorkContext context)
+		{
+			if (context.Configuration.RunLuceneInMemory || indexDefinition.RunInMemory)
+			{
+				var dir = indexWriter.Directory as RAMDirectory;
+				if (dir != null)
+				{
+					indexWriter.Commit();
+					context.IndexStorage.MakeRAMDirectoryPhysical(dir, indexDefinition.Name, true).Close();
+				}
+			}
 		}
 
 		public PerFieldAnalyzerWrapper CreateAnalyzer(Analyzer defaultAnalyzer, ICollection<Action> toDispose, bool forQuerying = false)

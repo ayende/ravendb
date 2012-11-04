@@ -159,6 +159,7 @@ namespace Raven.Database.Config
 
 			// Data settings
 			RunInMemory = GetConfigurationValue<bool>("Raven/RunInMemory") ?? false;
+			RunLuceneInMemory = GetConfigurationValue<bool>("Raven/RunLuceneInMemory") ?? false;
 			if (string.IsNullOrEmpty(DefaultStorageTypeName))
 				DefaultStorageTypeName = Settings["Raven/StorageTypeName"] ?? Settings["Raven/StorageEngine"] ?? "esent";
 
@@ -591,6 +592,7 @@ namespace Raven.Database.Config
 		private string defaultStorageTypeName;
 
 		private bool runInMemory;
+		private bool runLuceneInMemory;
 
 		/// <summary>
 		/// Should RavenDB's storage be in-memory. If set to true, Munin would be used as the
@@ -605,6 +607,19 @@ namespace Raven.Database.Config
 			{
 				runInMemory = value;
 				Settings["Raven/RunInMemory"] = value.ToString();
+			}
+		}
+
+		/// <summary>
+		/// Should Lucene's storage be in-memory. If set to true, Lucene's indexes will be loaded into memory.
+		/// Allowed values: true/false
+		/// Default: false
+		/// </summary>
+		public bool RunLuceneInMemory {
+			get { return runLuceneInMemory; }
+			set {
+				runLuceneInMemory = value;
+				Settings["Raven/RunLuceneInMemory"] = value.ToString();
 			}
 		}
 

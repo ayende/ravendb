@@ -73,7 +73,7 @@ namespace Raven.Database.Indexing.LuceneIntegration
 				if (actualEnum == null)
 					return false; // the actual enumerator is not initialized!
 				currentTerm = null;
-				while (EndEnum() == false && actualEnum.Next())
+				while (endEnum == false && actualEnum.Next())
 				{
 					do
 					{
@@ -105,11 +105,12 @@ namespace Raven.Database.Indexing.LuceneIntegration
 						return false;
 					}
 				}
-				if (last > 0)
-				{
-					MoveToCurrentTerm();
-					return false;
-				}
+				// Optimization caused a recursive loop (Move, set, compare...) that eventually caused, in some cases, TermCompare to be called when pos > count.
+				//if (last > 0)
+				//{
+				//	MoveToCurrentTerm();
+				//	return false;
+				//}
 				return last == 0;
 			}
 
