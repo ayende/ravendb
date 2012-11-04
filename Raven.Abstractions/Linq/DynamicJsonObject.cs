@@ -3,7 +3,6 @@
 //     Copyright (c) Hibernating Rhinos LTD. All rights reserved.
 // </copyright>
 //-----------------------------------------------------------------------
-#if !NET35
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -170,6 +169,10 @@ namespace Raven.Abstractions.Linq
 						if (l > int.MinValue && int.MaxValue > l)
 							return (int)l;
 					}
+					if(value is Guid)
+					{
+						return value.ToString();
+					}
 					var s = value as string;
 					if (s != null)
 					{
@@ -326,4 +329,3 @@ namespace Raven.Abstractions.Linq
 		}
 	}
 }
-#endif
