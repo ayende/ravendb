@@ -12,9 +12,9 @@ using Raven.Json.Linq;
 
 namespace Raven.Database.Indexing
 {
-	public class IndexedTerms
+	public static class IndexedTerms
 	{
-		public static void ReadEntriesForFields(IndexReader reader, HashSet<string> fieldsToRead, HashSet<int> docIds, Action<Term> onTermFound)
+		public static void ReadEntriesForFields(IndexReader reader, string[] fieldsToRead, ICollection<int> docIds, Action<Term, int> onTermFound)
 		{
 			using (var termDocs = reader.TermDocs())
 			{
@@ -30,19 +30,17 @@ namespace Raven.Database.Indexing
 							if(LowPrecisionNumber(termEnum.Term))
 								continue;
 
-							var totalDocCountIncludedDeletes = termEnum.DocFreq();
-							termDocs.Seek(termEnum.Term);
-							while (termDocs.Next() && totalDocCountIncludedDeletes > 0)
+							var count = 0;
+							termDocs.Seek(termEnum);
+							while (termDocs.Next())
 							{
-								totalDocCountIncludedDeletes -= 1;
-								if (reader.IsDeleted(termDocs.Doc))
-									continue;
-								if (docIds.Contains(termDocs.Doc) == false)
-									continue;
-								onTermFound(termEnum.Term);
+								if(docIds.Contains(termDocs.Doc))
+									count += 1;
 							}
-						} while (termEnum.Next());
-					} 
+							if (count > 0)
+								onTermFound(termEnum.Term, count);
+						} while(termEnum.Next());
+					}
 				}
 			}
 		}

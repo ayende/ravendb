@@ -231,7 +231,15 @@ namespace Raven.Database.Indexing
 				}
 			}
 
+			if(configuration.RunLuceneInMemory || indexDefinition.RunInMemory) {
+				var fsDir = directory;
+				directory = new RAMDirectory(directory);
+				fsDir.Close();
+			}
+
 			return directory;
+
+
 
 		}
 
@@ -290,10 +298,10 @@ namespace Raven.Database.Indexing
 			startupLog.Warn("Fixed index {0} in {1}", indexDirectory, sp.Elapsed);
 		}
 
-		internal Lucene.Net.Store.Directory MakeRAMDirectoryPhysical(RAMDirectory ramDir, string indexName)
+		internal Lucene.Net.Store.Directory MakeRAMDirectoryPhysical(RAMDirectory ramDir, string indexName, bool leaveRAMOpen = false)
 		{
 			var newDir = new LuceneCodecDirectory(Path.Combine(path, MonoHttpUtility.UrlEncode(IndexDefinitionStorage.FixupIndexName(indexName, path))), documentDatabase.IndexCodecs.OfType<AbstractIndexCodec>());
-			Lucene.Net.Store.Directory.Copy(ramDir, newDir, true);
+			Lucene.Net.Store.Directory.Copy(ramDir, newDir, !leaveRAMOpen);
 			return newDir;
 		}
 

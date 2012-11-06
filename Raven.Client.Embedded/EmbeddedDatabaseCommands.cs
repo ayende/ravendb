@@ -683,7 +683,8 @@ namespace Raven.Client.Embedded
 		public FacetResults GetFacets(string index, IndexQuery query, string facetSetupDoc)
 		{
 			CurrentOperationContext.Headers.Value = OperationsHeaders;
-			return database.ExecuteGetTermsQuery(index, query, facetSetupDoc);
+			// Moved json document retrieval to match facets responder.
+			return database.ExecuteGetTermsQuery(index, query, database.Get(facetSetupDoc, null));
 		}
 
 		/// <summary>

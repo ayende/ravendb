@@ -333,7 +333,8 @@ namespace Raven.Client.Indexes
 				Reduce = Reduce,
 				TransformResults = TransformResults,
 				Stores = Stores,
-				StoresStrings = StoresStrings
+				StoresStrings = StoresStrings,
+				RunInMemory = RunInMemory,
 			}.ToIndexDefinition(Conventions);
 		}
 
@@ -341,5 +342,10 @@ namespace Raven.Client.Indexes
 		/// The map definition
 		/// </summary>
 		protected Expression<Func<IEnumerable<TDocument>, IEnumerable>> Map { get; set; }
+
+		/// <summary>
+		/// Asks raven to run this index in memory.
+		/// </summary>
+		protected bool RunInMemory { get; set; }
 	}
 }

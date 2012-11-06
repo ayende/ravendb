@@ -802,5 +802,57 @@ namespace Raven.Tests.Linq
 			}
 		}
 
+		[Fact]
+		public void Can_Use_Order_By_Key() 
+		{
+			using(var store = new EmbeddableDocumentStore() { RunInMemory = true }) 
+			{
+				store.Initialize();
+
+				var guid1 = Guid.NewGuid();
+				var guid2 = Guid.NewGuid();
+				var guid3 = Guid.NewGuid();
+
+				using(var s = store.OpenSession()) 
+				{
+					s.Store(new OrderItem { Id = guid1, Cost = 1.59m, Quantity = 5 });
+					s.Store(new OrderItem { Id = Guid.NewGuid(), Cost = 7.59m, Quantity = 3 });
+					s.Store(new OrderItem { Id = guid2, Cost = 1.59m, Quantity = 4 });
+					s.Store(new OrderItem { Id = Guid.NewGuid(), Cost = 1.39m, Quantity = 3 });
+					s.Store(new OrderItem { Id = guid3, Cost = 1.59m, Quantity = 3 });
+					s.SaveChanges();
+				}
+
+				var keys = new string[] { "OrderItems/" + guid2, "OrderItems/" + guid1, "OrderItems/" + guid3 };
+
+
+				Action validate = () => {
+					using(var s = store.OpenSession()) 
+					{
+						var items = (from item in s.Query<OrderItem>()
+									 where item.Quantity.In(new[] { 3m, 4m })
+									 orderby item.Quantity
+									 select item).OrderByKey(keys).ToArray();
+
+						Assert.Equal(items.Length, 2);
+
+						var itemKeys = items.Select(x => s.Advanced.GetDocumentId(x)).ToArray();
+						var index = -1;
+						foreach(var itemKey in itemKeys) 
+						{
+							var newIndex = Array.IndexOf(keys, itemKey);
+							Assert.True(newIndex > index);
+							index = newIndex;
+						}
+					}
+				};
+
+				validate();
+
+				Array.Reverse(keys);
+
+				validate();
+			}
+		}
 	}
 }

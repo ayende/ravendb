@@ -188,7 +188,6 @@ namespace Raven.Database.Indexing
 
 				try
 				{
-
 					waitReason = "Flush";
 					indexWriter.Commit();
 				}
@@ -196,6 +195,7 @@ namespace Raven.Database.Indexing
 				{
 					waitReason = null;
 				}
+				WriteInMemoryIndexToDiskIfNeeded(context);
 			}
 		}
 
@@ -402,6 +402,19 @@ namespace Raven.Database.Indexing
 			indexWriter.Dispose(true);
 
 			indexWriter = CreateIndexWriter(directory);
+		}
+
+		private void WriteInMemoryIndexToDiskIfNeeded(WorkContext context)
+		{
+			if (context.Configuration.RunLuceneInMemory || indexDefinition.RunInMemory)
+			{
+				var dir = indexWriter.Directory as RAMDirectory;
+				if (dir != null)
+				{
+					indexWriter.Commit();
+					context.IndexStorage.MakeRAMDirectoryPhysical(dir, indexDefinition.Name, true).Close();
+				}
+			}
 		}
 
 		public PerFieldAnalyzerWrapper CreateAnalyzer(Analyzer defaultAnalyzer, ICollection<Action> toDispose, bool forQuerying = false)
@@ -750,6 +763,16 @@ namespace Raven.Database.Indexing
 				}
 			}
 
+			private static Raven.Database.Indexing.LuceneIntegration.KeyTermsMatchQuery FindKeyTermsMatchQuery(Query query) {
+				var match = query as Raven.Database.Indexing.LuceneIntegration.KeyTermsMatchQuery;
+				if(match != null)
+					return match;
+				var boolean = query as BooleanQuery;
+				if(boolean != null)
+					return boolean.Select(b => FindKeyTermsMatchQuery(b.Query)).Where(b => b != null).FirstOrDefault();
+				return null;
+			}
+
 			public IEnumerable<IndexQueryResult> Query()
 			{
 				parent.MarkQueried();
@@ -761,60 +784,92 @@ namespace Raven.Database.Indexing
 					{
 						var luceneQuery = ApplyIndexTriggers(GetLuceneQuery());
 
-
 						int start = indexQuery.Start;
 						int pageSize = indexQuery.PageSize;
 						int returnedResults = 0;
-						int skippedResultsInCurrentLoop = 0;
-						bool readAll;
-						bool adjustStart = true;
 
-						var recorder = new DuplicateDocumentRecorder(indexSearcher,
-													  parent,
-													  documentsAlreadySeenInPreviousPage,
-													  alreadyReturned,
-													  fieldsToFetch,
-													  parent.IsMapReduce || fieldsToFetch.IsProjection);
-
-						do
+						var byKey = FindKeyTermsMatchQuery(luceneQuery);
+						if(byKey != null) 
 						{
-							if (skippedResultsInCurrentLoop > 0)
+							var search = ExecuteQuery(indexSearcher, luceneQuery, 0, int.MaxValue, indexQuery);
+
+							indexQuery.TotalSize.Value = search.TotalHits;
+
+							var documents = search.ScoreDocs.Select(x => new { score = x.Score, document = indexSearcher.Doc(x.Doc) })
+								.ToDictionary(x => x.document.Get(Constants.DocumentIdFieldName));
+
+							var i = 0;
+							do 
 							{
-								start = start + pageSize - (start - indexQuery.Start); // need to "undo" the index adjustment
-								// trying to guesstimate how many results we will need to read from the index
-								// to get enough unique documents to match the page size
-								pageSize = Math.Max(2, skippedResultsInCurrentLoop) * pageSize;
-								skippedResultsInCurrentLoop = 0;
-							}
-							TopDocs search;
-							int moreRequired;
+								var key = byKey.SortedMatches[i];
+								if(documents.ContainsKey(key)) 
+								{
+									var indexQueryResult = parent.RetrieveDocument(documents[key].document, fieldsToFetch, documents[key].score);
+
+									if(start > 0) 
+									{
+										start -= 1;
+									} 
+									else 
+									{
+										returnedResults += 1;
+										yield return indexQueryResult;
+									}
+								}
+								i += 1;
+							} while(returnedResults < pageSize && i < byKey.Matches.Count);
+						} 
+						else 
+						{
+							int skippedResultsInCurrentLoop = 0;
+							bool readAll;
+							bool adjustStart = true;
+	
+							var recorder = new DuplicateDocumentRecorder(indexSearcher,
+											parent,
+											documentsAlreadySeenInPreviousPage,
+											alreadyReturned,
+											fieldsToFetch,
+											parent.IsMapReduce || fieldsToFetch.IsProjection);
+
 							do
 							{
-								search = ExecuteQuery(indexSearcher, luceneQuery, start, pageSize, indexQuery);
-								moreRequired = recorder.RecordResultsAlreadySeenForDistinctQuery(search, adjustStart, ref start);
-								pageSize += moreRequired*2;
-							} while (moreRequired > 0);
-							indexQuery.TotalSize.Value = search.TotalHits;
-							adjustStart = false;
-
-							for (var i = start; (i - start) < pageSize && i < search.ScoreDocs.Length; i++)
-							{
-								Document document = indexSearcher.Doc(search.ScoreDocs[i].Doc);
-								IndexQueryResult indexQueryResult = parent.RetrieveDocument(document, fieldsToFetch, search.ScoreDocs[i].Score);
-								if (ShouldIncludeInResults(indexQueryResult) == false)
-								{
-									indexQuery.SkippedResults.Value++;
-									skippedResultsInCurrentLoop++;
-									continue;
+								if(skippedResultsInCurrentLoop > 0) {
+									start = start + pageSize - (start - indexQuery.Start); // need to "undo" the index adjustment
+									// trying to guesstimate how many results we will need to read from the index
+									// to get enough unique documents to match the page size
+									pageSize = Math.Max(2, skippedResultsInCurrentLoop) * pageSize;
+									skippedResultsInCurrentLoop = 0;
 								}
+								TopDocs search;
+								int moreRequired;
+								do {
+									search = ExecuteQuery(indexSearcher, luceneQuery, start, pageSize, indexQuery);
+									moreRequired = recorder.RecordResultsAlreadySeenForDistinctQuery(search, adjustStart, ref start);
+									pageSize += moreRequired * 2;
+								} while(moreRequired > 0);
+								indexQuery.TotalSize.Value = search.TotalHits;
+								adjustStart = false;
 
-								returnedResults++;
-								yield return indexQueryResult;
-								if (returnedResults == indexQuery.PageSize)
-									yield break;
-							}
-							readAll = search.TotalHits == search.ScoreDocs.Length;
-						} while (returnedResults < indexQuery.PageSize && readAll == false);
+								for (var i = start; (i - start) < pageSize && i < search.ScoreDocs.Length; i++)
+								{
+									Document document = indexSearcher.Doc(search.ScoreDocs[i].Doc);
+									IndexQueryResult indexQueryResult = parent.RetrieveDocument(document, fieldsToFetch, search.ScoreDocs[i].Score);
+									if (ShouldIncludeInResults(indexQueryResult) == false)
+									{
+										indexQuery.SkippedResults.Value++;
+										skippedResultsInCurrentLoop++;
+										continue;
+									}
+
+									returnedResults++;
+									yield return indexQueryResult;
+									if (returnedResults == indexQuery.PageSize)
+										yield break;
+								}
+								readAll = search.TotalHits == search.ScoreDocs.Length;
+							} while (returnedResults < indexQuery.PageSize && readAll == false);
+						}
 					}
 				}
 			}

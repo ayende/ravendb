@@ -33,6 +33,11 @@ namespace Raven.Abstractions.Indexing
 		public string Name { get; set; }
 
 		/// <summary>
+		/// Asks Raven to run this index in memory.
+		/// </summary>
+		public bool RunInMemory { get; set; }
+
+		/// <summary>
 		/// Gets or sets the map function, if there is only one
 		/// </summary>
 		/// <remarks>

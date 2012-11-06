@@ -19,12 +19,8 @@ namespace Raven.Database.Queries
 			this.database = database;
 		}
 
-		public FacetResults GetFacets(string index, IndexQuery indexQuery, string facetSetupDoc)
+		public FacetResults GetFacets(string index, IndexQuery indexQuery, JsonDocument facetSetup)
 		{
-			var facetSetup = database.Get(facetSetupDoc, null);
-			if (facetSetup == null)
-				throw new InvalidOperationException("Could not find facets document: " + facetSetupDoc);
-
 			var facets = facetSetup.DataAsJson.JsonDeserialization<FacetSetup>().Facets;
 
 			var results = new FacetResults();
@@ -200,25 +196,38 @@ namespace Raven.Database.Queries
 			IndexQuery IndexQuery { get; set; }
 			FacetResults Results { get; set; }
 
+			struct FacetMatch
+			{
+				public string Value;
+				public int Count;
+			}
+
 			public void Execute()
 			{
 				//We only want to run the base query once, so we capture all of the facet-ing terms then run the query
 				//	once through the collector and pull out all of the terms in one shot
 				var allCollector = new GatherAllCollector();
-				var facetsByName = new Dictionary<string, Dictionary<string, int>>();
+				var facetsByName = new Dictionary<string, List<FacetMatch>>();
 
 				IndexSearcher currentIndexSearcher;
 				using (Database.IndexStorage.GetCurrentIndexSearcher(Index, out currentIndexSearcher))
 				{
 					var baseQuery = Database.IndexStorage.GetLuceneQuery(Index, IndexQuery, Database.IndexQueryTriggers);
 					currentIndexSearcher.Search(baseQuery, allCollector);
-					var fields = Facets.Values.Select(x => x.Name)
-							.Concat(Ranges.Select(x => x.Key));
-					var fieldsToRead = new HashSet<string>(fields);
+					var fields = Facets.Values.Select(x => x.Name).Concat(Ranges.Select(x => x.Key)).ToArray();
+
+					foreach (var field in Facets.Values)
+					{
+						facetsByName.Add(field.Name, new List<FacetMatch>((int)Math.Log(allCollector.Documents.Count)));
+					}
+
+					List<FacetMatch> current = null;
+					string currentField = null;
+
 					IndexedTerms.ReadEntriesForFields(currentIndexSearcher.IndexReader,
-						fieldsToRead,
+						fields,
 						allCollector.Documents,
-						term =>
+						(term, count) =>
 						{
 							List<ParsedRange> list;
 							if (Ranges.TryGetValue(term.Field, out list))
@@ -228,16 +237,18 @@ namespace Raven.Database.Queries
 									var parsedRange = list[i];
 									if (parsedRange.IsMatch(term.Text))
 									{
-										Results.Results[term.Field].Values[i].Hits++;
+										Results.Results[term.Field].Values[i].Hits += count;
 									}
 								}
 							}
-
-							Facet value;
-							if (Facets.TryGetValue(term.Field, out value))
+							else
 							{
-								var facetValues = facetsByName.GetOrAdd(term.Field);
-								facetValues[term.Text] = facetValues.GetOrDefault(term.Text) + 1;
+								if (currentField != term.Field || current == null)
+								{
+									currentField = term.Field;
+									current = facetsByName[currentField];
+								}
+								current.Add(new FacetMatch { Count = count, Value = term.Text });
 							}
 						});
 				}
@@ -245,55 +256,40 @@ namespace Raven.Database.Queries
 				UpdateFacetResults(facetsByName);
 			}
 
-			private void UpdateFacetResults(IDictionary<string, Dictionary<string, int>> facetsByName)
+			private void UpdateFacetResults(Dictionary<string, List<FacetMatch>> facetsByName)
 			{
-				foreach (var facet in Facets.Values)
+				foreach (var kvp in facetsByName)
 				{
-					var values = new List<FacetValue>();
-					List<string> allTerms;
+					var facet = Facets[kvp.Key];
 
 					int maxResults = Math.Min(facet.MaxResults ?? Database.Configuration.MaxPageSize, Database.Configuration.MaxPageSize);
-					var groups = facetsByName.GetOrDefault(facet.Name);
 
-					if (groups == null)
-						continue;
+					var values = kvp.Value;
 
+					IOrderedEnumerable<FacetMatch> ordered = null;
 					switch (facet.TermSortMode)
 					{
 						case FacetTermSortMode.ValueAsc:
-							allTerms = new List<string>(groups.OrderBy(x => x.Key).ThenBy(x => x.Value).Select(x => x.Key));
+							ordered = values.OrderBy(x => x.Value).ThenBy(x => x.Count);
 							break;
 						case FacetTermSortMode.ValueDesc:
-							allTerms = new List<string>(groups.OrderByDescending(x => x.Key).ThenBy(x => x.Value).Select(x => x.Key));
+							ordered = values.OrderByDescending(x => x.Value).ThenBy(x => x.Count);
 							break;
 						case FacetTermSortMode.HitsAsc:
-							allTerms = new List<string>(groups.OrderBy(x => x.Value).ThenBy(x => x.Key).Select(x => x.Key));
+							ordered = values.OrderBy(x => x.Count).ThenBy(x => x.Value);
 							break;
 						case FacetTermSortMode.HitsDesc:
-							allTerms = new List<string>(groups.OrderByDescending(x => x.Value).ThenBy(x=>x.Key).Select(x => x.Key));
+							ordered = values.OrderByDescending(x => x.Count).ThenBy(x => x.Value);
 							break;
-						default:
-							throw new ArgumentException(string.Format("Could not understand '{0}'", facet.TermSortMode));
-					}
-
-					foreach (var term in allTerms.TakeWhile(term => values.Count < maxResults))
-					{
-						values.Add(new FacetValue
-						{
-							Hits = groups.GetOrDefault(term),
-							Range = term
-						});
 					}
 
 					Results.Results[facet.Name] = new FacetResult
-				{
-					Values = values,
-					RemainingTermsCount = allTerms.Count - values.Count,
-					RemainingHits = groups.Values.Sum() - values.Sum(x => x.Hits),
-				};
-
-					if (facet.InclueRemainingTerms)
-						Results.Results[facet.Name].RemainingTerms = allTerms.Skip(maxResults).ToList();
+					{
+						Values = values.Take(maxResults).Select(x => new FacetValue { Hits = x.Count, Range = x.Value }).ToList(),
+						RemainingTermsCount = values.Count - maxResults,
+						RemainingHits = values.Skip(maxResults).Sum(x => x.Count),
+						RemainingTerms = facet.InclueRemainingTerms ? values.Skip(maxResults).Select(x => x.Value).ToList() : null,
+					};
 				}
 			}
 
