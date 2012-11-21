@@ -77,7 +77,7 @@ namespace Raven.Storage.Esent.Backup
 					fileThatGetsCreatedButDoesntSeemLikeItShould.MoveTo(dataFilePath);
 				}
 
-				DefragmentDatabase(instance, dataFilePath);
+				//DefragmentDatabase(instance, dataFilePath);
 			}
 			finally
 			{

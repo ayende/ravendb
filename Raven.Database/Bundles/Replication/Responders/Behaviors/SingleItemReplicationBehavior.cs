@@ -42,7 +42,7 @@ namespace Raven.Bundles.Replication.Responders
 			// we just got the same version from the same source - request playback again?
 			// at any rate, not an error, moving on
 			if (existingMetadata.Value<string>(Constants.RavenReplicationSource) == metadata.Value<string>(Constants.RavenReplicationSource)
-			    && existingMetadata.Value<int>(Constants.RavenReplicationVersion) == metadata.Value<int>(Constants.RavenReplicationVersion))
+			    && existingMetadata.Value<long>(Constants.RavenReplicationVersion) == metadata.Value<long>(Constants.RavenReplicationVersion))
 			{
 				return;
 			}
