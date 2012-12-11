@@ -44,7 +44,7 @@ namespace Raven.Database.Indexing
 	public class IndexStorage : CriticalFinalizerObject, IDisposable
 	{
 		private readonly DocumentDatabase documentDatabase;
-		private const string IndexVersion = "1.2.18";
+		private const string IndexVersion = "2.0.0.1";
 
 		private readonly IndexDefinitionStorage indexDefinitionStorage;
 		private readonly InMemoryRavenConfiguration configuration;
@@ -218,15 +218,19 @@ namespace Raven.Database.Indexing
 				else
 				{
 					EnsureIndexVersionMatches(indexName, directory);
-					if (directory.FileExists("write.lock")) // we had an unclean shutdown
+					if (directory.FileExists("write.lock"))// force lock release, because it was still open when we shut down
+					{
+						IndexWriter.Unlock(directory);
+						// for some reason, just calling unlock doesn't remove this file
+						directory.DeleteFile("write.lock");
+					} 
+					if (directory.FileExists("writing-to-index.lock")) // we had an unclean shutdown
 					{
 						if (configuration.ResetIndexOnUncleanShutdown)
 							throw new InvalidOperationException("Rude shutdown detected on: " + indexDirectory);
 
 						CheckIndexAndRecover(directory, indexDirectory);
-						IndexWriter.Unlock(directory);
-						// for some reason, just calling unlock doesn't remove this file
-						directory.DeleteFile("write.lock");
+						directory.DeleteFile("writing-to-index.lock");
 					}
 				}
 			}

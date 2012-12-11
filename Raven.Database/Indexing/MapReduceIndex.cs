@@ -50,6 +50,13 @@ namespace Raven.Database.Indexing
 			get { return true; }
 		}
 
+		private class MapResultItem
+		{
+			public string DocId;
+			public RavenJObject Data;
+			public string ReduceKey;
+		}
+
 		public override void IndexDocuments(
 			AbstractViewGenerator viewGenerator,
 			IndexingBatch batch,
@@ -70,6 +77,7 @@ namespace Raven.Database.Indexing
 				return doc;
 			})
 				.Where(x => x is FilteredDocument == false);
+			var items = new List<MapResultItem>();
 			var stats = new IndexingWorkStats();
 			foreach (
 				var mappedResultFromDocument in
@@ -97,11 +105,22 @@ namespace Raven.Database.Indexing
 
 					logIndexing.Debug("Mapped result for index '{0}' doc '{1}': '{2}'", name, docId, data);
 
-					actions.MapReduce.PutMappedResult(name, docId, reduceKey, data);
+					items.Add(new MapResultItem
+					{
+						Data = data,
+						DocId = docId,
+						ReduceKey =	reduceKey
+					});
 
 					changed.Add(new ReduceKeyAndBucket(IndexingUtil.MapBucket(docId), reduceKey));
 				}
 			}
+
+			foreach (var mapResultItem in items)
+			{
+				actions.MapReduce.PutMappedResult(name, mapResultItem.DocId, mapResultItem.ReduceKey, mapResultItem.Data);
+			}
+
 			UpdateIndexingStats(context, stats);
 			actions.MapReduce.ScheduleReductions(name, 0, changed);
 			AddindexingPerformanceStat(new IndexingPerformanceStats
@@ -244,7 +263,7 @@ namespace Raven.Database.Indexing
 				}
 				actions.MapReduce.ScheduleReductions(name, 0, reduceKeyAndBuckets);
 			});
-			Write(context, (writer, analyzer, stats) =>
+			Write((writer, analyzer, stats) =>
 			{
 				stats.Operation = IndexingWorkStats.Status.Ignore;
 				logIndexing.Debug(() => string.Format("Deleting ({0}) from {1}", string.Join(", ", keys), name));
@@ -373,7 +392,7 @@ namespace Raven.Database.Indexing
 				var sw = Stopwatch.StartNew();
 				var start = SystemTime.UtcNow;
 				
-				parent.Write(Context, (indexWriter, analyzer, stats) =>
+				parent.Write((indexWriter, analyzer, stats) =>
 				{
 					stats.Operation = IndexingWorkStats.Status.Reduce;
 					try
@@ -456,7 +475,7 @@ namespace Raven.Database.Indexing
 				var fields = GetFields(doc, out boost).ToList();
 
 				string reduceKeyAsString = ExtractReduceKey(ViewGenerator, doc);
-				reduceKeyField.SetValue(reduceKeyAsString.ToLowerInvariant());
+				reduceKeyField.SetValue(reduceKeyAsString);
 
 				luceneDoc.GetFields().Clear();
 				luceneDoc.Boost = boost;
@@ -490,7 +509,7 @@ namespace Raven.Database.Indexing
 				foreach (var reduceKey in ReduceKeys)
 				{
 					var entryKey = reduceKey;
-					indexWriter.DeleteDocuments(new Term(Constants.ReduceKeyFieldName, entryKey.ToLowerInvariant()));
+					indexWriter.DeleteDocuments(new Term(Constants.ReduceKeyFieldName, entryKey));
 					batchers.ApplyAndIgnoreAllErrors(
 						exception =>
 						{

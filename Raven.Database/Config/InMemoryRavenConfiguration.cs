@@ -45,6 +45,9 @@ namespace Raven.Database.Config
 
 			CreateTemporaryIndexesForAdHocQueriesIfNeeded = true;
 
+			CreatePluginsDirectoryIfNotExisting = true;
+			CreateAnalyzersDirectoryIfNotExisting = true;
+
 			AvailableMemoryForRaisingIndexBatchSizeLimit = Math.Min(768, MemoryStatistics.TotalPhysicalMemory / 2);
 			MaxNumberOfParallelIndexTasks = 8;
 
@@ -189,6 +192,9 @@ namespace Raven.Database.Config
 			AnonymousUserAccessMode = GetAnonymousUserAccessMode();
 
 			RedirectStudioUrl = Settings["Raven/RedirectStudioUrl"];
+
+			DisableDocumentPreFetchingForIndexing = GetConfigurationValue<bool>("Raven/DisableDocumentPreFetchingForIndexing") ??
+			                                        false;
 
 			// Misc settings
 			WebDir = Settings["Raven/WebDir"] ?? GetDefaultWebDir();
@@ -647,6 +653,9 @@ namespace Raven.Database.Config
 			}
 		}
 
+		public bool CreatePluginsDirectoryIfNotExisting { get; set; }
+		public bool CreateAnalyzersDirectoryIfNotExisting { get; set; }
+
 		public string OAuthTokenServer { get; set; }
 
 		#endregion
@@ -660,6 +669,8 @@ namespace Raven.Database.Config
 				container = value;
 			}
 		}
+
+		public bool DisableDocumentPreFetchingForIndexing { get; set; }
 
 		public AggregateCatalog Catalog { get; set; }
 
@@ -682,20 +693,16 @@ namespace Raven.Database.Config
 			get
 			{
 				if (string.IsNullOrEmpty(indexStoragePath))
-					return Path.Combine(DataDirectory, "Indexes");
-
+					indexStoragePath = Path.Combine(DataDirectory, "Indexes");
 				return indexStoragePath;
 			}
-			set
-			{
-				indexStoragePath = value.ToFullPath();
-			}
+			set { indexStoragePath = value.ToFullPath(); }
 		}
 
 		public int AvailableMemoryForRaisingIndexBatchSizeLimit { get; set; }
 
 		public TimeSpan MaxIndexingRunLatency { get; set; }
-		
+
 		internal bool IsTenantDatabase { get; set; }
 
 		[Browsable(false)]

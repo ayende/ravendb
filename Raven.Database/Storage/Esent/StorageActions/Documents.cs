@@ -275,6 +275,18 @@ namespace Raven.Storage.Esent.StorageActions
 			} while (Api.TryMoveNext(session, Documents) && count < take);
 		}
 
+		public Guid GetBestNextDocumentEtag(Guid etag)
+		{
+			Api.JetSetCurrentIndex(session, Documents, "by_etag");
+			Api.MakeKey(session, Documents, etag.TransformToValueForEsentSorting(), MakeKeyGrbit.NewKey);
+			if (Api.TrySeek(session, Documents, SeekGrbit.SeekGE) == false)
+				return etag;
+
+
+			var val = Api.RetrieveColumn(session, Documents, tableColumnsCache.DocumentsColumns["etag"],
+			                             RetrieveColumnGrbit.RetrieveFromIndex, null);
+			return new Guid(val);
+		}
 
 		public IEnumerable<JsonDocument> GetDocumentsWithIdStartingWith(string idPrefix, int start, int take)
 		{
@@ -456,7 +468,7 @@ namespace Raven.Storage.Esent.StorageActions
 		}
 
 
-		public bool DeleteDocument(string key, Guid? etag, out RavenJObject metadata)
+		public bool DeleteDocument(string key, Guid? etag, out RavenJObject metadata, out Guid? deletedETag)
 		{
 			metadata = null;
 			Api.JetSetCurrentIndex(session, Documents, "by_key");
@@ -464,6 +476,7 @@ namespace Raven.Storage.Esent.StorageActions
 			if (Api.TrySeek(session, Documents, SeekGrbit.SeekEQ) == false)
 			{
 				logger.Debug("Document with key '{0}' was not found, and considered deleted", key);
+				deletedETag = null;
 				return false;
 			}
 			if (Api.TryMoveFirst(session, Details))
@@ -473,6 +486,7 @@ namespace Raven.Storage.Esent.StorageActions
 			EnsureNotLockedByTransaction(key, null);
 
 			metadata = Api.RetrieveColumn(session, Documents, tableColumnsCache.DocumentsColumns["metadata"]).ToJObject();
+			deletedETag = existingEtag;
 
 			Api.JetDelete(session, Documents);
 			logger.Debug("Document with key '{0}' was deleted", key);

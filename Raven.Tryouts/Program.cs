@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Threading;
+using Microsoft.Isam.Esent.Interop;
 using Raven.Abstractions;
 using Raven.Abstractions.Commands;
 using Raven.Abstractions.Data;
@@ -17,6 +18,7 @@ using Raven.Database.Storage;
 using Raven.Json.Linq;
 using Raven.Tests.Bugs;
 using Raven.Tests.Document;
+using Raven.Tests.Faceted;
 using Raven.Tests.Issues;
 using System.Linq;
 using Raven.Tests.Util;
@@ -28,24 +30,13 @@ namespace Raven.Tryouts
 		[STAThread]
 		private static void Main()
 		{
+			for (int i = 0; i < 1000; i++)
 			{
-				var x = new DocumentStoreServerTests_DifferentProcess();
-				x.Can_promote_transactions();
-			}
-
-			using(var x = new RunExternalProcess())
-			{
-				x.can_use_RavenDB_in_a_remote_process();
-			}
-
-			using (var x = new RunExternalProcess())
-			{
-				x.can_use_RavenDB_in_a_remote_process_for_batch_operations();
-			}
-
-			using (var x = new RunExternalProcess())
-			{
-				x.can_use_RavenDB_in_a_remote_process_to_post_batch_operations();
+				Console.WriteLine(i);
+				using (var x = new FacetedIndex())
+				{
+					x.CanPerformFacetedSearch_Remotely_Lazy_can_work_with_others();
+				}
 			}
 		}
 	}

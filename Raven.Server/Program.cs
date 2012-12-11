@@ -26,6 +26,7 @@ using Raven.Abstractions.Smuggler;
 using Raven.Database;
 using Raven.Database.Config;
 using Raven.Database.Server;
+using Raven.Database.Server.Responders.Admin;
 using Raven.Smuggler;
 
 namespace Raven.Server
@@ -83,13 +84,13 @@ namespace Raven.Server
 
 			if(args.Contains("--msgbox", StringComparer.InvariantCultureIgnoreCase) || 
 				args.Contains("/msgbox", StringComparer.InvariantCultureIgnoreCase))
-			{
+		{
 				MessageBox.Show(msg, "RavenDB Startup failure");
 			}
 			Console.WriteLine("Press any key to continue...");
 			try
 			{
-				Console.ReadKey(true);
+			Console.ReadKey(true);
 			}
 			catch
 			{
@@ -367,11 +368,11 @@ Configuration options:
 						Console.WriteLine("Could not start browser: " + e.Message);
 					}
 				}
-				return InteractiveRun();
+				return InteractiveRun(server);
 			}
 		}
 
-		private static bool InteractiveRun()
+		private static bool InteractiveRun(RavenDbServer server)
 		{
 			bool? done = null;
 			var actions = new Dictionary<string,Action>
@@ -383,13 +384,13 @@ Configuration options:
 						TryClearingConsole();
 						done = true;
 					}
-				},
+					},
 				{
 					"gc", () =>
 					{
 						long before = Process.GetCurrentProcess().WorkingSet64;
 						Console.WriteLine("Starting garbage collection, current memory is: {0:#,#.##;;0} MB", before / 1024d / 1024d);
-						GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced);
+						AdminGc.CollectGarbage(server.Database);
 						var after = Process.GetCurrentProcess().WorkingSet64;
 						Console.WriteLine("Done garbage collection, current memory is: {0:#,#.##;;0} MB, saved: {1:#,#.##;;0} MB", after / 1024d / 1024d,
 										  (before - after) / 1024d / 1024d);
@@ -445,7 +446,7 @@ Document Database for the .Net Platform
 ----------------------------------------
 Copyright (C) 2008 - {0} - Hibernating Rhinos
 ----------------------------------------
-Command line ptions:",
+Command line options:",
 				SystemTime.UtcNow.Year);
 
 			optionSet.WriteOptionDescriptions(Console.Out);

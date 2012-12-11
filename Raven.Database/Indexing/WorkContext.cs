@@ -26,10 +26,13 @@ namespace Raven.Database.Indexing
 	{
 		private readonly ConcurrentSet<FutureBatchStats> futureBatchStats = new ConcurrentSet<FutureBatchStats>();
 
+		private readonly SizeLimitedConcurrentSet<string> recentlyDeleted = new SizeLimitedConcurrentSet<string>(100, StringComparer.InvariantCultureIgnoreCase);
+
 		private readonly ConcurrentQueue<ActualIndexingBatchSize> lastActualIndexingBatchSize = new ConcurrentQueue<ActualIndexingBatchSize>();
 		private readonly ConcurrentQueue<ServerError> serverErrors = new ConcurrentQueue<ServerError>();
 		private readonly object waitForWork = new object();
 		private volatile bool doWork = true;
+		private volatile bool doIndexing = true;
 		private int workCounter;
 		private readonly CancellationTokenSource cancellationTokenSource = new CancellationTokenSource();
 		private static readonly ILog log = LogManager.GetCurrentClassLogger();
@@ -44,6 +47,11 @@ namespace Raven.Database.Indexing
 		public bool DoWork
 		{
 			get { return doWork; }
+		}
+
+		public bool RunIndexing
+		{
+			get { return doWork && doIndexing; }
 		}
 
 		public void UpdateFoundWork()
@@ -140,12 +148,14 @@ namespace Raven.Database.Indexing
 		public void StartWork()
 		{
 			doWork = true;
+			doIndexing = true;
 		}
 
 		public void StopWork()
 		{
 			log.Debug("Stopping background workers");
 			doWork = false;
+			doIndexing = false;
 			lock (waitForWork)
 			{
 				Monitor.PulseAll(waitForWork);
@@ -470,6 +480,40 @@ namespace Raven.Database.Indexing
 			{
 				futureBatchStats.TryRemove(source);
 			}
+		}
+
+		public void StopIndexing()
+		{
+			log.Debug("Stopping indexing workers");
+			doIndexing = false;
+			lock (waitForWork)
+			{
+				Monitor.PulseAll(waitForWork);
+			}
+		}
+
+		public void StartIndexing()
+		{
+			doIndexing = true;
+		}
+
+		public void MarkAsRemovedFromIndex(HashSet<string> keys)
+		{
+			foreach (var key in keys)
+			{
+				recentlyDeleted.TryRemove(key);
+			}
+		}
+
+		public bool ShouldRemoveFromIndex(string key)
+		{
+			var shouldRemoveFromIndex = recentlyDeleted.Contains(key);
+			return shouldRemoveFromIndex;
+		}
+
+		public void MarkDeleted(string key)
+		{
+			recentlyDeleted.Add(key);
 		}
 	}
 }

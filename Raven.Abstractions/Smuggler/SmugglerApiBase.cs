@@ -38,7 +38,7 @@ namespace Raven.Abstractions.Smuggler
 		protected double maximumBatchChangePercentage = 0.3;
 
 		protected int minimumBatchSize = 10;
-		protected int maximumBatchSize = 16 * 1000;
+		protected int maximumBatchSize = 1024*4;
 
 		protected SmugglerApiBase(SmugglerOptions smugglerOptions)
 		{
@@ -197,7 +197,7 @@ namespace Raven.Abstractions.Smuggler
 						Console.Write("\rWaiting {0} for indexing ({1} total).", justIndexingWait.Elapsed, stopwatch.Elapsed);
 					}
 
-					Thread.Sleep(100);
+					Thread.Sleep(1000);
 					continue;
 				}
 				Console.WriteLine("\rWaited {0} for indexing ({1} total).", justIndexingWait.Elapsed, stopwatch.Elapsed);
