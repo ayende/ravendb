@@ -170,14 +170,48 @@ namespace Raven.Storage.Esent
 			using (var pht = new DocumentStorageActions(instance, database, tableColumnsCache, DocumentCodecs, generator, documentCacher, this))
 			{
 				int cacheSizeInPages = 0, pageSize = 0;
-				string test;
-				Api.JetGetSystemParameter(instance, pht.Session, JET_param.CacheSize, ref cacheSizeInPages, out test, 1024);
-				Api.JetGetSystemParameter(instance, pht.Session, JET_param.DatabasePageSize, ref pageSize, out test, 1024);
+				string unused;
 
+				//JET_paramCacheSize
+				//When this parameter is read, the actual size of the cache in database pages is returned. This size can be used by the 
+				//application as an input to drive its manual adjustment of the cache size.
+				Api.JetGetSystemParameter(instance, pht.Session, JET_param.CacheSize, ref cacheSizeInPages, out unused, 1024);
+				Api.JetGetSystemParameter(instance, pht.Session, JET_param.DatabasePageSize, ref pageSize, out unused, 1024);
 				cacheSizeInBytes = ((long) cacheSizeInPages) * pageSize;
 			}
 
 			return cacheSizeInBytes;
+		}
+
+		public long GetDatabaseTransactionCacheSizeInBytes()
+		{
+			long transactionCacheSizeInBytes = 0;
+
+			try
+			{
+				const string categoryName = "Database";
+				var category = new PerformanceCounterCategory(categoryName);
+				var instances = category.GetInstanceNames();
+				var ravenInstance = instances.FirstOrDefault(x => x.StartsWith("Raven.Server"));
+				const string counterName = "Version Buckets Allocated";
+				if (ravenInstance != null && category.CounterExists(counterName))
+				{
+					using (var counter = new PerformanceCounter(categoryName, counterName, ravenInstance, readOnly: true))
+					{
+						//According to the pages below, 1 Version Store Page = 64k (65,536 bytes)
+						//http://managedesent.codeplex.com/discussions/248471 (1024 pages = 64 MB)
+						var value = counter.NextValue();
+						transactionCacheSizeInBytes = (long)(value * 65536);
+					}
+				}
+			}
+			catch (InvalidOperationException ioEx)
+			{
+				//It's okay to swallow the error here, Esent Perf Counters only appear if you're running in debug mode
+				//So it's better to swallow the error and return 0, it's only for diagnostic statistics
+			}
+
+			return transactionCacheSizeInBytes;
 		}
 
 		public string FriendlyName
@@ -316,7 +350,7 @@ namespace Raven.Storage.Esent
 				}
 				else
 				{
-					instanceParameters = new TransactionalStorageConfigurator(configuration).ConfigureInstance(instance, path);
+					instanceParameters = new TransactionalStorageConfigurator(configuration).ConfigureInstance(instance, path);					
 				}
 
 				log.Info(@"Esent Settings:
