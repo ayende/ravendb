@@ -1,6 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Threading;
+using Lucene.Net.Analysis.Standard;
+using Lucene.Net.Analysis.Tokenattributes;
 using Microsoft.Isam.Esent.Interop;
 using Raven.Abstractions;
 using Raven.Abstractions.Commands;
@@ -22,6 +25,7 @@ using Raven.Tests.Faceted;
 using Raven.Tests.Issues;
 using System.Linq;
 using Raven.Tests.Util;
+using Version = Lucene.Net.Util.Version;
 
 namespace Raven.Tryouts
 {
@@ -30,14 +34,15 @@ namespace Raven.Tryouts
 		[STAThread]
 		private static void Main()
 		{
-			for (int i = 0; i < 1000; i++)
+			for (int i = 0; i < 100; i++)
 			{
 				Console.WriteLine(i);
-				using (var x = new FacetedIndex())
+				using(var x = new RavenDB_551())
 				{
-					x.CanPerformFacetedSearch_Remotely_Lazy_can_work_with_others();
+					x.CanGetErrorOnOptimisticDeleteInTransactionWhenDeletedInTransaction();
 				}
 			}
+				
 		}
 	}
 }
