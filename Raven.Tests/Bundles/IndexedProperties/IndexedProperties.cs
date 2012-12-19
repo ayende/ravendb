@@ -4,7 +4,6 @@
 //  </copyright>
 // -----------------------------------------------------------------------
 using System.Linq;
-using System.Threading;
 using Raven.Abstractions.Data;
 using Raven.Client.Indexes;
 using Raven.Json.Linq;
@@ -36,7 +35,11 @@ namespace Raven.Tests.Bundles.IndexedProperties
 		{
 			public string CustomerId { get; set; }
 
-			public decimal AverageOrderAmount { get; set; }
+			public decimal Sum { get; set; }
+
+			public int Count { get; set; }
+
+			public decimal Average { get; set; }
 		}
 
 		private class OrdersAverageAmount : AbstractIndexCreationTask<Order, OrderResults>
@@ -47,17 +50,23 @@ namespace Raven.Tests.Bundles.IndexedProperties
 								select new
 								{
 									CustomerId = order.CustomerId,
-									AverageOrderAmount = order.TotalAmount
+									Sum = order.TotalAmount,
+									Count = 1,
+									Average = 0
 								};
 
 				Reduce = results => from result in results
 									group result by result.CustomerId
-										into g
-										select new
-										{
-											CustomerId = g.Key,
-											AverageOrderAmount = g.Average(x => x.AverageOrderAmount)
-										};
+									into g
+									let sum = g.Sum(x => x.Sum)
+									let count = g.Sum(x => x.Count)
+									select new
+									{
+										CustomerId = g.Key,
+										Sum = sum,
+										Count = count,
+										Average = sum / count
+									};
 			}
 		}
 
@@ -70,16 +79,16 @@ namespace Raven.Tests.Bundles.IndexedProperties
 				ordersAverageAmount.Execute(store);
 
 				store.DatabaseCommands.Put("Raven/IndexedProperties/" + ordersAverageAmount.IndexName,
-				                           null,
-				                           RavenJObject.FromObject(new IndexedPropertiesSetupDoc
-				                           {
-					                           DocumentKey = "CustomerId",
-					                           FieldNameMappings =
+										   null,
+										   RavenJObject.FromObject(new IndexedPropertiesSetupDoc
+										   {
+											   DocumentKey = "CustomerId",
+											   FieldNameMappings =
 					                           {
-						                           {"AverageOrderAmount", "AverageOrderAmount"}
+						                           {"Average", "AverageOrderAmount"}
 					                           }
-				                           }),
-				                           new RavenJObject());
+										   }),
+										   new RavenJObject());
 
 				using (var session = store.OpenSession())
 				{
