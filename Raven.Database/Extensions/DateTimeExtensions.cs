@@ -1,16 +1,17 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 
 namespace Raven.Database.Extensions
 {
-
-	static class DateTimeExtensions
+	internal static class DateTimeExtensions
 	{
 		public static long ToUnixTime(this DateTime time)
 		{
-			return (long)time.ToUniversalTime().Subtract(new DateTime(1970, 1, 1, 0, 0, 0)).TotalMilliseconds;
+			return (long) time.ToUniversalTime().Subtract(new DateTime(1970, 1, 1, 0, 0, 0)).TotalMilliseconds;
+		}
+
+		public static DateTime ToDateTime(this byte[] bytes)
+		{
+			return DateTime.FromBinary(BitConverter.ToInt64(bytes, 0));
 		}
 	}
 }

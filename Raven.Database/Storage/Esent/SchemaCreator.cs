@@ -13,7 +13,7 @@ namespace Raven.Storage.Esent
 	[CLSCompliant(false)]
 	public class SchemaCreator
 	{
-		public const string SchemaVersion = "4.2";
+		public const string SchemaVersion = "4.3";
 		private readonly Session session;
 
 		public SchemaCreator(Session session)
@@ -284,7 +284,8 @@ namespace Raven.Storage.Esent
 
 			Api.JetAddColumn(session, tableid, "last_modified", new JET_COLUMNDEF
 			{
-				coltyp = JET_coltyp.DateTime,
+				cbMax = 64,
+				coltyp = JET_coltyp.Binary,
 				grbit = ColumndefGrbit.ColumnFixed | ColumndefGrbit.ColumnNotNULL,
 			}, null, 0, out columnid);
 
@@ -377,7 +378,8 @@ namespace Raven.Storage.Esent
 
 			Api.JetAddColumn(session, tableid, "last_modified", new JET_COLUMNDEF
 			{
-				coltyp = JET_coltyp.DateTime,
+				cbMax = 64,
+				coltyp = JET_coltyp.Binary,
 				grbit = ColumndefGrbit.ColumnFixed | ColumndefGrbit.ColumnNotNULL,
 			}, null, 0, out columnid);
 
