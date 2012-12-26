@@ -171,7 +171,6 @@
     <Compile Include="Abstractions\Logging\LogProviders\NLogLogManagerLoggingDisabedTests.cs" />
     <Compile Include="Abstractions\Logging\LogProviders\NLogLogProviderLoggingEnabledTests.cs" />
     <Compile Include="Abstractions\Logging\LogManagerTests.cs" />
-    <Compile Include="Bugs\Account.cs" />
     <Compile Include="Bugs\AccurateCount.cs" />
     <Compile Include="Bugs\AdHocProjections.cs" />
     <Compile Include="Bugs\AfterDeletingTheIndexStopsBeingStale.cs" />
@@ -199,6 +198,7 @@
     <Compile Include="Bugs\DictionaryOfDateTime.cs" />
     <Compile Include="Bugs\DynamicQuerySorting.cs" />
     <Compile Include="Bugs\EmbeddableDocumentStoreUsingUrlWithConnectionString.cs" />
+    <Compile Include="Bugs\Embedded\EmdeddedThrowsErrorsForMultiDatabaseCommands.cs" />
     <Compile Include="Bugs\EmptyAttachments.cs" />
     <Compile Include="Bugs\EqualityWithArrayOfGuids.cs" />
     <Compile Include="Bugs\Everett.cs" />
@@ -491,11 +491,14 @@
     <Compile Include="Bundles\Replication\FailoverDisabled.cs" />
     <Compile Include="Bundles\Replication\Issues\RavenDB677.cs" />
     <Compile Include="Bundles\Replication\Issues\RavenDB693.cs" />
+    <Compile Include="Bundles\Replication\Issues\ReplicationWithReferencedIndexes.cs" />
     <Compile Include="Bundles\Versioning\Bugs\MultiTenant.cs" />
+    <Compile Include="Linq\FlagsEnum.cs" />
     <Compile Include="DatabaseMemoryTargetTests.cs" />
     <Compile Include="Document\EmbeddedDocStoreWithHttpServer.cs" />
     <Compile Include="IncrementalBackupTest.cs" />
     <Compile Include="Indexes\CastingInIndexDefinition.cs" />
+    <Compile Include="Issues\BulkInsertTests.cs" />
     <Compile Include="Issues\RavenDb_783.cs" />
     <Compile Include="Issues\RaqvenDB651.cs" />
     <Compile Include="Issues\RavenDB349.cs" />
@@ -550,6 +553,7 @@
     <Compile Include="MailingList\AlexanderZeitler.cs" />
     <Compile Include="MailingList\bikkies.cs" />
     <Compile Include="MailingList\Chirea.cs" />
+    <Compile Include="MailingList\InOrderQueries.cs" />
     <Compile Include="MailingList\CustomizingIndexQuery.cs" />
     <Compile Include="MailingList\FacetQueryNotCorrectWithDefaultFieldSpecified.cs" />
     <Compile Include="MailingList\chad.cs" />
@@ -602,6 +606,7 @@
     <Compile Include="NestedIndexing\Item.cs" />
     <Compile Include="NestedIndexing\WithMapReduce.cs" />
     <Compile Include="Patching\BigDoc.cs" />
+    <Compile Include="PreFetching.cs" />
     <Compile Include="Spatial\Nick.cs" />
     <Compile Include="Spatial\RavenDB_423.cs" />
     <Compile Include="Spatial\SimonBartlett.cs" />
@@ -620,7 +625,6 @@
     <Compile Include="Bugs\TakeQueries.cs" />
     <Compile Include="Bugs\TempIndexScore.cs" />
     <Compile Include="Bugs\tjbsb.cs" />
-    <Compile Include="Bugs\Transaction.cs" />
     <Compile Include="Bugs\TransformResults\Answer.cs" />
     <Compile Include="Bugs\TransformResults\AnswerEntity.cs" />
     <Compile Include="Bugs\TransformResults\Answers_ByAnswerEntity.cs" />

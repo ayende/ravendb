@@ -15,7 +15,9 @@ using Raven.Abstractions.Data;
 using Raven.Abstractions.Exceptions;
 using Raven.Abstractions.Extensions;
 using Raven.Abstractions.Logging;
+using Raven.Abstractions.Util;
 using Raven.Database.Extensions;
+using Raven.Database.Impl;
 using Raven.Database.Storage;
 using Raven.Json.Linq;
 
@@ -255,7 +257,7 @@ namespace Raven.Storage.Esent.StorageActions
 		}
 
 
-		public IEnumerable<JsonDocument> GetDocumentsAfter(Guid etag, int take, long? maxSize = null)
+		public IEnumerable<JsonDocument> GetDocumentsAfter(Guid etag, int take, long? maxSize = null, Guid? untilEtag = null)
 		{
 			Api.JetSetCurrentIndex(session, Documents, "by_etag");
 			Api.MakeKey(session, Documents, etag.TransformToValueForEsentSorting(), MakeKeyGrbit.NewKey);
@@ -265,6 +267,12 @@ namespace Raven.Storage.Esent.StorageActions
 			int count = 0;
 			do
 			{
+				if (untilEtag != null && count > 0)
+				{
+					var docEtag = Api.RetrieveColumn(session, Documents, tableColumnsCache.DocumentsColumns["etag"]).TransfromToGuidWithProperSorting();
+					if (Etag.IsGreaterThanOrEqual(docEtag, untilEtag.Value))
+						yield break;
+				}
 				var readCurrentDocument = ReadCurrentDocument(checkTransactionStatus: false);
 				totalSize += readCurrentDocument.SerializedSizeOnDisk;
 				if (maxSize != null && totalSize > maxSize.Value)
@@ -313,15 +321,21 @@ namespace Raven.Storage.Esent.StorageActions
 			return optimizer.Select(Session, Documents, ReadCurrentDocument);
 		}
 
-		public void TouchDocument(string key)
+		public void TouchDocument(string key, out Guid? preTouchEtag, out Guid? afterTouchEtag)
 		{
 			Api.JetSetCurrentIndex(session, Documents, "by_key");
 			Api.MakeKey(session, Documents, key, Encoding.Unicode, MakeKeyGrbit.NewKey);
 			var isUpdate = Api.TrySeek(session, Documents, SeekGrbit.SeekEQ);
 			if (isUpdate == false)
+			{
+				preTouchEtag = null;
+				afterTouchEtag = null;
 				return;
+			}
 
-			Guid newEtag = uuidGenerator.CreateSequentialUuid();
+			preTouchEtag = Api.RetrieveColumn(session, Documents, tableColumnsCache.DocumentsColumns["etag"]).TransfromToGuidWithProperSorting();
+			Guid newEtag = uuidGenerator.CreateSequentialUuid(UuidType.Documents);
+			afterTouchEtag = newEtag;
 			using (var update = new Update(session, Documents, JET_prep.Replace))
 			{
 				Api.SetColumn(session, Documents, tableColumnsCache.DocumentsColumns["etag"], newEtag.TransformToValueForEsentSorting());
@@ -338,7 +352,7 @@ namespace Raven.Storage.Esent.StorageActions
 				throw new InvalidOperationException("Updating document metadata is only valid for existing documents, but " + key +
 													" does not exists");
 
-			Guid newEtag = uuidGenerator.CreateSequentialUuid();
+			Guid newEtag = uuidGenerator.CreateSequentialUuid(UuidType.Documents);
 			DateTime savedAt = SystemTime.UtcNow;
 			using (var update = new Update(session, Documents, JET_prep.Replace))
 			{
@@ -359,6 +373,12 @@ namespace Raven.Storage.Esent.StorageActions
 				SavedAt = savedAt,
 				Updated = true
 			};
+		}
+
+		public void IncrementDocumentCount(int value)
+		{
+			if (Api.TryMoveFirst(session, Details))
+				Api.EscrowUpdate(session, Details, tableColumnsCache.DetailsColumns["document_count"], value);
 		}
 
 		public AddDocumentResult AddDocument(string key, Guid? etag, RavenJObject data, RavenJObject metadata)
@@ -387,7 +407,7 @@ namespace Raven.Storage.Esent.StorageActions
 				if (Api.TryMoveFirst(session, Details))
 					Api.EscrowUpdate(session, Details, tableColumnsCache.DetailsColumns["document_count"], 1);
 			}
-			Guid newEtag = uuidGenerator.CreateSequentialUuid();
+			Guid newEtag = uuidGenerator.CreateSequentialUuid(UuidType.Documents);
 
 
 			DateTime savedAt;
@@ -426,6 +446,41 @@ namespace Raven.Storage.Esent.StorageActions
 			};
 		}
 
+		public void InsertDocument(string key, RavenJObject data, RavenJObject metadata, bool checkForUpdates)
+		{
+			var prep = JET_prep.Insert;
+			if(checkForUpdates)
+			{
+				Api.JetSetCurrentIndex(session, Documents, "by_key");
+				Api.MakeKey(session, Documents, key, Encoding.Unicode, MakeKeyGrbit.NewKey);
+				if(Api.TrySeek(session, Documents, SeekGrbit.SeekEQ))
+				{
+					prep = JET_prep.Replace;
+				}
+			}
+			using (var update = new Update(session, Documents, prep))
+			{
+				Api.SetColumn(session, Documents, tableColumnsCache.DocumentsColumns["key"], key, Encoding.Unicode);
+				using (Stream stream = new BufferedStream(new ColumnStream(session, Documents, tableColumnsCache.DocumentsColumns["data"])))
+				using (var finalStream = documentCodecs.Aggregate(stream, (current, codec) => codec.Encode(key, data, metadata, current)))
+				{
+					data.WriteTo(finalStream);
+					finalStream.Flush();
+				}
+				Guid newEtag = uuidGenerator.CreateSequentialUuid(UuidType.Documents);
+				Api.SetColumn(session, Documents, tableColumnsCache.DocumentsColumns["etag"], newEtag.TransformToValueForEsentSorting());
+				DateTime savedAt = SystemTime.UtcNow;
+				Api.SetColumn(session, Documents, tableColumnsCache.DocumentsColumns["last_modified"], savedAt.ToBinary());
+
+				using (Stream stream = new BufferedStream(new ColumnStream(session, Documents, tableColumnsCache.DocumentsColumns["metadata"])))
+				{
+					metadata.WriteTo(stream);
+					stream.Flush();
+				}
+
+				update.Save();
+			}
+		}
 
 		public Guid AddDocumentInTransaction(string key, Guid? etag, RavenJObject data, RavenJObject metadata, TransactionInformation transactionInformation)
 		{
@@ -447,7 +502,7 @@ namespace Raven.Storage.Esent.StorageActions
 				EnsureDocumentIsNotCreatedInAnotherTransaction(key, transactionInformation.Id);
 			}
 			EnsureTransactionExists(transactionInformation);
-			Guid newEtag = uuidGenerator.CreateSequentialUuid();
+			Guid newEtag = uuidGenerator.CreateSequentialUuid(UuidType.DocumentTransactions);
 
 			Api.JetSetCurrentIndex(session, DocumentsModifiedByTransactions, "by_key");
 			Api.MakeKey(session, DocumentsModifiedByTransactions, key, Encoding.Unicode, MakeKeyGrbit.NewKey);
@@ -544,7 +599,7 @@ namespace Raven.Storage.Esent.StorageActions
 			}
 			EnsureTransactionExists(transactionInformation);
 
-			Guid newEtag = uuidGenerator.CreateSequentialUuid();
+			Guid newEtag = uuidGenerator.CreateSequentialUuid(UuidType.DocumentTransactions);
 
 			Api.JetSetCurrentIndex(session, DocumentsModifiedByTransactions, "by_key");
 			Api.MakeKey(session, DocumentsModifiedByTransactions, key, Encoding.Unicode, MakeKeyGrbit.NewKey);

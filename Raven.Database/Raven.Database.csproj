@@ -186,6 +186,7 @@
     <Compile Include="Bundles\Versioning\Triggers\VersioningDeleteTrigger.cs" />
     <Compile Include="Bundles\Versioning\Triggers\VersioningPutTrigger.cs" />
     <Compile Include="Bundles\Versioning\VersioningUtil.cs" />
+    <Compile Include="Data\TouchedDocumentInfo.cs" />
     <Compile Include="Data\RestoreRequest.cs" />
     <Compile Include="Extensions\AdminFinder.cs" />
     <Compile Include="Extensions\WhoIsLocking.cs" />
@@ -197,7 +198,9 @@
     <Compile Include="Indexing\LowerCaseKeywordTokenizer.cs" />
     <Compile Include="Indexing\LowerCaseWhitespaceAnalyzer.cs" />
     <Compile Include="Indexing\LowerCaseWhitespaceTokenizer.cs" />
+    <Compile Include="Indexing\LuceneIntegration\OrderedTermsMatchQuery.cs" />
     <Compile Include="Indexing\LuceneIntegration\TermsMatchQuery.cs" />
+    <Compile Include="Indexing\PrefetchingBehavior.cs" />
     <Compile Include="Indexing\Spatial\RecursivePrefixTreeStrategyThatSupportsWithin.cs" />
     <Compile Include="Json\ScriptsCache.cs" />
     <Compile Include="Linq\Ast\ThrowOnInvalidMethodCallsForTransformResults.cs" />
@@ -212,6 +215,7 @@
     <Compile Include="Linq\Mono.Reflection\MethodBodyReader.cs" />
     <Compile Include="Linq\PrivateExtensions\DynamicEnumerable.cs" />
     <Compile Include="Linq\StringLiteralExpression.cs" />
+    <Compile Include="Queries\ISortFieldGenerator.cs" />
     <Compile Include="Queries\MoreLikeThisQueryRunner.cs" />
     <Compile Include="Queries\MoreLikeThisQueryExtensions.cs" />
     <Compile Include="Queries\MatchNoDocsQuery.cs" />
@@ -227,6 +231,7 @@
     <Compile Include="Server\Responders\Admin\AdminOptimize.cs" />
     <Compile Include="Server\Responders\Admin\AdminResponder.cs" />
     <Compile Include="Server\Responders\Admin\AdminRestore.cs" />
+    <Compile Include="Server\Responders\BulkInsert.cs" />
     <Compile Include="Server\Responders\ChangesConfig.cs" />
     <Compile Include="Server\Responders\Identity.cs" />
     <Compile Include="Server\Responders\MoreLikeThisResponder.cs" />
@@ -696,7 +701,6 @@
     <Compile Include="Storage\Managed\Munin\RemoteManagedStorageState.cs" />
     <Compile Include="Storage\Managed\Munin\ReverseComparableByteArrayWhichIgnoresNull.cs" />
     <Compile Include="Storage\Managed\Munin\SecondaryIndex.cs" />
-    <Compile Include="Storage\Managed\Munin\StreamsPool.cs" />
     <Compile Include="Storage\Managed\Munin\Table.cs" />
     <Compile Include="Storage\Managed\Munin\Tree\AVLTree.cs" />
     <Compile Include="Storage\Managed\Munin\Tree\EmptyAVLTree.cs" />
@@ -715,9 +719,12 @@
     <Compile Include="Tasks\Task.cs" />
     <Compile Include="Indexing\IndexStorage.cs" />
     <Compile Include="Util\DatabaseMemoryTarget.cs" />
+    <Compile Include="Util\PerformanceCountersUtils.cs" />
     <Compile Include="Util\PortUtil.cs" />
+    <Compile Include="Util\SequentialUuidGenerator.cs" />
     <Compile Include="Util\Streams\BufferPool.cs" />
     <Compile Include="Util\Streams\BufferPoolStream.cs" />
+    <Compile Include="Util\Streams\PartialStream.cs" />
     <Compile Include="Util\WildcardMatcher.cs" />
   </ItemGroup>
   <ItemGroup>

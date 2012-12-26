@@ -1,32 +1,13 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Threading;
-using Lucene.Net.Analysis.Standard;
-using Lucene.Net.Analysis.Tokenattributes;
-using Microsoft.Isam.Esent.Interop;
-using Raven.Abstractions;
-using Raven.Abstractions.Commands;
+using System.Diagnostics;
+using System.Linq;
 using Raven.Abstractions.Data;
-using Raven.Abstractions.Indexing;
-using Raven.Abstractions.Linq;
-using Raven.Abstractions.Logging;
-using Raven.Abstractions.MEF;
+using Raven.Client.Connection;
 using Raven.Client.Document;
-using Raven.Database;
-using Raven.Database.Config;
 using Raven.Database.Impl;
-using Raven.Database.Plugins;
-using Raven.Database.Storage;
+using Raven.Database.Util;
 using Raven.Json.Linq;
 using Raven.Tests.Bugs;
-using Raven.Tests.Document;
-using Raven.Tests.Faceted;
-using Raven.Tests.Issues;
-using System.Linq;
-using Raven.Tests.Util;
-using Xunit;
-using Version = Lucene.Net.Util.Version;
 
 namespace Raven.Tryouts
 {
@@ -35,12 +16,29 @@ namespace Raven.Tryouts
 		[STAThread]
 		private static void Main()
 		{
-			var now = SystemTime.UtcNow;
-			var oa = now.ToOADate();
-			var test = DateTime.FromBinary((long)oa);
-			Console.WriteLine(now.ToString("o"));
-			Console.WriteLine(test.ToString("o"));
-				
+			using(var store = new DocumentStore
+			{
+				Url = "http://localhost:8080"
+			}.Initialize())
+			{
+				var sp = Stopwatch.StartNew();
+				using(var op = new RemoteBulkInsertOperation(new BulkInsertOptions(), (ServerClient)store.DatabaseCommands,
+					batchSize: 512))
+				{
+					op.Report += Console.WriteLine;
+					for (int i = 0; i < 1000 * 1000; i++)
+					{
+						op.Write("items/"+(i+1), new RavenJObject
+						{
+							{"Raven-Entity-Name", "Users"}
+						}, new RavenJObject
+						{
+							{"Name", "Users#"+i}
+						} );
+					}
+				}
+				Console.WriteLine(sp.Elapsed);
+			}
 		}
 	}
 }

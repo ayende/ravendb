@@ -28,7 +28,13 @@ namespace Raven.Database.Indexing
 		private static readonly Dictionary<string, Func<string, List<string>, Query>> queryMethods = new Dictionary<string, Func<string, List<string>, Query>>(StringComparer.InvariantCultureIgnoreCase)
 		{
 			{"in", (field, args) => new TermsMatchQuery(field, args)},
+			{"inOrder", (field, args) => new OrderedTermsMatchQuery(field, args)},
 			{"emptyIn", (field, args) => new TermsMatchQuery(field, Enumerable.Empty<string>())}
+		};
+
+		private static readonly Dictionary<string, Func<string, List<string>, SortedField>> sortMethods = new Dictionary<string, Func<string, List<string>, SortedField>>(StringComparer.InvariantCultureIgnoreCase)
+		{
+			{"inOrder", (field, args) => new OrderedTermsMatchQuery(field, args).GetSortedField() },
 		};
 
 		public static Query BuildQuery(string query, PerFieldAnalyzerWrapper analyzer)
@@ -52,7 +58,7 @@ namespace Raven.Database.Indexing
 				query = PreProcessSearchTerms(query);
 				query = PreProcessDateTerms(query, queryParser);
 				var generatedQuery = queryParser.Parse(query);
-				generatedQuery = HandleMethods(generatedQuery);
+				generatedQuery = HandleMethods(generatedQuery, indexQuery);
 				return generatedQuery;
 			}
 			catch (ParseException pe)
@@ -64,11 +70,15 @@ namespace Raven.Database.Indexing
 			}
 		}
 
-		private static Query HandleMethods(Query query)
+		private static Query HandleMethods(Query query, IndexQuery indexQuery)
 		{
 			var termQuery = query as TermQuery;
 			if (termQuery != null && termQuery.Term.Field.StartsWith("@"))
 			{
+				var sortedField = HandleSortMethodsForQueryAndTerm(query, termQuery.Term);
+				if (sortedField != null) {
+					indexQuery.SortedFields = new[] { sortedField }.Concat(indexQuery.SortedFields).ToArray();
+				}
 				return HandleMethodsForQueryAndTerm(query, termQuery.Term);
 			}
 			var wildcardQuery = query as WildcardQuery;
@@ -81,12 +91,12 @@ namespace Raven.Database.Indexing
 			{
 				foreach (var c in booleanQuery.Clauses)
 				{
-					c.Query = HandleMethods(c.Query);
+					c.Query = HandleMethods(c.Query, indexQuery);
 				}
 				if (booleanQuery.Clauses.Count == 0)
 					return booleanQuery;
-			
-				var mergeGroups = booleanQuery.Clauses.Select(x=>x.Query).OfType<IRavenLuceneMethodQuery>().GroupBy(x => x.Field).ToArray();
+
+				var mergeGroups = booleanQuery.Clauses.Select(x => x.Query).OfType<IRavenLuceneMethodQuery>().GroupBy(x => new { x.Field, x.GetType().Name }).ToArray();
 				if (mergeGroups.Length == 0)
 					return booleanQuery;
 
@@ -131,6 +141,28 @@ namespace Raven.Database.Indexing
 					select part.Replace("`,`", ",")
 			);
 			return value(field, list);
+		}
+
+		private static SortedField HandleSortMethodsForQueryAndTerm(Query query, Term term) 
+		{
+			Func<string, List<string>, SortedField> value;
+			var indexOfFieldStart = term.Field.IndexOf('<');
+			var indexOfFieldEnd = term.Field.LastIndexOf('>');
+			if (indexOfFieldStart == -1 || indexOfFieldEnd == -1)
+				return null;
+			var method = term.Field.Substring(1, indexOfFieldStart - 1);
+			var field = term.Field.Substring(indexOfFieldStart + 1, indexOfFieldEnd - indexOfFieldStart - 1);
+
+			if (sortMethods.TryGetValue(method, out value)) {
+				var parts = unescapedSplitter.Split(term.Text);
+				var list = new List<string>(
+						from part in parts
+						where string.IsNullOrWhiteSpace(part) == false
+						select part.Replace("`,`", ",")
+				);
+				return value(field, list);
+			}
+			return null;
 		}
 
 		private static string PreProcessDateTerms(string query, RangeQueryParser queryParser)

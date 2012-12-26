@@ -50,7 +50,7 @@ using TransactionInformation = Raven.Abstractions.Data.TransactionInformation;
 
 namespace Raven.Database
 {
-	public class DocumentDatabase : IUuidGenerator, IDisposable
+	public class DocumentDatabase : IDisposable
 	{
 		[ImportMany]
 		public OrderedPartCollection<AbstractRequestResponder> RequestResponders { get; set; }
@@ -132,7 +132,9 @@ namespace Raven.Database
 		private readonly object idleLocker = new object();
 
 		private static readonly ILog log = LogManager.GetCurrentClassLogger();
-		private long currentEtagBase;
+
+		private readonly SizeLimitedConcurrentDictionary<string, TouchedDocumentInfo> recentTouches =
+			new SizeLimitedConcurrentDictionary<string, TouchedDocumentInfo>(1024, StringComparer.InvariantCultureIgnoreCase);
 
 		public DocumentDatabase(InMemoryRavenConfiguration configuration)
 		{
@@ -171,7 +173,8 @@ namespace Raven.Database
 
 				try
 				{
-					TransactionalStorage.Initialize(this, DocumentCodecs);
+					sequentialUuidGenerator = new SequentialUuidGenerator();
+					TransactionalStorage.Initialize(sequentialUuidGenerator, DocumentCodecs);
 				}
 				catch (Exception)
 				{
@@ -182,7 +185,8 @@ namespace Raven.Database
 				try
 				{
 
-					TransactionalStorage.Batch(actions => currentEtagBase = actions.General.GetNextIdentityValue("Raven/Etag"));
+					TransactionalStorage.Batch(actions => 
+						sequentialUuidGenerator.EtagBase = actions.General.GetNextIdentityValue("Raven/Etag"));
 
 					TransportState = new TransportState();
 
@@ -564,22 +568,6 @@ namespace Raven.Database
 			}
 		}
 
-		private long sequentialUuidCounter;
-
-		public Guid CreateSequentialUuid()
-		{
-			var ticksAsBytes = BitConverter.GetBytes(currentEtagBase);
-			Array.Reverse(ticksAsBytes);
-			var increment = Interlocked.Increment(ref sequentialUuidCounter);
-			var currentAsBytes = BitConverter.GetBytes(increment);
-			Array.Reverse(currentAsBytes);
-			var bytes = new byte[16];
-			Array.Copy(ticksAsBytes, 0, bytes, 0, ticksAsBytes.Length);
-			Array.Copy(currentAsBytes, 0, bytes, 8, currentAsBytes.Length);
-			return bytes.TransfromToGuidWithProperSorting();
-		}
-
-
 		public JsonDocument Get(string key, TransactionInformation transactionInformation)
 		{
 			if (key == null)
@@ -648,10 +636,7 @@ namespace Raven.Database
 						var addDocumentResult = actions.Documents.AddDocument(key, etag, document, metadata);
 						newEtag = addDocumentResult.Etag;
 
-						foreach (var referencing in actions.Indexing.GetDocumentReferencing(key))
-						{
-							actions.Documents.TouchDocument(referencing);
-						}
+						CheckReferenceBecauseOfDocumentUpdate(key, actions);
 
 						metadata.EnsureSnapshot("Metadata was written to the database, cannot modify the document after it was written (changes won't show up in the db). Did you forget to call CreateSnapshot() to get a clean copy?");
 						document.EnsureSnapshot("Document was written to the database, cannot modify the document after it was written (changes won't show up in the db). Did you forget to call CreateSnapshot() to get a clean copy?");
@@ -695,6 +680,25 @@ namespace Raven.Database
 				ETag = newEtag
 			};
 		}
+
+		internal void CheckReferenceBecauseOfDocumentUpdate(string key, IStorageActionsAccessor actions)
+		{
+			foreach (var referencing in actions.Indexing.GetDocumentsReferencing(key))
+			{
+				Guid? preTouchEtag;
+				Guid? afterTouchEtag;
+				actions.Documents.TouchDocument(referencing, out preTouchEtag, out afterTouchEtag);
+				if(preTouchEtag == null || afterTouchEtag == null)
+					continue;
+
+				recentTouches.Set(key, new TouchedDocumentInfo
+				{
+					PreTouchEtag = preTouchEtag.Value,
+					TouchedEtag = afterTouchEtag.Value
+				});
+			}
+		}
+
 		public long GetNextIdentityValueWithoutOverwritingOnExistingDocuments(string key,
 			IStorageActionsAccessor actions,
 			TransactionInformation transactionInformation)
@@ -828,10 +832,7 @@ namespace Raven.Database
 							actions.Indexing.RemoveAllDocumentReferencesFrom(key);
 							WorkContext.MarkDeleted(key);
 
-							foreach (var referencing in actions.Indexing.GetDocumentReferencing(key))
-							{
-								actions.Documents.TouchDocument(referencing);
-							}
+							CheckReferenceBecauseOfDocumentUpdate(key, actions);
 
 							foreach (var indexName in IndexDefinitionStorage.IndexNames)
 							{
@@ -855,7 +856,8 @@ namespace Raven.Database
 								});
 								task.Keys.Add(key);
 							}
-							indexingExecuter.AfterDelete(key, deletedETag);
+						    if (deletedETag != null)
+						        indexingExecuter.AfterDelete(key, deletedETag.Value);
 							DeleteTriggers.Apply(trigger => trigger.AfterDelete(key, null));
 						}
 
@@ -1759,6 +1761,7 @@ namespace Raven.Database
 		}
 
 		static string productVersion;
+		private SequentialUuidGenerator sequentialUuidGenerator;
 		public static string ProductVersion
 		{
 			get
@@ -1897,5 +1900,51 @@ namespace Raven.Database
 
 			alertsDocument.Alerts.Add(alert);
 		}
+
+		public int BulkInsert(BulkInsertOptions options, IEnumerable<IEnumerable<JsonDocument>> docBatches)
+		{
+			var documents = 0;
+			lock (putSerialLock)
+			{
+				TransactionalStorage.Batch(accessor =>
+				{
+					accessor.General.UseLazyCommit();
+					foreach (var docs in docBatches)
+					{
+						var batchDocs = 0;
+						var keys = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
+						foreach (var doc in docs)
+						{
+							if (options.CheckReferencesInIndexes)
+								keys.Add(doc.Key);
+							documents++;
+							batchDocs++;
+							accessor.Documents.InsertDocument(doc.Key, doc.DataAsJson, doc.Metadata, options.CheckForUpdates);
+						}
+						if(options.CheckReferencesInIndexes)
+						{
+							foreach (var key in keys)
+							{
+								CheckReferenceBecauseOfDocumentUpdate(key, accessor);
+							}
+						}
+						accessor.Documents.IncrementDocumentCount(batchDocs);
+						accessor.General.PulseTransaction();
+					}
+					if (documents == 0)
+						return;
+					workContext.ShouldNotifyAboutWork(() => "BulkInsert of " + documents + " docs");
+				});
+			}
+			return documents;
+		}
+
+		public TouchedDocumentInfo GetRecentTouchesFor(string key)
+		{
+			TouchedDocumentInfo info;
+			recentTouches.TryGetValue(key, out info);
+			return info;
+		}
 	}
+
 }

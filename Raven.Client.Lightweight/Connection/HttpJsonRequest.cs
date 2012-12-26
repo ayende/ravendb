@@ -78,7 +78,7 @@ namespace Raven.Client.Connection
 			webRequest.UseDefaultCredentials = true;
 			webRequest.Credentials = requestParams.Credentials;
 			webRequest.Method = requestParams.Method;
-			if (factory.DisableRequestCompression == false)
+			if (factory.DisableRequestCompression == false && requestParams.DisableRequestCompression == false)
 			{
 				if(requestParams.Method == "POST" || requestParams.Method == "PUT" ||
 					requestParams.Method == "PATCH" || requestParams.Method == "EVAL")
@@ -798,6 +798,17 @@ namespace Raven.Client.Connection
 		public Task WriteAsync(string serializeObject)
 		{
 			return Task.Factory.FromAsync(BeginWrite, EndWrite, serializeObject, null);
+		}
+
+		public Task<Stream> GetRawRequestStream()
+		{
+			webRequest.SendChunked = true;
+			return Task.Factory.FromAsync<Stream>(webRequest.BeginGetRequestStream, webRequest.EndGetRequestStream, null);
+		}
+
+		public void RawExecuteRequest()
+		{
+			webRequest.GetResponse().Close();
 		}
 	}
 }
