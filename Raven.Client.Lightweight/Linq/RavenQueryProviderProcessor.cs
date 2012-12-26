@@ -708,11 +708,20 @@ The recommended method is to use full text search (mark the field as Analyzed an
 					chainedWhere = false;
 					break;
 				case "In":
-					var memberInfo = GetMember(expression.Arguments[0]);
-					var objects = GetValueFromExpression(expression.Arguments[1], GetMemberType(memberInfo));
-					luceneQuery.WhereIn(memberInfo.Path, ((IEnumerable) objects).Cast<object>());
+					{
+						var memberInfo = GetMember(expression.Arguments[0]);
+						var objects = GetValueFromExpression(expression.Arguments[1], GetMemberType(memberInfo));
+						luceneQuery.WhereIn(memberInfo.Path, ((IEnumerable) objects).Cast<object>());
 
-					break;
+						break;
+					}
+				case "InOrder": 
+					{
+						var memberInfo = GetMember(expression.Arguments[0]);
+						var objects = GetValueFromExpression(expression.Arguments[1], GetMemberType(memberInfo));
+						luceneQuery.WhereInOrder(memberInfo.Path, ((IEnumerable)objects).Cast<object>());
+						break;
+					}
 				default:
 				{
 					throw new NotSupportedException("Method not supported: " + expression.Method.Name);

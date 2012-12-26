@@ -198,6 +198,7 @@
     <Compile Include="Indexing\LowerCaseKeywordTokenizer.cs" />
     <Compile Include="Indexing\LowerCaseWhitespaceAnalyzer.cs" />
     <Compile Include="Indexing\LowerCaseWhitespaceTokenizer.cs" />
+    <Compile Include="Indexing\LuceneIntegration\OrderedTermsMatchQuery.cs" />
     <Compile Include="Indexing\LuceneIntegration\TermsMatchQuery.cs" />
     <Compile Include="Indexing\PrefetchingBehavior.cs" />
     <Compile Include="Indexing\Spatial\RecursivePrefixTreeStrategyThatSupportsWithin.cs" />
@@ -214,6 +215,7 @@
     <Compile Include="Linq\Mono.Reflection\MethodBodyReader.cs" />
     <Compile Include="Linq\PrivateExtensions\DynamicEnumerable.cs" />
     <Compile Include="Linq\StringLiteralExpression.cs" />
+    <Compile Include="Queries\ISortFieldGenerator.cs" />
     <Compile Include="Queries\MoreLikeThisQueryRunner.cs" />
     <Compile Include="Queries\MoreLikeThisQueryExtensions.cs" />
     <Compile Include="Queries\MatchNoDocsQuery.cs" />

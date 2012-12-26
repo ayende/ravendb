@@ -14,6 +14,7 @@ using Raven.Abstractions.Data;
 using Raven.Abstractions.Indexing;
 using Raven.Database.Indexing;
 using Raven.Database.Indexing.Sorting;
+using Raven.Database.Queries;
 using Raven.Database.Server;
 using Constants = Raven.Abstractions.Data.Constants;
 
@@ -114,6 +115,12 @@ namespace Raven.Database.Extensions
 			return new Sort(self.SortedFields
 							.Select(sortedField =>
 							{
+								var generator = sortedField as ISortFieldGenerator;
+
+								if (generator != null) {
+									return generator.GetSortField();
+								}
+
 								if (sortedField.Field == Constants.TemporaryScoreValue)
 								{
 									return SortField.FIELD_SCORE;

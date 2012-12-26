@@ -397,11 +397,27 @@ namespace Raven.Client.Document
 		}
 
 		/// <summary>
+		/// Check that the field has one of the specified value, returning the results in the order specified by the values.
+		/// </summary>
+		IDocumentQuery<T> IDocumentQueryBase<T, IDocumentQuery<T>>.WhereInOrder(string fieldName, IEnumerable<object> values) {
+			WhereInOrder(fieldName, values);
+			return this;
+		}
+
+		/// <summary>
 		/// Check that the field has one of the specified value
 		/// </summary>
 		public IDocumentQuery<T> WhereIn<TValue>(Expression<Func<T, TValue>> propertySelector, IEnumerable<TValue> values)
 		{
 			WhereIn(GetMemberQueryPath(propertySelector.Body), values.Cast<object>());
+			return this;
+		}
+
+		/// <summary>
+		/// Check that the field has one of the specified value, returning the results in the order specified by the values.
+		/// </summary>
+		public IDocumentQuery<T> WhereInOrder<TValue>(Expression<Func<T, TValue>> propertySelector, IEnumerable<TValue> values) {
+			WhereInOrder(GetMemberQueryPath(propertySelector.Body), values.Cast<object>());
 			return this;
 		}
 

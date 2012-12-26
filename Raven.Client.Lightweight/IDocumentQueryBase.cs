@@ -147,9 +147,19 @@ If you really want to do in memory filtering on the data returned from the query
 		TSelf WhereIn(string fieldName, IEnumerable<object> values);
 
 		/// <summary>
+		/// Check that the field has one of the specified value, returning the results in the order specified by values.
+		/// </summary>
+		TSelf WhereInOrder(string fieldName, IEnumerable<object> values);
+
+		/// <summary>
 		/// Check that the field has one of the specified value
 		/// </summary>
 		TSelf WhereIn<TValue>(Expression<Func<T, TValue>> propertySelector, IEnumerable<TValue> values);
+
+		/// <summary>
+		/// Check that the field has one of the specified value, returning the results in the order specified by values.
+		/// </summary>
+		TSelf WhereInOrder<TValue>(Expression<Func<T, TValue>> propertySelector, IEnumerable<TValue> values);
 
 		/// <summary>
 		///   Matches fields which starts with the specified value.

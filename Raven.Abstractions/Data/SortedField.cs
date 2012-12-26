@@ -16,7 +16,7 @@ namespace Raven.Abstractions.Data
 		/// <param name="fieldWithPotentialPrefix">The field with potential prefix.</param>
 		public SortedField(string fieldWithPotentialPrefix)
 		{
-			if(fieldWithPotentialPrefix.StartsWith("+"))
+			if (fieldWithPotentialPrefix.StartsWith("+"))
 			{
 				Field = fieldWithPotentialPrefix.Substring(1);
 			}
@@ -35,12 +35,12 @@ namespace Raven.Abstractions.Data
 		/// Gets or sets the field.
 		/// </summary>
 		/// <value>The field.</value>
-		public string Field { get; set; }
+		public virtual string Field { get; set; }
 		/// <summary>
 		/// Gets or sets a value indicating whether this <see cref="SortedField"/> is descending.
 		/// </summary>
 		/// <value><c>true</c> if descending; otherwise, <c>false</c>.</value>
-		public bool Descending { get; set; }
+		public virtual bool Descending { get; set; }
 
 	}
 }

@@ -81,6 +81,13 @@ namespace Raven.Client.Linq
 			return values.Any(value => field.Equals(value));
 		}
 
+		/// <summary>
+		///  implementation of InOrder operator
+		/// </summary>
+		public static bool InOrder<T>(this T field, IEnumerable<T> values) 
+		{
+			return values.Any(value => field.Equals(value));
+		}
 
 		/// <summary>
 		///  implementation of In operator
@@ -89,6 +96,16 @@ namespace Raven.Client.Linq
 		{
 			return values.Any(value => field.Equals(value));
 		}
+
+
+		/// <summary>
+		///  implementation of InOrder operator
+		/// </summary>
+		public static bool InOrder<T>(this T field, params T[] values) 
+		{
+			return values.Any(value => field.Equals(value));
+		}
+
 
 		/// <summary>
 		/// Bypasses a specified number of elements in a sequence and then returns the remaining elements.

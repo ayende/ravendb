@@ -961,6 +961,46 @@ If you really want to do in memory filtering on the data returned from the query
 		}
 
 		/// <summary>
+		/// Check that the field has one of the specified value, returning the results in the order of the values supplied.
+		/// </summary>
+		public void WhereInOrder(string fieldName, IEnumerable<object> values) {
+			if (queryText.Length > 0 && char.IsWhiteSpace(queryText[queryText.Length - 1]) == false)
+				queryText.Append(" ");
+
+			NegateIfNeeded();
+
+			var list = values.ToList();
+
+			if (list.Count == 0) {
+				queryText.Append("@emptyIn<")
+					.Append(fieldName)
+					.Append(">:(no-results)");
+				return;
+			}
+
+			queryText.Append("@inOrder<")
+				.Append(fieldName)
+				.Append(">:(");
+
+			var first = true;
+			foreach (var value in list) {
+				if (first == false) {
+					queryText.Append(",");
+				}
+				first = false;
+				var whereParams = new WhereParams {
+					AllowWildcards = true,
+					IsAnalyzed = true,
+					FieldName = fieldName,
+					Value = value
+				};
+				EnsureValidFieldName(whereParams);
+				queryText.Append(TransformToEqualValue(whereParams).Replace(",", "`,`"));
+			}
+			queryText.Append(") ");
+		}
+
+		/// <summary>
 		///   Matches fields which starts with the specified value.
 		/// </summary>
 		/// <param name = "fieldName">Name of the field.</param>
