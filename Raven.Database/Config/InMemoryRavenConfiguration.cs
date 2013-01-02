@@ -12,6 +12,7 @@ using System.ComponentModel.Composition.Primitives;
 using System.IO;
 using System.Linq;
 using System.Runtime.Caching;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
@@ -41,6 +42,7 @@ namespace Raven.Database.Config
 			MaxNumberOfItemsToReduceInSingleBatch = MaxNumberOfItemsToIndexInSingleBatch / 2;
 			InitialNumberOfItemsToIndexInSingleBatch = Environment.Is64BitProcess ? 512 : 256;
 			InitialNumberOfItemsToReduceInSingleBatch = InitialNumberOfItemsToIndexInSingleBatch / 2;
+			NumberOfItemsToExecuteReduceInSingleStep = 1024;
 			MaxIndexingRunLatency = TimeSpan.FromMinutes(5);
 
 			CreateTemporaryIndexesForAdHocQueriesIfNeeded = true;
@@ -127,6 +129,12 @@ namespace Raven.Database.Config
 				InitialNumberOfItemsToReduceInSingleBatch = Math.Min(MaxNumberOfItemsToReduceInSingleBatch,
 																	InitialNumberOfItemsToReduceInSingleBatch);
 			}
+			var numberOfItemsToExecuteReduceInSingleStep = Settings["Raven/NumberOfItemsToExecuteReduceInSingleStep"];
+			if (numberOfItemsToExecuteReduceInSingleStep != null)
+			{
+				NumberOfItemsToExecuteReduceInSingleStep = int.Parse(numberOfItemsToExecuteReduceInSingleStep);
+			}
+
 			var initialNumberOfItemsToReduceInSingleBatch = Settings["Raven/InitialNumberOfItemsToReduceInSingleBatch"];
 			if (initialNumberOfItemsToReduceInSingleBatch != null)
 			{
@@ -278,38 +286,25 @@ namespace Raven.Database.Config
 		{
 			OAuthTokenServer = Settings["Raven/OAuthTokenServer"] ??
 							   (ServerUrl.EndsWith("/") ? ServerUrl + "OAuth/API-Key" : ServerUrl + "/OAuth/API-Key");
-			OAuthTokenCertificate = GetCertificate();
+			OAuthTokenKey = GetOAuthKey();
 		}
 
-		private X509Certificate2 GetCertificate()
+		private static readonly Lazy<byte[]> defaultOauthKey = new Lazy<byte[]>(() =>
 		{
-			var path = Settings["Raven/OAuthTokenCertificatePath"];
-			if (string.IsNullOrEmpty(path) == false)
+			using (var rsa = new RSACryptoServiceProvider())
 			{
-				path = path.ToFullPath();
-				var pwd = Settings["Raven/OAuthTokenCertificatePassword"];
-				if (string.IsNullOrEmpty(pwd) == false)
-				{
-					try
-					{
-						return new X509Certificate2(path, pwd);
-					}
-					catch (Exception)
-					{
-						return new X509Certificate2(path, pwd, X509KeyStorageFlags.MachineKeySet);
-					}
-				}
-				try
-				{
-					return new X509Certificate2(path);
-				}
-				catch (Exception)
-				{
-					return new X509Certificate2(path, string.Empty, X509KeyStorageFlags.MachineKeySet);
-				}
+				return rsa.ExportCspBlob(true);
 			}
+		});
 
-			return CertGenerator.GenerateNewCertificate("RavenDB");
+		private byte[] GetOAuthKey()
+		{
+			var key = Settings["Raven/OAuthTokenCertificate"];
+			if (string.IsNullOrEmpty(key) == false)
+			{
+				return Convert.FromBase64String(key);
+			}
+			return defaultOauthKey.Value; // ensure we only create this once per process
 		}
 
 
@@ -424,10 +419,26 @@ namespace Raven.Database.Config
 		public int InitialNumberOfItemsToReduceInSingleBatch { get; set; }
 
 		/// <summary>
+		/// The number that controls the if single step reduce optimization is performed.
+		/// If the count of mapped results if less than this value then the reduce is executed in single step.
+		/// Default: 1024
+		/// </summary>
+		public int NumberOfItemsToExecuteReduceInSingleStep { get; set; }
+
+		/// <summary>
 		/// The maximum number of indexing tasks allowed to run in parallel
 		/// Default: The number of processors in the current machine
 		/// </summary>
-		public int MaxNumberOfParallelIndexTasks { get; set; }
+		public int MaxNumberOfParallelIndexTasks
+		{
+			get
+			{
+				if(MemoryStatistics.MaxParallelismSet)
+					return Math.Min(maxNumberOfParallelIndexTasks ?? MemoryStatistics.MaxParallelism, MemoryStatistics.MaxParallelism);
+				return maxNumberOfParallelIndexTasks ?? Environment.ProcessorCount;
+			}
+			set { maxNumberOfParallelIndexTasks = value; }
+		}
 
 		/// <summary>
 		/// Time (in milliseconds) the index has to be queried at least once in order for it to
@@ -554,7 +565,7 @@ namespace Raven.Database.Config
 		/// <summary>
 		/// The certificate to use when verifying access token signatures for OAuth
 		/// </summary>
-		public X509Certificate2 OAuthTokenCertificate { get; set; }
+		public byte[] OAuthTokenKey { get; set; }
 
 		#endregion
 
@@ -677,6 +688,7 @@ namespace Raven.Database.Config
 		public bool RunInUnreliableYetFastModeThatIsNotSuitableForProduction { get; set; }
 
 		private string indexStoragePath;
+		private int? maxNumberOfParallelIndexTasks;
 		/// <summary>
 		/// The expiration value for documents in the internal managed cache
 		/// </summary>
@@ -843,7 +855,7 @@ namespace Raven.Database.Config
 		public void CopyParentSettings(InMemoryRavenConfiguration defaultConfiguration)
 		{
 			Port = defaultConfiguration.Port;
-			OAuthTokenCertificate = defaultConfiguration.OAuthTokenCertificate;
+			OAuthTokenKey = defaultConfiguration.OAuthTokenKey;
 			OAuthTokenServer = defaultConfiguration.OAuthTokenServer;
 		}
 

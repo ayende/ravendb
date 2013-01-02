@@ -71,7 +71,7 @@ namespace Raven.Studio.Commands
 									var settings = UpdateSettings(newDatabase, newDatabase, bundlesModel);
 									var securedSettings = UpdateSecuredSettings(bundlesData);
 
-									var databaseDocuemnt = new DatabaseDocument
+									var databaseDocument = new DatabaseDocument
 									{
 										Id = newDatabase.DbName.Text,
 										Settings = settings,
@@ -79,11 +79,11 @@ namespace Raven.Studio.Commands
 									};
 
 									string encryptionKey = null;
-									var encryotionSettings = bundlesData.FirstOrDefault(window => window is EncryptionSettings) as EncryptionSettings;
-									if (encryotionSettings != null)
-										encryptionKey = encryotionSettings.EncryptionKey.Text;
+									var encryptionSettings = bundlesData.FirstOrDefault(window => window is EncryptionSettings) as EncryptionSettings;
+									if (encryptionSettings != null)
+										encryptionKey = encryptionSettings.EncryptionKey.Text;
 
-									DatabaseCommands.CreateDatabaseAsync(databaseDocuemnt).ContinueOnSuccess(
+									DatabaseCommands.CreateDatabaseAsync(databaseDocument).ContinueOnSuccess(
 										() => DatabaseCommands.ForDatabase(databaseName).EnsureSilverlightStartUpAsync())
 										.ContinueOnSuccessInTheUIThread(() =>
 										{
@@ -93,7 +93,7 @@ namespace Raven.Studio.Commands
 											ApplicationModel.Current.AddNotification(
 												new Notification("Database " + databaseName + " created"));
 
-											HendleBundleAfterCreation(bundlesModel, databaseName, encryptionKey);
+											HandleBundleAfterCreation(bundlesModel, databaseName, encryptionKey);
 
 											ExecuteCommand(new ChangeDatabaseCommand(), databaseName);
 										})
@@ -161,12 +161,29 @@ namespace Raven.Studio.Commands
 			if (encryptionData != null)
 			{
 				settings[Constants.EncryptionKeySetting] = encryptionData.EncryptionKey.Text;
+				switch (encryptionData.EncryptionAlgorithm.SelectedValue.ToString())
+				{
+					case "DESC":
+						settings[Constants.AlgorithmTypeSetting] = "System.Security.Cryptography.DESCryptoServiceProvider, mscorlib";
+						break;
+					case "RC2C":
+						settings[Constants.AlgorithmTypeSetting] = "System.Security.Cryptography.RC2CryptoServiceProvider, mscorlib";
+						break;
+					case "Rijndael":
+						settings[Constants.AlgorithmTypeSetting] = "System.Security.Cryptography.RijndaelManaged, mscorlib";
+						break;
+					case "Triple DESC":
+						settings[Constants.AlgorithmTypeSetting] = "System.Security.Cryptography.TripleDESCryptoServiceProvider, mscorlib";
+						break;
+				}
+
+				settings[Constants.EncryptIndexes] = (encryptionData.EncryptIndexes.IsChecked ?? true).ToString();
 			}
 
 			return settings;
 		}
 
-		private void HendleBundleAfterCreation(CreateSettingsModel settingsModel, string databaseName, string encryptionKey)
+		private void HandleBundleAfterCreation(CreateSettingsModel settingsModel, string databaseName, string encryptionKey)
 		{
 			var session = ApplicationModel.Current.Server.Value.DocumentStore.OpenAsyncSession(databaseName);
 

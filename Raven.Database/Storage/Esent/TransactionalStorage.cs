@@ -14,6 +14,7 @@ using Raven.Abstractions.Data;
 using Raven.Abstractions.Exceptions;
 using Raven.Abstractions.Logging;
 using Raven.Abstractions.MEF;
+using Raven.Abstractions.Util;
 using Raven.Database;
 using Raven.Database.Commercial;
 using Raven.Database.Config;
@@ -29,6 +30,7 @@ namespace Raven.Storage.Esent
 {
 	public class TransactionalStorage : CriticalFinalizerObject, ITransactionalStorage
 	{
+		private static int instanceCounter;
 		private readonly ThreadLocal<StorageActionsAccessor> current = new ThreadLocal<StorageActionsAccessor>();
 		private readonly string database;
 		private readonly InMemoryRavenConfiguration configuration;
@@ -55,7 +57,7 @@ namespace Raven.Storage.Esent
 			}
 			catch (EsentErrorException e)
 			{
-				// this is expected if we had done something like recycyling the app domain
+				// this is expected if we had done something like recycling the app domain
 				// because the engine state is actually at the process level (unmanaged)
 				// so we ignore this error
 				if (e.Error == JET_err.AlreadyInitialized)
@@ -80,7 +82,8 @@ namespace Raven.Storage.Esent
 
 			new TransactionalStorageConfigurator(configuration).LimitSystemCache();
 
-			Api.JetCreateInstance(out instance, database + Guid.NewGuid());
+			uniquePrefix = Interlocked.Increment(ref instanceCounter) + "-" + Base62Util.Base62Random();
+			Api.JetCreateInstance(out instance, uniquePrefix + "-" + database);
 		}
 
 		public TableColumnsCache TableColumnsCache
@@ -165,40 +168,31 @@ namespace Raven.Storage.Esent
 
 		public long GetDatabaseCacheSizeInBytes()
 		{
-			using (var pht = new DocumentStorageActions(instance, database, tableColumnsCache, DocumentCodecs, generator, documentCacher, this))
-			{
-				int cacheSizeInPages = 0, pageSize = 0;
-				string unused;
-
-				//JET_paramCacheSize
-				//When this parameter is read, the actual size of the cache in database pages is returned. This size can be used by the 
-				//application as an input to drive its manual adjustment of the cache size.
-				Api.JetGetSystemParameter(instance, pht.Session, JET_param.CacheSize, ref cacheSizeInPages, out unused, 1024);
-				Api.JetGetSystemParameter(instance, pht.Session, JET_param.DatabasePageSize, ref pageSize, out unused, 1024);
-				return ((long)cacheSizeInPages) * pageSize;
-			}
+			return SystemParameters.CacheSize * SystemParameters.DatabasePageSize;
 		}
 
 		private bool reportedGetDatabaseTransactionCacheSizeInBytesError;
+		private string uniquePrefix;
+
 		public long GetDatabaseTransactionVersionSizeInBytes()
 		{
-			long transactionCacheSizeInBytes = 0;
 			try
 			{
-				const string categoryName = "Database";
+				const string categoryName = "Database ==> Instances";
+				if (PerformanceCounterCategory.Exists(categoryName) == false)
+					return -1;
 				var category = new PerformanceCounterCategory(categoryName);
 				var instances = category.GetInstanceNames();
-				var ravenInstance = instances.FirstOrDefault(x => x.StartsWith("Raven.Server"));
+				var ravenInstance = instances.FirstOrDefault(x => x.StartsWith(uniquePrefix));
 				const string counterName = "Version Buckets Allocated";
-				if (ravenInstance != null && category.CounterExists(counterName))
+				if (ravenInstance == null || !category.CounterExists(counterName))
 				{
-					using (var counter = new PerformanceCounter(categoryName, counterName, ravenInstance, readOnly: true))
-					{
-						//According to the pages below, 1 Version Store Page = 64k (65,536 bytes)
-						//http://managedesent.codeplex.com/discussions/248471 (1024 pages = 64 MB)
-						var value = counter.NextValue();
-						transactionCacheSizeInBytes = (long)(value * 65536);
-					}
+					return -2;
+				}
+				using (var counter = new PerformanceCounter(categoryName, counterName, ravenInstance, readOnly: true))
+				{
+					var value = counter.NextValue();
+					return (long)(value * TransactionalStorageConfigurator.GetVersionPageSize());
 				}
 			}
 			catch (Exception e)
@@ -208,8 +202,8 @@ namespace Raven.Storage.Esent
 					reportedGetDatabaseTransactionCacheSizeInBytesError = true;
 					log.WarnException("Failed to get Version Buckets Allocated value, this error will only be reported once.", e);
 				}
+				return -3;
 			}
-			return transactionCacheSizeInBytes;
 		}
 
 		public string FriendlyName
@@ -222,7 +216,7 @@ namespace Raven.Storage.Esent
 			var e = exception as EsentErrorException;
 			if (e == null)
 				return false;
-			// we need to protect ourselve from rollbacks happening in an async manner
+			// we need to protect ourself from rollbacks happening in an async manner
 			// after the database was already shut down.
 			return e.Error == JET_err.InvalidInstance;
 		}
@@ -292,7 +286,7 @@ namespace Raven.Storage.Esent
 			Guid newId = Guid.NewGuid();
 			instance.WithDatabase(database, (session, dbid) =>
 			{
-				using (var details = new Table(session, dbid, "details", OpenTableGrbit.ReadOnly))
+				using (var details = new Table(session, dbid, "details", OpenTableGrbit.None))
 				{
 					Api.JetMove(session, details, JET_Move.First, MoveGrbit.None);
 					var columnids = Api.GetColumnDictionary(session, details);
@@ -323,38 +317,16 @@ namespace Raven.Storage.Esent
 				DocumentCodecs = documentCodecs;
 				generator = uuidGenerator;
 
-				InstanceParameters instanceParameters;
+				InstanceParameters instanceParameters = new TransactionalStorageConfigurator(configuration).ConfigureInstance(instance, path);
+
 				if (configuration.RunInUnreliableYetFastModeThatIsNotSuitableForProduction)
-				{
-					instanceParameters = new InstanceParameters(instance)
-					{
-						CircularLog = true,
-						Recovery = false,
-						NoInformationEvent = false,
-						CreatePathIfNotExist = true,
-						TempDirectory = Path.Combine(path, "temp"),
-						SystemDirectory = Path.Combine(path, "system"),
-						LogFileDirectory = Path.Combine(path, "logs"),
-						MaxVerPages = 256,
-						BaseName = "RVN",
-						EventSource = "Raven",
-						LogBuffers = 8192,
-						LogFileSize = 256,
-						MaxSessions = TransactionalStorageConfigurator.MaxSessions,
-						MaxCursors = 1024,
-						DbExtensionSize = 128,
-						AlternateDatabaseRecoveryDirectory = path
-					};
-				}
-				else
-				{
-					instanceParameters = new TransactionalStorageConfigurator(configuration).ConfigureInstance(instance, path);
-				}
+					instanceParameters.Recovery = false;
 
 				log.Info(@"Esent Settings:
   MaxVerPages      = {0}
   CacheSizeMax     = {1}
-  DatabasePageSize = {2}", instanceParameters.MaxVerPages, SystemParameters.CacheSizeMax, SystemParameters.DatabasePageSize);
+  DatabasePageSize = {2}", instanceParameters.MaxVerPages, SystemParameters.CacheSizeMax,
+						 SystemParameters.DatabasePageSize);
 
 				Api.JetInit(ref instance);
 
@@ -369,8 +341,8 @@ namespace Raven.Storage.Esent
 			catch (Exception e)
 			{
 				Dispose();
-				var fileAccessExeption = e as EsentFileAccessDeniedException;
-				if (fileAccessExeption == null)
+				var fileAccessException = e as EsentFileAccessDeniedException;
+				if (fileAccessException == null)
 					throw new InvalidOperationException("Could not open transactional storage: " + database, e);
 				throw new InvalidOperationException("Could not write to location: " + path + ". Make sure you have read/write permissions for this path.", e);
 			}
@@ -488,6 +460,7 @@ namespace Raven.Storage.Esent
 			}
 		}
 
+		[DebuggerHidden, DebuggerNonUserCode, DebuggerStepThrough]
 		[CLSCompliant(false)]
 		public void Batch(Action<IStorageActionsAccessor> action)
 		{
@@ -499,11 +472,11 @@ namespace Raven.Storage.Esent
 					return;
 				}
 			}
-			Action afterCommit = null;
+			Action afterStorageCommit = null;
 			disposerLock.EnterReadLock();
 			try
 			{
-				afterCommit = ExecuteBatch(action);
+				afterStorageCommit = ExecuteBatch(action);
 			}
 			catch (EsentErrorException e)
 			{
@@ -529,9 +502,9 @@ namespace Raven.Storage.Esent
 				if (disposed == false)
 					current.Value = null;
 			}
+			if (afterStorageCommit != null)
+				afterStorageCommit(); 
 			onCommit(); // call user code after we exit the lock
-			if (afterCommit != null)
-				afterCommit();
 		}
 
 		[DebuggerHidden, DebuggerNonUserCode, DebuggerStepThrough]
@@ -546,18 +519,24 @@ namespace Raven.Storage.Esent
 				current.Value = storageActionsAccessor;
 				action(current.Value);
 				storageActionsAccessor.SaveAllTasks();
+				pht.FlushMapReduceUpdates();
+
+				if (pht.UsingLazyCommit)
+				{
+					txMode = CommitTransactionGrbit.WaitLastLevel0Commit;
+				}
 				return pht.Commit(txMode);
 			}
 		}
 
-		public void ExecuteImmediatelyOrRegisterForSyncronization(Action action)
+		public void ExecuteImmediatelyOrRegisterForSynchronization(Action action)
 		{
 			if (current.Value == null)
 			{
 				action();
 				return;
 			}
-			current.Value.OnCommit += action;
+			current.Value.OnStorageCommit += action;
 		}
 
 		internal StorageActionsAccessor GetCurrentBatch()

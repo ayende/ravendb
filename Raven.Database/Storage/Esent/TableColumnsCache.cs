@@ -41,6 +41,12 @@ namespace Raven.Storage.Esent
 
 		public IDictionary<string, JET_COLUMNID> ListsColumns { get; set; }
 
+		public IDictionary<string, JET_COLUMNID> ReduceKeysCountsColumns { get; set; }
+
+		public IDictionary<string, JET_COLUMNID> ReduceKeysStatusColumns { get; set; }
+
+		public IDictionary<string, JET_COLUMNID> IndexedDocumentsReferencesColumns { get; set; }
+
 	    public void InitColumDictionaries(JET_INSTANCE instance, string database)
 	    {
 	        using (var session = new Session(instance))
@@ -69,6 +75,8 @@ namespace Raven.Storage.Esent
 	                    MappedResultsColumns = Api.GetColumnDictionary(session, mappedResults);
 					using (var reduceResults = new Table(session, dbid, "reduce_results", OpenTableGrbit.None))
 						ReduceResultsColumns = Api.GetColumnDictionary(session, reduceResults);
+					using (var indexed_documents_references = new Table(session, dbid, "indexed_documents_references", OpenTableGrbit.None))
+						IndexedDocumentsReferencesColumns = Api.GetColumnDictionary(session, tableid: indexed_documents_references);
 					using (
 	                    var documentsModifiedByTransactions = new Table(session, dbid, "documents_modified_by_transaction",
 	                                                                    OpenTableGrbit.None))
@@ -82,7 +90,11 @@ namespace Raven.Storage.Esent
 	                    DetailsColumns = Api.GetColumnDictionary(session, details);
 	                using (var queue = new Table(session, dbid, "queue", OpenTableGrbit.None))
 	                    QueueColumns = Api.GetColumnDictionary(session, queue);
-	            }
+					using (var reduceKeys = new Table(session, dbid, "reduce_keys_counts", OpenTableGrbit.None))
+						ReduceKeysCountsColumns = Api.GetColumnDictionary(session, reduceKeys);
+					using (var reduceKeys = new Table(session, dbid, "reduce_keys_status", OpenTableGrbit.None))
+						ReduceKeysStatusColumns = Api.GetColumnDictionary(session, reduceKeys);
+				}
 	            finally
 	            {
 	                if (Equals(dbid, JET_DBID.Nil) == false)

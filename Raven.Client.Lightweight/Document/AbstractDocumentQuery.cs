@@ -5,6 +5,7 @@
 //-----------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
+using System.Collections.Specialized;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -25,6 +26,9 @@ using Raven.Client.Linq;
 using Raven.Client.Listeners;
 using Raven.Abstractions.Extensions;
 using Raven.Abstractions.Indexing;
+using Raven.Imports.Newtonsoft.Json;
+using Raven.Imports.Newtonsoft.Json.Linq;
+using Raven.Json.Linq;
 
 namespace Raven.Client.Document
 {
@@ -38,6 +42,8 @@ namespace Raven.Client.Document
 		protected SpatialRelation spatialRelation;
 		protected double distanceErrorPct;
 		private readonly LinqPathProvider linqPathProvider;
+		protected Action<IndexQuery> beforeQueryExecutionAction;
+
 		protected readonly HashSet<Type> rootTypes = new HashSet<Type>
 		{
 			typeof (T)
@@ -428,6 +434,10 @@ namespace Raven.Client.Document
 		{
 			var query = queryText.ToString();
 			var indexQuery = GenerateIndexQuery(query);
+
+			if(beforeQueryExecutionAction != null)
+				beforeQueryExecutionAction(indexQuery);
+
 			return new QueryOperation(theSession,
 			                          indexName,
 			                          indexQuery,
@@ -520,17 +530,15 @@ namespace Raven.Client.Document
 		/// </summary>
 		public virtual Lazy<IEnumerable<T>> Lazily(Action<IEnumerable<T>> onEval)
 		{
+			var headers = new Dictionary<string,string>();
 			if (queryOperation == null)
 			{
-				foreach (var key in DatabaseCommands.OperationsHeaders.AllKeys.Where(key => key.StartsWith("SortHint")).ToArray())
-				{
-					DatabaseCommands.OperationsHeaders.Remove(key);
-				}
 				ExecuteBeforeQueryListeners();
-				queryOperation = InitializeQueryOperation(DatabaseCommands.OperationsHeaders.Set);
+				queryOperation = InitializeQueryOperation(headers.Add);
 			}
 
 			var lazyQueryOperation = new LazyQueryOperation<T>(queryOperation, afterQueryExecutedCallback, includes);
+			lazyQueryOperation.SetHeaders(headers);
 
 			return ((DocumentSession)theSession).AddLazyOperation(lazyQueryOperation, onEval);
 		}
@@ -595,6 +603,12 @@ namespace Raven.Client.Document
 		public void RandomOrdering(string seed)
 		{
 			AddOrder(Constants.RandomFieldName + ";" + seed, false);
+		}
+
+		public IDocumentQueryCustomization BeforeQueryExecution(Action<IndexQuery> action)
+		{
+			beforeQueryExecutionAction += action;
+			return this;
 		}
 
 		public IDocumentQueryCustomization TransformResults(Func<IndexQuery,IEnumerable<object>, IEnumerable<object>> resultsTransformer)
@@ -1477,16 +1491,16 @@ If you really want to do in memory filtering on the data returned from the query
 
 		private static Task TaskDelay(int dueTimeMilliseconds)
 		{
-			var taskComplectionSource = new TaskCompletionSource<object>();
+			var taskCompletionSource = new TaskCompletionSource<object>();
 			var cancellationTokenRegistration = new CancellationTokenRegistration();
 			var timer = new Timer(o =>
 			{
 				cancellationTokenRegistration.Dispose();
 				((Timer)o).Dispose();
-				taskComplectionSource.TrySetResult(null);
+				taskCompletionSource.TrySetResult(null);
 			});
 			timer.Change(dueTimeMilliseconds, -1);
-			return taskComplectionSource.Task;
+			return taskCompletionSource.Task;
 		}
 
 		/// <summary>
@@ -1635,15 +1649,23 @@ If you really want to do in memory filtering on the data returned from the query
 				return RavenQuery.Escape(result(whereParams.Value), whereParams.AllowWildcards && whereParams.IsAnalyzed, true);
 			}
 
-			var stringWriter = new StringWriter();
-			conventions.CreateSerializer().Serialize(stringWriter, whereParams.Value);
-			var sb = stringWriter.GetStringBuilder();
-			if (sb.Length > 1 && sb[0] == '"' && sb[sb.Length - 1] == '"')
+			var jsonSerializer = conventions.CreateSerializer();
+			var ravenJTokenWriter = new RavenJTokenWriter();
+			jsonSerializer.Serialize(ravenJTokenWriter, whereParams.Value);
+			var term = ravenJTokenWriter.Token.ToString(Formatting.None);
+			if(term.Length > 1 && term[0] == '"' && term[term.Length-1] == '"')
 			{
-				sb.Remove(sb.Length - 1, 1);
-				sb.Remove(0, 1);
+				term = term.Substring(1, term.Length - 2);
 			}
-			return RavenQuery.Escape(sb.ToString(), whereParams.AllowWildcards && whereParams.IsAnalyzed, true);
+			switch (ravenJTokenWriter.Token.Type)
+			{
+				case JTokenType.Object:
+				case JTokenType.Array:
+					return "[[" + RavenQuery.Escape(term, whereParams.AllowWildcards && whereParams.IsAnalyzed, false) + "]]";
+		
+				default:
+					return RavenQuery.Escape(term, whereParams.AllowWildcards && whereParams.IsAnalyzed, true);
+			}
 		}
 
 		private Func<object,string> GetImplicitStringConvertion(Type type)
@@ -1752,7 +1774,7 @@ If you really want to do in memory filtering on the data returned from the query
 
 		public void Intersect()
 		{
-			queryText.Append(Constants.IntersectSeperator);
+			queryText.Append(Constants.IntersectSeparator);
 		}
 
 		public void AddRootType(Type type)

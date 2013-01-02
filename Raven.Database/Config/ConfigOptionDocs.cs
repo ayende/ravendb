@@ -22,8 +22,7 @@ namespace Raven.Database.Config
 			// Authentication
 			{"Raven/AnonymousAccess", "string", "Get,All,None", "Determines what actions an anonymous user can do. Get - read only, All - read & write, None - allows access to only authenticated users. Default: Get."},
 			{"Raven/OAuthTokenServer", "string", null, "The url clients should use for authenticating when using OAuth mode. Default: http://RavenDB-Server-Url/OAuth/AccessToken - the internal OAuth server"},
-			{"Raven/OAuthTokenCertificatePath", "string", null, "The path to the OAuth certificate. Default: none. If no certificate is specified, one will be automatically created."},
-			{"Raven/OAuthTokenCertificatePassword", "string", null, "The password for the OAuth certificate. Default: none."},
+			{"Raven/OAuthTokenCertificate", "string", null, "The base 64 to the OAuth key use to communicate with the server. Default: none. If no key is specified, one will be automatically created."},
 			{"Raven/Authorization/Windows/RequiredGroups", "string", null, "Limit the users that can authenticate to RavenDB to only users in the specified groups. Multiple groups can be specified, separated by a semi column (;)."},
 			{"Raven/Authorization/Windows/RequiredUsers", "string", null,  "Limit the users that can authenticate to RavenDB to only the specified users. Multiple users can be specified, separated by a semi column (;)."},
 			// Network
@@ -40,7 +39,7 @@ namespace Raven.Database.Config
 
 			// Tenants
 			{"Raven/Tenants/MaxIdleTimeForTenantDatabase", "int", null, "The time in seconds to allow a tenant database to be idle"},
-			{"Raven/Tenants/FrequnecyToCheckForIdleDatabases", "int", null, "The time in seconds to check for an idle tenant database"},
+			{"Raven/Tenants/FrequencyToCheckForIdleDatabases", "int", null, "The time in seconds to check for an idle tenant database"},
 
 			// Storage
 			{"Raven/StorageTypeName", "string", "esent,munin,Fully Qualified Type Name", "The storage engine to use for the database. Default: esent."},
@@ -52,7 +51,7 @@ namespace Raven.Database.Config
 			{"Raven/ResetIndexOnUncleanShutdown","bool", "false", "When the database is shut down rudely, determine whatever to reset the index or to check it. Note that checking the index may take some time on large databases."},
 			{"Raven/MaxIndexingRunLatency", "TimeSpan", "00:05:00", "What is the suggested max latency for a single indexing run that allows the database to increase the indexing batch size"},
 			{"Raven/DisableDocumentPreFetchingForIndexing", "bool", "false","Disable document prefetching for indexes"},
-
+			{"Raven/NumberOfItemsToExecuteReduceInSingleStep", "int", "10 - 100,000", "The number of items that will cause RavenDB to move to multi step reduce, default: 1,024"},
 			{"Raven/TaskScheduler", "string", "assembly qualified type name", "The TaskScheduler type to use for executing indexing."},
 			
 			// Temp Indexing
@@ -70,7 +69,7 @@ namespace Raven.Database.Config
 			// Esent
 			{"Raven/Esent/CacheSizeMax", "int", null, "The size in MB of the Esent page cache, which is the default storage engine. Default: 25% of RAM on 64 bits, 256 MB on 32 bits."},
 			{"Raven/Esent/MaxVerPages", "int", null, "The maximum size of version store (in memory modified data) available. The value is in megabytes. Default: 512."},
-			{"Raven/Esent/PreferredVerPages", "int", null, "The preferred size of version store (in memory modified data) available. If the value exceed that level, optional background tasks data are removed from the version store. The value is in megabytes. Default: 512."},
+			{"Raven/Esent/PreferredVerPages", "int", null, "The preferred size of version store (in memory modified data) available. If the value exceed that level, optional background tasks data are removed from the version store. The value is in megabytes. Default: 472."},
 			{"Raven/Esent/LogFileSize", "int", null, "The size of the database log file. The value is in megabytes. Default: 64."},
 			{"Raven/Esent/LogBuffers", "int", null, "The size of the in memory buffer for transaction log. Default: 8192."},
 			{"Raven/Esent/MaxCursors", "int", null, "The maximum number of cursors allowed concurrently. Default: 2048."},

@@ -110,7 +110,6 @@ namespace Raven.Tests.Helpers
 			{
 				Url = fiddler ? "http://localhost.fiddler:8079" : "http://localhost:8079"
 			};
-
 			store.AfterDispose += (sender, args) =>
 			{
 				ravenDbServer.Dispose();
@@ -173,12 +172,10 @@ namespace Raven.Tests.Helpers
 			return ravenDbServer;
 		}
 
-		public ITransactionalStorage NewTransactionalStorage()
+		public ITransactionalStorage NewTransactionalStorage(string requestedStorage = null)
 		{
 			ITransactionalStorage newTransactionalStorage;
-			string storageType = string.IsNullOrEmpty(Environment.GetEnvironmentVariable("raventest_storage_engine"))
-									 ? ConfigurationManager.AppSettings["Raven/StorageEngine"]
-									 : Environment.GetEnvironmentVariable("raventest_storage_engine");
+			string storageType = GetDefaultStorageType(requestedStorage);
 
 			if (storageType == "munin")
 				newTransactionalStorage = new Storage.Managed.TransactionalStorage(new RavenConfiguration { DataDirectory = DataDir, }, () => { });
@@ -327,6 +324,20 @@ namespace Raven.Tests.Helpers
 			GC.Collect(2);
 			GC.WaitForPendingFinalizers();
 			ClearDatabaseDirectory();
+		}
+
+		protected static void PrintServerErrors(ServerError[] serverErrors)
+		{
+			if (serverErrors.Any())
+			{
+				Console.WriteLine("Server errors count: " + serverErrors.Count());
+				foreach (var serverError in serverErrors)
+				{
+					Console.WriteLine("Server error: " + serverError.ToString());
+				}
+			}
+			else
+				Console.WriteLine("No server errors");
 		}
 	}
 }

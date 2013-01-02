@@ -14,6 +14,7 @@ using Raven.Abstractions.Connection;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
 using Raven.Abstractions.Smuggler;
+using Raven.Abstractions.Util;
 using Raven.Client.Extensions;
 using Raven.Imports.Newtonsoft.Json;
 using Raven.Json.Linq;
@@ -110,6 +111,14 @@ namespace Raven.Smuggler
 
 				if (attachmentInfo.Length == 0)
 				{
+					var databaseStatistics = GetStats();
+					var lastEtagComparable = new ComparableByteArray(lastEtag);
+					if (lastEtagComparable.CompareTo(databaseStatistics.LastAttachmentEtag) < 0)
+					{
+						lastEtag = Etag.Increment(lastEtag, smugglerOptions.BatchSize);
+						ShowProgress("Got no results but didn't get to the last attachment etag, trying from: {0}", lastEtag);
+						continue;
+					}
 					ShowProgress("Done with reading attachments, total: {0}", totalCount);
 					return lastEtag;
 				}

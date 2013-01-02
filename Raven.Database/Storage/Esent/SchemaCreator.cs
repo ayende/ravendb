@@ -13,7 +13,7 @@ namespace Raven.Storage.Esent
 	[CLSCompliant(false)]
 	public class SchemaCreator
 	{
-		public const string SchemaVersion = "4.0";
+		public const string SchemaVersion = "4.5";
 		private readonly Session session;
 
 		public SchemaCreator(Session session)
@@ -44,6 +44,9 @@ namespace Raven.Storage.Esent
 					CreateQueueTable(dbid);
 					CreateListsTable(dbid);
 					CreateIdentityTable(dbid);
+					CreateReduceKeysCountsTable(dbid);
+					CreateReduceKeysStatusTable(dbid);
+					CreateIndexedDocumentsReferencesTable(dbid);
 
 					tx.Commit(CommitTransactionGrbit.None);
 				}
@@ -115,7 +118,8 @@ namespace Raven.Storage.Esent
 
 			Api.JetAddColumn(session, tableid, "last_indexed_timestamp", new JET_COLUMNDEF
 			{
-				coltyp = JET_coltyp.DateTime,
+				cbMax = 8, //64 bits
+				coltyp = JET_coltyp.Binary,
 				grbit = ColumndefGrbit.ColumnFixed | ColumndefGrbit.ColumnNotNULL
 			}, null, 0, out columnid);
 
@@ -214,7 +218,8 @@ namespace Raven.Storage.Esent
 
 			Api.JetAddColumn(session, tableid, "last_reduced_timestamp", new JET_COLUMNDEF
 			{
-				coltyp = JET_coltyp.DateTime,
+				cbMax = 8, // 64 bits
+				coltyp = JET_coltyp.Binary,
 				grbit = ColumndefGrbit.ColumnFixed | ColumndefGrbit.ColumnNotNULL
 			}, null, 0, out columnid);
 
@@ -241,7 +246,8 @@ namespace Raven.Storage.Esent
 
 			Api.JetAddColumn(session, tableid, "timeout", new JET_COLUMNDEF
 			{
-				coltyp = JET_coltyp.DateTime,
+				cbMax = 8, // 64 bits
+				coltyp = JET_coltyp.Binary,
 				grbit = ColumndefGrbit.ColumnFixed | ColumndefGrbit.ColumnNotNULL,
 			}, null, 0, out columnid);
 
@@ -282,7 +288,8 @@ namespace Raven.Storage.Esent
 
 			Api.JetAddColumn(session, tableid, "last_modified", new JET_COLUMNDEF
 			{
-				coltyp = JET_coltyp.DateTime,
+				cbMax = 8, // 8 bytes - 64 bits
+				coltyp = JET_coltyp.Binary,
 				grbit = ColumndefGrbit.ColumnFixed | ColumndefGrbit.ColumnNotNULL,
 			}, null, 0, out columnid);
 
@@ -337,7 +344,9 @@ namespace Raven.Storage.Esent
 			{
 				try
 				{
-					Api.JetCreateIndex(session, tableid, index.szIndexName, index.grbit, index.szKey, index.szKey.Length, 90);
+					if (index.ulDensity == 0)
+						index.ulDensity = 90;
+					Api.JetCreateIndex(session, tableid, index.szIndexName, index.grbit, index.szKey, index.szKey.Length, index.ulDensity);
 				}
 				catch (Exception e)
 				{
@@ -375,7 +384,8 @@ namespace Raven.Storage.Esent
 
 			Api.JetAddColumn(session, tableid, "last_modified", new JET_COLUMNDEF
 			{
-				coltyp = JET_coltyp.DateTime,
+				cbMax = 8, // 64 bits 
+				coltyp = JET_coltyp.Binary,
 				grbit = ColumndefGrbit.ColumnFixed | ColumndefGrbit.ColumnNotNULL,
 			}, null, 0, out columnid);
 
@@ -470,7 +480,8 @@ namespace Raven.Storage.Esent
 
 			Api.JetAddColumn(session, tableid, "timestamp", new JET_COLUMNDEF
 			{
-				coltyp = JET_coltyp.DateTime,
+				cbMax = 8, // 64 bits
+				coltyp = JET_coltyp.Binary,
 				grbit = ColumndefGrbit.ColumnNotNULL | ColumndefGrbit.ColumnFixed
 			}, null, 0, out columnid);
 
@@ -495,15 +506,14 @@ namespace Raven.Storage.Esent
 				},
 				new JET_INDEXCREATE
 				{
-					szIndexName = "by_view",
-					szKey = "+view\0\0",
-					grbit = CreateIndexGrbit.IndexDisallowNull
+					szIndexName = "by_view_level_and_hashed_reduce_key",
+					szKey = "+view\0+level\0+hashed_reduce_key\0\0",
 				},
-						new JET_INDEXCREATE
-						{
-							szIndexName = "by_view_level_bucket_and_hashed_reduce_key",
-							szKey = "+view\0+level\0+bucket\0+hashed_reduce_key\0\0",
-						});
+				new JET_INDEXCREATE
+				{
+					szIndexName = "by_view_level_bucket_and_hashed_reduce_key",
+					szKey = "+view\0+level\0+bucket\0+hashed_reduce_key\0\0",
+				});
 		}
 
 		private void CreateMapResultsTable(JET_DBID dbid)
@@ -563,7 +573,8 @@ namespace Raven.Storage.Esent
 
 			Api.JetAddColumn(session, tableid, "timestamp", new JET_COLUMNDEF
 			{
-				coltyp = JET_coltyp.DateTime,
+				cbMax = 8, // 64 bits
+				coltyp = JET_coltyp.Binary,
 				grbit = ColumndefGrbit.ColumnNotNULL | ColumndefGrbit.ColumnFixed
 			}, null, 0, out columnid);
 
@@ -588,19 +599,8 @@ namespace Raven.Storage.Esent
 				},
 				new JET_INDEXCREATE
 				{
-					szIndexName = "by_view",
-					szKey = "+view\0\0",
-					grbit = CreateIndexGrbit.IndexDisallowNull
-				},
-				new JET_INDEXCREATE
-				{
-					szIndexName = "by_view_and_etag",
-					szKey = "+view\0-etag\0\0",
-				},
-				new JET_INDEXCREATE
-				{
-					szIndexName = "by_view_bucket_and_hashed_reduce_key",
-					szKey = "+view\0+bucket\0+hashed_reduce_key\0\0",
+					szIndexName = "by_view_hashed_reduce_key_and_bucket",
+					szKey = "+view\0+hashed_reduce_key\0+bucket\0\0",
 				});
 		}
 
@@ -653,7 +653,8 @@ namespace Raven.Storage.Esent
 
 			Api.JetAddColumn(session, tableid, "timestamp", new JET_COLUMNDEF
 			{
-				coltyp = JET_coltyp.DateTime,
+				cbMax = 8, // 64 bits
+				coltyp = JET_coltyp.Binary,
 				grbit = ColumndefGrbit.ColumnNotNULL | ColumndefGrbit.ColumnFixed
 			}, null, 0, out columnid);
 
@@ -684,14 +685,8 @@ namespace Raven.Storage.Esent
 			              },
 			              new JET_INDEXCREATE
 			              {
-				              szIndexName = "by_view",
-				              szKey = "+view\0\0",
-				              grbit = CreateIndexGrbit.IndexDisallowNull
-			              },
-			              new JET_INDEXCREATE
-			              {
-				              szIndexName = "by_view_level_bucket_and_hashed_reduce_key",
-							  szKey = "+view\0+level\0+bucket\0+hashed_reduce_key\0\0",
+							  szIndexName = "by_view_level_hashed_reduce_key_and_bucket",
+							  szKey = "+view\0+level\0+hashed_reduce_key\0+bucket\0\0",
 						  },
 						  new JET_INDEXCREATE
 						  {
@@ -736,7 +731,8 @@ namespace Raven.Storage.Esent
 
 			Api.JetAddColumn(session, tableid, "added_at", new JET_COLUMNDEF
 			{
-				coltyp = JET_coltyp.DateTime,
+				cbMax = 8,
+				coltyp = JET_coltyp.Binary,
 				grbit = ColumndefGrbit.ColumnNotNULL
 			}, null, 0, out columnid);
 
@@ -989,6 +985,182 @@ namespace Raven.Storage.Esent
 				Api.SetColumn(session, tableid, attachmentCount, 0);
 				update.Save();
 			}
+		}
+
+		private void CreateReduceKeysCountsTable(JET_DBID dbid)
+		{
+			JET_TABLEID tableid;
+			Api.JetCreateTable(session, dbid, "reduce_keys_counts", 1, 80, out tableid);
+			JET_COLUMNID columnid;
+
+			Api.JetAddColumn(session, tableid, "id", new JET_COLUMNDEF
+			{
+				coltyp = JET_coltyp.Long,
+				grbit = ColumndefGrbit.ColumnFixed | ColumndefGrbit.ColumnAutoincrement | ColumndefGrbit.ColumnNotNULL
+			}, null, 0, out columnid);
+
+			Api.JetAddColumn(session, tableid, "view", new JET_COLUMNDEF
+			{
+				cbMax = 2048,
+				coltyp = JET_coltyp.LongText,
+				cp = JET_CP.Unicode,
+				grbit = ColumnNotNullIfOnHigherThanWindowsXp()
+			}, null, 0, out columnid);
+
+			Api.JetAddColumn(session, tableid, "reduce_key", new JET_COLUMNDEF
+			{
+				coltyp = JET_coltyp.LongText,
+				cp = JET_CP.Unicode,
+				grbit = ColumnNotNullIfOnHigherThanWindowsXp()
+			}, null, 0, out columnid);
+
+			Api.JetAddColumn(session, tableid, "hashed_reduce_key", new JET_COLUMNDEF
+			{
+				coltyp = JET_coltyp.Binary,
+				cbMax = 20,
+				grbit = ColumnNotNullIfOnHigherThanWindowsXp() | ColumndefGrbit.ColumnFixed
+			}, null, 0, out columnid);
+
+			var defaultValue = BitConverter.GetBytes(0);
+			Api.JetAddColumn(session, tableid, "mapped_items_count", new JET_COLUMNDEF
+			{
+				coltyp = JET_coltyp.Long,
+				grbit = ColumndefGrbit.ColumnFixed | ColumndefGrbit.ColumnNotNULL | ColumndefGrbit.ColumnEscrowUpdate
+			}, defaultValue, defaultValue.Length, out columnid);
+
+			CreateIndexes(tableid,
+				new JET_INDEXCREATE
+				{
+					szIndexName = "by_id",
+					szKey = "+id\0\0",
+					grbit = CreateIndexGrbit.IndexPrimary
+				},
+				new JET_INDEXCREATE
+				{
+					szIndexName = "by_view_and_hashed_reduce_key",
+					szKey = "+view\0+hashed_reduce_key\0+reduce_key\0\0",
+					grbit = CreateIndexGrbit.IndexUnique
+				});
+		}
+
+		private void CreateReduceKeysStatusTable(JET_DBID dbid)
+		{
+			JET_TABLEID tableid;
+			Api.JetCreateTable(session, dbid, "reduce_keys_status", 1, 80, out tableid);
+			JET_COLUMNID columnid;
+
+			Api.JetAddColumn(session, tableid, "id", new JET_COLUMNDEF
+			{
+				coltyp = JET_coltyp.Long,
+				grbit = ColumndefGrbit.ColumnFixed | ColumndefGrbit.ColumnAutoincrement | ColumndefGrbit.ColumnNotNULL
+			}, null, 0, out columnid);
+
+			Api.JetAddColumn(session, tableid, "view", new JET_COLUMNDEF
+			{
+				cbMax = 2048,
+				coltyp = JET_coltyp.LongText,
+				cp = JET_CP.Unicode,
+				grbit = ColumnNotNullIfOnHigherThanWindowsXp()
+			}, null, 0, out columnid);
+
+			Api.JetAddColumn(session, tableid, "reduce_key", new JET_COLUMNDEF
+			{
+				coltyp = JET_coltyp.LongText,
+				cp = JET_CP.Unicode,
+				grbit = ColumnNotNullIfOnHigherThanWindowsXp()
+			}, null, 0, out columnid);
+
+			Api.JetAddColumn(session, tableid, "hashed_reduce_key", new JET_COLUMNDEF
+			{
+				coltyp = JET_coltyp.Binary,
+				cbMax = 20,
+				grbit = ColumnNotNullIfOnHigherThanWindowsXp() | ColumndefGrbit.ColumnFixed
+			}, null, 0, out columnid);
+
+			var defaultValue = BitConverter.GetBytes(0);
+			Api.JetAddColumn(session, tableid, "reduce_type", new JET_COLUMNDEF
+			{
+				coltyp = JET_coltyp.Long,
+				grbit = ColumndefGrbit.ColumnFixed | ColumndefGrbit.ColumnNotNULL
+			}, defaultValue, defaultValue.Length, out columnid);
+
+			CreateIndexes(tableid,
+				new JET_INDEXCREATE
+				{
+					szIndexName = "by_id",
+					szKey = "+id\0\0",
+					grbit = CreateIndexGrbit.IndexPrimary
+				},
+				new JET_INDEXCREATE
+				{
+					szIndexName = "by_view_and_hashed_reduce_key",
+					szKey = "+view\0+hashed_reduce_key\0+reduce_key\0\0",
+					grbit = CreateIndexGrbit.IndexUnique
+				});
+		}
+
+		private void CreateIndexedDocumentsReferencesTable(JET_DBID dbid)
+		{
+			JET_TABLEID tableid;
+			Api.JetCreateTable(session, dbid, "indexed_documents_references", 1, 80, out tableid);
+			JET_COLUMNID columnid;
+
+			Api.JetAddColumn(session, tableid, "id", new JET_COLUMNDEF
+			{
+				coltyp = JET_coltyp.Long,
+				grbit = ColumndefGrbit.ColumnFixed | ColumndefGrbit.ColumnAutoincrement | ColumndefGrbit.ColumnNotNULL
+			}, null, 0, out columnid);
+
+
+			Api.JetAddColumn(session, tableid, "view", new JET_COLUMNDEF
+			{
+				cbMax = 2048,
+				coltyp = JET_coltyp.LongText,
+				cp = JET_CP.Unicode,
+				grbit = ColumnNotNullIfOnHigherThanWindowsXp()
+			}, null, 0, out columnid);
+
+			Api.JetAddColumn(session, tableid, "key", new JET_COLUMNDEF
+			{
+				cbMax = 2048,
+				coltyp = JET_coltyp.LongText,
+				cp = JET_CP.Unicode,
+				grbit = ColumnNotNullIfOnHigherThanWindowsXp()
+			}, null, 0, out columnid);
+
+			Api.JetAddColumn(session, tableid, "ref", new JET_COLUMNDEF
+			{
+				cbMax = 2048,
+				coltyp = JET_coltyp.LongText,
+				cp = JET_CP.Unicode,
+				grbit = ColumnNotNullIfOnHigherThanWindowsXp()
+			}, null, 0, out columnid);
+
+			CreateIndexes(tableid,
+				new JET_INDEXCREATE
+				{
+					szIndexName = "by_id",
+					szKey = "+id\0\0",
+					grbit = CreateIndexGrbit.IndexPrimary
+				},
+				new JET_INDEXCREATE
+				{
+					szIndexName = "by_key",
+					szKey = "+key\0\0",
+					grbit = CreateIndexGrbit.IndexDisallowNull
+				},
+				new JET_INDEXCREATE
+				{
+					szIndexName = "by_view_and_key",
+					szKey = "+view\0+key\0\0",
+					grbit = CreateIndexGrbit.IndexDisallowNull
+				},
+				new JET_INDEXCREATE
+				{
+					szIndexName = "by_ref",
+					szKey = "+ref\0\0",
+					grbit = CreateIndexGrbit.IndexDisallowNull
+				});
 		}
 
 		public static void UpdateVersion(Session session, JET_DBID dbid, string newVersion)

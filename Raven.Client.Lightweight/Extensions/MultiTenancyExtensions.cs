@@ -15,7 +15,7 @@ namespace Raven.Client.Extensions
 	using System.Threading.Tasks;
 
 	///<summary>
-	/// Extension methods to create mutli tenants databases
+	/// Extension methods to create multitenant databases
 	///</summary>
 	public static class MultiTenancyExtensions
 	{
@@ -30,7 +30,7 @@ namespace Raven.Client.Extensions
 		{
 			var serverClient = self.ForDefaultDatabase() as ServerClient;
 			if (serverClient == null)
-				throw new InvalidOperationException("Ensuring database existence requires a Server Client but got: " + self);
+				throw new InvalidOperationException("Multiple databases are not supported in the embedded API currently");
 
 			var doc = MultiDatabase.CreateDatabaseDocument(name);
 			var docId = "Raven/Databases/" + name;

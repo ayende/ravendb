@@ -774,6 +774,9 @@
     <Compile Include="..\Raven.Abstractions\Logging\LogProviders\Log4NetLogManager.cs">
       <Link>Imports\Logging\LogProviders\Log4NetLogManager.cs</Link>
     </Compile>
+    <Compile Include="..\Raven.Abstractions\Logging\LogProviders\LogManagerBase.cs">
+      <Link>Imports\Logging\LogProviders\LogManagerBase.cs</Link>
+    </Compile>
     <Compile Include="..\Raven.Abstractions\Logging\LogProviders\NLogLogManager.cs">
       <Link>Imports\Logging\LogProviders\NLogLogManager.cs</Link>
     </Compile>
@@ -782,6 +785,9 @@
     </Compile>
     <Compile Include="..\Raven.Abstractions\Util\AtomicDictionary.cs">
       <Link>Imports\Util\AtomicDictionary.cs</Link>
+    </Compile>
+    <Compile Include="..\Raven.Abstractions\Util\Base62Util.cs">
+      <Link>Imports\Util\Base62Util.cs</Link>
     </Compile>
     <Compile Include="..\Raven.Abstractions\Util\CompletedTask.cs">
       <Link>Imports\Util\CompletedTask.cs</Link>
@@ -797,9 +803,6 @@
     </Compile>
     <Compile Include="..\Raven.Abstractions\Util\RavenQuery.cs">
       <Link>Imports\Util\RavenQuery.cs</Link>
-    </Compile>
-    <Compile Include="..\Raven.Client.Lightweight\Changes\Base62Util.cs">
-      <Link>Imports\Changes\Base62Util.cs</Link>
     </Compile>
     <Compile Include="..\Raven.Client.Lightweight\Changes\IDatabaseChanges.cs">
       <Link>Imports\Changes\IDatabaseChanges.cs</Link>
@@ -903,8 +906,14 @@
     <Compile Include="..\Raven.Client.Lightweight\Document\DocumentSessionListeners.cs">
       <Link>Imports\Document\DocumentSessionListeners.cs</Link>
     </Compile>
+    <Compile Include="..\Raven.Client.Lightweight\Document\EntityToJson.cs">
+      <Link>Imports\Document\EntityToJson.cs</Link>
+    </Compile>
     <Compile Include="..\Raven.Client.Lightweight\Document\FailoverBehavior.cs">
       <Link>Imports\Document\FailoverBehavior.cs</Link>
+    </Compile>
+    <Compile Include="..\Raven.Client.Lightweight\Document\GenerateEntityIdOnTheClient.cs">
+      <Link>Imports\Document\GenerateEntityIdOnTheClient.cs</Link>
     </Compile>
     <Compile Include="..\Raven.Client.Lightweight\Document\HiLoKeyGeneratorBase.cs">
       <Link>Imports\Document\HiLoKeyGeneratorBase.cs</Link>
@@ -1025,6 +1034,9 @@
     </Compile>
     <Compile Include="..\Raven.Client.Lightweight\Util\LastEtagHolder.cs">
       <Link>Imports\Util\LastEtagHolder.cs</Link>
+    </Compile>
+    <Compile Include="..\Raven.Client.Lightweight\Util\ObjectReferenceEqualityComparer.cs">
+      <Link>Imports\Util\ObjectReferenceEqualityComparer.cs</Link>
     </Compile>
     <Compile Include="..\Raven.Client.Lightweight\Util\SimpleCache.cs">
       <Link>Connection\SimpleCache.cs</Link>
@@ -1404,9 +1416,6 @@
     </Compile>
     <Compile Include="..\Raven.Client.Lightweight\Util\Inflector.cs">
       <Link>Imports\Util\Inflector.cs</Link>
-    </Compile>
-    <Compile Include="..\Raven.Client.Lightweight\Util\ObjectReferenceEqualityComparerer.cs">
-      <Link>Imports\Util\ObjectReferenceEqualityComparerer.cs</Link>
     </Compile>
   </ItemGroup>
   <ItemGroup>

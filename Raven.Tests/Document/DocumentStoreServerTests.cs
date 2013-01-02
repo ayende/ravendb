@@ -88,6 +88,19 @@ namespace Raven.Tests.Document
 		}
 
 		[Fact]
+		public void Can_get_indexes()
+		{
+			documentStore.DatabaseCommands.PutIndex("Companies/Name", new IndexDefinitionBuilder<Company, Company>
+			{
+				Map = companies => from c in companies
+								   select new { c.Name },
+				Indexes = { { x => x.Name, FieldIndexing.NotAnalyzed } }
+			});
+			var indexDefinitions = documentStore.DatabaseCommands.GetIndexes(0, 10);
+			Assert.NotNull(indexDefinitions.SingleOrDefault(d => d.Name == "Companies/Name"));
+		}
+
+		[Fact]
 		public void Can_delete_by_index()
 		{
 			var entity = new Company {Name = "Company"};
@@ -557,6 +570,18 @@ namespace Raven.Tests.Document
 			}
 		}
 
+		[Fact]
+		public void Can_get_documents()
+		{
+			using (var session = documentStore.OpenSession())
+			{
+				session.Store(new Company { Name = "Company A", Id = "1" });
+				session.Store(new Company { Name = "Company B", Id = "2" });
+				session.SaveChanges();
+			}
+			JsonDocument[] jsonDocuments = documentStore.DatabaseCommands.GetDocuments(0, 10, true);
+			Assert.Equal(2, jsonDocuments.Length);
+		}
 
 		[Fact]
 		public void Can_delete_document()
@@ -1028,11 +1053,13 @@ namespace Raven.Tests.Document
 			documentStore.DatabaseCommands.PutIndex("AvgAgeByLocation", new IndexDefinitionBuilder<LinqIndexesFromClient.User, LinqIndexesFromClient.LocationAge>
 			                                                            	{
 			                                                            		Map = users => from user in users
-			                                                            		               select new {user.Location, user.Age},
+			                                                            		               select new {user.Location, AgeSum=  user.Age, AverageAge = user.Age, Count = 1},
 			                                                            		Reduce = results => from loc in results
 			                                                            		                    group loc by loc.Location
 			                                                            		                    into g
-			                                                            		                    select new {Location = g.Key, Age = g.Average(x => x.Age)},
+																									let count = g.Sum(x=>x.Count)
+																									let age = g.Sum(x=>x.AgeSum)
+			                                                            		                    select new {Location = g.Key, AverageAge = age/ count, Count = count, AgeSum = age },
 			                                                            		Indexes = {{x => x.Location, FieldIndexing.NotAnalyzed}}
 			                                                            	});
 
@@ -1060,7 +1087,7 @@ namespace Raven.Tests.Document
 					.Single();
 
 				Assert.Equal("Tel Aviv", single.Location);
-				Assert.Equal(26.5m, single.Age);
+				Assert.Equal(26.5m, single.AverageAge);
 			}
 		}
 
@@ -1071,8 +1098,8 @@ namespace Raven.Tests.Document
 			                                                  	{
 			                                                  		Map = users => from user in users
 			                                                  		               select new {user.Age},
-			                                                  		Indexes = {{x => x.Age, FieldIndexing.Analyzed}},
-			                                                  		Stores = {{x => x.Age, FieldStorage.Yes}}
+			                                                  		Indexes = {{x => x.AverageAge, FieldIndexing.Analyzed}},
+																	Stores = { { x => x.AverageAge, FieldStorage.Yes } }
 			                                                  	});
 
 			using (var session = documentStore.OpenSession())
@@ -1115,8 +1142,8 @@ namespace Raven.Tests.Document
 			{
 				Map = users => from user in users
 								select new { user.Age },
-				Indexes = { { x => x.Age, FieldIndexing.Analyzed } },
-				Stores = { { x => x.Age, FieldStorage.Yes } }
+				Indexes = { { x => x.AverageAge, FieldIndexing.Analyzed } },
+				Stores = { { x => x.AverageAge, FieldStorage.Yes } }
 			});
 
 			using (var session = documentStore.OpenSession())

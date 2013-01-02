@@ -9,6 +9,7 @@ using System.Threading;
 using Raven.Abstractions.Connection;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Json;
+using Raven.Abstractions.Util;
 using Raven.Json.Linq;
 using Raven.Imports.Newtonsoft.Json;
 
@@ -16,7 +17,7 @@ namespace Raven.Abstractions.Smuggler
 {
 	public abstract class SmugglerApiBase : ISmugglerApi
 	{
-		private const int MaxSizeOfUncomressedSizeToSendToDatabase = 32 * 1024 * 1024;
+		private const int MaxSizeOfUncompressedSizeToSendToDatabase = 32 * 1024 * 1024;
 		protected readonly SmugglerOptions smugglerOptions;
 		private readonly Stopwatch stopwatch = Stopwatch.StartNew();
 		private readonly LinkedList<Tuple<Guid, DateTime>> batchRecording = new LinkedList<Tuple<Guid, DateTime>>();
@@ -166,6 +167,14 @@ namespace Raven.Abstractions.Smuggler
 
 				if (documents.Length == 0)
 				{
+					var databaseStatistics = GetStats();
+					var lastEtagComparable = new ComparableByteArray(lastEtag);
+					if (lastEtagComparable.CompareTo(databaseStatistics.LastDocEtag) < 0)
+					{
+						lastEtag = Etag.Increment(lastEtag, smugglerOptions.BatchSize);
+						ShowProgress("Got no results but didn't get to the last doc etag, trying from: {0}",lastEtag);
+						continue;
+					}
 					ShowProgress("Done with reading documents, total: {0}", totalCount);
 					return lastEtag;
 				}
@@ -353,7 +362,7 @@ namespace Raven.Abstractions.Smuggler
 				batch.Add(document);
 				sizeOnDisk = (sizeStream.Position - lastFlushedAt);
 				if (batch.Count >= smugglerOptions.BatchSize ||
-					sizeOnDisk >= MaxSizeOfUncomressedSizeToSendToDatabase)
+					sizeOnDisk >= MaxSizeOfUncompressedSizeToSendToDatabase)
 				{
 					lastFlushedAt = sizeStream.Position;
 					HandleBatch(options,batch, sizeOnDisk);
@@ -406,7 +415,7 @@ namespace Raven.Abstractions.Smuggler
 			var currentProcessingTime = sw.Elapsed;
 
 			batchRecording.AddLast(Tuple.Create(lastEtagInBatch, SystemTime.UtcNow));
-			if(sizeOfDisk >=MaxSizeOfUncomressedSizeToSendToDatabase)
+			if(sizeOfDisk >=MaxSizeOfUncompressedSizeToSendToDatabase)
 				options.BatchSize = actualBatchSize - actualBatchSize/10;
 			else
 				ModifyBatchSize(options, currentProcessingTime);
@@ -438,8 +447,8 @@ namespace Raven.Abstractions.Smuggler
 			}
 
 
-			var currentDoc = BitConverter.ToInt64(databaseStatistics.LastDocEtag.ToByteArray().Reverse().ToArray(), 0);
-			var lastIndexed = BitConverter.ToInt64(earliestIndexedEtag.ToByteArray().Reverse().ToArray(), 0);
+			var currentDoc = Etag.GetChangesCount(databaseStatistics.LastDocEtag);
+			var lastIndexed = Etag.GetChangesCount(earliestIndexedEtag);
 
 			var distance = Math.Max(0, currentDoc - lastIndexed);
 			TimeSpan latency = TimeSpan.Zero;
@@ -467,7 +476,7 @@ namespace Raven.Abstractions.Smuggler
 			if (timeAgo.TotalSeconds >= 1)
 				return string.Format("{0:#,#} seconds ago", timeAgo.TotalSeconds);
 
-			return string.Format("{0:#,#} milli-seconds ago", timeAgo.TotalMilliseconds);
+			return string.Format("{0:#,#} milliseconds ago", timeAgo.TotalMilliseconds);
 		}
 
 		protected void ExportIndexes(JsonTextWriter jsonWriter)
