@@ -17,7 +17,7 @@ namespace Raven.Studio.Models
             IsS3Selected = new Observable<bool>();
 			ShowPeriodicBackup = new Observable<bool>();
 
-			var req = ApplicationModel.DatabaseCommands.ForDefaultDatabase().CreateRequest("/license/status", "GET");
+			var req = ApplicationModel.DatabaseCommands.ForSystemDatabase().CreateRequest("/license/status", "GET");
 
 			req.ReadResponseJsonAsync().ContinueOnSuccessInTheUIThread(doc =>
 			{
@@ -43,7 +43,7 @@ namespace Raven.Studio.Models
 		public string AwsAccessKey { get; set; }
 		public string AwsSecretKey { get; set; }
         public Observable<bool> IsS3Selected { get; set; }
-        //TODO: add selection between S3 and Glecuir
+        //TODO: add selection between S3 and Glacier
 		public bool HasDocument { get; set; }
 
 		public override void LoadFor(DatabaseDocument document)

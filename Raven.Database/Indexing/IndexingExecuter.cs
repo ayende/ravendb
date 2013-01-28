@@ -4,7 +4,6 @@
 // </copyright>
 //-----------------------------------------------------------------------
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -17,6 +16,7 @@ using Raven.Database.Json;
 using Raven.Database.Plugins;
 using Raven.Database.Storage;
 using Raven.Database.Tasks;
+using Raven.Database.Util;
 using Task = Raven.Database.Tasks.Task;
 
 namespace Raven.Database.Indexing
@@ -52,7 +52,7 @@ namespace Raven.Database.Indexing
 			return new IndexToWorkOn
 			{
 				IndexName = indexesStat.Name,
-				LastIndexedEtag = indexesStat.LastIndexedEtag
+				LastIndexedEtag = indexesStat.LastIndexedEtag,
 			};
 		}
 
@@ -67,6 +67,7 @@ namespace Raven.Database.Indexing
 			var operationCancelled = false;
 			TimeSpan indexingDuration = TimeSpan.Zero;
 			List<JsonDocument> jsonDocs = null;
+			var lastEtag = Guid.Empty;
 			try
 			{
 				jsonDocs = prefetchingBehavior.GetDocumentsBatchFrom(lastIndexedGuidForAllIndexes);
@@ -74,27 +75,18 @@ namespace Raven.Database.Indexing
 				if (Log.IsDebugEnabled)
 				{
 					Log.Debug("Found a total of {0} documents that requires indexing since etag: {1}: ({2})",
-					          jsonDocs.Count, lastIndexedGuidForAllIndexes, string.Join(", ", jsonDocs.Select(x => x.Key)));
+							  jsonDocs.Count, lastIndexedGuidForAllIndexes, string.Join(", ", jsonDocs.Select(x => x.Key)));
 				}
 
 				context.ReportIndexingActualBatchSize(jsonDocs.Count);
 				context.CancellationToken.ThrowIfCancellationRequested();
 
-				if (jsonDocs.Count > 0)
-				{
-					context.IndexedPerSecIncreaseBy(jsonDocs.Count);
-					var result = FilterIndexes(indexesToWorkOn, jsonDocs).ToList();
-					indexesToWorkOn = result.Select(x => x.Item1).ToList();
-					var sw = Stopwatch.StartNew();
-					BackgroundTaskExecuter.Instance.ExecuteAll(context, result, (indexToWorkOn, _) =>
-					{
-						var index = indexToWorkOn.Item1;
-						var docs = indexToWorkOn.Item2;
+				if (jsonDocs.Count <= 0)
+					return;
 
-						transactionalStorage.Batch(actions => IndexDocuments(actions, index.IndexName, docs));
-					});
-					indexingDuration = sw.Elapsed;
-				}
+				var sw = Stopwatch.StartNew();
+				lastEtag = DoActualIndexing(indexesToWorkOn, jsonDocs);
+				indexingDuration = sw.Elapsed;
 			}
 			catch (OperationCanceledException)
 			{
@@ -104,29 +96,6 @@ namespace Raven.Database.Indexing
 			{
 				if (operationCancelled == false && jsonDocs != null && jsonDocs.Count > 0)
 				{
-					var lastByEtag = PrefetchingBehavior.GetHighestJsonDocumentByEtag(jsonDocs);
-					var lastModified = lastByEtag.LastModified.Value;
-					var lastEtag = lastByEtag.Etag.Value;
-
-					if (Log.IsDebugEnabled)
-					{
-						Log.Debug("After indexing {0} documents, the new last etag for is: {1} for {2}",
-						          jsonDocs.Count,
-						          lastEtag,
-						          string.Join(", ", indexesToWorkOn.Select(x => x.IndexName))
-							);
-					}
-
-					// whatever we succeeded in indexing or not, we have to update this
-					// because otherwise we keep trying to re-index failed documents
-					transactionalStorage.Batch(actions =>
-					{
-						foreach (var indexToWorkOn in indexesToWorkOn)
-						{
-							actions.Indexing.UpdateLastIndexed(indexToWorkOn.IndexName, lastEtag, lastModified);
-						}
-					});
-
 					prefetchingBehavior.CleanupDocumentsToRemove(lastEtag);
 					UpdateAutoThrottler(jsonDocs, indexingDuration);
 				}
@@ -135,16 +104,175 @@ namespace Raven.Database.Indexing
 			}
 		}
 
+		private Guid DoActualIndexing(IList<IndexToWorkOn> indexesToWorkOn, List<JsonDocument> jsonDocs)
+		{
+			var lastByEtag = PrefetchingBehavior.GetHighestJsonDocumentByEtag(jsonDocs);
+			var lastModified = lastByEtag.LastModified.Value;
+			var lastEtag = lastByEtag.Etag.Value;
+
+			context.IndexedPerSecIncreaseBy(jsonDocs.Count);
+			var result = FilterIndexes(indexesToWorkOn, jsonDocs).ToList();
+
+			ExecuteAllInterleaved(result, index => HandleIndexingFor(index, lastEtag, lastModified));
+
+			return lastEtag;
+		}
+
+		SemaphoreSlim indexingSemaphore;
+		private ManualResetEventSlim indexingCompletedEvent;
+		readonly ConcurrentSet<System.Threading.Tasks.Task> pendingTasks = new ConcurrentSet<System.Threading.Tasks.Task>();
+
+		private void ExecuteAllInterleaved(IList<IndexingBatchForIndex> result, Action<IndexingBatchForIndex> action)
+		{
+			if (result.Count == 0)
+				return;
+
+			var maxNumberOfParallelIndexTasks = context.Configuration.MaxNumberOfParallelIndexTasks;
+
+			SortResultsMixedAccordingToTimePerDoc(result);
+
+			int isSlowIndex = 0;
+			var totalIndexingTime = Stopwatch.StartNew();
+			var tasks = new System.Threading.Tasks.Task[result.Count];
+			for (int i = 0; i < result.Count; i++)
+			{
+				var index = result[i];
+				var indexToWorkOn = index;
+
+				var sp = Stopwatch.StartNew();
+				var task = new System.Threading.Tasks.Task(() => action(indexToWorkOn));
+				indexToWorkOn.Index.CurrentMapIndexingTask = tasks[i] = task.ContinueWith(_ =>
+				{
+					try
+					{
+						sp.Stop();
+						indexToWorkOn.Index.LastIndexingDuration = sp.Elapsed;
+						indexToWorkOn.Index.TimePerDoc = sp.ElapsedMilliseconds / Math.Max(1, indexToWorkOn.Batch.Docs.Count);
+						indexToWorkOn.Index.CurrentMapIndexingTask = null;
+					}
+					finally 
+					{
+						indexingSemaphore.Release();
+						indexingCompletedEvent.Set();
+						if (Thread.VolatileRead(ref isSlowIndex) != 0)
+						{
+							// we now need to notify the engine that the slow index(es) is done, and we need to resume its indexing
+							context.ShouldNotifyAboutWork(() => "Slow Index Completed Indexing Batch");
+							context.NotifyAboutWork();
+						}
+					}
+					
+				});
+
+				indexingSemaphore.Wait();
+
+				task.Start(context.Database.BackgroundTaskScheduler);
+			}
+
+			// we only get here AFTER we finished scheduling all the indexes
+			// we wait until we have at least parallel / 2 spots opened (for the _next_ indexing batch) or 8, if we are 
+			// running on Enterprise / high end systems
+			int minIndexingSpots = Math.Min((maxNumberOfParallelIndexTasks / 2), 8);
+			while (indexingSemaphore.CurrentCount < minIndexingSpots)
+			{
+				indexingCompletedEvent.Wait();
+				indexingCompletedEvent.Reset();
+			}
+
+			// now we have the chance to start a new indexing batch with the old items, but we still
+			// want to wait for a bit to _avoid_ creating multiple batches if we can possibly avoid it.
+			// We will wait for 3/4 the time we waited so far, and a min of 15 seconds
+			var timeToWait = Math.Max((int)(totalIndexingTime.ElapsedMilliseconds / 4) * 3, 15000);
+			var totalWaitTime = Stopwatch.StartNew();
+			while (indexingSemaphore.CurrentCount < maxNumberOfParallelIndexTasks)
+			{
+				int timeout = timeToWait - (int) totalWaitTime.ElapsedMilliseconds;
+				if (timeout <= 0)
+					break;
+				indexingCompletedEvent.Reset();
+				indexingCompletedEvent.Wait(timeout);
+			}
+			Interlocked.Increment(ref isSlowIndex);
+
+			if (Log.IsDebugEnabled == false)
+				return;
+
+			var creatingNewBatch = indexingSemaphore.CurrentCount < maxNumberOfParallelIndexTasks;
+			if (creatingNewBatch == false)
+				return;
+
+			var slowIndexes = result.Where(x =>
+			{
+				var currentMapIndexingTask = x.Index.CurrentMapIndexingTask;
+				return currentMapIndexingTask != null && !currentMapIndexingTask.IsCompleted;
+			})
+				.Select(x => x.IndexName)
+				.ToArray();
+			Log.Debug("Indexing is now split because there are {0:#,#} slow indexes [{1}], memory usage may increase, and those indexing may experience longer stale times (but other indexes will be faster)",
+					 slowIndexes.Length,
+					 string.Join(", ", slowIndexes));
+		}
+
+		private static void SortResultsMixedAccordingToTimePerDoc(IList<IndexingBatchForIndex> result)
+		{
+			var orderedBy = result.OrderBy(x => x.Index.TimePerDoc).ToArray();
+			int startPos = 0, endPos = orderedBy.Length;
+			int resultPos = 0;
+			while (startPos < endPos)
+			{
+				result[resultPos++] = orderedBy[startPos++];
+				if (resultPos + 1 < result.Count)
+					result[resultPos++] = orderedBy[--endPos];
+			}
+		}
+
+		private void HandleIndexingFor(IndexingBatchForIndex batchForIndex, Guid lastEtag, DateTime lastModified)
+		{
+			try
+			{
+				transactionalStorage.Batch(actions => IndexDocuments(actions, batchForIndex.IndexName, batchForIndex.Batch));
+			}
+			catch (Exception e)
+			{
+				Log.Warn("Failed to index " + batchForIndex.IndexName, e);
+			}
+			finally
+			{
+				if (Log.IsDebugEnabled)
+				{
+					Log.Debug("After indexing {0} documents, the new last etag for is: {1} for {2}",
+							  batchForIndex.Batch.Docs.Count,
+							  lastEtag,
+							  batchForIndex.IndexName);
+				}
+
+				transactionalStorage.Batch(actions =>
+					// whatever we succeeded in indexing or not, we have to update this
+					// because otherwise we keep trying to re-index failed documents
+										   actions.Indexing.UpdateLastIndexed(batchForIndex.IndexName, lastEtag, lastModified));
+			}
+		}
+
 		private void UpdateAutoThrottler(List<JsonDocument> jsonDocs, TimeSpan indexingDuration)
 		{
 			int futureLen;
 			int futureSize;
-			prefetchingBehavior.GetFutureStats(autoTuner.NumberOfItemsToIndexInSingleBatch ,out futureLen, out futureSize);
+			prefetchingBehavior.GetFutureStats(autoTuner.NumberOfItemsToIndexInSingleBatch, out futureLen, out futureSize);
 			autoTuner.AutoThrottleBatchSize(jsonDocs.Count + futureLen, futureSize + jsonDocs.Sum(x => x.SerializedSizeOnDisk), indexingDuration);
 		}
 
+		public class IndexingBatchForIndex
+		{
+			public string IndexName { get; set; }
 
-		private IEnumerable<Tuple<IndexToWorkOn, IndexingBatch>> FilterIndexes(IList<IndexToWorkOn> indexesToWorkOn, List<JsonDocument> jsonDocs)
+			public Index Index { get; set; }
+
+			public Guid LastIndexedEtag { get; set; }
+
+			public IndexingBatch Batch { get; set; }
+		}
+
+		private IEnumerable<IndexingBatchForIndex> FilterIndexes(IList<IndexToWorkOn> indexesToWorkOn, List<JsonDocument> jsonDocs)
 		{
 			var last = jsonDocs.Last();
 
@@ -165,7 +293,7 @@ namespace Raven.Database.Indexing
 					return filteredDoc == null ? new
 					{
 						Doc = doc,
-						Json = (object) new FilteredDocument(doc)
+						Json = (object)new FilteredDocument(doc)
 					} : new
 					{
 						Doc = filteredDoc,
@@ -175,7 +303,7 @@ namespace Raven.Database.Indexing
 
 			Log.Debug("After read triggers executed, {0} documents remained", filteredDocs.Count);
 
-			var results = new Tuple<IndexToWorkOn, IndexingBatch>[indexesToWorkOn.Count];
+			var results = new IndexingBatchForIndex[indexesToWorkOn.Count];
 			var actions = new Action<IStorageActionsAccessor>[indexesToWorkOn.Count];
 
 			BackgroundTaskExecuter.Instance.ExecuteAll(context, indexesToWorkOn, (indexToWorkOn, i) =>
@@ -207,7 +335,7 @@ namespace Raven.Database.Indexing
 
 					// is the Raven-Entity-Name a match for the things the index executes on?
 					if (viewGenerator.ForEntityNames.Count != 0 &&
-					    viewGenerator.ForEntityNames.Contains(item.Doc.Metadata.Value<string>(Constants.RavenEntityName)) == false)
+						viewGenerator.ForEntityNames.Contains(item.Doc.Metadata.Value<string>(Constants.RavenEntityName)) == false)
 					{
 						continue;
 					}
@@ -218,14 +346,14 @@ namespace Raven.Database.Indexing
 						batch.DateTime = item.Doc.LastModified;
 					else
 						batch.DateTime = batch.DateTime > item.Doc.LastModified
-							                 ? item.Doc.LastModified
-							                 : batch.DateTime;
+											 ? item.Doc.LastModified
+											 : batch.DateTime;
 				}
 
 				if (batch.Docs.Count == 0)
 				{
 					Log.Debug("All documents have been filtered for {0}, no indexing will be performed, updating to {1}, {2}", indexName,
-					          lastEtag, lastModified);
+							  lastEtag, lastModified);
 					// we use it this way to batch all the updates together
 					actions[i] = accessor => accessor.Indexing.UpdateLastIndexed(indexName, lastEtag, lastModified);
 					return;
@@ -234,7 +362,13 @@ namespace Raven.Database.Indexing
 				{
 					Log.Debug("Going to index {0} documents in {1}: ({2})", batch.Ids.Count, indexToWorkOn, string.Join(", ", batch.Ids));
 				}
-				results[i] = Tuple.Create(indexToWorkOn, batch);
+				results[i] = new IndexingBatchForIndex
+				{
+					Batch = batch,
+					IndexName = indexToWorkOn.IndexName,
+					Index = indexToWorkOn.Index,
+					LastIndexedEtag = indexToWorkOn.LastIndexedEtag
+				};
 
 			});
 
@@ -292,6 +426,29 @@ namespace Raven.Database.Indexing
 		public PrefetchingBehavior PrefetchingBehavior
 		{
 			get { return prefetchingBehavior; }
+		}
+
+		protected override void Dispose()
+		{
+			var exceptionAggregator = new ExceptionAggregator(Log, "Could not dispose of IndexingExecuter");
+			foreach (var pendingTask in pendingTasks)
+			{
+				exceptionAggregator.Execute(pendingTask.Wait);
+			}
+			pendingTasks.Clear();
+			exceptionAggregator.Execute(indexingCompletedEvent.Dispose);
+			exceptionAggregator.Execute(indexingSemaphore.Dispose);
+			exceptionAggregator.ThrowIfNeeded();
+
+			indexingCompletedEvent = null;
+			indexingSemaphore = null;
+		}
+
+		protected override void Init()
+		{
+			indexingSemaphore = new SemaphoreSlim(context.Configuration.MaxNumberOfParallelIndexTasks);
+			indexingCompletedEvent = new ManualResetEventSlim(false);
+			base.Init();
 		}
 	}
 }

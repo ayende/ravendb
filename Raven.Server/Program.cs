@@ -210,10 +210,22 @@ namespace Raven.Server
 
 		}
 
+		public static void DumpToCsv(RavenConfiguration ravenConfiguration)
+		{
+			using (var db = new DocumentDatabase(ravenConfiguration))
+			{
+				db.TransactionalStorage.DumpAllStorageTables();
+			}
+		}
+
 		private static void SetupPerfCounters(string user)
 		{
 			user = user ?? WindowsIdentity.GetCurrent().Name;
 			PerformanceCountersUtils.EnsurePerformanceCountersMonitoringAccess(user);
+
+			var actionToTake = user.StartsWith("IIS") ? "restart IIS service" : "log in the user again";
+
+			Console.Write("User {0} has been added to Performance Monitoring Users group. Please {1} to take an effect.", user, actionToTake);
 		}
 
 		private static void ProtectConfiguration(string file)
@@ -276,13 +288,11 @@ Configuration options:
 				var ravenConfiguration = new RavenConfiguration();
 				if (File.Exists(Path.Combine(backupLocation, "Raven.ravendb")))
 				{
-					ravenConfiguration.DefaultStorageTypeName =
-						"Raven.Storage.Managed.TransactionalStorage, Raven.Storage.Managed";
+					ravenConfiguration.DefaultStorageTypeName = typeof(Raven.Storage.Managed.TransactionalStorage).AssemblyQualifiedName;
 				}
 				else if (Directory.Exists(Path.Combine(backupLocation, "new")))
 				{
-					ravenConfiguration.DefaultStorageTypeName = "Raven.Storage.Esent.TransactionalStorage, Raven.Storage.Esent";
-
+					ravenConfiguration.DefaultStorageTypeName = typeof(Raven.Storage.Esent.TransactionalStorage).AssemblyQualifiedName;
 				}
 				DocumentDatabase.Restore(ravenConfiguration, backupLocation, databaseLocation, Console.WriteLine, defrag);
 			}

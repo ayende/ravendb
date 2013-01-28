@@ -10,8 +10,7 @@ namespace Raven.Client.Changes
 	{
 		private readonly Action onZero;
 		private readonly Task task;
-		private int value = 1;
-		private readonly ConcurrentSet<Task<IDisposable>> toDispose = new ConcurrentSet<Task<IDisposable>>();
+		private int value = 0;
 		public Task Task
 		{
 			get { return task; }
@@ -32,27 +31,8 @@ namespace Raven.Client.Changes
 		{
 			if (Interlocked.Decrement(ref value) == 0)
 			{
-				Dispose();
+				onZero();
 			}
-		}
-
-		public void Add(Task<IDisposable> disposableTask)
-		{
-			if (value == 0)
-			{
-				disposableTask.ContinueWith(_ => { using (_.Result) { } });
-				return;
-			}
-			toDispose.Add(disposableTask);
-		}
-
-		public void Dispose()
-		{
-			foreach (var disposableTask in toDispose)
-			{
-				disposableTask.ContinueWith(_ => { using (_.Result) { } });
-			}
-			onZero();
 		}
 
 		public event Action<DocumentChangeNotification> OnDocumentChangeNotification = delegate { };

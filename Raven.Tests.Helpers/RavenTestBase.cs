@@ -108,7 +108,7 @@ namespace Raven.Tests.Helpers
 			ModifyServer(ravenDbServer);
 			var store = new DocumentStore
 			{
-				Url = fiddler ? "http://localhost.fiddler:8079" : "http://localhost:8079"
+				Url = GetServerUrl(fiddler)
 			};
 			store.AfterDispose += (sender, args) =>
 			{
@@ -117,6 +117,16 @@ namespace Raven.Tests.Helpers
 			};
 			ModifyStore(store);
 			return store.Initialize();
+		}
+
+		private static string GetServerUrl(bool fiddler)
+		{
+			if (fiddler)
+			{
+				if (Process.GetProcessesByName("fiddler").Any())
+					return "http://localhost.fiddler:8079";
+			}
+			return "http://localhost:8079";
 		}
 
 		public static string GetDefaultStorageType(string requestedStorage = null)
@@ -272,9 +282,9 @@ namespace Raven.Tests.Helpers
 			}
 		}
 
-		protected void WaitForUserToContinueTheTest()
+		protected void WaitForUserToContinueTheTest(bool debug = true)
 		{
-			if (Debugger.IsAttached == false)
+			if (debug && Debugger.IsAttached == false)
 				return;
 
 			using (var documentStore = new DocumentStore
@@ -291,7 +301,7 @@ namespace Raven.Tests.Helpers
 				do
 				{
 					Thread.Sleep(100);
-				} while (documentStore.DatabaseCommands.Get("Pls Delete Me") != null);
+				} while (documentStore.DatabaseCommands.Get("Pls Delete Me") != null && (debug == false || Debugger.IsAttached));
 			}
 		}
 

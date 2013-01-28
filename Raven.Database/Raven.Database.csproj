@@ -101,6 +101,9 @@
       <SpecificVersion>False</SpecificVersion>
       <HintPath>..\SharedLibs\Lucene.Net.dll</HintPath>
     </Reference>
+    <Reference Include="Lucene.Net.Contrib.FastVectorHighlighter">
+      <HintPath>..\SharedLibs\Lucene.Net.Contrib.FastVectorHighlighter.dll</HintPath>
+    </Reference>
     <Reference Include="Lucene.Net.Contrib.Spatial.NTS">
       <HintPath>..\SharedLibs\Lucene.Net.Contrib.Spatial.NTS.dll</HintPath>
     </Reference>
@@ -181,6 +184,10 @@
     <Compile Include="Bundles\SpellChecker\SuggestWord.cs" />
     <Compile Include="Bundles\SpellChecker\SuggestWordQueue.cs" />
     <Compile Include="Bundles\SpellChecker\TRStringDistance.cs" />
+    <Compile Include="Bundles\SqlReplication\LastReplicatedEtag.cs" />
+    <Compile Include="Bundles\SqlReplication\SqlReplicationConfig.cs" />
+    <Compile Include="Bundles\SqlReplication\SqlReplicationStatus.cs" />
+    <Compile Include="Bundles\SqlReplication\SqlReplicationTask.cs" />
     <Compile Include="Bundles\Versioning\Data\VersioningConfiguration.cs" />
     <Compile Include="Bundles\Versioning\Triggers\HideVersionedDocumentsFromIndexingTrigger.cs" />
     <Compile Include="Bundles\Versioning\Triggers\VersioningDeleteTrigger.cs" />
@@ -200,6 +207,7 @@
     <Compile Include="Indexing\LowerCaseWhitespaceTokenizer.cs" />
     <Compile Include="Indexing\LuceneIntegration\TermsMatchQuery.cs" />
     <Compile Include="Indexing\PrefetchingBehavior.cs" />
+    <Compile Include="Indexing\RavenPerFieldAnalyzerWrapper.cs" />
     <Compile Include="Indexing\Spatial\RecursivePrefixTreeStrategyThatSupportsWithin.cs" />
     <Compile Include="Json\ScriptsCache.cs" />
     <Compile Include="Linq\Ast\ThrowOnInvalidMethodCallsForTransformResults.cs" />
@@ -231,6 +239,8 @@
     <Compile Include="Server\Responders\Admin\AdminRestore.cs" />
     <Compile Include="Server\Responders\BulkInsert.cs" />
     <Compile Include="Server\Responders\ChangesConfig.cs" />
+    <Compile Include="Server\Responders\Debugging\DebugDocReferences.cs" />
+    <Compile Include="Server\Responders\Debugging\DebugUser.cs" />
     <Compile Include="Server\Responders\Identity.cs" />
     <Compile Include="Server\Responders\MoreLikeThisResponder.cs" />
     <Compile Include="Bundles\MoreLikeThis\RavenMoreLikeThis.cs" />
@@ -349,6 +359,7 @@
     <Compile Include="Server\Responders\Favicon.cs" />
     <Compile Include="Server\Responders\Licensing.cs" />
     <Compile Include="Server\Responders\Logs.cs" />
+    <Compile Include="Server\Responders\OperationStatus.cs" />
     <Compile Include="Server\Responders\RavenRoot.cs" />
     <Compile Include="Server\Responders\RavenUI.cs" />
     <Compile Include="Server\Responders\SilverlightUI.cs" />
@@ -646,6 +657,7 @@
     <Compile Include="Storage\Esent\StorageActionsAccessor.cs" />
     <Compile Include="Storage\Esent\StorageActions\Documents.cs" />
     <Compile Include="Storage\Esent\StorageActions\DocumentStorageActions.cs" />
+    <Compile Include="Storage\Esent\StorageActions\EsentUtil.cs" />
     <Compile Include="Storage\Esent\StorageActions\General.cs" />
     <Compile Include="Storage\Esent\StorageActions\Indexing.cs" />
     <Compile Include="Storage\Esent\StorageActions\Lists.cs" />

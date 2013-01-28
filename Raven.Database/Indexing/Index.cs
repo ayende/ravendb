@@ -13,6 +13,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using Lucene.Net.Analysis;
 using Lucene.Net.Analysis.Standard;
 using Lucene.Net.Documents;
@@ -34,6 +35,7 @@ using Raven.Database.Storage;
 using Raven.Json.Linq;
 using Directory = Lucene.Net.Store.Directory;
 using Version = Lucene.Net.Util.Version;
+using Lucene.Net.Search.Vectorhighlight;
 
 namespace Raven.Database.Indexing
 {
@@ -70,6 +72,10 @@ namespace Raven.Database.Indexing
 		private readonly ConcurrentQueue<IndexingPerformanceStats> indexingPerformanceStats = new ConcurrentQueue<IndexingPerformanceStats>();
 		private readonly static StopAnalyzer stopAnalyzer = new StopAnalyzer(Version.LUCENE_30);
 
+		public TimeSpan LastIndexingDuration { get; set; }
+		public long TimePerDoc { get; set; }
+		public Task CurrentMapIndexingTask { get; set; } 
+
 		protected Index(Directory directory, string name, IndexDefinition indexDefinition, AbstractViewGenerator viewGenerator, WorkContext context)
 		{
 			if (directory == null) throw new ArgumentNullException("directory");
@@ -102,6 +108,7 @@ namespace Raven.Database.Indexing
 				return lastQueryTime;
 			}
 		}
+
 		public DateTime LastIndexTime { get; set; }
 
 		protected void AddindexingPerformanceStat(IndexingPerformanceStats stats)
@@ -127,17 +134,30 @@ namespace Raven.Database.Indexing
 				}
 
 				disposed = true;
+				var task = CurrentMapIndexingTask;
+				if (task != null)
+				{
+					try
+					{
+						task.Wait();
+					}
+					catch (Exception e)
+					{
+						logIndexing.Warn("Error while closing the index (could not wait for current indexing task)", e);
+					}
+				}
+
 				foreach (var indexExtension in indexExtensions)
 				{
 					indexExtension.Value.Dispose();
 				}
+
 				if (currentIndexSearcherHolder != null)
 				{
 					var item = currentIndexSearcherHolder.SetIndexSearcher(null, wait: true);
 					if (item.WaitOne(TimeSpan.FromSeconds(5)) == false)
 					{
 						logIndexing.Warn("After closing the index searching, we waited for 5 seconds for the searching to be done, but it wasn't. Continuing with normal shutdown anyway.");
-						Console.Beep();
 					}
 				}
 
@@ -414,7 +434,7 @@ namespace Raven.Database.Indexing
 			CreateIndexWriter();
 		}
 
-		public PerFieldAnalyzerWrapper CreateAnalyzer(Analyzer defaultAnalyzer, ICollection<Action> toDispose, bool forQuerying = false)
+		public RavenPerFieldAnalyzerWrapper CreateAnalyzer(Analyzer defaultAnalyzer, ICollection<Action> toDispose, bool forQuerying = false)
 		{
 			toDispose.Add(defaultAnalyzer.Close);
 
@@ -424,7 +444,7 @@ namespace Raven.Database.Indexing
 				defaultAnalyzer = IndexingExtensions.CreateAnalyzerInstance(Constants.AllFields, value);
 				toDispose.Add(defaultAnalyzer.Close);
 			}
-			var perFieldAnalyzerWrapper = new PerFieldAnalyzerWrapper(defaultAnalyzer);
+			var perFieldAnalyzerWrapper = new RavenPerFieldAnalyzerWrapper(defaultAnalyzer);
 			foreach (var analyzer in indexDefinition.Analyzers)
 			{
 				Analyzer analyzerInstance = IndexingExtensions.CreateAnalyzerInstance(analyzer.Key, analyzer.Value);
@@ -808,15 +828,68 @@ namespace Raven.Database.Indexing
 							indexQuery.TotalSize.Value = search.TotalHits;
 							adjustStart = false;
 
+							FastVectorHighlighter highlighter = null;
+							FieldQuery fieldQuery = null;
+
+							if (indexQuery.HighlightedFields != null && indexQuery.HighlightedFields.Length > 0)
+							{
+								highlighter = new FastVectorHighlighter(
+									FastVectorHighlighter.DEFAULT_PHRASE_HIGHLIGHT,
+									FastVectorHighlighter.DEFAULT_FIELD_MATCH,
+									new SimpleFragListBuilder(),
+									new SimpleFragmentsBuilder(
+										indexQuery.HighlighterPreTags != null && indexQuery.HighlighterPreTags.Any()
+											? indexQuery.HighlighterPreTags
+											: BaseFragmentsBuilder.COLORED_PRE_TAGS,
+										indexQuery.HighlighterPostTags != null && indexQuery.HighlighterPostTags.Any()
+											? indexQuery.HighlighterPostTags
+											: BaseFragmentsBuilder.COLORED_POST_TAGS));
+
+								fieldQuery = highlighter.GetFieldQuery(luceneQuery);
+							}
+
 							for (var i = start; (i - start) < pageSize && i < search.ScoreDocs.Length; i++)
 							{
-								Document document = indexSearcher.Doc(search.ScoreDocs[i].Doc);
-								IndexQueryResult indexQueryResult = parent.RetrieveDocument(document, fieldsToFetch, search.ScoreDocs[i].Score);
+								var scoreDoc = search.ScoreDocs[i];
+								var document = indexSearcher.Doc(scoreDoc.Doc);
+								var indexQueryResult = parent.RetrieveDocument(document, fieldsToFetch, scoreDoc.Score);
 								if (ShouldIncludeInResults(indexQueryResult) == false)
 								{
 									indexQuery.SkippedResults.Value++;
 									skippedResultsInCurrentLoop++;
 									continue;
+								}
+
+								if (highlighter != null)
+								{
+									var highlightings =
+										from highlightedField in this.indexQuery.HighlightedFields
+										select new
+										{
+											highlightedField.Field,
+											highlightedField.FragmentsField,
+											Fragments = highlighter.GetBestFragments(
+												fieldQuery,
+												indexSearcher.IndexReader,
+												scoreDoc.Doc,
+												highlightedField.Field,
+												highlightedField.FragmentLength,
+												highlightedField.FragmentCount)
+										}
+										into fieldHighlitings
+										where fieldHighlitings.Fragments != null &&
+											  fieldHighlitings.Fragments.Length > 0
+										select fieldHighlitings;
+
+									if (fieldsToFetch.IsProjection || parent.IsMapReduce)
+									{
+										foreach (var highlighting in highlightings)
+											if (!string.IsNullOrEmpty(highlighting.FragmentsField))
+												indexQueryResult.Projection[highlighting.FragmentsField]
+													= new RavenJArray(highlighting.Fragments);
+									} else
+										indexQueryResult.Highligtings = highlightings
+											.ToDictionary(x => x.Field, x => x.Fragments);
 								}
 
 								returnedResults++;
@@ -1020,7 +1093,7 @@ namespace Raven.Database.Indexing
 				{
 					logQuerying.Debug("Issuing query on index {0} for: {1}", parent.name, query);
 					var toDispose = new List<Action>();
-					PerFieldAnalyzerWrapper searchAnalyzer = null;
+					RavenPerFieldAnalyzerWrapper searchAnalyzer = null;
 					try
 					{
 						searchAnalyzer = parent.CreateAnalyzer(new LowerCaseKeywordAnalyzer(), toDispose, true);
@@ -1043,7 +1116,7 @@ namespace Raven.Database.Indexing
 				return luceneQuery;
 			}
 
-			private static void DisposeAnalyzerAndFriends(List<Action> toDispose, PerFieldAnalyzerWrapper analyzer)
+			private static void DisposeAnalyzerAndFriends(List<Action> toDispose, RavenPerFieldAnalyzerWrapper analyzer)
 			{
 				if (analyzer != null)
 					analyzer.Close();

@@ -383,7 +383,7 @@ namespace Raven.Client.Connection.Async
 		/// Create a new instance of <see cref="IDatabaseCommands"/> that will interact
 		/// with the root database. Useful if the database has works against a tenant database.
 		/// </summary>
-		public IAsyncDatabaseCommands ForDefaultDatabase()
+		public IAsyncDatabaseCommands ForSystemDatabase()
 		{
 			var databaseUrl = MultiDatabase.GetRootDatabaseUrl(url);
 			if (databaseUrl == url)
@@ -486,12 +486,13 @@ namespace Raven.Client.Connection.Async
 			{
 				path += string.Join("&", includes.Select(x => "include=" + x).ToArray());
 			}
+			var uniqueIds = new HashSet<string>(keys);
 			HttpJsonRequest request;
 			// if it is too big, we drop to POST (note that means that we can't use the HTTP cache any longer)
 			// we are fine with that, requests to load > 128 items are going to be rare
-			if (keys.Length < 128)
+			if (uniqueIds.Sum(x => x.Length) < 1024)
 			{
-				path += "&" + string.Join("&", keys.Select(x => "id=" + x).ToArray());
+				path += "&" + string.Join("&", uniqueIds.Select(x => "id=" + x).ToArray());
 				request =
 					jsonRequestFactory.CreateHttpJsonRequest(new CreateHttpJsonRequestParams(this, path.NoCache(), "GET", credentials,
 																							 convention)
@@ -507,7 +508,7 @@ namespace Raven.Client.Connection.Async
 				jsonRequestFactory.CreateHttpJsonRequest(new CreateHttpJsonRequestParams(this, path, "POST", credentials,
 																						 convention)
 															 .AddOperationHeaders(OperationsHeaders));
-			return request.WriteAsync(new RavenJArray(keys).ToString(Formatting.None))
+			return request.WriteAsync(new RavenJArray(uniqueIds).ToString(Formatting.None))
 				.ContinueWith(writeTask => request.ReadResponseJsonAsync())
 				.Unwrap()
 				.ContinueWith(task => CompleteMultiGetAsync(opUrl, keys, includes, task))
@@ -700,7 +701,8 @@ namespace Raven.Client.Connection.Async
 			return request.ExecuteWriteAsync(new RavenJObject
 				{
 					{"RestoreLocation", restoreLocation},
-					{"DatabaseLocation", databaseLocation}
+					{"DatabaseLocation", databaseLocation},
+					{"DatabaseName", name}
 				}.ToString(Formatting.None))
 				.ContinueWith(task =>
 				{
@@ -1199,25 +1201,6 @@ namespace Raven.Client.Connection.Async
 		public IDisposable DisableAllCaching()
 		{
 			return jsonRequestFactory.DisableAllCaching();
-		}
-
-		/// <summary>
-		/// Ensures that the silverlight startup tasks have run
-		/// </summary>
-		public Task EnsureSilverlightStartUpAsync()
-		{
-#if !SILVERLIGHT
-			throw new NotSupportedException("Only applicable in silverlight");
-#else
-			return ExecuteWithReplication("GET", url =>
-			{
-				return url
-					.SilverlightEnsuresStartup()
-					.NoCache()
-					.ToJsonRequest(this, credentials, convention)
-					.ReadResponseBytesAsync();
-			});
-#endif
 		}
 
 		///<summary>

@@ -153,7 +153,7 @@ namespace Raven.Client.Connection.Async
 		/// Create a new instance of <see cref="IAsyncDatabaseCommands"/> that will interacts
 		/// with the default database
 		/// </summary>
-		IAsyncDatabaseCommands ForDefaultDatabase();
+		IAsyncDatabaseCommands ForSystemDatabase();
 
 		/// <summary>
 		/// Returns a new <see cref="IAsyncDatabaseCommands"/> using the specified credentials
@@ -201,11 +201,6 @@ namespace Raven.Client.Connection.Async
 		///</summary>
 		///<returns></returns>
 		Task<string[]> GetTermsAsync(string index, string field, string fromValue, int pageSize);
-
-		/// <summary>
-		/// Ensures that the silverlight startup tasks have run
-		/// </summary>
-		Task EnsureSilverlightStartUpAsync();
 
 		/// <summary>
 		/// Disable all caching within the given scope
