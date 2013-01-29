@@ -246,6 +246,8 @@ namespace Raven.Smuggler
 			return results.Last().Etag.Value;
 		}
 
+        private readonly Func<DateTime> GetCurrentUtcDate = () => SystemTime.UtcNow;
+
 		public bool LastRequestErrored { get; set; }
 
 		protected override void EnsureDatabaseExists()

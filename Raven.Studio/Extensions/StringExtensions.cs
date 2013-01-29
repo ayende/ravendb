@@ -48,7 +48,14 @@ namespace Raven.Studio.Extensions
 			return RegexWhitespaces.Replace(str, " ").Trim();
 		}
 
-        public static bool IsValidRegex(this string value)
+        public static string NormalizeNewLines(this string value)
+        {
+            if (value == null) return value;
+
+            return Regex.Replace(value, @"\r(?!\n)|(?<!\r)\n", Environment.NewLine);
+        }
+
+	    public static bool IsValidRegex(this string value)
         {
             if (string.IsNullOrEmpty(value))
             {

@@ -7,6 +7,7 @@ using Raven.Abstractions.Replication;
 using Raven.Client.Extensions;
 using Raven.Database.Bundles.SqlReplication;
 using Raven.Json.Linq;
+using Raven.Studio.Extensions;
 using Raven.Studio.Infrastructure;
 using Raven.Studio.Messages;
 using Raven.Studio.Models;
@@ -86,8 +87,9 @@ namespace Raven.Studio.Commands
 			}
 
 			var sqlReplicationSettings = settingsModel.GetSection<SqlReplicationSettingsSectionModel>();
-			if (sqlReplicationSettings != null)
-			{
+
+		    if (sqlReplicationSettings != null)
+			{  
 				session.Advanced.LoadStartingWithAsync<SqlReplicationConfig>("Raven/SqlReplication/Configuration/")
 					.ContinueOnSuccessInTheUIThread(documents =>
 					{
@@ -105,6 +107,7 @@ namespace Raven.Studio.Commands
 
 						foreach (var sqlReplicationConfig in sqlReplicationSettings.SqlReplicationConfigs)
 						{
+                            sqlReplicationConfig.Script = sqlReplicationConfig.Script.NormalizeNewLines();
 							session.Store(sqlReplicationConfig);
 						}
 
