@@ -194,7 +194,7 @@ namespace Raven.Database.Linq
 			{
 				if (SpatialStrategies.Count > 1024)
 				{
-					throw new InvalidOperationException("The number of spatial fields in an index is limited ot 1,024");
+					throw new InvalidOperationException("The number of spatial fields in an index is limited to 1,024");
 				}
 				return SpatialIndex.CreateStrategy(fieldName, SpatialSearchStrategy.GeohashPrefixTree, GeohashPrefixTree.GetMaxLevelsPossible());
 			});
