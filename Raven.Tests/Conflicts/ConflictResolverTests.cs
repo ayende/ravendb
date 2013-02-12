@@ -167,5 +167,37 @@ namespace Raven.Tests.Conflicts
   ]/*<<<< auto merged array end*/
 }", conflictsResolver.Resolve());
 		}
+
+        [Fact]
+        public void CanMergeEmptyArrays()
+        {
+            var conflictsResolver = new ConflictsResolver(new RavenJObject
+			{
+				{"Nicks", new RavenJArray()}
+			}, new RavenJObject
+			{
+				{"Nicks", new RavenJArray()}
+			});
+            Assert.Equal(@"{
+  ""Nicks"": []
+}", conflictsResolver.Resolve());
+        }
+
+        [Fact]
+        public void CanMergeEmptyAndNonEmptyArrays()
+        {
+            var conflictsResolver = new ConflictsResolver(new RavenJObject
+			{
+				{"Nicks", new RavenJArray()}
+			}, new RavenJObject
+			{
+				{"Nicks", new RavenJArray{"Ayende"}}
+			});
+            Assert.Equal(@"{
+  ""Nicks"": /*>>>> auto merged array start*/ [
+    ""Ayende""
+  ]/*<<<< auto merged array end*/
+}", conflictsResolver.Resolve());
+        }
 	}
 }
