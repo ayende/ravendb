@@ -149,16 +149,15 @@ namespace Raven.Storage.Managed
 			return hasResult ? result : null;
 		}
 
-		public IEnumerable<MappedResultInfo> GetItemsToReduce(string index, string[] reduceKeys, int level, bool loadData, List<object> itemsToDelete)
+		public IEnumerable<MappedResultInfo> GetItemsToReduce(GetItemsToReduceParams getItemsToReduceParams)
 		{
-			var seen = new HashSet<Tuple<string, int>>();
-
-			foreach (var reduceKey in reduceKeys)
+			var seenLocally = new HashSet<Tuple<string, int>>();
+			foreach (var reduceKey in getItemsToReduceParams.ReduceKeys.ToArray())
 			{
 				var keyCriteria = new RavenJObject
 			                  {
-				                  {"view", index},
-				                  {"level", level},
+				                  {"view", getItemsToReduceParams.Index},
+				                  {"level", getItemsToReduceParams.Level},
 								  {"reduceKey", reduceKey}
 			                  };
 
@@ -168,8 +167,8 @@ namespace Raven.Storage.Managed
 					var levelFromDb = result.Value<int>("level");
 					var reduceKeyFromDb = result.Value<string>("reduceKey");
 
-					if (string.Equals(indexFromDb, index, StringComparison.InvariantCultureIgnoreCase) == false ||
-						levelFromDb != level)
+					if (string.Equals(indexFromDb, getItemsToReduceParams.Index, StringComparison.InvariantCultureIgnoreCase) == false ||
+						levelFromDb != getItemsToReduceParams.Level)
 						break;
 
 					if (string.Equals(reduceKeyFromDb, reduceKey, StringComparison.Ordinal) == false)
@@ -179,15 +178,31 @@ namespace Raven.Storage.Managed
 
 					var bucket = result.Value<int>("bucket");
 
-					if (seen.Add(Tuple.Create(reduceKeyFromDb, bucket)))
+					var rowKey = Tuple.Create(reduceKeyFromDb, bucket);
+					var thisIsNewScheduledReductionRow = getItemsToReduceParams.ItemsToDelete.Contains(result, RavenJTokenEqualityComparer.Default) == false;
+					var neverSeenThisKeyAndBucket = getItemsToReduceParams.ItemsAlreadySeen.Add(rowKey);
+					if (thisIsNewScheduledReductionRow || neverSeenThisKeyAndBucket)
 					{
-						foreach (var mappedResultInfo in GetResultsForBucket(index, level, reduceKeyFromDb, bucket, loadData))
+						if (seenLocally.Add(rowKey))
 						{
-							yield return mappedResultInfo;
+							foreach (var mappedResultInfo in GetResultsForBucket(getItemsToReduceParams.Index, getItemsToReduceParams.Level, reduceKeyFromDb, bucket, getItemsToReduceParams.LoadData))
+							{
+								getItemsToReduceParams.Take--;
+								yield return mappedResultInfo;
+							}
 						}
 					}
-					itemsToDelete.Add(result);
+					if(thisIsNewScheduledReductionRow)
+						getItemsToReduceParams.ItemsToDelete.Add(result);
+
+					if (getItemsToReduceParams.Take <= 0)
+						break;
 				}
+
+				getItemsToReduceParams.ReduceKeys.Remove(reduceKey);
+
+				if (getItemsToReduceParams.Take <= 0)
+					break;
 			}
 		}
 
@@ -339,10 +354,8 @@ namespace Raven.Storage.Managed
 
 			foreach (var reduction in storage.ScheduleReductions["ByViewLevelReduceKeyAndBucket"].SkipTo(new RavenJObject
 			{
-				{"view", indexName},
-				{"level", 0}
-			}).TakeWhile(x => string.Equals(indexName, x.Value<string>("view"), StringComparison.InvariantCultureIgnoreCase) &&
-								x.Value<int>("level") == 0)
+				{"view", indexName}
+			}).TakeWhile(x => string.Equals(indexName, x.Value<string>("view"), StringComparison.InvariantCultureIgnoreCase))
 								.Take(take))
 			{
 				allKeysToReduce.Add(reduction.Value<string>("reduceKey"));
@@ -448,7 +461,7 @@ namespace Raven.Storage.Managed
 				.Take(take);
 		}
 
-		public IEnumerable<MappedResultInfo> GetMappedResultsForDebug(string indexName, string key, int take)
+		public IEnumerable<MappedResultInfo> GetMappedResultsForDebug(string indexName, string key, int start, int take)
 		{
 			var results = storage.MappedResults["ByViewReduceKeyAndBucket"].SkipTo(new RavenJObject
 			{
@@ -456,6 +469,7 @@ namespace Raven.Storage.Managed
 				{"reduceKey", key},
 			}).TakeWhile(x => string.Equals(indexName, x.Value<string>("view"), StringComparison.InvariantCultureIgnoreCase) &&
 							  string.Equals(key, x.Value<string>("reduceKey"), StringComparison.InvariantCultureIgnoreCase))
+				.Skip(start)
 				.Take(take);
 
 			return from result in results
@@ -474,7 +488,7 @@ namespace Raven.Storage.Managed
 					   };
 		}
 
-		public IEnumerable<MappedResultInfo> GetReducedResultsForDebug(string indexName, string key, int level, int take)
+		public IEnumerable<MappedResultInfo> GetReducedResultsForDebug(string indexName, string key, int level, int start, int take)
 		{
 			var results = storage.ReduceResults["ByViewReduceKeyLevelAndBucket"].SkipTo(new RavenJObject
 			{
@@ -484,6 +498,7 @@ namespace Raven.Storage.Managed
 			}).TakeWhile(x => string.Equals(indexName, x.Value<string>("view"), StringComparison.InvariantCultureIgnoreCase) &&
 							  string.Equals(key, x.Value<string>("reduceKey"), StringComparison.InvariantCultureIgnoreCase) &&
 							  level == x.Value<int>("level"))
+				.Skip(start)
 				.Take(take);
 
 			return from result in results

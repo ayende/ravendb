@@ -83,7 +83,7 @@ namespace Raven.Storage.Esent
 			new TransactionalStorageConfigurator(configuration, this).LimitSystemCache();
 
 			uniquePrefix = Interlocked.Increment(ref instanceCounter) + "-" + Base62Util.Base62Random();
-			Api.JetCreateInstance(out instance, uniquePrefix + "-" + database);
+			CreateInstance(out instance, uniquePrefix + "-" + database);
 		}
 
 		public TableColumnsCache TableColumnsCache
@@ -225,6 +225,11 @@ namespace Raven.Storage.Esent
 			return e.Error == JET_err.InvalidInstance;
 		}
 
+		void ITransactionalStorage.Compact(InMemoryRavenConfiguration cfg)
+		{
+			Compact(cfg, (sesid, snp, snt, data) => JET_err.Success);
+		}
+
 		private static void RecoverFromFailedCompact(string file)
 		{
 			string renamedFile = file + ".RenameOp";
@@ -244,7 +249,7 @@ namespace Raven.Storage.Esent
 			}
 		}
 
-		public void Compact(InMemoryRavenConfiguration ravenConfiguration)
+		public static void Compact(InMemoryRavenConfiguration ravenConfiguration, JET_PFNSTATUS statusCallback)
 		{
 			var src = Path.Combine(ravenConfiguration.DataDirectory, "Data");
 			var compactPath = Path.Combine(ravenConfiguration.DataDirectory, "Data.Compact");
@@ -253,19 +258,21 @@ namespace Raven.Storage.Esent
 				File.Delete(compactPath);
 			RecoverFromFailedCompact(src);
 
+
 			JET_INSTANCE compactInstance;
-			Api.JetCreateInstance(out compactInstance, ravenConfiguration.DataDirectory + Guid.NewGuid());
+			CreateInstance(out compactInstance, ravenConfiguration.DataDirectory + Guid.NewGuid());
 			try
 			{
-				new TransactionalStorageConfigurator(ravenConfiguration, this)
+				new TransactionalStorageConfigurator(ravenConfiguration, null)
 					.ConfigureInstance(compactInstance, ravenConfiguration.DataDirectory);
+				DisableIndexChecking(compactInstance);
 				Api.JetInit(ref compactInstance);
 				using (var session = new Session(compactInstance))
 				{
 					Api.JetAttachDatabase(session, src, AttachDatabaseGrbit.None);
 					try
 					{
-						Api.JetCompact(session, src, compactPath, null, null,
+						Api.JetCompact(session, src, compactPath, statusCallback, null,
 								   CompactGrbit.None);
 					}
 					finally
@@ -283,6 +290,13 @@ namespace Raven.Storage.Esent
 			File.Move(compactPath, src);
 			File.Delete(src + ".RenameOp");
 
+		}
+
+		public static void CreateInstance(out JET_INSTANCE compactInstance, string name)
+		{
+			Api.JetCreateInstance(out compactInstance, name);
+
+			DisableIndexChecking(compactInstance);
 		}
 
 		public Guid ChangeId()
@@ -568,6 +582,19 @@ namespace Raven.Storage.Esent
 			if (batch == null)
 				throw new InvalidOperationException("Batch was not started, you are not supposed to call this method");
 			return batch;
+		}
+
+		public static void DisableIndexChecking(JET_INSTANCE jetInstance)
+		{
+			Api.JetSetSystemParameter(jetInstance, JET_SESID.Nil, JET_param.EnableIndexChecking, 0, null);
+			if (Environment.OSVersion.Version >= new Version(5, 2))
+			{
+				// JET_paramEnableIndexCleanup is not supported on WindowsXP
+
+				const int JET_paramEnableIndexCleanup = 54;
+
+				Api.JetSetSystemParameter(jetInstance, JET_SESID.Nil, (JET_param) JET_paramEnableIndexCleanup, 0, null);
+			}
 		}
 	}
 }

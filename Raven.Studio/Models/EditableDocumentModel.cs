@@ -102,33 +102,6 @@ namespace Raven.Studio.Models
 			ExpireAt = new Observable<DateTime>();
 			ExpireAt.PropertyChanged += (sender, args) => TimeChanged = true;
 			CurrentSection = dataSection;
-			
-			var databaseName = ApplicationModel.Current.Server.Value.SelectedDatabase.Value.Name;
-			ApplicationModel.Current.Server.Value.DocumentStore
-			                .AsyncDatabaseCommands
-							.ForSystemDatabase()
-			                .CreateRequest("/admin/databases/" + databaseName, "GET")
-			                .ReadResponseJsonAsync()
-			                .ContinueOnSuccessInTheUIThread(doc =>
-			                {
-				                if (doc == null)
-					                return;
-
-				                var databaseDocument = ApplicationModel.Current.Server.Value.DocumentStore.Conventions
-				                                                       .CreateSerializer()
-				                                                       .Deserialize<DatabaseDocument>(new RavenJTokenReader(doc));
-
-				                string activeBundles;
-				                databaseDocument.Settings.TryGetValue("Raven/ActiveBundles", out activeBundles);
-
-				                if (activeBundles == null) 
-									return;
-				                if (activeBundles.Contains("Expiration"))
-				                {
-					                hasExpiration = true;
-									OnPropertyChanged(() => HasExpiration);
-				                }
-			                });
 
 			References = new BindableCollection<LinkModel>(model => model.Title);
 			Related = new BindableCollection<LinkModel>(model => model.Title);
@@ -273,6 +246,7 @@ namespace Raven.Studio.Models
 		public bool HasExpiration
 		{
 			get { return hasExpiration; }
+			set { hasExpiration = value; OnPropertyChanged(() => HasExpiration); }
 		}
 
 		public bool TimeChanged { get; set; }
@@ -355,6 +329,7 @@ namespace Raven.Studio.Models
 					}
 					else
 					{
+						AssertNoPropertyBeyondSize(result.Document.DataAsJson, 500 * 1000);
 						var recentQueue = ApplicationModel.Current.Server.Value.SelectedDatabase.Value.RecentDocuments;
 						ApplicationModel.Current.Server.Value.RawUrl = "databases/" +
 						                                               ApplicationModel.Current.Server.Value.SelectedDatabase.Value.Name +
@@ -364,18 +339,16 @@ namespace Raven.Studio.Models
 						result.Document.Key = Uri.UnescapeDataString(result.Document.Key);
 						LocalId = result.Document.Key;
 						SetCurrentDocumentKey(result.Document.Key);
-						if (HasExpiration)
+						var expiration = result.Document.Metadata["Raven-Expiration-Date"];
+						if (expiration != null)
 						{
-							var expiration = result.Document.Metadata["Raven-Expiration-Date"];
-							if (expiration != null)
-							{
-								ExpireAt.Value = DateTime.Parse(expiration.ToString());
-								EnableExpiration.Value = true;
-							}
-							else
-							{
-								ExpireAt.Value = DateTime.Now;
-							}
+							ExpireAt.Value = DateTime.Parse(expiration.ToString());
+							EnableExpiration.Value = true;
+							HasExpiration = true;
+						}
+						else
+						{
+							HasExpiration = false;
 						}
 					}
 
@@ -443,6 +416,34 @@ namespace Raven.Studio.Models
 
 				         return false;
 			         });
+		}
+
+		public void AssertNoPropertyBeyondSize(RavenJToken token, int maxSize, string path = "")
+		{
+			if (path.StartsWith("."))
+				path = path.Substring(1);
+			switch (token.Type)
+			{
+				case JTokenType.Object:
+					foreach (var item in ((RavenJObject)token))
+					{
+						if (item.Key != null && item.Key.Length > maxSize)
+							throw new InvalidOperationException(string.Format("Document's property Name: \"{0}\" is too long to view in the studio (property length: {1:#,#}, max allowed length: {2:#,#})", path + "." + item.Key, item.Key.Length, maxSize));
+						AssertNoPropertyBeyondSize(item.Value, maxSize, path + "." + item.Key);
+					}
+					break;
+				case JTokenType.Array:
+					foreach (var item in ((RavenJArray)token))
+					{
+						AssertNoPropertyBeyondSize(item, maxSize, path + ".");
+					}
+					break;
+				case JTokenType.String:
+					var value = token.Value<string>();
+					if (value != null && value.Length > maxSize)
+						throw new InvalidOperationException(string.Format("Document's property: \"{0}\" is too long to view in the studio (property length: {1:#,#}, max allowed length: {2:#,#})", path, value.Length, maxSize));
+					break;
+			}
 		}
 
 		public bool EditingDatabase { get; set; }

@@ -282,9 +282,8 @@ namespace Raven.Client.Embedded
 			return new CompletedTask();
 		}
 
-		public Task<FacetResults> GetFacetsAsync(string index, IndexQuery query, string facetSetupDoc)
-		{
-			return new CompletedTask<FacetResults>(databaseCommands.GetFacets(index, query, facetSetupDoc));
+		public Task<FacetResults> GetFacetsAsync( string index, IndexQuery query, string facetSetupDoc, int start = 0, int? pageSize = null ) {
+			return new CompletedTask<FacetResults>( databaseCommands.GetFacets( index, query, facetSetupDoc, start, pageSize ) );
 		}
 
 		public Task<LogItem[]> GetLogsAsync(bool errorsOnly)
@@ -337,13 +336,18 @@ namespace Raven.Client.Embedded
 
 		public Task<JsonDocument[]> StartsWithAsync(string keyPrefix, int start, int pageSize, bool metadataOnly = false)
 		{
-			// Should add a 'matches' paramater? Setting to null for now.
+			// Should add a 'matches' parameter? Setting to null for now.
 			return new CompletedTask<JsonDocument[]>(databaseCommands.StartsWith(keyPrefix, null, start, pageSize, metadataOnly));
 		}
 
 		public void ForceReadFromMaster()
 		{
 			databaseCommands.ForceReadFromMaster();
+		}
+
+		public Task<JsonDocumentMetadata> HeadAsync(string key)
+		{
+			return new CompletedTask<JsonDocumentMetadata>(databaseCommands.Head(key));
 		}
 	}
 }
