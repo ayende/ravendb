@@ -28,7 +28,7 @@ namespace Raven.Tests.Faceted
             }
         }
 
-        public static HttpStatusCode PerformGet(string url, Guid? requestEtag, out Guid? responseEtag)
+        public static Result PerformGet(string url, Guid? requestEtag)
         {
             var getRequest = WebRequest.Create(url);
 
@@ -37,6 +37,7 @@ namespace Raven.Tests.Faceted
 
             using (var response = GetHttpResponseHandle304(getRequest))
             {
+                Guid? responseEtag;
                 try
                 {
                     responseEtag = response.GetEtagHeader();
@@ -46,11 +47,15 @@ namespace Raven.Tests.Faceted
                     responseEtag = null;
                 }
 
-                return response.StatusCode;
+                return new Result()
+                {
+                    StatusCode = response.StatusCode,
+                    ReponseEtag = responseEtag
+                };
             }
         }
 
-        public static HttpStatusCode PerformPost(string url, string payload, Guid? requestEtag, out Guid? responseEtag)
+        public static Result PerformPost(string url, string payload, Guid? requestEtag)
         {
             var request = WebRequest.Create(url);
             
@@ -65,6 +70,7 @@ namespace Raven.Tests.Faceted
 
             using (var response = GetHttpResponseHandle304(request))
             {
+                Guid? responseEtag;
                 try
                 {
                     responseEtag = response.GetEtagHeader();
@@ -74,8 +80,18 @@ namespace Raven.Tests.Faceted
                     responseEtag = null;
                 }
 
-                return response.StatusCode;
+                return new Result()
+                {
+                    StatusCode = response.StatusCode,
+                    ReponseEtag = responseEtag
+                };
             }
         }
+    }
+
+    public class Result
+    {
+        public HttpStatusCode StatusCode { get; set; }
+        public Guid? ReponseEtag { get; set; }
     }
 }

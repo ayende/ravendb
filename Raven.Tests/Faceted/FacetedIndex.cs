@@ -89,27 +89,60 @@ namespace Raven.Tests.Faceted
             {
                 Setup(store, _stronglyTypedFacets);
 
-                Guid? firstEtag;
-
                 var queryUrl = store.Url + "/facets/CameraCost?facetDoc=facets%2FCameraFacets&query=Manufacturer%253A{0}&facetStart=0&facetPageSize=";
 
                 var url = string.Format(queryUrl, "canon");
 
-                Assert.Equal(HttpStatusCode.OK, ConditionalGetHelper.PerformGet(url, null, out firstEtag));
+                var response = ConditionalGetHelper.PerformGet(url, null);
+                Guid? firstEtag = response.ReponseEtag;
+
+                Assert.NotNull(firstEtag);
+
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+                response = ConditionalGetHelper.PerformGet(url, firstEtag);
 
                 //second request should give 304 not modified
-                Assert.Equal(HttpStatusCode.NotModified, ConditionalGetHelper.PerformGet(url, firstEtag, out firstEtag));
+                Assert.Equal(HttpStatusCode.NotModified, response.StatusCode);
 
                 //change index etag by inserting new doc
                 InsertCameraDataAndWaitForNonStaleResults(store, GetCameras(1));
 
-                Guid? secondEtag;
+                response = ConditionalGetHelper.PerformGet(url, firstEtag);
+                Guid? secondEtag = response.ReponseEtag;
+
+                Assert.NotNull(secondEtag);
+                Assert.NotEqual(firstEtag, secondEtag);
 
                 //changing the index should give 200 OK
-                Assert.Equal(HttpStatusCode.OK, ConditionalGetHelper.PerformGet(url, firstEtag, out secondEtag));
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+                response = ConditionalGetHelper.PerformGet(url, secondEtag);
+                
+                //next request should give 304 not modified
+                Assert.Equal(HttpStatusCode.NotModified, response.StatusCode);
+                
+                //update facet setup doc
+                using (var s = store.OpenSession())
+                {
+                    var facetSetupDoc = new FacetSetup { Id = "facets/CameraFacets", Facets = GetFacets().Take(1).ToList() };
+                    s.Store(facetSetupDoc);
+                    s.SaveChanges();
+                }
+
+                response = ConditionalGetHelper.PerformGet(url, secondEtag);
+                Guid? thirdEtag = response.ReponseEtag;
+
+                Assert.NotNull(thirdEtag);
+                Assert.NotEqual(secondEtag, thirdEtag);
+
+                //updating facet doc should give 200 OK
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+                response = ConditionalGetHelper.PerformGet(url, thirdEtag);
 
                 //next request should give 304 not modified
-                Assert.Equal(HttpStatusCode.NotModified, ConditionalGetHelper.PerformGet(url, secondEtag, out secondEtag));
+                Assert.Equal(HttpStatusCode.NotModified, response.StatusCode);
             }
         }
 

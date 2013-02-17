@@ -107,31 +107,57 @@ namespace Raven.Tests.Faceted
 
                 InsertCameraDataAndWaitForNonStaleResults(store, GetCameras(1));
 
-                var facets = GetFacets();
-
-                var jsonFacets = JsonConvert.SerializeObject(facets);
-
-                Guid? firstEtag;
+                var jsonFacets = JsonConvert.SerializeObject(GetFacets());
 
                 var queryUrl = store.Url + "/facets/CameraCost?query=Manufacturer%253A{0}&facetStart=0&facetPageSize=";
 
                 var requestUrl = string.Format(queryUrl, "canon");
 
-                Assert.Equal(HttpStatusCode.OK, ConditionalGetHelper.PerformPost(requestUrl, jsonFacets, null, out firstEtag));
+                var response = ConditionalGetHelper.PerformPost(requestUrl, jsonFacets, null);
+                Guid? firstEtag = response.ReponseEtag;
+
+                Assert.NotNull(firstEtag);
+
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+                response = ConditionalGetHelper.PerformPost(requestUrl, jsonFacets, firstEtag);
 
                 //second request should give 304 not modified
-                Assert.Equal(HttpStatusCode.NotModified, ConditionalGetHelper.PerformPost(requestUrl, jsonFacets, firstEtag, out firstEtag));
+                Assert.Equal(HttpStatusCode.NotModified, response.StatusCode);
 
                 //change index etag by inserting new doc
                 InsertCameraDataAndWaitForNonStaleResults(store, GetCameras(1));
 
-                Guid? secondEtag;
+                response = ConditionalGetHelper.PerformPost(requestUrl, jsonFacets, firstEtag);
+                Guid? secondEtag = response.ReponseEtag;
+
+                Assert.NotNull(secondEtag);
+                Assert.NotEqual(firstEtag, secondEtag);
 
                 //changing the index should give 200 OK
-                Assert.Equal(HttpStatusCode.OK, ConditionalGetHelper.PerformPost(requestUrl, jsonFacets, firstEtag, out secondEtag));
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+                response = ConditionalGetHelper.PerformPost(requestUrl, jsonFacets, secondEtag);
 
                 //next request should give 304 not modified
-                Assert.Equal(HttpStatusCode.NotModified, ConditionalGetHelper.PerformPost(requestUrl, jsonFacets, secondEtag, out secondEtag));
+                Assert.Equal(HttpStatusCode.NotModified, response.StatusCode);
+
+                //change facet list
+                jsonFacets = JsonConvert.SerializeObject(GetFacets().Take(1).ToList());
+
+                response = ConditionalGetHelper.PerformPost(requestUrl, jsonFacets, secondEtag);
+                Guid? thirdEtag = response.ReponseEtag;
+
+                Assert.NotNull(thirdEtag);
+                Assert.NotEqual(secondEtag, thirdEtag);
+
+                //changing facet list should give 200 OK
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+                response = ConditionalGetHelper.PerformPost(requestUrl, jsonFacets, thirdEtag);
+
+                //next request should give 304 not modified
+                Assert.Equal(HttpStatusCode.NotModified, response.StatusCode);
             }
         }
 
