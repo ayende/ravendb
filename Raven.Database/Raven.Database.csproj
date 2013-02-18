@@ -97,6 +97,9 @@
     <Reference Include="Jint.Raven">
       <HintPath>..\SharedLibs\Jint.Raven.dll</HintPath>
     </Reference>
+    <Reference Include="leveldb-sharp">
+      <HintPath>..\SharedLibs\leveldb-sharp.dll</HintPath>
+    </Reference>
     <Reference Include="Lucene.Net, Version=2.3.2.1, Culture=neutral, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
       <HintPath>..\SharedLibs\Lucene.Net.dll</HintPath>
@@ -718,6 +721,11 @@
     <Compile Include="Storage\ITransactionalStorage.cs" />
     <Compile Include="Storage\ITransactionStorageActions.cs" />
     <Compile Include="Queries\SuggestionQueryRunner.cs" />
+    <Compile Include="Storage\RavenLevelDB\DocumentStorageActions.cs" />
+    <Compile Include="Storage\RavenLevelDB\LevelDBStorage.cs" />
+    <Compile Include="Storage\RavenLevelDB\LevelDBAccessor.cs" />
+    <Compile Include="Storage\RavenLevelDB\LevelDBStorageActions.cs" />
+    <Compile Include="Storage\RavenLevelDB\LevelDBTransaction.cs" />
     <Compile Include="Storage\Managed\AttachmentsStorageActions.cs" />
     <Compile Include="Storage\Managed\Backup\BackupOperation.cs" />
     <Compile Include="Storage\Managed\Backup\RestoreOperation.cs" />
@@ -792,6 +800,10 @@
     <EmbeddedResource Include="Json\ToJson.js" />
     <EmbeddedResource Include="Json\RavenDB.js" />
     <EmbeddedResource Include="Json\lodash.js" />
+    <Content Include="..\SharedLibs\leveldb.dll">
+      <Link>leveldb.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="Server\WebUI\css\smoothness\images\ui-anim_basic_16x16.gif" />
     <Content Include="Server\WebUI\studio_not_found.html" />
     <Content Include="Server\WebUI\studio.html" />
