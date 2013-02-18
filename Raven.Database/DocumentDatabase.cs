@@ -1516,7 +1516,7 @@ namespace Raven.Database
 
 		}
 
-		public RavenJArray GetDocumentsWithIdStartingWith(string idPrefix, string matches, int start, int pageSize)
+		public RavenJArray GetDocumentsWithIdStartingWith(string idPrefix, string matches, string exclude, int start, int pageSize)
 		{
 			if (idPrefix == null)
 				throw new ArgumentNullException("idPrefix");
@@ -1534,6 +1534,8 @@ namespace Raven.Database
 						docCount++;
 						if (WildcardMatcher.Matches(matches, doc.Key.Substring(idPrefix.Length)) == false)
 							continue;
+                        if (WildcardMatcher.MatchesExclusion(exclude, doc.Key.Substring(idPrefix.Length)))
+                            continue;
 						DocumentRetriever.EnsureIdInMetadata(doc);
 						var document = documentRetriever
 							.ExecuteReadTriggers(doc, null, ReadOperation.Load);

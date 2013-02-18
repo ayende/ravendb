@@ -24,6 +24,19 @@ namespace Raven.Database.Util
 			return patterns.Any(p => MatchesImpl(p, input, 0, 0));
 		}
 
+        public static bool MatchesExclusion(string pattern, string input)
+        {
+            // null or empty means no match
+            if (string.IsNullOrEmpty(pattern))
+                return false;
+
+            var patterns = pattern.Split(Separator, StringSplitOptions.RemoveEmptyEntries);
+            if (pattern.Length == 0)
+                return false;
+
+            return patterns.Any(p => MatchesImpl(p, input, 0, 0));
+        }
+
 		private static bool MatchesImpl(string pattern, string input, int patternPos, int inputPos)
 		{
 			if (string.IsNullOrEmpty(pattern))

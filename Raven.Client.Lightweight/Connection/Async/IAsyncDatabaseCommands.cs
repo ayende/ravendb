@@ -283,7 +283,7 @@ namespace Raven.Client.Connection.Async
 		/// <summary>
 		/// Get documents with id of a specific prefix
 		/// </summary>
-		Task<JsonDocument[]> StartsWithAsync(string keyPrefix, int start, int pageSize, bool metadataOnly = false);
+		Task<JsonDocument[]> StartsWithAsync(string keyPrefix, string matches, string exclude, int start, int pageSize, bool metadataOnly = false);
 
 		/// <summary>
 		/// Force the database commands to read directly from the master, unless there has been a failover.

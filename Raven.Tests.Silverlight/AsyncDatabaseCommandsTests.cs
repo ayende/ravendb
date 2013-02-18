@@ -54,12 +54,70 @@ namespace Raven.Tests.Silverlight
 
 				var task = cmd
 					.ForDatabase(dbname)
-					.StartsWithAsync("Companies", 0, 25);
+					.StartsWithAsync("Companies", null, null, 0, 25);
 				yield return task;
 
 				Assert.AreEqual(1, task.Result.Length);
 			}
 		}
+
+        [Asynchronous]
+        public IEnumerable<Task> CanGetDocumentsWhoseIdStartsWithAPrefixAndPattern()
+        {
+            var dbname = GenerateNewDatabaseName();
+            using (var documentStore = new DocumentStore { Url = Url + Port }.Initialize())
+            {
+                var cmd = documentStore.AsyncDatabaseCommands;
+                yield return cmd.EnsureDatabaseExistsAsync(dbname);
+
+                using (var session = documentStore.OpenAsyncSession(dbname))
+                {
+                    session.Store(new { Id = "customers/1234/users/1" });
+                    session.Store(new { Id = "customers/1234/users/1/orders" });
+                    session.Store(new { Id = "customers/1234/users/1/invoices" });
+                    session.Store(new { Id = "customers/1234/users/2" });
+                    session.Store(new { Id = "customers/1234/users/2/orders" });
+                    session.Store(new { Id = "customers/1234/users/2/invoices" });
+                    yield return session.SaveChangesAsync();
+                }
+
+                var task = cmd
+                    .ForDatabase(dbname)
+                    .StartsWithAsync("customers/1234/", "*/orders|*/invoices", null, 0, 25);
+                yield return task;
+
+                Assert.AreEqual(4, task.Result.Length);
+            }
+        }
+
+        [Asynchronous]
+        public IEnumerable<Task> CanGetDocumentsWhoseIdStartsWithAPrefixAndExclusion()
+        {
+            var dbname = GenerateNewDatabaseName();
+            using (var documentStore = new DocumentStore { Url = Url + Port }.Initialize())
+            {
+                var cmd = documentStore.AsyncDatabaseCommands;
+                yield return cmd.EnsureDatabaseExistsAsync(dbname);
+
+                using (var session = documentStore.OpenAsyncSession(dbname))
+                {
+                    session.Store(new { Id = "customers/1234/users/1" });
+                    session.Store(new { Id = "customers/1234/users/1/orders" });
+                    session.Store(new { Id = "customers/1234/users/1/invoices" });
+                    session.Store(new { Id = "customers/1234/users/2" });
+                    session.Store(new { Id = "customers/1234/users/2/orders" });
+                    session.Store(new { Id = "customers/1234/users/2/invoices" });
+                    yield return session.SaveChangesAsync();
+                }
+
+                var task = cmd
+                    .ForDatabase(dbname)
+                    .StartsWithAsync("customers/1234/", null, "*/invoices", 0, 25);
+                yield return task;
+
+                Assert.AreEqual(4, task.Result.Length);
+            }
+        }
 
 		[Asynchronous]
 		public IEnumerable<Task> CanGetAListOfDatabasesAsync()
