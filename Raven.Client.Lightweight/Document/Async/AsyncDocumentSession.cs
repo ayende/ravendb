@@ -54,7 +54,7 @@ namespace Raven.Client.Document.Async
 		/// </summary>
 		public Task<IEnumerable<T>> LoadStartingWithAsync<T>(string keyPrefix, string matches = null, int start = 0, int pageSize = 25, string exclude = null)
 		{
-            return AsyncDatabaseCommands.StartsWithAsync(keyPrefix, matches, exclude, start, pageSize)
+            return AsyncDatabaseCommands.StartsWithAsync(keyPrefix, matches, start, pageSize, exclude)
 			                            .ContinueWith(task => (IEnumerable<T>) task.Result.Select(TrackEntity<T>).ToList());
 		}
 

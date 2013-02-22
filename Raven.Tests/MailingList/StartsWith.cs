@@ -61,8 +61,10 @@ namespace Raven.Tests.MailingList
 
                 using (var session = store.OpenSession())
                 {
-                    var loadStartingWith = session.Advanced.LoadStartingWith<User>("customers/1234/", exclude: "*/invoices");
+                    const string excludedPattern = "invoices";
+                    var loadStartingWith = session.Advanced.LoadStartingWith<User>("customers/1234/", exclude: "*/" + excludedPattern);
                     Assert.Equal(4, loadStartingWith.Count());
+                    Assert.True(loadStartingWith.All(o => !o.Id.Contains(excludedPattern)));
                 }
 			}
 		}

@@ -54,7 +54,7 @@ namespace Raven.Tests.Silverlight
 
 				var task = cmd
 					.ForDatabase(dbname)
-					.StartsWithAsync("Companies", null, null, 0, 25);
+					.StartsWithAsync("Companies", null, 0, 25);
 				yield return task;
 
 				Assert.AreEqual(1, task.Result.Length);
@@ -83,7 +83,7 @@ namespace Raven.Tests.Silverlight
 
                 var task = cmd
                     .ForDatabase(dbname)
-                    .StartsWithAsync("customers/1234/", "*/orders|*/invoices", null, 0, 25);
+                    .StartsWithAsync("customers/1234/", "*/orders|*/invoices", 0, 25);
                 yield return task;
 
                 Assert.AreEqual(4, task.Result.Length);
@@ -110,12 +110,14 @@ namespace Raven.Tests.Silverlight
                     yield return session.SaveChangesAsync();
                 }
 
+                const string excludedPattern = "invoices";
                 var task = cmd
                     .ForDatabase(dbname)
-                    .StartsWithAsync("customers/1234/", null, "*/invoices", 0, 25);
+                    .StartsWithAsync("customers/1234/", null, 0, 25, "*/" + excludedPattern);
                 yield return task;
 
                 Assert.AreEqual(4, task.Result.Length);
+                Assert.IsTrue(task.Result.All(o => !o.DataAsJson.Value<string>("Id").Contains(excludedPattern)));
             }
         }
 

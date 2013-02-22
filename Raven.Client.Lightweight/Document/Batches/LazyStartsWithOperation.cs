@@ -108,7 +108,7 @@ namespace Raven.Client.Document.Batches
 
 		public object ExecuteEmbedded(IDatabaseCommands commands)
 		{
-			return commands.StartsWith(keyPrefix, matches, null, start, pageSize)
+			return commands.StartsWith(keyPrefix, matches, start, pageSize, null)
 				.Select(sessionOperations.TrackEntity<T>)
 				.ToArray();
 		}

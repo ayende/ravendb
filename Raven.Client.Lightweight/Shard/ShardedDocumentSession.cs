@@ -607,7 +607,7 @@ namespace Raven.Client.Shard
 			{
 				EntityType = typeof(T),
 				Keys = { keyPrefix }
-			}, (dbCmd, i) => dbCmd.StartsWith(keyPrefix, matches, exclude, start, pageSize));
+			}, (dbCmd, i) => dbCmd.StartsWith(keyPrefix, matches, start, pageSize, exclude));
 
 			return results.SelectMany(x => x).Select(TrackEntity<T>)
 			              .ToArray();

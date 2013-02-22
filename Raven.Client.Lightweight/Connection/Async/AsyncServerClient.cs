@@ -758,7 +758,7 @@ namespace Raven.Client.Connection.Async
 			});
 		}
 
-		public Task<JsonDocument[]> StartsWithAsync(string keyPrefix, string matches, string exclude, int start, int pageSize, bool metadataOnly = false)
+		public Task<JsonDocument[]> StartsWithAsync(string keyPrefix, string matches, int start, int pageSize, string exclude = null, bool metadataOnly = false)
 		{
 			return ExecuteWithReplication("GET", operationUrl =>
 		{

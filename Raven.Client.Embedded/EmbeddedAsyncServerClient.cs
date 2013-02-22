@@ -334,9 +334,9 @@ namespace Raven.Client.Embedded
 			throw new NotSupportedException();
 		}
 
-		public Task<JsonDocument[]> StartsWithAsync(string keyPrefix, string matches, string exclude, int start, int pageSize, bool metadataOnly = false)
+		public Task<JsonDocument[]> StartsWithAsync(string keyPrefix, string matches, int start, int pageSize, string exclude = null, bool metadataOnly = false)
 		{
-			return new CompletedTask<JsonDocument[]>(databaseCommands.StartsWith(keyPrefix, matches, exclude, start, pageSize, metadataOnly));
+			return new CompletedTask<JsonDocument[]>(databaseCommands.StartsWith(keyPrefix, matches, start, pageSize, exclude, metadataOnly));
 		}
 
 		public void ForceReadFromMaster()

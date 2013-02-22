@@ -119,7 +119,7 @@ namespace Raven.Client.Connection
 		/// <summary>
 		/// Gets documents for the specified key prefix
 		/// </summary>
-		public JsonDocument[] StartsWith(string keyPrefix, string matches, string exclude, int start, int pageSize, bool metadataOnly = false)
+		public JsonDocument[] StartsWith(string keyPrefix, string matches, int start, int pageSize, string exclude = null, bool metadataOnly = false)
 		{
 			EnsureIsNotNullOrEmpty(keyPrefix, "keyPrefix");
 

@@ -692,7 +692,7 @@ namespace Raven.Client.Document
 
         public T[] LoadStartingWith<T>(string keyPrefix, string matches = null, int start = 0, int pageSize = 25, string exclude = null)
 		{
-            return DatabaseCommands.StartsWith(keyPrefix, matches, exclude, start, pageSize)
+            return DatabaseCommands.StartsWith(keyPrefix, matches, start, pageSize, exclude)
 			                       .Select(TrackEntity<T>)
 			                       .ToArray();
 		}
