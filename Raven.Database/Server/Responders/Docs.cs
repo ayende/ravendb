@@ -57,11 +57,15 @@ namespace Raven.Database.Server.Responders
 						if (string.IsNullOrEmpty(startsWith))
 							context.WriteJson(Database.GetDocuments(context.GetStart(), context.GetPageSize(Database.Configuration.MaxPageSize), context.GetEtagFromQueryString()));
 						else
-							context.WriteJson(Database.GetDocumentsWithIdStartingWith(
+                        {
+                            var exclude = context.Request.QueryString["exclude"];
+                            context.WriteJson(Database.GetDocumentsWithIdStartingWith(
 								startsWith,
+                                exclude,
 								context.Request.QueryString["matches"],
 								context.GetStart(),
 								context.GetPageSize(Database.Configuration.MaxPageSize)));
+                        }
 					}
 					break;
 				case "POST":

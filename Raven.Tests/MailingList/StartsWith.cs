@@ -49,16 +49,25 @@ namespace Raven.Tests.MailingList
 
 				using (var session = store.OpenSession())
 				{
-					var loadStartingWith = session.Advanced.LoadStartingWith<User>("customers/1234/", "*/orders");
+					var loadStartingWith = session.Advanced.LoadStartingWith<User>("customers/1234/", matches: "*/orders");
 					Assert.Equal(2, loadStartingWith.Count());
 				}
 
 				using (var session = store.OpenSession())
 				{
-					var loadStartingWith = session.Advanced.LoadStartingWith<User>("customers/1234/", "*/orders|*/invoices");
+					var loadStartingWith = session.Advanced.LoadStartingWith<User>("customers/1234/", matches: "*/orders|*/invoices");
 					Assert.Equal(4, loadStartingWith.Count());
 				}
+
+                using (var session = store.OpenSession())
+                {
+                    const string excludedPattern = "invoices";
+                    var loadStartingWith = session.Advanced.LoadStartingWith<User>("customers/1234/", exclude: "*/" + excludedPattern);
+                    Assert.Equal(4, loadStartingWith.Count());
+                    Assert.True(loadStartingWith.All(o => !o.Id.Contains(excludedPattern)));
+                }
 			}
 		}
+
 	}
 }

@@ -16,7 +16,7 @@ namespace Raven.Client.Bundles.Versioning
 
 		public static string[] GetRevisionIdsFor<T>(this ISyncAdvancedSessionOperation session, string id, int start, int pageSize)
 		{
-			var jsonDocuments = ((DocumentSession)session).DatabaseCommands.StartsWith(id + "/revisions/", null, start, pageSize, metadataOnly: true);
+			var jsonDocuments = ((DocumentSession)session).DatabaseCommands.StartsWith(id + "/revisions/", null, pageSize, start, metadataOnly: true);
 			return jsonDocuments
 				.Select(document => document.Key)
 				.ToArray();

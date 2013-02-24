@@ -17,7 +17,7 @@ namespace Raven.Client
 		/// <summary>
 		/// Load documents with the specified key prefix
 		/// </summary>
-		Task<IEnumerable<T>> LoadStartingWithAsync<T>(string keyPrefix, int start = 0, int pageSize = 25);
+		Task<IEnumerable<T>> LoadStartingWithAsync<T>(string keyPrefix, string matches = null, int start = 0, int pageSize = 25, string exclude = null);
 
 
 		/// <summary>
