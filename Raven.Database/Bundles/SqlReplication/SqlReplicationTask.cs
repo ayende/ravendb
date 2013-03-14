@@ -312,124 +312,144 @@ namespace Raven.Database.Bundles.SqlReplication
 			return providerFactory;
 		}
 
-		private bool WriteToRelationalDatabase(SqlReplicationConfig cfg, DbProviderFactory providerFactory, Dictionary<string, List<ItemToReplicate>> dictionary, SqlReplicationStatistics replicationStatistics)
-		{
-			using (var commandBuilder = providerFactory.CreateCommandBuilder())
-			using (var connection = providerFactory.CreateConnection())
-			{
-				Debug.Assert(connection != null);
-				Debug.Assert(commandBuilder != null);
-				connection.ConnectionString = cfg.ConnectionString;
-				try
-				{
-					connection.Open();
-				}
-				catch (Exception e)
-				{
-					Database.AddAlert(new Alert
-					{
-						AlertLevel = AlertLevel.Error,
-						CreatedAt = SystemTime.UtcNow,
-						Exception = e.ToString(),
-						Title = "Sql Replication could not open connection",
-						Message = "Sql Replication could not open connection to " + connection.ConnectionString,
-						UniqueKey = "Sql Replication Connection Error: " + connection.ConnectionString
-					});
-					throw;
-				}
-				bool hadErrors = false;
-				using (var tx = connection.BeginTransaction())
-				{
-					foreach (var kvp in dictionary)
-					{
-						// first, delete all the rows that might already exist there
-						foreach (var itemToReplicate in kvp.Value)
-						{
-							using (var cmd = connection.CreateCommand())
-							{
-								cmd.Transaction = tx;
-								var dbParameter = cmd.CreateParameter();
-								dbParameter.ParameterName = GetParameterName(providerFactory, commandBuilder, itemToReplicate.PkName);
-								cmd.Parameters.Add(dbParameter);
-								dbParameter.Value = itemToReplicate.DocumentId;
-								cmd.CommandText = string.Format("DELETE FROM {0} WHERE {1} = {2}",
-								                                commandBuilder.QuoteIdentifier(kvp.Key),
-								                                commandBuilder.QuoteIdentifier(itemToReplicate.PkName),
-								                                dbParameter.ParameterName
-									);
-								try
-								{
-									cmd.ExecuteNonQuery();
-								}
-								catch (Exception e)
-								{
-									log.WarnException("Failure to replicate changes to relational database for: " + cfg.Name + ", will continue trying." + Environment.NewLine + cmd.CommandText, e);
-									replicationStatistics.RecordWriteError(e, Database);
-									hadErrors = true;
-								}
-							}
-						}
+        private bool WriteToRelationalDatabase(SqlReplicationConfig cfg, DbProviderFactory providerFactory, Dictionary<string, List<ItemToReplicate>> dictionary, SqlReplicationStatistics replicationStatistics)
+        {
+            using (var commandBuilder = providerFactory.CreateCommandBuilder())
+            using (var connection = providerFactory.CreateConnection())
+            {
+                Debug.Assert(connection != null);
+                Debug.Assert(commandBuilder != null);
+                connection.ConnectionString = cfg.ConnectionString;
+                try
+                {
+                    connection.Open();
+                }
+                catch (Exception e)
+                {
+                    Database.AddAlert(new Alert
+                    {
+                        AlertLevel = AlertLevel.Error,
+                        CreatedAt = SystemTime.UtcNow,
+                        Exception = e.ToString(),
+                        Title = "Sql Replication could not open connection",
+                        Message = "Sql Replication could not open connection to " + connection.ConnectionString,
+                        UniqueKey = "Sql Replication Connection Error: " + connection.ConnectionString
+                    });
+                    throw;
+                }
+                bool hadErrors = false;
+                using (var tx = connection.BeginTransaction())
+                {
+                    const string cmdText = "DELETE FROM {0} WHERE {1} IN ({2})";
 
-						foreach (var itemToReplicate in kvp.Value)
-						{
-							using (var cmd = connection.CreateCommand())
-							{
-								cmd.Transaction = tx;
+                    foreach (var kvp in dictionary)
+                    {
 
-								var sb = new StringBuilder("INSERT INTO ")
-									.Append(commandBuilder.QuoteIdentifier(kvp.Key))
-									.Append(" (")
-									.Append(commandBuilder.QuoteIdentifier(itemToReplicate.PkName))
-									.Append(", ");
-								foreach (var column in itemToReplicate.Columns)
-								{
-									if (column.Key == itemToReplicate.PkName)
-										continue;
-									sb.Append(commandBuilder.QuoteIdentifier(column.Key)).Append(", ");
-								}
-								sb.Length = sb.Length - 2;
+                        // array of ids to delete
+                        List<string> ids = kvp.Value.Select(x => x.DocumentId).ToList();
 
-								var pkParam = cmd.CreateParameter();
-								pkParam.ParameterName = GetParameterName(providerFactory, commandBuilder, itemToReplicate.PkName);
-								pkParam.Value = itemToReplicate.DocumentId;
-								cmd.Parameters.Add(pkParam);
+                        foreach (var partitionOfIds in ids.Partition(1000))
+                        {
+                            using (var deleteCmd = connection.CreateCommand())
+                            {
+                                // create an array of param names to store our ids (@id1, @id2 etc)
+                                string[] paramNames = partitionOfIds.Select(
+                                    (s, i) => "@id" + i.ToString()
+                                    ).ToArray();
 
-								sb.Append(") \r\nVALUES (")
-								  .Append(GetParameterName(providerFactory, commandBuilder, itemToReplicate.PkName))
-								  .Append(", ");
+                                // add a parameter for each id to our command
+                                string inClause = string.Join(",", paramNames);
 
-								foreach (var column in itemToReplicate.Columns)
-								{
-									if (column.Key == itemToReplicate.PkName)
-										continue;
-									var colParam = cmd.CreateParameter();
-									colParam.ParameterName = column.Key;
-									SetParamValue(colParam, column.Value);
-									cmd.Parameters.Add(colParam);
-									sb.Append(GetParameterName(providerFactory, commandBuilder, column.Key)).Append(", ");
-								}
-								sb.Length = sb.Length - 2;
-								sb.Append(")");
-								cmd.CommandText = sb.ToString();
-								try
-								{
-									cmd.ExecuteNonQuery();
-								}
-								catch (Exception e)
-								{
-									log.WarnException("Failure to replicate changes to relational database for: " + cfg.Name + ", will continue trying." + Environment.NewLine + cmd.CommandText, e);
-									replicationStatistics.RecordWriteError(e, Database);
-									hadErrors = true;
-								}
-							}
-						}
-					}
-					tx.Commit();
-				}
-				return hadErrors == false;
-			}
-		}
+                                for (int i = 0; i < paramNames.Length; i++)
+                                {
+                                    var param = deleteCmd.CreateParameter();
+                                    param.ParameterName = paramNames[i];
+                                    param.Value = partitionOfIds[i];
+                                    deleteCmd.Parameters.Add(param);
+                                }
 
+                                deleteCmd.Transaction = tx;
+
+                                deleteCmd.CommandText = string.Format(cmdText,
+                                                                        commandBuilder.QuoteIdentifier(kvp.Key),
+                                                                        commandBuilder.QuoteIdentifier(
+                                                                            kvp.Value[0].PkName),
+                                                                        inClause);
+                                try
+                                {
+                                    deleteCmd.ExecuteNonQuery();
+                                }
+                                catch (Exception e)
+                                {
+                                    log.WarnException(
+                                        "Failure to replicate changes to relational database for: " + cfg.Name +
+                                        " (delete), will continue trying." + Environment.NewLine +
+                                        deleteCmd.CommandText, e);
+                                    replicationStatistics.RecordWriteError(e, Database);
+                                    hadErrors = true;
+                                }
+                            }
+                        }
+
+                        foreach (var itemToReplicate in kvp.Value)
+                        {
+                            using (var cmd = connection.CreateCommand())
+                            {
+                                cmd.Transaction = tx;
+
+                                var sb = new StringBuilder("INSERT INTO ")
+                                    .Append(commandBuilder.QuoteIdentifier(kvp.Key))
+                                    .Append(" (")
+                                    .Append(commandBuilder.QuoteIdentifier(itemToReplicate.PkName))
+                                    .Append(", ");
+                                foreach (var column in itemToReplicate.Columns)
+                                {
+                                    if (column.Key == itemToReplicate.PkName)
+                                        continue;
+                                    sb.Append(commandBuilder.QuoteIdentifier(column.Key)).Append(", ");
+                                }
+                                sb.Length = sb.Length - 2;
+
+                                var pkParam = cmd.CreateParameter();
+                                pkParam.ParameterName = GetParameterName(providerFactory, commandBuilder, itemToReplicate.PkName);
+                                pkParam.Value = itemToReplicate.DocumentId;
+                                cmd.Parameters.Add(pkParam);
+
+                                sb.Append(") \r\nVALUES (")
+                                  .Append(GetParameterName(providerFactory, commandBuilder, itemToReplicate.PkName))
+                                  .Append(", ");
+
+                                foreach (var column in itemToReplicate.Columns)
+                                {
+                                    if (column.Key == itemToReplicate.PkName)
+                                        continue;
+                                    var colParam = cmd.CreateParameter();
+                                    colParam.ParameterName = column.Key;
+                                    SetParamValue(colParam, column.Value);
+                                    cmd.Parameters.Add(colParam);
+                                    sb.Append(GetParameterName(providerFactory, commandBuilder, column.Key)).Append(", ");
+                                }
+                                sb.Length = sb.Length - 2;
+                                sb.Append(")");
+                                cmd.CommandText = sb.ToString();
+                                try
+                                {
+                                    cmd.ExecuteNonQuery();
+                                }
+                                catch (Exception e)
+                                {
+                                    log.WarnException("Failure to replicate changes to relational database for: " + cfg.Name + " (insert), will continue trying." + Environment.NewLine + cmd.CommandText, e);
+                                    replicationStatistics.RecordWriteError(e, Database);
+                                    hadErrors = true;
+                                }
+                            }
+                        }
+                    }
+                    tx.Commit();
+                }
+                return hadErrors == false;
+            }
+        }
 		private static void SetParamValue(DbParameter colParam, RavenJToken val)
 		{
 			if (val == null)
