@@ -101,6 +101,11 @@ namespace Raven.Smuggler
 			}
 		}
 
+		public async Task<string> ExportData(SmugglerOptions options, bool incremental)
+		{
+			return await ExportData(null, options, incremental);
+		}
+
 		public override async Task<string> ExportData(Stream stream, SmugglerOptions options, bool incremental)
 		{
 			using (store = CreateStore())
