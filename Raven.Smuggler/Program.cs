@@ -33,7 +33,7 @@ namespace Raven.Smuggler
 			            		{
 			            			"operate-on-types:", "Specify the types to operate on. Specify the types to operate on. You can specify more than one type by combining items with a comma." + Environment.NewLine +
 			            			                     "Default is all items." + Environment.NewLine +
-			            			                     "Usage example: Indexes,Documents,Attachments", value =>
+			            			                     "Usage example: Indexes,Documents,Attachments,Transformers", value =>
 			            			                                                                     	{
 			            			                                                                     		try
 			            			                                                                     		{

@@ -48,7 +48,7 @@ namespace Raven.Abstractions.Smuggler
 		{
 			if (String.IsNullOrWhiteSpace(items))
 			{
-				return ItemType.Documents | ItemType.Indexes | ItemType.Attachments;
+				return ItemType.Documents | ItemType.Indexes | ItemType.Attachments | ItemType.Transformers;
 			}
 			return (ItemType)Enum.Parse(typeof(ItemType), items, ignoreCase: true);
 		}
