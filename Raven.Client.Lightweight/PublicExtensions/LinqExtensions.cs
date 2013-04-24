@@ -49,7 +49,7 @@ namespace Raven.Client
 			return source;
 		}
 
-#if !SILVERLIGHT
+#if !SILVERLIGHT && !NETFX_CORE
 		/// <summary>
 		/// Query the facets results for this query using the specified facet document with the given start and pageSize
 		/// </summary>
@@ -64,6 +64,25 @@ namespace Raven.Client
 			return ravenQueryInspector.DatabaseCommands.GetFacets( ravenQueryInspector.IndexQueried, query, facetSetupDoc, start, pageSize );
 		}
 
+        /// <summary>
+        /// Query the facets results for this query using the specified list of facets with the given start and pageSize
+        /// </summary>
+        /// <param name="facets">List of facets</param>
+        /// <param name="start">Start index for paging</param>
+        /// <param name="pageSize">Paging PageSize. If set, overrides Facet.MaxResults</param>
+        public static FacetResults ToFacets<T>(this IQueryable<T> queryable, IEnumerable<Facet> facets, int start = 0, int? pageSize = null)
+        {
+            var facetsList = facets.ToList();
+
+            if (!facetsList.Any())
+                throw new ArgumentException("Facets must contain at least one entry", "facets");
+
+            var ravenQueryInspector = ((IRavenQueryInspector)queryable);
+            var query = ravenQueryInspector.GetIndexQuery(isAsync: false);
+
+            return ravenQueryInspector.DatabaseCommands.GetFacets(ravenQueryInspector.IndexQueried, query, facetsList, start, pageSize);
+        }
+
 		/// <summary>
 		/// Query the facets results for this query using the specified facet document with the given start and pageSize
 		/// </summary>
@@ -76,9 +95,28 @@ namespace Raven.Client
 			var documentQuery = ((DocumentQuery<T>) query);
 			return documentQuery.DatabaseCommands.GetFacets(documentQuery.IndexQueried, indexQuery, facetSetupDoc, start, pageSize);
 		}
+
+        /// <summary>
+        /// Query the facets results for this query using the specified list of facets with the given start and pageSize
+        /// </summary>
+        /// <param name="facets">List of facets</param>
+        /// <param name="start">Start index for paging</param>
+        /// <param name="pageSize">Paging PageSize. If set, overrides Facet.MaxResults</param>
+        public static FacetResults ToFacets<T>(this IDocumentQuery<T> query, IEnumerable<Facet> facets, int start = 0, int? pageSize = null)
+        {
+            var facetsList = facets.ToList();
+
+            if (!facetsList.Any())
+                throw new ArgumentException("Facets must contain at least one entry", "facets");
+
+            var indexQuery = query.GetIndexQuery(isAsync: false);
+            var documentQuery = ((DocumentQuery<T>)query);
+
+            return documentQuery.DatabaseCommands.GetFacets(documentQuery.IndexQueried, indexQuery, facetsList, start, pageSize);
+        }
 #endif
 
-#if !SILVERLIGHT
+#if !SILVERLIGHT && !NETFX_CORE
 		/// <summary>
 		/// Lazily Query the facets results for this query using the specified facet document with the given start and pageSize
 		/// </summary>
@@ -96,6 +134,25 @@ namespace Raven.Client
 			return documentSession.AddLazyOperation<FacetResults>(lazyOperation, null);
 		}
 
+        /// <summary>
+        /// Lazily Query the facets results for this query using the specified list of facets with the given start and pageSize
+        /// </summary>
+        public static Lazy<FacetResults> ToFacetsLazy<T>(this IQueryable<T> queryable, IEnumerable<Facet> facets, int start = 0, int? pageSize = null)
+        {
+            var facetsList = facets.ToList();
+
+            if (!facetsList.Any())
+                throw new ArgumentException("Facets must contain at least one entry", "facets");
+
+            var ravenQueryInspector = ((IRavenQueryInspector)queryable);
+            var query = ravenQueryInspector.GetIndexQuery(isAsync: false);
+
+            var lazyOperation = new LazyFacetsOperation(ravenQueryInspector.IndexQueried, facetsList, query, start, pageSize);
+
+            var documentSession = ((DocumentSession)ravenQueryInspector.Session);
+            return documentSession.AddLazyOperation<FacetResults>(lazyOperation, null);
+        }
+
 		/// <summary>
 		/// Lazily Query the facets results for this query using the specified facet document with the given start and pageSize
 		/// </summary>
@@ -112,6 +169,28 @@ namespace Raven.Client
 			var documentSession = ((DocumentSession)documentQuery.Session);
 			return documentSession.AddLazyOperation<FacetResults>(lazyOperation, null);
 		}
+
+        /// <summary>
+        /// Lazily Query the facets results for this query using the specified list of facets with the given start and pageSize
+        /// </summary>
+        /// <param name="facets">List of facets</param>
+        /// <param name="start">Start index for paging</param>
+        /// <param name="pageSize">Paging PageSize. If set, overrides Facet.MaxResults</param>
+        public static Lazy<FacetResults> ToFacetsLazy<T>(this IDocumentQuery<T> query, IEnumerable<Facet> facets, int start = 0, int? pageSize = null)
+        {
+            var facetsList = facets.ToList();
+
+            if (!facetsList.Any())
+                throw new ArgumentException("Facets must contain at least one entry", "facets");
+
+            var indexQuery = query.GetIndexQuery(isAsync: false);
+            var documentQuery = ((DocumentQuery<T>)query);
+
+            var lazyOperation = new LazyFacetsOperation(documentQuery.IndexQueried, facetsList, indexQuery, start, pageSize);
+
+            var documentSession = ((DocumentSession)documentQuery.Session);
+            return documentSession.AddLazyOperation<FacetResults>(lazyOperation, null);
+        }
 #endif
 
 		/// <summary>
@@ -152,6 +231,7 @@ namespace Raven.Client
 			return results;
 		}
 
+#if !NETFX_CORE
 		/// <summary>
 		/// Partition the query so we can intersect different parts of the query
 		/// across different index entries.
@@ -167,7 +247,6 @@ namespace Raven.Client
 			var queryable =
 				self.Provider.CreateQuery(Expression.Call(null, currentMethod.MakeGenericMethod(typeof(T)), expression));
 			return (IRavenQueryable<T>)queryable;
-
 		}
 
 		public static IRavenQueryable<TResult> ProjectFromIndexFieldsInto<TResult>(this IQueryable queryable)
@@ -186,8 +265,9 @@ namespace Raven.Client
 			ravenQueryInspector.FieldsToFetch(typeof(TResult).GetProperties().Select(x => x.Name));
 			return (IRavenQueryable<TResult>)results;
 		}
+#endif
 
-#if !SILVERLIGHT
+#if !SILVERLIGHT && !NETFX_CORE
 
 		/// <summary>
 		/// Suggest alternative values for the queried term
@@ -295,12 +375,29 @@ namespace Raven.Client
 			var provider = source.Provider as IRavenQueryProvider;
 			if (provider == null)
 				throw new ArgumentException("You can only use Raven Queryable with ToListAsync");
+
 			var documentQuery = provider.ToAsyncLuceneQuery<T>(source.Expression);
 			provider.MoveAfterQueryExecuted(documentQuery);
 			return documentQuery.ToListAsync()
 				.ContinueWith(task => task.Result.Item2);
 		}
 
+		/// <summary>
+		/// Returns a first or default asynchronously. 
+		/// </summary>
+		public static Task<T> FirstOrDefaultAsync<T>(this IQueryable<T> source)
+		{
+			var provider = source.Provider as IRavenQueryProvider;
+			if (provider == null)
+				throw new ArgumentException("You can only use Raven Queryable with FirstOrDefaultAsync");
+
+			var documentQuery = provider
+				.ToAsyncLuceneQuery<T>(source.Expression)
+				.Take(1);
+			provider.MoveAfterQueryExecuted(documentQuery);
+			return documentQuery.ToListAsync()
+				.ContinueWith(task => task.Result.Item2.FirstOrDefault());
+		}
 
 		/// <summary>
 		/// Returns whatever the query has any results asynchronously
@@ -327,6 +424,7 @@ namespace Raven.Client
 				.ContinueWith(task => task.Result.Item1.TotalResults);
 		}
 
+#if !NETFX_CORE
 		/// <summary>
 		/// Perform a search for documents which fields that match the searchTerms.
 		/// If there is more than a single term, each of them will be checked independently.
@@ -365,5 +463,7 @@ namespace Raven.Client
 			var queryable = self.Provider.CreateQuery(Expression.Call(null, currentMethod.MakeGenericMethod(typeof(T)), expression));
 			return (IOrderedQueryable<T>)queryable;
 		}
+#endif
+
 	}
 }

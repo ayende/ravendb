@@ -26,19 +26,16 @@ namespace Raven.Storage.Managed
 	public class DocumentsStorageActions : IDocumentStorageActions
 	{
 		private readonly TableStorage storage;
-		private readonly ITransactionStorageActions transactionStorageActions;
 		private readonly IUuidGenerator generator;
 		private readonly OrderedPartCollection<AbstractDocumentCodec> documentCodecs;
 		private readonly IDocumentCacher documentCacher;
 
 		public DocumentsStorageActions(TableStorage storage,
-			ITransactionStorageActions transactionStorageActions,
 			IUuidGenerator generator,
 			OrderedPartCollection<AbstractDocumentCodec> documentCodecs,
 			IDocumentCacher documentCacher)
 		{
 			this.storage = storage;
-			this.transactionStorageActions = transactionStorageActions;
 			this.generator = generator;
 			this.documentCodecs = documentCodecs;
 			this.documentCacher = documentCacher;
@@ -51,7 +48,7 @@ namespace Raven.Storage.Managed
 				.Take(take);
 		}
 
-		public IEnumerable<JsonDocument> GetDocumentsAfter(Guid etag, int take, long? maxSize = null, Guid? untilEtag = null)
+		public IEnumerable<JsonDocument> GetDocumentsAfter(Etag etag, int take, long? maxSize = null, Etag untilEtag = null)
 		{
 			var docs = storage.Documents["ByEtag"].SkipAfter(new RavenJObject { { "etag", etag.ToByteArray() } })
 				.Select(result => DocumentByKey(result.Value<string>("key"), null))
@@ -68,7 +65,7 @@ namespace Raven.Storage.Managed
 				}
 				if (untilEtag != null && count > 0)
 				{
-					if (Etag.IsGreaterThanOrEqual(doc.Etag.Value, untilEtag.Value))
+					if (EtagUtil.IsGreaterThanOrEqual(doc.Etag, untilEtag))
 						yield break;
 				}
 				count++;
@@ -76,13 +73,13 @@ namespace Raven.Storage.Managed
 			}
 		}
 
-		public Guid GetBestNextDocumentEtag(Guid etag)
+		public Etag GetBestNextDocumentEtag(Etag etag)
 		{
 			var match = storage.Documents["ByEtag"].SkipAfter(new RavenJObject { { "etag", etag.ToByteArray() } })
 												  .FirstOrDefault();
 			if (match == null)
 				return etag;
-			return new Guid(match.Value<byte[]>("etag"));
+			return Etag.Parse(match.Value<byte[]>("etag"));
 		}
 
 		public IEnumerable<JsonDocument> GetDocumentsWithIdStartingWith(string idPrefix, int start, int take)
@@ -132,7 +129,7 @@ namespace Raven.Storage.Managed
 					if (resultInTx.Key.Value<bool>("deleted"))
 						return null;
 
-					var txEtag = new Guid(resultInTx.Key.Value<byte[]>("etag"));
+					var txEtag = Etag.Parse(resultInTx.Key.Value<byte[]>("etag"));
 					var resultTx = ReadMetadata(key, txEtag, resultInTx.Data, out metadata);
 					return createResult(resultTx, new JsonDocumentMetadata
 					{
@@ -152,7 +149,7 @@ namespace Raven.Storage.Managed
 					return createResult(Tuple.Create<MemoryStream, RavenJObject, int>(null, new RavenJObject(), 0), new JsonDocumentMetadata
 					{
 						Key = resultInTx.Key.Value<string>("key"),
-						Etag = Guid.Empty,
+						Etag = Etag.Empty,
 						Metadata = new RavenJObject { { Constants.RavenDocumentDoesNotExists, true } },
 						NonAuthoritativeInformation = true,
 						LastModified = DateTime.MinValue
@@ -161,7 +158,7 @@ namespace Raven.Storage.Managed
 				return null;
 			}
 
-			var etag = new Guid(readResult.Key.Value<byte[]>("etag"));
+			var etag = Etag.Parse(readResult.Key.Value<byte[]>("etag"));
 			var result = ReadMetadata(key, etag, readResult.Data, out metadata);
 			return createResult(result, new JsonDocumentMetadata
 			{
@@ -187,7 +184,7 @@ namespace Raven.Storage.Managed
 			return SystemTime.UtcNow < tx.Key.Value<DateTime>("timeout");
 		}
 
-		private Tuple<MemoryStream, RavenJObject, int> ReadMetadata(string key, Guid etag, Func<byte[]> getData, out RavenJObject metadata)
+		private Tuple<MemoryStream, RavenJObject, int> ReadMetadata(string key, Etag etag, Func<byte[]> getData, out RavenJObject metadata)
 		{
 			var cachedDocument = documentCacher.GetCachedDocument(key, etag);
 			if (cachedDocument != null)
@@ -224,12 +221,12 @@ namespace Raven.Storage.Managed
 			}
 
 			Debug.Assert(metadata.Etag != null);
-			documentCacher.SetCachedDocument(metadata.Key, metadata.Etag.Value, result, metadata.Metadata, stream.Item3);
+			documentCacher.SetCachedDocument(metadata.Key, metadata.Etag, result, metadata.Metadata, stream.Item3);
 
 			return result;
 		}
 
-		public bool DeleteDocument(string key, Guid? etag, out RavenJObject metadata, out Guid? deletedETag)
+		public bool DeleteDocument(string key, Etag etag, out RavenJObject metadata, out Etag deletedETag)
 		{
 			var existingEtag = AssertValidEtag(key, etag, "DELETE", null);
 			deletedETag = existingEtag;
@@ -243,7 +240,7 @@ namespace Raven.Storage.Managed
 
 			storage.Documents.Remove(new RavenJObject { { "key", key } });
 
-			documentCacher.RemoveCachedDocument(key, existingEtag ?? Guid.Empty);
+			documentCacher.RemoveCachedDocument(key, existingEtag ?? Etag.Empty);
 
 			return true;
 		}
@@ -254,7 +251,7 @@ namespace Raven.Storage.Managed
 			return AddDocument(key, documentByKey.Etag, documentByKey.DataAsJson, metadata);
 		}
 
-		public void TouchDocument(string key, out Guid? preTouchEtag, out Guid? afterTouchEtag)
+		public void TouchDocument(string key, out Etag preTouchEtag, out Etag afterTouchEtag)
 		{
 			var documentByKey = DocumentByKey(key, null);
 			if (documentByKey == null)
@@ -297,7 +294,7 @@ namespace Raven.Storage.Managed
 				 {"entityName", metadata.Value<string>(Constants.RavenEntityName)}
 			 }, ms.ToArray());
 
-			 IncrementDocumentCount(1);
+			IncrementDocumentCount(1);
 			return new AddDocumentResult
 			{
 				Etag = newEtag,
@@ -311,7 +308,7 @@ namespace Raven.Storage.Managed
 			// nothing to do here
 		}
 
-		public AddDocumentResult AddDocument(string key, Guid? etag, RavenJObject data, RavenJObject metadata)
+		public AddDocumentResult AddDocument(string key, Etag etag, RavenJObject data, RavenJObject metadata)
 		{
 			var existingEtag = AssertValidEtag(key, etag, "PUT", null);
 
@@ -339,7 +336,7 @@ namespace Raven.Storage.Managed
 				 {"entityName", metadata.Value<string>(Constants.RavenEntityName)}
 			 }, ms.ToArray());
 
-			documentCacher.RemoveCachedDocument(key, existingEtag ?? Guid.Empty);
+			documentCacher.RemoveCachedDocument(key, existingEtag ?? Etag.Empty);
 
 			return new AddDocumentResult
 			{
@@ -363,20 +360,19 @@ namespace Raven.Storage.Managed
 			return id;
 		}
 
-		private Guid? AssertValidEtag(string key, Guid? etag, string op, TransactionInformation transactionInformation)
+		private Etag AssertValidEtag(string key, Etag etag, string op, TransactionInformation transactionInformation)
 		{
 			var readResult = storage.Documents.Read(new RavenJObject { { "key", key } });
 
 			if (readResult != null)
 			{
-				StorageHelper.AssertNotModifiedByAnotherTransaction(storage, transactionStorageActions, key, readResult, transactionInformation);
-				var existingEtag = new Guid(readResult.Key.Value<byte[]>("etag"));
+				var existingEtag = Etag.Parse(readResult.Key.Value<byte[]>("etag"));
 
 				if (etag != null)
 				{
 					if (existingEtag != etag)
 					{
-						if (etag.Value == Guid.Empty)
+						if (etag == Etag.Empty)
 						{
 							RavenJObject metadata;
 							ReadMetadata(key, existingEtag, readResult.Data, out metadata);
@@ -389,7 +385,7 @@ namespace Raven.Storage.Managed
 						throw new ConcurrencyException(op + " attempted on document '" + key +
 													   "' using a non current etag")
 						{
-							ActualETag = etag.Value,
+							ActualETag = etag,
 							ExpectedETag = existingEtag
 						};
 					}
@@ -397,21 +393,19 @@ namespace Raven.Storage.Managed
 				return existingEtag;
 			}
 
-			if (etag != null && etag != Guid.Empty) // expected something to be there.
+			if (etag != null && etag != Etag.Empty) // expected something to be there.
 				throw new ConcurrencyException("PUT attempted on document '" + key +
 											   "' using a non current etag (document deleted)")
 				{
-					ExpectedETag = etag.Value
+					ExpectedETag = etag
 				};
 
 			readResult = storage.DocumentsModifiedByTransactions.Read(new RavenJObject { { "key", key } });
-			StorageHelper.AssertNotModifiedByAnotherTransaction(storage, transactionStorageActions, key, readResult, transactionInformation);
 
 			if (readResult == null)
 				return null;
 
-			return new Guid(readResult.Key.Value<byte[]>("etag"));
+			return Etag.Parse(readResult.Key.Value<byte[]>("etag"));
 		}
-
 	}
 }

@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
 using Raven.Abstractions.Util;
+using Raven.Client.Connection;
 using Raven.Client.Connection.Async;
 using Raven.Client.Document.SessionOperations;
 using Raven.Client.Extensions;
@@ -27,7 +28,7 @@ namespace Raven.Client.Document.Async
 	/// </summary>
 	public class AsyncDocumentSession : InMemoryDocumentSessionOperations, IAsyncDocumentSessionImpl, IAsyncAdvancedSessionOperations, IDocumentQueryGenerator
 	{
-		private AsyncDocumentKeyGeneration asyncDocumentKeyGeneration;
+		private readonly AsyncDocumentKeyGeneration asyncDocumentKeyGeneration;
 
 		/// <summary>
 		/// Initializes a new instance of the <see cref="AsyncDocumentSession"/> class.
@@ -58,6 +59,122 @@ namespace Raven.Client.Document.Async
 			                            .ContinueWith(task => (IEnumerable<T>) task.Result.Select(TrackEntity<T>).ToList());
 		}
 
+        public Task<IAsyncEnumerator<StreamResult<T>>> StreamAsync<T>(IAsyncDocumentQuery<T> query)
+		{
+			return StreamAsync(query, new Reference<QueryHeaderInformation>());
+		}
+
+		public Task<IAsyncEnumerator<StreamResult<T>>> StreamAsync<T>(IQueryable<T> query)
+		{
+			return StreamAsync(query, new Reference<QueryHeaderInformation>());
+		}
+
+
+		public async Task<IAsyncEnumerator<StreamResult<T>>> StreamAsync<T>(IQueryable<T> query, Reference<QueryHeaderInformation> queryHeaderInformation)
+		{
+		    var queryInspector = (IRavenQueryProvider) query.Provider;
+			var indexQuery = queryInspector.ToAsyncLuceneQuery<T>(query.Expression);
+		    return await StreamAsync(indexQuery, queryHeaderInformation);
+		}
+
+		public async Task<IAsyncEnumerator<StreamResult<T>>> StreamAsync<T>(IAsyncDocumentQuery<T> query, Reference<QueryHeaderInformation> queryHeaderInformation)
+		{
+			var ravenQueryInspector = ((IRavenQueryInspector)query);
+			var indexQuery = ravenQueryInspector.GetIndexQuery(true);
+			var enumerator = await AsyncDatabaseCommands.StreamQueryAsync(ravenQueryInspector.AsyncIndexQueried, indexQuery, queryHeaderInformation);
+		    var queryOperation = ((AsyncDocumentQuery<T>) query).InitializeQueryOperation(null);
+		    return new QueryYieldStream<T>(this, enumerator, queryOperation);
+		}
+
+		public async Task<IAsyncEnumerator<StreamResult<T>>> StreamAsync<T>(Etag fromEtag = null, string startsWith = null, string matches = null, int start = 0,
+		                           int pageSize = Int32.MaxValue)
+		{
+			var enumerator = await AsyncDatabaseCommands.StreamDocsAsync(fromEtag, startsWith, matches, start, pageSize);
+			return new DocsYieldStream<T>(this, enumerator);
+		}
+
+		public abstract class YieldStream<T> : IAsyncEnumerator<StreamResult<T>>
+		{
+		    protected readonly AsyncDocumentSession parent;
+		    protected readonly IAsyncEnumerator<RavenJObject> enumerator;
+
+		    protected YieldStream(AsyncDocumentSession parent,IAsyncEnumerator<RavenJObject> enumerator)
+			{
+				this.parent = parent;
+				this.enumerator = enumerator;
+			}
+
+			public void Dispose()
+			{
+				enumerator.Dispose();
+			}
+
+			public async Task<bool> MoveNextAsync()
+			{
+				if (await enumerator.MoveNextAsync() == false)
+					return false;
+
+				SetCurrent();
+
+			    return true;
+			}
+
+		    protected abstract void SetCurrent();
+
+		    public StreamResult<T> Current { get; protected set; }
+		}
+        public class QueryYieldStream<T> : YieldStream<T>
+        {
+            private readonly QueryOperation queryOperation;
+
+            public QueryYieldStream(AsyncDocumentSession parent, IAsyncEnumerator<RavenJObject> enumerator, QueryOperation queryOperation) : base(parent, enumerator)
+            {
+                this.queryOperation = queryOperation;
+            }
+
+            protected override void SetCurrent()
+            {
+                var meta = enumerator.Current.Value<RavenJObject>(Constants.Metadata);
+
+                string key = null;
+                Etag etag = null;
+                if (meta != null)
+                {
+                    key = meta.Value<string>(Constants.DocumentIdFieldName);
+                    var value = meta.Value<string>("@etag");
+                    if (value != null)
+                        etag = Etag.Parse(value);
+                }
+
+                Current = new StreamResult<T>
+                {
+                    Document = queryOperation.Deserialize<T>(enumerator.Current),
+                    Etag = etag,
+                    Key = key,
+                    Metdata = meta
+                };
+            }
+        }
+
+        public class DocsYieldStream<T> : YieldStream<T>
+        {
+            public DocsYieldStream(AsyncDocumentSession parent, IAsyncEnumerator<RavenJObject> enumerator) : base(parent, enumerator)
+            {
+            }
+
+            protected override void SetCurrent()
+            {
+                var document = SerializationHelper.RavenJObjectToJsonDocument(enumerator.Current);
+
+                Current = new StreamResult<T>
+                {
+                    Document = (T)parent.ConvertToEntity<T>(document.Key, document.DataAsJson, document.Metadata),
+                    Etag = document.Etag,
+                    Key = document.Key,
+                    Metdata = document.Metadata
+                };
+            }
+        }
 		/// <summary>
 		/// Query the specified index using Lucene syntax
 		/// </summary>
@@ -224,30 +341,31 @@ namespace Raven.Client.Document.Async
 		/// <returns></returns>
 		public Task<T[]> LoadAsync<T>(params string[] ids)
 		{
-			return LoadAsyncInternal<T>(ids, new string[0]);
+			return LoadAsyncInternal<T>(ids, new KeyValuePair<string, Type>[0]);
 		}
 
 		public Task<T[]> LoadAsync<T>(IEnumerable<string> ids)
 		{
-			return LoadAsyncInternal<T>(ids.ToArray(), new string[0]);
+			return LoadAsyncInternal<T>(ids.ToArray(), new KeyValuePair<string, Type>[0]);
 		}
 
 		/// <summary>
 		/// Begins the async multi load operation
 		/// </summary>
-		public Task<T[]> LoadAsyncInternal<T>(string[] ids, string[] includes)
+		public Task<T[]> LoadAsyncInternal<T>(string[] ids, KeyValuePair<string, Type>[] includes)
 		{
 			IncrementRequestCount();
 			var multiLoadOperation = new MultiLoadOperation(this, AsyncDatabaseCommands.DisableAllCaching, ids, includes);
 			return LoadAsyncInternal<T>(ids, includes, multiLoadOperation);
 		}
 
-		private Task<T[]> LoadAsyncInternal<T>(string[] ids, string[] includes, MultiLoadOperation multiLoadOperation)
+		private Task<T[]> LoadAsyncInternal<T>(string[] ids, KeyValuePair<string, Type>[] includes, MultiLoadOperation multiLoadOperation)
 		{
 			multiLoadOperation.LogOperation();
 			using (multiLoadOperation.EnterMultiLoadContext())
 			{
-				return AsyncDatabaseCommands.GetAsync(ids, includes)
+				var includePaths = includes != null ? includes.Select(x => x.Key).ToArray() : null;
+				return AsyncDatabaseCommands.GetAsync(ids, includePaths)
 				                            .ContinueWith(t =>
 				                            {
 					                            if (multiLoadOperation.SetResult(t.Result) == false)
@@ -325,16 +443,6 @@ namespace Raven.Client.Document.Async
 		/// </summary>
 		/// <param name="txId">The tx id.</param>
 		public override void Rollback(Guid txId)
-		{
-			throw new NotImplementedException();
-		}
-
-		/// <summary>
-		/// Promotes the transaction.
-		/// </summary>
-		/// <param name="fromTxId">From tx id.</param>
-		/// <returns></returns>
-		public override byte[] PromoteTransaction(Guid fromTxId)
 		{
 			throw new NotImplementedException();
 		}

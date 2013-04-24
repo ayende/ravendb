@@ -44,5 +44,16 @@ namespace Raven.Abstractions.Extensions
 			             .Unwrap();
 		}
 
+		public static async Task<bool> WaitWithTimeout(this Task task, TimeSpan? timeout)
+		{
+			if (timeout == null)
+			{
+				await task;
+				return true;
+			}
+			if (task == await TaskEx.WhenAny(task, TaskEx.Delay(timeout.Value)))
+				return true;
+			return false;
+		}
 	}
 }

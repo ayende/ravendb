@@ -3,6 +3,7 @@
 //     Copyright (c) Hibernating Rhinos LTD. All rights reserved.
 // </copyright>
 //-----------------------------------------------------------------------
+#if !SILVERLIGHT
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -140,10 +141,11 @@ namespace Raven.Client.Shard
 			return LoadAsyncInternal<T>(ids, null);
 		}
 
-		public Task<T[]> LoadAsyncInternal<T>(string[] ids, string[] includes)
+		public Task<T[]> LoadAsyncInternal<T>(string[] ids, KeyValuePair<string, Type>[] includes)
 		{
 			var results = new T[ids.Length];
-			var idsToLoad = GetIdsThatNeedLoading<T>(ids, includes);
+			var includePaths = includes != null ? includes.Select(x => x.Key).ToArray() : null;
+            var idsToLoad = GetIdsThatNeedLoading<T>(ids, includePaths);
 
 			if (!idsToLoad.Any())
 				return CompletedTask.With(new T[ids.Length]);
@@ -169,7 +171,7 @@ namespace Raven.Client.Shard
 						multiLoadOperation.LogOperation();
 
 						IDisposable loadContext = multiLoadOperation.EnterMultiLoadContext();
-						return commands.GetAsync(idsForCurrentShards, includes).ContinueWith(task =>
+						return commands.GetAsync(idsForCurrentShards, includePaths).ContinueWith(task =>
 						{
 							loadContext.Dispose();
 
@@ -262,6 +264,33 @@ namespace Raven.Client.Shard
 			return AsyncLuceneQuery<T>(GetDynamicIndexName<T>());
 		}
 
+        public Task<IAsyncEnumerator<StreamResult<T>>> StreamAsync<T>(IAsyncDocumentQuery<T> query)
+		{
+			return StreamAsync(query, new Reference<QueryHeaderInformation>());
+		}
+
+		public Task<IAsyncEnumerator<StreamResult<T>>> StreamAsync<T>(IQueryable<T> query)
+		{
+			return StreamAsync(query, new Reference<QueryHeaderInformation>());
+		}
+
+        public Task<IAsyncEnumerator<StreamResult<T>>> StreamAsync<T>(IAsyncDocumentQuery<T> query, Reference<QueryHeaderInformation> queryHeaderInformation)
+		{
+			throw new NotSupportedException("Streams are currently not supported by sharded document store");
+		}
+
+
+		public Task<IAsyncEnumerator<StreamResult<T>>> StreamAsync<T>(IQueryable<T> query, Reference<QueryHeaderInformation> queryHeaderInformation)
+		{
+			throw new NotSupportedException("Streams are currently not supported by sharded document store");
+		}
+
+		public Task<IAsyncEnumerator<StreamResult<T>>> StreamAsync<T>(Etag fromEtag = null, string startsWith = null, string matches = null, int start = 0,
+		                           int pageSize = Int32.MaxValue)
+		{
+			throw new NotSupportedException("Streams are currently not supported by sharded document store");
+		}
+
 		#endregion
 
 		/// <summary>
@@ -351,3 +380,4 @@ namespace Raven.Client.Shard
 		}
 	}
 }
+#endif

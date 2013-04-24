@@ -69,6 +69,15 @@ namespace Raven.Database.Server.Abstractions
 			set { response.ContentType = value; }
 		}
 
+		// for HTTP Listener, we never actually buffer, but we pretend we do
+		// so we won't send the headers after we already sent data to the client
+		private bool bufferOutput = true;
+		public bool BufferOutput
+		{
+			get { return bufferOutput; }
+			set { bufferOutput = value; }
+		}
+
 		public void Redirect(string url)
 		{
 			response.Redirect(RedirectionPrefix + url);
@@ -81,7 +90,7 @@ namespace Raven.Database.Server.Abstractions
 			var exceptionAggregator = new ExceptionAggregator(log, "Failed to close response");
 			exceptionAggregator.Execute(OutputStream.Flush);
 			exceptionAggregator.Execute(OutputStream.Dispose);
-			if (StreamsToDispose!= null)
+			if (StreamsToDispose != null)
 			{
 				foreach (var stream in StreamsToDispose)
 				{
@@ -96,7 +105,7 @@ namespace Raven.Database.Server.Abstractions
 
 		public void WriteFile(string path)
 		{
-			using(var file = File.OpenRead(path))
+			using (var file = File.OpenRead(path))
 			{
 				file.CopyTo(OutputStream);
 			}
@@ -133,7 +142,7 @@ namespace Raven.Database.Server.Abstractions
 
 		public void SetCookie(string name, string val)
 		{
-			response.SetCookie(new Cookie(name,val)
+			response.SetCookie(new Cookie(name, val)
 			{
 				Expires = SystemTime.UtcNow.AddHours(1),
 				HttpOnly = true,
@@ -148,7 +157,7 @@ namespace Raven.Database.Server.Abstractions
 
 		public void Dispose()
 		{
-			if(OutputStream != null)
+			if (OutputStream != null)
 				OutputStream.Dispose();
 		}
 	}

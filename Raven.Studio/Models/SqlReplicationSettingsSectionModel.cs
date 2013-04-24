@@ -104,7 +104,15 @@ namespace Raven.Studio.Models
 		{
 			get
 			{
-				return new ActionCommand(() => SelectedReplication.Value.SqlReplicationTables.Add(new SqlReplicationTable()));
+				return new ActionCommand(() =>
+				{
+					if (SelectedReplication.Value == null)
+						return;
+					if (SelectedReplication.Value.SqlReplicationTables == null)
+						SelectedReplication.Value.SqlReplicationTables = new ObservableCollection<SqlReplicationTable>();
+
+					SelectedReplication.Value.SqlReplicationTables.Add(new SqlReplicationTable());
+				});
 			}
 		}
 
@@ -194,9 +202,9 @@ namespace Raven.Studio.Models
 			SqlReplicationConfigs.Remove(replication);
 		}
 
-		public override void LoadFor(DatabaseDocument database)
+		public override void LoadFor(DatabaseDocument _)
 		{
-			ApplicationModel.Current.Server.Value.DocumentStore.OpenAsyncSession(database.Id)
+			ApplicationModel.Current.Server.Value.DocumentStore.OpenAsyncSession(ApplicationModel.Current.Server.Value.SelectedDatabase.Value.Name)
 				.Advanced.LoadStartingWithAsync<SqlReplicationConfig>("Raven/SqlReplication/Configuration/")
 				.ContinueOnSuccessInTheUIThread(documents =>
 				{

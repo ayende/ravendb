@@ -24,6 +24,7 @@ namespace Raven.Database.Server.Connections
 
         private int watchAllDocuments;
         private int watchAllIndexes;
+        private int watchAllReplicationConflicts;
 
         public ConnectionState(EventsTransport eventsTransport)
         {
@@ -109,6 +110,18 @@ namespace Raven.Database.Server.Connections
             Enqueue(value);
         }
 
+        public void Send(ReplicationConflictNotification replicationConflictNotification)
+        {
+            var value = new { Value = replicationConflictNotification, Type = "ReplicationConflictNotification" };
+
+            if (watchAllReplicationConflicts <= 0)
+            {
+                return;
+            }
+
+            Enqueue(value);
+        }
+
         private void Enqueue(object msg)
         {
             if (eventsTransport == null || eventsTransport.Connected == false)
@@ -119,11 +132,11 @@ namespace Raven.Database.Server.Connections
 
             eventsTransport.SendAsync(msg)
                 .ContinueWith(task =>
-                                {
-                                    if (task.IsFaulted == false)
-                                        return;
-                                    pendingMessages.Enqueue(msg);
-                                });
+                {
+                    if (task.IsFaulted == false)
+                        return;
+                    pendingMessages.Enqueue(msg);
+                });
         }
 
         public void WatchAllDocuments()
@@ -156,6 +169,16 @@ namespace Raven.Database.Server.Connections
             matchingDocumentPrefixes.TryRemove(name);
         }
 
+        public void WatchAllReplicationConflicts()
+        {
+            Interlocked.Increment(ref watchAllReplicationConflicts);
+        }
+
+        public void UnwatchAllReplicationConflicts()
+        {
+            Interlocked.Decrement(ref watchAllReplicationConflicts);
+        }
+
         public void Reconnect(EventsTransport transport)
         {
             eventsTransport = transport;
@@ -168,14 +191,14 @@ namespace Raven.Database.Server.Connections
 
             eventsTransport.SendManyAsync(items)
                 .ContinueWith(task =>
-                                {
-                                    if (task.IsFaulted == false)
-                                        return;
-                                    foreach (var item in items)
-                                    {
-                                        pendingMessages.Enqueue(item);
-                                    }
-                                });
+                {
+                    if (task.IsFaulted == false)
+                        return;
+                    foreach (var item in items)
+                    {
+                        pendingMessages.Enqueue(item);
+                    }
+                });
         }
 
         public void Disconnect()

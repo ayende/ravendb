@@ -1,3 +1,4 @@
+#if !NETFX_CORE && !SILVERLIGHT
 //-----------------------------------------------------------------------
 // <copyright file="HttpJsonRequest.cs" company="Hibernating Rhinos LTD">
 //     Copyright (c) Hibernating Rhinos LTD. All rights reserved.
@@ -5,18 +6,24 @@
 //-----------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
+#if SILVERLIGHT || NETFX_CORE
+using Raven.Client.Silverlight.MissingFromSilverlight;
+#else
 using System.Collections.Specialized;
+#endif
 using System.Diagnostics;
 using System.IO;
 #if !SILVERLIGHT
 using System.IO.Compression;
-#else
-using Raven.Client.Silverlight.MissingFromSilverlight;
+#endif
+#if NETFX_CORE
+using Raven.Client.WinRT.Connection;
 #endif
 using System.Net;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Raven.Abstractions.Exceptions;
 using Raven.Abstractions.Util;
 using Raven.Imports.Newtonsoft.Json;
 using Raven.Imports.Newtonsoft.Json.Linq;
@@ -430,6 +437,8 @@ namespace Raven.Client.Connection
 				return result;
 			}
 
+
+
 			using (var sr = new StreamReader(e.Response.GetResponseStreamWithHttpDecompression()))
 			{
 				var readToEnd = sr.ReadToEnd();
@@ -457,7 +466,14 @@ namespace Raven.Client.Connection
 				{
 					throw new InvalidOperationException(readToEnd, e);
 				}
-
+                if (ravenJObject.ContainsKey("IndexDefinitionProperty"))
+                {
+                    throw new IndexCompilationException(ravenJObject.Value<string>("Message"))
+                    {
+                        IndexDefinitionProperty = ravenJObject.Value<string>("IndexDefinitionProperty"),
+                        ProblematicText = ravenJObject.Value<string>("ProblematicText")
+                    };
+                }
 				if (ravenJObject.ContainsKey("Error"))
 				{
 					var sb = new StringBuilder();
@@ -502,7 +518,7 @@ namespace Raven.Client.Connection
 
 		public HttpJsonRequest AddReplicationStatusHeaders(string thePrimaryUrl, string currentUrl, ReplicationInformer replicationInformer, FailoverBehavior failoverBehavior, Action<NameValueCollection, string, string> handleReplicationStatusChanges)
 		{
-			if (thePrimaryUrl.Equals(currentUrl, StringComparison.InvariantCultureIgnoreCase))
+			if (thePrimaryUrl.Equals(currentUrl, StringComparison.OrdinalIgnoreCase))
 				return this;
 			if (replicationInformer.GetFailureCount(thePrimaryUrl) <= 0)
 				return this; // not because of failover, no need to do this.
@@ -673,8 +689,9 @@ namespace Raven.Client.Connection
 			{
 				writer.Write(postedData);
 				writer.Flush();
-
+#if !MONO
 				compressed.Flush();
+#endif
 				dataStream.Flush();
 			}
 		}
@@ -839,7 +856,36 @@ namespace Raven.Client.Connection
 					.Append(httpWebResponse.StatusDescription)
 					.AppendLine();
 
-				using (var reader = new StreamReader(httpWebResponse.GetResponseStream()))
+				using (var reader = new StreamReader(httpWebResponse.GetResponseStreamWithHttpDecompression()))
+				{
+					string line;
+					while ((line = reader.ReadLine()) != null)
+					{
+						sb.AppendLine(line);
+					}
+				}
+				throw new InvalidOperationException(sb.ToString(), we);
+			}
+		}
+
+		public async Task<WebResponse> RawExecuteRequestAsync()
+		{
+			try
+			{
+				return await webRequest.GetResponseAsync();
+			}
+			catch (WebException we)
+			{
+				var httpWebResponse = we.Response as HttpWebResponse;
+				if (httpWebResponse == null)
+					throw;
+				var sb = new StringBuilder()
+					.Append(httpWebResponse.StatusCode)
+					.Append(" ")
+					.Append(httpWebResponse.StatusDescription)
+					.AppendLine();
+
+				using (var reader = new StreamReader(httpWebResponse.GetResponseStreamWithHttpDecompression()))
 				{
 					string line;
 					while ((line = reader.ReadLine()) != null)
@@ -858,3 +904,4 @@ namespace Raven.Client.Connection
 		}
 	}
 }
+#endif

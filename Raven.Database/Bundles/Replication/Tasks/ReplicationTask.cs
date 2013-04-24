@@ -11,7 +11,6 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
-using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using Raven.Abstractions;
@@ -23,13 +22,11 @@ using Raven.Abstractions.Replication;
 using Raven.Abstractions.Util;
 using Raven.Bundles.Replication.Data;
 using Raven.Database;
-using Raven.Database.Bundles.Replication;
 using Raven.Database.Data;
 using Raven.Database.Impl;
 using Raven.Database.Plugins;
 using Raven.Database.Server;
 using Raven.Database.Storage;
-using Raven.Database.Util;
 using Raven.Json.Linq;
 
 namespace Raven.Bundles.Replication.Tasks
@@ -43,13 +40,13 @@ namespace Raven.Bundles.Replication.Tasks
 			public int Value;
 		}
 
-		public ConcurrentQueue<Task> activeTasks = new ConcurrentQueue<Task>();
+		public readonly ConcurrentQueue<Task> activeTasks = new ConcurrentQueue<Task>();
 
 		private readonly ConcurrentDictionary<string, DestinationStats> destinationStats =
-			new ConcurrentDictionary<string, DestinationStats>(StringComparer.InvariantCultureIgnoreCase);
+			new ConcurrentDictionary<string, DestinationStats>(StringComparer.OrdinalIgnoreCase);
 
 		private DocumentDatabase docDb;
-		private readonly ILog log = LogManager.GetCurrentClassLogger();
+		private readonly static ILog log = LogManager.GetCurrentClassLogger();
 		private bool firstTimeFoundNoReplicationDocument = true;
 		private readonly ConcurrentDictionary<string, IntHolder> activeReplicationTasks = new ConcurrentDictionary<string, IntHolder>();
 
@@ -75,16 +72,12 @@ namespace Raven.Bundles.Replication.Tasks
 
 			httpRavenRequestFactory = new HttpRavenRequestFactory { RequestTimeoutInMs = replicationRequestTimeoutInMs };
 
-			var thread = new Thread(Execute)
-			{
-				IsBackground = true,
-				Name = "Replication Thread"
-			};
-			var disposableAction = new DisposableAction(thread.Join);
-			// make sure that the doc db waits for the replication thread shutdown
+            var task = new Task(Execute, TaskCreationOptions.LongRunning);
+			var disposableAction = new DisposableAction(task.Wait);
+			// make sure that the doc db waits for the replication task shutdown
 			docDb.ExtensionsState.GetOrAdd(Guid.NewGuid().ToString(), s => disposableAction);
-			thread.Start();
-
+			task.Start();
+            
 
 		}
 
@@ -155,11 +148,11 @@ namespace Raven.Bundles.Replication.Tasks
 											if (!task.IsCompleted && !task.IsCanceled && !task.IsFaulted)
 												break;
 											activeTasks.TryDequeue(out task); // remove it from end
-										}
-									});
 								}
+									});
 							}
 						}
+					}
 					}
 					catch (Exception e)
 					{
@@ -207,7 +200,7 @@ namespace Raven.Bundles.Replication.Tasks
 					var match = replicationDestinations.FirstOrDefault(x =>
 														   string.Equals(x.ConnectionStringOptions.Url,
 																		 sourceReplicationInformation.Source,
-																		 StringComparison.InvariantCultureIgnoreCase));
+																		 StringComparison.OrdinalIgnoreCase));
 
 					if (match != null)
 					{
@@ -285,7 +278,7 @@ namespace Raven.Bundles.Replication.Tasks
 			return true;
 		}
 
-		private static string EscapeDestinationName(string url)
+		public static string EscapeDestinationName(string url)
 		{
 			return Uri.EscapeDataString(url.Replace("http://", "").Replace("/", "").Replace(":", ""));
 		}
@@ -295,8 +288,7 @@ namespace Raven.Bundles.Replication.Tasks
 			if (firstTimeFoundNoReplicationDocument)
 			{
 				firstTimeFoundNoReplicationDocument = false;
-				log.Warn(
-					"Replication bundle is installed, but there is no destination in 'Raven/Replication/Destinations'.\r\nReplication results in NO-OP");
+				log.Warn("Replication bundle is installed, but there is no destination in 'Raven/Replication/Destinations'.\r\nReplication results in NO-OP");
 			}
 		}
 
@@ -373,8 +365,7 @@ namespace Raven.Bundles.Replication.Tasks
 						destination);
 					if (TryReplicationAttachments(destination, attachments, out lastError))// success on second fail
 					{
-						RecordSuccess(destination.ConnectionStringOptions.Url,
-							lastReplicatedEtag: tuple.Item2);
+						RecordSuccess(destination.ConnectionStringOptions.Url,lastReplicatedEtag: tuple.Item2);
 						return true;
 					}
 				}
@@ -428,16 +419,16 @@ namespace Raven.Bundles.Replication.Tasks
 			return true;
 		}
 
-		private void SetLastReplicatedEtagForServer(ReplicationStrategy destination, Guid? lastDocEtag = null, Guid? lastAttachmentEtag = null)
+		private void SetLastReplicatedEtagForServer(ReplicationStrategy destination, Etag lastDocEtag = null, Etag lastAttachmentEtag = null)
 		{
 			try
 			{
 				var url = destination.ConnectionStringOptions.Url + "/replication/lastEtag?from=" + UrlEncodedServerUrl() +
 						  "&dbid=" + docDb.TransactionalStorage.Id;
 				if (lastDocEtag != null)
-					url += "&docEtag=" + lastDocEtag.Value;
+					url += "&docEtag=" + lastDocEtag;
 				if (lastAttachmentEtag != null)
-					url += "&attachmentEtag=" + lastAttachmentEtag.Value;
+					url += "&attachmentEtag=" + lastAttachmentEtag;
 
 				var request = httpRavenRequestFactory.Create(url, "PUT", destination.ConnectionStringOptions);
 				request.Write(new byte[0]);
@@ -476,21 +467,21 @@ namespace Raven.Bundles.Replication.Tasks
 					  RavenJObject.FromObject(failureInformation), new RavenJObject(), null);
 		}
 
-		private void RecordLastEtagChecked(string url, Guid lastEtagChecked)
+		private void RecordLastEtagChecked(string url, Etag lastEtagChecked)
 		{
 			var stats = destinationStats.GetOrDefault(url, new DestinationStats { Url = url });
 			stats.LastEtagCheckedForReplication = lastEtagChecked;
 		}
 
 		private void RecordSuccess(string url, 
-			Guid? lastReplicatedEtag = null, DateTime? lastReplicatedLastModified = null,
+			Etag lastReplicatedEtag = null, DateTime? lastReplicatedLastModified = null,
 			DateTime? lastHeartbeatReceived = null, string lastError = null)
 		{
 			var stats = destinationStats.GetOrAdd(url, new DestinationStats { Url = url });
 			Interlocked.Exchange(ref stats.FailureCountInternal, 0);
 			stats.LastSuccessTimestamp = SystemTime.UtcNow;
 
-			if (lastReplicatedEtag.HasValue)
+			if (lastReplicatedEtag != null)
 			{
 				stats.LastEtagCheckedForReplication = lastReplicatedEtag;
 				stats.LastReplicatedEtag = lastReplicatedEtag;
@@ -502,11 +493,10 @@ namespace Raven.Bundles.Replication.Tasks
 			if (lastHeartbeatReceived.HasValue)
 				stats.LastHeartbeatReceived = lastHeartbeatReceived;
 
-			if (!String.IsNullOrWhiteSpace(lastError))
+			if (!string.IsNullOrWhiteSpace(lastError))
 				stats.LastError = lastError;
 			
-			docDb.Delete(Constants.RavenReplicationDestinationsBasePath + EscapeDestinationName(url), null,
-						 null);
+			docDb.Delete(Constants.RavenReplicationDestinationsBasePath + EscapeDestinationName(url), null, null);
 		}
 
 		private bool IsFirstFailure(string url)
@@ -624,7 +614,7 @@ namespace Raven.Bundles.Replication.Tasks
 
 		private class JsonDocumentsToReplicate
 		{
-			public Guid LastEtag { get; set; }
+			public Etag LastEtag { get; set; }
 			public DateTime LastLastModified { get; set; }
 			public RavenJArray Documents { get; set; }
 			public int CountOfFilteredDocumentsWhichAreSystemDocuments { get; set; }
@@ -654,7 +644,7 @@ namespace Raven.Bundles.Replication.Tasks
 									var info = docDb.GetRecentTouchesFor(document.Key);
 									if(info != null)
 									{
-										if (Etag.IsGreaterThan(info.PreTouchEtag, result.LastEtag) == false)
+										if (info.PreTouchEtag.CompareTo(result.LastEtag) <= 0)
 											return false;
 									}
 	
@@ -669,7 +659,7 @@ namespace Raven.Bundles.Replication.Tasks
 						{
 							var lastDoc = docsToReplicate.Last();
 							Debug.Assert(lastDoc.Etag != null);
-							result.LastEtag = lastDoc.Etag.Value;
+							result.LastEtag = lastDoc.Etag;
 							if (lastDoc.LastModified.HasValue)
 								result.LastLastModified = lastDoc.LastModified.Value;
 						}
@@ -722,7 +712,7 @@ namespace Raven.Bundles.Replication.Tasks
 		private static List<JsonDocument> GetDocsToReplicate(IStorageActionsAccessor actions, JsonDocumentsToReplicate result)
 		{
 			var docsToReplicate = actions.Documents.GetDocumentsAfter(result.LastEtag, 1024, 1024*1024*25).ToList();
-			Guid? lastEtag = null;
+			Etag lastEtag = null;
 			if (docsToReplicate.Count > 0)
 			{
 				lastEtag = docsToReplicate[docsToReplicate.Count - 1].Etag;
@@ -735,15 +725,15 @@ namespace Raven.Bundles.Replication.Tasks
 						        Metadata = x.Data,
 						        DataAsJson = new RavenJObject()
 					        }))
-				.OrderBy(x => new ComparableByteArray(x.Etag ?? Guid.Empty))
+				.OrderBy(x => x.Etag)
 				.ToList();
 		}
 
 
-		private Tuple<RavenJArray, Guid> GetAttachments(SourceReplicationInformation destinationsReplicationInformationForSource, ReplicationStrategy destination)
+		private Tuple<RavenJArray, Etag> GetAttachments(SourceReplicationInformation destinationsReplicationInformationForSource, ReplicationStrategy destination)
 		{
 			RavenJArray attachments = null;
-			Guid lastAttachmentEtag = Guid.Empty;
+			Etag lastAttachmentEtag = Etag.Empty;
 			try
 			{
 				var destinationId = destinationsReplicationInformationForSource.ServerInstanceId.ToString();
@@ -769,7 +759,7 @@ namespace Raven.Bundles.Replication.Tasks
 						}
 
 						AttachmentInformation jsonDocument = attachmentsToReplicate.Last();
-						Guid attachmentEtag = jsonDocument.Etag;
+						Etag attachmentEtag = jsonDocument.Etag;
 						log.Debug("All the attachments were filtered, trying another batch from etag [>{0}]", attachmentEtag);
 						lastAttachmentEtag = attachmentEtag;
 					}
@@ -820,11 +810,11 @@ namespace Raven.Bundles.Replication.Tasks
 			return Tuple.Create(attachments, lastAttachmentEtag);
 		}
 
-		private static List<AttachmentInformation> GetAttachmentsToReplicate(IStorageActionsAccessor actions, Guid lastAttachmentEtag)
+		private static List<AttachmentInformation> GetAttachmentsToReplicate(IStorageActionsAccessor actions, Etag lastAttachmentEtag)
 		{
 			var attachmentInformations = actions.Attachments.GetAttachmentsAfter(lastAttachmentEtag, 100, 1024*1024*10).ToList();
 
-			Guid? lastEtag = null;
+			Etag lastEtag = null;
 			if (attachmentInformations.Count > 0)
 				lastEtag = attachmentInformations[attachmentInformations.Count - 1].Etag;
 
@@ -845,7 +835,7 @@ namespace Raven.Bundles.Replication.Tasks
 		{
 			try
 			{
-				var currentEtag = Guid.Empty;
+				Etag currentEtag = Etag.Empty;
 				docDb.TransactionalStorage.Batch(accessor => currentEtag = accessor.Staleness.GetMostRecentDocumentEtag());
 				var url = destination.ConnectionStringOptions.Url + "/replication/lastEtag?from=" + UrlEncodedServerUrl() +
 						  "&currentEtag=" + currentEtag + "&dbid=" + docDb.TransactionalStorage.Id;
@@ -977,8 +967,6 @@ namespace Raven.Bundles.Replication.Tasks
 			docDb.WorkContext.NotifyAboutWork();
 		}
 
-		private readonly ConcurrentDictionary<string, DateTime> heartbeatDictionary = new ConcurrentDictionary<string, DateTime>(StringComparer.InvariantCultureIgnoreCase);
-
 		public void Dispose()
 		{
 			Task task;
@@ -987,5 +975,6 @@ namespace Raven.Bundles.Replication.Tasks
 				task.Wait();
 			}
 		}
+		private readonly ConcurrentDictionary<string, DateTime> heartbeatDictionary = new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
 	}
 }

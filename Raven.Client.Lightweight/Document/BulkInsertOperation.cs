@@ -1,6 +1,13 @@
-﻿using System;
+﻿#if !SILVERLIGHT && !NETFX_CORE
+using System;
+using System.Threading.Tasks;
 using Raven.Abstractions.Data;
+#if !SILVERLIGHT
 using Raven.Client.Connection;
+#else
+using Raven.Client.Connection.Async;
+#endif
+using Raven.Client.Extensions;
 using Raven.Json.Linq;
 
 namespace Raven.Client.Document
@@ -10,14 +17,18 @@ namespace Raven.Client.Document
 		private readonly IDocumentStore documentStore;
 		private readonly GenerateEntityIdOnTheClient generateEntityIdOnTheClient;
 		private readonly ILowLevelBulkInsertOperation operation;
-		private readonly IDatabaseCommands databaseCommands;
+#if !SILVERLIGHT
+		public IDatabaseCommands DatabaseCommands { get; private set; }
+#else
+		public IAsyncDatabaseCommands DatabaseCommands { get; private set; }
+#endif
 		private readonly EntityToJson entityToJson;
 
 		public delegate void BeforeEntityInsert(string id, RavenJObject data, RavenJObject metadata);
 
-		public event BeforeEntityInsert OnBeforeEntityInsert = delegate { }; 
+		public event BeforeEntityInsert OnBeforeEntityInsert = delegate { };
 
-		public event Action<string>  Report
+		public event Action<string> Report
 		{
 			add { operation.Report += value; }
 			remove { operation.Report -= value; }
@@ -26,13 +37,30 @@ namespace Raven.Client.Document
 		public BulkInsertOperation(string database, IDocumentStore documentStore, DocumentSessionListeners listeners, BulkInsertOptions options)
 		{
 			this.documentStore = documentStore;
-			databaseCommands = database == null
-				                   ? documentStore.DatabaseCommands.ForSystemDatabase()
-				                   : documentStore.DatabaseCommands.ForDatabase(database);
 
-			generateEntityIdOnTheClient = new GenerateEntityIdOnTheClient(documentStore, entity => documentStore.Conventions.GenerateDocumentKey(database, databaseCommands, entity));
-			operation = databaseCommands.GetBulkInsertOperation(options);
+			database = database ?? MultiDatabase.GetDatabaseName(documentStore.Url);
+
+#if !SILVERLIGHT
+			// Fitzchak: Should not be ever null because of the above code, please refactor this.
+			DatabaseCommands = database == null
+								   ? documentStore.DatabaseCommands.ForSystemDatabase()
+								   : documentStore.DatabaseCommands.ForDatabase(database);
+
+			generateEntityIdOnTheClient = new GenerateEntityIdOnTheClient(documentStore, entity => documentStore.Conventions.GenerateDocumentKey(database, DatabaseCommands, entity));
+#else
+			DatabaseCommands = database == null
+								   ? documentStore.AsyncDatabaseCommands.ForSystemDatabase()
+								   : documentStore.AsyncDatabaseCommands.ForDatabase(database);
+
+			generateEntityIdOnTheClient = new GenerateEntityIdOnTheClient(documentStore, entity => documentStore.Conventions.GenerateDocumentKeyAsync(database, DatabaseCommands, entity).Result);
+#endif
+			operation = DatabaseCommands.GetBulkInsertOperation(options);
 			entityToJson = new EntityToJson(documentStore, listeners);
+		}
+
+		public Task DisposeAsync()
+		{
+			return operation.DisposeAsync();
 		}
 
 		public void Dispose()
@@ -60,6 +88,13 @@ namespace Raven.Client.Document
 			operation.Write(id, metadata, data);
 		}
 
+		public void Store(RavenJObject document, RavenJObject metadata, string id)
+		{
+			OnBeforeEntityInsert(id, document, metadata);
+
+			operation.Write(id, metadata, document);
+		}
+
 		private string GetId(object entity)
 		{
 			string id;
@@ -76,3 +111,4 @@ namespace Raven.Client.Document
 		}
 	}
 }
+#endif

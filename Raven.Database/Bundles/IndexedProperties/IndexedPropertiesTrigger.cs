@@ -38,7 +38,7 @@ namespace Raven.Bundles.IndexedProperties
 			private readonly IndexedPropertiesSetupDoc setupDoc;
 			private readonly string index;
 			private readonly AbstractViewGenerator viewGenerator;
-			private readonly ConcurrentSet<string> itemsToRemove = new ConcurrentSet<string>(StringComparer.InvariantCultureIgnoreCase);
+			private readonly ConcurrentSet<string> itemsToRemove = new ConcurrentSet<string>(StringComparer.OrdinalIgnoreCase);
 
 			public IndexPropertyBatcher(DocumentDatabase database, IndexedPropertiesSetupDoc setupDoc, string index, AbstractViewGenerator viewGenerator)
 			{
@@ -129,7 +129,15 @@ namespace Raven.Bundles.IndexedProperties
 					}
 					else if(field.IsBinary == false)
 					{
-						resultDoc.DataAsJson[mapping.Value] = GetStringValue(field);
+						string stringValue = GetStringValue(field);
+						try
+						{
+							resultDoc.DataAsJson[mapping.Value] = RavenJToken.Parse(stringValue);
+						}
+						catch
+						{
+							resultDoc.DataAsJson[mapping.Value] = stringValue;
+						}
 					}
 					changesMade = true;
 				}

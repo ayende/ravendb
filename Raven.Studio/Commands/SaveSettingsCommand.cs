@@ -2,11 +2,16 @@
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Globalization;
+using System.Net;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Replication;
+using Raven.Client.Connection;
 using Raven.Client.Extensions;
 using Raven.Database.Bundles.SqlReplication;
 using Raven.Json.Linq;
+using Raven.Studio.Controls;
+using Raven.Studio.Features.Bundles;
+using Raven.Studio.Features.Input;
 using Raven.Studio.Infrastructure;
 using Raven.Studio.Messages;
 using Raven.Studio.Models;
@@ -25,22 +30,23 @@ namespace Raven.Studio.Commands
 
 		public override void Execute(object parameter)
 		{
+			if(ApplicationModel.Current == null || ApplicationModel.Current.Server.Value == null || ApplicationModel.Current.Server.Value.SelectedDatabase.Value == null)
+				return;
+			if (settingsModel == null)
+				return;
+
 			var databaseName = ApplicationModel.Current.Server.Value.SelectedDatabase.Value.Name;
 
 			var periodicBackup = settingsModel.GetSection<PeriodicBackupSettingsSectionModel>();
 			if (periodicBackup != null)
 				SavePeriodicBackup(databaseName, periodicBackup);
 
-
 			if(databaseName == Constants.SystemDatabase)
 			{
 				SaveApiKeys();
-				if(SaveWindowsAuth())
-					ApplicationModel.Current.Notifications.Add(new Notification("Api keys and Windows Authentication saved"));
-				else
-				{
-					ApplicationModel.Current.Notifications.Add(new Notification("Only Api keys where saved, something when wrong with Windows Authentication", NotificationLevel.Error));					
-				}
+				ApplicationModel.Current.Notifications.Add(SaveWindowsAuth()
+					? new Notification("Api keys and Windows Authentication saved")
+					: new Notification("Only Api keys where saved, something when wrong with Windows Authentication", NotificationLevel.Error));
 				return;
 			}
 			var session = ApplicationModel.Current.Server.Value.DocumentStore.OpenAsyncSession(databaseName);
@@ -56,6 +62,7 @@ namespace Raven.Studio.Commands
                     (quotaSettings.MaxDocs).ToString(CultureInfo.InvariantCulture);
 				settingsModel.DatabaseDocument.Settings[Constants.DocsSoftLimit] =
                     (quotaSettings.WarnDocs).ToString(CultureInfo.InvariantCulture);
+
 				if (settingsModel.DatabaseDocument.Id == null)
 					settingsModel.DatabaseDocument.Id = databaseName;
 				DatabaseCommands.CreateDatabaseAsync(settingsModel.DatabaseDocument);
@@ -68,16 +75,15 @@ namespace Raven.Studio.Commands
 					.ContinueOnSuccessInTheUIThread(document =>
 					{
                         if (document == null)
-                        {
                             document = new ReplicationDocument();
-                        }
 
 						document.Destinations.Clear();
-                        foreach (var destination in replicationSettings.ReplicationDestinations
-							.Where(destination => !string.IsNullOrWhiteSpace(destination.Url)))
+                        foreach (var destination in replicationSettings.ReplicationDestinations.Where(destination => !string.IsNullOrWhiteSpace(destination.Url)))
 						{
 							document.Destinations.Add(destination);
 						}
+
+						CheckDestinations(document);
 						
 						session.Store(document);
 						session.SaveChangesAsync().Catch();
@@ -88,7 +94,7 @@ namespace Raven.Studio.Commands
 			var sqlReplicationSettings = settingsModel.GetSection<SqlReplicationSettingsSectionModel>();
 			if (sqlReplicationSettings != null)
 			{
-				if (sqlReplicationSettings.SqlReplicationConfigs.Any(config => config.Name == "Temp_Name") == false && sqlReplicationSettings.SqlReplicationConfigs.Any(config => string.IsNullOrWhiteSpace(config.Name)) == false)
+				if (sqlReplicationSettings.SqlReplicationConfigs.Any(config => string.IsNullOrWhiteSpace(config.Name)) == false)
 				{
 					var problemWithTable = false;
 					foreach (var sqlReplicationConfigModel in sqlReplicationSettings.SqlReplicationConfigs)
@@ -103,46 +109,81 @@ namespace Raven.Studio.Commands
 								break;
 							}
 						}
-						if(problemWithTable)
+						if (problemWithTable)
 							break;
 					}
 
 					if (problemWithTable)
 					{
-						ApplicationModel.Current.AddNotification(new Notification("Sql Replicaiton settings were not saved, all tables must distinct names and have document keys", NotificationLevel.Error));
+						ApplicationModel.Current.AddNotification(
+							new Notification(
+								"Sql Replicaiton settings were not saved, all tables must distinct names and have document keys",
+								NotificationLevel.Error));
 					}
 					else
 					{
+						var hasChanges = new List<string>();
 						session.Advanced.LoadStartingWithAsync<SqlReplicationConfig>("Raven/SqlReplication/Configuration/")
-						   .ContinueOnSuccessInTheUIThread(documents =>
-						   {
-							   sqlReplicationSettings.UpdateIds();
-							   if (documents != null)
-							   {
-								   foreach (var sqlReplicationConfig in documents)
-								   {
-									   if (sqlReplicationSettings.SqlReplicationConfigs.All(config => config.Id != sqlReplicationConfig.Id))
-									   {
-										   session.Delete(sqlReplicationConfig);
-									   }
-								   }
-							   }
+						       .ContinueOnSuccessInTheUIThread(documents =>
+						       {
+							       sqlReplicationSettings.UpdateIds();
+							       if (documents != null)
+							       {
+								       hasChanges = sqlReplicationSettings.SqlReplicationConfigs.Where(config =>
+								                                                                       HasChanges(config,
+								                                                                                  documents.FirstOrDefault(
+									                                                                                  replicationConfig =>
+									                                                                                  replicationConfig.Name ==
+									                                                                                  config.Name)))
+								                                          .Select(config => config.Name).ToList();
 
-							   foreach (var sqlReplicationConfig in sqlReplicationSettings.SqlReplicationConfigs)
-							   {
-								   sqlReplicationConfig.Id = "Raven/SqlReplication/Configuration/" + sqlReplicationConfig.Name;
-								   session.Store(sqlReplicationConfig.ToSqlReplicationConfig());
-							   }
+								       foreach (var sqlReplicationConfig in documents)
+								       {
+									       if (sqlReplicationSettings.SqlReplicationConfigs.All(config => config.Id != sqlReplicationConfig.Id))
+									       {
+										       session.Delete(sqlReplicationConfig);
+									       }
+								       }
+							       }
 
-							   session.SaveChangesAsync().Catch();
-						   })
-						   .Catch();
+							       if (hasChanges != null && hasChanges.Count > 0)
+							       {
+								       var resetReplication = new ResetReplication(hasChanges);
+								       resetReplication.ShowAsync().ContinueOnSuccessInTheUIThread(() =>
+								       {
+									       if (resetReplication.Selected.Count == 0)
+										       return;
+									       const string ravenSqlreplicationStatus = "Raven/SqlReplication/Status";
+
+									       session.LoadAsync<SqlReplicationStatus>(ravenSqlreplicationStatus).ContinueOnSuccess(status =>
+									       {
+										       foreach (var name in resetReplication.Selected)
+										       {
+											       var lastReplicatedEtag = status.LastReplicatedEtags.FirstOrDefault(etag => etag.Name == name);
+											       if (lastReplicatedEtag != null)
+												       lastReplicatedEtag.LastDocEtag = Etag.Empty;
+										       }
+
+										       session.Store(status);
+										       session.SaveChangesAsync().Catch();
+									       });
+								       });
+							       }
+
+							       foreach (var sqlReplicationConfig in sqlReplicationSettings.SqlReplicationConfigs)
+							       {
+								       sqlReplicationConfig.Id = "Raven/SqlReplication/Configuration/" + sqlReplicationConfig.Name;
+								       session.Store(sqlReplicationConfig.ToSqlReplicationConfig());
+							       }
+
+							       session.SaveChangesAsync().Catch();
+						       })
+						       .Catch();
 					}
-					
 				}
 				else
 				{
-					ApplicationModel.Current.AddNotification(new Notification("Sql Replicaiton settings not saved, all settings must have a name and it must be different from \"Temp_Name\"", NotificationLevel.Error));
+					ApplicationModel.Current.AddNotification(new Notification("Sql Replication settings not saved, all replications must have a name", NotificationLevel.Error));
 				}
 			}
 
@@ -161,7 +202,7 @@ namespace Raven.Studio.Commands
 
                 foreach (var versioningConfiguration in versioningSettings.VersioningConfigurations)
 				{
-					if (versioningConfiguration.Id.StartsWith("Raven/Versioning/",StringComparison.InvariantCultureIgnoreCase) == false)
+					if (versioningConfiguration.Id.StartsWith("Raven/Versioning/",StringComparison.OrdinalIgnoreCase) == false)
 						versioningConfiguration.Id = "Raven/Versioning/" + versioningConfiguration.Id;
 					session.Store(versioningConfiguration);
 				}
@@ -199,6 +240,63 @@ namespace Raven.Studio.Commands
 
 			session.SaveChangesAsync()
 				.ContinueOnSuccessInTheUIThread(() => ApplicationModel.Current.AddNotification(new Notification("Updated Settings for: " + databaseName)));
+		}
+
+		private async void CheckDestinations(ReplicationDocument replicationDocument)
+		{
+			var badReplication = new List<string>();
+			var request = ApplicationModel.Current.Server.Value.SelectedDatabase.Value
+			                                    .AsyncDatabaseCommands
+			                                    .CreateRequest(string.Format("/admin/replicationInfo").NoCache(), "POST");
+			await request.WriteAsync(RavenJObject.FromObject(replicationDocument).ToString());
+			var responseAsJson = await request.ReadResponseJsonAsync();
+			var replicationInfo = ApplicationModel.Current.Server.Value.DocumentStore.Conventions.CreateSerializer()
+												   .Deserialize<ReplicationInfoStatus[]>(new RavenJTokenReader(responseAsJson));
+
+			foreach (var replicationInfoStatus in replicationInfo)
+			{
+				if (replicationInfoStatus.Status != "Valid")
+				{
+					badReplication.Add(replicationInfoStatus.Url + " - " + replicationInfoStatus.Code);
+				}
+			}
+
+			if (badReplication.Count != 0)
+			{
+				var mesage = "Some of the replications could not be reached:" + Environment.NewLine +
+				             string.Join(Environment.NewLine, badReplication);
+
+				ApplicationModel.Current.Notifications.Add(new Notification(mesage, NotificationLevel.Warning));
+			}
+		}
+
+		private bool HasChanges(SqlReplicationConfigModel local, SqlReplicationConfig remote)
+		{
+			if (remote == null)
+				return false;
+
+			if (local.RavenEntityName != remote.RavenEntityName)
+				return true;
+
+			if (local.Script != remote.Script)
+				return true;
+
+            if (local.Disabled != remote.Disabled)
+                return true;
+
+			if (local.ConnectionString != remote.ConnectionString)
+				return true;
+
+			if (local.ConnectionStringName != remote.ConnectionStringName)
+				return true;
+
+			if (local.ConnectionStringSettingName != remote.ConnectionStringSettingName)
+				return true;
+
+			if (local.FactoryName != remote.FactoryName)
+				return true;
+
+			return false;
 		}
 
 		private void SavePeriodicBackup(string databaseName, PeriodicBackupSettingsSectionModel periodicBackup)
@@ -265,12 +363,10 @@ namespace Raven.Studio.Commands
 				return false;
 			}
 
-
 			windowsAuthModel.Document.Value.RequiredGroups = windowsAuthModel.RequiredGroups.ToList();
 			windowsAuthModel.Document.Value.RequiredUsers = windowsAuthModel.RequiredUsers.ToList();
 
 			session.Store(RavenJObject.FromObject(windowsAuthModel.Document.Value), "Raven/Authorization/WindowsSettings");
-
 			session.SaveChangesAsync();
 
 			return true;

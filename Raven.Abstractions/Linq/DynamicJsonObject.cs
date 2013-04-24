@@ -9,6 +9,7 @@ using System.Collections.Generic;
 using System.Dynamic;
 using System.Globalization;
 using System.Linq;
+using Raven.Imports.Newtonsoft.Json;
 using Raven.Imports.Newtonsoft.Json.Linq;
 using Raven.Abstractions.Data;
 using Raven.Json.Linq;
@@ -23,10 +24,12 @@ namespace Raven.Abstractions.Linq
 		/// <value>The inner.</value>
 		RavenJObject Inner { get; }
 
+	    void WriteTo(JsonWriter writer);
 	}
 	/// <summary>
 	/// A dynamic implementation on top of <see cref="RavenJObject"/>
 	/// </summary>
+	[JsonObject]
 	public class DynamicJsonObject : DynamicObject, IEnumerable<object>, IDynamicJsonObject
 	{
 		private DynamicJsonObject parent;
@@ -306,7 +309,7 @@ namespace Raven.Abstractions.Linq
 		/// </summary>
 		/// <param name="name">The name.</param>
 		/// <returns></returns>
-		public object GetValue(string name)
+		public virtual object GetValue(string name)
 		{
 			if (name == Constants.DocumentIdFieldName)
 			{
@@ -364,5 +367,9 @@ namespace Raven.Abstractions.Linq
 			get { return inner; }
 		}
 
+	    public virtual void WriteTo(JsonWriter writer)
+	    {
+	        inner.WriteTo(writer);
+	    }
 	}
 }
