@@ -125,7 +125,8 @@ namespace Raven.Client.Connection
 		private Task<RavenJToken> InternalReadResponseStringAsync(int retries)
 		{
 			return Task.Factory.FromAsync<WebResponse>(webRequest.BeginGetResponse, webRequest.EndGetResponse, null)
-				.ContinueWith(task => ReadJsonInternal(() => task.Result))
+				.ContinueWith(task => ReadJsonInternalAsync(task))
+				.Unwrap()
 				.ContinueWith(task =>
 				{
 					var webException = task.Exception.ExtractSingleInnerException() as WebException;
@@ -322,8 +323,6 @@ namespace Raven.Client.Connection
 			webRequest = newWebRequest;
 		}
 
-
-
 		private RavenJToken ReadJsonInternal(Func<WebResponse> getResponse)
 		{
 			WebResponse response;
@@ -340,6 +339,22 @@ namespace Raven.Client.Connection
 					throw;
 				return result;
 			}
+
+			using (response)
+			using (var responseStream = response.GetResponseStreamWithHttpDecompression())
+			{
+				return ReadJsonInternal(response, responseStream);
+			}
+		}
+
+		private Task<RavenJToken> ReadJsonInternalAsync(Task<WebResponse> responseTask)
+		{
+			WebResponse response;
+			try
+			{
+				response = responseTask.Result;
+				sp.Stop();
+			}
 			catch (AggregateException e)
 			{
 				sp.Stop();
@@ -349,37 +364,67 @@ namespace Raven.Client.Connection
 				var result = HandleErrors(we);
 				if (result == null)
 					throw;
-				return result;
+				return new CompletedTask<RavenJToken>(result);
 			}
 
+			var responseStream = response.GetResponseStreamWithHttpDecompression();
+			var memoryStream = new MemoryStream();
+			var copyTask = responseStream.CopyToAsync(memoryStream);
+
+			return copyTask.ContinueWith(
+				continuedCopyTask =>
+				{
+					using (response)
+					using (responseStream)
+					using (memoryStream)
+					{
+						if (continuedCopyTask.Status == TaskStatus.RanToCompletion)
+						{
+							memoryStream.Position = 0;
+
+							return ReadJsonInternal(response, memoryStream);
+						}
+
+						if (continuedCopyTask.IsFaulted)
+							throw continuedCopyTask.Exception;
+
+						// continuedCopyTask.IsCanceled
+						throw new OperationCanceledException();
+					}
+				});
+		}
+
+		private RavenJToken ReadJsonInternal(WebResponse response, Stream responseStream)
+		{
 			ResponseHeaders = new NameValueCollection(response.Headers);
 			ResponseStatusCode = ((HttpWebResponse)response).StatusCode;
 
 			HandleReplicationStatusChanges(ResponseHeaders, primaryUrl, operationUrl);
 
-			using (response)
-			using (var responseStream = response.GetResponseStreamWithHttpDecompression())
+			return ReadJsonInternal(responseStream);
+		}
+
+		private RavenJToken ReadJsonInternal(Stream stream)
+		{
+			var data = RavenJToken.TryLoad(stream);
+
+			if (Method == "GET" && ShouldCacheRequest)
 			{
-				var data = RavenJToken.TryLoad(responseStream);
-
-				if (Method == "GET" && ShouldCacheRequest)
-				{
-					factory.CacheResponse(Url, data, ResponseHeaders);
-				}
-
-				factory.InvokeLogRequest(owner, () => new RequestResultArgs
-				{
-					DurationMilliseconds = CalculateDuration(),
-					Method = webRequest.Method,
-					HttpResult = (int)ResponseStatusCode,
-					Status = RequestStatus.SentToServer,
-					Result = (data ?? "").ToString(),
-					Url = webRequest.RequestUri.PathAndQuery,
-					PostedData = postedData
-				});
-
-				return data;
+				factory.CacheResponse(Url, data, ResponseHeaders);
 			}
+
+			factory.InvokeLogRequest(owner, () => new RequestResultArgs
+			{
+				DurationMilliseconds = CalculateDuration(),
+				Method = webRequest.Method,
+				HttpResult = (int)ResponseStatusCode,
+				Status = RequestStatus.SentToServer,
+				Result = (data ?? "").ToString(),
+				Url = webRequest.RequestUri.PathAndQuery,
+				PostedData = postedData
+			});
+
+			return data;
 		}
 
 		private RavenJToken HandleErrors(WebException e)
