@@ -7,6 +7,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 
 namespace Raven.Abstractions.Extensions
 {
@@ -27,6 +28,79 @@ namespace Raven.Abstractions.Extensions
 					return;
 				other.Write(buffer, 0, read);
 			}
+		}
+
+		private static void CopyToAsync(Stream source, Stream destination, byte[] buffer,
+										TaskCompletionSource<object> taskCompletionSource)
+		{
+			Task<int> readTask;
+
+			try
+			{
+				readTask = Task<int>.Factory.FromAsync(source.BeginRead, source.EndRead,
+													   buffer, 0, buffer.Length,
+													   null);
+			}
+			catch (Exception ex)
+			{
+				taskCompletionSource.SetException(ex);
+				return;
+			}
+
+			readTask.ContinueWith(
+				continuedReadTask =>
+				{
+					if (continuedReadTask.Status == TaskStatus.RanToCompletion && continuedReadTask.Result > 0)
+					{
+						Task writeTask;
+
+						try
+						{
+							writeTask = Task.Factory.FromAsync(destination.BeginWrite, destination.EndWrite,
+															   buffer, 0, continuedReadTask.Result,
+															   null);
+						}
+						catch (Exception ex)
+						{
+							taskCompletionSource.SetException(ex);
+							return;
+						}
+
+						writeTask.ContinueWith(
+							continuedWriteTask =>
+							{
+								if (continuedWriteTask.Status == TaskStatus.RanToCompletion)
+								{
+									CopyToAsync(source, destination, buffer, taskCompletionSource);
+									return;
+								}
+
+								if (continuedWriteTask.IsFaulted)
+									taskCompletionSource.SetException(continuedWriteTask.Exception.InnerExceptions);
+								else // continuedWriteTask.IsCanceled
+									taskCompletionSource.SetCanceled();
+							});
+
+						return;
+					}
+
+					if (continuedReadTask.IsFaulted)
+						taskCompletionSource.SetException(continuedReadTask.Exception.InnerExceptions);
+					else if (continuedReadTask.IsCanceled)
+						taskCompletionSource.SetCanceled();
+					else // continuedReadTask.Result == 0
+						taskCompletionSource.SetResult(null);
+				});
+		}
+
+		public static Task CopyToAsync(this Stream source, Stream destination)
+		{
+			var buffer = new byte[0x1000];
+			var taskCompletionSource = new TaskCompletionSource<object>();
+
+			CopyToAsync(source, destination, buffer, taskCompletionSource);
+
+			return taskCompletionSource.Task;
 		}
 
 		/// <summary>
