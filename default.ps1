@@ -476,8 +476,10 @@ task CreateNugetPackages -depends Compile {
 	@("Raven.Client.Silverlight.???", "AsyncCtpLibrary_Silverlight5.???") |% { Copy-Item "$build_dir\sl5\$_" $nuget_dir\RavenDB.Client\lib\sl50	}
 	
 	New-Item $nuget_dir\RavenDB.Client.MvcIntegration\lib\net40 -Type directory | Out-Null
+	New-Item $nuget_dir\RavenDB.Client.MvcIntegration\lib\net45 -Type directory | Out-Null
 	Copy-Item $base_dir\NuGet\RavenDB.Client.MvcIntegration.nuspec $nuget_dir\RavenDB.Client.MvcIntegration\RavenDB.Client.MvcIntegration.nuspec
 	@("Raven.Client.MvcIntegration.???") |% { Copy-Item "$build_dir\$_" $nuget_dir\RavenDB.Client.MvcIntegration\lib\net40 }
+	@("Raven.Client.MvcIntegration-4.5.???") |% { Copy-Item "$build_dir\net45\$_" $nuget_dir\RavenDB.Client.MvcIntegration\lib\net45 }
 		
 	New-Item $nuget_dir\RavenDB.Database\lib\net40 -Type directory | Out-Null
 	New-Item $nuget_dir\RavenDB.Database\lib\net45 -Type directory | Out-Null
@@ -510,8 +512,10 @@ task CreateNugetPackages -depends Compile {
 	@("Authorization", "UniqueConstraints") | Foreach-Object { 
 		$name = $_;
 		New-Item $nuget_dir\RavenDB.Client.$name\lib\net40 -Type directory | Out-Null
+		New-Item $nuget_dir\RavenDB.Client.$name\lib\net45 -Type directory | Out-Null
 		Copy-Item $base_dir\NuGet\RavenDB.Client.$name.nuspec $nuget_dir\RavenDB.Client.$name\RavenDB.Client.$name.nuspec
 		@("Raven.Client.$_.???") |% { Copy-Item $build_dir\$_ $nuget_dir\RavenDB.Client.$name\lib\net40 }
+		@("Raven.Client.$_-4.5.???") |% { Copy-Item $build_dir\net45\$_ $nuget_dir\RavenDB.Client.$name\lib\net45 }
 	}
 	
 	New-Item $nuget_dir\RavenDB.Bundles.Authorization\lib\net40 -Type directory | Out-Null
