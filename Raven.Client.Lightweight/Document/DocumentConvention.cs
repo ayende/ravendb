@@ -7,14 +7,17 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Net;
 using System.Reflection;
 using System.Runtime.Serialization.Formatters;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Raven.Abstractions.Indexing;
 using Raven.Client.Connection.Async;
 using Raven.Client.Indexes;
+using Raven.Client.Linq;
 using Raven.Imports.Newtonsoft.Json;
 using Raven.Imports.Newtonsoft.Json.Serialization;
 using Raven.Abstractions;
@@ -641,13 +644,15 @@ namespace Raven.Client.Document
 
 		public delegate bool TryConvertValueForQueryDelegate<in T>(string fieldName, T value, QueryValueConvertionType convertionType, out string strValue);
 
-		private readonly List<Tuple<Type,TryConvertValueForQueryDelegate<object>>> listOfQueryValueConverters	 = new List<Tuple<Type, TryConvertValueForQueryDelegate<object>>>();
+		private readonly List<Tuple<Type, TryConvertValueForQueryDelegate<object>>> listOfQueryValueConverters = new List<Tuple<Type, TryConvertValueForQueryDelegate<object>>>();
+		private readonly Dictionary<string, SortOptions> customDefaultSortOptions = new Dictionary<string, SortOptions>();
+		private readonly List<Type> customRangeTypes = new List<Type>();
 
-		public void RegisterQueryValueConverter<T>(TryConvertValueForQueryDelegate<T> converter)
+		public void RegisterQueryValueConverter<T>(TryConvertValueForQueryDelegate<T> converter, SortOptions defaultSortOption = SortOptions.String, bool usesRangeField = false)
 		{
 			TryConvertValueForQueryDelegate<object> actual = (string name, object value, QueryValueConvertionType convertionType, out string strValue) =>
 			{
-				if(value is T)
+				if (value is T)
 					return converter(name, (T)value, convertionType, out strValue);
 				strValue = null;
 				return false;
@@ -664,8 +669,13 @@ namespace Raven.Client.Document
 			}
 
 			listOfQueryValueConverters.Insert(index, Tuple.Create(typeof(T), actual));
-		}
 
+			if (defaultSortOption != SortOptions.String)
+				customDefaultSortOptions.Add(typeof(T).Name, defaultSortOption);
+
+			if (usesRangeField)
+				customRangeTypes.Add(typeof(T));
+		}
 
 
 		public bool TryConvertValueForQuery(string fieldName, object value, QueryValueConvertionType convertionType, out string strValue)
@@ -677,6 +687,79 @@ namespace Raven.Client.Document
 			}
 			strValue = null;
 			return false;
+		}
+
+		public SortOptions GetDefaultSortOption(string typeName)
+		{
+			switch (typeName)
+			{
+				case "Int16":
+					return SortOptions.Short;
+				case "Int32":
+					return SortOptions.Int;
+				case "Int64":
+				case "TimeSpan":
+					return SortOptions.Long;
+				case "Double":
+				case "Decimal":
+					return SortOptions.Double;
+				case "Single":
+					return SortOptions.Float;
+				case "String":
+					return SortOptions.String;
+				default:
+					return customDefaultSortOptions.ContainsKey(typeName)
+						       ? customDefaultSortOptions[typeName]
+						       : SortOptions.String;
+			}
+		}
+
+		public bool UsesRangeType(Object o)
+		{
+			if (o is int || o is long || o is double || o is float || o is decimal || o is TimeSpan)
+				return true;
+
+			return customRangeTypes.Contains(o.GetType());
+		}
+
+		public delegate LinqPathProvider.Result CustomQueryTranslator(LinqPathProvider provider, Expression expression);
+
+		private readonly Dictionary<MemberInfo, CustomQueryTranslator> customQueryTranslators = new Dictionary<MemberInfo, CustomQueryTranslator>();
+
+		public void RegisterCustomQueryTranslator<T>(Expression<Func<T, object>> member, CustomQueryTranslator translator)
+		{
+			var body = member.Body as UnaryExpression;
+			if (body == null)
+				throw new NotSupportedException("A custom query translator can only be used to evaluate a simple member access or method call.");
+
+			var info = GetMemberInfoFromExpression(body.Operand);
+
+			if (!customQueryTranslators.ContainsKey(info))
+				customQueryTranslators.Add(info, translator);
+		}
+
+		internal LinqPathProvider.Result TranslateCustomQueryExpression(LinqPathProvider provider, Expression expression)
+		{
+			var member = GetMemberInfoFromExpression(expression);
+
+			CustomQueryTranslator translator;
+			if (!customQueryTranslators.TryGetValue(member, out translator))
+				return null;
+
+			return translator.Invoke(provider, expression);
+		}
+
+		private static MemberInfo GetMemberInfoFromExpression(Expression expression)
+		{
+			var callExpression = expression as MethodCallExpression;
+			if (callExpression != null)
+				return callExpression.Method;
+
+			var memberExpression = expression as MemberExpression;
+			if (memberExpression != null)
+				return memberExpression.Member;
+
+			throw new NotSupportedException("A custom query translator can only be used to evaluate a simple member access or method call.");
 		}
 	}
 
