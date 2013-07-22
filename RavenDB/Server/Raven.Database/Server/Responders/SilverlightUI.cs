@@ -80,7 +80,7 @@ namespace Raven.Database.Server.Responders
 
 			var options = new[]
 			              	{
-			              		@"..\..\..\packages", // assuming we are in slnDir\Project.Name\bin\debug 		
+			              		@"..\..\packages", // assuming we are in slnDir\Project.Name\bin\debug 		
 			              		@"..\..\packages"
 			              	};
 			foreach (var option in options)
