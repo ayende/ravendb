@@ -376,7 +376,7 @@ namespace Raven.Client.Connection
 				if (httpWebResponse == null ||
 					httpWebResponse.StatusCode != HttpStatusCode.Conflict)
 					throw;
-				throw ThrowConcurrencyException(e);
+				throw FetchConcurrencyException(e);
 			}
 			return SerializationHelper.RavenJObjectsToJsonDocuments(((RavenJArray)responseJson).OfType<RavenJObject>()).ToArray();
 		}
@@ -412,7 +412,7 @@ namespace Raven.Client.Connection
 				if (httpWebResponse == null ||
 					httpWebResponse.StatusCode != HttpStatusCode.Conflict)
 					throw;
-				throw ThrowConcurrencyException(e);
+				throw FetchConcurrencyException(e);
 			}
 			var jsonSerializer = convention.CreateSerializer();
 			return jsonSerializer.Deserialize<PutResult>(new RavenJTokenReader(responseJson));
@@ -660,18 +660,6 @@ namespace Raven.Client.Connection
 				.ToArray();
 		}
 
-		public IDictionary<string, RavenJToken> GetDatabases(int pageSize, int start = 0)
-		{
-			var result = ExecuteGetRequest("".Databases(pageSize, start).NoCache());
-
-			var json = (RavenJArray)result;
-
-			return json
-				.ToDictionary(
-					x =>
-					x.Value<RavenJObject>("@metadata").Value<string>("@id").Replace("Raven/Databases/", string.Empty));
-		}
-
 		private void DirectDeleteAttachment(string key, Etag etag, string operationUrl)
 		{
 			var metadata = new RavenJObject();
@@ -869,11 +857,11 @@ namespace Raven.Client.Connection
 				if (httpWebResponse == null ||
 					httpWebResponse.StatusCode != HttpStatusCode.Conflict)
 					throw;
-				throw ThrowConcurrencyException(e);
+				throw FetchConcurrencyException(e);
 			}
 		}
 
-		private static Exception ThrowConcurrencyException(WebException e)
+		private static Exception FetchConcurrencyException(WebException e)
 		{
 			using (var sr = new StreamReader(e.Response.GetResponseStreamWithHttpDecompression()))
 			{
@@ -1417,7 +1405,7 @@ namespace Raven.Client.Connection
 				if (httpWebResponse == null ||
 					httpWebResponse.StatusCode != HttpStatusCode.Conflict)
 					throw;
-				throw ThrowConcurrencyException(e);
+				throw FetchConcurrencyException(e);
 			}
 			return convention.CreateSerializer().Deserialize<BatchResult[]>(new RavenJTokenReader(response));
 		}

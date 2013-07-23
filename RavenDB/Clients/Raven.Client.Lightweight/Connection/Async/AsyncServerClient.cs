@@ -583,7 +583,7 @@ namespace Raven.Client.Connection.Async
 					throw;
 				responseException = e;
 			}
-			throw await ThrowConcurrencyException(responseException);
+			throw await FetchConcurrencyException(responseException);
 		}
 
 		/// <summary>
@@ -755,7 +755,7 @@ namespace Raven.Client.Connection.Async
 					throw;
 				responseException = e;
 			}
-			throw await ThrowConcurrencyException(responseException);
+			throw await FetchConcurrencyException(responseException);
 		}
 
 		/// <summary>
@@ -1191,11 +1191,11 @@ namespace Raven.Client.Connection.Async
 						throw;
 					responseException = e;
 				}
-				throw await ThrowConcurrencyException(responseException);
+				throw await FetchConcurrencyException(responseException);
 			});
 		}
 
-		private static async Task<ConcurrencyException> ThrowConcurrencyException(ErrorResponseException e)
+		private static async Task<ConcurrencyException> FetchConcurrencyException(ErrorResponseException e)
 		{
 			using (var sr = new StreamReader(await e.Response.GetResponseStreamWithHttpDecompression()))
 			{
