@@ -12,6 +12,9 @@ properties {
 	$release_dir = "$base_dir\Release"
 	$uploader = "..\Uploader\S3Uploader.exe"
 	$global:configuration = "Release"
+	$signTool = "C:\Program Files (x86)\Windows Kits\8.0\bin\x86\signtool.exe"
+	$installerCert = "..\certs\installer.pfx"
+	$certPassword = $null
 	
 	$core_db_dlls = @(
         "Raven.Abstractions.???", 
@@ -325,8 +328,35 @@ task CopyInstaller {
 	  return
 	}
 
-	Copy-Item $base_dir\RavenDB.Setup.exe "$release_dir\$global:uploadCategory-Build-$env:buildlabel.Setup.exe"
+	Copy-Item "$base_dir\RavenDB\Setup\Raven.Setup\bin\$global:configuration\RavenDB.Setup.exe" "$release_dir\$global:uploadCategory-Build-$env:buildlabel.Setup.exe"
 }
+
+task SignInstaller {
+	if($env:buildlabel -eq 13)
+	{
+	  return
+	}
+	
+	if (!(Test-Path $signTool)) 
+	{
+		throw "Could not find SignTool.exe under the specified path $signTool"
+	}
+	
+	if (!(Test-Path $installerCert)) 
+	{
+		throw "Could not find pfx file under the path $installerCert to sign the installer"
+	}
+	
+	if ($certPassword -eq $null) 
+	{
+		throw "Certificate password must be provided"
+	}
+	
+	$installerFile = "$release_dir\$global:uploadCategory-Build-$env:buildlabel.Setup.exe"
+		
+	Exec { &$signTool sign /f "$installerCert" /p "$certPassword" /d "RavenDB" /du "http://ravendb.net" /t "http://timestamp.verisign.com/scripts/timstamp.dll" "$installerFile" }
+}
+
 
 task CreateDocs {
 	$v4_net_version = (ls "$env:windir\Microsoft.NET\Framework\v4.0*").Name
@@ -337,7 +367,7 @@ task CreateDocs {
 	}
 	 
 	# we expliclty allows this to fail
-	exec { &"C:\Windows\Microsoft.NET\Framework\$v4_net_version\MSBuild.exe" "$base_dir\Raven.Docs.shfbproj" /p:OutDir="$buildartifacts_dir\" }
+	#exec { &"C:\Windows\Microsoft.NET\Framework\$v4_net_version\MSBuild.exe" "$base_dir\RavenDB\Raven.Docs.shfbproj" /p:OutDir="$buildartifacts_dir\" }
 }
 
 task CopyRootFiles -depends CreateDocs {
@@ -351,14 +381,14 @@ task CopyRootFiles -depends CreateDocs {
 }
 
 task ZipOutput {
-	
+
 	if($env:buildlabel -eq 13)
 	{
 		return 
 	}
 
 	$old = pwd
-	cd $build_dir\Output
+	cd $output_dir
 	
 	$file = "$release_dir\$global:uploadCategory-Build-$env:buildlabel.zip"
 		
@@ -397,6 +427,7 @@ task DoRelease -depends Compile, `
 	CopyRootFiles, `
 	ZipOutput, `
 	CopyInstaller, `
+	SignInstaller, `
 	ResetBuildArtifcats {	
 	Write-Host "Done building RavenDB"
 }
