@@ -18,6 +18,5 @@
     <dependencies>
       <dependency id="Rx-Xaml" version="2.1.30214.0" />
     </dependencies>
-    <references />
   </metadata>
 </package>
