@@ -222,6 +222,8 @@ namespace Raven.Database.Queries
 
             public void Execute()
             {
+				ValidateFacets();
+
                 //We only want to run the base query once, so we capture all of the facet-ing terms then run the query
                 //	once through the collector and pull out all of the terms in one shot
                 var allCollector = new GatherAllCollector();
@@ -284,6 +286,47 @@ namespace Raven.Database.Queries
                     CompleteFacetCalculationsStage2();
                 }
             }
+
+			private void ValidateFacets()
+			{
+				foreach (var facet in Facets.Where(facet => IsAggregationNumerical(facet.Value.Aggregation) && IsAggregationTypeNumerical(facet.Value.AggregationType) && GetSortOptionsForFacet(facet.Value.AggregationField) == SortOptions.None))
+				{
+					throw new InvalidOperationException(string.Format("Index '{0}' does not have sorting enabled for a numerical field '{1}'.", this.Index, facet.Value.AggregationField));
+				}
+			}
+
+			private static bool IsAggregationNumerical(FacetAggregation aggregation)
+			{
+				switch (aggregation)
+				{
+					case FacetAggregation.Average:
+					case FacetAggregation.Count:
+					case FacetAggregation.Max:
+					case FacetAggregation.Min:
+					case FacetAggregation.Sum:
+						return true;
+					default:
+						return false;
+				}
+			}
+
+			private static bool IsAggregationTypeNumerical(string aggregationType)
+			{
+				var type = Type.GetType(aggregationType, false, true);
+				if (type == null)
+					return false;
+
+				var numericalTypes = new List<Type>
+		                             {
+			                             typeof(decimal),
+			                             typeof(int),
+			                             typeof(long),
+			                             typeof(short),
+			                             typeof(double)
+		                             };
+
+				return numericalTypes.Any(numericalType => numericalType == type);
+			}
 
             private void CompleteFacetCalculationsStage2()
             {

@@ -88,6 +88,7 @@ namespace Raven.Client.Linq
 		{
 			var last = facets.Last();
 			last.AggregationField = path.ToPropertyPath();
+		    last.AggregationType = path.ExtractTypeFromPath().FullName;
 			last.Aggregation |= facetAggregation;
 		}
 
