@@ -2,17 +2,14 @@
 #if !SILVERLIGHT
 using System.Collections.Specialized;
 #endif
-using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Configuration;
 using System.Linq;
-using System.Net;
 using Raven.Abstractions.Data;
-using Raven.Abstractions.Extensions;
 using Raven.Client.Changes;
 using Raven.Client.Connection;
 using Raven.Client.Connection.Profiling;
 using Raven.Client.Document.DTC;
-using Raven.Client.Extensions;
 using Raven.Client.Indexes;
 using Raven.Client.Listeners;
 using Raven.Client.Document;
@@ -20,12 +17,18 @@ using Raven.Client.Document;
 using Raven.Client.Silverlight.Connection;
 #elif NETFX_CORE
 using Raven.Client.WinRT.Connection;
+#else
+using Raven.Abstractions.Util.Encryptors;
 #endif
 using Raven.Client.Connection.Async;
 using Raven.Client.Util;
 
 namespace Raven.Client
 {
+	using System.Collections.Generic;
+
+	using Raven.Abstractions.Util.Encryptors;
+
 	/// <summary>
 	/// Contains implementation of some IDocumentStore operations shared by DocumentStore implementations
 	/// </summary>
@@ -33,6 +36,8 @@ namespace Raven.Client
 	{
 		protected DocumentStoreBase()
 		{
+			InitializeEncryptor();
+
 			LastEtagHolder = new GlobalLastEtagHolder();
 			TransactionRecoveryStorage = new VolatileOnlyTransactionRecoveryStorage();
 		}
@@ -128,6 +133,11 @@ namespace Raven.Client
 		/// destinations if a master server is down.
 		/// </summary>
 		public FailoverServers FailoverServers { get; set; }
+
+		/// <summary>
+		/// Whenever or not we will use FIPS compliant encryption algorithms (must match server settings).
+		/// </summary>
+		public bool UseFipsEncryptionAlgorithms { get; set; }
 
 		///<summary>
 		/// Whatever or not we will automatically enlist in distributed transactions
@@ -303,6 +313,11 @@ namespace Raven.Client
 		public IDisposable AggressivelyCache()
 		{
 			return AggressivelyCacheFor(TimeSpan.FromDays(1));
+		}
+
+		protected void InitializeEncryptor()
+		{
+			Encryptor.Initialize(UseFipsEncryptionAlgorithms);
 		}
 	}
 }

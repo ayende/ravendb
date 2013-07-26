@@ -35,6 +35,8 @@ using Binder = Microsoft.CSharp.RuntimeBinder.Binder;
 
 namespace Raven.Database.Linq
 {
+	using Raven.Abstractions.Util.Encryptors;
+
 	public static class QueryParsingUtils
 	{
 		[CLSCompliant(false)]
@@ -332,12 +334,8 @@ namespace Raven.Database.Linq
 			// For more info, see http://ayende.com/blog/161218/robs-sprint-idly-indexing?key=f37cf4dc-0e5c-43be-9b27-632f61ba044f#comments-form-location
 			var indexCacheDir = GetIndexCacheDir(configuration);
 
-			string sourceHashed;
-			using (var md5 = MD5.Create())
-			{
-				var hash = md5.ComputeHash(Encoding.UTF8.GetBytes(source));
-				sourceHashed = MonoHttpUtility.UrlEncode(Convert.ToBase64String(hash));
-			}
+			var hash = Encryptor.Current.Hash.Compute(Encoding.UTF8.GetBytes(source));
+			var sourceHashed = MonoHttpUtility.UrlEncode(Convert.ToBase64String(hash));
 			indexFilePath = Path.Combine(indexCacheDir,
 			                             IndexingUtil.StableInvariantIgnoreCaseStringHash(source) + "." + sourceHashed + "." +
 			                             (Debugger.IsAttached ? "debug" : "nodebug") + ".dll");

@@ -12,6 +12,10 @@ using Xunit;
 
 namespace Raven.Tests
 {
+	using System.Configuration;
+
+	using Raven.Tests.Helpers;
+
 	public class RavenDB_1033 : IisExpressTestClient
 	{
 		class Item
@@ -28,7 +32,7 @@ namespace Raven.Tests
 				new Dictionary<string, string>
 				{
 					{ "Raven/HttpCompression", "true" } // HttpCompression is enabled by default, just in case of changing it in the future
-				}); 
+				});
 		}
 
 		[IISExpressInstalledFact]

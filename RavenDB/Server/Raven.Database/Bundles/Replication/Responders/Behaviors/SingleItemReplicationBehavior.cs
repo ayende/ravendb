@@ -10,6 +10,8 @@ using Raven.Database.Bundles.Replication.Impl;
 
 namespace Raven.Bundles.Replication.Responders
 {
+	using Raven.Abstractions.Util.Encryptors;
+
 	public abstract class SingleItemReplicationBehavior<TInternal, TExternal>
 	{
 		protected class CreatedConflict
@@ -213,20 +215,22 @@ namespace Raven.Bundles.Replication.Responders
 
 		private static string HashReplicationIdentifier(RavenJObject metadata)
 		{
-			using (var md5 = MD5.Create())
-			{
-				var bytes = Encoding.UTF8.GetBytes(metadata.Value<string>(Constants.RavenReplicationSource) + "/" + metadata.Value<string>("@etag"));
-				return new Guid(md5.ComputeHash(bytes)).ToString();
-			}
+			var bytes = Encoding.UTF8.GetBytes(metadata.Value<string>(Constants.RavenReplicationSource) + "/" + metadata.Value<string>("@etag"));
+
+			var hash = Encryptor.Current.Hash.Compute(bytes);
+			Array.Resize(ref hash, 16);
+
+			return new Guid(hash).ToString();
 		}
 
 		private string HashReplicationIdentifier(Etag existingEtag)
 		{
-			using (var md5 = MD5.Create())
-			{
-				var bytes = Encoding.UTF8.GetBytes(Database.TransactionalStorage.Id + "/" + existingEtag);
-				return new Guid(md5.ComputeHash(bytes)).ToString();
-			}
+			var bytes = Encoding.UTF8.GetBytes(Database.TransactionalStorage.Id + "/" + existingEtag);
+
+			var hash = Encryptor.Current.Hash.Compute(bytes);
+			Array.Resize(ref hash, 16);
+
+			return new Guid(hash).ToString();
 		}
 	}
 }

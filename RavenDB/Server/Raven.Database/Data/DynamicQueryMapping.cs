@@ -17,6 +17,8 @@ using Raven.Database.Server;
 
 namespace Raven.Database.Data
 {
+	using Raven.Abstractions.Util.Encryptors;
+
 	public class DynamicQueryMapping
 	{
 		public bool DynamicAggregation { get; set; }
@@ -27,8 +29,8 @@ namespace Raven.Database.Data
 		public AggregationOperation AggregationOperation { get; set; }
 		public string[] HighlightedFields { get; set; }
 
-	    private List<Action<IndexDefinition>> extraActionsToPerform = new List<Action<IndexDefinition>>();
- 
+		private List<Action<IndexDefinition>> extraActionsToPerform = new List<Action<IndexDefinition>>();
+
 		protected DynamicQueryMappingItem[] GroupByItems { get; set; }
 
 		public DynamicQueryMapping()
@@ -256,7 +258,7 @@ namespace Raven.Database.Data
 
 					if (field.EndsWith("_Range"))
 						field = field.Substring(0, field.Length - "_Range".Length);
-				
+
 					fields.Add(Tuple.Create(SimpleQueryParser.TranslateField(field), field));
 				}
 			}
@@ -266,7 +268,7 @@ namespace Raven.Database.Data
 				AggregationOperation = query.AggregationOperation.RemoveOptionals(),
 				DynamicAggregation = query.AggregationOperation.HasFlag(AggregationOperation.Dynamic),
 				ForEntityName = entityName,
-				HighlightedFields = query.HighlightedFields.EmptyIfNull().Select(x=>x.Field).ToArray(),
+				HighlightedFields = query.HighlightedFields.EmptyIfNull().Select(x => x.Field).ToArray(),
 				SortDescriptors = GetSortInfo(fieldName =>
 				{
 					if (fields.Any(x => x.Item2 == fieldName || x.Item2 == (fieldName + "_Range")) == false)
@@ -287,51 +289,51 @@ namespace Raven.Database.Data
 			}
 		}
 
-        public void AddExistingIndexDefinition(IndexDefinition indexDefinition, DocumentDatabase database, IndexQuery query)
-        {
-            var abstractViewGenerator = database.IndexDefinitionStorage.GetViewGenerator(indexDefinition.Name);
-            if (abstractViewGenerator == null) return; // No biggy, it just means we'll have two small indexes and we'll do this again later
+		public void AddExistingIndexDefinition(IndexDefinition indexDefinition, DocumentDatabase database, IndexQuery query)
+		{
+			var abstractViewGenerator = database.IndexDefinitionStorage.GetViewGenerator(indexDefinition.Name);
+			if (abstractViewGenerator == null) return; // No biggy, it just means we'll have two small indexes and we'll do this again later
 
-            this.Items = this.Items.Union(
-                abstractViewGenerator.Fields
-                   .Where(field => this.Items.All(item => item.From != field) && !field.StartsWith("__"))
-                   .Select(field => new DynamicQueryMappingItem()
-                   {
-                       From = field,
-                       To = ReplaceInvalidCharactersForFields(field),
-                       QueryFrom = EscapeParentheses(field)
-                   })
-           ).ToArray();
+			this.Items = this.Items.Union(
+				abstractViewGenerator.Fields
+				   .Where(field => this.Items.All(item => item.From != field) && !field.StartsWith("__"))
+				   .Select(field => new DynamicQueryMappingItem()
+				   {
+					   From = field,
+					   To = ReplaceInvalidCharactersForFields(field),
+					   QueryFrom = EscapeParentheses(field)
+				   })
+		   ).ToArray();
 
-            this.SortDescriptors = this.SortDescriptors.Union(
-                indexDefinition.SortOptions
-                    .Where(option => this.SortDescriptors.All(desc => desc.Field != option.Key))
-                    .Select(option => new DynamicSortInfo()
-                    {
-                        Field = option.Key,
-                        FieldType = option.Value
-                    })
-                ).ToArray();
+			this.SortDescriptors = this.SortDescriptors.Union(
+				indexDefinition.SortOptions
+					.Where(option => this.SortDescriptors.All(desc => desc.Field != option.Key))
+					.Select(option => new DynamicSortInfo()
+					{
+						Field = option.Key,
+						FieldType = option.Value
+					})
+				).ToArray();
 
-            foreach (var fieldStorage in abstractViewGenerator.Stores)
-            {
-                KeyValuePair<string, FieldStorage> storage = fieldStorage;
-                extraActionsToPerform.Add(def=> def.Stores[storage.Key] = storage.Value);
-            }
+			foreach (var fieldStorage in abstractViewGenerator.Stores)
+			{
+				KeyValuePair<string, FieldStorage> storage = fieldStorage;
+				extraActionsToPerform.Add(def => def.Stores[storage.Key] = storage.Value);
+			}
 
-            foreach (var fieldIndex in abstractViewGenerator.Indexes)
-            {
-                KeyValuePair<string, FieldIndexing> index = fieldIndex;
-                extraActionsToPerform.Add(def=> def.Indexes[index.Key] = index.Value);
-            }
+			foreach (var fieldIndex in abstractViewGenerator.Indexes)
+			{
+				KeyValuePair<string, FieldIndexing> index = fieldIndex;
+				extraActionsToPerform.Add(def => def.Indexes[index.Key] = index.Value);
+			}
 
-            foreach (var fieldTermVector in abstractViewGenerator.TermVectors)
-            {
-                KeyValuePair<string, FieldTermVector> vector = fieldTermVector;
-                extraActionsToPerform.Add(def=> def.TermVectors[vector.Key] = vector.Value);
-            }
-            this.FindIndexName(database, this, query);
-	    }
+			foreach (var fieldTermVector in abstractViewGenerator.TermVectors)
+			{
+				KeyValuePair<string, FieldTermVector> vector = fieldTermVector;
+				extraActionsToPerform.Add(def => def.TermVectors[vector.Key] = vector.Value);
+			}
+			this.FindIndexName(database, this, query);
+		}
 
 		static readonly Regex replaceInvalidCharacterForFields = new Regex(@"[^\w_]", RegexOptions.Compiled);
 		private void SetupFieldsToIndex(IndexQuery query, IEnumerable<Tuple<string, string>> fields)
@@ -452,11 +454,8 @@ namespace Raven.Database.Data
 				// Hash the name if it's too long (as a path)
 				if ((database.Configuration.DataDirectory.Length + indexName.Length) > 230)
 				{
-					using (var sha256 = SHA256.Create())
-					{
-						var bytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(indexName));
-						indexName = Convert.ToBase64String(bytes);
-					}
+					var bytes = Encryptor.Current.Hash.Compute(Encoding.UTF8.GetBytes(indexName));
+					indexName = Convert.ToBase64String(bytes);
 				}
 			}
 
@@ -469,7 +468,7 @@ namespace Raven.Database.Data
 					: string.Format("Temp/{0}/By{1}{2}", targetName, indexName, groupBy);
 
 
-		    map.IndexName = permanentIndexName;
+			map.IndexName = permanentIndexName;
 		}
 
 		public class DynamicSortInfo

@@ -26,7 +26,9 @@ using Raven.Database.Plugins;
 
 namespace Raven.Database.Storage
 {
-    public class IndexDefinitionStorage
+	using Raven.Abstractions.Util.Encryptors;
+
+	public class IndexDefinitionStorage
     {
         private const string IndexDefDir = "IndexDefinitions";
 
@@ -336,11 +338,8 @@ namespace Raven.Database.Storage
             if (path.Length + index.Length > 230 ||
                 Encoding.Unicode.GetByteCount(index) >= 255)
             {
-                using (var md5 = MD5.Create())
-                {
-                    var bytes = md5.ComputeHash(Encoding.UTF8.GetBytes(index));
-                    return prefix + Convert.ToBase64String(bytes);
-                }
+                var bytes = Encryptor.Current.Hash.Compute(Encoding.UTF8.GetBytes(index));
+                return prefix + Convert.ToBase64String(bytes);
             }
             return index;
         }

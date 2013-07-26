@@ -5,6 +5,8 @@ using Xunit;
 
 namespace Raven.Tests.Bugs
 {
+	using Raven.Tests.Helpers;
+
 	public class AggressiveCaching : RemoteClientTest
 	{
 		public AggressiveCaching()

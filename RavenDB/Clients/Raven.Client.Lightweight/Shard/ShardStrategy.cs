@@ -22,6 +22,8 @@ using System.Security.Cryptography;
 
 namespace Raven.Client.Shard
 {
+	using Raven.Abstractions.Util.Encryptors;
+
 	/// <summary>
 	/// Default shard strategy for the sharding document store
 	/// </summary>
@@ -70,10 +72,7 @@ namespace Raven.Client.Shard
 #elif  NETFX_CORE
 			indexEtag = new Etag(Convert.ToBase64String(MD5.HashCore(buffer)));			
 #else
-			using (var md5 = MD5.Create())
-			{
-				indexEtag = Etag.Parse(md5.ComputeHash(buffer));
-			}
+			indexEtag = Etag.Parse(Encryptor.Current.Hash.Compute(buffer));
 #endif
 			var results = queryResults.SelectMany(x => x.Results);
 

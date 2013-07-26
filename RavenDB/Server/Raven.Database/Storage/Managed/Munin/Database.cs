@@ -17,6 +17,8 @@ using Raven.Json.Linq;
 
 namespace Raven.Munin
 {
+	using Raven.Abstractions.Util.Encryptors;
+
 	public class Database : IEnumerable<Table>, IDisposable
 	{
 		private readonly IPersistentSource persistentSource;
@@ -52,7 +54,7 @@ namespace Raven.Munin
 					log.Flush();
 				}
 				log.Position = 0;
-				
+
 				AssertValidVersionAndTables(log);
 
 				while (true)
@@ -224,7 +226,7 @@ namespace Raven.Munin
 				for (int i = 0; i < cmds.Count; i += 1024)
 				{
 					WriteCommands(cmds.Skip(i).Take(1024), log);
-					
+
 				}
 				persistentSource.FlushLog(); // flush all the index changes to disk
 
@@ -246,7 +248,7 @@ namespace Raven.Munin
 
 		private static void WriteCommands(IEnumerable<Command> cmds, Stream log)
 		{
-			const int shaSize = 32;
+			int shaSize = Encryptor.Current.Hash.StorageHashSize;
 			var dataSizeInBytes = cmds
 				.Where(x => x.Type == CommandType.Put && x.Payload != null)
 				.Sum(x => x.Payload.Length + shaSize);
@@ -274,11 +276,9 @@ namespace Raven.Munin
 						command.Position = log.Position;
 						command.Size = command.Payload.Length;
 						log.Write(command.Payload, 0, command.Payload.Length);
-						using (var sha256 = SHA256.Create())
-						{
-							var sha = sha256.ComputeHash(command.Payload);
-							log.Write(sha, 0, sha.Length);
-						}
+
+						var sha = Encryptor.Current.Hash.ComputeForStorage(command.Payload);
+						log.Write(sha, 0, sha.Length);
 					}
 					cmd.Add("position", command.Position);
 					cmd.Add("size", command.Size);
@@ -303,36 +303,36 @@ namespace Raven.Munin
 
 		public void Compact()
 		{
-			using(BeginTransaction())
+			using (BeginTransaction())
 			{
-			persistentSource.Write(log =>
-			{
-				Stream tempLog = persistentSource.CreateTemporaryStream();
-
-				WriteFileHeader(tempLog);
-			  
-				var cmds = new List<Command>();
-				foreach (var persistentDictionary in tables)
+				persistentSource.Write(log =>
 				{
-					cmds.AddRange(persistentDictionary.CopyCommittedData(tempLog));
-					persistentDictionary.ResetWaste();
-				}
+					Stream tempLog = persistentSource.CreateTemporaryStream();
 
-				WriteCommands(cmds, tempLog);
+					WriteFileHeader(tempLog);
 
-				persistentSource.ReplaceAtomically(tempLog);
-
-				using (SuppressTransaction())
-				{
-					CurrentTransactionId.Value = Guid.NewGuid();
-					foreach (var command in cmds)
+					var cmds = new List<Command>();
+					foreach (var persistentDictionary in tables)
 					{
-						tables[command.DictionaryId].UpdateKey(command.Key, command.Position, command.Size);
-						tables[command.DictionaryId].CompleteCommit(CurrentTransactionId.Value);
+						cmds.AddRange(persistentDictionary.CopyCommittedData(tempLog));
+						persistentDictionary.ResetWaste();
 					}
-				}
-			});
-		}
+
+					WriteCommands(cmds, tempLog);
+
+					persistentSource.ReplaceAtomically(tempLog);
+
+					using (SuppressTransaction())
+					{
+						CurrentTransactionId.Value = Guid.NewGuid();
+						foreach (var command in cmds)
+						{
+							tables[command.DictionaryId].UpdateKey(command.Key, command.Position, command.Size);
+							tables[command.DictionaryId].CompleteCommit(CurrentTransactionId.Value);
+						}
+					}
+				});
+			}
 		}
 
 
@@ -353,25 +353,25 @@ namespace Raven.Munin
 		{
 			using (BeginTransaction())
 			{
-			var itemsCount = tables.Sum(x => x.Count);
-			var wasteCount = tables.Sum(x => x.WasteCount);
+				var itemsCount = tables.Sum(x => x.Count);
+				var wasteCount = tables.Sum(x => x.WasteCount);
 
-			if (itemsCount < 10000) // for small data sizes, we cleanup on 100% waste
-				return wasteCount > itemsCount;
-			if (itemsCount < 100000) // for medium data sizes, we cleanup on 50% waste
-				return wasteCount > (itemsCount / 2);
-			return wasteCount > (itemsCount / 10); // on large data size, we cleanup on 10% waste
+				if (itemsCount < 10000) // for small data sizes, we cleanup on 100% waste
+					return wasteCount > itemsCount;
+				if (itemsCount < 100000) // for medium data sizes, we cleanup on 50% waste
+					return wasteCount > (itemsCount / 2);
+				return wasteCount > (itemsCount / 10); // on large data size, we cleanup on 10% waste
 
-		}
+			}
 		}
 
 		public Table Add(Table dictionary)
 		{
 			persistentSource.Write(stream =>
 				{
-			tables.Add(dictionary);
-			DictionaryStates.Add(null);
-			dictionary.Initialize(persistentSource, tables.Count - 1, this, CurrentTransactionId);
+					tables.Add(dictionary);
+					DictionaryStates.Add(null);
+					dictionary.Initialize(persistentSource, tables.Count - 1, this, CurrentTransactionId);
 				});
 			return dictionary;
 		}

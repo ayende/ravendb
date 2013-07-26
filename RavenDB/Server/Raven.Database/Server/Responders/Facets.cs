@@ -13,6 +13,8 @@ using Raven.Imports.Newtonsoft.Json;
 
 namespace Raven.Database.Server.Responders
 {
+	using Raven.Abstractions.Util.Encryptors;
+
 	public class Facets : AbstractRequestResponder
 	{
 		public override string UrlPattern
@@ -131,11 +133,8 @@ namespace Raven.Database.Server.Responders
 
 		private Etag GetFacetsEtag(string jsonFacets, string index)
         {
-            using (var md5 = MD5.Create())
-            {
-                var etagBytes = md5.ComputeHash(Database.GetIndexEtag(index, null).ToByteArray().Concat(Encoding.UTF8.GetBytes(jsonFacets)).ToArray());
-	            return Etag.Parse(etagBytes);
-            }
+            var etagBytes = Encryptor.Current.Hash.Compute(Database.GetIndexEtag(index, null).ToByteArray().Concat(Encoding.UTF8.GetBytes(jsonFacets)).ToArray());
+	        return Etag.Parse(etagBytes);
         }
 	}
 }

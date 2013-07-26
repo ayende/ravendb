@@ -11,6 +11,10 @@ using Xunit;
 
 namespace Raven.Tests
 {
+	using System.Configuration;
+
+	using Raven.Tests.Helpers;
+
 	public class IisExpressTestClient : IDisposable
 	{
 		private const string WebDirectory = @".\RavenIISTestWeb";
@@ -53,10 +57,13 @@ namespace Raven.Tests
 				iisExpress = new IISExpressDriver();
 				var iisTestWebDirectory = DeployWebProjectToTestDirectory();
 
-				if (settings != null)
-				{
-					ModifyWebConfig(Path.Combine(iisTestWebDirectory, "web.config"), settings);
-				}
+				if (settings == null)
+					settings = new Dictionary<string, string>();
+
+				if (!settings.ContainsKey("Raven/Encryption/FIPS"))
+					settings.Add("Raven/Encryption/FIPS", SettingsHelper.UseFipsEncryptionAlgorithms.ToString());
+
+				ModifyWebConfig(Path.Combine(iisTestWebDirectory, "web.config"), settings);
 
 				iisExpress.Start(iisTestWebDirectory, 8084);
 			}
@@ -64,7 +71,11 @@ namespace Raven.Tests
 			var url = iisExpress.Url;
 			if (fiddler)
 				url = url.Replace("localhost", "localhost.fiddler");
-			return new DocumentStore {Url = url}.Initialize();
+
+			return new DocumentStore
+				   {
+					   Url = url
+				   }.Initialize();
 		}
 
 		private void ModifyWebConfig(string webConfigPath, Dictionary<string, string> settings)

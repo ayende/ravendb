@@ -21,6 +21,8 @@ using Index = Raven.Database.Indexing.Index;
 
 namespace Raven.Database.Queries
 {
+	using Raven.Abstractions.Util.Encryptors;
+
 	public class MoreLikeThisQueryRunner
 	{
 		private readonly DocumentDatabase database;
@@ -119,12 +121,8 @@ namespace Raven.Database.Queries
 						addIncludesCommand.Execute(jsonDocument.DataAsJson);
 					}
 
-					Etag computedEtag;
-					using (var md5 = MD5.Create())
-					{
-						var computeHash = md5.ComputeHash(includedEtags.ToArray());
-						computedEtag = Etag.Parse(computeHash);
-					}
+					var computeHash = Encryptor.Current.Hash.Compute(includedEtags.ToArray());
+					Etag computedEtag = Etag.Parse(computeHash);
 
 					return new MoreLikeThisQueryResult
 					{

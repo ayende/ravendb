@@ -69,8 +69,10 @@ namespace Raven.Abstractions.Data
 
 		public const int DefaultIndexFileBlockSize = 12 * 1024;
 
-#if !NETFX_CORE
+#if SILVERLIGHT || NETFX_CORE
 		public static readonly Type DefaultCryptoServiceProvider = typeof(System.Security.Cryptography.AesManaged);
+#else
+		public static readonly Type DefaultCryptoServiceProvider = typeof(System.Security.Cryptography.AesCryptoServiceProvider);
 #endif
 
 		//Quotas

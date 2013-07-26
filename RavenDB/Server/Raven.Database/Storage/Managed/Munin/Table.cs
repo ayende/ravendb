@@ -19,6 +19,8 @@ using Raven.Munin.Tree;
 
 namespace Raven.Munin
 {
+	using Raven.Abstractions.Util.Encryptors;
+
 	public class Table : IEnumerable<Table.ReadResult>, IDisposable
 	{
 		private ThreadLocal<Guid> _txId;
@@ -278,17 +280,14 @@ namespace Raven.Munin
 			if(data.Length != size)
 				throw new InvalidDataException("Could not read complete data, the file is probably corrupt when reading: " + key.ToString(Formatting.None) + " on table " + Name);
 
-			using(var sha256 = SHA256.Create())
-			{
-				var hash = sha256.ComputeHash(data);
-				var hashFromFile = binaryReader.ReadBytes(hash.Length);
-				if(hashFromFile.Length != hash.Length)
-					throw new InvalidDataException("Could not read complete SHA data, the file is probably corrupt when reading: " + key.ToString(Formatting.None) + " on table " + Name);
+			var hash = Encryptor.Current.Hash.ComputeForStorage(data);
+			var hashFromFile = binaryReader.ReadBytes(hash.Length);
+			if(hashFromFile.Length != hash.Length)
+				throw new InvalidDataException("Could not read complete SHA data, the file is probably corrupt when reading: " + key.ToString(Formatting.None) + " on table " + Name);
 
-				if (hashFromFile.Where((t, i) => hash[i] != t).Any())
-				{
-					throw new InvalidDataException("Invalid SHA signature, the file is probably corrupt when reading: " + key.ToString(Formatting.None) + " on table " + Name);
-				}
+			if (hashFromFile.Where((t, i) => hash[i] != t).Any())
+			{
+				throw new InvalidDataException("Invalid SHA signature, the file is probably corrupt when reading: " + key.ToString(Formatting.None) + " on table " + Name);
 			}
 
 			return data;

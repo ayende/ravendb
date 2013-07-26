@@ -24,6 +24,8 @@ using Raven.Json.Linq;
 
 namespace Raven.Bundles.Replication.Responders
 {
+	using Raven.Abstractions.Util.Encryptors;
+
 	[ExportMetadata("Bundle", "Replication")]
 	[InheritedExport(typeof(AbstractRequestResponder))]
 	public class DocumentReplicationResponder : AbstractRequestResponder
@@ -120,20 +122,22 @@ namespace Raven.Bundles.Replication.Responders
 
 		private static string HashReplicationIdentifier(RavenJObject metadata)
 		{
-			using (var md5 = MD5.Create())
-			{
-				var bytes = Encoding.UTF8.GetBytes(metadata.Value<string>(Constants.RavenReplicationSource) + "/" + metadata.Value<string>("@etag"));
-				return new Guid(md5.ComputeHash(bytes)).ToString();
-			}
+			var bytes = Encoding.UTF8.GetBytes(metadata.Value<string>(Constants.RavenReplicationSource) + "/" + metadata.Value<string>("@etag"));
+
+			var hash = Encryptor.Current.Hash.Compute(bytes);
+			Array.Resize(ref hash, 16);
+
+			return new Guid(hash).ToString();
 		}
 
 		private string HashReplicationIdentifier(Guid existingEtag)
 		{
-			using (var md5 = MD5.Create())
-			{
-				var bytes = Encoding.UTF8.GetBytes(Database.TransactionalStorage.Id + "/" + existingEtag);
-				return new Guid(md5.ComputeHash(bytes)).ToString();
-			}
+			var bytes = Encoding.UTF8.GetBytes(Database.TransactionalStorage.Id + "/" + existingEtag);
+
+			var hash = Encryptor.Current.Hash.Compute(bytes);
+			Array.Resize(ref hash, 16);
+
+			return new Guid(hash).ToString();
 		}
 
 		private static bool IsDirectChildOfCurrentDocument(JsonDocument existingDoc, RavenJObject metadata)

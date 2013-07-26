@@ -6,7 +6,7 @@ using System.Linq;
 #if SILVERLIGHT || NETFX_CORE
 using Raven.Client.Silverlight.MissingFromSilverlight;
 #else
-using System.Security.Cryptography;
+using Raven.Abstractions.Util.Encryptors;
 #endif
 using Raven.Imports.Newtonsoft.Json;
 
@@ -247,10 +247,7 @@ namespace Raven.Abstractions.Data
 #if SILVERLIGHT || NETFX_CORE
 			return Parse(MD5Core.GetHash(etagBytes));
 #else
-			using (var md5 = MD5.Create())
-			{
-				return Parse(md5.ComputeHash(etagBytes));
-			}
+			return Parse(Encryptor.Current.Hash.Compute(etagBytes));
 #endif
 		}
 	}

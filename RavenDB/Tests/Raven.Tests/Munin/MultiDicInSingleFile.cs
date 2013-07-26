@@ -8,6 +8,9 @@ using System.IO;
 
 namespace Raven.Munin.Tests
 {
+	using Raven.Abstractions.Util.Encryptors;
+	using Raven.Tests.Helpers;
+
 	public class MultiDicInSingleFile : IDisposable
 	{
 		protected Table tableOne;
@@ -17,11 +20,15 @@ namespace Raven.Munin.Tests
 
 		public MultiDicInSingleFile()
 		{
+			Encryptor.Initialize(SettingsHelper.UseFipsEncryptionAlgorithms);
+
 			OpenDictionary();
 		}
 
 		public void Dispose()
 		{
+			Encryptor.Dispose();
+
 			persistentSource.Dispose();
 			persistentSource.Delete();
 		}

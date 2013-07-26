@@ -64,6 +64,7 @@
     </Compile>
     <Compile Include="CommonInitializationUtil.cs" />
     <Compile Include="RavenTestBase.cs" />
+    <Compile Include="SettingsHelper.cs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\Shared\Raven.Abstractions\Raven.Abstractions.csproj">

@@ -13,6 +13,8 @@ using Raven.Json.Linq;
 
 namespace Raven.Database.Server.Responders
 {
+	using Raven.Abstractions.Util.Encryptors;
+
 	public class Queries : AbstractRequestResponder
 	{
 		public override string UrlPattern
@@ -74,13 +76,8 @@ namespace Raven.Database.Server.Responders
 				}
 			});
 
-			Etag computedEtag;
-
-			using (var md5 = MD5.Create())
-			{
-				var computeHash = md5.ComputeHash(includedEtags.ToArray());
-				computedEtag = Etag.Parse(computeHash);
-			}
+			var computeHash = Encryptor.Current.Hash.Compute(includedEtags.ToArray());
+			var computedEtag = Etag.Parse(computeHash);
 
 			if (context.MatchEtag(computedEtag))
 			{

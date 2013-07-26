@@ -446,7 +446,6 @@ namespace Raven.Client.Document
 					DatabaseCommands.ForSystemDatabase().Admin.EnsureDatabaseExists(DefaultDatabase, ignoreFailures: true);
 				}
 #endif
-
 			}
 			catch (Exception)
 			{
@@ -636,6 +635,8 @@ namespace Raven.Client.Document
 		protected virtual void InitializeInternal()
 		{
 #if !SILVERLIGHT && !NETFX_CORE
+			
+			InitializeEncryptor();
 
 			var rootDatabaseUrl = MultiDatabase.GetRootDatabaseUrl(Url);
 			var rootServicePoint = ServicePointManager.FindServicePoint(new Uri(rootDatabaseUrl));
@@ -812,7 +813,7 @@ namespace Raven.Client.Document
 
 				var session = new AsyncDocumentSession(dbName, this, asyncDatabaseCommands, listeners, sessionId)
 				{
-				    DatabaseName = dbName ?? DefaultDatabase
+					DatabaseName = dbName ?? DefaultDatabase
 				};
 				AfterSessionCreated(session);
 				return session;
@@ -846,7 +847,7 @@ namespace Raven.Client.Document
 
 		public IAsyncDocumentSession OpenAsyncSession(OpenSessionOptions options)
 		{
-            return OpenAsyncSessionInternal(options.Database, SetupCommandsAsync(AsyncDatabaseCommands, options.Database, options.Credentials, options));
+			return OpenAsyncSessionInternal(options.Database, SetupCommandsAsync(AsyncDatabaseCommands, options.Database, options.Credentials, options));
 		}
 
 		/// <summary>

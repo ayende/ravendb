@@ -13,12 +13,16 @@ using Xunit;
 
 namespace Raven.Tests.Bugs
 {
+	using Raven.Tests.Helpers;
+
 	public class CanUseLuceneCodecDirectory : IDisposable
 	{
 		private const string Path = "TestLuceneCodecDir";
 
 		public CanUseLuceneCodecDirectory()
 		{
+			Lucene.Net.Support.Cryptography.FIPSCompliant = SettingsHelper.UseFipsEncryptionAlgorithms;
+
 			IOExtensions.DeleteDirectory(Path);
 		}
 
