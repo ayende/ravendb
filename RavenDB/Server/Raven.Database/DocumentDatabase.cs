@@ -1229,12 +1229,21 @@ namespace Raven.Database
         {
             index = IndexDefinitionStorage.FixupIndexName(index);
             var highlightings = new Dictionary<string, Dictionary<string, string[]>>();
-            Func<IndexQueryResult, object> tryRecordHighlighting = queryResult =>
+	        var scoreExplanations = new Dictionary<string, string>();
+
+            Func<IndexQueryResult, object> tryRecordHighlightingAndScoreExplanation = queryResult =>
             {
-                if (queryResult.Highligtings != null && queryResult.Key != null)
-                    highlightings.Add(queryResult.Key, queryResult.Highligtings);
+				if (queryResult.Key != null)
+				{
+					if (queryResult.Highligtings != null)
+						highlightings.Add(queryResult.Key, queryResult.Highligtings);
+					if(queryResult.ScoreExplanation != null)
+						scoreExplanations.Add(queryResult.Key, queryResult.ScoreExplanation);
+				}
+                
                 return null;
             };
+
             var stale = false;
             Tuple<DateTime, Etag> indexTimestamp = Tuple.Create(DateTime.MinValue, Etag.Empty);
             Etag resultEtag = Etag.Empty;
@@ -1287,7 +1296,7 @@ namespace Raven.Database
                                                   let doc = docRetriever.RetrieveDocumentForQuery(queryResult, indexDefinition, fieldsToFetch)
                                                   where doc != null
                                                   let _ = nonAuthoritativeInformation |= (doc.NonAuthoritativeInformation ?? false)
-                                                  let __ = tryRecordHighlighting(queryResult)
+                                                  let __ = tryRecordHighlightingAndScoreExplanation(queryResult)
                                                   select doc, transformerErrors);
 
                     if (headerInfo != null)
@@ -1331,7 +1340,8 @@ namespace Raven.Database
                 IdsToInclude = idsToLoad,
                 LastQueryTime = SystemTime.UtcNow,
                 Highlightings = highlightings,
-				DurationMilliseconds = duration.ElapsedMilliseconds
+				DurationMilliseconds = duration.ElapsedMilliseconds,
+				ScoreExplanations = scoreExplanations
             };
         }
 

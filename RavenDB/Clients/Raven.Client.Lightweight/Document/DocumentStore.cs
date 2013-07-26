@@ -702,6 +702,9 @@ namespace Raven.Client.Document
 #else
 			result  = replicationInformers.GetOrAdd(key, Conventions.ReplicationInformerFactory);
 #endif
+			if (FailoverServers == null)
+				return result;
+
 			if (dbName == DefaultDatabase)
 			{
 				if (FailoverServers.IsSetForDefaultDatabase && result.FailoverUrls == null)
