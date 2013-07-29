@@ -257,6 +257,15 @@ namespace Raven.Database
 
 		private static void InitializeEncryption(InMemoryRavenConfiguration configuration)
 		{
+			string fipsAsString;
+			bool fips;
+			if (ValidateLicense.CurrentLicense.Attributes.TryGetValue("fips", out fipsAsString) && bool.TryParse(fipsAsString, out fips))
+			{
+				if (!fips && configuration.UseFips)
+					throw new InvalidOperationException(
+						"Your license does not allow you to use FIPS compliant encryption on the server.");
+			}
+
 			Encryptor.Initialize(configuration.UseFips);
 			Lucene.Net.Support.Cryptography.FIPSCompliant = configuration.UseFips;
 		}

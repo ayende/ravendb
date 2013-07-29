@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 namespace Raven.Abstractions.Util.Encryptors
 {
+	using System;
 	using System.Security.Cryptography;
 
 	public sealed class FipsEncryptor : EncryptorBase<FipsEncryptor.FipsHashEncryptor, FipsEncryptor.FipsSymmetricalEncryptor, FipsEncryptor.FipsAsymmetricalEncryptor>
@@ -22,13 +23,17 @@ namespace Raven.Abstractions.Util.Encryptors
 			{
 				get
 				{
+#if !SILVERLIGHT
 					return 20;
+#else
+					throw new NotSupportedException();
+#endif
 				}
 			}
 
 			public byte[] ComputeForStorage(byte[] bytes)
 			{
-				return Compute(bytes);
+				return Compute(bytes, StorageHashSize);
 			}
 
 			public byte[] ComputeForOAuth(byte[] bytes)
@@ -38,10 +43,15 @@ namespace Raven.Abstractions.Util.Encryptors
 
 			public byte[] Compute(byte[] bytes)
 			{
+				return Compute(bytes, 16);
+			}
+
+			private byte[] Compute(byte[] bytes, int? size)
+			{
 #if !SILVERLIGHT
-				return ComputeHash(SHA1.Create(), bytes);
+				return ComputeHash(SHA1.Create(), bytes, size);
 #else
-				return ComputeHash(new SHA1Managed(), bytes);
+				return ComputeHash(new SHA1Managed(), bytes, size);
 #endif
 			}
 		}

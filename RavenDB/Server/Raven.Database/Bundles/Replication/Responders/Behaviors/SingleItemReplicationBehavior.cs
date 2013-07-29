@@ -218,7 +218,6 @@ namespace Raven.Bundles.Replication.Responders
 			var bytes = Encoding.UTF8.GetBytes(metadata.Value<string>(Constants.RavenReplicationSource) + "/" + metadata.Value<string>("@etag"));
 
 			var hash = Encryptor.Current.Hash.Compute(bytes);
-			Array.Resize(ref hash, 16);
 
 			return new Guid(hash).ToString();
 		}
@@ -228,7 +227,6 @@ namespace Raven.Bundles.Replication.Responders
 			var bytes = Encoding.UTF8.GetBytes(Database.TransactionalStorage.Id + "/" + existingEtag);
 
 			var hash = Encryptor.Current.Hash.Compute(bytes);
-			Array.Resize(ref hash, 16);
 
 			return new Guid(hash).ToString();
 		}
