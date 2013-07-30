@@ -31,13 +31,7 @@ namespace Raven.Studio.Commands
 				                                                                .AsyncDatabaseCommands
 				                                                                .ForSystemDatabase();
 
-				                    var relativeUrl = "/admin/databases/" + databasesModel.SelectedDatabase.Name;
-
-				                    if (deleteDatabase.hardDelete.IsChecked == true)
-					                    relativeUrl += "?hard-delete=true";
-
-				                    var httpJsonRequest = asyncDatabaseCommands.CreateRequest(relativeUrl, "DELETE");
-				                    httpJsonRequest.ExecuteRequestAsync()
+									asyncDatabaseCommands.GlobalAdmin.DeleteDatabaseAsync(databasesModel.SelectedDatabase.Name, deleteDatabase.hardDelete.IsChecked == true)
 				                                   .ContinueOnSuccessInTheUIThread(() =>
 				                                   {
 					                                   var database = ApplicationModel.Current.Server

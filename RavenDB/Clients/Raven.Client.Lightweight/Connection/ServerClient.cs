@@ -38,10 +38,10 @@ namespace Raven.Client.Connection
 	/// <summary>
 	/// Access the RavenDB operations using HTTP
 	/// </summary>
-	public class ServerClient : IDatabaseCommands, IAdminDatabaseCommands
+	public class ServerClient : IDatabaseCommands
 	{
 		private readonly string url;
-		private readonly DocumentConvention convention;
+		internal readonly DocumentConvention convention;
 		private readonly ICredentials credentials;
 		private readonly Func<string, ReplicationInformer> replicationInformerGetter;
 		private readonly string databaseName;
@@ -54,6 +54,7 @@ namespace Raven.Client.Connection
 
 		private bool resolvingConflict;
 		private bool resolvingConflictRetries;
+		private readonly AdminServerClient adminServerClient;
 
 		/// <summary>
 		/// Notify when the failover status changed
@@ -86,6 +87,8 @@ namespace Raven.Client.Connection
 			OperationsHeaders = new NameValueCollection();
 			replicationInformer.UpdateReplicationInformationIfNeeded(this);
 			readStripingBase = replicationInformer.GetReadStripingBase();
+
+			adminServerClient = new AdminServerClient(this);
 		}
 
 		/// <summary>
@@ -153,7 +156,7 @@ namespace Raven.Client.Connection
 			});
 		}
 
-		public HttpJsonRequest CreateRequest(string method, string requestUrl, bool disableRequestCompression = false)
+		public HttpJsonRequest CreateRequest(string requestUrl, string method, bool disableRequestCompression = false)
 		{
 			var metadata = new RavenJObject();
 			AddTransactionInformation(metadata);
@@ -162,7 +165,21 @@ namespace Raven.Client.Connection
 			return jsonRequestFactory.CreateHttpJsonRequest(createHttpJsonRequestParams);
 		}
 
-		private void ExecuteWithReplication(string method, Action<string> operation)
+		public HttpJsonRequest CreateReplicationAwareRequest(string currentServerUrl, string requestUrl, string method, bool disableRequestCompression = false)
+		{
+			var metadata = new RavenJObject();
+			AddTransactionInformation(metadata);
+
+			var createHttpJsonRequestParams = new CreateHttpJsonRequestParams(this, (currentServerUrl + requestUrl).NoCache(), method, credentials,
+																			  convention).AddOperationHeaders(OperationsHeaders);
+			createHttpJsonRequestParams.DisableRequestCompression = disableRequestCompression;
+
+			return jsonRequestFactory.CreateHttpJsonRequest(createHttpJsonRequestParams)
+									 .AddReplicationStatusHeaders(url, currentServerUrl, replicationInformer,
+																  convention.FailoverBehavior, HandleReplicationStatusChanges);
+		}
+
+		internal void ExecuteWithReplication(string method, Action<string> operation)
 		{
 			ExecuteWithReplication<object>(method, operationUrl =>
 			{
@@ -171,7 +188,7 @@ namespace Raven.Client.Connection
 			});
 		}
 
-		private T ExecuteWithReplication<T>(string method, Func<string, T> operation)
+		internal T ExecuteWithReplication<T>(string method, Func<string, T> operation)
 		{
 			int currentRequest = convention.IncrementRequestCount();
 			return replicationInformer.ExecuteWithReplication(method, url, currentRequest, readStripingBase, operation);
@@ -2155,32 +2172,22 @@ namespace Raven.Client.Connection
 			return new DisposableAction(() => servicePoint.Expect100Continue = false);
 		}
 
-		#region IAsyncAdminDatabaseCommands
+		/// <summary>
+		/// Admin operations performed against system database, like create/delete database
+		/// </summary>
+		public IGlobalAdminDatabaseCommands GlobalAdmin
+		{
+			get { return adminServerClient; }
+		}
 
 		/// <summary>
-		/// Admin operations, like create/delete database.
+		/// Admin operations for current database
 		/// </summary>
 		public IAdminDatabaseCommands Admin
 		{
-			get { return (IAdminDatabaseCommands)ForSystemDatabase(); }
+			get { return adminServerClient; }
 		}
 
-		public void CreateDatabase(DatabaseDocument databaseDocument)
-		{
-			if (databaseDocument.Settings.ContainsKey("Raven/DataDir") == false)
-				throw new InvalidOperationException("The Raven/DataDir setting is mandatory");
-
-			var dbname = databaseDocument.Id.Replace("Raven/Databases/", "");
-			MultiDatabase.AssertValidDatabaseName(dbname);
-			var doc = RavenJObject.FromObject(databaseDocument);
-			doc.Remove("Id");
-
-			var req = CreateRequest("PUT", "/admin/databases/" + Uri.EscapeDataString(dbname));
-			req.Write(doc.ToString(Formatting.Indented));
-			req.ExecuteRequest();
-		}
-
-		#endregion
 	}
 }
 #endif

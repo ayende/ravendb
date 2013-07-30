@@ -33,7 +33,7 @@ namespace Raven.Studio.Features.Tasks
             await DatabaseCommands.ForSystemDatabase().DeleteDocumentAsync("Raven/Restore/Status");
 
             var failCount = 0;
-            await DatabaseCommands.StartRestoreAsync(backupLocation, databaseLocation, DatabaseName);
+            await DatabaseCommands.Admin.StartRestoreAsync(backupLocation, databaseLocation, DatabaseName);
 
             var restoreFinished = false;
             var reportedMessageCount = 0;

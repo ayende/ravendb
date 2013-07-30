@@ -443,7 +443,7 @@ namespace Raven.Client.Document
 
 				if (string.IsNullOrEmpty(DefaultDatabase) == false)
 				{
-					DatabaseCommands.ForSystemDatabase().Admin.EnsureDatabaseExists(DefaultDatabase, ignoreFailures: true);
+					DatabaseCommands.ForSystemDatabase().GlobalAdmin.EnsureDatabaseExists(DefaultDatabase, ignoreFailures: true);
 				}
 #endif
 			}

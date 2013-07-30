@@ -50,14 +50,14 @@ namespace Raven.Client.Connection.Async
 	/// <summary>
 	/// Access the database commands in async fashion
 	/// </summary>
-	public class AsyncServerClient : IAsyncDatabaseCommands, IAsyncAdminDatabaseCommands, IAsyncInfoDatabaseCommands, IAsyncGlobalAdminDatabaseCommands
+	public class AsyncServerClient : IAsyncDatabaseCommands, IAsyncInfoDatabaseCommands
 	{
 		private readonly ProfilingInformation profilingInformation;
 		private readonly IDocumentConflictListener[] conflictListeners;
 		private readonly string url;
 		private readonly string rootUrl;
 		private readonly ICredentials credentials;
-		private readonly DocumentConvention convention;
+		internal readonly DocumentConvention convention;
 		private IDictionary<string, string> operationsHeaders = new Dictionary<string, string>();
 		internal readonly HttpJsonRequestFactory jsonRequestFactory;
 		private readonly Guid? sessionId;
@@ -66,6 +66,7 @@ namespace Raven.Client.Connection.Async
 		private readonly ReplicationInformer replicationInformer;
 		private int requestCount;
 		private int readStripingBase;
+		private readonly AsyncAdminServerClient asyncAdminServerClient;
 
 		public string Url
 		{
@@ -98,6 +99,8 @@ namespace Raven.Client.Connection.Async
 			this.replicationInformerGetter = replicationInformerGetter;
 			this.replicationInformer = replicationInformerGetter(databaseName);
 			this.readStripingBase = replicationInformer.GetReadStripingBase();
+
+			asyncAdminServerClient = new AsyncAdminServerClient(this);
 		}
 
 		/// <summary>
@@ -904,107 +907,6 @@ namespace Raven.Client.Connection.Async
 			return convention.CreateSerializer().Deserialize<BuildNumber>(new RavenJTokenReader(result));
 		}
 
-		public async Task<LicensingStatus> GetLicenseStatus()
-		{
-			var actualUrl = string.Format("{0}/license/status", url).NoCache();
-			var request = jsonRequestFactory.CreateHttpJsonRequest(
-				new CreateHttpJsonRequestParams(this, actualUrl, "GET", new RavenJObject(), credentials, convention)
-					.AddOperationHeaders(OperationsHeaders));
-
-			var result = await request.ReadResponseJsonAsync();
-			return new LicensingStatus
-			{
-				Error = result.Value<bool>("Error"),
-				Message = result.Value<string>("Message"),
-				Status = result.Value<string>("Status"),
-			};
-		}
-
-		public async Task<BuildNumber> GetBuildNumber()
-		{
-			var actualUrl = string.Format("{0}/build/version", url).NoCache();
-			var request = jsonRequestFactory.CreateHttpJsonRequest(
-				new CreateHttpJsonRequestParams(this, actualUrl, "GET", new RavenJObject(), credentials, convention)
-					.AddOperationHeaders(OperationsHeaders));
-
-			RavenJToken result = await request.ReadResponseJsonAsync();
-			return new BuildNumber
-			{
-				BuildVersion = result.Value<string>("BuildVersion"),
-				ProductVersion = result.Value<string>("ProductVersion")
-			};
-		}
-
-		public Task StartBackupAsync(string backupLocation, DatabaseDocument databaseDocument)
-		{
-			var request = jsonRequestFactory.CreateHttpJsonRequest(new CreateHttpJsonRequestParams(this, (url + "/admin/backup").NoCache(), "POST", credentials, convention));
-			request.AddOperationHeaders(OperationsHeaders);
-			return request.ExecuteWriteAsync(new RavenJObject
-			{
-				{"BackupLocation", backupLocation},
-				{"DatabaseDocument", RavenJObject.FromObject(databaseDocument)}
-			}.ToString(Formatting.None));
-		}
-
-		public Task StartRestoreAsync(string restoreLocation, string databaseLocation, string name = null, bool defrag = false)
-		{
-			var request = jsonRequestFactory.CreateHttpJsonRequest(new CreateHttpJsonRequestParams(this, (url + "/admin/restore?defrag=" + defrag).NoCache(), "POST", credentials, convention));
-			request.AddOperationHeaders(OperationsHeaders);
-			return request.ExecuteWriteAsync(new RavenJObject
-			{
-				{"RestoreLocation", restoreLocation},
-				{"DatabaseLocation", databaseLocation},
-				{"DatabaseName", name}
-			}.ToString(Formatting.None));
-		}
-
-		public Task StartIndexingAsync()
-		{
-			return ExecuteWithReplication("POST", operationUrl =>
-			{
-				var request =
-					jsonRequestFactory.CreateHttpJsonRequest(new CreateHttpJsonRequestParams(this,
-					                                                                         (operationUrl + "/admin/StartIndexing").NoCache(),
-					                                                                         "POST", credentials, convention));
-
-				request.AddOperationHeaders(OperationsHeaders);
-				request.AddReplicationStatusHeaders(url, operationUrl, replicationInformer, convention.FailoverBehavior, HandleReplicationStatusChanges);
-
-				return request.ExecuteRequestAsync();
-			});
-		}
-
-		public Task StopIndexingAsync()
-		{
-			return ExecuteWithReplication("POST", operationUrl =>
-			{
-				var request =
-					jsonRequestFactory.CreateHttpJsonRequest(new CreateHttpJsonRequestParams(this,
-					                                                                         (operationUrl + "/admin/StopIndexing").NoCache(),
-					                                                                         "POST", credentials, convention));
-				request.AddOperationHeaders(OperationsHeaders);
-				request.AddReplicationStatusHeaders(url, operationUrl, replicationInformer, convention.FailoverBehavior, HandleReplicationStatusChanges);
-
-				return request.ExecuteRequestAsync();
-			});
-		}
-
-		public Task<string> GetIndexingStatusAsync()
-		{
-			return ExecuteWithReplication("GET", async operationUrl =>
-			{
-				var request =
-					jsonRequestFactory.CreateHttpJsonRequest(new CreateHttpJsonRequestParams(this,
-					                                                                         (operationUrl + "/admin/IndexingStatus").
-						                                                                         NoCache(), "GET", credentials, convention));
-				request.AddOperationHeaders(OperationsHeaders);
-				request.AddReplicationStatusHeaders(url, operationUrl, replicationInformer, convention.FailoverBehavior, HandleReplicationStatusChanges);
-
-				var result = await request.ReadResponseJsonAsync();
-				return result.Value<string>("IndexingStatus");
-			});
-		}
-
 		public Task<JsonDocument[]> StartsWithAsync(string keyPrefix, int start, int pageSize, bool metadataOnly = false)
 		{
 			return ExecuteWithReplication("GET", async operationUrl =>
@@ -1623,9 +1525,23 @@ namespace Raven.Client.Connection.Async
 		{
 			var metadata = new RavenJObject();
 			AddTransactionInformation(metadata);
-			var createHttpJsonRequestParams = new CreateHttpJsonRequestParams(this, url + requestUrl, method, metadata, credentials, convention).AddOperationHeaders(OperationsHeaders);
+			var createHttpJsonRequestParams = new CreateHttpJsonRequestParams(this, (url + requestUrl).NoCache(), method, metadata, credentials, convention).AddOperationHeaders(OperationsHeaders);
 			createHttpJsonRequestParams.DisableRequestCompression = disableRequestCompression;
 			return jsonRequestFactory.CreateHttpJsonRequest(createHttpJsonRequestParams);
+		}
+
+		public HttpJsonRequest CreateReplicationAwareRequest(string currentServerUrl, string requestUrl, string method, bool disableRequestCompression = false)
+		{
+			var metadata = new RavenJObject();
+			AddTransactionInformation(metadata);
+
+			var createHttpJsonRequestParams = new CreateHttpJsonRequestParams(this, (currentServerUrl + requestUrl).NoCache(), method, credentials,
+			                                                                  convention).AddOperationHeaders(OperationsHeaders);
+			createHttpJsonRequestParams.DisableRequestCompression = disableRequestCompression;
+
+			return jsonRequestFactory.CreateHttpJsonRequest(createHttpJsonRequestParams)
+			                         .AddReplicationStatusHeaders(url, currentServerUrl, replicationInformer,
+			                                                      convention.FailoverBehavior, HandleReplicationStatusChanges);
 		}
 
 		private void HandleReplicationStatusChanges(NameValueCollection headers, string primaryUrl, string currentUrl)
@@ -1641,7 +1557,7 @@ namespace Raven.Client.Connection.Async
 			}
 		}
 
-		private Task ExecuteWithReplication(string method, Func<string, Task> operation)
+		internal Task ExecuteWithReplication(string method, Func<string, Task> operation)
 		{
 			// Convert the Func<string, Task> to a Func<string, Task<object>>
 			return ExecuteWithReplication(method, u => operation(u).ContinueWith<object>(t =>
@@ -1655,7 +1571,7 @@ namespace Raven.Client.Connection.Async
 		private bool resolvingConflict;
 		private bool resolvingConflictRetries;
 
-		private async Task<T> ExecuteWithReplication<T>(string method, Func<string, Task<T>> operation)
+		internal async Task<T> ExecuteWithReplication<T>(string method, Func<string, Task<T>> operation)
 		{
 			var currentRequest = Interlocked.Increment(ref requestCount);
 			if (currentlyExecuting && convention.AllowMultipuleAsyncOperations == false)
@@ -1796,50 +1712,21 @@ namespace Raven.Client.Connection.Async
 			}
 		}
 
-		#region IAsyncGlobalAdminDatabaseCommands
-
+		/// <summary>
+		/// Admin operations performed against system database, like create/delete database
+		/// </summary>
 		public IAsyncGlobalAdminDatabaseCommands GlobalAdmin
 		{
-			get { return this; }
+			get { return asyncAdminServerClient; }
 		}
-
-		async Task<AdminStatistics> IAsyncGlobalAdminDatabaseCommands.GetStatisticsAsync()
-		{
-			var json = (RavenJObject) await rootUrl.AdminStats()
-			                                       .NoCache()
-			                                       .ToJsonRequest(this, credentials, convention)
-			                                       .ReadResponseJsonAsync();
-
-			return json.Deserialize<AdminStatistics>(convention);
-		}
-
-		#endregion
-
-		#region IAsyncAdminDatabaseCommands
 
 		/// <summary>
-		/// Admin operations, like create/delete database.
+		/// Admin operations for current database
 		/// </summary>
 		public IAsyncAdminDatabaseCommands Admin
 		{
-			get { return this; }
+			get { return asyncAdminServerClient; }
 		}
-
-		public Task CreateDatabaseAsync(DatabaseDocument databaseDocument)
-		{
-			if (databaseDocument.Settings.ContainsKey("Raven/DataDir") == false)
-				throw new InvalidOperationException("The Raven/DataDir setting is mandatory");
-
-			var dbname = databaseDocument.Id.Replace("Raven/Databases/", "");
-			MultiDatabase.AssertValidDatabaseName(dbname);
-			var doc = RavenJObject.FromObject(databaseDocument);
-			doc.Remove("Id");
-
-			var req = CreateRequest("/admin/databases/" + Uri.EscapeDataString(dbname), "PUT");
-			return req.ExecuteWriteAsync(doc.ToString(Formatting.Indented));
-		}
-
-		#endregion
 
 		#region IAsyncInfoDatabaseCommands
 

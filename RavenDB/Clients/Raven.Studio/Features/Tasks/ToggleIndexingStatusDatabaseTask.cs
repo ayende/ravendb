@@ -35,7 +35,7 @@ namespace Raven.Studio.Features.Tasks
             {
                 Report("Disabling Indexing ... (will wait for current indexing batch to complete)");
 
-                await DatabaseCommands.StopIndexingAsync();
+                await DatabaseCommands.Admin.StopIndexingAsync();
 
                 Report("Indexing Disabled");
             }
@@ -43,7 +43,7 @@ namespace Raven.Studio.Features.Tasks
             {
                 Report("Enabling Indexing");
 
-                await DatabaseCommands.StartIndexingAsync();
+                await DatabaseCommands.Admin.StartIndexingAsync();
 
                 Report("Indexing Enabled");
             }
