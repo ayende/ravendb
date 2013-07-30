@@ -165,14 +165,7 @@ namespace Raven.Client.Connection
 						{
 							Response = await httpClient.SendAsync(new HttpRequestMessage(new HttpMethod(Method), Url));
 
-							ResponseHeaders = new NameValueCollection();
-							foreach (var header in Response.Headers)
-							{
-								foreach (var val in header.Value)
-								{
-									ResponseHeaders.Add(header.Key, val);
-								}
-							}
+							SetResponseHeaders(Response);
 
 							ResponseStatusCode = Response.StatusCode;
 						}
@@ -205,6 +198,18 @@ namespace Raven.Client.Connection
 
 				if (await HandleUnauthorizedResponseAsync(Response) == false)
 					await new CompletedTask(webException).Task; // Throws, preserving original stack
+			}
+		}
+
+		private void SetResponseHeaders(HttpResponseMessage response)
+		{
+			ResponseHeaders = new NameValueCollection();
+			foreach (var header in response.Headers)
+			{
+				foreach (var val in header.Value)
+				{
+					ResponseHeaders.Add(header.Key, val);
+				}
 			}
 		}
 
@@ -853,7 +858,10 @@ namespace Raven.Client.Connection
 				try
 				{
 					Response = await httpClient.SendAsync(new HttpRequestMessage(new HttpMethod(Method), Url), HttpCompletionOption.ResponseHeadersRead);
+					
 					await CheckForErrorsAsync();
+					
+					SetResponseHeaders(Response);
 
 					var stream = await Response.GetResponseStreamWithHttpDecompression();
 					var observableLineStream = new ObservableLineStream(stream, () => Response.Dispose());
@@ -910,6 +918,8 @@ namespace Raven.Client.Connection
 
 				if (Response.IsSuccessStatusCode == false)
 					throw new ErrorResponseException(Response);
+
+				SetResponseHeaders(Response);
 			}
 		}
 
@@ -923,6 +933,8 @@ namespace Raven.Client.Connection
 
 			if (Response.IsSuccessStatusCode == false)
 				throw new ErrorResponseException(Response);
+
+			SetResponseHeaders(Response);
 		}
 
 		public Task<Stream> GetRawRequestStream()
