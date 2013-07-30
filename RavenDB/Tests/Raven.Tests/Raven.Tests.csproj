@@ -143,6 +143,7 @@
     <Reference Include="System.Core">
       <RequiredTargetFramework>3.5</RequiredTargetFramework>
     </Reference>
+    <Reference Include="System.Linq" />
     <Reference Include="System.Net" />
     <Reference Include="System.Net.Http" />
     <Reference Include="System.Reactive.Core">
@@ -558,6 +559,7 @@
     <Compile Include="Issues\BulkInsertAuth.cs" />
     <Compile Include="Issues\BulkInsertClient.cs" />
     <Compile Include="Issues\BulkInsertDatabaseUrl.cs" />
+    <Compile Include="Issues\NestedPropertiesIndex_1182.cs" />
     <Compile Include="Issues\RavenDB1019.cs" />
     <Compile Include="Issues\RavenDB1025.cs" />
     <Compile Include="Issues\RavenDB1067.cs" />
