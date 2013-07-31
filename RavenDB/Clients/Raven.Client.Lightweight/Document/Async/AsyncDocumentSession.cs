@@ -14,15 +14,13 @@ using Raven.Abstractions.Util;
 using Raven.Client.Connection;
 using Raven.Client.Connection.Async;
 using Raven.Client.Document.SessionOperations;
-using Raven.Client.Extensions;
+using Raven.Client.Linq;
 using Raven.Client.Indexes;
 using Raven.Client.Util;
 using Raven.Json.Linq;
 
 namespace Raven.Client.Document.Async
 {
-	using Linq;
-
 	/// <summary>
 	/// Implementation for async document session 
 	/// </summary>
@@ -369,7 +367,7 @@ namespace Raven.Client.Document.Async
 			return result.FirstOrDefault();
 		}
 
-		public async Task<TResult[]> Load<TTransformer, TResult>(IEnumerable<string> ids, Action<ILoadConfiguration> configure) where TTransformer : AbstractTransformerCreationTask, new()
+		public async Task<TResult[]> LoadAsync<TTransformer, TResult>(IEnumerable<string> ids, Action<ILoadConfiguration> configure) where TTransformer : AbstractTransformerCreationTask, new()
 		{
 			var transformer = new TTransformer();
 			var ravenLoadConfiguration = new RavenLoadConfiguration();
