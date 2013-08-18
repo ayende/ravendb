@@ -280,6 +280,7 @@ namespace Raven.Tests.Helpers
 		{
 			var done = SpinWait.SpinUntil(() =>
 			{
+				// We expect to get the doc from database that we tried to backup
 				var jsonDocument = getDocument(BackupStatus.RavenBackupStatusDocumentKey);
 				if (jsonDocument == null)
 					return true;
@@ -299,6 +300,30 @@ namespace Raven.Tests.Helpers
 				}
 				return false;
 			}, TimeSpan.FromMinutes(15));
+			Assert.True(done);
+		}
+
+		protected void WaitForRestore(IDatabaseCommands databaseCommands)
+		{
+			var done = SpinWait.SpinUntil(() =>
+			{
+				// We expect to get the doc from the <system> database
+				var doc = databaseCommands.Get(RestoreStatus.RavenRestoreStatusDocumentKey);
+
+				if (doc == null)
+					return false;
+
+				var status = doc.DataAsJson["restoreStatus"].Values().Select(token => token.ToString()).ToList();
+
+				var restoreFinishMessages = new[]
+				{
+					"The new database was created",
+					"Esent Restore: Restore Complete", 
+					"Restore ended but could not create the datebase document, in order to access the data create a database with the appropriate name",
+				};
+				return restoreFinishMessages.Any(status.Last().Contains);
+			}, TimeSpan.FromMinutes(5));
+
 			Assert.True(done);
 		}
 
