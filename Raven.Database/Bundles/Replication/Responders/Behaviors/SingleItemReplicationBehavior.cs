@@ -31,7 +31,8 @@ namespace Raven.Bundles.Replication.Responders
 			}
 			TInternal existingItem;
 			Guid existingEtag;
-			var existingMetadata = TryGetExisting(id, out existingItem, out existingEtag);
+			bool deleted;
+			var existingMetadata = TryGetExisting(id, out existingItem, out existingEtag, out deleted);
 			if (existingMetadata == null)
 			{
 				log.Debug("New item {0} replicated successfully from {1}", id, Src);
@@ -50,15 +51,13 @@ namespace Raven.Bundles.Replication.Responders
 
 
 			var existingDocumentIsInConflict = existingMetadata[Constants.RavenReplicationConflict] != null;
-			var existingDocumentIsDeleted = existingMetadata[Constants.RavenDeleteMarker] != null
-			                                && existingMetadata[Constants.RavenDeleteMarker].Value<bool>();
 
 			if (existingDocumentIsInConflict == false &&                    // if the current document is not in conflict, we can continue without having to keep conflict semantics
 				(Historian.IsDirectChildOfCurrent(metadata, existingMetadata)))		// this update is direct child of the existing doc, so we are fine with overwriting this
 			{
 				log.Debug("Existing item {0} replicated successfully from {1}", id, Src);
 
-				var etag = existingDocumentIsDeleted == false ? existingEtag : (Guid?)null;
+				var etag = deleted == false ? existingEtag : (Guid?)null;
 				AddWithoutConflict(id, etag, metadata, incoming);
 				return;
 			}
@@ -85,14 +84,14 @@ namespace Raven.Bundles.Replication.Responders
 				AppendToCurrentItemConflicts(id, newDocumentConflictId, existingMetadata, existingItem);
 				return;
 			}
-			log.Debug("Existing item {0} is in conflict with replicated version from {1}, marking item as conflicted", id, Src);
+				log.Debug("Existing item {0} is in conflict with replicated version from {1}, marking item as conflicted", id, Src);
 
-			// we have a new conflict
-			// move the existing doc to a conflict and create a conflict document
-			var existingDocumentConflictId = id + "/conflicts/" + HashReplicationIdentifier(existingEtag);
+				// we have a new conflict
+				// move the existing doc to a conflict and create a conflict document
+				var existingDocumentConflictId = id + "/conflicts/" + HashReplicationIdentifier(existingEtag);
 
 			CreateConflict(id, newDocumentConflictId, existingDocumentConflictId, existingItem, existingMetadata);
-		}
+			}
 
 		protected abstract DocumentChangeTypes ReplicationConflict { get; }
 
@@ -101,7 +100,11 @@ namespace Raven.Bundles.Replication.Responders
 			metadata[Constants.RavenReplicationConflictDocument] = true;
 			var newDocumentConflictId = id + "/conflicts/" + HashReplicationIdentifier(metadata);
 			metadata.Add(Constants.RavenReplicationConflict, RavenJToken.FromObject(true));
-			AddWithoutConflict(newDocumentConflictId, Guid.Empty, metadata, incoming);
+			AddWithoutConflict(
+				newDocumentConflictId,
+				null, // we explicitly want to overwrite a document if it already exists, since it  is known uniuque by the key 
+				metadata, 
+				incoming);
 			return newDocumentConflictId;
 		}
 
@@ -109,7 +112,8 @@ namespace Raven.Bundles.Replication.Responders
 		{
 			TInternal existingItem;
 			Guid existingEtag;
-			var existingMetadata = TryGetExisting(id, out existingItem, out existingEtag);
+			bool deleted;
+			var existingMetadata = TryGetExisting(id, out existingItem, out existingEtag, out deleted);
 			if (existingMetadata == null)
 			{
 				log.Debug("Replicating deleted item {0} from {1} that does not exist, ignoring", id, Src);
@@ -162,17 +166,17 @@ namespace Raven.Bundles.Replication.Responders
 
 			Database.TransactionalStorage.ExecuteImmediatelyOrRegisterForSynchronization(() =>
 																						Database.RaiseNotifications(new DocumentChangeNotification
-																						{
+			{
 																							Id = id,
 																							Type = DocumentChangeTypes.ReplicationConflict
 																						}, metadata));
-			var newConflictId = SaveConflictedItem(id, metadata, incoming, existingEtag);
-			log.Debug("Existing item {0} is in conflict with replicated delete from {1}, marking item as conflicted", id, Src);
+				var newConflictId = SaveConflictedItem(id, metadata, incoming, existingEtag);
+				log.Debug("Existing item {0} is in conflict with replicated delete from {1}, marking item as conflicted", id, Src);
 
-			// we have a new conflict  move the existing doc to a conflict and create a conflict document
-			var existingDocumentConflictId = id + "/conflicts/" + HashReplicationIdentifier(existingEtag);
+				// we have a new conflict  move the existing doc to a conflict and create a conflict document
+				var existingDocumentConflictId = id + "/conflicts/" + HashReplicationIdentifier(existingEtag);
 			CreateConflict(id, newConflictId, existingDocumentConflictId, existingItem, existingMetadata);
-		}
+			}
 
 		protected abstract void DeleteItem(string id, Guid etag);
 
@@ -184,10 +188,10 @@ namespace Raven.Bundles.Replication.Responders
 
 		protected abstract void AppendToCurrentItemConflicts(string id, string newConflictId, RavenJObject existingMetadata, TInternal existingItem);
 
-		protected abstract RavenJObject TryGetExisting(string id, out TInternal existingItem, out Guid existingEtag);
+		protected abstract RavenJObject TryGetExisting(string id, out TInternal existingItem, out Guid existingEtag, out bool deleted);
 
 		protected abstract bool TryResolveConflict(string id, RavenJObject metadata, TExternal document,
-		                                          TInternal existing);
+												  TInternal existing);
 
 
 		private static string HashReplicationIdentifier(RavenJObject metadata)

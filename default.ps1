@@ -87,7 +87,7 @@ task Init -depends Verify40, Clean {
 	
 	$commit = Get-Git-Commit
 	(Get-Content "$base_dir\CommonAssemblyInfo.cs") | 
-		Foreach-Object { $_ -replace ".13.", ".$($env:buildlabel)." } |
+		Foreach-Object { $_ -replace ".13", ".$($env:buildlabel)" } |
 		Foreach-Object { $_ -replace "{commit}", $commit } |
 		Set-Content "$base_dir\CommonAssemblyInfo.cs" -Encoding UTF8
 	
@@ -97,6 +97,8 @@ task Init -depends Verify40, Clean {
 }
 
 task Compile -depends Init {
+	
+	"Dummy file so msbuild knows there is one here before embedding as resource." | Out-File "$base_dir\Raven.Database\Server\WebUI\Raven.Studio.xap"
 	
 	$v4_net_version = (ls "$env:windir\Microsoft.NET\Framework\v4.0*").Name
 	
@@ -529,7 +531,7 @@ task CreateNugetPackages -depends Compile {
 	
 	# Upload packages
 	$accessPath = "$base_dir\..\Nuget-Access-Key.txt"
-	$sourceFeed = "https://nuget.org/api/v2"
+	$sourceFeed = "https://nuget.org/"
 	
 	if ($global:uploadCategory -and $global:uploadCategory.EndsWith("-Unstable")){
 		$accessPath = "$base_dir\..\MyGet-Access-Key.txt"

@@ -10,7 +10,7 @@ namespace Raven.Database.Server.Security.OAuth
 {
 	public class OAuthRequestAuthorizer : AbstractRequestAuthorizer
 	{
-		public bool Authorize(IHttpContext ctx, bool hasApiKey)
+		public bool Authorize(IHttpContext ctx, bool hasApiKey, bool ignoreDbAccess)
 		{
 			var httpRequest = ctx.Request;
 
@@ -55,7 +55,7 @@ namespace Raven.Database.Server.Security.OAuth
 			var writeAccess = isGetRequest == false;
 			if(!tokenBody.IsAuthorized(TenantId, writeAccess))
 			{
-				if (allowUnauthenticatedUsers)
+				if (allowUnauthenticatedUsers || ignoreDbAccess)
 					return true;
 
 				WriteAuthorizationChallenge(ctx, 403, "insufficient_scope", 
@@ -109,7 +109,19 @@ namespace Raven.Database.Server.Security.OAuth
 		{
 			if (string.IsNullOrEmpty(Settings.OAuthTokenServer) == false)
 			{
-				ctx.Response.AddHeader("OAuth-Source", Settings.OAuthTokenServer);
+				if (Settings.UseDefaultOAuthTokenServer == false)
+				{
+					ctx.Response.AddHeader("OAuth-Source", Settings.OAuthTokenServer);
+				}
+				else
+				{
+					ctx.Response.AddHeader("OAuth-Source", new UriBuilder(Settings.OAuthTokenServer)
+					{
+						Host = ctx.Request.Url.Host,
+						Port = ctx.Request.Url.Port
+					}.Uri.ToString());
+			
+				}
 			}
 			ctx.Response.StatusCode = statusCode;
 			ctx.Response.AddHeader("WWW-Authenticate", string.Format("Bearer realm=\"Raven\", error=\"{0}\",error_description=\"{1}\"", error, errorDescription));
