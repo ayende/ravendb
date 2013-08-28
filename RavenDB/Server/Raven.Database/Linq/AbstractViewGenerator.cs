@@ -41,6 +41,8 @@ namespace Raven.Database.Linq
 
 		public string SourceCode { get; set; }
 
+    public string Name { get { return indexDefinition.Name;  }}
+
 		public int CountOfSelectMany
 		{
 			get

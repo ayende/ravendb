@@ -77,7 +77,7 @@ namespace Raven.Studio.Models
 	    {
 	        bool hadIndexingErrors = Errors.Any(e => e.Stage == "Indexing");
 
-	        var serverErrors = Database.Value.Statistics.Value.Errors.Where(s => s.Index == Name).Select(se => new IndexDefinitionError()
+	        var serverErrors = Database.Value.Statistics.Value.Errors.Where(s => s.Index == index.IndexId).Select(se => new IndexDefinitionError()
 	        {
 	            DocumentId = se.Document,
                 Message = se.Error,
@@ -139,7 +139,7 @@ namespace Raven.Studio.Models
 
 		private void UpdateFromIndex(IndexDefinition indexDefinition)
 		{
-			UpdatePriority(indexDefinition.Name);
+			UpdatePriority(indexDefinition.IndexId);
 			index = indexDefinition;
 
 			if (index.Maps.Count == 0)
@@ -180,13 +180,13 @@ namespace Raven.Studio.Models
 			OnEverythingChanged();
 		}
 
-		private void UpdatePriority(string name)
+		private void UpdatePriority(int id)
 		{
 			DatabaseCommands
 				.GetStatisticsAsync()
 				.ContinueOnSuccessInTheUIThread(databaseStatistics =>
 				{
-					var indexStats = databaseStatistics.Indexes.FirstOrDefault(stats => stats.Name == name);
+					var indexStats = databaseStatistics.Indexes.FirstOrDefault(stats => stats.Id == id);
 					if (indexStats == null)
 						return;
 					Priority = indexStats.Priority;
@@ -521,7 +521,7 @@ namespace Raven.Studio.Models
 			get
 			{
 				var databaseStatistics = statistics.Value;
-				return databaseStatistics == null ? 0 : databaseStatistics.Errors.Count(e => e.Index == Name);
+				return databaseStatistics == null ? 0 : databaseStatistics.Errors.Count(e => e.Index == index.IndexId);
 			}
 		}
 

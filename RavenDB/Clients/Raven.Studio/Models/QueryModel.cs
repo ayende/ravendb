@@ -625,7 +625,7 @@ namespace Raven.Studio.Models
                 return;
             }
 
-	        AvailableIndexes.Match(Database.Value.Statistics.Value.Indexes.Select(i => i.Name).ToArray());
+	        AvailableIndexes.Match(Database.Value.Statistics.Value.Indexes.Select(i => i.Id.ToString()).ToArray());
 	    }
 
 	    private void ClearCurrentQuery()

@@ -1386,7 +1386,7 @@ namespace Raven.Database.Server
 				{
 					Url = ctx.Request.RawUrl,
 					Error = e.Information.GetErrorMessage(),
-					Index = e.Information.Name,
+					Index = e.Information.Id,
 				});
 			}
 
