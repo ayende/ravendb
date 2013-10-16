@@ -174,13 +174,13 @@
     </Reference>
     <Reference Include="System.Data" />
     <Reference Include="System.Xml" />
-    <Reference Include="xunit, Version=1.9.1.1600, Culture=neutral, PublicKeyToken=8d05b1bb7a6fdb6c, processorArchitecture=MSIL">
+    <Reference Include="xunit, Version=1.9.2.1705, Culture=neutral, PublicKeyToken=8d05b1bb7a6fdb6c, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\packages\xunit.1.9.1\lib\net20\xunit.dll</HintPath>
+      <HintPath>..\packages\xunit.1.9.2\lib\net20\xunit.dll</HintPath>
     </Reference>
-    <Reference Include="xunit.extensions, Version=1.9.1.1600, Culture=neutral, PublicKeyToken=8d05b1bb7a6fdb6c, processorArchitecture=MSIL">
+    <Reference Include="xunit.extensions, Version=1.9.2.1705, Culture=neutral, PublicKeyToken=8d05b1bb7a6fdb6c, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\packages\xunit.extensions.1.9.1\lib\net20\xunit.extensions.dll</HintPath>
+      <HintPath>..\packages\xunit.extensions.1.9.2\lib\net20\xunit.extensions.dll</HintPath>
     </Reference>
     <Reference Include="xunit.runner.msbuild">
       <HintPath>..\packages\xunit.1.9.1\lib\net20\xunit.runner.msbuild.dll</HintPath>
@@ -220,6 +220,9 @@
     <Compile Include="Bugs\CanUseReduceResultInOutput.cs" />
     <Compile Include="Bugs\CaseSensitiveDeletes.cs" />
     <Compile Include="Bugs\Chripede\IndexOnList.cs" />
+    <Compile Include="Bugs\AccessingMetadataInTransformer.cs" />
+    <Compile Include="Linq\In.cs" />
+    <Compile Include="Bugs\WhenQueringAsync.cs" />
     <Compile Include="Bugs\PatchShouldNotConvertFloatToInteger.cs" />
     <Compile Include="Bugs\MultiGetDoesNotUrlDecodeTwice.cs" />
     <Compile Include="Bugs\MultiMap\MultiMapWithNullableEnum.cs" />
@@ -771,6 +774,7 @@
     <Compile Include="MailingList\jbartruf.cs" />
     <Compile Include="MailingList\JsonComarision.cs" />
     <Compile Include="MailingList\Kushnir.cs" />
+    <Compile Include="MailingList\LazilyLoadByIdsWithTransformer.cs" />
     <Compile Include="MailingList\LazyLoadFromSessionCache.cs" />
     <Compile Include="MailingList\LazyTests.cs" />
     <Compile Include="MailingList\Lindblom.cs" />
