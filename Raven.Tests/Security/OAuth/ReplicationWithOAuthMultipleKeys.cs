@@ -18,6 +18,8 @@ using Xunit;
 
 namespace Raven.Tests.Security.OAuth
 {
+	using Raven.Client.Connection;
+
 	public class ReplicationWithOAuthMultipleKeys : ReplicationBase
 	{
 		private string[] apiKeys = new string[]
@@ -38,7 +40,7 @@ namespace Raven.Tests.Security.OAuth
 		protected override void ConfigureDatabase(Database.DocumentDatabase database)
 		{
 			var apiKey = apiKeys[databaseCounter++];
-			database.Put("Raven/ApiKeys/test", null, RavenJObject.FromObject(new ApiKeyDefinition
+			database.Put("Raven/ApiKeys/" + apiKey.Split('/')[0], null, RavenJObject.FromObject(new ApiKeyDefinition
 			{
 				Name = apiKey.Split('/')[0],
 				Secret = apiKey.Split('/')[1],
@@ -69,6 +71,9 @@ namespace Raven.Tests.Security.OAuth
 			var company = WaitForDocument<Company>(store2, "companies/1");
 			Assert.Equal("Hibernating Rhinos", company.Name);
 
+			var serverClient = ((ServerClient)store1.DatabaseCommands);
+			serverClient.ReplicationInformer.RefreshReplicationInformation(serverClient);
+
 			servers[0].Dispose();
 
 			using (var session = store1.OpenSession())
@@ -78,7 +83,7 @@ namespace Raven.Tests.Security.OAuth
 		}
 
 		[Fact]
-		public async Task Can_Failover_With_Different_Api_Key_aysnc()
+		public async Task Can_Failover_With_Different_Api_Key_async()
 		{
 			var store1 = CreateStore(enableAuthorization: true);
 			Authentication.EnableOnce();
@@ -94,6 +99,9 @@ namespace Raven.Tests.Security.OAuth
 
 			var company = WaitForDocument<Company>(store2, "companies/1");
 			Assert.Equal("Hibernating Rhinos", company.Name);
+
+			var serverClient = ((ServerClient)store1.DatabaseCommands);
+			serverClient.ReplicationInformer.RefreshReplicationInformation(serverClient);
 
 			servers[0].Dispose();
 
@@ -115,6 +123,13 @@ namespace Raven.Tests.Security.OAuth
 			new MyIndex().Execute(store1);
 
 			Assert.NotNull(store2.DatabaseCommands.GetIndex("MyIndex"));
+
+			var serverClient = ((ServerClient)store1.DatabaseCommands);
+			serverClient.ReplicationInformer.RefreshReplicationInformation(serverClient);
+
+			servers[0].Dispose();
+
+			Assert.NotNull(store1.DatabaseCommands.GetIndex("MyIndex"));
 		}
 
 		[Fact]
@@ -128,6 +143,13 @@ namespace Raven.Tests.Security.OAuth
 
 			await new MyIndex().ExecuteAsync(store1.AsyncDatabaseCommands, store1.Conventions);
 			Assert.NotNull(await store2.AsyncDatabaseCommands.GetIndexAsync("MyIndex"));
+
+			var serverClient = ((ServerClient)store1.DatabaseCommands);
+			serverClient.ReplicationInformer.RefreshReplicationInformation(serverClient);
+
+			servers[0].Dispose();
+
+			Assert.NotNull(await store1.AsyncDatabaseCommands.GetIndexAsync("MyIndex"));
 		}
 
 		public class MyIndex : AbstractIndexCreationTask<Company>
