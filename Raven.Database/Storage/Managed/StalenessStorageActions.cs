@@ -4,7 +4,9 @@
 // </copyright>
 //-----------------------------------------------------------------------
 using System;
+using System.Collections.Generic;
 using System.Linq;
+using Microsoft.VisualBasic;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
 using Raven.Abstractions.Exceptions;
@@ -19,20 +21,31 @@ namespace Raven.Storage.Managed
 	public class StalenessStorageActions : IStalenessStorageActions
 	{
 		private readonly TableStorage storage;
+	    private readonly IListsStorageActions listStorageActions;
 
-		public StalenessStorageActions(TableStorage storage)
+	    public StalenessStorageActions(TableStorage storage, IListsStorageActions listStorageActions)
 		{
-			this.storage = storage;
+		    this.storage = storage;
+		    this.listStorageActions = listStorageActions;
 		}
 
-		public bool IsIndexStale(int view, DateTime? cutOff, Etag cutoffEtag)
+	    public bool IsIndexStale(int view, DateTime? cutOff, Etag cutoffEtag, IEnumerable<string> collectionNames)
 		{
+	        if (collectionNames != null)
+	        {
+                var collectionEtags = collectionNames.Select(GetLastEtagForCollection);
+                var maximumCollectionEtag = collectionEtags.Max();
+                if (cutoffEtag != null && maximumCollectionEtag.CompareTo(cutoffEtag) < 0)
+                {
+                    cutoffEtag = maximumCollectionEtag;
+                }
+	        }
+
 			var indexingStatsReadResult = storage.IndexingStats.Read(view.ToString());
 			var lastIndexedEtagsReadResult = storage.LastIndexedEtags.Read(view.ToString());
 
 			if (indexingStatsReadResult == null)
 				return false;// index does not exists
-
 
 			if (IsMapStale(view) || IsReduceStale(view))
 			{
@@ -126,7 +139,25 @@ namespace Raven.Storage.Managed
 			return readResult.Key.Value<int>("touches");
 		}
 
-		public Etag GetMostRecentDocumentEtag()
+	    public void SetLastEtagForCollection(string collection, Etag etag)
+	    {
+            this.listStorageActions.Set("Raven/Collection/Etag", collection, RavenJObject.FromObject(new
+            {
+                Etag = etag.ToByteArray()
+            }), UuidType.Documents);
+	    }
+
+	    public Etag GetLastEtagForCollection(string collection)
+	    {
+            var dbvalue = this.listStorageActions.Read("Raven/Collection/Etag", collection);
+            if (dbvalue != null)
+            {
+                return Etag.Parse(dbvalue.Data.Value<Byte[]>("Etag"));
+            }
+	        return Etag.Empty;
+	    }
+
+	    public Etag GetMostRecentDocumentEtag()
 		{
 			foreach (var doc in storage.Documents["ByEtag"].SkipFromEnd(0))
 			{

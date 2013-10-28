@@ -4,6 +4,7 @@
 // </copyright>
 //-----------------------------------------------------------------------
 using System;
+using System.Collections.Generic;
 using System.Text;
 using Microsoft.Isam.Esent.Interop;
 using Raven.Abstractions.Data;
@@ -15,13 +16,23 @@ using Raven.Database.Json;
 using Raven.Database.Storage;
 using Raven.Database.Extensions;
 using System.Linq;
+using Raven.Json.Linq;
 
 namespace Raven.Storage.Esent.StorageActions
 {
 	public partial class DocumentStorageActions : IStalenessStorageActions
 	{
-		public bool IsIndexStale(int view, DateTime? cutOff, Etag cutoffEtag)
+		public bool IsIndexStale(int view, DateTime? cutOff, Etag cutoffEtag, IEnumerable<string> collectionNames)
 		{
+	        if (collectionNames != null)
+	        {
+                var collectionEtags = collectionNames.Select(GetLastEtagForCollection);
+                var maximumCollectionEtag = collectionEtags.Max();
+                if (cutoffEtag != null && maximumCollectionEtag.CompareTo(cutoffEtag) < 0)
+                {
+                    cutoffEtag = maximumCollectionEtag;
+                }
+	        }
 			Api.JetSetCurrentIndex(session, IndexesStats, "by_key");
 			Api.MakeKey(session, IndexesStats, view, MakeKeyGrbit.NewKey);
 			if (Api.TrySeek(session, IndexesStats, SeekGrbit.SeekEQ) == false)
@@ -165,5 +176,23 @@ namespace Raven.Storage.Esent.StorageActions
 
 			return Api.RetrieveColumnAsInt32(session, IndexesEtags, tableColumnsCache.IndexesEtagsColumns["touches"]).Value;
 		}
+
+	    public void SetLastEtagForCollection(string collection, Etag etag)
+	    {
+            this.Set("Raven/Collection/Etag", collection, RavenJObject.FromObject(new
+            {
+                Etag = etag.ToByteArray()
+            }), UuidType.Documents);
+	    }
+
+	    public Etag GetLastEtagForCollection(string collection)
+	    {
+            var dbvalue = this.Read("Raven/Collection/Etag", collection);
+            if (dbvalue != null)
+            {
+                return Etag.Parse(dbvalue.Data.Value<Byte[]>("Etag"));
+            }
+	        return Etag.Empty;
+	    }
 	}
 }
