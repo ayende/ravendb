@@ -17,6 +17,8 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Lucene.Net.Search;
+using Microsoft.Data.Edm.Library;
+using Mono.CSharp;
 using Raven.Abstractions.Logging;
 using Raven.Abstractions.Util;
 using Raven.Abstractions.Util.Encryptors;
@@ -161,6 +163,7 @@ namespace Raven.Database
         private System.Threading.Tasks.Task reducingBackgroundTask;
         private readonly TaskScheduler backgroundTaskScheduler;
         private readonly object idleLocker = new object();
+        private readonly ConcurrentDictionary<string, Etag> lastCollectionEtags = new ConcurrentDictionary<string, Etag>();
 
         private static readonly ILog log = LogManager.GetCurrentClassLogger();
 
@@ -243,6 +246,7 @@ namespace Raven.Database
                     indexingExecuter = new IndexingExecuter(workContext, etagSynchronizer, prefetcher);
 
                     InitializeTriggersExceptIndexCodecs();
+                    InitializeLastCollectionEtags();
                     SecondStageInitialization();
 
                     ExecuteStartupTasks();
@@ -254,6 +258,7 @@ namespace Raven.Database
                 }
             }
         }
+
 
         private static void InitializeEncryption(InMemoryRavenConfiguration configuration)
         {
@@ -416,7 +421,7 @@ namespace Raven.Database
                         {
                             var indexInstance = IndexStorage.GetIndexInstance(indexId);
                             return (indexInstance != null && indexInstance.IsMapIndexingInProgress) ||
-                                                                 actions.Staleness.IsIndexStale(indexId, null, null, null);
+                                                                 actions.Staleness.IsIndexStale(indexId, null, null);
                         })
                                                       .Select(indexId =>
                                                       {
@@ -503,6 +508,10 @@ namespace Raven.Database
                     log.WarnException("Error when notifying about db disposal, ignoring error and continuing with disposal", e);
                 }
             }
+
+            // I really don't know if this is the right place - I can't find much in the way
+            // Of explicit shutdown code though
+            this.WriteLastEtagsForCollections();
 
             var exceptionAggregator = new ExceptionAggregator(log, "Could not properly dispose of DatabaseDocument");
 
@@ -703,6 +712,7 @@ namespace Raven.Database
                 TransportState.OnIdle();
                 IndexStorage.RunIdleOperations();
                 ClearCompletedPendingTasks();
+                WriteLastEtagsForCollections();
             }
             finally
             {
@@ -835,7 +845,7 @@ namespace Raven.Database
                             SkipDeleteFromIndex = addDocumentResult.Updated == false
                         }, documents =>
                         {
-                            SetPerCollectionEtags(documents);
+                            UpdatePerCollectionEtags(documents);
                             etagSynchronizer.UpdateSynchronizationState(documents);
                             prefetcher.GetPrefetchingBehavior(PrefetchingUser.Indexer, null).AfterStorageCommitBeforeWorkNotifications(documents);
                         });
@@ -882,33 +892,85 @@ namespace Raven.Database
             }
         }
 
-        private void SetPerCollectionEtags(JsonDocument[] documents)
+        private  void InitializeLastCollectionEtags()
+        {
+            TransactionalStorage.Batch(accessor =>
+                accessor.Lists.Read("Raven/Collection/Etag", Etag.Empty, null, int.MaxValue)
+                    .ForEach(x => lastCollectionEtags[x.Key] = Etag.Parse(x.Data.Value<string>("Etag"))));
+            SeekAnyMissingCollectionEtags();
+        }
+
+        private void SeekAnyMissingCollectionEtags()
+        {
+            var lastKnownEtag = Etag.Empty;
+            var lastDatabaseEtag = Etag.Empty;
+
+            if (!lastCollectionEtags.TryGetValue("All", out lastKnownEtag))
+                lastKnownEtag = Etag.Empty;
+
+            TransactionalStorage.Batch(accessor => { lastDatabaseEtag = accessor.Staleness.GetMostRecentDocumentEtag(); });
+
+            if (lastDatabaseEtag == lastKnownEtag) return;
+
+            TransactionalStorage.Batch(accessor => UpdatePerCollectionEtags(
+                accessor.Documents.GetDocumentsAfter(lastKnownEtag, 1000)));
+            SeekAnyMissingCollectionEtags();
+        }
+
+        private void UpdatePerCollectionEtags(IEnumerable<JsonDocument> documents)
         {
             var collections = documents.GroupBy(x => x.Metadata[Constants.RavenEntityName])
-                     .Where(x => x.Key != null)
-                     .Select(x => new { Etag = x.Max(y => y.Etag), CollectionName = x.Key.ToString() })
+                .Select(x => new { Etag = x.Max(y => y.Etag), CollectionName = x.Key != null ? x.Key.ToString() : "All" })
                      .ToArray();
-
-            TransactionalStorage.Batch(accessor =>
-            {
-                foreach (var collection in collections)
-                    SetLastEtagForCollection(accessor, collection.CollectionName, collection.Etag);
-            });
+             foreach (var collection in collections)
+                 UpdateLastEtagForCollection(collection.CollectionName, collection.Etag);
         }
 
-        private void SetLastEtagForCollection(IStorageActionsAccessor actions, string collectionName, Etag etag)
+        private void UpdateLastEtagForCollection(string collectionName, Etag etag)
         {
-            actions.Staleness.SetLastEtagForCollection(collectionName, etag);
+            lastCollectionEtags.AddOrUpdate(collectionName, etag,
+                (v, oldEtag) => etag.CompareTo(oldEtag) < 0 ? oldEtag : etag);
         }
 
-        public Etag GetLastEtagForCollection(string collectionName)
+
+        private void WriteLastEtagsForCollections()
+        {
+             TransactionalStorage.Batch(accessor => 
+                 lastCollectionEtags.ForEach(x=> 
+                     accessor.Lists.Set("Raven/Collection/Etag", x.Key, RavenJObject.FromObject(new { Etag = x.Value }), UuidType.Documents)));
+        }
+
+        public Etag ReadLastETagForCollection(string collectionName)
         {
             Etag value = Etag.Empty;
             TransactionalStorage.Batch(accessor =>
             {
-                value = accessor.Staleness.GetLastEtagForCollection(collectionName);
+                var dbvalue = accessor.Lists.Read("Raven/Collection/Etag", collectionName);
+                if (dbvalue != null) value = Etag.Parse(dbvalue.Data.Value<string>("Etag"));
             });
             return value;
+        }
+
+        public Etag GetLastEtagForCollection(string collectionName)
+        {
+            Etag result = Etag.Empty;
+            if (lastCollectionEtags.TryGetValue(collectionName, out result))
+                return result;
+            return null;
+        }
+
+        private Etag OptimizeCutoffForIndex(string indexName, Etag cutoffEtag)
+        {
+            if (cutoffEtag != null) return cutoffEtag;
+            var viewGenerator = IndexDefinitionStorage.GetViewGenerator(indexName);
+            if (viewGenerator.ReduceDefinition == null && viewGenerator.ForEntityNames.Count > 0)
+            {
+                var etags = viewGenerator.ForEntityNames.Select(GetLastEtagForCollection)
+                                        .Where(x=> x != null);
+                if (etags.Any())
+                    return etags.Max();
+            }
+            return null;
         }
 
         internal void CheckReferenceBecauseOfDocumentUpdate(string key, IStorageActionsAccessor actions)
@@ -1355,7 +1417,7 @@ namespace Raven.Database
                     return null;
                 };
                 var stale = false;
-                Tuple<DateTime, Etag> indexTimestamp = Tuple.Create(DateTime.MinValue, Etag.Empty);
+                System.Tuple<DateTime, Etag> indexTimestamp = Tuple.Create(DateTime.MinValue, Etag.Empty);
                 Etag resultEtag = Etag.Empty;
                 var nonAuthoritativeInformation = false;
 
@@ -1375,13 +1437,9 @@ namespace Raven.Database
                         if (viewGenerator == null)
                             throw new IndexDoesNotExistsException("Could not find index named: " + indexName);
 
-                        var collectionNames = index.IsMapReduce && viewGenerator.ForEntityNames.Count > 0
-                            ? viewGenerator.ForEntityNames
-                            : null;
-
                         resultEtag = GetIndexEtag(index.Name, null, query.ResultsTransformer);
 
-                        stale = actions.Staleness.IsIndexStale(index.IndexId, query.Cutoff, query.CutoffEtag, collectionNames);
+                        stale = actions.Staleness.IsIndexStale(index.IndexId, query.Cutoff, OptimizeCutoffForIndex(indexName, query.CutoffEtag));
 
                         if (stale == false && query.Cutoff == null && query.CutoffEtag == null)
                         {
@@ -1465,6 +1523,7 @@ namespace Raven.Database
         }
 
 
+
         private void RemoveFromCurrentlyRunningQueryList(string index, ExecutingQueryInfo queryStat)
         {
             ConcurrentSet<ExecutingQueryInfo> set;
@@ -1538,7 +1597,7 @@ namespace Raven.Database
                     actions =>
                     {
                         var definition = IndexDefinitionStorage.GetIndexDefinition(index);
-                        isStale = actions.Staleness.IsIndexStale(definition.IndexId, query.Cutoff, null, null);
+                        isStale = actions.Staleness.IsIndexStale(definition.IndexId, query.Cutoff, null);
 
                         if (isStale == false && query.Cutoff == null)
                         {
@@ -1961,7 +2020,7 @@ namespace Raven.Database
 		        });
         }
 
-        public Tuple<PatchResultData, List<string>> ApplyPatch(string docId, Etag etag, ScriptedPatchRequest patch,
+        public System.Tuple<PatchResultData, List<string>> ApplyPatch(string docId, Etag etag, ScriptedPatchRequest patch,
                                                                TransactionInformation transactionInformation, bool debugMode = false)
         {
             ScriptedJsonPatcher scriptedJsonPatcher = null;
@@ -1981,7 +2040,7 @@ namespace Raven.Database
             return Tuple.Create(applyPatchInternal, scriptedJsonPatcher == null ? new List<string>() : scriptedJsonPatcher.Debug);
         }
 
-        public Tuple<PatchResultData, List<string>> ApplyPatch(string docId, Etag etag,
+        public System.Tuple<PatchResultData, List<string>> ApplyPatch(string docId, Etag etag,
                                                                ScriptedPatchRequest patchExisting, ScriptedPatchRequest patchDefault, RavenJObject defaultMetadata,
                                                                TransactionInformation transactionInformation, bool debugMode = false)
         {
@@ -2434,7 +2493,7 @@ namespace Raven.Database
                 if (indexInstance == null)
                     return;
                 isStale = (indexInstance.IsMapIndexingInProgress) ||
-                          accessor.Staleness.IsIndexStale(indexInstance.indexId, null, null, null);
+                          accessor.Staleness.IsIndexStale(indexInstance.indexId, null, null);
                 lastDocEtag = accessor.Staleness.GetMostRecentDocumentEtag();
                 var indexStats = accessor.Indexing.GetIndexStats(indexInstance.indexId);
                 if (indexStats != null)
