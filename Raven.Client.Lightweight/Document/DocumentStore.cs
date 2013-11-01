@@ -504,7 +504,7 @@ namespace Raven.Client.Document
 			}
 
 			var basicAuthenticator = new BasicAuthenticator(jsonRequestFactory.EnableBasicAuthenticationOverUnsecuredHttpEvenThoughPasswordsWouldBeSentOverTheWireInClearTextToBeStolenByHackers);
-			var securedAuthenticator = new SecuredAuthenticator();
+            var securedAuthenticator = new SecuredAuthenticator(ApiKey);
 
 			jsonRequestFactory.ConfigureRequest += basicAuthenticator.ConfigureRequest;
 			jsonRequestFactory.ConfigureRequest += securedAuthenticator.ConfigureRequest;
