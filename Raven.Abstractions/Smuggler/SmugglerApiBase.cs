@@ -259,6 +259,12 @@ namespace Raven.Abstractions.Smuggler
 
 						if (options.ShouldExcludeExpired && options.ExcludeExpired(document))
 							continue;
+
+                        if (IsReplicationDocument(document))
+                            continue;
+
+					    FilterOutReplicationInformation(document);
+
 						document.WriteTo(jsonWriter);
 						totalCount++;
 						
@@ -291,7 +297,34 @@ namespace Raven.Abstractions.Smuggler
 			}
 		}
 
-		public async Task WaitForIndexing(SmugglerOptions options)
+	    private void FilterOutReplicationInformation(RavenJObject document)
+	    {
+            var metadata = document[Constants.Metadata] as RavenJObject;
+	        if (metadata == null) 
+                return;
+
+	        metadata.Remove(Constants.RavenReplicationHistory);
+            metadata.Remove(Constants.RavenReplicationSource);
+            metadata.Remove(Constants.RavenReplicationVersion);
+	    }
+
+	    private bool IsReplicationDocument(RavenJObject document)
+	    {
+	        var metadata = document[Constants.Metadata] as RavenJObject;
+	        if (metadata == null) 
+                return false;
+
+	        var id = metadata.Value<string>("@id");
+            if (string.IsNullOrEmpty(id))
+                return false;
+
+	        if (id.StartsWith("Raven/Replication/", StringComparison.OrdinalIgnoreCase)) 
+                return true;
+
+	        return false;
+	    }
+
+	    public async Task WaitForIndexing(SmugglerOptions options)
 		{
 			var justIndexingWait = Stopwatch.StartNew();
 			int tries = 0;
@@ -584,6 +617,11 @@ namespace Raven.Abstractions.Smuggler
 
 				if (document == null)
 					continue;
+
+                if (IsReplicationDocument(document))
+                    continue;
+
+                FilterOutReplicationInformation(document);
 
 				await PutDocument(document);
 
