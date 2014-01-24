@@ -25,6 +25,7 @@ using Lucene.Net.Documents;
 using Microsoft.CSharp;
 using Raven.Abstractions;
 using Raven.Abstractions.MEF;
+using Raven.Abstractions.Util;
 using Raven.Database.Config;
 using Raven.Database.Extensions;
 using Raven.Database.Indexing;
@@ -411,15 +412,18 @@ namespace Raven.Database.Linq
 		                                        string basePath, string indexFilePath)
 		{
 			var provider = new CSharpCodeProvider(new Dictionary<string, string> {{"CompilerVersion", "v4.0"}});
+		    var currentAssembly = typeof(QueryParsingUtils).Assembly;
+
 			var assemblies = new HashSet<string>
 			{
-				typeof (SystemTime).Assembly.Location,
-				typeof (AbstractViewGenerator).Assembly.Location,
+                AssemblyHelper.GetExtractedAssemblyLocationFor(typeof(SystemTime), currentAssembly),
+                //AssemblyHelper.GetExtractedAssemblyLocationFor(typeof(Field), currentAssembly),
+                typeof (AbstractViewGenerator).Assembly.Location,
 				typeof (NameValueCollection).Assembly.Location,
 				typeof (Enumerable).Assembly.Location,
 				typeof (Binder).Assembly.Location,
-				typeof (Field).Assembly.Location,
 			};
+
 			foreach (var extension in extensions)
 			{
 				foreach (var assembly in extension.Value.GetAssembliesToReference())
