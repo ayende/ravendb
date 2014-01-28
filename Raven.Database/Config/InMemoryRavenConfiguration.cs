@@ -12,6 +12,7 @@ using System.ComponentModel.Composition.Primitives;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Web;
 using Raven.Abstractions.Data;
@@ -99,6 +100,8 @@ namespace Raven.Database.Config
 			MaxIndexWritesBeforeRecreate = ravenSettings.MaxIndexWritesBeforeRecreate.Value;
 			MaxIndexOutputsPerDocument = ravenSettings.MaxIndexOutputsPerDocument.Value;
 
+			DisablePerformanceCounters = ravenSettings.DisablePerformanceCounters.Value;
+
 			MaxNumberOfItemsToIndexInSingleBatch = ravenSettings.MaxNumberOfItemsToIndexInSingleBatch.Value;
 
 			var initialNumberOfItemsToIndexInSingleBatch = Settings["Raven/InitialNumberOfItemsToIndexInSingleBatch"];
@@ -150,6 +153,8 @@ namespace Raven.Database.Config
 			}
 
 			CreateAutoIndexesForAdHocQueriesIfNeeded = ravenSettings.CreateAutoIndexesForAdHocQueriesIfNeeded.Value;
+
+			DatbaseOperationTimeout = ravenSettings.DatbaseOperationTimeout.Value;
 
 			TimeToWaitBeforeRunningIdleIndexes = ravenSettings.TimeToWaitBeforeRunningIdleIndexes.Value;
 			TimeToWaitBeforeMarkingAutoIndexAsIdle = ravenSettings.TimeToWaitBeforeMarkingAutoIndexAsIdle.Value;
@@ -217,6 +222,18 @@ namespace Raven.Database.Config
 
 			PostInit();
 		}
+
+        /// <summary>
+        /// This limits the number of concurrent multi get requests,
+        /// Note that this plays with the max number of requests allowed as well as the max number
+        /// of sessions
+        /// </summary>
+        public SemaphoreSlim ConcurrentMultiGetRequests = new SemaphoreSlim(192);
+
+		/// <summary>
+		/// The time to wait before canceling a database operation such as load (many) or query
+		/// </summary>
+		public TimeSpan DatbaseOperationTimeout { get; private set; }
 
 		public TimeSpan TimeToWaitBeforeRunningIdleIndexes { get; private set; }
 
@@ -818,6 +835,11 @@ namespace Raven.Database.Config
 		/// Default value: 15. In order to disable this check set value to -1.
 		/// </summary>
 		public int MaxIndexOutputsPerDocument { get; set; }
+
+		/// <summary>
+		/// If True then no PerformanceCounters will be used. Default: false
+		/// </summary>
+		public bool DisablePerformanceCounters { get; set; }
 
 		[Browsable(false)]
 		[EditorBrowsable(EditorBrowsableState.Never)]
