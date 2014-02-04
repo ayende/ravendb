@@ -2075,7 +2075,8 @@ namespace Raven.Database
 		                    if (matchedDocs <= docsToSkip) 
                                 continue;
 
-		                    addDoc(document.ToJson());
+							token.ThrowIfCancellationRequested();
+							addDoc(document.ToJson());
 		                    addedDocs++;
 
 		                    if (addedDocs >= pageSize) 
