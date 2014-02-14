@@ -86,6 +86,7 @@
     <TypeScriptCompile Include="App\commands\getDocumentsByEntityNameCommand.ts" />
     <TypeScriptCompile Include="App\commands\getDocumentWithMetadataCommand.ts" />
     <TypeScriptCompile Include="App\commands\getIndexDefinitionCommand.ts" />
+    <TypeScriptCompile Include="App\commands\queryIndexCommand.ts" />
     <TypeScriptCompile Include="App\commands\getIndexTermsCommand.ts" />
     <TypeScriptCompile Include="App\commands\getLicenseStatusCommand.ts" />
     <TypeScriptCompile Include="App\commands\getLogsCommand.ts" />
@@ -93,6 +94,7 @@
     <TypeScriptCompile Include="App\commands\getSystemDocumentsCommand.ts" />
     <TypeScriptCompile Include="App\commands\getUserInfoCommand.ts" />
     <TypeScriptCompile Include="App\commands\saveAlertsCommand.ts" />
+    <TypeScriptCompile Include="App\commands\saveDocumentCommand.ts" />
     <TypeScriptCompile Include="App\commands\saveIndexAsPersistentCommand.ts" />
     <TypeScriptCompile Include="App\commands\saveIndexLockModeCommand.ts" />
     <TypeScriptCompile Include="App\commands\saveIndexDefinitionCommand.ts" />
@@ -119,10 +121,12 @@
     <TypeScriptCompile Include="App\viewmodels\editDocument.ts" />
     <TypeScriptCompile Include="App\viewmodels\editIndex.ts" />
     <TypeScriptCompile Include="App\viewmodels\indexErrors.ts" />
+    <TypeScriptCompile Include="App\viewmodels\indexesShell.ts" />
     <TypeScriptCompile Include="App\viewmodels\indexes.ts" />
-    <TypeScriptCompile Include="App\viewmodels\indexesAll.ts" />
     <TypeScriptCompile Include="App\viewmodels\indexTerms.ts" />
     <TypeScriptCompile Include="App\viewmodels\logs.ts" />
+    <TypeScriptCompile Include="App\viewmodels\query.ts" />
+    <TypeScriptCompile Include="App\viewmodels\queryShell.ts" />
     <TypeScriptCompile Include="App\viewmodels\replicationStats.ts" />
     <TypeScriptCompile Include="App\viewmodels\shell.ts" />
     <TypeScriptCompile Include="App\common\appUrl.ts" />
@@ -133,6 +137,7 @@
     <TypeScriptCompile Include="App\commands\getDatabaseSettingsCommand.ts" />
     <TypeScriptCompile Include="App\models\periodicBackupSetup.ts" />
     <TypeScriptCompile Include="App\commands\savePeriodicBackupSetupCommand.ts" />
+    <TypeScriptCompile Include="App\viewmodels\periodicBackup.ts" />
     <Content Include="App\views\alerts.html" />
     <Content Include="App\views\apiKeys.html" />
     <Content Include="App\views\copyDocuments.html" />
@@ -143,10 +148,11 @@
     <Content Include="App\views\dialog.html" />
     <Content Include="App\views\editIndex.html" />
     <Content Include="App\views\indexErrors.html" />
-    <Content Include="App\views\indexes.html" />
+    <Content Include="App\views\indexesShell.html" />
     <Content Include="App\views\indexTerms.html" />
     <Content Include="App\views\logs.html" />
     <Content Include="App\views\periodicBackup.html" />
+    <Content Include="App\views\query.html" />
     <Content Include="App\views\replicationStats.html" />
     <Content Include="App\views\settings.html" />
     <Content Include="App\views\userInfo.html" />
@@ -155,6 +161,9 @@
     <TypeScriptCompile Include="App\widgets\virtualTable\row.ts" />
     <TypeScriptCompile Include="App\widgets\virtualTable\column.ts" />
     <Content Include="App\views\windowsAuth.html" />
+    <Content Include="Content\app.min.css">
+      <DependentUpon>app.less</DependentUpon>
+    </Content>
     <Content Include="Content\bootstrap-theme.css" />
     <Content Include="Content\bootstrap-theme.min.css" />
     <Content Include="Content\bootstrap.css" />
@@ -1029,15 +1038,10 @@
     <TypeScriptCompile Include="App\common\dialogResult.ts" />
     <TypeScriptCompile Include="App\common\alertType.ts" />
     <TypeScriptCompile Include="App\common\alertArgs.ts" />
-    <TypeScriptCompile Include="App\commands\saveDocumentCommand.ts" />
-    <Content Include="App\commands\saveDocumentCommand.js">
-      <DependentUpon>saveDocumentCommand.ts</DependentUpon>
-    </Content>
     <Content Include="App\main.js" />
     <TypeScriptCompile Include="App\models\collection.ts" />
     <TypeScriptCompile Include="App\models\collectionInfo.ts" />
     <TypeScriptCompile Include="App\models\database.ts" />
-    <TypeScriptCompile Include="App\viewmodels\query.ts" />
     <TypeScriptCompile Include="App\viewmodels\settings.ts" />
     <TypeScriptCompile Include="App\viewmodels\status.ts" />
     <TypeScriptCompile Include="App\viewmodels\tasks.ts" />
@@ -1050,8 +1054,8 @@
     <Content Include="App\views\deleteDocuments.html" />
     <Content Include="App\views\documents.html" />
     <Content Include="App\views\editDocument.html" />
-    <Content Include="App\views\indexesAll.html" />
-    <Content Include="App\views\query.html" />
+    <Content Include="App\views\indexes.html" />
+    <Content Include="App\views\queryShell.html" />
     <Content Include="App\views\statistics.html" />
     <Content Include="App\views\status.html" />
     <Content Include="App\views\tasks.html" />

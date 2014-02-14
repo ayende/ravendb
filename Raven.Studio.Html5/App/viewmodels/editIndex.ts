@@ -10,7 +10,7 @@ import saveIndexDefinitionCommand = require("commands/saveIndexDefinitionCommand
 import appUrl = require("common/appUrl");
 import deleteIndexesConfirm = require("viewmodels/deleteIndexesConfirm");
 import dialog = require("plugins/dialog");
-import acedEditorBindingHandler = require("common/aceEditorBindingHandler");
+import aceEditorBindingHandler = require("common/aceEditorBindingHandler");
 
 class editIndex extends viewModelBase { 
 
@@ -29,7 +29,7 @@ class editIndex extends viewModelBase {
     constructor() {
         super();
 
-        acedEditorBindingHandler.install();
+        aceEditorBindingHandler.install();
 
         this.priorityFriendlyName = ko.computed(() => this.getPriorityFriendlyName());
         this.priorityLabel = ko.computed(() => this.priorityFriendlyName() ? "Priority: " + this.priorityFriendlyName() : "Priority");
@@ -51,7 +51,8 @@ class editIndex extends viewModelBase {
         }
     }
 
-    editExistingIndex(indexName: string) {
+    editExistingIndex(unescapedIndexName: string) {
+        var indexName = decodeURIComponent(unescapedIndexName);
         this.fetchIndexToEdit(indexName);
         this.fetchIndexPriority(indexName);
         this.termsUrl(appUrl.forTerms(indexName, this.activeDatabase()));
@@ -165,6 +166,9 @@ class editIndex extends viewModelBase {
         // Instead of showing things like "Idle,Forced", just show Idle.
         
         var priority = this.priority();
+        if (!priority) {
+            return "";
+        }
         if (priority === indexPriority.idleForced) {
             return index.priorityToString(indexPriority.idle);
         }
