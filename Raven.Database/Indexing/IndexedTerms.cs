@@ -14,6 +14,8 @@ using Raven.Json.Linq;
 
 namespace Raven.Database.Indexing
 {
+    using System.Collections;
+
     public static class IndexedTerms
     {
         public static void ReadEntriesForFieldsFromTermVectors(
@@ -50,35 +52,18 @@ namespace Raven.Database.Indexing
                 Func<string, string, double> convert,
                 Action<string, string, double, int> onTermFound)
         {
-            var reader = state.IndexSearcher.IndexReader;
-
-            var readFromCache = new Dictionary<string, HashSet<int>>();
-
             state.Lock.EnterReadLock();
             try
             {
-                EnsureFieldsAreInCache(state, fieldsToRead, reader);
+                EnsureFieldsAreInCache(state, fieldsToRead, docIds);
 
                 foreach (var field in fieldsToRead)
                 {
-                    var read = new HashSet<int>();
-                    readFromCache[field] = read;
                     foreach (var docId in docIds)
                     {
                         foreach (var val in state.GetFromCache(field, docId))
                         {
-                            read.Add(docId);
-
-                            double converted;
-                            if (val.Val == null)
-                            {
-                                val.Val = converted = convert(val.Term.Field, val.Term.Text);
-                            }
-                            else
-                            {
-                                converted = val.Val.Value;
-                            }
-                            onTermFound(val.Term.Field, val.Term.Text, converted, docId);
+                            onTermFound(val.Term.Field, val.Term.Text, convert(val.Term.Field, val.Term.Text), docId);
                         }
                     }
                 }
@@ -122,20 +107,18 @@ namespace Raven.Database.Indexing
               HashSet<int> docIds,
               Action<string, string, int> onTermFound)
         {
-            var reader = state.IndexSearcher.IndexReader;
-
             state.Lock.EnterReadLock();
             try
             {
-                EnsureFieldsAreInCache(state, fieldsToRead, reader);
+                EnsureFieldsAreInCache(state, fieldsToRead, docIds);
 
                 foreach (var field in fieldsToRead)
                 {
                     foreach (var docId in docIds)
                     {
-                        foreach (var term in state.GetTermsFromCache(field, docId))
+                        foreach (var val in state.GetFromCache(field, docId))
                         {
-                            onTermFound(term.Field, term.Text, docId);
+                            onTermFound(val.Term.Field, val.Term.Text, docId);
                         }
                     }
                 }
@@ -147,34 +130,37 @@ namespace Raven.Database.Indexing
             }
         }
 
-        public static void PreFillCache(IndexSearcherHolder.IndexSearcherHoldingState state, string[] fieldsToRead,
-            IndexReader reader)
-        {
-            state.Lock.EnterWriteLock();
-            try
-            {
-                if (fieldsToRead.All(state.IsInCache))
-                    return;
-                FillCache(state, fieldsToRead, reader);
-            }
-            finally
-            {
-                state.Lock.ExitWriteLock();
-            }
-        }
+        //public static void PreFillCache(IndexSearcherHolder.IndexSearcherHoldingState state, string[] fieldsToRead,
+        //    IndexReader reader)
+        //{
+        //    state.Lock.EnterWriteLock();
+        //    try
+        //    {
+        //        if (fieldsToRead.All(state.IsInCache))
+        //            return;
+        //        FillCache(state, fieldsToRead, reader);
+        //    }
+        //    finally
+        //    {
+        //        state.Lock.ExitWriteLock();
+        //    }
+        //}
 
-        private static void EnsureFieldsAreInCache(IndexSearcherHolder.IndexSearcherHoldingState state, HashSet<string> fieldsToRead, IndexReader reader)
+        private static void EnsureFieldsAreInCache(IndexSearcherHolder.IndexSearcherHoldingState state, HashSet<string> fieldsToRead, HashSet<int> docIds)
         {
-            if (fieldsToRead.All(state.IsInCache))
+            if (fieldsToRead.All(field => docIds.All(docId => state.IsInCache(field, docId))))
                 return;
 
             state.Lock.ExitReadLock();
             state.Lock.EnterWriteLock();
             try
             {
-                var fieldsNotInCache = fieldsToRead.Where(field => state.IsInCache(field) == false).ToList();
-                if (fieldsToRead.Count > 0)
-                    FillCache(state, fieldsNotInCache, reader);
+                var segments = new HashSet<object>();
+                foreach (var docId in fieldsToRead.SelectMany(field => docIds.Where(docId => state.IsInCache(field, docId) == false)))
+                    segments.Add(state.GetCachedSegmentReaderFieldCacheKey(docId));
+
+                foreach (var segment in segments)
+                    FillCache(state, fieldsToRead, state.GetCachedSegmentReaderByFieldCacheKey(segment));
             }
             finally
             {
@@ -183,10 +169,14 @@ namespace Raven.Database.Indexing
             state.Lock.EnterReadLock();
         }
 
-        private static void FillCache(IndexSearcherHolder.IndexSearcherHoldingState state, IEnumerable<string> fieldsToRead,IndexReader reader)
+        private static void FillCache(IndexSearcherHolder.IndexSearcherHoldingState state, IEnumerable<string> fieldsToRead, IndexSearcherHolder.IndexSearcherHoldingState.SegmentReaderWithMetaInformation reader)
         {
+            var numDocs = reader.NumDocs();
+
             foreach (var field in fieldsToRead)
             {
+                var items = new LinkedList<IndexSearcherHolder.IndexSearcherHoldingState.CacheVal>[numDocs];
+
                 using (var termDocs = reader.TermDocs())
                 {
                     using (var termEnum = reader.Terms(new Term(field)))
@@ -200,7 +190,6 @@ namespace Raven.Database.Indexing
                             if (LowPrecisionNumber(term.Field, term.Text))
                                 continue;
 
-
                             var totalDocCountIncludedDeletes = termEnum.DocFreq();
                             termDocs.Seek(termEnum.Term);
 
@@ -210,11 +199,19 @@ namespace Raven.Database.Indexing
                                 if (reader.IsDeleted(termDocs.Doc))
                                     continue;
 
-                                state.SetInCache(field, termDocs.Doc, termEnum.Term);
+                                if (items[termDocs.Doc] == null)
+                                    items[termDocs.Doc] = new LinkedList<IndexSearcherHolder.IndexSearcherHoldingState.CacheVal>();
+
+                                items[termDocs.Doc].AddLast(new IndexSearcherHolder.IndexSearcherHoldingState.CacheVal
+                                {
+                                    Term = termEnum.Term
+                                });
                             }
                         } while (termEnum.Next());
                     }
                 }
+
+                state.SetInCache(field, reader.FieldCacheKey, items);
             }
         }
 
