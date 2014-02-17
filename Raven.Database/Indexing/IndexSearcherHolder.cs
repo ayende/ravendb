@@ -13,6 +13,9 @@ using Raven.Abstractions.Extensions;
 
 namespace Raven.Database.Indexing
 {
+    using System.Diagnostics;
+    using System.Threading.Tasks;
+
     public class IndexSearcherHolder
     {
         private readonly string index;
@@ -35,35 +38,37 @@ namespace Raven.Database.Indexing
             if (old == null)
                 return null;
 
-            // here we try to make sure that the actual facet cache is up to do when we update the index searcher.
-            // we use this to ensure that any facets that has been recently queried is warmed up and in the cache
-            //if (context.Configuration.PrewarmFacetsOnIndexingMaxAge != TimeSpan.Zero)
-            //{
-            //    var usedFacets = old.GetUsedFacets(context.Configuration.PrewarmFacetsOnIndexingMaxAge).ToArray();
+             //here we try to make sure that the actual facet cache is up to do when we update the index searcher.
+             //we use this to ensure that any facets that has been recently queried is warmed up and in the cache
+            if (context.Configuration.PrewarmFacetsOnIndexingMaxAge != TimeSpan.Zero)
+            {
+                var usedFacets = old.GetUsedFacets(context.Configuration.PrewarmFacetsOnIndexingMaxAge).ToArray();
 
-            //    if (usedFacets.Length > 0)
-            //    {
-            //        var preFillCache = Task.Factory.StartNew(() =>
-            //        {
-            //            var sp = Stopwatch.StartNew();
-            //            try
-            //            {
-            //                IndexedTerms.PreFillCache(current, usedFacets, searcher.IndexReader);
-            //            }
-            //            catch (Exception e)
-            //            {
-            //                Log.WarnException(
-            //                    string.Format("Failed to properly pre-warm the facets cache ({1}) for index {0}", index,
-            //                        string.Join(",", usedFacets)), e);
-            //            }
-            //            finally
-            //            {
-            //                Log.Debug("Pre-warming the facet cache for {0} took {2}. Facets: {1}", index, string.Join(",", usedFacets), sp.Elapsed);
-            //            }
-            //        });
-            //        preFillCache.Wait(context.Configuration.PrewarmFacetsSyncronousWaitTime);
-            //    }
-            //}
+                if (usedFacets.Length > 0)
+                {
+                    var preFillCache = Task.Factory.StartNew(
+                        () =>
+                        {
+                            var sp = Stopwatch.StartNew();
+                            try
+                            {
+                                var usedFieldCacheKeys = old.GetUsedFieldCacheKeys();
+
+                                IndexedTerms.PreFillCache(current, usedFacets, usedFieldCacheKeys);
+                            }
+                            catch (Exception e)
+                            {
+                                Log.WarnException(
+                                    string.Format("Failed to properly pre-warm the facets cache ({1}) for index {0}", index, string.Join(",", usedFacets)), e);
+                            }
+                            finally
+                            {
+                                Log.Debug("Pre-warming the facet cache for {0} took {2}. Facets: {1}", index, string.Join(",", usedFacets), sp.Elapsed);
+                            }
+                        });
+                    preFillCache.Wait(context.Configuration.PrewarmFacetsSyncronousWaitTime);
+                }
+            }
 
 
             Interlocked.Increment(ref old.Usage);
@@ -142,8 +147,6 @@ namespace Raven.Database.Indexing
 
             private readonly Dictionary<object, SegmentReaderWithMetaInformation> segmentReadersCache;
 
-            private readonly Dictionary<int, object> docReaderCache = new Dictionary<int, object>();
-
             public ReaderWriterLockSlim Lock
             {
                 get { return rwls; }
@@ -165,7 +168,7 @@ namespace Raven.Database.Indexing
                 return lastFacetQuery.Where(x => (now - x.Value) < tooOld).Select(x => x.Key);
             }
 
-            public bool IsInCache(string field, int doc)
+            public bool IsInCache(string field, DocIdWithSegmentFieldCacheKey doc)
             {
                 var now = SystemTime.UtcNow;
                 lastFacetQuery.AddOrUpdate(field, now, (s, time) => time > now ? time : now);
@@ -173,15 +176,13 @@ namespace Raven.Database.Indexing
                 if (!cache.ContainsKey(field))
                     return false;
 
-                var fieldCacheKey = GetCachedSegmentReaderFieldCacheKey(doc);
-
-                if (!cache[field].ContainsKey(fieldCacheKey))
+                if (!cache[field].ContainsKey(doc.FieldCacheKey))
                     return false;
 
-                var segmentReader = segmentReadersCache[fieldCacheKey];
-                var translatedDocId = segmentReader.TranslateDocId(doc);
+                var segmentReader = segmentReadersCache[doc.FieldCacheKey];
+                var translatedDocId = segmentReader.TranslateDocId(doc.DocId);
 
-                return cache[field][fieldCacheKey].Length >= translatedDocId;
+                return cache[field][doc.FieldCacheKey].Length >= translatedDocId;
             }
 
             public void SetInCache(string field, object fieldCacheKey, LinkedList<CacheVal>[] items)
@@ -189,23 +190,21 @@ namespace Raven.Database.Indexing
                 cache.GetOrAdd(field)[fieldCacheKey] = items;
             }
 
-            public IEnumerable<CacheVal> GetFromCache(string field, int doc)
+            public IEnumerable<CacheVal> GetFromCache(string field, DocIdWithSegmentFieldCacheKey docId)
             {
                 if (!cache.ContainsKey(field))
                     yield break;
 
-                var fieldCacheKey = GetCachedSegmentReaderFieldCacheKey(doc);
-
-                if (!cache[field].ContainsKey(fieldCacheKey))
+                if (!cache[field].ContainsKey(docId.FieldCacheKey))
                     yield break;
 
-                var segmentReader = segmentReadersCache[fieldCacheKey];
-                var translatedDocId = segmentReader.TranslateDocId(doc);
+                var segmentReader = segmentReadersCache[docId.FieldCacheKey];
+                var translatedDocId = segmentReader.TranslateDocId(docId.DocId);
 
-                if (cache[field][fieldCacheKey][translatedDocId] == null)
+                if (cache[field][docId.FieldCacheKey][translatedDocId] == null)
                     yield break;
 
-                foreach (var cacheVal in cache[field][fieldCacheKey][translatedDocId])
+                foreach (var cacheVal in cache[field][docId.FieldCacheKey][translatedDocId])
                     yield return cacheVal;
             }
 
@@ -214,7 +213,10 @@ namespace Raven.Database.Indexing
                 IndexSearcher = indexSearcher;
 
                 if (indexSearcher == null)
+                {
+                    segmentReadersCache = new Dictionary<object, SegmentReaderWithMetaInformation>();
                     return;
+                }
 
                 var readers = GetAllSegmentReaders(indexSearcher.IndexReader as DirectoryReader).ToList();
                 var starts = GetStarts(readers);
@@ -269,29 +271,35 @@ namespace Raven.Database.Indexing
 
             public SegmentReaderWithMetaInformation GetCachedSegmentReaderByFieldCacheKey(object fieldCacheKey)
             {
-                return segmentReadersCache[fieldCacheKey];
+                SegmentReaderWithMetaInformation reader;
+                if (segmentReadersCache.TryGetValue(fieldCacheKey, out reader))
+                    return reader;
+
+                return null;
             }
 
-            public object GetCachedSegmentReaderFieldCacheKey(int docId)
+            public ICollection<DocIdWithSegmentFieldCacheKey> GetSegmentReaderFieldCacheKey(IEnumerable<int> docIds)
             {
-                if (docReaderCache.ContainsKey(docId))
-                    return docReaderCache[docId];
-
-                var fieldCacheKey = GetSegmentReaderFieldCacheKey(docId);
-                docReaderCache[docId] = fieldCacheKey;
-
-                return fieldCacheKey;
+                return docIds
+                    .Select(GetSegmentReaderFieldCacheKey)
+                    .ToList();
             }
 
-            private object GetSegmentReaderFieldCacheKey(int docId)
+            private DocIdWithSegmentFieldCacheKey GetSegmentReaderFieldCacheKey(int docId)
             {
                 foreach (var reader in segmentReadersCache)
                 {
                     if (docId >= reader.Value.MinDoc && docId <= reader.Value.MaxDoc)
-                        return reader.Value.FieldCacheKey;
+                        return new DocIdWithSegmentFieldCacheKey(docId, reader.Key);
                 }
 
                 throw new InvalidOperationException("There is no segment reader for doc: " + docId);
+            }
+
+
+            public IEnumerable<object> GetUsedFieldCacheKeys()
+            {
+                return cache.Values.SelectMany(value => value.Keys);
             }
 
             private static Dictionary<object, SegmentReaderWithMetaInformation> BuildSegmentReadersWithMetaInformation(IList<SegmentReader> readers, int[] starts)
@@ -340,6 +348,19 @@ namespace Raven.Database.Indexing
                 }
             }
 
+            public class DocIdWithSegmentFieldCacheKey
+            {
+                public DocIdWithSegmentFieldCacheKey(int docId, object fieldCacheKey)
+                {
+                    DocId = docId;
+                    FieldCacheKey = fieldCacheKey;
+                }
+
+                public int DocId { get; private set; }
+
+                public object FieldCacheKey { get; private set; }
+            }
+
             public class SegmentReaderWithMetaInformation
             {
                 private readonly SegmentReader reader;
@@ -383,9 +404,9 @@ namespace Raven.Database.Indexing
                     return docId - MinDoc;
                 }
 
-                public int NumDocs()
+                public int GetMaxDoc()
                 {
-                    return reader.NumDocs();
+                    return reader.MaxDoc;
                 }
             }
         }
