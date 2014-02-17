@@ -9,12 +9,13 @@ using Lucene.Net.Search;
 using Raven.Abstractions;
 using Raven.Abstractions.Logging;
 using Raven.Json.Linq;
-using Raven.Abstractions.Extensions;
 
 namespace Raven.Database.Indexing
 {
     using System.Diagnostics;
     using System.Threading.Tasks;
+
+    using Raven.Abstractions.Extensions;
 
     public class IndexSearcherHolder
     {
@@ -139,11 +140,12 @@ namespace Raven.Database.Indexing
             private RavenJObject[] readEntriesFromIndex;
             private readonly Lazy<ManualResetEvent> disposed = new Lazy<ManualResetEvent>(() => new ManualResetEvent(false));
 
-            private readonly Dictionary<string, Dictionary<object, LinkedList<CacheVal>[]>> cache = new Dictionary<string, Dictionary<object, LinkedList<CacheVal>[]>>();
 
             private readonly ConcurrentDictionary<string, DateTime> lastFacetQuery = new ConcurrentDictionary<string, DateTime>();
 
             private readonly ReaderWriterLockSlim rwls = new ReaderWriterLockSlim();
+
+            private readonly Dictionary<string, Dictionary<object, LinkedList<CacheVal>[]>> cache = new Dictionary<string, Dictionary<object, LinkedList<CacheVal>[]>>();
 
             private readonly Dictionary<object, SegmentReaderWithMetaInformation> segmentReadersCache;
 
@@ -183,11 +185,6 @@ namespace Raven.Database.Indexing
                 var translatedDocId = segmentReader.TranslateDocId(doc.DocId);
 
                 return cache[field][doc.FieldCacheKey].Length >= translatedDocId;
-            }
-
-            public void SetInCache(string field, object fieldCacheKey, LinkedList<CacheVal>[] items)
-            {
-                cache.GetOrAdd(field)[fieldCacheKey] = items;
             }
 
             public IEnumerable<CacheVal> GetFromCache(string field, DocIdWithSegmentFieldCacheKey docId)
@@ -267,6 +264,11 @@ namespace Raven.Database.Indexing
                 var indexReader = IndexSearcher.IndexReader;
                 readEntriesFromIndex = IndexedTerms.ReadAllEntriesFromIndex(indexReader);
                 return readEntriesFromIndex;
+            }
+
+            public void SetInCache(string field, object fieldCacheKey, LinkedList<CacheVal>[] items)
+            {
+                cache.GetOrAdd(field)[fieldCacheKey] = items;
             }
 
             public SegmentReaderWithMetaInformation GetCachedSegmentReaderByFieldCacheKey(object fieldCacheKey)
