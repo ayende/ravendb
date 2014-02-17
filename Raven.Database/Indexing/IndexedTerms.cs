@@ -53,17 +53,17 @@ namespace Raven.Database.Indexing
             state.Lock.EnterReadLock();
             try
             {
-                var docIdsWithSegmentFieldCacheKey = state.GetSegmentReaderFieldCacheKey(docIds);
+                var segmentFieldCacheKeys = state.GetSegmentReaderFieldCacheKeys(docIds);
 
-                EnsureFieldsAreInCache(state, fieldsToRead, docIdsWithSegmentFieldCacheKey);
+                EnsureFieldsAreInCache(state, fieldsToRead, segmentFieldCacheKeys);
 
                 foreach (var field in fieldsToRead)
                 {
-                    foreach (var docId in docIdsWithSegmentFieldCacheKey)
+                    foreach (var docId in docIds)
                     {
-                        foreach (var val in state.GetFromCache(field, docId))
+                        foreach (var val in state.GetFromCache(field, docId, segmentFieldCacheKeys))
                         {
-                            onTermFound(val.Term.Field, val.Term.Text, convert(val.Term.Field, val.Term.Text), docId.DocId);
+                            onTermFound(val.Term.Field, val.Term.Text, convert(val.Term.Field, val.Term.Text), docId);
                         }
                     }
                 }
@@ -110,17 +110,17 @@ namespace Raven.Database.Indexing
             state.Lock.EnterReadLock();
             try
             {
-                var docIdsWithSegmentFieldCacheKey = state.GetSegmentReaderFieldCacheKey(docIds);
+                var segmentFieldCacheKeys = state.GetSegmentReaderFieldCacheKeys(docIds);
 
-                EnsureFieldsAreInCache(state, fieldsToRead, docIdsWithSegmentFieldCacheKey);
+                EnsureFieldsAreInCache(state, fieldsToRead, segmentFieldCacheKeys);
 
                 foreach (var field in fieldsToRead)
                 {
-                    foreach (var docId in docIdsWithSegmentFieldCacheKey)
+                    foreach (var docId in docIds)
                     {
-                        foreach (var val in state.GetFromCache(field, docId))
+                        foreach (var val in state.GetFromCache(field, docId, segmentFieldCacheKeys))
                         {
-                            onTermFound(val.Term.Field, val.Term.Text, docId.DocId);
+                            onTermFound(val.Term.Field, val.Term.Text, docId);
                         }
                     }
                 }
@@ -150,9 +150,9 @@ namespace Raven.Database.Indexing
             }
         }
 
-        private static void EnsureFieldsAreInCache(IndexSearcherHolder.IndexSearcherHoldingState state, HashSet<string> fieldsToRead, IEnumerable<IndexSearcherHolder.IndexSearcherHoldingState.DocIdWithSegmentFieldCacheKey> docIds)
+        private static void EnsureFieldsAreInCache(IndexSearcherHolder.IndexSearcherHoldingState state, HashSet<string> fieldsToRead, IEnumerable<object> segmentFieldCacheKeys)
         {
-            if (fieldsToRead.All(field => docIds.All(docId => state.IsInCache(field, docId))))
+            if (fieldsToRead.All(field => segmentFieldCacheKeys.All(fieldCacheKey => state.IsInCache(field, fieldCacheKey))))
                 return;
 
             state.Lock.ExitReadLock();
@@ -160,8 +160,8 @@ namespace Raven.Database.Indexing
             try
             {
                 var segments = new HashSet<object>();
-                foreach (var docId in fieldsToRead.SelectMany(field => docIds.Where(docId => state.IsInCache(field, docId) == false)))
-                    segments.Add(docId.FieldCacheKey);
+                foreach (var fieldCacheKey in fieldsToRead.SelectMany(field => segmentFieldCacheKeys.Where(fieldCacheKey => state.IsInCache(field, fieldCacheKey) == false)))
+                    segments.Add(fieldCacheKey);
 
                 foreach (var segment in segments)
                     FillCache(state, fieldsToRead, state.GetCachedSegmentReaderByFieldCacheKey(segment));

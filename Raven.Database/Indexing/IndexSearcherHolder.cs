@@ -170,7 +170,7 @@ namespace Raven.Database.Indexing
                 return lastFacetQuery.Where(x => (now - x.Value) < tooOld).Select(x => x.Key);
             }
 
-            public bool IsInCache(string field, DocIdWithSegmentFieldCacheKey doc)
+            public bool IsInCache(string field, object fieldCacheKey)
             {
                 var now = SystemTime.UtcNow;
                 lastFacetQuery.AddOrUpdate(field, now, (s, time) => time > now ? time : now);
@@ -178,30 +178,29 @@ namespace Raven.Database.Indexing
                 if (!cache.ContainsKey(field))
                     return false;
 
-                if (!cache[field].ContainsKey(doc.FieldCacheKey))
+                if (!cache[field].ContainsKey(fieldCacheKey))
                     return false;
 
-                var segmentReader = segmentReadersCache[doc.FieldCacheKey];
-                var translatedDocId = segmentReader.TranslateDocId(doc.DocId);
-
-                return cache[field][doc.FieldCacheKey].Length >= translatedDocId;
+                return true;
             }
 
-            public IEnumerable<CacheVal> GetFromCache(string field, DocIdWithSegmentFieldCacheKey docId)
+            public IEnumerable<CacheVal> GetFromCache(string field, int docId, ICollection<object> segmentFieldCacheKeys)
             {
                 if (!cache.ContainsKey(field))
                     yield break;
 
-                if (!cache[field].ContainsKey(docId.FieldCacheKey))
+                var segmentReader = GetSegmentReader(docId, segmentFieldCacheKeys);
+                var fieldCacheKey = segmentReader.FieldCacheKey;
+
+                if (!cache[field].ContainsKey(fieldCacheKey))
+                    yield break;
+                
+                var translatedDocId = segmentReader.TranslateDocId(docId);
+
+                if (cache[field][fieldCacheKey][translatedDocId] == null)
                     yield break;
 
-                var segmentReader = segmentReadersCache[docId.FieldCacheKey];
-                var translatedDocId = segmentReader.TranslateDocId(docId.DocId);
-
-                if (cache[field][docId.FieldCacheKey][translatedDocId] == null)
-                    yield break;
-
-                foreach (var cacheVal in cache[field][docId.FieldCacheKey][translatedDocId])
+                foreach (var cacheVal in cache[field][fieldCacheKey][translatedDocId])
                     yield return cacheVal;
             }
 
@@ -280,24 +279,36 @@ namespace Raven.Database.Indexing
                 return null;
             }
 
-            public ICollection<DocIdWithSegmentFieldCacheKey> GetSegmentReaderFieldCacheKey(IEnumerable<int> docIds)
+            public ICollection<object> GetSegmentReaderFieldCacheKeys(IEnumerable<int> docIds)
             {
                 return docIds
                     .Select(GetSegmentReaderFieldCacheKey)
+                    .Distinct()
                     .ToList();
             }
 
-            private DocIdWithSegmentFieldCacheKey GetSegmentReaderFieldCacheKey(int docId)
+            private object GetSegmentReaderFieldCacheKey(int docId)
             {
                 foreach (var reader in segmentReadersCache)
                 {
                     if (docId >= reader.Value.MinDoc && docId <= reader.Value.MaxDoc)
-                        return new DocIdWithSegmentFieldCacheKey(docId, reader.Key);
+                        return reader.Key;
                 }
 
                 throw new InvalidOperationException("There is no segment reader for doc: " + docId);
             }
 
+            private SegmentReaderWithMetaInformation GetSegmentReader(int docId, IEnumerable<object> fieldCacheKeys)
+            {
+                foreach (var fieldCacheKey in fieldCacheKeys)
+                {
+                    var reader = segmentReadersCache[fieldCacheKey];
+                    if (docId >= reader.MinDoc && docId <= reader.MaxDoc)
+                        return reader;
+                }
+
+                throw new InvalidOperationException("There is no segment reader for doc: " + docId);
+            }
 
             public IEnumerable<object> GetUsedFieldCacheKeys()
             {
@@ -348,19 +359,6 @@ namespace Raven.Database.Indexing
                         yield return segmentReader;
                     }
                 }
-            }
-
-            public class DocIdWithSegmentFieldCacheKey
-            {
-                public DocIdWithSegmentFieldCacheKey(int docId, object fieldCacheKey)
-                {
-                    DocId = docId;
-                    FieldCacheKey = fieldCacheKey;
-                }
-
-                public int DocId { get; private set; }
-
-                public object FieldCacheKey { get; private set; }
             }
 
             public class SegmentReaderWithMetaInformation
