@@ -1,11 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Linq;
-using Raven.Abstractions.Util;
-#if SILVERLIGHT || NETFX_CORE
+#if NETFX_CORE
 using Raven.Abstractions.Util;
 #else
 using System.Security.Cryptography;
@@ -16,7 +14,6 @@ namespace Raven.Abstractions.Data
 {
 	public class Etag : IEquatable<Etag>, IComparable<Etag>
 	{
-	
 		public override int GetHashCode()
 		{
 			unchecked
@@ -267,7 +264,7 @@ namespace Raven.Abstractions.Data
 		public Etag HashWith(IEnumerable<byte> bytes)
 		{
 			var etagBytes = ToBytes().Concat(bytes).ToArray();
-#if SILVERLIGHT || NETFX_CORE
+#if NETFX_CORE
 			return Parse(MD5Core.GetHash(etagBytes));
 #else
 			using (var md5 = MD5.Create())
