@@ -76,11 +76,17 @@ namespace Raven.Database.Server.WebApi
 	    private void OnBeforeRequest(object sender, BeforeRequestWebApiEventArgs args)
 	    {
 	        var documentDatabase = args.Database;
+<<<<<<< HEAD
+
+            documentDatabase.WorkContext.MetricsCounters.ConcurrentRequests.Mark();
+            documentDatabase.WorkContext.MetricsCounters.RequestsPerSecondCounter.Mark();
+=======
 	        if (documentDatabase != null)
 	        {
                 documentDatabase.WorkContext.MetricsCounters.ConcurrentRequests.Mark();
                 documentDatabase.WorkContext.MetricsCounters.RequestsPerSecondCounter.Mark();
 	        }
+>>>>>>> upstream/new3
 	    }
 
 	    public void Init()
@@ -196,6 +202,24 @@ namespace Raven.Database.Server.WebApi
             CurrentOperationContext.RequestDisposables.Value.Add(disposable);
         }
 
+<<<<<<< HEAD
+        public void SetThreadLocalState(HttpHeaders innerHeaders, string databaseName)
+        {
+            CurrentOperationContext.Headers.Value = new NameValueCollection();
+            foreach (var innerHeader in innerHeaders)
+                CurrentOperationContext.Headers.Value[innerHeader.Key] = innerHeader.Value.FirstOrDefault();
+
+            CurrentOperationContext.Headers.Value[Constants.RavenAuthenticatedUser] = string.Empty;
+            CurrentOperationContext.User.Value = null;
+
+            LogContext.DatabaseName.Value = databaseName;
+            var disposable = LogManager.OpenMappedContext("database", databaseName ?? Constants.SystemDatabase);
+
+            CurrentOperationContext.RequestDisposables.Value.Add(disposable);
+        }
+
+=======
+>>>>>>> upstream/new3
 		public void ResetThreadLocalState()
 		{
 			try
@@ -263,6 +287,14 @@ namespace Raven.Database.Server.WebApi
 		    {
 		        Logger.WarnException("Could not gather information to log request stats", e);
 		    }
+<<<<<<< HEAD
+		    finally
+		    {
+               //!! controller.Database.WorkContext.PerformanceCounters.ConcurrentRequests.Decrement(); //??
+               
+            }
+=======
+>>>>>>> upstream/new3
 
 		    if (logHttpRequestStatsParam == null || sw == null)
 				return;

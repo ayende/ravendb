@@ -477,7 +477,11 @@ more responsive application.
                 if (entityType == typeof(RavenJObject))
                     return documentFound.CloneToken();
 
+<<<<<<< HEAD
+                foreach (var extendedDocumentConversionListener in listeners.ExtendedConversionListeners)
+=======
                 foreach (var extendedDocumentConversionListener in theListeners.ExtendedConversionListeners)
+>>>>>>> upstream/new3
                 {
                     extendedDocumentConversionListener.BeforeConversionToEntity(id, documentFound, metadata);
                 }
@@ -514,12 +518,20 @@ more responsive application.
                     }
                     GenerateEntityIdOnTheClient.TrySetIdentity(entity, id);
 
+<<<<<<< HEAD
+                    foreach (var documentConversionListener in listeners.ConversionListeners)
+=======
                     foreach (var documentConversionListener in theListeners.ConversionListeners)
+>>>>>>> upstream/new3
                     {
                         documentConversionListener.DocumentToEntity(id, entity, documentFound, metadata);
                     }
 
+<<<<<<< HEAD
+                    foreach (var extendedDocumentConversionListener in listeners.ExtendedConversionListeners)
+=======
                     foreach (var extendedDocumentConversionListener in theListeners.ExtendedConversionListeners)
+>>>>>>> upstream/new3
                     {
                         extendedDocumentConversionListener.AfterConversionToEntity(id, documentFound, metadata, entity);
                     }
@@ -676,12 +688,20 @@ more responsive application.
                     }
                     GenerateEntityIdOnTheClient.TrySetIdentity(entity, id);
 
+<<<<<<< HEAD
+                    foreach (var documentConversionListener in listeners.ConversionListeners)
+=======
                     foreach (var documentConversionListener in theListeners.ConversionListeners)
+>>>>>>> upstream/new3
                     {
                         documentConversionListener.DocumentToEntity(id, entity, documentFound, metadata);
                     }
 
+<<<<<<< HEAD
+                    foreach (var extendedDocumentConversionListener in listeners.ExtendedConversionListeners)
+=======
                     foreach (var extendedDocumentConversionListener in theListeners.ExtendedConversionListeners)
+>>>>>>> upstream/new3
                     {
                         extendedDocumentConversionListener.AfterConversionToEntity(id, documentFound, metadata, entity);
                     }
