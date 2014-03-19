@@ -6,7 +6,6 @@ using Raven.Client.Extensions;
 // </copyright>
 //-----------------------------------------------------------------------
 using System;
-using System.Collections.Generic;
 #if NETFX_CORE
 using Raven.Client.Silverlight.MissingFromSilverlight;
 #else
@@ -23,11 +22,9 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
-using System.Threading;
 using System.Threading.Tasks;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Exceptions;
-using Raven.Abstractions.Util;
 using Raven.Imports.Newtonsoft.Json;
 using Raven.Imports.Newtonsoft.Json.Linq;
 using Raven.Abstractions.Extensions;
@@ -46,7 +43,7 @@ namespace Raven.Client.Connection
 		internal readonly string Url;
 		internal readonly string Method;
 
-		private readonly WebRequestHandler handler;
+		private readonly HttpMessageHandler handler;
 		internal volatile HttpClient httpClient;
 
 		private readonly NameValueCollection headers = new NameValueCollection();
@@ -55,14 +52,14 @@ namespace Raven.Client.Connection
 		// avoid the potential for clearing the cache from a cached item
 		internal CachedRequest CachedRequestDetails;
 		private readonly HttpJsonRequestFactory factory;
+        private Action disableAuthentication = () => { };
 		private readonly IHoldProfilingInformation owner;
 		private readonly Convention conventions;
 		private string postedData;
 		private bool isRequestSentToServer;
 
-		private Stopwatch sp = Stopwatch.StartNew();
+		private readonly Stopwatch sp = Stopwatch.StartNew();
 		internal bool ShouldCacheRequest;
-		private Stream postedStream;
 	    private RavenJToken postedToken;
 		private bool writeCalled;
 		public static readonly string ClientVersion = typeof(HttpJsonRequest).Assembly.GetName().Version.ToString();
@@ -74,7 +71,6 @@ namespace Raven.Client.Connection
 		public Action<NameValueCollection, string, string> HandleReplicationStatusChanges = delegate { };
 
 		private readonly OperationCredentials _credentials;
-		private HttpContent postedContent;
 
 		/// <summary>
 		/// Gets or sets the response headers.
@@ -94,11 +90,26 @@ namespace Raven.Client.Connection
 			owner = requestParams.Owner;
 			conventions = requestParams.Convention;
 
-			handler = new WebRequestHandler
-			{
-				UseDefaultCredentials = _credentials.HasCredentials() == false,
-				Credentials = requestParams.Credentials.Credentials,
-			};
+		    if (factory.httpMessageHandler != null)
+		    {
+		        handler = factory.httpMessageHandler;
+		    }
+		    else
+		    {
+                var webRequestHandler = new WebRequestHandler
+			    {
+				    UseDefaultCredentials = _credentials.HasCredentials() == false,
+				    Credentials = requestParams.Credentials.Credentials,
+			    };
+		        disableAuthentication = () =>
+		        {
+		            webRequestHandler.Credentials = null;
+		            webRequestHandler.UseDefaultCredentials = false;
+		        };
+		        handler = webRequestHandler;
+		    }
+
+			
 			httpClient = new HttpClient(handler);
 
 			if (factory.DisableRequestCompression == false && requestParams.DisableRequestCompression == false)
@@ -126,8 +137,7 @@ namespace Raven.Client.Connection
 
 		public void DisableAuthentication()
 		{
-			handler.Credentials = null;
-			handler.UseDefaultCredentials = false;
+		    disableAuthentication();
 			disabledAuthRetries = true;
 		}
 
@@ -416,13 +426,14 @@ namespace Raven.Client.Connection
 			await forbiddenResponseAsync;
 		}
 
-		private async Task RecreateHttpClient(Action<HttpClient> configureHttpClient)
+		private Task RecreateHttpClient(Action<HttpClient> configureHttpClient)
 		{
-			var newHttpClient = new HttpClient(new HttpClientHandler
+            throw new NotImplementedException("DH TODO");
+			/*var newHttpClient = new HttpClient(new HttpClientHandler
 			{
 				Credentials = handler.Credentials,
 			});
-			//HttpJsonRequestHelper.CopyHeaders(webRequest, newWebRequest);
+
 			configureHttpClient(newHttpClient);
 			httpClient = newHttpClient;
 			isRequestSentToServer = false;
@@ -434,7 +445,7 @@ namespace Raven.Client.Connection
             if (postedToken != null)
             {
                 await WriteAsync(postedToken);
-            }
+            }*/
 		}
 
 		private async Task<RavenJToken> ReadJsonInternalAsync()
@@ -648,7 +659,6 @@ namespace Raven.Client.Connection
 
 		public async Task WriteAsync(Stream streamToWrite)
 		{
-			postedStream = streamToWrite;
 			writeCalled = true;
 
 			await SendRequestInternal(() => new HttpRequestMessage(new HttpMethod(Method), Url)
@@ -659,7 +669,6 @@ namespace Raven.Client.Connection
 
 		public async Task WriteAsync(HttpContent content)
 		{
-			postedContent = content;
 			writeCalled = true;
 
 			await SendRequestInternal(() => new HttpRequestMessage(new HttpMethod(Method), Url)
