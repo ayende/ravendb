@@ -23,14 +23,17 @@ namespace Raven.Tests.Embedded
         {
             using (var server = new RavenDbServer { RunInMemory = true }.Initialize())
             {
-                using (var session = server.DocumentStore.OpenSession())
+                using (var store = server.CreateDocumentStore())
                 {
-                    session.Store(new Company {Name = "Company A", Id = "1"});
-                    session.Store(new Company {Name = "Company B", Id = "2"});
-                    session.SaveChanges();
+                    using (var session = store.OpenSession())
+                    {
+                        session.Store(new Company {Name = "Company A", Id = "1"});
+                        session.Store(new Company {Name = "Company B", Id = "2"});
+                        session.SaveChanges();
+                    }
+                    JsonDocument[] jsonDocuments = store.DatabaseCommands.GetDocuments(0, 10, true);
+                    Assert.Equal(2, jsonDocuments.Length);
                 }
-                JsonDocument[] jsonDocuments = server.DocumentStore.DatabaseCommands.GetDocuments(0, 10, true);
-                Assert.Equal(2, jsonDocuments.Length);
             }
         }
 
@@ -39,21 +42,24 @@ namespace Raven.Tests.Embedded
         {
             using (var server = new RavenDbServer { RunInMemory = true }.Initialize())
             {
-                var list = new BlockingCollection<DocumentChangeNotification>();
-                var taskObservable = server.DocumentStore.Changes();
-                taskObservable.Task.Wait();
-                var observableWithTask = taskObservable.ForDocument("items/1");
-                observableWithTask.Task.Wait();
-                observableWithTask.Subscribe(list.Add);
-
-                using (var session = server.DocumentStore.OpenSession())
+                using (var store = server.CreateDocumentStore())
                 {
-                    session.Store(new ClientServer.Item(), "items/1");
-                    session.SaveChanges();
-                }
+                    var list = new BlockingCollection<DocumentChangeNotification>();
+                    var taskObservable = store.Changes();
+                    taskObservable.Task.Wait();
+                    var observableWithTask = taskObservable.ForDocument("items/1");
+                    observableWithTask.Task.Wait();
+                    observableWithTask.Subscribe(list.Add);
 
-                DocumentChangeNotification documentChangeNotification;
-                Assert.True(list.TryTake(out documentChangeNotification, TimeSpan.FromSeconds(3)));
+                    using (var session = store.OpenSession())
+                    {
+                        session.Store(new ClientServer.Item(), "items/1");
+                        session.SaveChanges();
+                    }
+
+                    DocumentChangeNotification documentChangeNotification;
+                    Assert.True(list.TryTake(out documentChangeNotification, TimeSpan.FromSeconds(3)));
+                }
             }
         }
 
@@ -62,40 +68,42 @@ namespace Raven.Tests.Embedded
         {
             using (var server = new RavenDbServer { RunInMemory = true }.Initialize())
             {
-                var documentStore = server.DocumentStore;
-                documentStore.ExecuteIndex(new FooIndex());
-
-                using (var session = documentStore.OpenSession())
+                using (var store = server.CreateDocumentStore())
                 {
-                    var random = new System.Random();
+                    store.ExecuteIndex(new FooIndex());
 
-                    for (int i = 0; i < 100; i++)
+                    using (var session = store.OpenSession())
                     {
-                        session.Store(new Foo {Num = random.Next(1, 100)});
-                    }
-                    session.SaveChanges();
-                }
-                RavenTestBase.WaitForIndexing(documentStore);
+                        var random = new System.Random();
 
-                Foo last = null;
-
-                using (var session = documentStore.OpenSession())
-                {
-                    var q = session.Query<Foo, FooIndex>().OrderBy(x => x.Num);
-                    var enumerator = session.Advanced.Stream(q);
-
-                    while (enumerator.MoveNext())
-                    {
-                        var foo = enumerator.Current.Document;
-                        Debug.WriteLine("{0} - {1}", foo.Id, foo.Num);
-
-                        if (last != null)
+                        for (int i = 0; i < 100; i++)
                         {
-                            // If the sort worked, this test should pass
-                            Assert.True(last.Num <= foo.Num);
+                            session.Store(new Foo {Num = random.Next(1, 100)});
                         }
+                        session.SaveChanges();
+                    }
+                    RavenTestBase.WaitForIndexing(store);
 
-                        last = foo;
+                    Foo last = null;
+
+                    using (var session = store.OpenSession())
+                    {
+                        var q = session.Query<Foo, FooIndex>().OrderBy(x => x.Num);
+                        var enumerator = session.Advanced.Stream(q);
+
+                        while (enumerator.MoveNext())
+                        {
+                            var foo = enumerator.Current.Document;
+                            Debug.WriteLine("{0} - {1}", foo.Id, foo.Num);
+
+                            if (last != null)
+                            {
+                                // If the sort worked, this test should pass
+                                Assert.True(last.Num <= foo.Num);
+                            }
+
+                            last = foo;
+                        }
                     }
                 }
             }
@@ -106,14 +114,16 @@ namespace Raven.Tests.Embedded
         {
             using (var server = new RavenDbServer { RunInMemory = true }.Initialize())
             {
-                var store = server.DocumentStore;
-                var bulkInsertOperation = new RemoteBulkInsertOperation(new BulkInsertOptions(), (AsyncServerClient)store.AsyncDatabaseCommands, store.Changes());
-                bulkInsertOperation.Write("one", new RavenJObject(), new RavenJObject { { "test", "passed" } });
-                bulkInsertOperation.Write("two", new RavenJObject(), new RavenJObject { { "test", "passed" } });
-                bulkInsertOperation.Dispose();
+                using (var store = server.CreateDocumentStore())
+                {
+                    var bulkInsertOperation = new RemoteBulkInsertOperation(new BulkInsertOptions(), (AsyncServerClient) store.AsyncDatabaseCommands, store.Changes());
+                    bulkInsertOperation.Write("one", new RavenJObject(), new RavenJObject {{"test", "passed"}});
+                    bulkInsertOperation.Write("two", new RavenJObject(), new RavenJObject {{"test", "passed"}});
+                    bulkInsertOperation.Dispose();
 
-                Assert.Equal("passed", store.DatabaseCommands.Get("one").DataAsJson.Value<string>("test"));
-                Assert.Equal("passed", store.DatabaseCommands.Get("two").DataAsJson.Value<string>("test"));
+                    Assert.Equal("passed", store.DatabaseCommands.Get("one").DataAsJson.Value<string>("test"));
+                    Assert.Equal("passed", store.DatabaseCommands.Get("two").DataAsJson.Value<string>("test"));
+                }
             }
         }
 

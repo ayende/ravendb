@@ -22,7 +22,6 @@ namespace Raven.Server
 	    private IServerThingsForTests serverThingsForTests;
 		private RavenDBOptions options;
 	    private OwinHttpServer owinHttpServer;
-        private IDocumentStore documentStore;
 
 	    public RavenDbServer()
 			: this(new RavenConfiguration())
@@ -46,9 +45,13 @@ namespace Raven.Server
 			get { return serverThingsForTests; }
 		}
 
-	    public IDocumentStore DocumentStore
+	    public IDocumentStore CreateDocumentStore()
 	    {
-            get { return documentStore; }
+            return new DocumentStore
+            {
+                HttpMessageHandler = new OwinClientHandler(owinHttpServer.Invoke),
+                Url = "http://localhost"
+            }.Initialize();
 	    }
 
 	    public bool RunInMemory
@@ -62,11 +65,7 @@ namespace Raven.Server
             owinHttpServer = new OwinHttpServer(configuration, useHttpServer: UseEmbeddedHttpServer);
             options = owinHttpServer.Options;
             serverThingsForTests = new ServerThingsForTests(options);
-            documentStore = new DocumentStore
-            {
-                HttpMessageHandler = new OwinClientHandler(owinHttpServer.Invoke),
-                Url = "http://localhost"
-            }.Initialize();
+            
 	        return this;
 	    }
 
@@ -77,9 +76,6 @@ namespace Raven.Server
 
 	    public void Dispose()
 	    {
-		    if (documentStore != null)
-			    documentStore.Dispose();
-
 		    if (owinHttpServer != null)
 			    owinHttpServer.Dispose();
 	    }
