@@ -243,7 +243,10 @@ namespace Raven.Tests.Helpers
 			ravenConfiguration.PostInit();
 
 			NonAdminHttp.EnsureCanListenToWhenInNonAdminContext(ravenConfiguration.Port);
-			var ravenDbServer = new RavenDbServer(ravenConfiguration);
+            var ravenDbServer = new RavenDbServer(ravenConfiguration)
+            {
+	            UseEmbeddedHttpServer = true,
+            }.Initialize();
 			servers.Add(ravenDbServer);
 
 			try
@@ -555,6 +558,8 @@ namespace Raven.Tests.Helpers
 
 			foreach (var server in servers)
 			{
+				if (server == null)
+					continue;
 				try
 				{
 					server.Dispose();
