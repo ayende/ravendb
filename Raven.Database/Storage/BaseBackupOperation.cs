@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Threading;
 using Raven.Abstractions;
@@ -69,12 +70,15 @@ namespace Raven.Database.Storage
                     while (true)
                     {
                         incrementalTag = SystemTime.UtcNow.ToString("Inc yyyy-MM-dd HH-mm-ss");
-                        backupDestinationDirectory = Path.Combine(backupDestinationDirectory, incrementalTag);
-
-                        if (Directory.Exists(backupDestinationDirectory) == false)
+                        var incrBackupDestinationDirectory = Path.Combine(backupDestinationDirectory, incrementalTag);
+                        if (Directory.Exists(incrBackupDestinationDirectory) == false)
+                        {
+                            backupDestinationDirectory = incrBackupDestinationDirectory;
                             break;
-                        Thread.Sleep(100); // wait until the second changes, should only even happen in tests
-                    }
+                        }
+
+                        Thread.Sleep(1000); // wait until the second changes, should only even happen in tests
+                     }
                 }
                 else
                 {
@@ -83,7 +87,7 @@ namespace Raven.Database.Storage
 
                 UpdateBackupStatus(string.Format("Backing up indexes.."), BackupStatus.BackupMessageSeverity.Informational);
 
-                // Make sure we have an Indexes folder in the backup location
+                 // Make sure we have an Indexes folder in the backup location
                 if (!Directory.Exists(Path.Combine(backupDestinationDirectory, "Indexes")))
                     Directory.CreateDirectory(Path.Combine(backupDestinationDirectory, "Indexes"));
 

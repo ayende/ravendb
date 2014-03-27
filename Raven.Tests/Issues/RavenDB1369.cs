@@ -221,8 +221,9 @@ namespace Raven.Tests.Issues
                     store.DatabaseCommands.GlobalAdmin.StartBackup(backupDir, new DatabaseDocument(), true, "DB1");
                     WaitForBackup(store.DatabaseCommands.ForDatabase("DB1"), true);
 
+                  
                 }
-
+                
                 store.DatabaseCommands.GlobalAdmin.StartRestore(new RestoreRequest
                 {
                     BackupLocation = backupDir,
