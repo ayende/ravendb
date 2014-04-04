@@ -35,8 +35,6 @@ class ctor {
     firstVisibleRow: row = null;
     itemsSourceSubscription: KnockoutSubscription = null;
     isIndexMapReduce: KnockoutObservable<boolean>;
-    isCopyAllowed: KnockoutObservable<boolean>;
-
 
     settings: {
         itemsSource: KnockoutObservable<pagedList>;
@@ -50,7 +48,7 @@ class ctor {
         maxHeight: string;
         customColumnParams: { [column: string]: customColumnParams };
         isIndexMapReduce: KnockoutObservable<boolean>;
-        isCopyAllowed: KnockoutObservable<boolean>;
+        isCopyAllowed: boolean;
         customColumns: KnockoutObservable<customColumns>;
     }
 
@@ -65,7 +63,7 @@ class ctor {
             maxHeight: 'none',
             customColumnParams: {},
             isIndexMapReduce: ko.observable<boolean>(true),
-            isCopyAllowed: ko.observable<boolean>(true),
+            isCopyAllowed: true,
             customColumns: ko.observable(customColumns.empty())
         };
         this.settings = $.extend(defaults, settings);
@@ -80,14 +78,14 @@ class ctor {
         this.items = this.settings.itemsSource();
         this.focusableGridSelector = this.settings.gridSelector + " .ko-grid";
         this.virtualHeight = ko.computed(() => this.rowHeight * this.virtualRowCount());
-        this.isCopyAllowed = this.settings.isCopyAllowed;
 
         this.refreshIdAndCheckboxColumn();
 
         this.itemsSourceSubscription = this.settings.itemsSource.subscribe(list => {
             this.recycleRows().forEach(r => {
-                r.resetCells();this.recycleRows.valueHasMutated();
- +                    this.columns.valueHasMutated();
+                r.resetCells();
+                this.recycleRows.valueHasMutated();
+                this.columns.valueHasMutated();
                 r.isInUse(false);
             });
             this.items = list;
@@ -301,7 +299,8 @@ class ctor {
 
         // Enforce a max number of columns. Having many columns is unweildy to the user
         // and greatly slows down scroll speed.
-        var maxColumns = 10;
+        //var maxColumns = this.grid.width()/200;
+        var maxColumns = this.grid.width() / 200;
         if (this.columns().length >= maxColumns) {
             return;
         }
@@ -330,11 +329,13 @@ class ctor {
         }
 
         var idColumn = this.columns.first(x=> x.binding == "Id");
+        var idCheckboxColumn = this.columns.first(x=> x.binding == "__IsChecked");
+        var idCheckboxWidth = idCheckboxColumn ? idCheckboxColumn.width() : 0;
         var idColumnExists = idColumn ? 1 : 0;
 
         var calculateWidth = ctor.idColumnWidth;
         var colCount = Object.keys(columnsNeeded).length;
-        if ((colCount + idColumnExists) * 200 > this.grid.width()) {
+        if ((colCount + idColumnExists) * 200 + idCheckboxWidth > this.grid.width()) {
             if (idColumn) {
                 idColumn.width(calculateWidth);
             }
@@ -342,9 +343,9 @@ class ctor {
             calculateWidth = this.grid.width() / (colCount + idColumnExists);
         }
 
-        if (idColumn) {
-            idColumn.width(calculateWidth);
-        }
+        //if (idColumn) {
+        //    idColumn.width(calculateWidth);
+        //}
 
         for (var binding  in columnsNeeded) {
             var columnWidth = this.getColumnWidth(binding, calculateWidth);

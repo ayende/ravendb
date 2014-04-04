@@ -1,5 +1,5 @@
 import database = require("models/database");
-import filesystem = require("models/filesystem");
+import filesystem = require("models/filesystem/filesystem");
 import resource = require("models/resource");
 import pagedList = require("common/pagedList");
 import router = require("plugins/router");
@@ -51,6 +51,8 @@ class appUrl {
         filesystemSynchronization: ko.computed(() => appUrl.forFilesystemSynchronization(appUrl.currentFilesystem())),
         filesystemConfiguration: ko.computed(() => appUrl.forFilesystemConfiguration(appUrl.currentFilesystem())),
     };
+
+  
 
     static checkIsAreaActive(routeRoot: string): boolean {
 
@@ -337,11 +339,11 @@ class appUrl {
     */
     static getResource(): resource {
         var appFilesystem = appUrl.getFilesystem()
-        if (appFilesystem != appUrl.getDefaultFilesystem()) {
+        if (!appFilesystem.isDefault) {
             return appFilesystem;
         }
         else {
-            return appUrl.getDefaultFilesystem();
+            return appUrl.getDatabase();
         }
     }
 
