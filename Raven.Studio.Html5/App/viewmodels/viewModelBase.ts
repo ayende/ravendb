@@ -1,6 +1,6 @@
 import appUrl = require("common/appUrl");
 import database = require("models/database");
-import filesystem = require("models/filesystem");
+import filesystem = require("models/filesystem/filesystem");
 import router = require("plugins/router");
 import app = require("durandal/app");
 import viewSystemDatabaseConfirm = require("viewmodels/viewSystemDatabaseConfirm");
@@ -10,12 +10,12 @@ import viewSystemDatabaseConfirm = require("viewmodels/viewSystemDatabaseConfirm
 */
 class viewModelBase {
     public activeDatabase = ko.observable<database>().subscribeTo("ActivateDatabase", true);
+    public activeFilesystem = ko.observable<filesystem>().subscribeTo("ActivateFilesystem", true);
 
     private keyboardShortcutDomContainers: string[] = [];
     private modelPollingHandle: number;
     static dirtyFlag = new ko.DirtyFlag([]);
     private static isConfirmedUsingSystemDatabase: boolean;
-    public activeFilesystem = ko.observable<filesystem>().subscribeTo("ActivateFilesystem", true);
 
     /*
      * Called by Durandal when checking whether this navigation is allowed. 
@@ -157,6 +157,7 @@ class viewModelBase {
     private modelPollingStart() {
         this.modelPolling();
         this.activeDatabase.subscribe(() => this.forceModelPolling());
+        this.activeFilesystem.subscribe(() => this.forceModelPolling());
     }
 
     private modelPollingStop() {

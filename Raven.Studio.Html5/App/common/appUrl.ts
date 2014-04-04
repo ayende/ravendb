@@ -1,5 +1,5 @@
 import database = require("models/database");
-import filesystem = require("models/filesystem");
+import filesystem = require("models/filesystem/filesystem");
 import resource = require("models/resource");
 import pagedList = require("common/pagedList");
 import router = require("plugins/router");
@@ -54,18 +54,12 @@ class appUrl {
 
   
 
-        static checkIsAreaActive(routeRoot: string): boolean {
+    static checkIsAreaActive(routeRoot: string): boolean {
 
         var items = router.routes.filter(m => m.isActive() && m.route != null && m.route != '');
         var isThereAny = items.some(m => m.route.substring(0, routeRoot.length) === routeRoot);
 
         return isThereAny;
-    }
-
-    static forDatabaseQuery(db: database) {
-        if (db && !db.isSystem) {
-            return appUrl.baseUrl + "/databases/" + db.name;
-        }
     }
 
     static forDatabases(): string {
@@ -345,11 +339,11 @@ class appUrl {
     */
     static getResource(): resource {
         var appFilesystem = appUrl.getFilesystem()
-        if (appFilesystem != appUrl.getDefaultFilesystem()) {
+        if (!appFilesystem.isDefault) {
             return appFilesystem;
         }
         else {
-            return appUrl.getDefaultFilesystem();
+            return appUrl.getDatabase();
         }
     }
 

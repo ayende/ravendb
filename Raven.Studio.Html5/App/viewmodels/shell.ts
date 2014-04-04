@@ -6,6 +6,7 @@ import app = require("durandal/app");
 import sys = require("durandal/system");
 
 import database = require("models/database");
+import filesystem = require("models/filesystem/filesystem");
 import document = require("models/document");
 import appUrl = require("common/appUrl");
 import collection = require("models/collection");
@@ -16,6 +17,7 @@ import alertType = require("common/alertType");
 import pagedList = require("common/pagedList");
 import getDatabaseStatsCommand = require("commands/getDatabaseStatsCommand");
 import getDatabasesCommand = require("commands/getDatabasesCommand");
+import getFilesystemsCommand = require("commands/filesystem/getFilesystemsCommand");
 import getBuildVersionCommand = require("commands/getBuildVersionCommand");
 import getLicenseStatusCommand = require("commands/getLicenseStatusCommand");
 import dynamicHeightBindingHandler = require("common/dynamicHeightBindingHandler");
@@ -27,6 +29,7 @@ import changesApi = require("common/changesApi");
 
 class shell extends viewModelBase {
     private router = router;
+
     databases = ko.observableArray<database>();
     currentAlert = ko.observable<alertArgs>();
     queuedAlert: alertArgs;
@@ -38,8 +41,15 @@ class shell extends viewModelBase {
     recordedErrors = ko.observableArray<alertArgs>();
     newIndexUrl = appUrl.forCurrentDatabase().newIndex;
     newTransformerUrl = appUrl.forCurrentDatabase().newTransformer;
+
+    filesystems = ko.observableArray<filesystem>();
+    filesystemsLoadedTask: JQueryPromise<any>;
+
     currentRawUrl = ko.observable<string>("");
     rawUrlIsVisible = ko.computed(() => this.currentRawUrl().length > 0);
+
+    activeArea = ko.observable<string>("");
+
     goToDocumentSearch = ko.observable<string>();
     goToDocumentSearchResults = ko.observableArray<string>();    
 
@@ -50,6 +60,7 @@ class shell extends viewModelBase {
         super();
         ko.postbox.subscribe("Alert", (alert: alertArgs) => this.showAlert(alert));
         ko.postbox.subscribe("ActivateDatabaseWithName", (databaseName: string) => this.activateDatabaseWithName(databaseName));
+        ko.postbox.subscribe("ActivateFilesystemWithName", (filesystemName: string) => this.activateFilesystemWithName(filesystemName));
         ko.postbox.subscribe("SetRawJSONUrl", (jsonUrl: string) => this.currentRawUrl(jsonUrl));
         ko.postbox.subscribe("ActivateDatabase", (db: database) => this.updateChangesApi(db));
 
@@ -64,7 +75,7 @@ class shell extends viewModelBase {
 
         NProgress.set(.7);
         router.map([
-            { route: ['', 'databases/databases'], title: 'Databases', moduleId: 'viewmodels/databases', nav: false, hash: this.appUrls.databasesManagement },
+            { route: ['', 'databases'], title: 'Databases', moduleId: 'viewmodels/databases', nav: true, hash: this.appUrls.databasesManagement },
             { route: 'databases/documents', title: 'Documents', moduleId: 'viewmodels/documents', nav: true, hash: this.appUrls.documents },
             { route: 'databases/conflicts', title: 'Conflicts', moduleId: 'viewmodels/conflicts', nav: true, hash: this.appUrls.conflicts },
             { route: 'databases/patch', title: 'Patch', moduleId: 'viewmodels/patch', nav: true, hash: this.appUrls.patch },
@@ -74,8 +85,21 @@ class shell extends viewModelBase {
             { route: 'databases/tasks*details', title: 'Tasks', moduleId: 'viewmodels/tasks', nav: true, hash: this.appUrls.tasks, },
             { route: 'databases/settings*details', title: 'Settings', moduleId: 'viewmodels/settings', nav: true, hash: this.appUrls.settings },
             { route: 'databases/status*details', title: 'Status', moduleId: 'viewmodels/status', nav: true, hash: this.appUrls.status },
-            { route: 'databases/edit', title: 'Edit Document', moduleId: 'viewmodels/editDocument', nav: false }
+            { route: 'databases/edit', title: 'Edit Document', moduleId: 'viewmodels/editDocument', nav: false },
+            { route: ['', 'filesystems'], title: 'File Systems', moduleId: 'viewmodels/filesystem/filesystems', nav: true, hash: this.appUrls.filesystemsManagement },
+            { route: 'filesystems/files', title: 'Files', moduleId: 'viewmodels/filesystem/filesystemFiles', nav: true, hash: this.appUrls.filesystemFiles },
+            { route: 'filesystems/search', title: 'Search', moduleId: 'viewmodels/filesystem/filesystemSearch', nav: true, hash: this.appUrls.filesystemSearch },
+            { route: 'filesystems/synchronization', title: 'Synchronization', moduleId: 'viewmodels/filesystem/filesystemSynchronization', nav: true, hash: this.appUrls.filesystemSynchronization },
+            { route: 'filesystems/configuration', title: 'Configuration', moduleId: 'viewmodels/filesystem/configuration', nav: true, hash: this.appUrls.filesystemConfiguration },
+            //{ route: 'filesystems/create', title: 'Create Filesystem', moduleId: 'viewmodels/filesystem/createFilesystem', nav: true },
+            { route: 'filesystems/upload', title: 'Upload File', moduleId: 'viewmodels/filesystem/filesystemUploadFile', nav: false },
+            { route: 'filesystems/edit', title: 'Upload File', moduleId: 'viewmodels/filesystem/filesystemEditFile', nav: false },
         ]).buildNavigationModel();
+
+        router.activeInstruction.subscribe(val => {
+            if (val.config.route.split('/').length == 1) //if it's a root navigation item.
+                this.activeArea(val.config.title);
+        });
 
         // Show progress whenever we navigate.
         router.isNavigating.subscribe(isNavigating => this.showNavigationProgress(isNavigating));
@@ -125,6 +149,13 @@ class shell extends viewModelBase {
         
     }
 
+    filesystemsLoaded(filesystems) {
+        this.filesystems(filesystems);
+        if (this.filesystems().length != 0) {
+            this.filesystems.first(x=> x.isVisible()).activate();
+        }
+    }
+
     launchDocEditor(docId?: string, docsList?: pagedList) {
         var editDocUrl = appUrl.forEditDoc(docId, docsList ? docsList.collectionName : null, docsList ? docsList.currentItemIndex() : null, this.activeDatabase());
         this.navigate(editDocUrl);
@@ -141,6 +172,16 @@ class shell extends viewModelBase {
                 this.fetchLicenseStatus();
                 router.activate();
             });
+
+	    this.filesystemsLoadedTask = new getFilesystemsCommand()
+	        .execute()
+	        .fail(result => this.handleRavenConnectionFailure(result))
+	        .done(results => {
+	            this.filesystemsLoaded(results);
+	            router.activate();
+	            this.fetchBuildVersion();
+	            this.fetchLicenseStatus();
+	        });
     }
 
     fetchStudioConfig() {
@@ -221,6 +262,17 @@ class shell extends viewModelBase {
         }
     }
 
+    activateFilesystemWithName(filesystemName: string) {
+        if (this.filesystemsLoadedTask) {
+            this.filesystemsLoadedTask.done(() => {
+                var matchingFilesystem = this.filesystems().first(d => d.name == filesystemName);
+                if (matchingFilesystem && this.activeFilesystem() !== matchingFilesystem) {
+                    ko.postbox.publish("ActivateFilesystem", matchingFilesystem);
+                }
+            });
+        }
+    }
+
     updateChangesApi(newDb: database) {
         if (shell.currentDbChangesApi()) {
             shell.currentDbChangesApi().dispose();
@@ -256,6 +308,14 @@ class shell extends viewModelBase {
         if (db.name != this.activeDatabase().name) {
             db.activate();
             var updatedUrl = appUrl.forCurrentPage(db);
+            this.navigate(updatedUrl);
+        }
+    }
+
+    selectFilesystem(fs: filesystem) {
+        if (fs.name != this.activeFilesystem().name) {
+            fs.activate();
+            var updatedUrl = appUrl.forCurrentPage(fs);
             this.navigate(updatedUrl);
         }
     }

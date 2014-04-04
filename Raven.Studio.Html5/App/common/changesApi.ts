@@ -23,7 +23,7 @@ class changesApi {
 
     private connect() {
         if (!!window.EventSource) {
-            var dbUrl = appUrl.forDatabaseQuery(this.db);
+            var dbUrl = appUrl.forResourceQuery(this.db);
 
             console.log("Connecting to changes API (db = " + this.db.name + ")");
 
