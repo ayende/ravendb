@@ -230,6 +230,7 @@ arrayPrototype.distinct = function () {
 // String extensions
 interface String {
     hashCode: () => number;
+    replaceAll: (find, replace) => string;
 }
 
 String.prototype.hashCode = function () {
@@ -243,6 +244,10 @@ String.prototype.hashCode = function () {
     return hash;
 };
 
+String.prototype.replaceAll = function (find, replace) {
+    return this.replace(new RegExp(find, 'g'), replace);
+}
+
 // TODO: this should really be in its own file, similiar to common/aceEditorBindingHandler
 ko.bindingHandlers['slideVisible'] = {
     init: function (element, valueAccessor) {
@@ -254,3 +259,8 @@ ko.bindingHandlers['slideVisible'] = {
         ko.unwrap(value) ? jQuery(element).slideDown() : jQuery(element).slideUp();
     }
 };
+
+class Pair<T1, T2> {
+    constructor(public item1: T1, public item2: T2) {
+    }
+}
