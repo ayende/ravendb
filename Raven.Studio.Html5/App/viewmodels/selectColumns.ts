@@ -18,7 +18,6 @@ class selectColumns extends dialogViewModelBase {
 
     constructor(private customColumns: customColumns, private context, private database: database) {
         super();
-        //this.customColumns.customMode(true);
     }
 
     attached() {
@@ -75,6 +74,14 @@ class selectColumns extends dialogViewModelBase {
 
     customScheme(val: boolean) {
         this.customColumns.customMode(val);
+
+        var messageBoxHeight = parseInt($(".messageBox").css('height'), 10);
+        var windowHeight = $(window).height();
+        var messageBoxMarginTop = parseInt($(".messageBox").css('margin-top'), 10);
+        var newTopPercent = Math.floor(((windowHeight - messageBoxHeight) / 2 - messageBoxMarginTop) / windowHeight * 100);
+        var newTopPercentString = newTopPercent.toString() + '%';
+
+        $(".modalHost").css('top', newTopPercentString);
     }
 
     saveAsDefault() {
