@@ -401,7 +401,18 @@ namespace Raven.Database
 	                        return (indexInstance != null && indexInstance.IsMapIndexingInProgress) ||
 	                               actions.Staleness.IsIndexStale(s, null, null);
                         }).ToArray();
-					result.Indexes = actions.Indexing.GetIndexesStats().Where(x => x != null).ToArray();
+
+	                var indexes = new List<IndexStats>();
+	                foreach (var index in actions.Indexing.GetIndexesStats().Where(x => x != null))
+	                {
+		                var definition = GetIndexDefinition(index.Name);
+						if (definition != null)
+							index.Name = definition.Name;
+
+						indexes.Add(index);
+	                }
+
+	                result.Indexes = indexes.ToArray();
                 });
 
                 if (result.Indexes != null)
