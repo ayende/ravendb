@@ -53,7 +53,8 @@
              ConfigurableDirectory='INSTALLFOLDER'>
       <ComponentRef Id='StoreInstallationPath' />
       <ComponentRef Id='Raven.Server' />
-      <ComponentRef Id='Raven.Database.Service' />
+			<ComponentRef Id='Raven.Server.Config.File' />
+			<ComponentRef Id='Raven.Database.Service' />
       <ComponentRef Id='Raven.Abstractions.Service' />
       <ComponentRef Id='PersistServiceValues' />
       <ComponentRef Id ="CopyLicenseFile"/>
