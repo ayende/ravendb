@@ -204,14 +204,9 @@ class shell extends viewModelBase {
                 router.activate();
             });
 
-	    this.filesystemsLoadedTask = new getFilesystemsCommand()
-	        .execute()
-	        .fail(result => this.handleRavenConnectionFailure(result))
-	        .done(results => {
-	            this.filesystemsLoaded(results);
-	            this.fetchBuildVersion();
-	            this.fetchLicenseStatus();
-	        });
+        this.filesystemsLoadedTask = new getFilesystemsCommand()
+            .execute()
+            .done(results => this.filesystemsLoaded(results));
     }
 
     fetchStudioConfig() {
