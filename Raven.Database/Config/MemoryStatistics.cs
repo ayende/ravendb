@@ -35,7 +35,7 @@ namespace Raven.Database.Config
 		private static bool failedToGetTotalPhysicalMemory;
 		private static int memoryLimit;
 		private static readonly IntPtr lowMemoryNotificationHandle;
-		private static ConcurrentSet<WeakReference<ILowMemoryHandler>> lowMemoryHandlers;
+		private static readonly ConcurrentSet<WeakReference<ILowMemoryHandler>> lowMemoryHandlers = new ConcurrentSet<WeakReference<ILowMemoryHandler>>();
 
 		static MemoryStatistics()
 		{
