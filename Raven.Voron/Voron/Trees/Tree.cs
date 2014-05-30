@@ -161,7 +161,7 @@ namespace Voron.Trees
 			{
 				var node = page.GetNode(page.LastSearchPosition);
 
-				Debug.Assert(page.GetFullNodeKey(node).Equals(key));
+				Debug.Assert(page.GetNodeKey(node).Equals(key));
 
 				shouldGoToOverflowPage = _tx.DataPager.ShouldGoToOverflowPage(len);
 
@@ -380,8 +380,8 @@ namespace Voron.Trees
 	        var foundPage = new RecentlyFoundPages.FoundPage(c.Pages.Count)
 	        {
 	            Number = p.PageNumber,
-	            FirstKey = leftmostPage == true ? Slice.BeforeAllKeys : p.GetFullNodeKey(0),
-	            LastKey = rightmostPage == true ? Slice.AfterAllKeys : p.GetFullNodeKey(p.NumberOfEntries - 1),
+	            FirstKey = leftmostPage == true ? Slice.BeforeAllKeys : p.GetNodeKey(0),
+	            LastKey = rightmostPage == true ? Slice.AfterAllKeys : p.GetNodeKey(p.NumberOfEntries - 1),
 	        };
 	        var cur = c.Pages.First;
 	        int pos = foundPage.CursorPath.Length - 1;
@@ -518,7 +518,7 @@ namespace Voron.Trees
 			var p = FindPageFor(key, out lazy);
 			var node = p.Search(key);
 
-			if (node == null || p.GetFullNodeKey(node).Compare(key) != 0)
+			if (node == null || p.GetNodeKey(node).Compare(key) != 0)
 				return -1;
 
 			return node->DataSize;
@@ -530,7 +530,7 @@ namespace Voron.Trees
 			var p = FindPageFor(key, out lazy);
 			var node = p.Search(key);
 
-			if (node == null || p.GetFullNodeKey(node).Compare(key) != 0)
+			if (node == null || p.GetNodeKey(node).Compare(key) != 0)
 				return 0;
 
 			return node->Version;
@@ -540,12 +540,12 @@ namespace Voron.Trees
 		{
 			Lazy<Cursor> lazy;
 			var p = FindPageFor(key, out lazy);
-			var node = p.Search(key);
+			var node = p.Search(key); // TODO arek - change to p.getNode(p.lastsearchposition)
 
 			if (node == null)
 				return null;
 
-			var foundKey = p.GetFullNodeKey(node);
+			var foundKey = p.GetNodeKey(node);
 
 			if (foundKey.Compare(key) != 0)
 				return null;
@@ -592,7 +592,7 @@ namespace Voron.Trees
 						results.Add(childTreeHeader->RootPageNumber);
 
 						// this is a multi value
-						var tree = OpenOrCreateMultiValueTree(_tx, p.GetFullNodeKey(node), node);
+						var tree = OpenOrCreateMultiValueTree(_tx, p.GetNodeKey(node), node);
 						results.AddRange(tree.AllPages());
 					}
 				}

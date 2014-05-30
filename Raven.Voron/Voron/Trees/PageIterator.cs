@@ -24,7 +24,7 @@ namespace Voron.Trees
 			var current = _page.Search(key);
 			if (current == null)
 				return false;
-			_currentKey = _page.GetFullNodeKey(current);
+			_currentKey = _page.GetNodeKey(current);
 			return this.ValidateCurrentKey(current, _page);
 		}
 
@@ -88,7 +88,7 @@ namespace Voron.Trees
 			{
 				return false;
 			}
-			_currentKey = _page.GetFullNodeKey(current);
+			_currentKey = _page.GetNodeKey(current);
 			return true;
 		}
 

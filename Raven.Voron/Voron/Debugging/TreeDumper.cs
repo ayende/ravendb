@@ -31,7 +31,7 @@ namespace Voron.Debugging
 					    for (int nodeIndex = 0; nodeIndex < currentPage.NumberOfEntries;nodeIndex++)
 					    {
 						    var node = currentPage.GetNode(nodeIndex);
-						    var key = currentPage.GetFullNodeKey(node);
+						    var key = currentPage.GetNodeKey(node);
 
 							writer.WriteLine("Node #{0}, Flags = {1}, {4} = {2}, Key = {3}, Entry Size: {5}", nodeIndex, node->Flags, node->DataSize, MaxString(key.ToString(), 25), node->Flags == NodeFlags.Data ? "Size" : "Page",
                                 SizeOf.NodeEntry(node));
@@ -108,7 +108,7 @@ digraph structs {
                                 writer.WriteLine(" ... {0:#,#} keys redacted ...", showNodesEvery - 1);
                             }
                             var node = p.GetNode(i);
-                            key = p.GetFullNodeKey(node);
+                            key = p.GetNodeKey(node);
                             writer.WriteLine("{0} - {2} {1:#,#}", MaxString(key.ToString(), 25),
                                 node->DataSize, node->Flags == NodeFlags.Data ? "Size" : "Page");
                         }
@@ -169,12 +169,12 @@ digraph structs {
             string keyStr;
             if (i == 0 && key.Size == 0)
             {
-                key = p.GetFullNodeKey(1);
+                key = p.GetNodeKey(1);
                 keyStr = "(lt " + key + ")";
             }
             else
             {
-                key = p.GetFullNodeKey(node);
+                key = p.GetNodeKey(node);
                 keyStr = key.ToString();
             }
             return MaxString(keyStr, 25);

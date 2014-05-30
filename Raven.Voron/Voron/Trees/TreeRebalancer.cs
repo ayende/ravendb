@@ -161,7 +161,8 @@ namespace Voron.Trees
             var originalFromKeyStart = GetActualKey(from, from.LastSearchPositionOrLastEntry);
 
             var fromNode = from.GetNode(from.LastSearchPosition);
-            byte* val = @from.Base + @from.KeysOffsets[@from.LastSearchPosition] + Constants.NodeHeaderSize + new PrefixedSlice(fromNode).Size;
+
+            byte* val = @from.Base + @from.KeysOffsets[@from.LastSearchPosition] + Constants.NodeHeaderSize + new Slice(fromNode).Size;
 
 			var nodeVersion = fromNode->Version; // every time new node is allocated the version is increased, but in this case we do not want to increase it
 			if (nodeVersion > 0)
@@ -226,15 +227,17 @@ namespace Voron.Trees
                 // cannot add to left implicit side, adjust by moving the left node
                 // to the right by one, then adding the new one as the left
 
+
+				//TODO arek - review this
 	            NodeHeader* actualKeyNode;
                 var implicitLeftKey = GetActualKey(to, 0, out actualKeyNode);
 	            var implicitLeftNode = to.GetNode(0);
 				var leftPageNumber = implicitLeftNode->PageNumber;
 
-	            PrefixedSlice implicitLeftPrefixedKey;
+	            Slice implicitLeftPrefixedKey;
 
 	            if (implicitLeftNode == actualKeyNode) // no need to create a prefix, just use the existing prefixed key from the node
-					implicitLeftPrefixedKey = new PrefixedSlice(actualKeyNode);
+					implicitLeftPrefixedKey = new Slice(actualKeyNode);
 				else
 					implicitLeftPrefixedKey = to.ConvertToPrefixedKey(implicitLeftKey, 1);
 	            
@@ -287,13 +290,13 @@ namespace Voron.Trees
         private Slice GetActualKey(Page page, int pos, out NodeHeader* node)
         {
             node = page.GetNode(pos);
-			var key = page.GetFullNodeKey(node);
+			var key = page.GetNodeKey(node);
 			while (key.Size == 0)
             {
                 Debug.Assert(page.IsBranch);
                 page = _tx.GetReadOnlyPage(node->PageNumber);
                 node = page.GetNode(0);
-				key = page.GetFullNodeKey(node);
+				key = page.GetNodeKey(node);
             }
 
             return key;

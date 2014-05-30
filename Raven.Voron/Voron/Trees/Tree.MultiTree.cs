@@ -92,7 +92,7 @@ namespace Voron.Trees
 			if (existingItem != null)
 			{
 				// maybe same value added twice?
-				var tmpKey = page.GetFullNodeKey(item);
+				var tmpKey = page.GetNodeKey(item);
 				if (tmpKey.Compare(value) == 0)
 					return; // already there, turning into a no-op
 				nestedPage.RemoveNode(nestedPage.LastSearchPosition);
@@ -121,7 +121,7 @@ namespace Voron.Trees
 			var tree = Create(_tx, TreeFlags.MultiValue);
 			for (int i = 0; i < nestedPage.NumberOfEntries; i++)
 			{
-				var existingValue = nestedPage.GetFullNodeKey(i);
+				var existingValue = nestedPage.GetNodeKey(i);
 				tree.DirectAdd(existingValue, 0);
 			}
 			tree.DirectAdd(value, 0, version: version);
@@ -153,11 +153,11 @@ namespace Voron.Trees
 
 				newNestedPage.ClearPrefixInfo();
 
-				PrefixedSlice nodeKey = null;
+				Slice nodeKey = null;
 				for (int i = 0; i < nestedPage.NumberOfEntries; i++)
 				{
 					var nodeHeader = nestedPage.GetNode(i);
-					nodeKey = newNestedPage.ConvertToPrefixedKey(nestedPage.GetFullNodeKey(nodeHeader), i);
+					nodeKey = newNestedPage.ConvertToPrefixedKey(nestedPage.GetNodeKey(nodeHeader), i);
 					newNestedPage.AddDataNode(i, nodeKey, 0,
 						(ushort)(nodeHeader->Version - 1)); // we dec by one because AdddataNode will inc by one, and we don't want to change those values
 				}
@@ -169,9 +169,7 @@ namespace Voron.Trees
 
 		private void MultiAddOnNewValue(Transaction tx, Slice key, Slice value, ushort? version, int maxNodeSize)
 		{
-			var prefixedValue = new PrefixedSlice(value); // first item is never prefixed
-
-			var requiredPageSize = Constants.PageHeaderSize + SizeOf.LeafEntry(-1, prefixedValue, 0) + Constants.NodeOffsetSize;
+			var requiredPageSize = Constants.PageHeaderSize + SizeOf.LeafEntry(-1, value, 0) + Constants.NodeOffsetSize;
 			if (requiredPageSize > maxNodeSize)
 			{
 				// no choice, very big value, we might as well just put it in its own tree from the get go...
@@ -199,7 +197,7 @@ namespace Voron.Trees
 
 			CheckConcurrency(key, value, version, 0, TreeActionType.Add);
 
-			nestedPage.AddDataNode(0, prefixedValue, 0, 0);
+			nestedPage.AddDataNode(0, value, 0, 0);
 		}
 
 		public void MultiDelete(Slice key, Slice value, ushort? version = null)
@@ -273,7 +271,7 @@ namespace Voron.Trees
 
 			var item = page.Search(key);
 
-			var fetchedNodeKey = page.GetFullNodeKey(item);
+			var fetchedNodeKey = page.GetNodeKey(item);
 			if (fetchedNodeKey.Compare(key) != 0)
 			{
 				throw new InvalidDataException("Was unable to retrieve the correct node. Data corruption possible");
