@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using Voron.Impl;
 using Voron.Trees;
@@ -22,6 +23,8 @@ namespace Voron
 
 	public unsafe delegate int SliceComparer(byte* a, byte* b, int size);
 
+	// TODO arek - maybe introduce Flags concept to avoid checks like if(HasPrefixHeader), if(IsPrefixed == false)
+
 	public unsafe class Slice
 	{
 		public static Slice AfterAllKeys = new Slice(SliceOptions.AfterAllKeys);
@@ -35,7 +38,6 @@ namespace Voron
 		public const byte NonPrefixedId = 0xff;
 
 		private readonly PrefixedSliceHeader* _prefixHeader;
-		private readonly byte* _prefixedBase;
 
 		public readonly ushort Size;
 		public readonly byte* NonPrefixedData;
@@ -69,13 +71,39 @@ namespace Voron
 
 		public Slice(Slice other, ushort size)
 		{
-			if (other._array != null)
-				_array = other._array;
+			if (other.HasPrefixHeader == false)
+			{
+				if (other._array != null)
+					_array = other._array;
+				else
+					NonPrefixedData = other.NonPrefixedData;
+
+				Size = size;
+			}
 			else
-				NonPrefixedData = other.NonPrefixedData;
+			{
+				if (other.IsPrefixed == false)
+				{
+					NonPrefixedData = other.NonPrefixedData;
+					Size = size;
+				}
+				else
+				{
+					Debug.Assert(other._prefix != null);
+
+					//var count = Math.Min(other.PrefixUsage + other.NonPrefixedDataSize, size); TODO arek
+
+					NonPrefixedData = (byte*)Marshal.AllocHGlobal(other.PrefixUsage + other.NonPrefixedDataSize).ToPointer(); // TODO arek - need to take into account 'size' parameter
+
+					other._prefix.Value.CopyTo(NonPrefixedData, other.PrefixUsage);
+
+					NativeMethods.memcpy(NonPrefixedData + other.PrefixUsage, other.NonPrefixedData, other.NonPrefixedDataSize);
+
+					Size = size;
+				}
+			}
 
 			Options = other.Options;
-			Size = size;
 		}
 
 		public Slice(byte[] key, ushort size)
@@ -91,10 +119,9 @@ namespace Voron
 		{
 			if (node->KeySize > 0)
 			{
-				_prefixedBase = (byte*)node + Constants.NodeHeaderSize;
-				_prefixHeader = (PrefixedSliceHeader*)_prefixedBase;
+				_prefixHeader = (PrefixedSliceHeader*)((byte*)node + Constants.NodeHeaderSize);
 
-				NonPrefixedData = _prefixedBase + Constants.PrefixedSliceHeaderSize;
+				NonPrefixedData = (byte*)_prefixHeader + Constants.PrefixedSliceHeaderSize;
 
 				Size = node->KeySize;
 			}
@@ -108,46 +135,139 @@ namespace Voron
 
 		internal static Slice WithEmptyPrefix(Slice key)
 		{
-			return new Slice(key);
+			var a = new Slice(key);
+
+			return a;
 		}
 
-		//TODO arek
+		//TODO arek - do the review of this ctor and move to the calling method
 		private Slice(Slice key)
 		{
-			_prefixedBase = (byte*)Marshal.AllocHGlobal(Constants.PrefixedSliceHeaderSize + key.Size).ToPointer();
-			_prefixHeader = (PrefixedSliceHeader*)_prefixedBase;
+			if (key.HasPrefixHeader)
+			{
+				if (key.IsPrefixed == false)
+				{
+					_prefixHeader = (PrefixedSliceHeader*) Marshal.AllocHGlobal(Constants.PrefixedSliceHeaderSize).ToPointer();
 
-			_prefixHeader->PrefixId = NonPrefixedId;
-			_prefixHeader->PrefixUsage = 0;
-			_prefixHeader->NonPrefixedDataSize = key.Size;
+					_prefixHeader->PrefixId = NonPrefixedId;
+					_prefixHeader->PrefixUsage = 0;
+					_prefixHeader->NonPrefixedDataSize = key.NonPrefixedDataSize;
 
-			NonPrefixedData = _prefixedBase + Constants.PrefixedSliceHeaderSize;
-			key.CopyTo(NonPrefixedData);
+					NonPrefixedData = key.NonPrefixedData;
 
-			Options = key.Options;
-			Size = (ushort)(Constants.PrefixedSliceHeaderSize + _prefixHeader->NonPrefixedDataSize);
+					Options = key.Options;
+					Size = (ushort) (Constants.PrefixedSliceHeaderSize + _prefixHeader->NonPrefixedDataSize);
+				}
+				else
+				{
+					Debug.Assert(key._prefix != null);
+
+					_prefixHeader = (PrefixedSliceHeader*)Marshal.AllocHGlobal(Constants.PrefixedSliceHeaderSize + key.NonPrefixedDataSize + key.PrefixUsage).ToPointer();
+
+					_prefixHeader->PrefixId = NonPrefixedId;
+					_prefixHeader->PrefixUsage = 0;
+					_prefixHeader->NonPrefixedDataSize = (ushort) (key.NonPrefixedDataSize + key.PrefixUsage);
+
+					NonPrefixedData = (byte*)_prefixHeader + Constants.PrefixedSliceHeaderSize;
+					key._prefix.Value.CopyTo(NonPrefixedData, key.PrefixUsage);
+					NativeMethods.memcpy(NonPrefixedData + key.PrefixUsage, key.NonPrefixedData, key.NonPrefixedDataSize);
+
+					Options = key.Options;
+					Size = (ushort)(Constants.PrefixedSliceHeaderSize + _prefixHeader->NonPrefixedDataSize);
+				}
+			}
+			else
+			{
+				_prefixHeader = (PrefixedSliceHeader*)Marshal.AllocHGlobal(Constants.PrefixedSliceHeaderSize + key.Size).ToPointer();
+
+				_prefixHeader->PrefixId = NonPrefixedId;
+				_prefixHeader->PrefixUsage = 0;
+				_prefixHeader->NonPrefixedDataSize = key.Size;
+
+				NonPrefixedData = (byte*)_prefixHeader + Constants.PrefixedSliceHeaderSize;
+				key.CopyTo(NonPrefixedData);
+
+				Options = key.Options;
+				Size = (ushort)(Constants.PrefixedSliceHeaderSize + _prefixHeader->NonPrefixedDataSize);
+			}
 		}
 
 		internal Slice(byte prefixId, ushort prefixUsage, Slice key)
 		{
-			var nonPrefixedSize = (ushort)(key.Size - prefixUsage);
-			_prefixedBase = (byte*)Marshal.AllocHGlobal(Constants.PrefixedSliceHeaderSize + nonPrefixedSize).ToPointer();
-			_prefixHeader = (PrefixedSliceHeader*)_prefixedBase;
+			if (key.HasPrefixHeader == false)
+			{
+				var nonPrefixedSize = (ushort) (key.Size - prefixUsage);
+				_prefixHeader = (PrefixedSliceHeader*) Marshal.AllocHGlobal(Constants.PrefixedSliceHeaderSize + nonPrefixedSize).ToPointer();
 
-			_prefixHeader->PrefixId = prefixId;
-			_prefixHeader->PrefixUsage = prefixUsage;
-			_prefixHeader->NonPrefixedDataSize = nonPrefixedSize;
+				_prefixHeader->PrefixId = prefixId;
+				_prefixHeader->PrefixUsage = prefixUsage;
+				_prefixHeader->NonPrefixedDataSize = nonPrefixedSize;
 
-			NonPrefixedData = _prefixedBase + Constants.PrefixedSliceHeaderSize;
-			key.CopyTo(prefixUsage, NonPrefixedData, 0, _prefixHeader->NonPrefixedDataSize);
+				NonPrefixedData = (byte*)_prefixHeader + Constants.PrefixedSliceHeaderSize;
+				key.CopyTo(prefixUsage, NonPrefixedData, 0, _prefixHeader->NonPrefixedDataSize);
 
-			Options = key.Options;
-			Size = (ushort)(Constants.PrefixedSliceHeaderSize + _prefixHeader->NonPrefixedDataSize);
+				Options = key.Options;
+				Size = (ushort) (Constants.PrefixedSliceHeaderSize + _prefixHeader->NonPrefixedDataSize);
+			}
+			else
+			{
+				if (key.IsPrefixed)
+				{
+					Debug.Assert(key._prefix != null);
+
+					var nonPrefixedSize = (ushort)(key.PrefixUsage + key.NonPrefixedDataSize - prefixUsage);
+					_prefixHeader = (PrefixedSliceHeader*) Marshal.AllocHGlobal(Constants.PrefixedSliceHeaderSize).ToPointer();
+
+					_prefixHeader->PrefixId = prefixId;
+					_prefixHeader->PrefixUsage = prefixUsage;
+					_prefixHeader->NonPrefixedDataSize = nonPrefixedSize;
+
+					if (prefixUsage == key.PrefixUsage)
+					{
+						NonPrefixedData = key.NonPrefixedData;
+					}
+					else if (prefixUsage > key.PrefixUsage)
+					{
+						NonPrefixedData = key.NonPrefixedData + (prefixUsage - key.PrefixUsage);
+					}
+					else
+					{
+						NonPrefixedData = (byte*) Marshal.AllocHGlobal(nonPrefixedSize).ToPointer();
+
+						var prefixPart = key.PrefixUsage - prefixUsage;
+
+						key._prefix.Value.CopyTo(prefixUsage, NonPrefixedData, 0, prefixPart);
+						NativeMethods.memcpy(NonPrefixedData + prefixPart, key.NonPrefixedData, nonPrefixedSize - prefixPart);
+					}
+
+					Options = key.Options;
+					Size = (ushort)(Constants.PrefixedSliceHeaderSize + _prefixHeader->NonPrefixedDataSize);
+				}
+				else
+				{
+					var nonPrefixedSize = (ushort)(key.NonPrefixedDataSize - prefixUsage);
+					_prefixHeader = (PrefixedSliceHeader*) Marshal.AllocHGlobal(Constants.PrefixedSliceHeaderSize).ToPointer();
+
+					_prefixHeader->PrefixId = prefixId;
+					_prefixHeader->PrefixUsage = prefixUsage;
+					_prefixHeader->NonPrefixedDataSize = nonPrefixedSize;
+
+					NonPrefixedData = key.NonPrefixedData + prefixUsage;
+
+					Options = key.Options;
+					Size = (ushort)(Constants.PrefixedSliceHeaderSize + _prefixHeader->NonPrefixedDataSize);
+				}
+			}
+		}
+
+		public bool HasPrefixHeader
+		{
+			get { return _prefixHeader != null; }
 		}
 
 		public bool IsPrefixed
 		{
-			get { return _prefixHeader != null; }
+			get { return PrefixId != NonPrefixedId; }
 		}
 
 		internal byte PrefixId
@@ -230,7 +350,7 @@ namespace Voron
 			if (Options != SliceOptions.Key)
 				return Options.ToString();
 
-			if (IsPrefixed == false)
+			if (HasPrefixHeader == false)
 			{
 				if (_array != null)
 					return Encoding.UTF8.GetString(_array, 0, Size);
@@ -241,7 +361,7 @@ namespace Voron
 			if (_prefix != null)
 				return _prefix.Value + new string((sbyte*) NonPrefixedData, 0, NonPrefixedDataSize, Encoding.UTF8);
 
-			if (PrefixId == NonPrefixedId)
+			if (IsPrefixed == false)
 				return new string((sbyte*) NonPrefixedData, 0, NonPrefixedDataSize, Encoding.UTF8);
 
 			return string.Format("prefix_id: {0} [usage: {1}], non_prefixed: {2}", PrefixId, PrefixUsage, new string((sbyte*)NonPrefixedData, 0, NonPrefixedDataSize, Encoding.UTF8));
@@ -257,8 +377,8 @@ namespace Voron
 			Debug.Assert(Options == SliceOptions.Key);
 			Debug.Assert(other.Options == SliceOptions.Key);
 
-			var keySize = IsPrefixed ? Size - Constants.PrefixedSliceHeaderSize + PrefixUsage : Size;
-			var otherKeySize = other.IsPrefixed ? other.Size - Constants.PrefixedSliceHeaderSize + other.PrefixUsage : other.Size;
+			var keySize = HasPrefixHeader ? Size - Constants.PrefixedSliceHeaderSize + PrefixUsage : Size;
+			var otherKeySize = other.HasPrefixHeader ? other.Size - Constants.PrefixedSliceHeaderSize + other.PrefixUsage : other.Size;
 
 			var r = CompareData(other, NativeMethods.memcmp, (ushort) Math.Min(keySize, otherKeySize));
 			if (r != 0)
@@ -293,29 +413,30 @@ namespace Voron
 
 		private int ComparePrefixWithNonPrefixedData(Slice other, SliceComparer cmp, int prefixOffset, int count)
 		{
-			Debug.Assert(IsPrefixed);
+			Debug.Assert(HasPrefixHeader);
 
 			if (count == 0)
 				return 0;
 
-			return cmp(_prefix.ValuePtr + prefixOffset, other.NonPrefixedData, count);
+			fixed (byte* ptr = other._array)
+				return cmp(_prefix.ValuePtr + prefixOffset, other._array != null ? ptr : other.NonPrefixedData, count);
 		}
 
-		private int CompareNonPrefixedData(Slice other, SliceComparer cmp, int nonPrefixedDataOffset, int count)
+		private int CompareNonPrefixedData(int offset, Slice other, int otherOffset, SliceComparer cmp, int count)
 		{
 			if (count == 0)
 				return 0;
 
 			if(other._prefixHeader != null)
-				return cmp(NonPrefixedData + nonPrefixedDataOffset, other.NonPrefixedData, count);
+				return cmp(NonPrefixedData + offset, other.NonPrefixedData + otherOffset, count);
 
 			fixed (byte* ptr = other._array)
-				return cmp(NonPrefixedData + nonPrefixedDataOffset, ptr, count);
+				return cmp(NonPrefixedData + offset, (other._array != null ? ptr : other.NonPrefixedData) + otherOffset, count);
 		}
 
 		private int CompareData(Slice other, SliceComparer cmp, ushort size)
 		{
-			if (IsPrefixed == false && other.IsPrefixed == false)
+			if (HasPrefixHeader == false && other.HasPrefixHeader == false)
 			{
 				fixed (byte* a = _array)
 				{
@@ -326,7 +447,7 @@ namespace Voron
 				}
 			}
 
-			if (IsPrefixed && other.IsPrefixed)
+			if (HasPrefixHeader && other.HasPrefixHeader)
 			{
 				// compare prefixes
 				var comparedPrefixBytes = Math.Min(PrefixUsage, other.PrefixUsage);
@@ -351,7 +472,7 @@ namespace Voron
 
 					size -= (ushort) remainingPrefix;
 					 //TODO arek review Min(Min) - isn't size enough
-					r = other.CompareNonPrefixedData(this, cmp, remainingPrefix, Math.Min(Math.Min(other.NonPrefixedDataSize - remainingPrefix, NonPrefixedDataSize), size));
+					r = other.CompareNonPrefixedData(remainingPrefix, this, 0, cmp, Math.Min(Math.Min(other.NonPrefixedDataSize - remainingPrefix, NonPrefixedDataSize), size));
 
 					return r * -1;
 				}
@@ -369,23 +490,23 @@ namespace Voron
 
 					size -= (ushort)remainingPrefix;
 					//TODO arek review Min(Min) - isn't size enough
-					r = CompareNonPrefixedData(other, cmp, remainingPrefix, Math.Min(Math.Min(NonPrefixedDataSize - remainingPrefix, other.NonPrefixedDataSize), size));
+					r = CompareNonPrefixedData(remainingPrefix, other, 0, cmp, Math.Min(Math.Min(NonPrefixedDataSize - remainingPrefix, other.NonPrefixedDataSize), size));
 
 					return r;
 				}
 
 				// both prefixes were equal, now compare non prefixed data
 
-				r = CompareNonPrefixedData(other, cmp, 0, size);
+				r = CompareNonPrefixedData(0, other, 0, cmp, size);
 
 				return r;
 			}
 
-			if (IsPrefixed == false && other.IsPrefixed)
+			if (HasPrefixHeader == false && other.HasPrefixHeader)
 			{
 				var prefixLength = Math.Min(other.PrefixUsage, size);
 
-				var r = other.ComparePrefixWithNonPrefixedData(other, cmp, 0, prefixLength);
+				var r = other.ComparePrefixWithNonPrefixedData(this, cmp, 0, prefixLength);
 
 				if (r != 0)
 					return r * -1;
@@ -394,16 +515,16 @@ namespace Voron
 
 				size -= prefixLength;
 
-				r = other.CompareNonPrefixedData(this, cmp, prefixLength, size);
+				r = other.CompareNonPrefixedData(0, this, prefixLength, cmp, size); // TODO arek - last check
 
 				return r * -1;
 			}
 
-			if (IsPrefixed && other.IsPrefixed == false)
+			if (HasPrefixHeader && other.HasPrefixHeader == false)
 			{
 				var prefixLength = Math.Min(PrefixUsage, size);
 
-				var r = ComparePrefixWithNonPrefixedData(this, cmp, 0, prefixLength);
+				var r = ComparePrefixWithNonPrefixedData(other, cmp, 0, prefixLength);
 
 				if (r != 0)
 					return r;
@@ -412,63 +533,60 @@ namespace Voron
 
 				size -= prefixLength;
 
-				r = CompareNonPrefixedData(other, cmp, prefixLength, size);
+				r = CompareNonPrefixedData(0, other, prefixLength, cmp, size);
 
 				return r;
 			}
 
-			throw new NotImplementedException();
+			throw new NotSupportedException();
 		}
 
-		private class SlicePrefixMatcher
+		private class SlicePrefixMatcher : IDisposable
 		{
 			private readonly int _maxPrefixLength;
 
 			public SlicePrefixMatcher(int maxPrefixLength)
 			{
 				_maxPrefixLength = maxPrefixLength;
+				MatchedBytes = 0;
 			}
 
 			public int MatchedBytes { get; private set; }
 
 			public int MatchPrefix(byte* a, byte* b, int size)
 			{
-				MatchedBytes = 0;
-
 				for (var i = 0; i < Math.Min(_maxPrefixLength, size); i++)
 				{
-					try
-					{
-						if (*a == *b)
-							MatchedBytes++;
-						else
-							break;
-					}
-					catch (Exception e)
-					{
-						Console.WriteLine(e);
-					}
+					if (*a == *b)
+						MatchedBytes++;
+					else
+						break;
 
 					a++;
 					b++;
 				}
 
 				return 0;
-			} 
+			}
+
+			public void Dispose()
+			{
+			}
 		}
 
 		public int FindPrefixSize(Slice other)
 		{
-			var keySize = IsPrefixed ? Size - Constants.PrefixedSliceHeaderSize + PrefixUsage : Size;
-			var otherKeySize = other.IsPrefixed ? other.Size - Constants.PrefixedSliceHeaderSize + other.PrefixUsage : other.Size;
+			var keySize = HasPrefixHeader ? Size - Constants.PrefixedSliceHeaderSize + PrefixUsage : Size;
+			var otherKeySize = other.HasPrefixHeader ? other.Size - Constants.PrefixedSliceHeaderSize + other.PrefixUsage : other.Size;
 
 			// TODO arek - 
 
-			var slicePrefixMatcher = new SlicePrefixMatcher(Math.Min(keySize, otherKeySize));
+			using (var slicePrefixMatcher = new SlicePrefixMatcher(Math.Min(keySize, otherKeySize)))
+			{
+				CompareData(other, slicePrefixMatcher.MatchPrefix, (ushort) Math.Min(keySize, otherKeySize));
 
-			CompareData(other, slicePrefixMatcher.MatchPrefix, (ushort) Math.Min(keySize, otherKeySize));
-
-			return slicePrefixMatcher.MatchedBytes;
+				return slicePrefixMatcher.MatchedBytes;
+			}
 		}
 
 		public static implicit operator Slice(string s)
@@ -476,29 +594,32 @@ namespace Voron
 			return new Slice(Encoding.UTF8.GetBytes(s));
 		}
 
-		public void CopyTo(byte* dest)
+		public void CopyTo(byte* dest, int? count = null)
 		{
-			if (IsPrefixed == false)
+			if (HasPrefixHeader == false)
 			{
 				if (_array == null)
 				{
-					NativeMethods.memcpy(dest, NonPrefixedData, Size);
+					NativeMethods.memcpy(dest, NonPrefixedData, count ?? Size);
 					return;
 				}
 				fixed (byte* a = _array)
 				{
-					NativeMethods.memcpy(dest, a, Size);
+					NativeMethods.memcpy(dest, a, count ?? Size);
 				}
 			}
 			else
 			{
-					NativeMethods.memcpy(dest, _prefixedBase, Size);
+				Debug.Assert(count == null); // TODO arek - temp assertion
+
+				NativeMethods.memcpy(dest, (byte*) _prefixHeader, Constants.PrefixedSliceHeaderSize);
+				NativeMethods.memcpy(dest + Constants.PrefixedSliceHeaderSize, NonPrefixedData, NonPrefixedDataSize);
 			}
 		}
 
 		public void CopyTo(byte[] dest)
 		{
-			if (IsPrefixed == false)
+			if (HasPrefixHeader == false)
 			{
 				if (_array == null)
 				{
@@ -511,7 +632,7 @@ namespace Voron
 			else
 			{
 				// TODO arek
-				throw new NotImplementedException();
+				throw new NotImplementedException("TODO arek");
 			}
 		}
 
@@ -536,14 +657,22 @@ namespace Voron
 			if (from + count > Size)
 				throw new ArgumentOutOfRangeException("from", "Cannot copy data after the end of the slice");
 
-			if (_array == null)
+			if (HasPrefixHeader == false)
 			{
-				NativeMethods.memcpy(dest + offset, NonPrefixedData + from, count);
-				return;
-			}
+				if (_array == null)
+				{
+					NativeMethods.memcpy(dest + offset, NonPrefixedData + from, count);
+					return;
+				}
 
-			fixed (byte* p = _array)
-				NativeMethods.memcpy(dest + offset, p + from, count);
+				fixed (byte* p = _array)
+					NativeMethods.memcpy(dest + offset, p + from, count);
+			}
+			else
+			{
+				// TODO arek
+				throw new NotImplementedException("TODO arek");
+			}
 		}
 
 		public Slice Clone()

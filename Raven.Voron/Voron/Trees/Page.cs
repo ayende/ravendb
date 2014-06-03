@@ -344,11 +344,11 @@ namespace Voron.Trees
 			return false;
 	    }
 
-		private bool TryCreateNewPrefix(Slice key, int nodeIndex, out Slice Slice)
+		private bool TryCreateNewPrefix(Slice key, int nodeIndex, out Slice prefixedSlice)
 		{
 			if (NextPrefixId >= PrefixCount || NumberOfEntries == 0)
 			{
-				Slice = null;
+				prefixedSlice = null;
 				return false;
 			}
 
@@ -386,7 +386,7 @@ namespace Voron.Trees
 
 			if (leftLength > minPrefixLength && leftLength > rightLength)
 			{
-				Slice = new Slice(NextPrefixId, leftLength, key)
+				prefixedSlice = new Slice(NextPrefixId, leftLength, key)
 				{
 					NewPrefix = new Slice(left, leftLength)
 				};
@@ -396,7 +396,7 @@ namespace Voron.Trees
 
 			if (rightLength > minPrefixLength && rightLength > leftLength)
 			{
-				Slice = new Slice(NextPrefixId, rightLength, key)
+				prefixedSlice = new Slice(NextPrefixId, rightLength, key)
 				{
 					NewPrefix = new Slice(right, rightLength)
 				};
@@ -404,7 +404,7 @@ namespace Voron.Trees
 				return true;
 			}
 
-			Slice = null;
+			prefixedSlice = null;
 			return false;
 		}
 
