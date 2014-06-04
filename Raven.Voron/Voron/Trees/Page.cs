@@ -633,32 +633,6 @@ namespace Voron.Trees
             get { return GetNodeKey(i).ToString(); }
         }
 
-		//public Slice GetFullNodeKey(NodeHeader* node)
-		//{
-		//	if (node->KeySize == 0)
-		//		return Slice.Empty;
-
-		//	var Slice = new Slice(node);
-
-		//	if (Slice.PrefixUsage > 0)
-		//	{
-		//		Debug.Assert(Slice.PrefixId < PrefixCount);
-
-		//		var prefixNode = GetPrefixNode(Slice.PrefixId);
-
-		//		var key = new byte[Slice.PrefixUsage + Slice.NonPrefixedDataSize];
-
-		//		prefixNode.Value.CopyTo(0, key, 0, Slice.PrefixUsage);
-
-		//		fixed (byte* ptr1 = key)
-		//			NativeMethods.memcpy(ptr1 + Slice.PrefixUsage, Slice.NonPrefixedData, Slice.NonPrefixedDataSize);
-
-		//		return new Slice(key);
-		//	}
-
-		//	return new Slice(Slice.NonPrefixedData, Slice.NonPrefixedDataSize);
-		//}
-
 	    public Slice GetNodeKey(NodeHeader* node)
 	    {
 			if (node->KeySize == 0)
@@ -688,13 +662,6 @@ namespace Voron.Trees
 
 			return GetNodeKey(node);
 	    }
-
-		//public Slice GetFullNodeKey(int nodeNumber)
-		//{
-		//	var node = GetNode(nodeNumber);
-
-		//	return GetFullNodeKey(node);
-		//}
 
 	    public string DebugView()
 	    {

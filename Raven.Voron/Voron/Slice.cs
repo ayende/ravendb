@@ -24,7 +24,7 @@ namespace Voron
 	public unsafe delegate int SliceComparer(byte* a, byte* b, int size);
 
 	// TODO arek - maybe introduce Flags concept to avoid checks like if(HasPrefixHeader), if(IsPrefixed == false)
-
+	// TODO arek - remember about calling Marshal.FreeHGlobal
 	public unsafe class Slice
 	{
 		public static Slice AfterAllKeys = new Slice(SliceOptions.AfterAllKeys);
@@ -359,7 +359,7 @@ namespace Voron
 			}
 
 			if (_prefix != null)
-				return _prefix.Value + new string((sbyte*) NonPrefixedData, 0, NonPrefixedDataSize, Encoding.UTF8);
+				return new Slice(_prefix.Value, PrefixUsage) + new string((sbyte*) NonPrefixedData, 0, NonPrefixedDataSize, Encoding.UTF8);
 
 			if (IsPrefixed == false)
 				return new string((sbyte*) NonPrefixedData, 0, NonPrefixedDataSize, Encoding.UTF8);
@@ -677,6 +677,8 @@ namespace Voron
 
 		public Slice Clone()
 		{
+			Debug.Assert(HasPrefixHeader == false);
+
 			var buffer = new byte[Size];
 			if (_array == null)
 			{
@@ -694,10 +696,30 @@ namespace Voron
 
 	    public ValueReader CreateReader()
 	    {
-            if(_array != null)
-                return new ValueReader(_array, Size);
+		    if (HasPrefixHeader == false)
+		    {
+			    if (_array != null)
+				    return new ValueReader(_array, Size);
 
-	        return new ValueReader(NonPrefixedData, Size);
+			    return new ValueReader(NonPrefixedData, Size);
+		    }
+
+		    if (IsPrefixed)
+		    {
+				Debug.Assert(_prefix != null);
+
+			    var key = new byte[PrefixUsage + NonPrefixedDataSize];
+
+			    fixed (byte* p = key)
+			    { // TODO arek - fix it
+				    NativeMethods.memcpy(p, _prefix.ValuePtr, PrefixUsage);
+				    NativeMethods.memcpy(p + PrefixUsage, NonPrefixedData, NonPrefixedDataSize);
+			    }
+
+				return new ValueReader(key, key.Length);
+		    }
+
+			return new ValueReader(NonPrefixedData, NonPrefixedDataSize);
 	    }
 	}
 }

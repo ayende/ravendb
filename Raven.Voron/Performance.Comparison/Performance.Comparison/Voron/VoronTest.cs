@@ -95,12 +95,19 @@ namespace Performance.Comparison.Voron
         {
             NewStorage();
 
-	        var storageEnvironmentOptions = StorageEnvironmentOptions.ForPath(dataPath);
-	        using (var env = new StorageEnvironment(storageEnvironmentOptions))
+			var options = StorageEnvironmentOptions.ForPath(dataPath);
+			options.ManualFlushing = true;
+	        using (var env = new StorageEnvironment(options))
             {
                 var enumerator = data.GetEnumerator();
                 //return WriteInternal(operation, itemsPerTransaction, numberOfTransactions, perfTracker, env, enumerator);
-                return WriteInternalBatch(operation, enumerator, itemsPerTransaction, numberOfTransactions, perfTracker, env);
+                var a = WriteInternalBatch(operation, enumerator, itemsPerTransaction, numberOfTransactions, perfTracker, env);
+
+				env.FlushLogToDataFile();
+
+				Console.WriteLine("Size used: " + env.Stats().UsedDataFileSizeInBytes / 1024 / 1024 + "MB");
+
+	            return a;
             }
         }
 
@@ -143,7 +150,7 @@ namespace Performance.Comparison.Voron
 
                         valueToWrite = GetValueToWrite(valueToWrite, enumerator.Current.ValueSize);
                         v += valueToWrite.Length;
-                        batch.Add(enumerator.Current.Id.ToString("0000000000000000"), new MemoryStream(valueToWrite), "Root");
+						batch.Add(enumerator.Current.Id.ToString("0000000000000000"), new MemoryStream(valueToWrite), "Root");
                     }
 
                     env.Writer.Write(batch);
@@ -187,7 +194,7 @@ namespace Performance.Comparison.Voron
 
                         valueToWrite = GetValueToWrite(valueToWrite, enumerator.Current.ValueSize);
 
-                        tx.State.Root.Add(tx, enumerator.Current.Id.ToString("0000000000000000"), new MemoryStream(valueToWrite));
+						tx.State.Root.Add("largeprefix/" + enumerator.Current.Id.ToString("0000000000000000"), new MemoryStream(valueToWrite));
                     }
 
                     tx.Commit();
@@ -257,8 +264,8 @@ namespace Performance.Comparison.Voron
                 long v = 0;
                 foreach (var id in ids)
                 {
-                    var key = id.ToString("0000000000000000");
-                    var readResult = tx.State.Root.Read(tx, key);
+					var key = "largeprefix/" + id.ToString("0000000000000000");
+                    var readResult = tx.State.Root.Read(key);
                     int reads = 0;
                     while ((reads = readResult.Reader.Read(ms, 0, ms.Length)) > 0)
                     {
