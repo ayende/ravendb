@@ -92,21 +92,23 @@ namespace Voron.Trees
 			if (existingItem != null)
 			{
 				// maybe same value added twice?
-				var tmpKey = new Slice(item);
+				var tmpKey = page.GetNodeKey(item);
 				if (tmpKey.Compare(value) == 0)
 					return; // already there, turning into a no-op
 				nestedPage.RemoveNode(nestedPage.LastSearchPosition);
 			}
 
-			if (nestedPage.HasSpaceFor(_tx, value, 0))
+			var prefixedValue = nestedPage.ConvertToPrefixedKey(value, nestedPage.LastSearchPosition);
+
+			if (nestedPage.HasSpaceFor(_tx, prefixedValue, 0))
 			{
 				// we are now working on top of the modified root page, we can just modify the memory directly
-				nestedPage.AddDataNode(nestedPage.LastSearchPosition, value, 0, previousNodeRevision);
+				nestedPage.AddDataNode(nestedPage.LastSearchPosition, prefixedValue, 0, previousNodeRevision);
 				return;
 			}
 
 			int pageSize = nestedPage.CalcSizeUsed() + Constants.PageHeaderSize;
-			var newRequiredSize = pageSize + nestedPage.GetRequiredSpace(value, 0);
+			var newRequiredSize = pageSize + nestedPage.GetRequiredSpace(prefixedValue, 0);
 			if (newRequiredSize <= maxNodeSize)
 			{
 				// we can just expand the current value... no need to create a nested tree yet
@@ -149,17 +151,19 @@ namespace Voron.Trees
 					PageNumber = -1L // mark as invalid page number
 				};
 
-				Slice nodeKey = new Slice(SliceOptions.Key);
+				newNestedPage.ClearPrefixInfo();
+
+				Slice nodeKey = null;
 				for (int i = 0; i < nestedPage.NumberOfEntries; i++)
 				{
 					var nodeHeader = nestedPage.GetNode(i);
-					nodeKey.Set(nodeHeader);
+					nodeKey = newNestedPage.ConvertToPrefixedKey(nestedPage.GetNodeKey(nodeHeader), i);
 					newNestedPage.AddDataNode(i, nodeKey, 0,
 						(ushort)(nodeHeader->Version - 1)); // we dec by one because AdddataNode will inc by one, and we don't want to change those values
 				}
 
 				newNestedPage.Search(value);
-				newNestedPage.AddDataNode(newNestedPage.LastSearchPosition, value, 0, 0);
+				newNestedPage.AddDataNode(newNestedPage.LastSearchPosition, newNestedPage.ConvertToPrefixedKey(value, newNestedPage.LastSearchPosition), 0, 0);
 			}
 		}
 
@@ -193,7 +197,7 @@ namespace Voron.Trees
 
 			CheckConcurrency(key, value, version, 0, TreeActionType.Add);
 
-			nestedPage.AddDataNode(0, value, 0, 0);
+			nestedPage.AddDataNode(0, nestedPage.ConvertToPrefixedKey(value, 0), 0, 0);
 		}
 
 		public void MultiDelete(Slice key, Slice value, ushort? version = null)
@@ -267,7 +271,7 @@ namespace Voron.Trees
 
 			var item = page.Search(key);
 
-			var fetchedNodeKey = new Slice(item);
+			var fetchedNodeKey = page.GetNodeKey(item);
 			if (fetchedNodeKey.Compare(key) != 0)
 			{
 				throw new InvalidDataException("Was unable to retrieve the correct node. Data corruption possible");
@@ -323,7 +327,7 @@ namespace Voron.Trees
 							updatedNode->Flags = requestedNodeType;
 
 							{
-								pos = (byte*)updatedNode + Constants.NodeHeaderSize + key.Size;
+								pos = (byte*)updatedNode + Constants.NodeHeaderSize + updatedNode->KeySize;
 								return true;
 							}
 						}

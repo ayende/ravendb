@@ -163,7 +163,7 @@ namespace Voron.Trees
 			{
 				var node = page.GetNode(page.LastSearchPosition);
 
-				Debug.Assert(node->KeySize == key.Size && new Slice(node).Equals(key));
+				Debug.Assert(page.GetNodeKey(node).Equals(key));
 
 				shouldGoToOverflowPage = _tx.DataPager.ShouldGoToOverflowPage(len);
 
@@ -200,12 +200,14 @@ namespace Voron.Trees
 				nodeType = NodeFlags.PageRef;
 			}
 
+			var prefixedKey = page.ConvertToPrefixedKey(key, lastSearchPosition);
+
 			byte* dataPos;
-			if (page.HasSpaceFor(_tx, key, len) == false)
+			if (page.HasSpaceFor(_tx, prefixedKey, len) == false)
 			{
 			    var cursor = lazy.Value;
 			    cursor.Update(cursor.Pages.First, page);
-
+			    
 				var pageSplitter = new PageSplitter(_tx, this, key, len, pageNumber, nodeType, nodeVersion, cursor, State);
 			    dataPos = pageSplitter.Execute();
 
@@ -216,13 +218,13 @@ namespace Voron.Trees
 				switch (nodeType)
 				{
 					case NodeFlags.PageRef:
-						dataPos = page.AddPageRefNode(lastSearchPosition, key, pageNumber);
+						dataPos = page.AddPageRefNode(lastSearchPosition, prefixedKey, pageNumber);
 						break;
 					case NodeFlags.Data:
-						dataPos = page.AddDataNode(lastSearchPosition, key, len, nodeVersion);
+						dataPos = page.AddDataNode(lastSearchPosition, prefixedKey, len, nodeVersion);
 						break;
 					case NodeFlags.MultiValuePageRef:
-						dataPos = page.AddMultiValueNode(lastSearchPosition, key, len, nodeVersion);
+						dataPos = page.AddMultiValueNode(lastSearchPosition, prefixedKey, len, nodeVersion);
 						break;
 					default:
 						throw new NotSupportedException("Unknown node type for direct add operation: " + nodeType);
@@ -518,7 +520,7 @@ namespace Voron.Trees
 			var p = FindPageFor(key, out lazy);
 			var node = p.Search(key);
 
-			if (node == null || new Slice(node).Compare(key) != 0)
+			if (node == null || p.GetNodeKey(node).Compare(key) != 0)
 				return -1;
 
 		    return NodeHeader.GetDataSize(_tx, node);
@@ -530,7 +532,7 @@ namespace Voron.Trees
 			var p = FindPageFor(key, out lazy);
 			var node = p.Search(key);
 
-			if (node == null || new Slice(node).Compare(key) != 0)
+			if (node == null || p.GetNodeKey(node).Compare(key) != 0)
 				return 0;
 
 			return node->Version;
@@ -540,14 +542,14 @@ namespace Voron.Trees
 		{
 			Lazy<Cursor> lazy;
 			var p = FindPageFor(key, out lazy);
-			var node = p.Search(key);
+			var node = p.Search(key); // TODO arek - change to p.getNode(p.lastsearchposition)
 
 			if (node == null)
 				return null;
 
-			var item1 = new Slice(node);
+			var foundKey = p.GetNodeKey(node);
 
-			if (item1.Compare(key) != 0)
+			if (foundKey.Compare(key) != 0)
 				return null;
 
 			if (node->Flags == (NodeFlags.PageRef))
@@ -592,7 +594,7 @@ namespace Voron.Trees
 						results.Add(childTreeHeader->RootPageNumber);
 
 						// this is a multi value
-						var tree = OpenOrCreateMultiValueTree(_tx, new Slice(node), node);
+						var tree = OpenOrCreateMultiValueTree(_tx, p.GetNodeKey(node), node);
 						results.AddRange(tree.AllPages());
 					}
 				}
@@ -604,6 +606,7 @@ namespace Voron.Trees
 		{
 			return Name + " " + State.EntriesCount;
 		}
+
 
 		private void CheckConcurrency(Slice key, ushort? expectedVersion, ushort nodeVersion, TreeActionType actionType)
 		{

@@ -68,5 +68,20 @@ namespace Voron.Impl
 
             return sz;
         }
+
+		public static int NewPrefix(Slice key)
+		{
+			// this method is needed to take into account the size of a new prefix that will be written to the page
+
+			if (key.NewPrefix != null)
+			{
+				var size = Constants.PrefixNodeHeaderSize + key.NewPrefix.Size;
+				size += size & 1;
+				
+				return size;
+			}
+
+			return 0;
+		}
 	}
 }

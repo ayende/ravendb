@@ -352,7 +352,7 @@ namespace Voron.Tests
 					fetchedDataIterator.Seek(Slice.BeforeAllKeys);
 					do
 					{
-						Assert.Equal(inputDataSize, fetchedDataIterator.CurrentKey.Size);
+						Assert.True(fetchedDataIterator.CurrentKey.Size <= inputDataSize + Constants.PrefixedSliceHeaderSize && fetchedDataIterator.CurrentKey.Size > 0);
 
 						var value = fetchedDataIterator.CurrentKey.ToString();
 						Assert.True(inputData.Contains(value));

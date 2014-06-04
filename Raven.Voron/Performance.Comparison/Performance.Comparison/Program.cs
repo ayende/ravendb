@@ -22,11 +22,11 @@ namespace Performance.Comparison
             var buffer = new byte[87 * 1024];
             random.NextBytes(buffer);
 
-            var path = @"c:\work\temp\";
+            var path = @"c:\work\temp-2268\";
 
             writer = new StreamWriter("output.txt", false) { AutoFlush = true };
 
-            var sequentialIds = InitSequentialNumbers(Constants.WriteTransactions * Constants.ItemsPerTransaction, minValueSize: 128, maxValueSize: 128);
+            var sequentialIds = InitSequentialNumbers(Constants.WriteTransactions * Constants.ItemsPerTransaction, minValueSize: 0, maxValueSize: 0);
             var randomIds = InitRandomNumbers(Constants.WriteTransactions * Constants.ItemsPerTransaction, minValueSize: 128, maxValueSize: 128);
 
             var sequentialIdsLarge = InitSequentialNumbers(Constants.WriteTransactions * Constants.ItemsPerTransaction, minValueSize: 512, maxValueSize: 87 * 1024);
@@ -39,7 +39,7 @@ namespace Performance.Comparison
                     //new SqlLiteTest(path, buffer),
                     //new SqlCeTest(path, buffer),
                     //new LmdbTest(path, buffer),
-                    new EsentTest(path, buffer),
+                    //new EsentTest(path, buffer),
                     //new FdbTest(buffer),
 					new VoronTest(path, buffer)
 				};
@@ -63,6 +63,8 @@ namespace Performance.Comparison
                 bytes = performanceRecords.Sum(x => x.Bytes);
                 OutputResults("Write Seq", items, totalDuration, bytes, perfTracker);
                 WritePerfData("WriteSeq", test, performanceRecords);
+
+				return;
 
                 performanceRecords = test.WriteParallelSequential(sequentialIds, perfTracker, 2, out totalDuration);
                 items = performanceRecords.Sum(x => x.ProcessedItems);
