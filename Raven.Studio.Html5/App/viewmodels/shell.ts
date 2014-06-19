@@ -81,6 +81,7 @@ class shell extends viewModelBase {
     static globalChangesApi: changesApi;
     static currentDbChangesApi = ko.observable<changesApi>(null);
     static currentFsChangesApi = ko.observable<changesApi>(null);
+    static currentCsChangesApi = ko.observable<changesApi>(null);
 
     constructor() {
         super();
@@ -105,6 +106,7 @@ class shell extends viewModelBase {
         dynamicHeightBindingHandler.install();
         autoCompleteBindingHandler.install();
         shell.globalChangesApi = new changesApi(appUrl.getSystemDatabase());
+        shell.globalChangesApi.connect();
 
         this.isDatabaseDisabled = ko.computed(() => {
             var activeDb = this.activeDatabase();
@@ -245,7 +247,7 @@ class shell extends viewModelBase {
                 getSystemDocumentTask.done((dto: databaseDocumentDto) => {
                     var existingResource = observableResourceArray.first((rs: resource) => rs.name == receivedResourceName);
 
-                    if (existingResource == null) {
+                    if (existingResource == null) { // new database
                         var newResource = this.createNewResource(typeHash, receivedResourceName, dto);
                         observableResourceArray.unshift(newResource);
                     } else {
@@ -470,13 +472,16 @@ class shell extends viewModelBase {
                 shell.currentDbChangesApi().dispose();
             }
 
-            shell.currentDbChangesApi(new changesApi(db, 5000));
+            shell.currentDbChangesApi(new changesApi(db));
 
-            shell.currentDbChangesApi().watchAllDocs(() => shell.fetchDbStats(db));
-            shell.currentDbChangesApi().watchAllIndexes(() => shell.fetchDbStats(db));
-            shell.currentDbChangesApi().watchBulks(() => shell.fetchDbStats(db));
+            var connectWebSocketTask: JQueryPromise<any> = shell.currentDbChangesApi().connect(5000);
+            connectWebSocketTask.done(() => {
+                shell.currentDbChangesApi().watchAllDocs(() => shell.fetchDbStats(db));
+                shell.currentDbChangesApi().watchAllIndexes(() => shell.fetchDbStats(db));
+                shell.currentDbChangesApi().watchBulks(() => shell.fetchDbStats(db));
 
-            this.currentConnectedDatabase = db;
+                this.currentConnectedDatabase = db;
+            });
         }
     }
 
@@ -485,22 +490,33 @@ class shell extends viewModelBase {
             if (shell.currentFsChangesApi()) {
                 shell.currentFsChangesApi().dispose();
             }
+
             shell.currentFsChangesApi(new changesApi(fs));
 
-            this.currentConnectedFileSystem = fs;
+            var connectWebSocketTask: JQueryPromise<any> = shell.currentDbChangesApi().connect(5000);
+            connectWebSocketTask.done(() => {
+                
+                this.currentConnectedFileSystem = fs;
+            });
+            
         }
     }
 
     private updateCsChangesApi(cs: counterStorage) {
         //TODO: enable changes api for counter storages, server side
-/*        if (!cs.disabled() && this.currentConnectedCounterStorage.name != cs.name) {
-            if (shell.currentFsChangesApi()) {
-                shell.currentFsChangesApi().dispose();
+        if (!cs.disabled() && this.currentConnectedCounterStorage.name != cs.name) {
+            if (shell.currentCsChangesApi()) {
+                shell.currentCsChangesApi().dispose();
             }
-            shell.currentFsChangesApi(new changesApi(cs));
 
-            this.currentConnectedCounterStorage = cs;
-        }*/
+            shell.currentCsChangesApi(new changesApi(cs));
+
+            var connectWebSocketTask: JQueryPromise<any> = shell.currentDbChangesApi().connect(5000);
+            connectWebSocketTask.done(() => {
+
+                this.currentConnectedCounterStorage = cs;
+            });
+        }
     }
     
     static fetchDbStats(db: database, forceFetch: boolean = false) {
