@@ -393,6 +393,8 @@ namespace Raven.Client.Document
 					DatabaseCommands.ForSystemDatabase().GlobalAdmin.EnsureDatabaseExists(DefaultDatabase, ignoreFailures: true);
 				}
 #endif
+
+				InitializeConfiguration();
 			}
 			catch (Exception)
 			{
@@ -424,6 +426,17 @@ namespace Raven.Client.Document
 				}
 				profilingContext.RecordAction(sender, args);
 			};
+		}
+
+		private void InitializeConfiguration()
+		{
+			var document = DatabaseCommands.Get(Constants.RavenClientConfiguration);
+			if (document == null)
+				return;
+
+			var configuration = document.DataAsJson.Deserialize<DocumentStoreConfiguration>(Conventions);
+
+			Conventions.InitializeFrom(configuration);
 		}
 
 		private void RecoverPendingTransactions()
