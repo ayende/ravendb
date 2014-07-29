@@ -102,6 +102,7 @@
     <Compile Include="Counters\RavenCountersClient.cs" />
     <Compile Include="Document\Batches\LazyMoreLikeThisOperation.cs" />
     <Compile Include="Document\Batches\LazyTransformerLoadOperation.cs" />
+    <Compile Include="Document\DocumentStoreConfiguration.cs" />
     <Compile Include="Document\DTC\IsolatedStorageTransactionRecoveryContext.cs" />
     <Compile Include="Document\DTC\IsolatedStorageTransactionRecoveryStorage.cs" />
     <Compile Include="Document\DTC\ITransactionRecoveryStorage.cs" />

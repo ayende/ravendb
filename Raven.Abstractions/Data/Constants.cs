@@ -113,6 +113,10 @@ namespace Raven.Abstractions.Data
 		public const string RavenReplicationDocsTombstones = "Raven/Replication/Docs/Tombstones";
 		public const string RavenReplicationAttachmentsTombstones = "Raven/Replication/Attachments/Tombstones";
 
+		//Client
+
+		public const string RavenClientConfiguration = "Raven/Client/Configuration";
+
         //Periodic export
 		public const string RavenPeriodicExportsDocsTombstones = "Raven/PeriodicExports/Docs/Tombstones";
 		public const string RavenPeriodicExportsAttachmentsTombstones = "Raven/PeriodicExports/Attachments/Tombstones";
@@ -157,6 +161,6 @@ namespace Raven.Abstractions.Data
 		public const string GroupSeperatorString = "\u001D";
 
 
-        public const string MetadataEtagField = "ETag";        
+        public const string MetadataEtagField = "ETag";
 	}
 }

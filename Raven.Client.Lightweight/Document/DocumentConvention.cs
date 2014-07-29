@@ -644,6 +644,14 @@ namespace Raven.Client.Document
 			return customRangeTypes.Contains(type);
 		}
 
+		internal void InitializeFrom(DocumentStoreConfiguration configuration)
+		{
+			if (configuration == null)
+				return;
+
+			if (configuration.FailoverBehavior.HasValue)
+				FailoverBehavior = configuration.FailoverBehavior.Value;
+		}
 	}
 
 	public enum QueryValueConvertionType
