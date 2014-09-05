@@ -4,6 +4,7 @@
 //  </copyright>
 // -----------------------------------------------------------------------
 
+using System;
 using Jint;
 using Jint.Parser;
 
@@ -16,7 +17,7 @@ namespace Raven.Database.Plugins.Builtins
     {
         public override VetoResult AllowPut(string key, RavenJObject document, RavenJObject metadata, TransactionInformation transactionInformation)
         {
-            if (key == Constants.RavenJavascriptFunctions)
+            if (string.Equals(key, Constants.RavenJavascriptFunctions, StringComparison.OrdinalIgnoreCase) == false)
                 return VetoResult.Allowed;
 
             try
