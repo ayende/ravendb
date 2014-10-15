@@ -453,11 +453,13 @@ namespace Raven.Storage.Managed
 				.Distinct();
 		}
 
-		public IEnumerable<MappedResultInfo> GetMappedResults(string indexName, IEnumerable<string> keysToReduce, bool loadData)
+		public IEnumerable<MappedResultInfo> GetMappedResults(string indexName, HashSet<string> keysLeftToReduce, bool loadData, int take, HashSet<string> keysReturned)
 		{
-			foreach (var reduceKey in keysToReduce)
+			foreach (var reduceKey in keysLeftToReduce)
 			{
 				string key = reduceKey;
+				keysLeftToReduce.Remove(key);
+				keysReturned.Add(key);
 
 				foreach (var item in storage.MappedResults["ByViewAndReduceKey"].SkipTo(new RavenJObject
 				{
@@ -480,6 +482,11 @@ namespace Raven.Storage.Managed
 						Size = readResult.Size,
 						Data = loadData ? LoadMappedResult(readResult) : null
 					};
+				}
+
+				if (take < 0)
+				{
+					yield break;
 				}
 			}
 		}
@@ -640,5 +647,5 @@ namespace Raven.Storage.Managed
 				.Take(take)
 				.Select(token => new ReduceTypePerKey(token.Value<string>("reduceKey"), (ReduceType)token.Value<int>("reduceType")));
 		}
-	}
+    }
 }

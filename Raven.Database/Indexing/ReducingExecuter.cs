@@ -219,7 +219,6 @@ namespace Raven.Database.Indexing
 			var batchTimeWatcher = Stopwatch.StartNew();
 			var count = 0;
 			var size = 0;
-			var state = new ConcurrentQueue<Tuple<HashSet<string>, List<MappedResultInfo>>>();
 			var reducingBatchThrottlerId = Guid.NewGuid();
 			try
 			{
@@ -235,6 +234,7 @@ namespace Raven.Database.Indexing
 
 					transactionalStorage.Batch(actions =>
 					{
+
 						var getItemsToReduceParams = new GetItemsToReduceParams(index: index.IndexName, reduceKeys: localKeys, level: 0,
 							loadData: false,
 							itemsToDelete: itemsToDelete)
@@ -289,33 +289,41 @@ namespace Raven.Database.Indexing
 								actions.MapReduce.RemoveReduceResults(index.IndexName, 2, reduceKey, mappedBucket / 1024);
 							}
 						}
-
-						var mappedResults = actions.MapReduce.GetMappedResults(
-							index.IndexName,
-							localKeys,
-							loadData: true
-							).ToList();
-
-						Interlocked.Add(ref count, mappedResults.Count);
-						Interlocked.Add(ref size, mappedResults.Sum(x => x.Size));
-
-						mappedResults.ApplyIfNotNull(x => x.Bucket = 0);
-
-						state.Enqueue(Tuple.Create(localKeys, mappedResults));
 					});
 				});
+				
+				var keysLeftToduce = new HashSet<string>(keysToReduce);
+				while (keysLeftToduce.Count > 0)
+				{
+					context.TransactionalStorage.Batch(
+						actions =>
+						{
+							context.CancellationToken.ThrowIfCancellationRequested();
+							var maxItems = context.CurrentNumberOfItemsToReduceInSingleBatch;
+							var keysReturned = new HashSet<string>();
+							var mappedResults = actions.MapReduce.GetMappedResults(
+								index.IndexName, 
+								keysLeftToduce, 
+								true, 
+								maxItems, 
+								keysReturned
+								).ToList();
 
-				var reduceKeys = new HashSet<string>(state.SelectMany(x => x.Item1));
+							Interlocked.Add(ref count, mappedResults.Count);
+							Interlocked.Add(ref size, mappedResults.Sum(x => x.Size));
 
-				var results = state.SelectMany(x => x.Item2)
-					.Where(x => x.Data != null)
-					.GroupBy(x => x.Bucket, x => JsonToExpando.Convert(x.Data))
-					.ToArray();
-				context.PerformanceCounters.ReducedPerSecond.IncrementBy(results.Length);
+							mappedResults.ApplyIfNotNull(x => x.Bucket = 0);
 
-				context.TransactionalStorage.Batch(actions =>
-					context.IndexStorage.Reduce(index.IndexName, viewGenerator, results, 2, context, actions, reduceKeys, state.Sum(x=>x.Item2.Count))
-					);
+							var results =
+								mappedResults.Where(x => x.Data != null).GroupBy(x => x.Bucket, x => JsonToExpando.Convert(x.Data)).ToArray();
+
+							context.PerformanceCounters.ReducedPerSecond.IncrementBy(results.Length);
+
+							context.CancellationToken.ThrowIfCancellationRequested();
+
+							context.IndexStorage.Reduce(index.IndexName, viewGenerator, results, 2, context, actions, keysReturned, mappedResults.Count);
+						});
+				}
 
 				autoTuner.AutoThrottleBatchSize(count, size, batchTimeWatcher.Elapsed);
 
