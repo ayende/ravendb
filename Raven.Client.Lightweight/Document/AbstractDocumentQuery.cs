@@ -756,9 +756,10 @@ namespace Raven.Client.Document
 		/// <value>The query result.</value>
 		public async Task<QueryResult> QueryResultAsync()
 		{
-			var result = await InitAsync();
-			return result.CurrentQueryResults.CreateSnapshot();
-			}
+		    var val = await LazilyAsync(null).Value.ConfigureAwait(false);
+		    return QueryResult.CreateSnapshot();
+
+		}
 
 		protected virtual async Task<QueryOperation> InitAsync()
 		{
@@ -921,12 +922,11 @@ namespace Raven.Client.Document
 		/// </summary>
 		public virtual IEnumerator<T> GetEnumerator()
 		{
-			InitSync();
 			while (true)
 			{
 				try
 				{
-					return queryOperation.Complete<T>().GetEnumerator();
+					return Lazily(null).Value.GetEnumerator();
 				}
 				catch (Exception e)
 				{
@@ -2199,8 +2199,8 @@ If you really want to do in memory filtering on the data returned from the query
 		/// </summary>
 		public async Task<IList<T>> ToListAsync()
 		{
-			var currentQueryOperation = await InitAsync();
-			var tuple = await ProcessEnumerator(currentQueryOperation);
+            var val = await LazilyAsync(null).Value.ConfigureAwait(false);
+			var tuple = await ProcessEnumerator(queryOperation);
 			return tuple.Item2;
 		}
 
