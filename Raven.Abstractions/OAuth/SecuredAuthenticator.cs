@@ -165,83 +165,84 @@ namespace Raven.Abstractions.OAuth
                 tries++;
 
                 var handler = new WebRequestHandler();
+                using(var httpClient = new HttpClient(handler))
+				{ 
+					httpClient.DefaultRequestHeaders.TryAddWithoutValidation("grant_type", "client_credentials");
+					httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json") { CharSet = "UTF-8" });
 
-                var httpClient = new HttpClient(handler);
-                httpClient.DefaultRequestHeaders.TryAddWithoutValidation("grant_type", "client_credentials");
-                httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json") { CharSet = "UTF-8" });
-
-                string data = null;
-                if (!string.IsNullOrEmpty(serverRSAExponent) && !string.IsNullOrEmpty(serverRSAModulus) && !string.IsNullOrEmpty(challenge))
-                {
-                    var exponent = OAuthHelper.ParseBytes(serverRSAExponent);
-                    var modulus = OAuthHelper.ParseBytes(serverRSAModulus);
-
-                    var apiKeyParts = apiKey.Split(new[] { '/' }, StringSplitOptions.None);
-                    if (apiKeyParts.Length > 2)
-                    {
-                        apiKeyParts[1] = string.Join("/", apiKeyParts.Skip(1));
-                    }
-                    if (apiKeyParts.Length < 2)
-                        throw new InvalidOperationException("Invalid API key");
-
-                    var apiKeyName = apiKeyParts[0].Trim();
-                    var apiSecret = apiKeyParts[1].Trim();
-
-                    data = OAuthHelper.DictionaryToString(new Dictionary<string, string>
+					string data = null;
+					if (!string.IsNullOrEmpty(serverRSAExponent) && !string.IsNullOrEmpty(serverRSAModulus) && !string.IsNullOrEmpty(challenge))
 					{
-						{OAuthHelper.Keys.RSAExponent, serverRSAExponent},
-						{OAuthHelper.Keys.RSAModulus, serverRSAModulus},
+						var exponent = OAuthHelper.ParseBytes(serverRSAExponent);
+						var modulus = OAuthHelper.ParseBytes(serverRSAModulus);
+
+						var apiKeyParts = apiKey.Split(new[] { '/' }, StringSplitOptions.None);
+						if (apiKeyParts.Length > 2)
 						{
-							OAuthHelper.Keys.EncryptedData,
-							OAuthHelper.EncryptAsymmetric(exponent, modulus, OAuthHelper.DictionaryToString(new Dictionary<string, string>
-							{
-								{OAuthHelper.Keys.APIKeyName, apiKeyName},
-								{OAuthHelper.Keys.Challenge, challenge},
-								{OAuthHelper.Keys.Response, OAuthHelper.Hash(string.Format(OAuthHelper.Keys.ResponseFormat, challenge, apiSecret))}
-							}))
+							apiKeyParts[1] = string.Join("/", apiKeyParts.Skip(1));
 						}
-					});
-                }
+						if (apiKeyParts.Length < 2)
+							throw new InvalidOperationException("Invalid API key");
 
-                var requestUri = oauthSource;
+						var apiKeyName = apiKeyParts[0].Trim();
+						var apiSecret = apiKeyParts[1].Trim();
 
-                var response = await httpClient.PostAsync(requestUri, data != null ? (HttpContent)new CompressedStringContent(data, true) : new StringContent(""))
-                                               .AddUrlIfFaulting(new Uri(requestUri))
-                                               .ConvertSecurityExceptionToServerNotFound();
+						data = OAuthHelper.DictionaryToString(new Dictionary<string, string>
+						{
+							{OAuthHelper.Keys.RSAExponent, serverRSAExponent},
+							{OAuthHelper.Keys.RSAModulus, serverRSAModulus},
+							{
+								OAuthHelper.Keys.EncryptedData,
+								OAuthHelper.EncryptAsymmetric(exponent, modulus, OAuthHelper.DictionaryToString(new Dictionary<string, string>
+								{
+									{OAuthHelper.Keys.APIKeyName, apiKeyName},
+									{OAuthHelper.Keys.Challenge, challenge},
+									{OAuthHelper.Keys.Response, OAuthHelper.Hash(string.Format(OAuthHelper.Keys.ResponseFormat, challenge, apiSecret))}
+								}))
+							}
+						});
+					}
 
-				if (response.IsSuccessStatusCode == false)
-				{
-					// We've already tried three times and failed
-                    if (tries >= 3)
-                        throw ErrorResponseException.FromResponseMessage(response);
+					var requestUri = oauthSource;
 
-					if (response.StatusCode != HttpStatusCode.PreconditionFailed)
-						throw ErrorResponseException.FromResponseMessage(response);
+					var response = await httpClient.PostAsync(requestUri, data != null ? (HttpContent)new CompressedStringContent(data, true) : new StringContent(""))
+												   .AddUrlIfFaulting(new Uri(requestUri))
+												   .ConvertSecurityExceptionToServerNotFound();
 
-                    var header = response.Headers.GetFirstValue("WWW-Authenticate");
-                    if (header == null || header.StartsWith(OAuthHelper.Keys.WWWAuthenticateHeaderKey) == false)
-                        throw new ErrorResponseException(response, "Got invalid WWW-Authenticate value");
+					if (response.IsSuccessStatusCode == false)
+					{
+						// We've already tried three times and failed
+						if (tries >= 3)
+							throw ErrorResponseException.FromResponseMessage(response);
 
-                    var challengeDictionary = OAuthHelper.ParseDictionary(header.Substring(OAuthHelper.Keys.WWWAuthenticateHeaderKey.Length).Trim());
-                    serverRSAExponent = challengeDictionary.GetOrDefault(OAuthHelper.Keys.RSAExponent);
-                    serverRSAModulus = challengeDictionary.GetOrDefault(OAuthHelper.Keys.RSAModulus);
-                    challenge = challengeDictionary.GetOrDefault(OAuthHelper.Keys.Challenge);
+						if (response.StatusCode != HttpStatusCode.PreconditionFailed)
+							throw ErrorResponseException.FromResponseMessage(response);
 
-                    if (string.IsNullOrEmpty(serverRSAExponent) || string.IsNullOrEmpty(serverRSAModulus) || string.IsNullOrEmpty(challenge))
-                    {
-                        throw new InvalidOperationException("Invalid response from server, could not parse raven authentication information: " + header);
-                    }
+						var header = response.Headers.GetFirstValue("WWW-Authenticate");
+						if (header == null || header.StartsWith(OAuthHelper.Keys.WWWAuthenticateHeaderKey) == false)
+							throw new ErrorResponseException(response, "Got invalid WWW-Authenticate value");
 
-                    continue;
-                }
+						var challengeDictionary = OAuthHelper.ParseDictionary(header.Substring(OAuthHelper.Keys.WWWAuthenticateHeaderKey.Length).Trim());
+						serverRSAExponent = challengeDictionary.GetOrDefault(OAuthHelper.Keys.RSAExponent);
+						serverRSAModulus = challengeDictionary.GetOrDefault(OAuthHelper.Keys.RSAModulus);
+						challenge = challengeDictionary.GetOrDefault(OAuthHelper.Keys.Challenge);
 
-                using (var stream = await response.GetResponseStreamWithHttpDecompression())
-                using (var reader = new StreamReader(stream))
-                {
-                    CurrentOauthToken = reader.ReadToEnd();
-                    return (Action<HttpClient>)(SetAuthorization);
-                }
+						if (string.IsNullOrEmpty(serverRSAExponent) || string.IsNullOrEmpty(serverRSAModulus) || string.IsNullOrEmpty(challenge))
+						{
+							throw new InvalidOperationException("Invalid response from server, could not parse raven authentication information: " + header);
+						}
+
+						continue;
+					}
+
+					using (var stream = await response.GetResponseStreamWithHttpDecompression())
+					using (var reader = new StreamReader(stream))
+					{
+						CurrentOauthToken = reader.ReadToEnd();
+						return (Action<HttpClient>)(SetAuthorization);
+					}
             }
+			}
         }
 
     }

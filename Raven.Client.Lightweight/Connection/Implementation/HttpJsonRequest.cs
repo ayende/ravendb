@@ -14,7 +14,6 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Threading.Tasks;
-using Raven.Abstractions;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Exceptions;
 using Raven.Abstractions.Replication;
@@ -24,7 +23,6 @@ using Raven.Imports.Newtonsoft.Json.Linq;
 using Raven.Abstractions.Extensions;
 using Raven.Abstractions.Connection;
 using Raven.Client.Connection.Profiling;
-using Raven.Client.Document;
 using Raven.Json.Linq;
 using System.Collections;
 
@@ -38,10 +36,14 @@ namespace Raven.Client.Connection
 		internal readonly string Url;
 		internal readonly string Method;
 
-		private readonly HttpMessageHandler handler;
-		internal volatile HttpClient httpClient;
+		[ThreadStatic]
+		internal static volatile HttpClient httpClient;
 
 		private readonly NameValueCollection headers = new NameValueCollection();
+
+		private readonly Stopwatch sp = Stopwatch.StartNew();
+
+		private readonly OperationCredentials _credentials;
 
 		// temporary create a strong reference to the cached data for this request
 		// avoid the potential for clearing the cache from a cached item
@@ -54,10 +56,8 @@ namespace Raven.Client.Connection
 		private string postedData;
 		private bool isRequestSentToServer;
 
-		private readonly Stopwatch sp = Stopwatch.StartNew();
 		internal bool ShouldCacheRequest;
 		private Stream postedStream;
-	    private RavenJToken postedToken;
 		private bool writeCalled;
 		public static readonly string ClientVersion = typeof(HttpJsonRequest).Assembly.GetName().Version.ToString();
 		private bool disabledAuthRetries;
@@ -66,9 +66,6 @@ namespace Raven.Client.Connection
 		private string operationUrl;
 
 		public Action<NameValueCollection, string, string> HandleReplicationStatusChanges = delegate { };
-
-		private readonly OperationCredentials _credentials;
-		private HttpContent postedContent;
 
 		/// <summary>
 		/// Gets or sets the response headers.
@@ -80,6 +77,7 @@ namespace Raven.Client.Connection
 			CreateHttpJsonRequestParams requestParams,
 			HttpJsonRequestFactory factory)
 		{
+			HttpMessageHandler handler;
 			_credentials = requestParams.Credentials;
 			Url = requestParams.Url;
 			Method = requestParams.Method;
@@ -112,7 +110,10 @@ namespace Raven.Client.Connection
 				handler = webRequestHandler;
 			}
 
-			httpClient = new HttpClient(handler);
+			if (httpClient != null)
+				httpClient.Dispose();
+
+			httpClient = new HttpClient(handler, disposeHandler: true);
 
 			if (factory.DisableRequestCompression == false && requestParams.DisableRequestCompression == false)
 			{
@@ -431,8 +432,11 @@ namespace Raven.Client.Connection
 		private void RecreateHttpClient(Action<HttpClient> configureHttpClient)
 		{
 			var newHttpClient = new HttpClient(recreateHandler());
-
 			configureHttpClient(newHttpClient);
+
+			if (httpClient != null)
+				httpClient.Dispose();
+
 			httpClient = newHttpClient;
 			isRequestSentToServer = false;
 
@@ -629,7 +633,7 @@ namespace Raven.Client.Connection
 			return await RunWithAuthRetry(async () =>
 			{
 				var httpRequestMessage = new HttpRequestMessage(new HttpMethod(Method), Url);
-				this.Response = await httpClient.SendAsync(httpRequestMessage, HttpCompletionOption.ResponseHeadersRead);
+				Response = await httpClient.SendAsync(httpRequestMessage, HttpCompletionOption.ResponseHeadersRead);
 				SetResponseHeaders(Response);
 
 			    await CheckForErrorsAndReturnCachedResultIfAnyAsync(readErrorString: true).ConfigureAwait(false);
@@ -656,7 +660,6 @@ namespace Raven.Client.Connection
 
         public async Task WriteAsync(RavenJToken tokenToWrite)
         {
-            postedToken = tokenToWrite;
             writeCalled = true;
 	        await SendRequestInternal(() => new HttpRequestMessage(new HttpMethod(Method), Url)
 	        {
@@ -681,7 +684,6 @@ namespace Raven.Client.Connection
 
 		public async Task WriteAsync(HttpContent content)
 		{
-			postedContent = content;
 			writeCalled = true;
 
 			await SendRequestInternal(() => new HttpRequestMessage(new HttpMethod(Method), Url)
@@ -712,7 +714,7 @@ namespace Raven.Client.Connection
 
 		public async Task<HttpResponseMessage> ExecuteRawResponseAsync(string data)
 		{
-            this.Response = await RunWithAuthRetry(async () =>
+            Response = await RunWithAuthRetry(async () =>
             {
 
                 var rawRequestMessage = new HttpRequestMessage(new HttpMethod(Method), Url)
@@ -736,14 +738,14 @@ namespace Raven.Client.Connection
             }).ConfigureAwait(false);
 
 
-            this.ResponseStatusCode = this.Response.StatusCode;
+            ResponseStatusCode = Response.StatusCode;
 
-            return this.Response;
+            return Response;
 		}
 
 		public async Task<HttpResponseMessage> ExecuteRawResponseAsync()
 		{
-            this.Response = await RunWithAuthRetry(async () =>
+            Response = await RunWithAuthRetry(async () =>
 		    {
                 var rawRequestMessage = new HttpRequestMessage(new HttpMethod(Method), Url);
                 CopyHeadersToHttpRequestMessage(rawRequestMessage);
@@ -761,16 +763,16 @@ namespace Raven.Client.Connection
 
 		    }).ConfigureAwait(false);
 
-            this.ResponseStatusCode = this.Response.StatusCode;
+            ResponseStatusCode = Response.StatusCode;
 
-            return this.Response;
+            return Response;
 		}
 
 		public async Task<HttpResponseMessage> ExecuteRawRequestAsync(Action<Stream, TaskCompletionSource<object>> action)
 		{
 			httpClient.DefaultRequestHeaders.TransferEncodingChunked = true;
 
-            this.Response = await RunWithAuthRetry(async () =>
+            Response = await RunWithAuthRetry(async () =>
             {
                 var rawRequestMessage = new HttpRequestMessage(new HttpMethod(Method), Url)
                 {
@@ -789,9 +791,9 @@ namespace Raven.Client.Connection
                 return response;
             }).ConfigureAwait(false);
 
-            this.ResponseStatusCode = this.Response.StatusCode;
+            ResponseStatusCode = Response.StatusCode;
 
-            return this.Response;		
+            return Response;		
 		}
 
 		private class PushContent : HttpContent
@@ -833,9 +835,9 @@ namespace Raven.Client.Connection
 			httpClient.DefaultRequestHeaders.Range = new RangeHeaderValue(from, to);
 		}
 
-        public void AddHeaders(RavenJObject headers)
+        public void AddHeaders(RavenJObject headersToAdd)
         {
-            foreach (var item in headers)
+            foreach (var item in headersToAdd)
             {
                 switch( item.Value.Type )
                 {
