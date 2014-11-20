@@ -7,6 +7,8 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 using System.Threading;
 using Raven.Abstractions.Util.Encryptors;
@@ -197,5 +199,73 @@ namespace Raven.Database.Extensions
                 return GetMD5Hex(md5.Compute16(stream));
             }
         }
+
+		public static bool HasAccess(string path, FileSystemRights rights)
+		{
+			AuthorizationRuleCollection accessRules; 
+			try
+			{
+				accessRules = Directory.GetAccessControl(path).GetAccessRules(true, true, typeof(SecurityIdentifier));
+			}
+			catch (UnauthorizedAccessException)
+			{
+				return false;
+			}
+
+			var currentUser = WindowsIdentity.GetCurrent();
+			var currentPrincipal = new WindowsPrincipal(currentUser);
+
+			bool allow = false;
+			bool inheritedAllow = false;
+			bool inheritedDeny = false;
+
+			foreach (var rule in accessRules)
+			{
+				var currentRule = (FileSystemAccessRule) rule;
+
+				if (currentUser.User.Equals(currentRule.IdentityReference) == false && 
+					currentPrincipal.IsInRole((SecurityIdentifier) currentRule.IdentityReference) == false)
+				{
+					continue;
+				}
+
+				if (currentRule.AccessControlType.Equals(AccessControlType.Deny))
+				{
+					if (currentRule.FileSystemRights.HasFlag(rights))
+					{
+						if (currentRule.IsInherited)
+						{
+							inheritedDeny = true;
+						}
+						else
+						{ 
+							// Non inherited "deny" takes overall precedence
+							return false;
+						}
+					}
+				}
+				else if (currentRule.AccessControlType.Equals(AccessControlType.Allow))
+				{
+					if (currentRule.FileSystemRights.HasFlag(rights))
+					{
+						if (currentRule.IsInherited)
+						{
+							inheritedAllow = true;
+						}
+						else
+						{
+							allow = true;
+						}
+					}
+				}
+			}
+
+			if (allow)
+			{
+				// Non inherited "allow" takes precedence over inherited rules
+				return true;
+			}
+			return inheritedAllow && !inheritedDeny;
+		}
 	}
 }

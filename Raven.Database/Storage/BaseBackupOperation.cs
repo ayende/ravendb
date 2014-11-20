@@ -6,6 +6,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Security.AccessControl;
 using System.Threading;
 using Raven.Abstractions;
 using Raven.Abstractions.Data;
@@ -14,8 +15,6 @@ using Raven.Abstractions.Logging;
 using Raven.Database.Backup;
 using Raven.Database.Extensions;
 using Raven.Json.Linq;
-
-using Voron.Impl.Backup;
 
 namespace Raven.Database.Storage
 {
@@ -61,7 +60,15 @@ namespace Raven.Database.Storage
                     string.Format("Started backup process. Backing up data to directory = '{0}'",
                                   backupDestinationDirectory), null, BackupStatus.BackupMessageSeverity.Informational);
 
-                if (incrementalBackup)
+	            if (Directory.Exists(backupDestinationDirectory))
+	            {
+		            if (IOExtensions.HasAccess(backupDestinationDirectory, FileSystemRights.Write) == false)
+			            throw new UnauthorizedAccessException(string.Format("You don't have write access to the path {0}", backupDestinationDirectory));
+	            }
+	            else
+					Directory.CreateDirectory(backupDestinationDirectory); // will throw UnauthorizedAccessException if a user doesn't have write permission
+
+	            if (incrementalBackup)
                 {
 	                var incrementalBackupState = Path.Combine(backupDestinationDirectory, Constants.IncrementalBackupState);
 
@@ -79,9 +86,6 @@ namespace Raven.Database.Storage
 			                ResourceId = database.TransactionalStorage.Id,
 							ResourceName = database.Name ?? Constants.SystemDatabase
 		                };
-
-						if (!Directory.Exists(backupDestinationDirectory))
-							Directory.CreateDirectory(backupDestinationDirectory);
 
 						File.WriteAllText(incrementalBackupState, RavenJObject.FromObject(state).ToString());
 	                }
