@@ -5,11 +5,11 @@
 //-----------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Raven.Abstractions.Logging;
-using System.Runtime.InteropServices;
 using System.Text;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Util.Streams;
@@ -22,6 +22,11 @@ namespace Raven.Abstractions.Extensions
     public static class StreamExtensions
     {
         private static readonly IBufferPool BufferPool = new BufferPool(1024 * 1024 * 1024, 65 * 1024);
+
+	    private static bool CanReadAmoutOfBytes(this Stream stream, int bytesCount)
+	    {
+		    return stream.Length - stream.Position >= bytesCount;
+	    }
 
         public static void CopyTo(this Stream stream, Stream other)
         {
@@ -44,7 +49,7 @@ namespace Raven.Abstractions.Extensions
         }
 
         public static void Write(this Stream stream, long value)
-        {
+        {	        
             var buffer = BitConverter.GetBytes(value);
             stream.Write(buffer, 0, buffer.Length);
         }
@@ -57,12 +62,17 @@ namespace Raven.Abstractions.Extensions
 
         public static long ReadInt64(this Stream stream)
         {
-            var int64Size = Marshal.SizeOf(typeof(long));
-            var buffer = BufferPool.TakeBuffer(int64Size);
+			if(stream.CanReadAmoutOfBytes(sizeof(long)) == false)
+				throw new EndOfStreamException("Tried to read past the end of the stream.");
+
+	        var buffer = BufferPool.TakeBuffer(sizeof(long));
 
             try
             {
-                stream.Read(buffer, 0, int64Size);
+                var bytesRead = stream.Read(buffer, 0, sizeof(long));
+				if(bytesRead < sizeof(long)) //precaution
+					throw new EndOfStreamException("Read past the end of the stream.");
+
                 return BitConverter.ToInt64(buffer, 0);
             }
             finally
@@ -74,13 +84,17 @@ namespace Raven.Abstractions.Extensions
 
         public static int ReadInt32(this Stream stream)
         {
-            var int32Size = Marshal.SizeOf(typeof(int));
-            var buffer = BufferPool.TakeBuffer(int32Size);
+			if (stream.CanReadAmoutOfBytes(sizeof(int)) == false)
+				throw new EndOfStreamException("Tried to read past the end of the stream.");
+
+			var buffer = BufferPool.TakeBuffer(sizeof(int));
 
             try
             {
-                stream.Read(buffer, 0, int32Size);
-                return BitConverter.ToInt32(buffer, 0);
+                var bytesRead = stream.Read(buffer, 0, sizeof(int));
+				if (bytesRead < sizeof(int)) //precaution
+					throw new EndOfStreamException("Read past the end of the stream.");
+				return BitConverter.ToInt32(buffer, 0);
             }
             finally
             {
@@ -96,11 +110,18 @@ namespace Raven.Abstractions.Extensions
         public static string ReadString(this Stream stream, Encoding encoding)
         {
             var stringLength = stream.ReadInt32();
+
+			if (stream.CanReadAmoutOfBytes(stringLength) == false)
+				throw new EndOfStreamException("Tried to read past the end of the stream.");
+
             var buffer = BufferPool.TakeBuffer(stringLength);
 
             try
             {
                 var read = stream.Read(buffer, 0, stringLength);
+				if (read < stringLength) //precaution
+					throw new EndOfStreamException("Read past the end of the stream.");
+
                 return encoding.GetString(buffer, 0, read);
             }
             finally
@@ -117,7 +138,6 @@ namespace Raven.Abstractions.Extensions
         public static string ReadStringWithoutPrefix(this Stream stream, Encoding encoding)
         {
             var buffer = stream.ReadData();
-
             return encoding.GetString(buffer);
         }
 
@@ -135,18 +155,25 @@ namespace Raven.Abstractions.Extensions
 
         public static void Write(this Stream stream, Etag etag)
         {
+	        const int EtagSize = 16;
             var buffer = etag.ToByteArray();
-            stream.Write(buffer, 0, 16);
+            stream.Write(buffer, 0, EtagSize);
         }
 
         public static Etag ReadEtag(this Stream stream)
         {
-            var buffer = BufferPool.TakeBuffer(16); //etag size is 16 bytes
+			const int EtagSize = 16;
+			if (stream.CanReadAmoutOfBytes(EtagSize) == false)
+				throw new EndOfStreamException("Tried to read past the end of the stream.");
+
+			var buffer = BufferPool.TakeBuffer(EtagSize); //etag size is 16 bytes
 
             try
             {
-                stream.Read(buffer, 0, 16);
-                return Etag.Parse(buffer);
+				var bytesRead = stream.Read(buffer, 0, EtagSize);
+				if (bytesRead < EtagSize) //precaution
+					throw new EndOfStreamException("Read past the end of the stream.");
+				return Etag.Parse(buffer);
 
             }
             finally
