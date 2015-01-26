@@ -97,12 +97,14 @@
     <Compile Include="PrefixedSlice.cs" />
     <Compile Include="SliceComparisonMethods.cs" />
     <Compile Include="SliceWriter.cs" />
+    <Compile Include="StructReadResult.cs" />
     <Compile Include="Trees\PageIterator.cs" />
     <Compile Include="Trees\PrefixInfoSection.cs" />
     <Compile Include="Trees\PrefixNodeHeader.cs" />
     <Compile Include="Trees\Tree.MultiTree.cs" />
     <Compile Include="Util\ConcurrentSet.cs" />
     <Compile Include="Util\EndOfDiskSpaceEvent.cs" />
+    <Compile Include="Util\ExpressionExtensions.cs" />
     <Compile Include="Util\GenericUtil.cs" />
     <Compile Include="Impl\FileHeaders\FileHeader.cs" />
     <Compile Include="Impl\FileHeaders\HeaderAccessor.cs" />
@@ -174,6 +176,7 @@
     <Compile Include="Util\Conversion\LittleEndianBitConverter.cs" />
     <Compile Include="Util\Conversion\EndianBitConverter.cs" />
     <Compile Include="Util\SkipList.cs" />
+    <Compile Include="Util\TypeExtensions.cs" />
     <Compile Include="Util\Utils.cs" />
     <Compile Include="Util\PageTable.cs" />
     <Compile Include="ValueReader.cs" />
