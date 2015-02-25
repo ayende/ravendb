@@ -2089,7 +2089,7 @@ namespace Raven.Client.Indexes
 		private Expression VisitUnary(UnaryExpression node, ExpressionOperatorPrecedence outerPrecedence)
 		{
 			var innerPrecedence = ExpressionOperatorPrecedence.Unary;
-
+		    var escapedConvert = false;
 			switch (node.NodeType)
 			{
 				case ExpressionType.TypeAs:
@@ -2145,6 +2145,11 @@ namespace Raven.Client.Indexes
                         Out(node.Method.DeclaringType.Name);
                         Out(".Parse(");
                     }
+                    else if (ShouldEscapeConvert(node))
+                    {
+                        escapedConvert = true;
+                        break;
+                    }
                     else
                     {
 					Out("(");
@@ -2182,6 +2187,7 @@ namespace Raven.Client.Indexes
 
 				case ExpressionType.Convert:
 				case ExpressionType.ConvertChecked:
+			        if (escapedConvert) break;
 					Out(")");
 					break;
 
@@ -2212,6 +2218,13 @@ namespace Raven.Client.Indexes
 			return node;
 		}
 
+	    private static bool ShouldEscapeConvert(UnaryExpression node)
+	    {
+
+	        if (node.Type.Name.Equals(node.Operand.Type.Name)) return true;
+            if (node.Type.Name.Equals("Double") && node.Operand.Type.Name.StartsWith("Int")) return true;
+	        return false;
+	    }
 		private static bool ShouldConvert(Type nonNullableType)
 		{
 			if (nonNullableType.IsEnum())
