@@ -171,9 +171,9 @@ namespace Raven.Database.Server.Controllers
 
         private IEnumerable<JsonDocument> YieldDocumentsInBatch(CancellationTimeout timeout, Stream partialStream, Action<int> increaseDocumentsCount)
         {
-            using (var stream = new GZipStream(partialStream, CompressionMode.Decompress, leaveOpen: true))
+            //using (var stream = new GZipStream(partialStream, CompressionMode.Decompress, leaveOpen: true))
             {
-                var reader = new BinaryReader(stream);
+				var reader = new BinaryReader(partialStream);
                 var count = reader.ReadInt32();
 
                 for (var i = 0; i < count; i++)

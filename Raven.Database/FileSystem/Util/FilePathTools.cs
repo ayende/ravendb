@@ -1,4 +1,6 @@
-﻿namespace Raven.Database.FileSystem.Util
+﻿using System.IO;
+
+namespace Raven.Database.FileSystem.Util
 {
 	public static class FilePathTools
 	{
@@ -12,7 +14,7 @@
 
         public static string MakeSureEndsWithSlash(string filePath)
         {
-            return filePath.TrimEnd('\\') + "\\";
+			return filePath.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
         }
 	}
 }

@@ -28,13 +28,7 @@ namespace Raven.Client.Util
 			});
 		}
 
-		static readonly bool runningOnMono = Type.GetType("Mono.Runtime") != null;
 		private static bool failedToGetAvailablePhysicalMemory;
-
-		private static bool RunningOnMono
-		{
-			get { return runningOnMono; }
-		}
 
 		private static int AvailableMemory
 		{
@@ -43,7 +37,7 @@ namespace Raven.Client.Util
 				if (failedToGetAvailablePhysicalMemory)
 					return -1;
 
-				if (RunningOnMono)
+				if (EnvironmentUtils.RunningOnMono)
 				{
 					// Try /proc/meminfo, which will work on Linux only!
 					if (File.Exists("/proc/meminfo"))

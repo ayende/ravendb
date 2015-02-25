@@ -89,25 +89,26 @@ namespace Raven.Tests.Linq
 			using (var session = store.OpenSession())
 			{
 				var count1 = session.Query<SearchableElement, SearchableElements>()
-				                    .Count(se => se.PermittedUsers.In(new Guid[] {userId}.Cast<object>()));
-				Assert.Equal(0, count1);
+					.Count(se => se.PermittedUsers.Any(user => user.Equals(userId)));
+				Assert.Equal<int>(0, count1);
 
 
 				var count2 = session.Query<SearchableElement, SearchableElements>()
-				                    .Count(se => se.PermittedUsers.Any(u => u.In(new Guid[] {userId})));
-				Assert.Equal(0, count2);
+					.Count(se => se.PermittedUsers.Any(user => user.Equals(userId)));
+				Assert.Equal<int>(0, count2);
 
 				var query1 = session.Query<SearchableElement, SearchableElements>()
-									.Where(se => se.PermittedUsers.In(new Guid[] { userId }.Cast<object>()))
+					.Where(se => se.PermittedUsers.Any(user => user.Equals(userId)))
 									.ToString();
 				Assert.Equal(@"@in<PermittedUsers>:(dc89a428\-7eb2\-428c\-bc97\-99763db25f9a)", query1);
 
-				var query2 = session.Query<SearchableElement, SearchableElements>()
-									.Where(se => se.PermittedUsers.Any(u => u.In(new Guid[] { userId })))
+				var query2 = session.Query<SearchableElement, SearchableElements> ()
+					.Where (se => se.PermittedUsers.Any (user => user.Equals (userId)))
 									.ToString();
-				Assert.Equal(@"@in<PermittedUsers>:(dc89a428\-7eb2\-428c\-bc97\-99763db25f9a)", query2);
+				Assert.Equal<string>(@"@in<PermittedUsers>:(dc89a428\-7eb2\-428c\-bc97\-99763db25f9a)", query2);
 			}
 		}
+
 
 		[Fact]
 		public void WithEmptyObjectsArray()
@@ -147,7 +148,7 @@ namespace Raven.Tests.Linq
 
 				var count2 = session.Query<SearchableElement, SearchableElements>()
 				                    .Count(se => se.PermittedUsers.Any(u => u.In(new Guid[0])));
-				Assert.Equal(0, count2);
+				Assert.Equal<int>(0, count2);
 
 				var query1 = session.Query<SearchableElement, SearchableElements>()
 									.Where(se => se.PermittedUsers.In(new Guid[0].Cast<object>()))

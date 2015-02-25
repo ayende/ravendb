@@ -7,7 +7,7 @@ namespace Raven.Abstractions.Util.Streams
 {
     public class BufferPool : IBufferPool
     {
-        private readonly BufferManager bufferManager;
+		private readonly BufferManager bufferManager;
 #if VALIDATE
         public class BufferTracker
         {
@@ -36,8 +36,11 @@ namespace Raven.Abstractions.Util.Streams
 #endif
 
         public BufferPool(long maxBufferPoolSize, int maxBufferSize)
-        {
-            bufferManager = BufferManager.CreateBufferManager(maxBufferPoolSize, maxBufferSize);
+        {									
+			if (EnvironmentUtils.RunningOnMono)
+				bufferManager = new RavenBufferManager ();
+			else
+            	bufferManager = BufferManager.CreateBufferManager(maxBufferPoolSize, maxBufferSize);
         }
 
         public void Dispose()

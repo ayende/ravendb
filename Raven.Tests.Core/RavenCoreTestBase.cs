@@ -62,8 +62,9 @@ namespace Raven.Tests.Core
 			{
 				HttpMessageHandler = Server.DocumentStore.HttpMessageHandler,
 				Url = Server.SystemDatabase.ServerUrl,
-				DefaultDatabase = databaseName
+				DefaultDatabase = databaseName,
 			};
+			documentStore.Conventions.DisableRequestCompression = true;
 			documentStore.Initialize();
 
 			createdStores.Add(documentStore);

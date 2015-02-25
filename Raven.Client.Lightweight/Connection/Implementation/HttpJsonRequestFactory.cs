@@ -61,16 +61,18 @@ namespace Raven.Client.Connection
 			if (disposed)
 				throw new ObjectDisposedException(typeof(HttpJsonRequestFactory).FullName);
 
-			if (RequestTimeout != null)
-				createHttpJsonRequestParams.Timeout = RequestTimeout.Value;
+			if (DisableRequestCompression == true)
+				createHttpJsonRequestParams.DisableRequestCompression = true;
 
+			if (RequestTimeout != null)
+				createHttpJsonRequestParams.Timeout = RequestTimeout.Value;			
             var request = new HttpJsonRequest(createHttpJsonRequestParams, this)
 			{
 				ShouldCacheRequest =
 					createHttpJsonRequestParams.AvoidCachingRequest == false && 
-					createHttpJsonRequestParams.Convention.ShouldCacheRequest(createHttpJsonRequestParams.Url)
+					createHttpJsonRequestParams.Convention.ShouldCacheRequest(createHttpJsonRequestParams.Url),
 			};
-
+			
 			if (request.ShouldCacheRequest && !DisableHttpCaching)
 			{
 				var cachedRequestDetails = ConfigureCaching(createHttpJsonRequestParams.Url, request.AddHeader);
@@ -159,11 +161,12 @@ namespace Raven.Client.Connection
 		/// default ctor
 		/// </summary>
 		/// <param name="maxNumberOfCachedRequests"></param>
-		public HttpJsonRequestFactory(int maxNumberOfCachedRequests, HttpMessageHandler httpMessageHandler = null, bool acceptGzipContent = true)
+		public HttpJsonRequestFactory(int maxNumberOfCachedRequests, HttpMessageHandler httpMessageHandler = null, bool acceptGzipContent = true, bool disableRequestCompression = false)
 		{
 			this.maxNumberOfCachedRequests = maxNumberOfCachedRequests;
 			this.httpMessageHandler = httpMessageHandler;
 			this.acceptGzipContent = acceptGzipContent;
+			this.DisableRequestCompression = true; //TODO: reschange this to disableRequestCompression -> hardcoded because temp workaround of mono bug
 			httpClientCache = new HttpClientCache();
 
 		    ResetCache();

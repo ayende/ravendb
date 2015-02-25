@@ -89,7 +89,8 @@ namespace Raven.Client.Document
         /// </summary>
         Lazy<T[]> ILazySessionOperations.Load<T>(IEnumerable<string> ids)
         {
-            return Lazily.Load<T>(ids, null);
+			
+			return Lazily.Load<T>(ids, (Action<T[]>)null);
         }
 
         /// <summary>

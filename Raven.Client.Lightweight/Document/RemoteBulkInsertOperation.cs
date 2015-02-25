@@ -244,7 +244,6 @@ namespace Raven.Client.Document
             if (data == null) throw new ArgumentNullException("data");
             if (aborted) throw new InvalidOperationException("Operation has been aborted");
 
-
             metadata["@id"] = id;
             data[Constants.Metadata] = metadata;
 
@@ -415,8 +414,8 @@ namespace Raven.Client.Document
 
 	    private void WriteToBuffer(ICollection<RavenJObject> localBatch, out long bytesWritten)
         {
-			using (var gzip = new GZipStream(bufferedStream, CompressionMode.Compress, leaveOpen: true))
-			using (var stream = new CountingStream(gzip))
+			//using (var gzip = new GZipStream(bufferedStream, CompressionMode.Compress, leaveOpen: true))
+			using (var stream = new CountingStream(bufferedStream))
             {
                 var binaryWriter = new BinaryWriter(stream);
                 binaryWriter.Write(localBatch.Count);

@@ -123,12 +123,12 @@ namespace Raven.Database.Config
 			DisableInMemoryIndexing =
 				new BooleanSetting(settings["Raven/DisableInMemoryIndexing"], false);
 			DataDir =
-				new StringSetting(settings["Raven/DataDir"], @"~\Data");
+				new StringSetting(settings["Raven/DataDir"], @"~" + Path.DirectorySeparatorChar  +  "Data");
 			IndexStoragePath =
 				new StringSetting(settings["Raven/IndexStoragePath"], (string)null);
 			CountersDataDir =
-				new StringSetting(settings["Raven/Counters/DataDir"], @"~\Data\Counters");
-
+				new StringSetting(settings["Raven/Counters/DataDir"], String.Format("~{0}Data{0}Counters", Path.DirectorySeparatorChar));
+			
 			HostName =
 				new StringSetting(settings["Raven/HostName"], (string)null);
 			Port =
@@ -155,13 +155,13 @@ namespace Raven.Database.Config
 			WebDir =
 				new StringSetting(settings["Raven/WebDir"], GetDefaultWebDir);
 			PluginsDirectory =
-				new StringSetting(settings["Raven/PluginsDirectory"], @"~\Plugins");
+				new StringSetting(settings["Raven/PluginsDirectory"], @"~"+ Path.DirectorySeparatorChar + "Plugins");
             AssembliesDirectory =
-                new StringSetting(settings["Raven/AssembliesDirectory"], @"~\Assemblies");
+				new StringSetting(settings["Raven/AssembliesDirectory"], @"~" + Path.DirectorySeparatorChar + "Assemblies");
             EmbeddedFilesDirectory =
                 new StringSetting(settings["Raven/EmbeddedFilesDirectory"], (string)null);
 			CompiledIndexCacheDirectory =
-				new StringSetting(settings["Raven/CompiledIndexCacheDirectory"], @"~\Raven\CompiledIndexCache");
+				new StringSetting(settings["Raven/CompiledIndexCacheDirectory"], String.Format("~{0}Raven{0}CompiledIndexCache",Path.DirectorySeparatorChar));
 			TaskScheduler =
 				new StringSetting(settings["Raven/TaskScheduler"], (string)null);
 			AllowLocalAccessWithoutAuthorization =
@@ -219,7 +219,7 @@ namespace Raven.Database.Config
 
             FileSystem.MaximumSynchronizationInterval = new TimeSpanSetting(settings[Constants.FileSystem.MaximumSynchronizationInterval], TimeSpan.FromSeconds(60), TimeSpanArgumentType.FromParse);
             FileSystem.IndexStoragePath = new StringSetting(settings[Constants.FileSystem.IndexStorageDirectory], string.Empty);
-            FileSystem.DataDir = new StringSetting(settings[Constants.FileSystem.DataDirectory], @"~\FileSystems");
+			FileSystem.DataDir = new StringSetting(settings[Constants.FileSystem.DataDirectory], @"~" + Path.DirectorySeparatorChar + "FileSystems");
             FileSystem.DefaultStorageTypeName = new StringSetting(settings[Constants.FileSystem.Storage], string.Empty);
 
 			Encryption.UseFips = new BooleanSetting(settings["Raven/Encryption/FIPS"], false);

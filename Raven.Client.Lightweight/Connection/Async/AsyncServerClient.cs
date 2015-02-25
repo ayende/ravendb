@@ -1341,6 +1341,7 @@ public Task<SuggestionQueryResult> SuggestAsync(string index, SuggestionQuery su
 
 				using (var request = jsonRequestFactory.CreateHttpJsonRequest(new CreateHttpJsonRequestParams(this, operationMetadata.Url + "/bulk_docs", "POST", metadata, operationMetadata.Credentials, convention).AddOperationHeaders(OperationsHeaders)))
 				{
+						
 					request.AddReplicationStatusHeaders(url, operationMetadata.Url, replicationInformer, convention.FailoverBehavior, HandleReplicationStatusChanges);
 
 					var serializedData = commandDatas.Select(x => x.ToJson()).ToList();

@@ -12,11 +12,32 @@ using Raven.Abstractions.Extensions;
 using Raven.Database.Extensions;
 using Raven.Database.Server.WebApi.Attributes;
 using Raven.Json.Linq;
+using System.Web.Http.Filters;
+using Raven.Abstractions;
 
 namespace Raven.Database.Server.Controllers
 {
+	[DocIdUnescapeFilter]
 	public class DocumentsController : RavenDbApiController
 	{
+		[AttributeUsage(AttributeTargets.Class)]
+		internal class DocIdUnescapeFilterAttribute : ActionFilterAttribute
+		{
+			public override void OnActionExecuting (System.Web.Http.Controllers.HttpActionContext actionContext)
+			{
+				if (EnvironmentUtils.RunningOnMono) {
+					if (actionContext.ActionArguments.ContainsKey ("id")) {
+						actionContext.ActionArguments ["id"] = Uri.UnescapeDataString ((string)actionContext.ActionArguments ["id"]);
+					}
+
+					if (actionContext.ActionArguments.ContainsKey ("docId")) {
+						actionContext.ActionArguments ["docId"] = Uri.UnescapeDataString ((string)actionContext.ActionArguments ["docId"]);
+					}
+				}
+				base.OnActionExecuting (actionContext);
+			}
+		}
+
 		[HttpGet]
 		[RavenRoute("docs")]
 		[RavenRoute("databases/{databaseName}/docs")]

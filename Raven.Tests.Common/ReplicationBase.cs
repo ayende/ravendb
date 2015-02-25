@@ -34,10 +34,10 @@ namespace Raven.Tests.Common
 {
     public abstract class ReplicationBase : RavenTest
     {
-        protected int PortRangeStart = 9000;
+        protected int PortRangeStart = 8079;
         protected int RetriesCount = 500;
 
-	    protected ReplicationBase()
+        public ReplicationBase()
         {
             checkPorts = true;
         }

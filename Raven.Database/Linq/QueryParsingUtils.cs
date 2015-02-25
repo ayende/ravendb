@@ -72,13 +72,12 @@ namespace Raven.Database.Linq
 					namespaces.Add(ns);
 				}
 			}
-
 			foreach (var ns in namespaces)
 			{
 				unit.Members.Add(new UsingDeclaration(ns));
 			}
 
-			unit.Members.Add(new WindowsNewLine());
+			unit.Members.Add(new ICSharpCode.NRefactory.CSharp.NewLineNode());
 
 			unit.Members.Add(type);
 

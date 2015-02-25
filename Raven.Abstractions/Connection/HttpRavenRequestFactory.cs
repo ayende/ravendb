@@ -25,7 +25,7 @@ namespace Raven.Abstractions.Connection
 			{
 				request.AllowWriteStreamBuffering = AllowWriteStreamBuffering.Value;
 				if(AllowWriteStreamBuffering.Value == false)
-					request.SendChunked = true;
+					request.SendChunked = !EnvironmentUtils.RunningOnPosix;
 			}
 
 			if (options.ApiKey == null)

@@ -376,6 +376,7 @@ namespace Raven.Tests.Core.Replication
 				{
 					Url = source.Url
 				});
+				
 				replicationRequest.ExecuteRequest();
 
 				var transformerNamesAtDestination1 = destination1.DatabaseCommands.ForDatabase("testDB").GetTransformers(0, 1024);

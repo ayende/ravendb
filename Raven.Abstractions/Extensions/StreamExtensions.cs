@@ -59,28 +59,39 @@ namespace Raven.Abstractions.Extensions
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
 	    private static void PartialRead(this Stream stream, byte[] buffer, int size)
 	    {
-		    var totalRead = 0;
-			while (totalRead < size)
-		    {
-				var bytesRead = stream.Read(buffer, totalRead, size - totalRead);
-				if(bytesRead == 0 )
-					throw new EndOfStreamException();
-			    totalRead += bytesRead;
-		    }
+			try
+			{
+		    	var totalRead = 0;
+				while (totalRead < size)
+		    	{					
+					var bytesRead = stream.Read(buffer, totalRead, size - totalRead);
+					if(bytesRead == 0 )
+						throw new EndOfStreamException();
+			    	totalRead += bytesRead;
+				}
+			}
+			catch(Exception e) {
+				throw;
+			}
 	    }
 
         public static long ReadInt64(this Stream stream)
         {
-	        var buffer = BufferPool.TakeBuffer(sizeof(long));
+			byte[] buffer = null;
 
             try
             {
+				buffer = BufferPool.TakeBuffer(sizeof(long));
                 stream.PartialRead(buffer,sizeof(long));
                 return BitConverter.ToInt64(buffer, 0);
             }
+			catch(Exception e) {
+				throw;
+			}
             finally
             {
-                BufferPool.ReturnBuffer(buffer);
+				if(buffer != null)
+                	BufferPool.ReturnBuffer(buffer);
             }
         }
 

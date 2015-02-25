@@ -25,6 +25,7 @@ namespace Raven.Abstractions.OAuth
 				httpClient.DefaultRequestHeaders.TryAddWithoutValidation("grant_type", "client_credentials");
 				httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json") { CharSet = "UTF-8" });
 
+
 				httpClient.DefaultRequestHeaders.AcceptEncoding.Add(new StringWithQualityHeaderValue("deflate"));
 				httpClient.DefaultRequestHeaders.AcceptEncoding.Add(new StringWithQualityHeaderValue("gzip"));
 

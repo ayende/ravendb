@@ -14,6 +14,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web;
+using Raven.Abstractions;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Util.Encryptors;
 using Raven.Database.Extensions;
@@ -1061,6 +1062,8 @@ namespace Raven.Database.Config
 		[CLSCompliant(false)]
 		public ITransactionalStorage CreateTransactionalStorage(string storageEngine, Action notifyAboutWork, Action handleStorageInaccessible)
 		{
+			if (EnvironmentUtils.RunningOnPosix)
+				storageEngine = "voron";
 			storageEngine = StorageEngineAssemblyNameByTypeName(storageEngine);
 			var type = Type.GetType(storageEngine);
 
