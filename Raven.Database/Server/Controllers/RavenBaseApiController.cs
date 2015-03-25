@@ -149,11 +149,13 @@ namespace Raven.Database.Server.Controllers
 		}
 
 		public async Task<RavenJArray> ReadJsonArrayAsync()
-		{
+		{			
 			using (var stream = await InnerRequest.Content.ReadAsStreamAsync())
 			using (var streamReader = new StreamReader(stream, GetRequestEncoding()))
 			using (var jsonReader = new RavenJsonTextReader(streamReader))
+			{
 				return RavenJArray.Load(jsonReader);
+			}
 		}
 
 		public async Task<string> ReadStringAsync()
@@ -720,7 +722,7 @@ namespace Raven.Database.Server.Controllers
             AddHeader("Temp-Request-Time", sp.ElapsedMilliseconds.ToString("#,#;;0", CultureInfo.InvariantCulture), msg);
         }
 
-	    public abstract bool SetupRequestToProperDatabase(RequestManager requestManager);
+	    public abstract Task<bool> SetupRequestToProperDatabase(RequestManager requestManager);
 
         public abstract string TenantName { get; }
 

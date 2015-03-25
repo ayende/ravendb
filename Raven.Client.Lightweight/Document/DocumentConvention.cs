@@ -530,6 +530,7 @@ namespace Raven.Client.Document
             return this;
         }
 
+
         private static Lazy<JsonConverterCollection> defaultConverters = new Lazy<JsonConverterCollection>(() =>
         {
             var converters = new JsonConverterCollection(Default.Converters);
@@ -571,6 +572,8 @@ namespace Raven.Client.Document
             get { return defaultConvertersEnumsAsIntegers.Value; }
         }
         
+
+
 		/// <summary>
 		/// Creates the serializer.
 		/// </summary>
@@ -585,18 +588,18 @@ namespace Raven.Client.Document
 				TypeNameHandling = TypeNameHandling.Auto,
 				TypeNameAssemblyFormat = FormatterAssemblyStyle.Simple,
 				ConstructorHandling = ConstructorHandling.AllowNonPublicDefaultConstructor,
-                FloatParseHandling = FloatParseHandling.PreferDecimalFallbackToDouble,
+                FloatParseHandling = FloatParseHandling.Double,
                 Converters = new JsonConverterCollection()
 			};
 
 			CustomizeJsonSerializer(jsonSerializer);
 			if (jsonSerializer.Converters.IsFrozen)  // if the user froze the collection, we don't need to do anything
-				return jsonSerializer;
+			return jsonSerializer;
 			var convertersToUse = SaveEnumsAsIntegers ? DefaultConvertersEnumsAsIntegers : DefaultConverters;
 			if (jsonSerializer.Converters.Count == 0)
 			{
 				jsonSerializer.Converters = convertersToUse;
-			}
+		}
 			else
 			{
 				for (int i = convertersToUse.Count - 1; i >= 0; i--)

@@ -237,6 +237,19 @@
     <Compile Include="Actions\TaskActions.cs" />
     <Compile Include="Bundles\Versioning\Data\FileVersioningConfiguration.cs" />
     <Compile Include="Config\CpuStatistics.cs" />
+    <Compile Include="Config\GlobalSettingsDocument.cs" />
+    <Compile Include="Config\GlobalSettingsDocumentProtector.cs" />
+    <Compile Include="Config\Retriever\ConfigurationDocument.cs" />
+    <Compile Include="Config\Retriever\ConfigurationRetriever.cs" />
+    <Compile Include="Config\Retriever\ConfigurationRetrieverBase.cs" />
+    <Compile Include="Config\Retriever\ConfigurationSettingRetriever.cs" />
+    <Compile Include="Config\Retriever\ConfigurationSettingsDocument.cs" />
+    <Compile Include="Config\Retriever\JavascriptFunctionsRetriever.cs" />
+    <Compile Include="Config\Retriever\ReplicationConflictResolutionConfigurationRetriever.cs" />
+    <Compile Include="Config\Retriever\PeriodicExportConfigurationRetriever.cs" />
+    <Compile Include="Config\Retriever\ReplicationConfigurationRetriever.cs" />
+    <Compile Include="Config\Retriever\SqlReplicationConfigurationRetriever.cs" />
+    <Compile Include="Config\Retriever\VersioningConfigurationRetriever.cs" />
     <Compile Include="Config\Settings\EnumSetting.cs" />
     <Compile Include="Config\Settings\NullableIntegerSettingWithMin.cs" />
     <Compile Include="FileSystem\Actions\ActionsBase.cs" />
@@ -270,6 +283,7 @@
     <Compile Include="Indexing\Sorting\Custom\CustomSortField.cs" />
     <Compile Include="Indexing\Sorting\Custom\CustomSortFieldCompartor.cs" />
     <Compile Include="Indexing\Sorting\Custom\IndexEntriesToComparablesGenerator.cs" />
+    <Compile Include="Server\Controllers\ConfigurationController.cs" />
     <Compile Include="Server\WebApi\ MultiGetSafeStringContent.cs" />
     <Compile Include="Server\WebApi\RavenInlineConstraintResolver.cs" />
     <Compile Include="Server\WebApi\Attributes\RavenRouteAttribute.cs" />

@@ -452,6 +452,29 @@ interface replicationDestinationDto {
     Disabled: boolean;
     ClientVisibleUrl: string;
     SkipIndexReplication: boolean;
+    SourceCollections: string[];
+    HasGlobal?: boolean;
+    HasLocal?: boolean;
+}
+
+interface configurationDocumentDto<TClass> {
+    LocalExists?: boolean;
+    GlobalExists?: boolean;
+    MergedDocument: TClass;
+    GlobalDocument?: TClass;
+    Etag?: string;
+    Metadata?: any;
+}
+
+interface configurationSettingDto {
+    LocalExists: boolean;
+    GlobalExists: boolean;
+    EffectiveValue: string;
+    GlobalValue: string;
+}
+
+interface configurationSettingsDto {
+    Results: dictionary<configurationSettingDto>;
 }
 
 interface replicationsDto {
@@ -662,6 +685,8 @@ interface predefinedSqlConnectionDto {
     Name:string;
     FactoryName: string;
     ConnectionString: string;
+    HasGlobal?: boolean;
+    HasLocal?: boolean;
 }
 
 interface facetDto {
@@ -1221,4 +1246,8 @@ interface synchronizationConfigDto {
     FileConflictResolution: string;
     MaxNumberOfSynchronizationsPerDestination: number;
     SynchronizationLockTimeoutMiliseconds: number;
+}
+
+interface copyFromParentDto<T> {
+    copyFromParent(parent: T);
 }

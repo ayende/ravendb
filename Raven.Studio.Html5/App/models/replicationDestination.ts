@@ -11,6 +11,13 @@ class replicationDestination {
     disabled = ko.observable<boolean>().extend({ required: true });
     clientVisibleUrl = ko.observable<string>().extend({ required: true });
     skipIndexReplication = ko.observable<boolean>().extend({ required: true });
+    hasGlobal = ko.observable<boolean>(false);
+    hasLocal = ko.observable<boolean>(true);
+
+    globalConfiguration = ko.observable<replicationDestination>();
+
+    sourceCollections = ko.observableArray<string>().extend({required: false});
+    enableReplicateOnlyFromCollections = ko.observable<boolean>();
 
     name = ko.computed(() => {
         var prefix = this.disabled() ? "[disabled]" : null;
@@ -24,6 +31,8 @@ class replicationDestination {
             || "[empty]";
     });
     isValid = ko.computed(() => this.url() != null && this.url().length > 0);
+
+    canEdit = ko.computed(() => this.hasLocal());
 
 
     // data members for the ui
@@ -70,12 +79,18 @@ class replicationDestination {
         this.disabled(dto.Disabled);
         this.clientVisibleUrl(dto.ClientVisibleUrl);
         this.skipIndexReplication(dto.SkipIndexReplication);
+        this.sourceCollections(dto.SourceCollections);
+
+        this.enableReplicateOnlyFromCollections = ko.observable<boolean>(typeof dto.SourceCollections !== 'undefined' && dto.SourceCollections.length > 0);
 
         if (this.username()) {
             this.isUserCredentials(true);
         } else if (this.apiKey()) {
             this.isApiKeyCredentials(true);
         }
+
+        this.hasGlobal(dto.HasGlobal);
+        this.hasLocal(dto.HasLocal);
     }
 
     static empty(databaseName: string): replicationDestination {
@@ -90,7 +105,10 @@ class replicationDestination {
             IgnoredClient: false,
             Disabled: false,
             ClientVisibleUrl: null,
-            SkipIndexReplication: false
+            SkipIndexReplication: false,
+            SourceCollections: [],
+            HasGlobal: false,
+            HasLocal: true
         });
     }
 
@@ -122,7 +140,8 @@ class replicationDestination {
             IgnoredClient: this.ignoredClient(),
             Disabled: this.disabled(),
             ClientVisibleUrl: this.clientVisibleUrl(),
-            SkipIndexReplication: this.skipIndexReplication()
+            SkipIndexReplication: this.skipIndexReplication(),
+            SourceCollections: this.sourceCollections()
         };
     }
 
@@ -132,6 +151,27 @@ class replicationDestination {
             url = url.substring(0, url.length - 1);
         }
         return url;
+    }
+
+    copyFromGlobal() {
+        if (this.globalConfiguration()) {
+            var gConfig = this.globalConfiguration();
+            this.url(gConfig.url());
+            this.username(gConfig.username());
+            this.password(gConfig.password());
+            this.domain(gConfig.domain());
+            this.apiKey(gConfig.apiKey());
+            this.database(gConfig.database());
+            this.transitiveReplicationBehavior(gConfig.transitiveReplicationBehavior());
+            this.ignoredClient(gConfig.ignoredClient());
+            this.disabled(gConfig.disabled());
+            this.clientVisibleUrl(gConfig.clientVisibleUrl());
+            this.skipIndexReplication(gConfig.skipIndexReplication());
+            this.hasGlobal(true);
+            this.hasLocal(false);
+            this.isUserCredentials(gConfig.isUserCredentials());
+            this.isApiKeyCredentials(gConfig.isApiKeyCredentials());
+        }
     }
 }
 
