@@ -935,8 +935,8 @@ namespace Raven.Database.FileSystem.Storage.Voron
 					{
 						var metadata = (RavenJObject) file["metadata"];
 
-						if (metadata.ContainsKey(RavenConstants.RavenDocumentDeleteMarker) &&
-							metadata.Value<bool>(RavenConstants.RavenDocumentDeleteMarker))
+						if (metadata.ContainsKey(RavenConstants.RavenDeleteMarker) &&
+							metadata.Value<bool>(RavenConstants.RavenDeleteMarker))
 						{
 							return existingEtag;
 						}

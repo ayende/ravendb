@@ -90,7 +90,7 @@ namespace Raven.Database.Server.Tenancy
             if (jsonDocument == null ||
                 jsonDocument.Metadata == null ||
                 jsonDocument.Metadata.Value<bool>(Constants.RavenDocumentDoesNotExists) ||
-                jsonDocument.Metadata.Value<bool>(Constants.RavenDocumentDeleteMarker))
+                jsonDocument.Metadata.Value<bool>(Constants.RavenDeleteMarker))
                 return null;
 
             var document = jsonDocument.DataAsJson.JsonDeserialization<DatabaseDocument>();

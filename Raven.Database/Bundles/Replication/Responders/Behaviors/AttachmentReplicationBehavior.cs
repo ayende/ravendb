@@ -50,7 +50,7 @@ namespace Raven.Bundles.Replication.Responders
 			var memoryStream = new MemoryStream();
 			conflictAttachment.WriteTo(memoryStream);
 			memoryStream.Position = 0;
-			var etag = existingMetadata.Value<bool>(Constants.RavenDocumentDeleteMarker) ? null : existingItem.Etag;
+			var etag = existingMetadata.Value<bool>(Constants.RavenDeleteMarker) ? null : existingItem.Etag;
 			var newEtag = Actions.Attachments.AddAttachment(id, etag,
 			                                  memoryStream,
 			                                  new RavenJObject

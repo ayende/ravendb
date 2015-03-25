@@ -22,7 +22,7 @@ namespace Raven.Tests.Issues
 				store.DatabaseCommands.Put(
 					"docs/1", null, new RavenJObject(), new RavenJObject
 					                                     {
-						                                     { Constants.RavenDocumentDeleteMarker, "true" }
+						                                     { Constants.RavenDeleteMarker, "true" }
 					                                     });
 
 				store.DatabaseCommands.Put(

@@ -1,7 +1,5 @@
 using System;
-using System.Linq;
 using Raven.Abstractions.Data;
-using Raven.Abstractions.Json.Linq;
 using Raven.Abstractions.Logging;
 using Raven.Database.Bundles.Replication.Impl;
 using Raven.Database.Storage;
@@ -24,16 +22,11 @@ namespace Raven.Database.Bundles.Replication.Responders.Behaviors
 
 		public void Replicate(string id, RavenJObject metadata, TExternal incoming)
 		{
-			if (metadata.Value<bool>(Constants.RavenDocumentDeleteMarker))
+			if (metadata.Value<bool>(Constants.RavenDeleteMarker))
 			{
 				ReplicateDelete(id, metadata, incoming);
 				return;
-			}
-			
-			if (metadata.Value<bool>(Constants.RavenIndexDeleteMarker))
-			{
-				return;	
-			}
+			}					
 
 			TInternal existingItem;
 			Etag existingEtag;
@@ -161,36 +154,10 @@ namespace Raven.Database.Bundles.Replication.Responders.Behaviors
 				log.Debug("Replicating deleted item {0} from {1} that does not exist, ignoring", id, Src);
 				return;
 			}
-			if (existingMetadata.Value<bool>(Constants.RavenDocumentDeleteMarker)) //deleted locally as well
-			{
-				log.Debug("Replicating deleted item {0} from {1} that was deleted locally. Merging histories", id, Src);
-				var existingHistory = new RavenJArray(ReplicationData.GetHistory(existingMetadata));
-				var newHistory = new RavenJArray(ReplicationData.GetHistory(metadata));
-
-				foreach (var item in newHistory)
-				{
-					existingHistory.Add(item);
-				}
-
-
-				if (metadata.ContainsKey(Constants.RavenReplicationVersion) &&
-					metadata.ContainsKey(Constants.RavenReplicationSource))
-				{
-					existingHistory.Add(new RavenJObject
-						{
-							{Constants.RavenReplicationVersion, metadata[Constants.RavenReplicationVersion]},
-							{Constants.RavenReplicationSource, metadata[Constants.RavenReplicationSource]}
-						});
-				}
-
-				while (existingHistory.Length > Constants.ChangeHistoryLength)
-				{
-					existingHistory.RemoveAt(0);
-				}
-
-				MarkAsDeleted(id, metadata);
+			
+			if (ReplicateDeletedDocumentIfNeeded(id, metadata, existingMetadata)) 
 				return;
-			}
+
 			if (Historian.IsDirectChildOfCurrent(metadata, existingMetadata)) // not modified
 			{
 				log.Debug("Delete of existing item {0} was replicated successfully from {1}", id, Src);
@@ -235,7 +202,40 @@ namespace Raven.Database.Bundles.Replication.Responders.Behaviors
 				}));
 
 		}
-		
+
+		private bool ReplicateDeletedDocumentIfNeeded(string id, RavenJObject metadata, RavenJObject existingMetadata)
+		{
+			if (existingMetadata.Value<bool>(Constants.RavenDeleteMarker)) //deleted locally as well
+			{
+				log.Debug("Replicating deleted item {0} from {1} that was deleted locally. Merging histories", id, Src);
+				var existingHistory = new RavenJArray(ReplicationData.GetHistory(existingMetadata));
+				var newHistory = new RavenJArray(ReplicationData.GetHistory(metadata));
+
+				foreach (var item in newHistory)
+				{
+					existingHistory.Add(item);
+				}
+
+				if (metadata.ContainsKey(Constants.RavenReplicationVersion) &&
+				    metadata.ContainsKey(Constants.RavenReplicationSource))
+				{
+					existingHistory.Add(new RavenJObject
+					{
+						{Constants.RavenReplicationVersion, metadata[Constants.RavenReplicationVersion]},
+						{Constants.RavenReplicationSource, metadata[Constants.RavenReplicationSource]}
+					});
+				}
+
+				while (existingHistory.Length > Constants.ChangeHistoryLength)
+				{
+					existingHistory.RemoveAt(0);
+				}
+
+				MarkAsDeleted(id, metadata);
+				return true;
+			}
+			return false;
+		}
 
 		protected abstract void DeleteItem(string id, Etag etag);
 

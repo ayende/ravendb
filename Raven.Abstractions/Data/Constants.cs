@@ -45,7 +45,7 @@ namespace Raven.Abstractions.Data
 		public const string RavenDocumentDoesNotExists = "Raven-Document-Does-Not-Exists";
 		public const string Metadata = "@metadata";
 		public const string NotForReplication = "Raven-Not-For-Replication";
-		public const string RavenDocumentDeleteMarker = "Raven-Delete-Marker";
+		public const string RavenDeleteMarker = "Raven-Delete-Marker";
 		public const string RavenIndexDeleteMarker = "Raven-Index-Delete-Marker";
 		public const string ActiveBundles = "Raven/ActiveBundles";
 		public const string AllowBundlesChange = "Raven-Temp-Allow-Bundles-Change";

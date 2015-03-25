@@ -459,8 +459,8 @@ namespace Raven.Database.Storage.Voron.StorageActions
 				{
 					if (etag == Etag.Empty)
 					{
-						if (metadata.Metadata.ContainsKey(Constants.RavenDocumentDeleteMarker) &&
-							metadata.Metadata.Value<bool>(Constants.RavenDocumentDeleteMarker))
+						if (metadata.Metadata.ContainsKey(Constants.RavenDeleteMarker) &&
+							metadata.Metadata.Value<bool>(Constants.RavenDeleteMarker))
 						{
 							return existingEtag;
 						}
@@ -698,7 +698,7 @@ namespace Raven.Database.Storage.Voron.StorageActions
 						stat.IncrementCollection(entityName, size, doc.Key);
 					}
 
-					if (metadata.Metadata.ContainsKey(Constants.RavenDocumentDeleteMarker))
+					if (metadata.Metadata.ContainsKey(Constants.RavenDeleteMarker))
 						stat.Tombstones++;
 
 				}

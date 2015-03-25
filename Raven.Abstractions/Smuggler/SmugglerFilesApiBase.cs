@@ -38,8 +38,8 @@ namespace Raven.Abstractions.Smuggler
             {
                 get 
                 {
-                    if ( Metadata.ContainsKey( Constants.RavenDocumentDeleteMarker ))
-                        return Metadata[Constants.RavenDocumentDeleteMarker].Value<bool>();
+                    if ( Metadata.ContainsKey( Constants.RavenDeleteMarker ))
+                        return Metadata[Constants.RavenDeleteMarker].Value<bool>();
 
                     return false;
                 }

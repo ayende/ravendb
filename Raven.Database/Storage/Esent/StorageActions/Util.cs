@@ -27,8 +27,8 @@ namespace Raven.Database.Storage.Esent.StorageActions
 					if (etag == Etag.Empty)
 					{
 						var metadata = Api.RetrieveColumn(session, Documents, tableColumnsCache.DocumentsColumns["metadata"]).ToJObject();
-						if (metadata.ContainsKey(Constants.RavenDocumentDeleteMarker) &&
-							metadata.Value<bool>(Constants.RavenDocumentDeleteMarker))
+						if (metadata.ContainsKey(Constants.RavenDeleteMarker) &&
+							metadata.Value<bool>(Constants.RavenDeleteMarker))
 						{
 							return existingEtag;
 						}

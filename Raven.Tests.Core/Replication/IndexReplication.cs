@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Raven.Abstractions.Connection;
 using Raven.Abstractions.Data;
@@ -140,13 +141,13 @@ namespace Raven.Tests.Core.Replication
 				replicationTask.ReplicateIndexesAndTransformersTask(null);
 
 				var expectedIndexNames = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase) { userIndex.IndexName };
-				var indexStatsAfterReplication1 = destination1.DatabaseCommands.ForDatabase("testDB").GetStatistics().Indexes.Select(x => x.Name);
+				var indexStatsAfterReplication1 = destination1.DatabaseCommands.ForDatabase("testDB").GetStatistics().Indexes.Select(x => x.Name).ToArray();
 				Assert.True(expectedIndexNames.SetEquals(indexStatsAfterReplication1));
 
-				var indexStatsAfterReplication3 = destination3.DatabaseCommands.ForDatabase("testDB").GetStatistics().Indexes.Select(x => x.Name);
+				var indexStatsAfterReplication3 = destination3.DatabaseCommands.ForDatabase("testDB").GetStatistics().Indexes.Select(x => x.Name).ToArray();
 				Assert.True(expectedIndexNames.SetEquals(indexStatsAfterReplication3));
 
-				var indexStatsAfterReplication2 = destination2.DatabaseCommands.ForDatabase("testDB").GetStatistics().Indexes.Select(x => x.Name);
+				var indexStatsAfterReplication2 = destination2.DatabaseCommands.ForDatabase("testDB").GetStatistics().Indexes.Select(x => x.Name).ToArray();
 				Assert.True(expectedIndexNames.SetEquals(indexStatsAfterReplication2));
 
 				source.DatabaseCommands.ForDatabase("testDB").DeleteIndex(userIndex.IndexName);
@@ -154,14 +155,15 @@ namespace Raven.Tests.Core.Replication
 				//the index is now replicated on all servers.
 				//now delete the index and verify that deletion is replicated
 				replicationTask.ReplicateIndexesAndTransformersTask(null);
+				
 
-				indexStatsAfterReplication1 = destination1.DatabaseCommands.ForDatabase("testDB").GetStatistics().Indexes.Select(x => x.Name);
+				indexStatsAfterReplication1 = destination1.DatabaseCommands.ForDatabase("testDB").GetStatistics().Indexes.Select(x => x.Name).ToArray();
 				Assert.Empty(indexStatsAfterReplication1);
 
-				indexStatsAfterReplication2 = destination2.DatabaseCommands.ForDatabase("testDB").GetStatistics().Indexes.Select(x => x.Name);
+				indexStatsAfterReplication2 = destination2.DatabaseCommands.ForDatabase("testDB").GetStatistics().Indexes.Select(x => x.Name).ToArray();
 				Assert.Empty(indexStatsAfterReplication2);
 
-				indexStatsAfterReplication3 = destination3.DatabaseCommands.ForDatabase("testDB").GetStatistics().Indexes.Select(x => x.Name);
+				indexStatsAfterReplication3 = destination3.DatabaseCommands.ForDatabase("testDB").GetStatistics().Indexes.Select(x => x.Name).ToArray();
 				Assert.Empty(indexStatsAfterReplication3);
 			}				
 		}

@@ -2,8 +2,6 @@ using Raven.Abstractions.Data;
 using Raven.Bundles.Replication.Plugins;
 using Raven.Bundles.Replication.Tasks;
 using Raven.Database.Bundles.Replication.Responders.Behaviors;
-using Raven.Database.Impl;
-using Raven.Database.Storage;
 using Raven.Json.Linq;
 using System.Collections.Generic;
 using System.Linq;
@@ -40,7 +38,7 @@ namespace Raven.Bundles.Replication.Responders
 		{
 			existingMetadata.Add(Constants.RavenReplicationConflict, true);
 			Actions.Documents.AddDocument(existingDocumentConflictId, Etag.Empty, existingItem.DataAsJson, existingItem.Metadata);
-			var etag = existingMetadata.Value<bool>(Constants.RavenDocumentDeleteMarker) ? Etag.Empty : existingItem.Etag;
+			var etag = existingMetadata.Value<bool>(Constants.RavenDeleteMarker) ? Etag.Empty : existingItem.Etag;
 			Actions.Lists.Remove(Constants.RavenReplicationDocsTombstones, id);
 			var conflictsArray = new RavenJArray(existingDocumentConflictId, newDocumentConflictId);
 			var addResult = Actions.Documents.AddDocument(id, etag,
@@ -112,12 +110,12 @@ namespace Raven.Bundles.Replication.Responders
 					Metadata = listItem.Data
 				};
 				return listItem.Data;
+
 			}
 			existingEtag = Etag.Empty;
 			existingItem = null;
 			deleted = false;
 			return null;
-
 		}
 
 		protected override bool TryResolveConflict(string id, RavenJObject metadata, RavenJObject document, JsonDocument existing, out RavenJObject metadataToSave,
