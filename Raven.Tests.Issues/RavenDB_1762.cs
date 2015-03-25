@@ -84,7 +84,7 @@ namespace Raven.Tests.Issues
             {
                 if (Enabled)
                 {
-                    if (metadata.ContainsKey(Constants.RavenDeleteMarker))
+                    if (metadata.ContainsKey(Constants.RavenDocumentDeleteMarker))
                     {
                         ReplaceValues(document, existingDoc.DataAsJson);
                         ReplaceValues(document, existingDoc.Metadata);

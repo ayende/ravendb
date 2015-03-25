@@ -16,7 +16,7 @@ namespace Raven.Tests.Issues
 			{
 				store.DatabaseCommands.Put("users/1", null, new RavenJObject(), new RavenJObject
 				{
-					{Constants.RavenDeleteMarker, "true"}
+					{Constants.RavenDocumentDeleteMarker, "true"}
 				});
 
 				using (var s = store.OpenSession())
