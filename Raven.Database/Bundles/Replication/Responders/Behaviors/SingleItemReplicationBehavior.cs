@@ -24,11 +24,17 @@ namespace Raven.Database.Bundles.Replication.Responders.Behaviors
 
 		public void Replicate(string id, RavenJObject metadata, TExternal incoming)
 		{
-			if (metadata.Value<bool>(Constants.RavenDeleteMarker))
+			if (metadata.Value<bool>(Constants.RavenDocumentDeleteMarker))
 			{
 				ReplicateDelete(id, metadata, incoming);
 				return;
 			}
+			
+			if (metadata.Value<bool>(Constants.RavenIndexDeleteMarker))
+			{
+				return;	
+			}
+
 			TInternal existingItem;
 			Etag existingEtag;
 			bool deleted;
@@ -155,6 +161,11 @@ namespace Raven.Database.Bundles.Replication.Responders.Behaviors
 				log.Debug("Replicating deleted item {0} from {1} that does not exist, ignoring.", id, Src);
 				return;
 			}
+			if (existingMetadata.Value<bool>(Constants.RavenDocumentDeleteMarker)) //deleted locally as well
+			{
+				log.Debug("Replicating deleted item {0} from {1} that was deleted locally. Merging histories", id, Src);
+				var existingHistory = new RavenJArray(ReplicationData.GetHistory(existingMetadata));
+				var newHistory = new RavenJArray(ReplicationData.GetHistory(metadata));
 
 			RavenJObject currentReplicationEntry = null;
 			if (newMetadata.ContainsKey(Constants.RavenReplicationVersion) &&

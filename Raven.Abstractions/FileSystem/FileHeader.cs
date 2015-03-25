@@ -110,8 +110,8 @@ namespace Raven.Abstractions.FileSystem
         {
             get
             {                
-                if (Metadata.ContainsKey(Constants.RavenDeleteMarker))
-                    return Metadata[Constants.RavenDeleteMarker].Value<bool>();
+                if (Metadata.ContainsKey(Constants.RavenDocumentDeleteMarker))
+                    return Metadata[Constants.RavenDocumentDeleteMarker].Value<bool>();
                 return false;
             }
         }

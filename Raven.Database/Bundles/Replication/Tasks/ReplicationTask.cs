@@ -17,7 +17,6 @@ using Raven.Database.Plugins;
 using Raven.Database.Prefetching;
 using Raven.Database.Storage;
 using Raven.Json.Linq;
-using System.Globalization;
 using Raven.Abstractions;
 using Raven.Abstractions.Connection;
 using Raven.Abstractions.Data;
@@ -62,8 +61,8 @@ namespace Raven.Bundles.Replication.Tasks
 		private TimeSpan _lastQueriedFrequency;
 		private Timer _indexReplicationTaskTimer;
 		private Timer _lastQueriedTaskTimer;
-		private object _indexReplicationTaskLock = new object();
-		private object _lastQueriedTaskLock = new object();
+		private readonly object _indexReplicationTaskLock = new object();
+		private readonly object _lastQueriedTaskLock = new object();
 
 		private readonly ConcurrentDictionary<string, DateTime> destinationAlertSent = new ConcurrentDictionary<string, DateTime>(); 
 
@@ -919,6 +918,18 @@ namespace Raven.Bundles.Replication.Tasks
 			{
 				foreach (var destination in GetReplicationDestinations(x => x.SkipIndexReplication == false))
 				{
+//					var indexTombstones = actions
+//						.Lists
+//						.Read(Constants.RavenReplicationIndexesTombstones, result.LastEtag, lastEtag, maxNumberOfTombstones + 1)
+//						.Select(x => new JsonDocument
+//						{
+//							Etag = x.Etag,
+//							Key = x.Key,
+//							Metadata = x.Data,
+//							DataAsJson = new RavenJObject()
+//						})
+//						.ToList();
+
 					if (docDb.Indexes.Definitions.Length > 0)
 					{
 						foreach (var definition in docDb.Indexes.Definitions)
@@ -1115,7 +1126,7 @@ namespace Raven.Bundles.Replication.Tasks
 				lastEtag = docsToReplicate[docsToReplicate.Count - 1].Etag;
 
 			var maxNumberOfTombstones = Math.Max(1024, docsToReplicate.Count);
-			var tombstones = actions
+			var documentTombstones = actions
 				.Lists
 				.Read(Constants.RavenReplicationDocsTombstones, result.LastEtag, lastEtag, maxNumberOfTombstones + 1)
 				.Select(x => new JsonDocument
@@ -1125,13 +1136,12 @@ namespace Raven.Bundles.Replication.Tasks
 					Metadata = x.Data,
 					DataAsJson = new RavenJObject()
 				})
-				.ToList();
+				.ToList();		
 
-			var results = docsToReplicate.Concat(tombstones);
-
-			if (tombstones.Count >= maxNumberOfTombstones + 1)
+			var results = docsToReplicate.Concat(documentTombstones);
+			if (documentTombstones.Count >= maxNumberOfTombstones + 1)
 			{
-				var lastTombstoneEtag = tombstones[tombstones.Count - 1].Etag;
+				var lastTombstoneEtag = documentTombstones[documentTombstones.Count - 1].Etag;
 				log.Info("Replication batch trimmed. Found more than '{0}' document tombstones. Last etag from prefetcher: '{1}'. Last tombstone etag: '{2}'.", maxNumberOfTombstones, lastEtag, lastTombstoneEtag);
 
 				results = results.Where(x => EtagUtil.IsGreaterThan(x.Etag, lastTombstoneEtag) == false);

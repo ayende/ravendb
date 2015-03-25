@@ -20,7 +20,7 @@ namespace Raven.Database.Bundles.PeriodicExports.Triggers
         {
             var metadata = new RavenJObject
 			{
-				{Constants.RavenDeleteMarker, true},
+				{Constants.RavenDocumentDeleteMarker, true},
 			};
 
             Database.TransactionalStorage.Batch(accessor => 

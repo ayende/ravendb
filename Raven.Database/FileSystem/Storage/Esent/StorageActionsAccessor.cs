@@ -931,8 +931,8 @@ namespace Raven.Database.FileSystem.Storage.Esent
 					{
 						var metadata = RavenJObject.Parse(Api.RetrieveColumnAsString(session, Files, tableColumnsCache.FilesColumns["metadata"], Encoding.Unicode));
 
-						if (metadata.ContainsKey(Constants.RavenDeleteMarker) &&
-							metadata.Value<bool>(Constants.RavenDeleteMarker))
+						if (metadata.ContainsKey(Constants.RavenDocumentDeleteMarker) &&
+							metadata.Value<bool>(Constants.RavenDocumentDeleteMarker))
 						{
 							return existingEtag;
 						}

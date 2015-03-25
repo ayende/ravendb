@@ -19,8 +19,8 @@ namespace Raven.Database.Bundles.Replication.Plugins
 		                                out byte[] dataToSave)
 		{
 			var existingAttachmentIsInConflict = existingAttachment.Metadata[Constants.RavenReplicationConflict] != null;
-			var existingAttachmentIsDeleted = existingAttachment.Metadata[Constants.RavenDeleteMarker] != null
-			                                  && existingAttachment.Metadata[Constants.RavenDeleteMarker].Value<bool>();
+			var existingAttachmentIsDeleted = existingAttachment.Metadata[Constants.RavenDocumentDeleteMarker] != null
+			                                  && existingAttachment.Metadata[Constants.RavenDocumentDeleteMarker].Value<bool>();
 
 			metadataToSave = null;
 			dataToSave = null;

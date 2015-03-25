@@ -40,7 +40,7 @@ namespace Raven.Bundles.Replication.Responders
 		{
 			existingMetadata.Add(Constants.RavenReplicationConflict, true);
 			Actions.Documents.AddDocument(existingDocumentConflictId, Etag.Empty, existingItem.DataAsJson, existingItem.Metadata);
-			var etag = existingMetadata.Value<bool>(Constants.RavenDeleteMarker) ? Etag.Empty : existingItem.Etag;
+			var etag = existingMetadata.Value<bool>(Constants.RavenDocumentDeleteMarker) ? Etag.Empty : existingItem.Etag;
 			Actions.Lists.Remove(Constants.RavenReplicationDocsTombstones, id);
 			var conflictsArray = new RavenJArray(existingDocumentConflictId, newDocumentConflictId);
 			var addResult = Actions.Documents.AddDocument(id, etag,
@@ -121,18 +121,18 @@ namespace Raven.Bundles.Replication.Responders
 		}
 
 		protected override bool TryResolveConflict(string id, RavenJObject metadata, RavenJObject document, JsonDocument existing, out RavenJObject metadataToSave,
-										out RavenJObject documentToSave)
+			out RavenJObject documentToSave)
 		{
 			foreach (var replicationConflictResolver in ReplicationConflictResolvers)
-		{
+			{
 				if (replicationConflictResolver.TryResolve(id, metadata, document, existing, key => Actions.Documents.DocumentByKey(key),
-														   out metadataToSave, out documentToSave))
+					out metadataToSave, out documentToSave))
 					return true;
-		}
+			}
 
 			metadataToSave = null;
 			documentToSave = null;
 
 			return false;
-	}
-}}
+		}
+	}}

@@ -18,8 +18,8 @@
 		                                out RavenJObject documentToSave)
 		{
 			var existingDocumentIsInConflict = existingDoc.Metadata[Constants.RavenReplicationConflict] != null;
-			var existingDocumentIsDeleted = existingDoc.Metadata[Constants.RavenDeleteMarker] != null
-			                                && existingDoc.Metadata[Constants.RavenDeleteMarker].Value<bool>();
+			var existingDocumentIsDeleted = existingDoc.Metadata[Constants.RavenDocumentDeleteMarker] != null
+			                                && existingDoc.Metadata[Constants.RavenDocumentDeleteMarker].Value<bool>();
 
 			metadataToSave = null;
 			documentToSave = null;
