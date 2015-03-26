@@ -2,8 +2,6 @@ using Raven.Abstractions.Data;
 using Raven.Bundles.Replication.Plugins;
 using Raven.Bundles.Replication.Tasks;
 using Raven.Database.Bundles.Replication.Responders.Behaviors;
-using Raven.Database.Impl;
-using Raven.Database.Storage;
 using Raven.Json.Linq;
 using System.Collections.Generic;
 using System.Linq;
@@ -112,27 +110,27 @@ namespace Raven.Bundles.Replication.Responders
 					Metadata = listItem.Data
 				};
 				return listItem.Data;
+
 			}
 			existingEtag = Etag.Empty;
 			existingItem = null;
 			deleted = false;
 			return null;
-
 		}
 
 		protected override bool TryResolveConflict(string id, RavenJObject metadata, RavenJObject document, JsonDocument existing, out RavenJObject metadataToSave,
-										out RavenJObject documentToSave)
+			out RavenJObject documentToSave)
 		{
 			foreach (var replicationConflictResolver in ReplicationConflictResolvers)
-		{
+			{
 				if (replicationConflictResolver.TryResolve(id, metadata, document, existing, key => Actions.Documents.DocumentByKey(key),
-														   out metadataToSave, out documentToSave))
+					out metadataToSave, out documentToSave))
 					return true;
-		}
+			}
 
 			metadataToSave = null;
 			documentToSave = null;
 
 			return false;
-	}
-}}
+		}
+	}}

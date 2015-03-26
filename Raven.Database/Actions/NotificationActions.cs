@@ -4,7 +4,6 @@
 //  </copyright>
 // -----------------------------------------------------------------------
 using System;
-
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Logging;
 using Raven.Database.Data;
@@ -23,7 +22,9 @@ namespace Raven.Database.Actions
 
         public event Action<DocumentDatabase, DocumentChangeNotification, RavenJObject> OnDocumentChange;
 
-        public void RaiseNotifications(DocumentChangeNotification obj, RavenJObject metadata)
+	    public event Action<DocumentDatabase, IndexChangeNotification> OnIndexChange;
+
+	    public void RaiseNotifications(DocumentChangeNotification obj, RavenJObject metadata)
         {
             Database.TransportState.Send(obj);
             var onDocumentChange = OnDocumentChange;
@@ -34,6 +35,9 @@ namespace Raven.Database.Actions
         public void RaiseNotifications(IndexChangeNotification obj)
         {
             Database.TransportState.Send(obj);
+			var onIndexChange = OnIndexChange;
+			if (onIndexChange != null) 
+				onIndexChange(Database, obj);
         }
 
         public void RaiseNotifications(TransformerChangeNotification obj)

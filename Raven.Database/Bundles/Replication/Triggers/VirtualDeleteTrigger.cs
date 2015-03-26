@@ -9,7 +9,6 @@ using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
 using Raven.Bundles.Replication.Impl;
 using Raven.Database.Bundles.Replication.Impl;
-using Raven.Database.Impl;
 using Raven.Database.Plugins;
 using Raven.Json.Linq;
 
@@ -27,6 +26,11 @@ namespace Raven.Bundles.Replication.Triggers
 	public class VirtualDeleteTrigger : AbstractDeleteTrigger
 	{
 		readonly ThreadLocal<RavenJArray> deletedHistory = new ThreadLocal<RavenJArray>();
+
+		public override void Initialize()
+		{
+			Database.Notifications.OnIndexChange += OnIndexChange;
+		}
 
 		public override void OnDelete(string key, TransactionInformation transactionInformation)
 		{
@@ -75,7 +79,7 @@ namespace Raven.Bundles.Replication.Triggers
 				if (conflictSource != currentSource)
 					continue;
 
-				this.deletedHistory.Value = new RavenJArray
+				deletedHistory.Value = new RavenJArray
 				{
 					new RavenJObject
 					{
@@ -106,5 +110,22 @@ namespace Raven.Bundles.Replication.Triggers
 
 			return conflict != null && conflict.Value<bool>() && document.DataAsJson.Value<RavenJArray>("Conflicts") != null;
 		}
+
+		private void OnIndexChange(Database.DocumentDatabase database, IndexChangeNotification eventArgs)
+		{
+			if (eventArgs.Type == IndexChangeTypes.IndexRemoved)
+			{
+				var metadata = new RavenJObject
+				{
+					{ Constants.RavenIndexDeleteMarker, true },
+					{ Constants.RavenReplicationSource, Database.TransactionalStorage.Id.ToString() },
+					{ Constants.RavenReplicationVersion, ReplicationHiLo.NextId(Database) }
+				};
+
+				Database.TransactionalStorage.Batch(accessor =>
+					accessor.Lists.Set(Constants.RavenReplicationIndexesTombstones, eventArgs.Name, metadata, UuidType.Indexing));
+			}
+		}
+
 	}
 }
