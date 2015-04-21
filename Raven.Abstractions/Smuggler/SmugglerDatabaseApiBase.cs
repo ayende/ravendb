@@ -21,7 +21,6 @@ using Raven.Abstractions.Util;
 using Raven.Abstractions.Extensions;
 using Raven.Json.Linq;
 using Raven.Imports.Newtonsoft.Json;
-using Raven.Abstractions.Extensions;
 
 namespace Raven.Abstractions.Smuggler
 {
@@ -33,9 +32,24 @@ namespace Raven.Abstractions.Smuggler
 
         private const string IncrementalExportStateFile = "IncrementalExport.state.json";
 
+		protected readonly ILog _log;
+
+
         protected SmugglerDatabaseApiBase(SmugglerDatabaseOptions options)
 		{
 			this.Options = options;
+
+			if (options != null && options.ShouldLogErrorsAndContinue) //if null, by default logging is not enabled
+				_log = LogManager.GetCurrentClassLogger();
+
+		}
+
+		protected bool ShouldLogErrorsAndContinue
+		{
+			get
+			{
+				return Options != null && Options.ShouldLogErrorsAndContinue;
+			}
 		}
 
         public virtual async Task<OperationState> ExportData(SmugglerExportOptions<RavenConnectionStringOptions> exportOptions)
@@ -901,27 +915,41 @@ namespace Raven.Abstractions.Smuggler
             };
 
             JsonDocument lastEtagsDocument = null;
-            if (Options.UseContinuationFile)
-            {
-                lastEtagsDocument = Operations.GetDocument(continuationDocId);
-                if ( lastEtagsDocument == null )
-                {
-                    lastEtagsDocument = new JsonDocument()
-                    {
-                        Key = continuationDocId,                        
-                        Etag = Etag.Empty,
-                        DataAsJson = RavenJObject.FromObject(state)
-                    };
-                }
-                else
-                {                    
-                    state = lastEtagsDocument.DataAsJson.JsonDeserialization<OperationState>();
-                }
 
-                JsonDocument.EnsureIdInMetadata(lastEtagsDocument);
-            }
+			try
+			{
+				if (Options.UseContinuationFile)
+				{
+					lastEtagsDocument = Operations.GetDocument(continuationDocId);
+					if (lastEtagsDocument == null)
+					{
+						lastEtagsDocument = new JsonDocument()
+						{
+							Key = continuationDocId,
+							Etag = Etag.Empty,
+							DataAsJson = RavenJObject.FromObject(state)
+						};
+					}
+					else
+					{
+						state = lastEtagsDocument.DataAsJson.JsonDeserialization<OperationState>();
+					}
 
-            int skippedDocuments = 0;
+					JsonDocument.EnsureIdInMetadata(lastEtagsDocument);
+				}
+			}
+			catch (Exception e)
+			{
+				if (ShouldLogErrorsAndContinue)
+				{
+					const string message = "Failed loading continuation state";
+					_log.ErrorException(message, e);
+					Operations.ShowProgress(message);
+				}
+				else throw;
+			}
+
+			int skippedDocuments = 0;
             long skippedDocumentsSize = 0;
 
             Etag tempLastEtag = Etag.Empty;
@@ -930,55 +958,74 @@ namespace Raven.Abstractions.Smuggler
 			{
                 Options.CancelToken.Token.ThrowIfCancellationRequested();
 
-				var document = (RavenJObject)RavenJToken.ReadFrom(jsonReader);
-                var size = DocumentHelpers.GetRoughSize(document);
-				if (size > 1024 * 1024)
+				RavenJObject document = null;
+				try
 				{
-					Console.WriteLine("Large document warning: {0:#,#.##;;0} kb - {1}",
-									    (double)size / 1024,
-									    document["@metadata"].Value<string>("@id"));
+					document = (RavenJObject) RavenJToken.ReadFrom(jsonReader);
+					var size = DocumentHelpers.GetRoughSize(document);
+					if (size > 1024*1024)
+					{
+						Console.WriteLine("Large document warning: {0:#,#.##;;0} kb - {1}",
+							(double) size/1024,
+							document["@metadata"].Value<string>("@id"));
+					}
+					if ((Options.OperateOnTypes & ItemType.Documents) != ItemType.Documents)
+						continue;
+					if (Options.MatchFilters(document) == false)
+						continue;
+
+					if (Options.ShouldExcludeExpired && Options.ExcludeExpired(document, now))
+						continue;
+
+					if (!string.IsNullOrEmpty(Options.TransformScript))
+						document = await Operations.TransformDocument(document, Options.TransformScript);
+
+					// If document is null after a transform we skip it. 
+					if (document == null)
+						continue;
+
+					var metadata = document["@metadata"] as RavenJObject;
+					if (metadata != null)
+					{
+						if (Options.SkipConflicted && metadata.ContainsKey(Constants.RavenReplicationConflictDocument))
+							continue;
+
+						if (Options.StripReplicationInformation)
+							document["@metadata"] = Operations.StripReplicationInformationFromMetadata(metadata);
+
+						if (Options.ShouldDisableVersioningBundle)
+							document["@metadata"] = Operations.DisableVersioning(metadata);
+					}
+
+					if (Options.UseContinuationFile)
+					{
+						tempLastEtag = Etag.Parse(document.Value<RavenJObject>("@metadata").Value<string>("@etag"));
+						if (tempLastEtag.CompareTo(state.LastDocsEtag) <= 0) // tempLastEtag < lastEtag therefore we are skipping.
+						{
+							skippedDocuments++;
+							skippedDocumentsSize += size;
+							continue;
+						}
+					}
+
+					await Operations.PutDocument(document, (int) size);
 				}
-                if ((Options.OperateOnTypes & ItemType.Documents) != ItemType.Documents)
-					continue;
-                if (Options.MatchFilters(document) == false)
-					continue;
+				catch (Exception e)
+				{
+					if (ShouldLogErrorsAndContinue)
+					{
+						string message;
+						if (document != null)
+							message = "Failed to import document - " + document;
+						else
+							message = "Failed to import document";
 
-                if (Options.ShouldExcludeExpired && Options.ExcludeExpired(document, now))
-					continue;
+						_log.ErrorException(message, e);
+						Operations.ShowProgress(message);
 
-                if (!string.IsNullOrEmpty(Options.TransformScript))
-                    document = await Operations.TransformDocument(document, Options.TransformScript);
-
-                // If document is null after a transform we skip it. 
-                if (document == null)
-                    continue;
-
-                var metadata = document["@metadata"] as RavenJObject;
-                if (metadata != null)
-                {
-                    if (Options.SkipConflicted && metadata.ContainsKey(Constants.RavenReplicationConflictDocument))
-                        continue;
-
-                    if (Options.StripReplicationInformation)
-                        document["@metadata"] = Operations.StripReplicationInformationFromMetadata(metadata);
-
-					if(Options.ShouldDisableVersioningBundle)
-						document["@metadata"] = Operations.DisableVersioning(metadata);
-                }
-
-                if (Options.UseContinuationFile)
-                {
-                    tempLastEtag = Etag.Parse(document.Value<RavenJObject>("@metadata").Value<string>("@etag"));
-                    if (tempLastEtag.CompareTo(state.LastDocsEtag) <= 0) // tempLastEtag < lastEtag therefore we are skipping.
-                    {
-                        skippedDocuments++;
-                        skippedDocumentsSize += size;
-                        continue;
-                    }     
-                }
-
-				await Operations.PutDocument(document, (int)size);
-
+					}
+					else throw;
+				}
 				count++;
 
                 if (count % Options.BatchSize == 0)
@@ -1048,7 +1095,21 @@ namespace Raven.Abstractions.Smuggler
 					definition.Remove("Analyzers");
 				}
 
-				await Operations.PutIndex(indexName, index);
+				try
+				{
+					await Operations.PutIndex(indexName, index);
+				}
+				catch (Exception e)
+				{
+					if (ShouldLogErrorsAndContinue)
+					{
+						var message = "Failed to import index - " + indexName;
+						_log.ErrorException(message, e);
+						Operations.ShowProgress(message);
+					}
+					else
+						throw;
+				}
 
 				count++;
 			}
@@ -1073,7 +1134,21 @@ namespace Raven.Abstractions.Smuggler
 				Operations.ShowProgress("Reading batch of {0,3} indexes, read so far: {1,10:#,#;;0}", indexes.Length, totalCount);
 				foreach (var index in indexes)
 				{
-					index.WriteTo(jsonWriter);
+					try
+					{
+						index.WriteTo(jsonWriter);
+					}
+					catch (Exception e)
+					{
+						if (ShouldLogErrorsAndContinue)
+						{
+							var message = string.Format("Failed to export index {0}", index);
+							_log.ErrorException(message, e);
+							Operations.ShowProgress(message);
+						}
+						else
+							throw;
+					}
 				}
 			}
 		}
