@@ -33,6 +33,7 @@ using Raven.Database.Config;
 using Raven.Database.Data;
 using Raven.Database.Extensions;
 using Raven.Database.Impl;
+using Raven.Database.Impl.BackgroundTaskExecuter;
 using Raven.Database.Impl.DTC;
 using Raven.Database.Indexing;
 using Raven.Database.Plugins;
@@ -79,13 +80,11 @@ namespace Raven.Database
 
 		private volatile bool disposed;
 
-		private Task indexingBackgroundTask;
-
-		private Task reducingBackgroundTask;
-
 		private readonly DocumentDatabaseInitializer initializer;
 
 		private readonly SizeLimitedConcurrentDictionary<string, TouchedDocumentInfo> recentTouches;
+
+		private readonly CancellationTokenSource _tpCts = new CancellationTokenSource();
 
 		public DocumentDatabase(InMemoryRavenConfiguration configuration, TransportState recievedTransportState = null)
 		{
@@ -96,7 +95,7 @@ namespace Raven.Database
 			Configuration = configuration;
 			transportState = recievedTransportState ?? new TransportState();
 			ExtensionsState = new AtomicDictionary<object>();
-
+			
 			using (LogManager.OpenMappedContext("database", Name ?? Constants.SystemDatabase))
 			{
 				Log.Debug("Start loading the following database: {0}", Name ?? Constants.SystemDatabase);
@@ -191,10 +190,13 @@ namespace Raven.Database
 					indexingExecuter = new IndexingExecuter(workContext, prefetcher, IndexReplacer);
 					InitializeTriggersExceptIndexCodecs();
 
-					RaiseIndexingWiringComplete();
+					
 
 					ExecuteStartupTasks();
 					lastCollectionEtags.InitializeBasedOnIndexingResults();
+					ReducingExecuter = new ReducingExecuter(workContext, IndexReplacer);
+
+					
 
 					Log.Debug("Finish loading the following database: {0}", configuration.DatabaseName ?? Constants.SystemDatabase);
 				}
@@ -714,6 +716,7 @@ namespace Raven.Database
 			Log.Debug("Start shutdown the following database: {0}", Name ?? Constants.SystemDatabase);
 
 			EventHandler onDisposing = Disposing;
+			_tpCts.Cancel();
 			if (onDisposing != null)
 			{
 				try
@@ -774,13 +777,11 @@ namespace Raven.Database
 
 			exceptionAggregator.Execute(() =>
 			{
-				if (indexingBackgroundTask != null)
-					indexingBackgroundTask.Wait();
+				StopMappingThreadPool();
 			});
 			exceptionAggregator.Execute(() =>
 			{
-				if (reducingBackgroundTask != null)
-					reducingBackgroundTask.Wait();
+				StopReducingThreadPool();
 			});
 
 			exceptionAggregator.Execute(() =>
@@ -926,6 +927,9 @@ namespace Raven.Database
 			}
 		}
 
+		public RavenThreadPool MappingThreadPool;
+		public RavenThreadPool ReducingThreadPool;
+
 		public void SpinBackgroundWorkers()
 		{
 			if (backgroundWorkersSpun)
@@ -940,21 +944,49 @@ namespace Raven.Database
 			backgroundWorkersSpun = true;
 
 			workContext.StartWork();
-			indexingBackgroundTask = Task.Factory.StartNew(indexingExecuter.Execute, CancellationToken.None, TaskCreationOptions.LongRunning, backgroundTaskScheduler);
 
-			ReducingExecuter = new ReducingExecuter(workContext, IndexReplacer);
+			MappingThreadPool = new RavenThreadPool(Configuration.MaxNumberOfParallelProcessingTasks * 2, _tpCts.Token, "Map Thread Pool", new[]
+					{
+						new Action(()=> indexingExecuter.Execute())
+					});
+			ReducingThreadPool = new RavenThreadPool(Configuration.MaxNumberOfParallelProcessingTasks * 2, _tpCts.Token, "Reduce Thread Pool", new[]
+					{
+						new Action(()=>ReducingExecuter.Execute())
+					});
 
-			reducingBackgroundTask = Task.Factory.StartNew(ReducingExecuter.Execute, CancellationToken.None, TaskCreationOptions.LongRunning, backgroundTaskScheduler);
+			MappingThreadPool.Start();
+			ReducingThreadPool.Start();
+
+			RaiseIndexingWiringComplete();
+
+		}
+
+		private void StopMappingThreadPool()
+		{
+			if (MappingThreadPool != null)
+			{
+				MappingThreadPool.WaitForWorkToBeDone();
+				MappingThreadPool.Dispose();
+				MappingThreadPool = null;
+			}
+			MappingThreadPool = null;
+		}
+
+		private void StopReducingThreadPool()
+		{
+			if (ReducingThreadPool != null)
+			{
+				ReducingThreadPool.WaitForWorkToBeDone();
+				ReducingThreadPool.Dispose();
+				ReducingThreadPool = null;
+			}
 		}
 
 		public void StopBackgroundWorkers()
 		{
 			workContext.StopWork();
-			if (indexingBackgroundTask != null)
-				indexingBackgroundTask.Wait();
-
-			if (reducingBackgroundTask != null)
-				reducingBackgroundTask.Wait();
+			StopMappingThreadPool();
+			StopReducingThreadPool();
 
 			backgroundWorkersSpun = false;
 		}
@@ -964,7 +996,7 @@ namespace Raven.Database
 			workContext.StopIndexing();
 			try
 			{
-				indexingBackgroundTask.Wait();
+				StopMappingThreadPool();
 			}
 			catch (Exception e)
 			{
@@ -973,7 +1005,7 @@ namespace Raven.Database
 
 			try
 			{
-				reducingBackgroundTask.Wait();
+				StopReducingThreadPool();
 			}
 			catch (Exception e)
 			{

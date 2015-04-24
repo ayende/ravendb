@@ -268,6 +268,9 @@
     <Compile Include="FileSystem\Plugins\AbstractFileReadTrigger.cs" />
     <Compile Include="FileSystem\Plugins\AbstractFilePutTrigger.cs" />
     <Compile Include="FileSystem\Plugins\TriggerExtensions.cs" />
+    <Compile Include="Impl\BackgroundTaskExecuter\DefaultBackgroundTaskExecuter.cs" />
+    <Compile Include="Impl\BackgroundTaskExecuter\IBackgroundTaskExecuter.cs" />
+    <Compile Include="Impl\BackgroundTaskExecuter\RavenThreadPool.cs" />
     <Compile Include="FileSystem\Smuggler\SmugglerEmbeddedFilesOperations.cs" />
     <Compile Include="FileSystem\Storage\Esent\Schema\Updates\From04To05.cs" />
     <Compile Include="FileSystem\Storage\Voron\Schema\Updates\From10To11.cs" />
@@ -766,8 +769,6 @@
     <Compile Include="Indexing\BaseBatchSizeAutoTuner.cs" />
     <Compile Include="Indexing\LuceneCodecDirectory.cs" />
     <Compile Include="Indexing\ReduceBatchSizeAutoTuner.cs" />
-    <Compile Include="Indexing\DefaultBackgroundTaskExecuter.cs" />
-    <Compile Include="Indexing\IBackgroundTaskExecuter.cs" />
     <Compile Include="Indexing\BackgroundTaskExecuter.cs" />
     <Compile Include="Indexing\IIndexingClassifier.cs" />
     <Compile Include="Indexing\IndexBatchSizeAutoTuner.cs" />

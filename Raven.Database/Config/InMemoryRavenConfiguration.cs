@@ -303,6 +303,8 @@ namespace Raven.Database.Config
 			Encryption.EncryptionKeyBitsPreference = ravenSettings.Encryption.EncryptionKeyBitsPreference.Value;
 
 			Indexing.MaxNumberOfItemsToProcessInTestIndexes = ravenSettings.Indexing.MaxNumberOfItemsToProcessInTestIndexes.Value;
+			Indexing.MaxNumberOfStoredIndexingBatchInfoElements = ravenSettings.Indexing.MaxNumberOfStoredIndexingBatchInfoElements.Value;
+			
 
 			TombstoneRetentionTime = ravenSettings.TombstoneRetentionTime.Value;
 
@@ -1056,8 +1058,8 @@ namespace Raven.Database.Config
         ///     Exception (an exception is thrown if we need to fetch fields from the document itself)
         /// </summary>
         public ImplicitFetchFieldsMode ImplicitFetchFieldsFromDocumentMode { get; set; }
-
-	    [Browsable(false)]
+		
+		[Browsable(false)]
 		[EditorBrowsable(EditorBrowsableState.Never)]
 		public void SetSystemDatabase()
 		{
@@ -1409,6 +1411,7 @@ namespace Raven.Database.Config
 		public class IndexingConfiguration
 		{
 			public int MaxNumberOfItemsToProcessInTestIndexes { get; set; }
+			public int MaxNumberOfStoredIndexingBatchInfoElements { get; set; }
 		}
 
 		public void UpdateDataDirForLegacySystemDb()
