@@ -84,7 +84,7 @@ namespace Voron
 
 		protected StorageEnvironmentOptions()
 		{
-			MaxNumberOfPagesInJournalBeforeFlush = 1024; // 4 MB
+			MaxNumberOfPagesInJournalBeforeFlush = (32 * 1024 * 1024) / 4096; // 32 MB
 
 			IdleFlushTimeout = 5000; // 5 seconds
 
@@ -96,7 +96,7 @@ namespace Voron
 
 			ScratchBufferOverflowTimeout = 5000;
 
-			MaxNumberOfPagesInMergedTransaction = 1024*128;// Ends up being 512 MB
+			MaxNumberOfPagesInMergedTransaction = 1024 * 32; // Ends up being 128 MB
 
 			OwnsPagers = true;
 			IncrementalBackupEnabled = false;
@@ -178,13 +178,13 @@ namespace Voron
 				get { return _tempPath; }
 			}
 
-            public override IVirtualPager OpenPager(string filename)
-            {
-                if (RunningOnPosix)
-                    return new PosixMemoryMapPager(filename);
+			public override IVirtualPager OpenPager(string filename)
+			{
+				if (RunningOnPosix)
+					return new PosixMemoryMapPager(filename);
 
-                return new Win32MemoryMapPager(filename);
-            }
+				return new Win32MemoryMapPager(filename);
+			}
 
 			public override IJournalWriter CreateJournalWriter(long journalNumber, long journalSize)
 			{
@@ -369,7 +369,7 @@ namespace Voron
 
 			public unsafe override bool ReadHeader(string filename, FileHeader* header)
 			{
-				if(Disposed)
+				if (Disposed)
 					throw new ObjectDisposedException("PureMemoryStorageEnvironmentOptions");
 				IntPtr ptr;
 				if (_headers.TryGetValue(filename, out ptr) == false)
@@ -391,7 +391,7 @@ namespace Voron
 					ptr = Marshal.AllocHGlobal(sizeof(FileHeader));
 					_headers[filename] = ptr;
 				}
-                MemoryUtils.Copy((byte*)ptr, (byte*)header, sizeof(FileHeader));
+				MemoryUtils.Copy((byte*)ptr, (byte*)header, sizeof(FileHeader));
 			}
 
 			public override IVirtualPager CreateScratchPager(string name)
@@ -401,12 +401,12 @@ namespace Voron
 				return new Win32PageFileBackedMemoryMappedPager(name, InitialFileSize);
 			}
 
-            public override IVirtualPager OpenPager(string filename)
-            {
-                if (RunningOnPosix)
-                    return new PosixMemoryMapPager(filename);
-                return new Win32MemoryMapPager(filename);
-            }
+			public override IVirtualPager OpenPager(string filename)
+			{
+				if (RunningOnPosix)
+					return new PosixMemoryMapPager(filename);
+				return new Win32MemoryMapPager(filename);
+			}
 
 			public override IVirtualPager OpenJournalPager(long journalNumber)
 			{
@@ -445,7 +445,7 @@ namespace Voron
 
 		public abstract IVirtualPager OpenJournalPager(long journalNumber);
 
-        public abstract IVirtualPager OpenPager(string filename);
+		public abstract IVirtualPager OpenPager(string filename);
 
 		public static bool RunningOnPosix
 		{

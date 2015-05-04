@@ -359,10 +359,10 @@ namespace Voron.Trees
 		        return p;
 		    }
 
-			return SearchForPage(key, ref cursor, ref node);
+			return SearchForPage(key, out cursor, out node);
 		}
 
-	    private Page SearchForPage(MemorySlice key, ref Lazy<Cursor> cursor, ref NodeHeader* node)
+		private Page SearchForPage(MemorySlice key, out Lazy<Cursor> cursor, out NodeHeader* node)
 	    {
 			var p = _tx.GetReadOnlyPage(State.RootPageNumber);
 	        var c = new Cursor();

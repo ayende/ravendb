@@ -51,22 +51,21 @@ namespace Voron.Impl
 		}
 
 		internal Action<Transaction> AfterCommit = delegate { };
-	    internal Action<Transaction, DebugActionType> RecordTransactionState = delegate { };
-	    internal bool CreatedByJournalApplicator;
+		internal Action<Transaction, DebugActionType> RecordTransactionState = delegate { };
+		internal bool CreatedByJournalApplicator;
 		private readonly StorageEnvironmentState _state;
 		private int _allocatedPagesInTransaction;
 		private int _overflowPagesInTransaction;
 		private TransactionHeader* _txHeader;
 
-        private PageFromScratchBuffer _transactionHeaderPage;
-        private readonly HashSet<PageFromScratchBuffer> _transactionPages = new HashSet<PageFromScratchBuffer>();
+		private PageFromScratchBuffer _transactionHeaderPage;
+		private readonly HashSet<PageFromScratchBuffer> _transactionPages = new HashSet<PageFromScratchBuffer>();
 		private readonly HashSet<long> _freedPages = new HashSet<long>();
 		private readonly List<PageFromScratchBuffer> _unusedScratchPages = new List<PageFromScratchBuffer>();
-	    private readonly Dictionary<string, Tree> _trees = new Dictionary<string, Tree>();
+		private readonly Dictionary<string, Tree> _trees = new Dictionary<string, Tree>();
 		private readonly Dictionary<int, PagerState> _scratchPagerStates;
 
-
-	    public bool Committed { get; private set; }
+		public bool Committed { get; private set; }
 
 		public bool RolledBack { get; private set; }
 
@@ -98,11 +97,11 @@ namespace Voron.Impl
 				_pagerStates.Add(scratchPagerState);
 			}
 
-            
+
 			if (flags.HasFlag(TransactionFlags.ReadWrite) == false)
 			{
-                // for read transactions, we need to keep the pager state frozen
-                // for write transactions, we can use the current one (which == null)
+				// for read transactions, we need to keep the pager state frozen
+				// for write transactions, we can use the current one (which == null)
 				_scratchPagerStates = scratchPagerStates;
 
 				_state = env.State.Clone(this);
@@ -120,19 +119,19 @@ namespace Voron.Impl
 		internal void WriteDirect(TransactionHeader* transactionHeader, PageFromScratchBuffer pages)
 		{
 			for (int i = 0; i < pages.NumberOfPages; i++)
-		    {
-		        var page = _env.ScratchBufferPool.ReadPage(pages.ScratchFileNumber, pages.PositionInScratchBuffer+i);
-			    int numberOfPages = 1;
-			    if (page.IsOverflow)
-		        {
+			{
+				var page = _env.ScratchBufferPool.ReadPage(pages.ScratchFileNumber, pages.PositionInScratchBuffer + i);
+				int numberOfPages = 1;
+				if (page.IsOverflow)
+				{
 					numberOfPages = (page.OverflowSize / AbstractPager.PageSize) + (page.OverflowSize % AbstractPager.PageSize == 0 ? 0 : 1);
 					i += numberOfPages;
-			        _overflowPagesInTransaction += (numberOfPages - 1);
-		        }
+					_overflowPagesInTransaction += (numberOfPages - 1);
+				}
 
-			    WritePageDirect(page, numberOfPages);
+				WritePageDirect(page, numberOfPages);
 
-			    _state.NextPageNumber = transactionHeader->NextPageNumber;
+				_state.NextPageNumber = transactionHeader->NextPageNumber;
 			}
 		}
 
@@ -149,7 +148,7 @@ namespace Voron.Impl
 					_overflowPagesInTransaction += (numberOfPages - 1);
 				}
 
-				WritePageDirect(page, numberOfPages);				
+				WritePageDirect(page, numberOfPages);
 			}
 		}
 
@@ -158,7 +157,7 @@ namespace Voron.Impl
 			var pageFromScratchBuffer = _env.ScratchBufferPool.Allocate(this, numberOfPagesIncludingOverflow);
 
 			var dest = _env.ScratchBufferPool.AcquirePagePointer(pageFromScratchBuffer.ScratchFileNumber, pageFromScratchBuffer.PositionInScratchBuffer);
-            MemoryUtils.Copy(dest, page.Base, numberOfPagesIncludingOverflow * AbstractPager.PageSize);
+			MemoryUtils.Copy(dest, page.Base, numberOfPagesIncludingOverflow * AbstractPager.PageSize);
 
 			_allocatedPagesInTransaction++;
 
@@ -176,8 +175,8 @@ namespace Voron.Impl
 		{
 			var allocation = _env.ScratchBufferPool.Allocate(this, 1);
 			var page = _env.ScratchBufferPool.ReadPage(allocation.ScratchFileNumber, allocation.PositionInScratchBuffer);
-			
-            _transactionHeaderPage = allocation;
+
+			_transactionHeaderPage = allocation;
 
 			StdLib.memset(page.Base, 0, AbstractPager.PageSize);
 			_txHeader = (TransactionHeader*)page.Base;
@@ -212,67 +211,64 @@ namespace Voron.Impl
 
 		public Tree ReadTree(string treeName)
 		{
-		    Tree tree;
-		    if (_trees.TryGetValue(treeName, out tree))
-		        return tree;
+			Tree tree;
+			if (_trees.TryGetValue(treeName, out tree))
+				return tree;
 
-            var header = (TreeRootHeader*)State.Root.DirectRead((Slice)treeName);
-		    if (header != null)
-		    {
-		        tree = Tree.Open(this, header);
-		        tree.Name = treeName;
-		        _trees.Add(treeName, tree);
-		        return tree;
-		    }
+			var header = (TreeRootHeader*)State.Root.DirectRead((Slice)treeName);
+			if (header != null)
+			{
+				tree = Tree.Open(this, header);
+				tree.Name = treeName;
+				_trees.Add(treeName, tree);
+				return tree;
+			}
 
-		    _trees.Add(treeName, null);
-		    return null;
+			_trees.Add(treeName, null);
+			return null;
 		}
 
-	    internal Page ModifyPage(long num, Page page)
+		internal Page ModifyPage(long num, Page page)
 		{
 			_env.AssertFlushingNotFailed();
 
+			page = page ?? GetReadOnlyPage(num);
+
+			if (page.Dirty)
+				return page;
+
 			if (_dirtyPages.Contains(num))
 			{
-				page = GetPageForModification(num, page);
 				page.Dirty = true;
 
 				return page;
 			}
 
-			page = GetPageForModification(num, page);
-
 			var newPage = AllocatePage(1, PageFlags.None, num); // allocate new page in a log file but with the same number
 
-            MemoryUtils.Copy(newPage.Base, page.Base, AbstractPager.PageSize);
+			MemoryUtils.Copy(newPage.Base, page.Base, AbstractPager.PageSize);
 			newPage.LastSearchPosition = page.LastSearchPosition;
 			newPage.LastMatch = page.LastMatch;
 
 			return newPage;
 		}
 
-		private Page GetPageForModification(long p, Page page)
-		{
-		    return page ?? GetReadOnlyPage(p);
-		}
-
-	    public Page GetReadOnlyPage(long pageNumber)
+		public Page GetReadOnlyPage(long pageNumber)
 		{
 			PageFromScratchBuffer value;
-		    Page p;
+			Page p;
 			if (_scratchPagesTable.TryGetValue(pageNumber, out value))
 			{
-			    p = _env.ScratchBufferPool.ReadPage(value.ScratchFileNumber, value.PositionInScratchBuffer, _scratchPagerStates != null ? _scratchPagerStates[value.ScratchFileNumber] : null);
+				p = _env.ScratchBufferPool.ReadPage(value.ScratchFileNumber, value.PositionInScratchBuffer, _scratchPagerStates != null ? _scratchPagerStates[value.ScratchFileNumber] : null);
 			}
 			else
 			{
-			    p =  _journal.ReadPage(this, pageNumber, _scratchPagerStates) ?? _dataPager.Read(pageNumber);
+				p = _journal.ReadPage(this, pageNumber, _scratchPagerStates) ?? _dataPager.Read(pageNumber);
 			}
 
-            Debug.Assert(p != null && p.PageNumber == pageNumber, string.Format("Requested ReadOnly page #{0}. Got #{1} from {2}", pageNumber, p.PageNumber, p.Source));
+			Debug.Assert(p != null && p.PageNumber == pageNumber, string.Format("Requested ReadOnly page #{0}. Got #{1} from {2}", pageNumber, p.PageNumber, p.Source));
 
-		    return p;
+			return p;
 		}
 
 		internal Page AllocatePage(int numberOfPages, PageFlags flags, long? pageNumber = null)
@@ -291,7 +287,7 @@ namespace Voron.Impl
 			{
 				var maxAvailablePageNumber = _env.Options.MaxStorageSize / AbstractPager.PageSize;
 
-				if(pageNumber.Value > maxAvailablePageNumber)
+				if (pageNumber.Value > maxAvailablePageNumber)
 					throw new QuotaException(
 						string.Format(
 							"The maximum storage size quota ({0} bytes) has been reached. " +
@@ -322,7 +318,7 @@ namespace Voron.Impl
 
 			if ((flags & PageFlags.KeysPrefixed) == PageFlags.KeysPrefixed)
 			{
-				page.Upper = (ushort) (AbstractPager.PageSize - Constants.PrefixInfoSectionSize);
+				page.Upper = (ushort)(AbstractPager.PageSize - Constants.PrefixInfoSectionSize);
 				page.ClearPrefixInfo();
 			}
 			else
@@ -338,10 +334,10 @@ namespace Voron.Impl
 			return page;
 		}
 
-	    public IEnumerable<Tree> Trees
-	    {
-            get { return _trees.Values; }
-	    }
+		public IEnumerable<Tree> Trees
+		{
+			get { return _trees.Values; }
+		}
 
 		internal int GetNumberOfFreePages(NodeHeader* node)
 		{
@@ -363,11 +359,11 @@ namespace Voron.Impl
 			if (Flags != (TransactionFlags.ReadWrite))
 				return; // nothing to do
 
-            if (Committed)
-                throw new InvalidOperationException("Cannot commit already committed transaction.");
+			if (Committed)
+				throw new InvalidOperationException("Cannot commit already committed transaction.");
 
-            if (RolledBack)
-                throw new InvalidOperationException("Cannot commit rolled-back transaction.");
+			if (RolledBack)
+				throw new InvalidOperationException("Cannot commit rolled-back transaction.");
 
 			FlushAllMultiValues();
 
@@ -376,13 +372,13 @@ namespace Voron.Impl
 
 			foreach (var tree in Trees)
 			{
-			    if (tree == null)
-			        continue;
+				if (tree == null)
+					continue;
 				tree.State.InWriteTransaction = false;
 				var treeState = tree.State;
 				if (treeState.IsModified)
 				{
-					var treePtr = (TreeRootHeader*)State.Root.DirectAdd((Slice) tree.Name, sizeof(TreeRootHeader));
+					var treePtr = (TreeRootHeader*)State.Root.DirectAdd((Slice)tree.Name, sizeof(TreeRootHeader));
 					treeState.CopyTo(treePtr);
 				}
 			}
@@ -408,16 +404,16 @@ namespace Voron.Impl
 				FlushedToJournal = true;
 			}
 
-            // release scratch file page allocated for the transaction header
-            _env.ScratchBufferPool.Free(_transactionHeaderPage.ScratchFileNumber, _transactionHeaderPage.PositionInScratchBuffer, -1);            
+			// release scratch file page allocated for the transaction header
+			_env.ScratchBufferPool.Free(_transactionHeaderPage.ScratchFileNumber, _transactionHeaderPage.PositionInScratchBuffer, -1);
 
 			Committed = true;
 			AfterCommit(this);
 
-            if (Environment.IsDebugRecording)
-            {
-                RecordTransactionState(this, DebugActionType.TransactionCommit);
-            }
+			if (Environment.IsDebugRecording)
+			{
+				RecordTransactionState(this, DebugActionType.TransactionCommit);
+			}
 		}
 
 
@@ -436,14 +432,14 @@ namespace Voron.Impl
 				_env.ScratchBufferPool.Free(pageFromScratch.ScratchFileNumber, pageFromScratch.PositionInScratchBuffer, -1);
 			}
 
-            // release scratch file page allocated for the transaction header
-            _env.ScratchBufferPool.Free(_transactionHeaderPage.ScratchFileNumber, _transactionHeaderPage.PositionInScratchBuffer, -1);    
+			// release scratch file page allocated for the transaction header
+			_env.ScratchBufferPool.Free(_transactionHeaderPage.ScratchFileNumber, _transactionHeaderPage.PositionInScratchBuffer, -1);
 
 			RolledBack = true;
-            if (Environment.IsDebugRecording)
-            {
-                RecordTransactionState(this, DebugActionType.TransactionRollback);
-            }
+			if (Environment.IsDebugRecording)
+			{
+				RecordTransactionState(this, DebugActionType.TransactionRollback);
+			}
 		}
 
 
@@ -554,7 +550,7 @@ namespace Voron.Impl
 
 		internal bool RemoveTree(string name)
 		{
-		    return _trees.Remove(name);
+			return _trees.Remove(name);
 		}
 
 		private void AddJournalSnapshot(JournalSnapshot snapshot)
@@ -566,15 +562,15 @@ namespace Voron.Impl
 			JournalSnapshots.Add(snapshot);
 		}
 
-        internal PageFromScratchBuffer GetTransactionHeaderPage()
-        {
-            return this._transactionHeaderPage;
-        }
+		internal PageFromScratchBuffer GetTransactionHeaderPage()
+		{
+			return this._transactionHeaderPage;
+		}
 
-        internal HashSet<PageFromScratchBuffer> GetTransactionPages()
-        {
-            return _transactionPages;
-        }
+		internal HashSet<PageFromScratchBuffer> GetTransactionPages()
+		{
+			return _transactionPages;
+		}
 
 		internal List<PageFromScratchBuffer> GetUnusedScratchPages()
 		{
@@ -584,17 +580,17 @@ namespace Voron.Impl
 		internal HashSet<long> GetFreedPagesNumbers()
 		{
 			return _freedPages;
-		} 
+		}
 
 		internal void AddTree(string name, Tree tree)
-	    {
-	        Tree value;
-	        if (_trees.TryGetValue(name, out value) && value != null)
-	        {
-	            throw new InvalidOperationException("Tree already exists: " + name);
-	        }
-	        _trees[name] = tree;
-	    }
+		{
+			Tree value;
+			if (_trees.TryGetValue(name, out value) && value != null)
+			{
+				throw new InvalidOperationException("Tree already exists: " + name);
+			}
+			_trees[name] = tree;
+		}
 
 		internal Transaction JournalApplicatorTransaction()
 		{
