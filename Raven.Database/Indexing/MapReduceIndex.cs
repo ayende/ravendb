@@ -274,7 +274,7 @@ namespace Raven.Database.Indexing
 			var parallelReductionOperations = new ConcurrentQueue<ParallelBatchStats>();
 			var parallelReductionStart = SystemTime.UtcNow;
 
-			BackgroundTaskExecuter.Instance.ExecuteAllBuffered(context, changed, enumerator => context.TransactionalStorage.Batch(accessor =>
+			BackgroundTaskExecuter.Instance.ExecuteAllBuffered(context, changed, enumerator => 
 			{
 				var parallelStats = new ParallelBatchStats
 				{
@@ -287,14 +287,14 @@ namespace Raven.Database.Indexing
 				{
 					while (enumerator.MoveNext())
 					{
-						accessor.MapReduce.ScheduleReductions(indexId, 0, enumerator.Current);
+						actions.MapReduce.ScheduleReductions(indexId, 0, enumerator.Current);
 						actions.General.MaybePulseTransaction();
 					}
 				}
 
 				parallelStats.Operations.Add(PerformanceStats.From(IndexingOperation.Map_ScheduleReductions, scheduleReductionsDuration.ElapsedMilliseconds));
 				parallelReductionOperations.Enqueue(parallelStats);
-			}));
+			});
 
 			performanceStats.Add(new ParallelPerformanceStats
 			{
