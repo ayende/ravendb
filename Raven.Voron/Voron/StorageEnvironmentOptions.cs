@@ -84,7 +84,7 @@ namespace Voron
 
 		protected StorageEnvironmentOptions()
 		{
-			MaxNumberOfPagesInJournalBeforeFlush = (32 * 1024 * 1024) / 4096; // 32 MB
+			MaxNumberOfPagesInJournalBeforeFlush = 1024; // 4 MB
 
 			IdleFlushTimeout = 5000; // 5 seconds
 
@@ -96,7 +96,8 @@ namespace Voron
 
 			ScratchBufferOverflowTimeout = 5000;
 
-			MaxNumberOfPagesInMergedTransaction = 1024 * 32; // Ends up being 128 MB
+			MaxNumberOfPagesInMergedTransaction = 1024 * 128;// Ends up being 512 MB
+
 
 			OwnsPagers = true;
 			IncrementalBackupEnabled = false;

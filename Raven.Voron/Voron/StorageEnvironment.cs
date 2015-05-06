@@ -184,8 +184,9 @@ namespace Voron
 					if (largestTx > activeTransaction.Id)
 						largestTx = activeTransaction.Id;
 				}
-				return Math.Min(largestTx, _transactionsCounter);
-				// return Math.Min(_activeTransactions.OrderBy(x => x.Id).Select(x => x.Id).FirstOrDefault(), _transactionsCounter);
+				if (largestTx == long.MaxValue)
+					return 0;
+				return largestTx;
 			}
 		}
 
