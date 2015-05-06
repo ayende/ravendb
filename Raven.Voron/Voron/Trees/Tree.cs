@@ -206,7 +206,7 @@ namespace Voron.Trees
 			NodeHeader* node;
 			var foundPage = FindPageFor(key, out node, out lazy);
 
-			var page = _tx.ModifyPage(foundPage.PageNumber, foundPage);
+			var page = _tx.ModifyPage(foundPage.PageNumber, this, foundPage);
 
 			ushort nodeVersion = 0;
 			bool? shouldGoToOverflowPage = null;
@@ -431,7 +431,8 @@ namespace Voron.Trees
 	    {
 	        var foundPage = new RecentlyFoundPages.FoundPage(c.Pages.Count)
 	        {
-	            Number = p.PageNumber
+	            Number = p.PageNumber,
+				Page = p
 	        };
 
 		    if (leftmostPage == true)
@@ -485,8 +486,8 @@ namespace Voron.Trees
 			if (foundPage == null)
 				return false;
 
-			var lastFoundPageNumber = foundPage.Number;
-			page = _tx.GetReadOnlyPage(lastFoundPageNumber);
+		    var lastFoundPageNumber = foundPage.Number;
+		    page = foundPage.Page ?? _tx.GetReadOnlyPage(lastFoundPageNumber);
 
 			if (page.IsLeaf == false)
 				throw new DataException("Index points to a non leaf page");
@@ -551,7 +552,7 @@ namespace Voron.Trees
 			if (page.LastMatch != 0)
 				return; // not an exact match, can't delete
 
-			page = _tx.ModifyPage(page.PageNumber, page);
+			page = _tx.ModifyPage(page.PageNumber, this, page);
 
 			State.EntriesCount--;
 			ushort nodeVersion;

@@ -228,7 +228,7 @@ namespace Voron.Impl
 			return null;
 		}
 
-		internal Page ModifyPage(long num, Page page)
+		internal Page ModifyPage(long num, Tree tree, Page page)
 		{
 			_env.AssertFlushingNotFailed();
 
@@ -240,7 +240,6 @@ namespace Voron.Impl
 			if (_dirtyPages.Contains(num))
 			{
 				page.Dirty = true;
-
 				return page;
 			}
 
@@ -249,6 +248,7 @@ namespace Voron.Impl
 			MemoryUtils.Copy(newPage.Base, page.Base, AbstractPager.PageSize);
 			newPage.LastSearchPosition = page.LastSearchPosition;
 			newPage.LastMatch = page.LastMatch;
+			tree.RecentlyFoundPages.Reset(num);
 
 			return newPage;
 		}
