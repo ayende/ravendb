@@ -29,7 +29,6 @@ namespace Voron.Impl
 		private readonly HashSet<PagerState> _pagerStates = new HashSet<PagerState>();
 		private readonly IFreeSpaceHandling _freeSpaceHandling;
 
-        private readonly HashSet<long> _scratchPages = new HashSet<long>(LongEqualityComparer.Instance);
         private readonly Dictionary<long, PageFromScratchBuffer> _scratchPagesTable = new Dictionary<long, PageFromScratchBuffer>(LongEqualityComparer.Instance);
 
 		internal readonly List<JournalSnapshot> JournalSnapshots = new List<JournalSnapshot>();
@@ -197,7 +196,6 @@ namespace Voron.Impl
 			_allocatedPagesInTransaction = 0;
 			_overflowPagesInTransaction = 0;
 
-            _scratchPages.Clear();
 			_scratchPagesTable.Clear();
 		}
 
@@ -275,12 +273,10 @@ namespace Voron.Impl
 		public Page GetReadOnlyPage(long pageNumber)
 		{
 			PageFromScratchBuffer value;
-		    Page p;            
-
-            if (_scratchPages.Contains(pageNumber))
+		    Page p;   
+         
+            if ( _scratchPagesTable.TryGetValue( pageNumber, out value ))
             {
-                value = _scratchPagesTable[pageNumber];
-
                 PagerState state = null;
                 if ( _scratchPagerStates != null )
                 {
@@ -348,7 +344,6 @@ namespace Voron.Impl
 				_overflowPagesInTransaction += (numberOfPages - 1);
 			}
 
-            _scratchPages.Add(pageNumber.Value);
 			_scratchPagesTable[pageNumber.Value] = pageFromScratchBuffer;
 
 			page.Lower = (ushort)Constants.PageHeaderSize;
@@ -494,8 +489,6 @@ namespace Voron.Impl
 
 				var trh = (TreeRootHeader*)parentTree.DirectAdd(key, sizeof(TreeRootHeader), NodeFlags.MultiValuePageRef);
 				childTree.State.CopyTo(trh);
-
-				//parentTree.SetAsMultiValueTreeRef(this, key);
 			}
 		}
 
@@ -527,7 +520,6 @@ namespace Voron.Impl
 				_transactionPages.Remove(scratchPage);
 				_unusedScratchPages.Add(scratchPage);
                 
-                _scratchPages.Remove(pageNumber);
 				_scratchPagesTable.Remove(pageNumber);
 			}
 

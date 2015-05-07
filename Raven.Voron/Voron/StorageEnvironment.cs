@@ -28,7 +28,27 @@ namespace Voron
     {
         private readonly StorageEnvironmentOptions _options;
 
-        private readonly ConcurrentSet<Transaction> _activeTransactions = new ConcurrentSet<Transaction>();
+        private readonly SortedSet<Transaction> _activeTransactions = new SortedSet<Transaction>(new TransactionComparer());
+
+        private class TransactionComparer : IComparer<Transaction>
+        {
+            public int Compare(Transaction x, Transaction y)
+            {
+                if (x == y)
+                {
+                    return 0;
+                }                    
+                else if (x.Id == y.Id)
+                {
+                    if (x.Flags == TransactionFlags.ReadWrite)
+                        return -1;
+                    else if (y.Flags == TransactionFlags.ReadWrite)
+                        return 1;
+                    return Math.Sign(x.GetHashCode() - y.GetHashCode()); // We don't care which one is first, as long as we are consistent about it.
+                }
+                else return Math.Sign(x.Id - y.Id);
+            }
+        }
 
         private readonly IVirtualPager _dataPager;
 
@@ -177,7 +197,14 @@ namespace Voron
         {
             get
             {
-                return Math.Min(_activeTransactions.OrderBy(x => x.Id).Select(x => x.Id).FirstOrDefault(), _transactionsCounter);
+                lock ( _activeTransactions )
+                {
+                    if (_activeTransactions.Count == 0)
+                        return default(long);
+
+                    var tx = _activeTransactions.First();
+                    return Math.Min(tx.Id, _transactionsCounter);
+                }
             }
         }
 
@@ -231,11 +258,19 @@ namespace Voron
 	    {
 			get
 			{
-				return _activeTransactions.Select(x => new ActiveTransaction()
-				{
-					Id = x.Id,
-					Flags = x.Flags
-				}).ToList();
+                var result = new List<ActiveTransaction>();
+                lock (_activeTransactions)
+                {
+                    foreach (var transaction in _activeTransactions)
+                    {
+                        result.Add(new ActiveTransaction
+                        {
+                            Id = transaction.Id,
+                            Flags = transaction.Flags,
+                        });
+                    }
+                }
+                return result;
 			}
 	    }
 
@@ -440,7 +475,11 @@ namespace Voron
 			        _txCommit.ExitReadLock();
 		        }
 
-		        _activeTransactions.Add(tx);
+                lock (_activeTransactions )
+                {
+                    _activeTransactions.Add(tx);
+                }
+		        
 		        var state = _dataPager.TransactionBegan();
 		        tx.AddPagerState(state);
 
@@ -471,8 +510,11 @@ namespace Voron
 
         private void TransactionAfterCommit(Transaction tx)
         {
-            if (_activeTransactions.Contains(tx) == false)
-		        return;
+            lock ( _activeTransactions )
+            {
+                if (_activeTransactions.Contains(tx) == false)
+                    return;
+            }
 	        
             _txCommit.EnterWriteLock();
             try
@@ -496,8 +538,11 @@ namespace Voron
 
         internal void TransactionCompleted(Transaction tx)
         {
-            if (_activeTransactions.TryRemove(tx) == false)
-                return;
+            lock ( _activeTransactions )
+            {
+                if (_activeTransactions.Remove(tx) == false)
+                    return;
+            }
 
             if (tx.Flags != (TransactionFlags.ReadWrite))
                 return;
