@@ -147,7 +147,7 @@ namespace Raven.Tests.Linq
 
 
 				var count2 = session.Query<SearchableElement, SearchableElements>()
-				                    .Count(se => se.PermittedUsers.Any(u => u.In(new Guid[0])));
+					.Count(se => se.PermittedUsers.Any(u => u.In(new Guid[0].Cast<object>())));
 				Assert.Equal<int>(0, count2);
 
 				var query1 = session.Query<SearchableElement, SearchableElements>()
@@ -157,7 +157,7 @@ namespace Raven.Tests.Linq
 
 
 				var query2 = session.Query<SearchableElement, SearchableElements>()
-									.Where(se => se.PermittedUsers.Any(u => u.In(new Guid[0])))
+					.Where(se => se.PermittedUsers.Any(u => u.In(new Guid[0].Cast<object>())))
 									.ToString();
 				Assert.Equal("@emptyIn<PermittedUsers>:(no-results)", query2);
 			}

@@ -195,7 +195,7 @@
       <HintPath>..\..\hacklib\System.DirectoryServices.AccountManagement.dll</HintPath>
     </Reference>
     <Reference Include="Microsoft.VisualBasic">
-      <HintPath>..\..\..\..\usr\lib\mono\2.0\Microsoft.VisualBasic.dll</HintPath>
+      <HintPath>..\..\..\usr\local\lib\mono\2.0\Microsoft.VisualBasic.dll</HintPath>
     </Reference>
   </ItemGroup>
   <ItemGroup>
