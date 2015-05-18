@@ -53,6 +53,7 @@ namespace Raven.Abstractions.Data
 
 		public const string MemoryLimitForProcessing_BackwardCompatibility = "Raven/MemoryLimitForIndexing";
 		public const string MemoryLimitForProcessing = "Raven/MemoryLimitForProcessing";
+		public const string LowMemoryLimitForLinuxDetectionInMB = "Raven/LowMemoryLimitForLinuxDetectionInMB";
         public const string RunInMemory = "Raven/RunInMemory";
 	    public const string ExposeConfigOverTheWire = "Raven/ExposeConfigOverTheWire";
 

@@ -9,6 +9,11 @@ using System.Threading;
 using Raven.Abstractions;
 using Raven.Abstractions.Logging;
 using Raven.Database.Util;
+using Mono.Unix;
+using Raven.Abstractions.Data;
+using Raven.Database.Indexing;
+using Raven.Unix.Native;
+
 
 namespace Raven.Database.Config
 {
@@ -46,7 +51,7 @@ namespace Raven.Database.Config
         private static readonly IntPtr LowMemorySimulationEvent;
 
         static MemoryStatistics()
-        {
+		{
 			if (RunningOnPosix == false) {
 				LowMemoryHandlers = new ConcurrentSet<WeakReference<ILowMemoryHandler>> ();
 				LowMemorySimulationEvent = CreateEvent (IntPtr.Zero, false, false, null);
@@ -97,8 +102,34 @@ namespace Raven.Database.Config
 					IsBackground = true,
 					Name = "Low memory notification thread"
 				}.Start ();
+			} else { // linux:
+				new Thread (() => {
+					while (true) {
+						// poll free mem every 5 seconds
+						sysinfo_t info = new Raven.Unix.Native.sysinfo_t();
+						if ( Syscall.sysinfo(ref info) != 0)
+						{
+							log.Warn ("Failure when trying to wait for low memory notification. No low memory notifications will be raised.");
+						}
+						else
+						{
+							RavenConfiguration configuration = new RavenConfiguration();
+							ulong availableMem = info.AvailableRam / ( 1024L * 1024);
+							if ( availableMem <  (ulong)configuration.LowMemoryForLinuxDetectionInMB )
+							{
+								log.Warn ("Low memory detected, will try to reduce memory usage...");
+								RunLowMemoryHandlers ();
+								Thread.Sleep (TimeSpan.FromSeconds (55)); // prevent triggering the event to frequent when the low memory notification object is in the signaled state
+							}
+						}
+						Thread.Sleep (TimeSpan.FromSeconds (5));
+					}
+				}) {
+					IsBackground = true,
+					Name = "Low memory notification thread"
+				}.Start ();
 			}
-        }
+		}
 
         public static void SimulateLowMemoryNotification()
         {

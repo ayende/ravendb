@@ -24,6 +24,7 @@ using Raven.Database.FileSystem.Synchronization.Rdc.Wrapper;
 using Raven.Abstractions.FileSystem;
 using Raven.Database.FileSystem.Synchronization.Rdc.Wrapper.Unmanaged;
 using System.Runtime.InteropServices;
+using Raven.Abstractions;
 
 namespace Raven.Database.FileSystem
 {
@@ -104,17 +105,18 @@ namespace Raven.Database.FileSystem
         {
             get
             {
-                try
-                {
-                    var rdcLibrary = new RdcLibrary();
-                    Marshal.ReleaseComObject(rdcLibrary);
+				if (EnvironmentUtils.RunningOnPosix) {
+					return false;
+				} else {
+					try {
+						var rdcLibrary = new RdcLibrary ();
+						Marshal.ReleaseComObject (rdcLibrary);
 
-                    return true;
-                }
-                catch (COMException)
-                {
-                    return false;
-                }
+						return true;
+					} catch (COMException) {
+						return false;
+					}
+				}
             }
         }
 

@@ -137,19 +137,19 @@
       <Name>Raven.Server</Name>
     </ProjectReference>
     <ProjectReference Include="..\Raven.Tests.Common\Raven.Tests.Common.csproj">
-      <Project>{381234cc-8aa7-41ff-8cad-22330e15f993}</Project>
+      <Project>{381234CC-8AA7-41FF-8CAD-22330E15F993}</Project>
       <Name>Raven.Tests.Common</Name>
     </ProjectReference>
     <ProjectReference Include="..\Raven.Tests.Helpers\Raven.Tests.Helpers.csproj">
-      <Project>{14f2d508-8e06-407b-9451-97e99538e26b}</Project>
+      <Project>{14F2D508-8E06-407B-9451-97E99538E26B}</Project>
       <Name>Raven.Tests.Helpers</Name>
     </ProjectReference>
     <ProjectReference Include="..\Raven.Tests.Issues\Raven.Tests.Issues.csproj">
-      <Project>{d8bdd718-6e21-41b7-9c41-d0fbe0532df4}</Project>
+      <Project>{D8BDD718-6E21-41B7-9C41-D0FBE0532DF4}</Project>
       <Name>Raven.Tests.Issues</Name>
     </ProjectReference>
     <ProjectReference Include="..\Raven.Tests\Raven.Tests.csproj">
-      <Project>{267ac60c-751e-42e9-aa18-66035deff63a}</Project>
+      <Project>{267AC60C-751E-42E9-AA18-66035DEFF63A}</Project>
       <Name>Raven.Tests</Name>
     </ProjectReference>
     <ProjectReference Include="..\Raven.Voron\Voron\Voron.csproj">

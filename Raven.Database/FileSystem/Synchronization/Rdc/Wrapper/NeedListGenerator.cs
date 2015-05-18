@@ -5,6 +5,7 @@ using System.Runtime.ConstrainedExecution;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Raven.Database.FileSystem.Synchronization.Rdc.Wrapper.Unmanaged;
+using Raven.Abstractions;
 
 namespace Raven.Database.FileSystem.Synchronization.Rdc.Wrapper
 {
@@ -20,16 +21,17 @@ namespace Raven.Database.FileSystem.Synchronization.Rdc.Wrapper
 
 		public NeedListGenerator(ISignatureRepository seedSignatureRepository, ISignatureRepository sourceSignatureRepository)
 		{
-			try
-			{
-				_rdcLibrary = (IRdcLibrary)new RdcLibrary();
+			if (EnvironmentUtils.RunningOnPosix) {
+				throw new Exception ("RdcLibrary not supported when RunningOnPosix");
+			} else {
+				try {
+					_rdcLibrary = (IRdcLibrary)new RdcLibrary ();
+				} catch (InvalidCastException e) {
+					throw new InvalidOperationException ("This have to run in an MTA thread", e);
+				}
+				_seedSignatureRepository = seedSignatureRepository;
+				_sourceSignatureRepository = sourceSignatureRepository;
 			}
-			catch (InvalidCastException e)
-			{
-				throw new InvalidOperationException("This have to run in an MTA thread", e);
-			}
-			_seedSignatureRepository = seedSignatureRepository;
-			_sourceSignatureRepository = sourceSignatureRepository;
 		}
 
 		public void Dispose()

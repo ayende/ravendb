@@ -114,6 +114,8 @@ namespace Raven.Database.Config
 
 			MemoryLimitForProcessingInMb = ravenSettings.MemoryLimitForProcessing.Value;
 
+			LowMemoryForLinuxDetectionInMB = ravenSettings.LowMemoryLimitForLinuxDetectionInMB.Value;
+
 			PrefetchingDurationLimit = ravenSettings.PrefetchingDurationLimit.Value;
 
 			// Core settings
@@ -905,6 +907,11 @@ namespace Raven.Database.Config
 		/// Limit of how much memory a batch processing can take (in MBytes)
 		/// </summary>
 		public int MemoryLimitForProcessingInMb { get; set; }
+
+		// <summary>
+		/// Limit for low mem detection in linux
+		/// </summary>
+		public int LowMemoryForLinuxDetectionInMB { get; set; }
 
 		public string IndexStoragePath
 		{

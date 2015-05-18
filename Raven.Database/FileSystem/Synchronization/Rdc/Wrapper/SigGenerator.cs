@@ -8,6 +8,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using NLog;
 using Raven.Database.FileSystem.Synchronization.Rdc.Wrapper.Unmanaged;
+using Raven.Abstractions;
 
 namespace Raven.Database.FileSystem.Synchronization.Rdc.Wrapper
 {
@@ -27,7 +28,11 @@ namespace Raven.Database.FileSystem.Synchronization.Rdc.Wrapper
 		{
 			try
 			{
+				if (EnvironmentUtils.RunningOnPosix) {
+					throw new Exception ("Can't init RdcLibrary when RunningOnPosix");
+				} else {
 				_rdcLibrary = (IRdcLibrary)new RdcLibrary();
+				}
 			}
 			catch (InvalidCastException e)
 			{

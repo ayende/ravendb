@@ -135,6 +135,7 @@
       <HintPath>..\packages\NLog.3.2.0.0\lib\net45\NLog.dll</HintPath>
     </Reference>
     <Reference Include="System.Net.Http.WebRequest" />
+    <Reference Include="Mono.Posix" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="..\CommonAssemblyInfo.cs">
@@ -197,6 +198,14 @@
     <ProjectReference Include="..\Raven.Tests.Helpers\Raven.Tests.Helpers.csproj">
       <Project>{14F2D508-8E06-407B-9451-97E99538E26B}</Project>
       <Name>Raven.Tests.Helpers</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\Raven.Voron\Voron.Tests\Voron.Tests.csproj">
+      <Project>{3C2CD044-CF12-48D1-9C43-64A9058C165E}</Project>
+      <Name>Voron.Tests</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\Raven.Tests.FileSystem\Raven.Tests.FileSystem.csproj">
+      <Project>{01CA67F3-1E46-455C-8713-86FCCF2EFBC7}</Project>
+      <Name>Raven.Tests.FileSystem</Name>
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
