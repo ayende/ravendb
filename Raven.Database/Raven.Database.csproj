@@ -191,12 +191,9 @@
     <Reference Include="ICSharpCode.NRefactory.Xml">
       <HintPath>..\packages\ICSharpCode.NRefactory.5.5.0\lib\Net40\ICSharpCode.NRefactory.Xml.dll</HintPath>
     </Reference>
-    <Reference Include="Microsoft.VisualBasic">
-      <HintPath>..\..\..\usr\local\lib\mono\2.0\Microsoft.VisualBasic.dll</HintPath>
-    </Reference>
     <Reference Include="Mono.Posix" />
     <Reference Include="System.DirectoryServices.AccountManagement">
-      <HintPath>..\AA_Temp\System.DirectoryServices.AccountManagement.dll</HintPath>
+      <HintPath>..\DLLs\System.DirectoryServices.AccountManagement.dll</HintPath>
     </Reference>
   </ItemGroup>
   <ItemGroup>
