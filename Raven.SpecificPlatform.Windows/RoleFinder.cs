@@ -1,32 +1,27 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.DirectoryServices.AccountManagement;
 using System.DirectoryServices.ActiveDirectory;
 using System.Linq;
 using System.Security.Principal;
 using System.Threading;
-using Raven.Abstractions;
-using Raven.Abstractions.Data;
-using Raven.Abstractions.Logging;
-using Raven.Database.Server;
-using Raven.Database.Server.Abstractions;
-using Raven.Database.Server.Security.OAuth;
 
-namespace Raven.Database.Extensions
+using System.DirectoryServices.AccountManagement;
+
+// Raven.SpecificPlatform.Windows can reference System only dlls. It should completely avoid referencing Raven's dlls.
+namespace Raven.SpecificPlatform.Windows
 {
 	
 	public static class RoleFinder
 	{
 		private static readonly CachingRoleFinder cachingRoleFinder = new CachingRoleFinder();
 
-		public static bool IsInRole(this IPrincipal principal, AnonymousUserAccessMode mode, WindowsBuiltInRole role)
-		{			
+		public static bool IsInRole(IPrincipal principal, bool isModeAdmin, WindowsBuiltInRole role, DateTime SystemTime_UtcNow, 
+			Action<string> log_Debug, bool isOAuthNull, bool isGlobalAdmin, Action<string, Exception>log_WarnException)
+		{
 			if (principal == null || principal.Identity == null | principal.Identity.IsAuthenticated == false)
 			{
-				if (mode == AnonymousUserAccessMode.Admin)
-					return true;
-				return false;
+				return isModeAdmin;
 			}
 
 			var databaseAccessPrincipal = principal as PrincipalWithDatabaseAccess;
@@ -48,34 +43,34 @@ namespace Raven.Database.Extensions
 				if (windowsIdentity.User == null)
 					return false; // we aren't sure who this use is, probably anonymous?
 				// we still need to make this check, to by pass UAC non elevated admin issue
-				return cachingRoleFinder.IsInRole(windowsIdentity, role);
+				return cachingRoleFinder.IsInRole(windowsIdentity, role, SystemTime_UtcNow, log_Debug, isOAuthNull, isGlobalAdmin, log_WarnException);
 			}
 
-			var oauthPrincipal = principal as OAuthPrincipal;
-			if (oauthPrincipal == null)
+
+			if (isOAuthNull == true)
 				return false;
 
 			if (role != WindowsBuiltInRole.Administrator)
 				return false;
 
-			return oauthPrincipal.IsGlobalAdmin();
+			return isGlobalAdmin;
+
 		}
 
-
+		/*
 		public static bool IsAdministrator(this IPrincipal principal, AnonymousUserAccessMode mode)
 		{
-			return IsInRole(principal, mode, WindowsBuiltInRole.Administrator);
+			return principal.IsInRole(mode, WindowsBuiltInRole.Administrator);
 		}
 
 		public static bool IsBackupOperator(this IPrincipal principal, AnonymousUserAccessMode mode)
 		{
-			return IsInRole(principal, mode, WindowsBuiltInRole.BackupOperator);
+			return principal.IsInRole(mode, WindowsBuiltInRole.BackupOperator);
 		}
+		*/
 
 		public class CachingRoleFinder
 		{
-			private static readonly ILog log = LogManager.GetCurrentClassLogger();
-
 			private class CachedResult
 			{
 				public int Usage;
@@ -88,31 +83,33 @@ namespace Raven.Database.Extensions
 
 			private readonly ConcurrentDictionary<SecurityIdentifier, CachedResult> cache = new ConcurrentDictionary<SecurityIdentifier, CachedResult>();
 
-			public bool IsInRole(WindowsIdentity windowsIdentity, WindowsBuiltInRole role)
+			public bool IsInRole(WindowsIdentity windowsIdentity, WindowsBuiltInRole role, DateTime SystemTime_UtcNow, 
+				Action<string> log_Debug, bool isOAuthNull, bool isGlobalAdmin, Action<string, Exception>log_WarnException)
 			{
 				CachedResult value;
-				if (cache.TryGetValue(windowsIdentity.User, out value) && (SystemTime.UtcNow - value.Timestamp) <= maxDuration)
+				if (cache.TryGetValue(windowsIdentity.User, out value) && (SystemTime_UtcNow - value.Timestamp) <= maxDuration)
 				{
 					Interlocked.Increment(ref value.Usage);
-					return IsInRole(value, role);
+					return IsInRole (value, role, SystemTime_UtcNow, log_Debug, isOAuthNull, isGlobalAdmin, log_WarnException);
 				}
 
 				var cachedResult = new CachedResult
 				{
 					Usage = value == null ? 1 : value.Usage + 1,
 					AuthorizationGroups = new Lazy<IList<Principal>>(() => GetUserAuthorizationGroups(windowsIdentity.Name)),
-					Timestamp = SystemTime.UtcNow
+					Timestamp = SystemTime_UtcNow
 				};
 
 				cache.AddOrUpdate(windowsIdentity.User, cachedResult, (_, __) => cachedResult);
 				if (cache.Count > CacheMaxSize)
 				{
 					foreach (var source in cache
-							.Where(x => (SystemTime.UtcNow - x.Value.Timestamp) > maxDuration))
+							.Where(x => (SystemTime_UtcNow - x.Value.Timestamp) > maxDuration))
 					{
 						CachedResult ignored;
 						cache.TryRemove(source.Key, out ignored);
-						log.Debug("Removing expired {0} from cache", source.Key);
+						string exceptionString = String.Format("Removing expired {0} from cache", source.Key);
+						log_Debug(exceptionString);
 					}
 					if (cache.Count > CacheMaxSize)
 					{
@@ -125,15 +122,18 @@ namespace Raven.Database.Extensions
 								continue; // we don't want to remove the one we just added
 							CachedResult ignored;
 							cache.TryRemove(source.Key, out ignored);
-							log.Debug("Removing least used {0} from cache", source.Key);
+							string exceptionString = String.Format("Removing expired {0} from cache", source.Key);
+							log_Debug(exceptionString);
 						}
 					}
 				}
 
-				return IsInRole(cachedResult, role);
+				return IsInRole(cachedResult, role, SystemTime_UtcNow, 
+					log_Debug, isOAuthNull, isGlobalAdmin, log_WarnException);
 			}
 
-			private bool IsInRole(CachedResult cachedResult, WindowsBuiltInRole role)
+			private bool IsInRole(CachedResult cachedResult, WindowsBuiltInRole role, DateTime SystemTime_UtcNow, 
+				Action<string> log_Debug, bool isOAuthNull, bool isGlobalAdmin, Action<string, Exception>log_WarnException)
 			{
 				try
 				{
@@ -151,7 +151,7 @@ namespace Raven.Database.Extensions
 				}
 				catch (Exception e)
 				{
-					log.WarnException("Could not determine whatever user is admin or not, assuming not", e);
+					log_WarnException("Could not determine whatever user is admin or not, assuming not", e);
 					return false;
 				}
 			}
@@ -216,46 +216,24 @@ namespace Raven.Database.Extensions
 			}
 		}
 
-		public static bool IsAdministrator(this IPrincipal principal, DocumentDatabase database)
-		{
-			var name = database.Name ?? "<system>";
-			return IsAdministrator(principal, name);
-		}
-
-		public static bool IsAdministrator(this IPrincipal principal, string databaseNane)
+		public static bool IsAdministrator(IPrincipal principal, string databaseNane, string Constants_SystemDatabase, bool isDbAccessAdmin)
 		{
 			var databaseAccessPrincipal = principal as PrincipalWithDatabaseAccess;
 			if (databaseAccessPrincipal != null)
 			{
 				if (databaseAccessPrincipal.AdminDatabases.Any(name => name == "*")
-					&& databaseNane != null && databaseNane != Constants.SystemDatabase)
+					&& databaseNane != null && databaseNane != Constants_SystemDatabase)
 					return true;
 				if (databaseAccessPrincipal.AdminDatabases.Any(name => string.Equals(name, databaseNane, StringComparison.InvariantCultureIgnoreCase)))
 					return true;
 				if (databaseNane == null &&
 					databaseAccessPrincipal.AdminDatabases.Any(
-						name => string.Equals(name, Constants.SystemDatabase, StringComparison.InvariantCultureIgnoreCase)))
+						name => string.Equals(name, Constants_SystemDatabase, StringComparison.InvariantCultureIgnoreCase)))
 					return true;
 				return false;
 			}
 
-			var oauthPrincipal = principal as OAuthPrincipal;
-			if (oauthPrincipal != null)
-			{
-				foreach (var dbAccess in oauthPrincipal.TokenBody.AuthorizedDatabases.Where(x => x.Admin))
-				{
-					if (dbAccess.TenantId == "*" && databaseNane != null && databaseNane != Constants.SystemDatabase)
-						return true;
-					if (string.Equals(dbAccess.TenantId, databaseNane, StringComparison.InvariantCultureIgnoreCase))
-						return true;
-					if (databaseNane == null &&
-						string.Equals(dbAccess.TenantId, Constants.SystemDatabase, StringComparison.InvariantCultureIgnoreCase))
-						return false;
-				}
-			}
-
-
-			return false;
+			return isDbAccessAdmin;
 		}
 	}
 }

@@ -192,9 +192,6 @@
       <HintPath>..\packages\ICSharpCode.NRefactory.5.5.0\lib\Net40\ICSharpCode.NRefactory.Xml.dll</HintPath>
     </Reference>
     <Reference Include="Mono.Posix" />
-    <Reference Include="System.DirectoryServices.AccountManagement">
-      <HintPath>..\DLLs\System.DirectoryServices.AccountManagement.dll</HintPath>
-    </Reference>
   </ItemGroup>
   <ItemGroup>
     <Compile Include="..\CommonAssemblyInfo.cs">
@@ -634,7 +631,6 @@
     <Compile Include="Config\Settings\StringSetting.cs" />
     <Compile Include="Config\Settings\TimeSpanSetting.cs" />
     <Compile Include="Data\TouchedDocumentInfo.cs" />
-    <Compile Include="Extensions\RoleFinder.cs" />
     <Compile Include="Extensions\WhoIsLocking.cs" />
     <Compile Include="Indexing\CurrentIndexingScope.cs" />
     <Compile Include="Indexing\CurrentTransformationScope.cs" />
@@ -1116,6 +1112,7 @@
     <Compile Include="Util\Streams\BufferPoolMemoryStream.cs" />
     <Compile Include="Util\Streams\BlockingStream.cs" />
     <Compile Include="Util\WildcardMatcher.cs" />
+    <Compile Include="Extensions\RoleFinder.cs" />
   </ItemGroup>
   <ItemGroup>
     <BootstrapperPackage Include="Microsoft.Net.Client.3.5">
@@ -1170,6 +1167,10 @@
     <ProjectReference Include="..\Raven.Client.Lightweight\Raven.Client.Lightweight.csproj">
       <Project>{4E087ECB-E7CA-4891-AC3C-3C76702715B6}</Project>
       <Name>Raven.Client.Lightweight</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\Raven.SpecificPlatform.Windows\Raven.SpecificPlatform.Windows.csproj">
+      <Project>{38444EDA-CBD2-4557-8947-F8803A942661}</Project>
+      <Name>Raven.SpecificPlatform.Windows</Name>
     </ProjectReference>
   </ItemGroup>
   <ItemGroup />
