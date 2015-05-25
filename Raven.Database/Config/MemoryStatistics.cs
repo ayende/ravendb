@@ -49,6 +49,20 @@ namespace Raven.Database.Config
         private static readonly IntPtr lowMemoryNotificationHandle;
         private static readonly ConcurrentSet<WeakReference<ILowMemoryHandler>> LowMemoryHandlers;
         private static readonly IntPtr LowMemorySimulationEvent;
+		private static readonly Thread lowMemDetectThread = null;
+		public static void StopLowMemDetectThread ()
+		{
+			if (lowMemDetectThread != null) {
+				try
+				{
+					lowMemDetectThread.Abort();
+				}
+				catch (ThreadAbortException e){
+					Console.WriteLine("On StopLowMemDetectionThread Exception message: {0}", e.Message);
+				}
+			}
+
+		}
 
         static MemoryStatistics()
 		{
@@ -64,7 +78,7 @@ namespace Raven.Database.Config
 				if (lowMemoryNotificationHandle == null)
 					throw new Win32Exception ();
 
-				new Thread (() => {
+				lowMemDetectThread = new Thread (() => {
 					const UInt32 INFINITE = 0xFFFFFFFF;
 					const UInt32 WAIT_FAILED = 0xFFFFFFFF;
 					const UInt32 WAIT_TIMEOUT = 0x00000102;
@@ -101,22 +115,19 @@ namespace Raven.Database.Config
 				}) {
 					IsBackground = true,
 					Name = "Low memory notification thread"
-				}.Start ();
+				};
+				lowMemDetectThread.Start ();
 			} else { // linux:
-				new Thread (() => {
+				lowMemDetectThread = new Thread (() => {
 					while (true) {
 						// poll free mem every 5 seconds
-						sysinfo_t info = new Raven.Unix.Native.sysinfo_t();
-						if ( Syscall.sysinfo(ref info) != 0)
-						{
+						sysinfo_t info = new Raven.Unix.Native.sysinfo_t ();
+						if (Syscall.sysinfo (ref info) != 0) {
 							log.Warn ("Failure when trying to wait for low memory notification. No low memory notifications will be raised.");
-						}
-						else
-						{
-							RavenConfiguration configuration = new RavenConfiguration();
-							ulong availableMem = info.AvailableRam / ( 1024L * 1024);
-							if ( availableMem <  (ulong)configuration.LowMemoryForLinuxDetectionInMB )
-							{
+						} else {
+							RavenConfiguration configuration = new RavenConfiguration ();
+							ulong availableMem = info.AvailableRam / (1024L * 1024);
+							if (availableMem < (ulong)configuration.LowMemoryForLinuxDetectionInMB) {
 								log.Warn ("Low memory detected, will try to reduce memory usage...");
 								RunLowMemoryHandlers ();
 								Thread.Sleep (TimeSpan.FromSeconds (55)); // prevent triggering the event to frequent when the low memory notification object is in the signaled state
@@ -127,7 +138,8 @@ namespace Raven.Database.Config
 				}) {
 					IsBackground = true,
 					Name = "Low memory notification thread"
-				}.Start ();
+				};
+				lowMemDetectThread.Start ();
 			}
 		}
 
