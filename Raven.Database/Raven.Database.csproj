@@ -1113,6 +1113,7 @@
     <Compile Include="Util\Streams\BlockingStream.cs" />
     <Compile Include="Util\WildcardMatcher.cs" />
     <Compile Include="Extensions\RoleFinder.cs" />
+    <Compile Include="Extensions\FeatureNotSupportedOnPosixException.cs" />
   </ItemGroup>
   <ItemGroup>
     <BootstrapperPackage Include="Microsoft.Net.Client.3.5">
