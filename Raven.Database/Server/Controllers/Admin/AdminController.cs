@@ -984,8 +984,8 @@ namespace Raven.Database.Server.Controllers.Admin
 		{
 			if (EnsureSystemDatabase() == false)
 				return GetMessageWithString("Low memory simulation is only possible from the system database", HttpStatusCode.BadRequest);
-
-			MemoryStatistics.SimulateLowMemoryNotification();
+	
+			MemoryStatistics.SimulateLowMemoryNotification ();
 
 			return GetEmptyMessage();
 		}
