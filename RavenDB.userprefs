@@ -1,0 +1,13 @@
+﻿<Properties StartupItem="Raven.Database/Raven.Database.csproj">
+  <MonoDevelop.Ide.Workspace ActiveConfiguration="Debug" />
+  <MonoDevelop.Ide.Workbench ActiveDocument="Raven.Database/Raven.Database.csproj">
+    <Files>
+      <File FileName="RavenDB.sln" Line="6" Column="86" />
+      <File FileName="Raven.Database/Raven.Database.csproj" Line="198" Column="55" />
+    </Files>
+  </MonoDevelop.Ide.Workbench>
+  <MonoDevelop.Ide.DebuggingService.Breakpoints>
+    <BreakpointStore />
+  </MonoDevelop.Ide.DebuggingService.Breakpoints>
+  <MonoDevelop.Ide.DebuggingService.PinnedWatches />
+</Properties>
