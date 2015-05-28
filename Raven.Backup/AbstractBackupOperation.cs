@@ -1,7 +1,9 @@
 ﻿using System.Collections.Generic;
 using System.Net.Http;
+
 using Raven.Abstractions.Data;
 using Raven.Client.Connection;
+
 using System;
 using System.Threading;
 using Raven.Client.Connection.Implementation;

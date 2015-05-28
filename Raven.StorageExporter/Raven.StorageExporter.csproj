@@ -60,13 +60,13 @@
       <Project>{41AC479E-1EB2-4D23-AAF2-E4C8DF1BC2BA}</Project>
       <Name>Raven.Abstractions</Name>
     </ProjectReference>
-    <ProjectReference Include="..\Raven.Voron\Voron\Voron.csproj">
-      <Project>{FF83C7C2-BC7B-4DCC-A782-49EF9BBD9390}</Project>
-      <Name>Voron</Name>
-    </ProjectReference>
     <ProjectReference Include="..\Raven.Database\Raven.Database.csproj">
       <Project>{212823CD-25E1-41AC-92D1-D6DF4D53FC85}</Project>
       <Name>Raven.Database</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\Raven.Voron\Voron\Voron.csproj">
+      <Project>{FF83C7C2-BC7B-4DCC-A782-49EF9BBD9390}</Project>
+      <Name>Voron</Name>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

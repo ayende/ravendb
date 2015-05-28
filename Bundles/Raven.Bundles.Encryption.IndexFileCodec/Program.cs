@@ -7,7 +7,6 @@ using System.Text;
 using System.Threading.Tasks;
 using Raven.Bundles.Encryption.Settings;
 using Raven.Bundles.Encryption.Streams;
-using Raven.Bundles.Encryption.Streams;
 
 namespace Raven.Bundles.Encryption.IndexFileCodec
 {

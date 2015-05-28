@@ -1,9 +1,13 @@
-﻿<Properties StartupItem="Raven.Database/Raven.Database.csproj">
+﻿<Properties StartupItem="Raven.Server/Raven.Server.csproj">
   <MonoDevelop.Ide.Workspace ActiveConfiguration="Debug" />
-  <MonoDevelop.Ide.Workbench ActiveDocument="Raven.Database/Raven.Database.csproj">
+  <MonoDevelop.Ide.Workbench ActiveDocument="Raven.Voron/Voron.Tests/Bugs/MultiAdds.cs">
     <Files>
-      <File FileName="RavenDB.sln" Line="6" Column="86" />
-      <File FileName="Raven.Database/Raven.Database.csproj" Line="198" Column="55" />
+      <File FileName="Raven.Abstractions/Connection/ErrorResponseException.cs" Line="1" Column="1" />
+      <File FileName="Raven.Database/Linq/QueryParsingUtils.cs" Line="1" Column="1" />
+      <File FileName="Raven.Voron/Voron.Tests/Bugs/MultiAdds.cs" Line="60" Column="11" />
+      <File FileName=".nuget/NuGet.Config" Line="1" Column="1" />
+      <File FileName=".nuget/NuGet.targets" Line="1" Column="1" />
+      <File FileName=".nuget/packages.config" Line="1" Column="1" />
     </Files>
   </MonoDevelop.Ide.Workbench>
   <MonoDevelop.Ide.DebuggingService.Breakpoints>

@@ -73,7 +73,6 @@ namespace Raven.Database.Config
 				throw new Win32Exception ();
 
 			new Thread (() => {
-				const UInt32 INFINITE = 0xFFFFFFFF;
 				const UInt32 WAIT_FAILED = 0xFFFFFFFF;
 				const UInt32 WAIT_TIMEOUT = 0x00000102;
 				while (true) {

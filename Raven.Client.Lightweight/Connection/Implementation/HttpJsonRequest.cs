@@ -680,7 +680,7 @@ namespace Raven.Client.Connection.Implementation
 		        Content = new JsonContent(tokenToWrite),
 		        Headers =
 		        {
-						TransferEncodingChunked = !EnvironmentUtils.RunningOnPosix
+			        TransferEncodingChunked = true
 		        }
 	        });
         }
@@ -705,7 +705,7 @@ namespace Raven.Client.Connection.Implementation
 				Content = content,
 				Headers =
 				{
-						TransferEncodingChunked = !EnvironmentUtils.RunningOnPosix,
+					TransferEncodingChunked = true,
 				}
 			});
 		}
@@ -758,7 +758,8 @@ namespace Raven.Client.Connection.Implementation
                 {
 					throw new ErrorResponseException(Response, "Failed request");
                 }
-                return Response;
+
+            return Response;
 		    }).ConfigureAwait(false);
 		}
 
