@@ -15,6 +15,7 @@ using Raven.Client.Changes;
 using Raven.Client.Connection.Async;
 using Raven.Client.Connection;
 using Raven.Client.Document;
+using Raven.Client.Extensions;
 using Raven.Client.Indexes;
 
 namespace Raven.Client.Shard
@@ -127,6 +128,14 @@ namespace Raven.Client.Shard
 		public override IAsyncDocumentSession OpenAsyncSession(string databaseName)
 		{
 			return OpenAsyncSessionInternal(databaseName, ShardStrategy.Shards.ToDictionary(x => x.Key, x => x.Value.AsyncDatabaseCommands.ForDatabase(databaseName)));
+		}
+
+		/// <summary>
+		/// Opens the async session with the specified options.
+		/// </summary>
+		public override IAsyncDocumentSession OpenAsyncSession(OpenSessionOptions sessionOptions)
+		{
+			return OpenAsyncSessionInternal(sessionOptions.Database, ShardStrategy.Shards.ToDictionary(x => x.Key, x => x.Value.AsyncDatabaseCommands.ForDatabase(sessionOptions.Database).With(sessionOptions.Credentials)));
 		}
 
 		private IAsyncDocumentSession OpenAsyncSessionInternal(string dbName,Dictionary<string, IAsyncDatabaseCommands> shardDbCommands)
@@ -288,7 +297,7 @@ namespace Raven.Client.Shard
 			ShardStrategy.Shards.ForEach(shard => shard.Value.InitializeProfiling());
 		}
 
-		public override bool CanEnlistInDistributedTransactions(string dbName)
+	    public override bool CanEnlistInDistributedTransactions(string dbName)
 		{
 			return false;// sharding & dtc don't mix
 		}
@@ -394,7 +403,40 @@ namespace Raven.Client.Shard
             });
         }
 
-        public override Task ExecuteTransformerAsync(AbstractTransformerCreationTask transformerCreationTask)
+		public override void SideBySideExecuteIndex(AbstractIndexCreationTask indexCreationTask, Etag minimumEtagBeforeReplace = null, DateTime? replaceTimeUtc = null)
+		{
+			var list = ShardStrategy.Shards.Values.Select(x => x.DatabaseCommands).ToList();
+			ShardStrategy.ShardAccessStrategy.Apply(list,
+															new ShardRequestData()
+															, (commands, i) =>
+															{
+																indexCreationTask.SideBySideExecute(commands, Conventions, minimumEtagBeforeReplace, replaceTimeUtc);
+																return (object)null;
+															});
+		}
+
+		public override Task SideBySideExecuteIndexAsync(AbstractIndexCreationTask indexCreationTask, Etag minimumEtagBeforeReplace = null, DateTime? replaceTimeUtc = null)
+		{
+			var list = ShardStrategy.Shards.Values.Select(x => x.AsyncDatabaseCommands).ToList();
+			return ShardStrategy.ShardAccessStrategy.ApplyAsync(list, new ShardRequestData(), (commands, i) =>
+			{
+				var tcs = new TaskCompletionSource<bool>();
+
+				try
+				{
+					indexCreationTask.SideBySideExecuteAsync(commands, Conventions, minimumEtagBeforeReplace, replaceTimeUtc)
+									 .ContinueWith(t => tcs.SetResult(true));
+				}
+				catch (Exception e)
+				{
+					tcs.SetException(e);
+				}
+
+				return tcs.Task;
+			});
+		}
+
+		public override Task ExecuteTransformerAsync(AbstractTransformerCreationTask transformerCreationTask)
         {
             var list = ShardStrategy.Shards.Values.Select(x => x.AsyncDatabaseCommands).ToList();
             return ShardStrategy.ShardAccessStrategy.ApplyAsync(list,

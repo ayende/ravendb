@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -9,35 +10,15 @@ using System.Threading.Tasks;
 using System.Web.Http;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
+using Raven.Abstractions.Logging;
 using Raven.Database.Extensions;
 using Raven.Database.Server.WebApi.Attributes;
 using Raven.Json.Linq;
-using System.Web.Http.Filters;
-using Raven.Abstractions;
 
 namespace Raven.Database.Server.Controllers
 {
-	[DocIdUnescapeFilter]
-	public class DocumentsController : RavenDbApiController
+	public class DocumentsController : ClusterAwareRavenDbApiController
 	{
-		[AttributeUsage(AttributeTargets.Class)]
-		internal class DocIdUnescapeFilterAttribute : ActionFilterAttribute
-		{
-			public override void OnActionExecuting (System.Web.Http.Controllers.HttpActionContext actionContext)
-			{
-				if (EnvironmentUtils.RunningOnMono) {
-					if (actionContext.ActionArguments.ContainsKey ("id")) {
-						actionContext.ActionArguments ["id"] = Uri.UnescapeDataString ((string)actionContext.ActionArguments ["id"]);
-					}
-
-					if (actionContext.ActionArguments.ContainsKey ("docId")) {
-						actionContext.ActionArguments ["docId"] = Uri.UnescapeDataString ((string)actionContext.ActionArguments ["docId"]);
-					}
-				}
-				base.OnActionExecuting (actionContext);
-			}
-		}
-
 		[HttpGet]
 		[RavenRoute("docs")]
 		[RavenRoute("databases/{databaseName}/docs")]
@@ -116,7 +97,30 @@ namespace Raven.Database.Server.Controllers
 		[RavenRoute("databases/{databaseName}/docs")]
 		public async Task<HttpResponseMessage> DocsPost()
 		{
-			var json = await ReadJsonAsync();
+
+			RavenJObject json;
+			try
+			{
+				json = await ReadJsonAsync();
+			}
+			catch (InvalidOperationException e)
+			{
+				Log.Debug("Failed to deserialize document request. Error: " + e);
+				return GetMessageWithObject(new
+				{
+					Message = "Could not understand json, please check its validity."
+				}, (HttpStatusCode)422); //http code 422 - Unprocessable entity
+
+			}
+			catch (InvalidDataException e)
+			{
+				Log.Debug("Failed to deserialize document request. Error: " + e);
+				return GetMessageWithObject(new
+				{
+					e.Message
+				}, (HttpStatusCode)422); //http code 422 - Unprocessable entity
+			}
+
 			var id = Database.Documents.Put(null, Etag.Empty, json,
 								  ReadInnerHeaders.FilterHeadersToObject(),
 								  GetRequestTransaction());
@@ -205,7 +209,29 @@ namespace Raven.Database.Server.Controllers
 		[RavenRoute("databases/{databaseName}/docs/{*docId}")]
 		public async Task<HttpResponseMessage> DocPut(string docId)
 		{
-			var json = await ReadJsonAsync();
+			RavenJObject json;
+			try
+			{
+				json = await ReadJsonAsync();
+			}
+			catch (InvalidOperationException e)
+			{
+				Log.Debug("Failed to deserialize document request. Error: " + e);
+				return GetMessageWithObject(new
+				{
+					Message = "Could not understand json, please check its validity."
+				}, (HttpStatusCode)422); //http code 422 - Unprocessable entity
+
+			}
+			catch (InvalidDataException e)
+			{
+				Log.Debug("Failed to deserialize document request. Error: " + e);
+				return GetMessageWithObject(new
+				{
+					e.Message
+				}, (HttpStatusCode)422); //http code 422 - Unprocessable entity
+			}
+
 			var putResult = Database.Documents.Put(docId, GetEtag(), json, ReadInnerHeaders.FilterHeadersToObject(), GetRequestTransaction());
 			return GetMessageWithObject(putResult, HttpStatusCode.Created);
 		}

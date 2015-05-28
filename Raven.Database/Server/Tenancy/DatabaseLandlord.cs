@@ -21,26 +21,58 @@ namespace Raven.Database.Server.Tenancy
 {
     public class DatabasesLandlord : AbstractLandlord<DocumentDatabase>
     {
-        private readonly InMemoryRavenConfiguration systemConfiguration;
-        private readonly DocumentDatabase systemDatabase;
-
         public event Action<InMemoryRavenConfiguration> SetupTenantConfiguration = delegate { };
+
+		public event Action<string> OnDatabaseLoaded = delegate { };
 
 	    private bool initialized;
         private const string DATABASES_PREFIX = "Raven/Databases/";
         public override string ResourcePrefix { get { return DATABASES_PREFIX; } }
 
-        public DatabasesLandlord(DocumentDatabase systemDatabase)
+		public int MaxIdleTimeForTenantDatabaseInSec { get; private set; }
+		
+		public int FrequencyToCheckForIdleDatabasesInSec { get; private set; }
+
+        public DatabasesLandlord(DocumentDatabase systemDatabase) : base(systemDatabase)
         {
-            systemConfiguration = systemDatabase.Configuration;
-            this.systemDatabase = systemDatabase;
+			int val;
+			if (int.TryParse(SystemConfiguration.Settings["Raven/Tenants/MaxIdleTimeForTenantDatabase"], out val) == false)
+				val = 900;
+
+	        MaxIdleTimeForTenantDatabaseInSec = val;
+
+			if (int.TryParse(SystemConfiguration.Settings["Raven/Tenants/FrequencyToCheckForIdleDatabases"], out val) == false)
+				val = 60;
+
+	        FrequencyToCheckForIdleDatabasesInSec = val;
 
 			string tempPath = Path.GetTempPath();
 			var fullTempPath = tempPath + Constants.TempUploadsDirectoryName;
-			if (File.Exists(fullTempPath))
-				File.Delete(fullTempPath);
-			if (Directory.Exists(fullTempPath))
-				Directory.Delete(fullTempPath, true);
+	        if (File.Exists(fullTempPath))
+	        {
+		        try
+		        {
+			        File.Delete(fullTempPath);
+		        }
+		        catch (Exception)
+		        {
+			        // we ignore this issue, nothing to do now, and we'll only see
+					// this as an error if there are actually uploads
+		        }
+	        }
+	        if (Directory.Exists(fullTempPath))
+	        {
+		        try
+		        {
+			        Directory.Delete(fullTempPath, true);
+		        }
+		        catch (Exception)
+		        {
+			        // there is nothing that we can do here, and it is possible that we have
+					// another database doing uploads for the same user, so we'll just 
+					// not any cleanup. Worst case, we'll waste some memory.
+		        }
+	        }
 
             Init();
         }
@@ -98,47 +130,34 @@ namespace Raven.Database.Server.Tenancy
             return null;
         }
 
-        public bool TryGetDatabase(string tenantId, out Task<DocumentDatabase> database)
-        {
-            if (Locks.Contains(DisposingLock))
-                throw new ObjectDisposedException("DatabaseLandlord", "Server is shutting down, can't access any databases");
-
-            if (!ResourcesStoresCache.TryGetValue(tenantId, out database)) 
-                return false;
-
-            if (!database.IsFaulted && !database.IsCanceled) 
-                return true;
-
-            ResourcesStoresCache.TryRemove(tenantId, out database);
-            DateTime time;
-            LastRecentlyUsed.TryRemove(tenantId, out time);
-            return false;
-        }
-
         public bool TryGetOrCreateResourceStore(string tenantId, out Task<DocumentDatabase> database)
         {
 			if (Locks.Contains(DisposingLock))
 				throw new ObjectDisposedException("DatabaseLandlord","Server is shutting down, can't access any databases");
 
-            if (ResourcesStoresCache.TryGetValue(tenantId, out database))
-            {
-                if (database.IsFaulted || database.IsCanceled)
-                {
-                    ResourcesStoresCache.TryRemove(tenantId, out database);
-                    DateTime time;
-                    LastRecentlyUsed.TryRemove(tenantId, out time);
-                    // and now we will try creating it again
-                }
-                else
-                {
-                    return true;
-                }
-            }
+			if (Locks.Contains(tenantId))
+				throw new InvalidOperationException("Database '" + tenantId + "' is currently locked and cannot be accessed.");
 
-            if (Locks.Contains(tenantId))
-                throw new InvalidOperationException("Database '" + tenantId + "' is currently locked and cannot be accessed.");
+	        ManualResetEvent cleanupLock;
+			if (Cleanups.TryGetValue(tenantId, out cleanupLock) && cleanupLock.WaitOne(MaxSecondsForTaskToWaitForDatabaseToLoad) == false)
+				throw new InvalidOperationException(string.Format("Database '{0}' is currently being restarted and cannot be accessed. We already waited {1} seconds.", tenantId, MaxSecondsForTaskToWaitForDatabaseToLoad));
 
-            var config = CreateTenantConfiguration(tenantId);
+	        if (ResourcesStoresCache.TryGetValue(tenantId, out database))
+	        {
+		        if (database.IsFaulted || database.IsCanceled)
+		        {
+			        ResourcesStoresCache.TryRemove(tenantId, out database);
+			        DateTime time;
+			        LastRecentlyUsed.TryRemove(tenantId, out time);
+			        // and now we will try creating it again
+		        }
+		        else
+		        {
+			        return true;
+		        }
+	        }
+
+	        var config = CreateTenantConfiguration(tenantId);
             if (config == null)
                 return false;
 
@@ -147,7 +166,7 @@ namespace Raven.Database.Server.Tenancy
 				var transportState = ResourseTransportStates.GetOrAdd(tenantId, s => new TransportState());
 
                 AssertLicenseParameters(config);
-                var documentDatabase = new DocumentDatabase(config, transportState);
+                var documentDatabase = new DocumentDatabase(config, systemDatabase, transportState);
 
 				documentDatabase.SpinBackgroundWorkers();
 				documentDatabase.Disposing += DocumentDatabaseDisposingStarted;
@@ -158,9 +177,13 @@ namespace Raven.Database.Server.Tenancy
 
                 // if we have a very long init process, make sure that we reset the last idle time for this db.
                 LastRecentlyUsed.AddOrUpdate(tenantId, SystemTime.UtcNow, (_, time) => SystemTime.UtcNow);
+
                 return documentDatabase;
             }).ContinueWith(task =>
             {
+	            if (task.Status == TaskStatus.RanToCompletion) 
+					OnDatabaseLoaded(tenantId);
+
                 if (task.Status == TaskStatus.Faulted) // this observes the task exception
                 {
                     Logger.WarnException("Failed to create database " + tenantId, task.Exception);
@@ -380,7 +403,7 @@ namespace Raven.Database.Server.Tenancy
 				ResourcesStoresCache.Set(database.Name, (dbName) =>
 				{
 					var tcs = new TaskCompletionSource<DocumentDatabase>();
-					tcs.SetException(new ObjectDisposedException(dbName, "Database named " + dbName + " is being disposed right now and cannot be accessed.\r\n" +
+					tcs.SetException(new ObjectDisposedException(database.Name, "Database named " + database.Name + " is being disposed right now and cannot be accessed.\r\n" +
 																 "Access will be available when the dispose process will end")
 					{
 						Data =
@@ -388,6 +411,8 @@ namespace Raven.Database.Server.Tenancy
 							{"Raven/KeepInResourceStore", "true"}
 						}
 					});
+					// we need to observe this task exception in case no one is actually looking at it during disposal
+					GC.KeepAlive(tcs.Task.Exception);
 					return tcs.Task;
 				});
 			}

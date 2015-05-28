@@ -218,6 +218,7 @@ namespace Raven.Database.Storage
             get
             {
                 return transformDefinitions.Values
+										   .Where(x => !x.Temporary)
                                            .OrderBy(x => x.Name)
                                            .Select(x => x.Name)
                                            .ToArray();
@@ -244,8 +245,8 @@ namespace Raven.Database.Storage
             if (configuration.RunInMemory)
                 return;
             var indexName = Path.Combine(path, indexDefinition.IndexId + ".index");
-            File.WriteAllText(indexName,
-                              JsonConvert.SerializeObject(indexDefinition, Formatting.Indented, Default.Converters));
+	        var serializedObject = JsonConvert.SerializeObject(indexDefinition, Formatting.Indented, Default.Converters);
+	        File.WriteAllText(indexName, serializedObject);
         }
 
         private void WriteTransformerDefinition(TransformerDefinition transformerDefinition)
@@ -260,15 +261,20 @@ namespace Raven.Database.Storage
         }
 
 		[CLSCompliant(false)]
-        public string CreateAndPersistTransform(TransformerDefinition transformerDefinition, AbstractTransformer transformer)
+        public string CreateTransform(TransformerDefinition transformerDefinition, AbstractTransformer transformer)
         {
 			transformCache.AddOrUpdate(transformerDefinition.TransfomerId, transformer, (s, viewGenerator) => transformer);
-            if (configuration.RunInMemory == false)
-            {
-                WriteTransformerDefinition(transformerDefinition);
-            }
             return transformer.Name;
         }
+
+		[CLSCompliant(false)]
+		public void PersistTransform(TransformerDefinition transformerDefinition)
+		{
+			if (configuration.RunInMemory == false)
+			{
+				WriteTransformerDefinition(transformerDefinition);
+			}
+		}
 
         public void UpdateIndexDefinitionWithoutUpdatingCompiledIndex(IndexDefinition definition)
         {
@@ -484,11 +490,14 @@ namespace Raven.Database.Storage
             });
         }
 
-        public void RemoveTransformer(string name)
+        public bool RemoveTransformer(string name)
         {
             var transformer = GetTransformerDefinition(name);
-            if (transformer == null) return;
+            if (transformer == null) 
+				return false;
             RemoveTransformer(transformer.TransfomerId);
+
+	        return true;
         }
 
         public void RemoveIndex(string name)

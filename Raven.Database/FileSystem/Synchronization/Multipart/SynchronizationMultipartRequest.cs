@@ -1,12 +1,14 @@
 ﻿using Raven.Abstractions.Connection;
+using Raven.Abstractions.Data;
+using Raven.Abstractions.Extensions;
 using Raven.Abstractions.FileSystem;
+using Raven.Abstractions.Util;
 using Raven.Client.Connection;
 using Raven.Client.Connection.Profiling;
 using Raven.Client.FileSystem;
 using Raven.Client.FileSystem.Connection;
 using Raven.Database.FileSystem.Synchronization.Rdc.Wrapper;
 using Raven.Database.FileSystem.Util;
-using Raven.Imports.Newtonsoft.Json;
 using Raven.Json.Linq;
 using System;
 using System.Collections.Generic;
@@ -16,6 +18,7 @@ using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using FileSystemInfo = Raven.Abstractions.FileSystem.FileSystemInfo;
 
 namespace Raven.Database.FileSystem.Synchronization.Multipart
 {
@@ -24,16 +27,16 @@ namespace Raven.Database.FileSystem.Synchronization.Multipart
         private readonly IAsyncFilesSynchronizationCommands destination;
 		private readonly string fileName;
 		private readonly IList<RdcNeed> needList;
-		private readonly ServerInfo serverInfo;
+		private readonly FileSystemInfo fileSystemInfo;
         private readonly RavenJObject sourceMetadata;
 		private readonly Stream sourceStream;
 		private readonly string syncingBoundary;
 
-        public SynchronizationMultipartRequest(IAsyncFilesSynchronizationCommands destination, ServerInfo serverInfo, string fileName,
+        public SynchronizationMultipartRequest(IAsyncFilesSynchronizationCommands destination, FileSystemInfo fileSystemInfo, string fileName,
                                                RavenJObject sourceMetadata, Stream sourceStream, IList<RdcNeed> needList)
 		{
 			this.destination = destination;
-			this.serverInfo = serverInfo;
+			this.fileSystemInfo = fileSystemInfo;
 			this.fileName = fileName;
 			this.sourceMetadata = sourceMetadata;
 			this.sourceStream = sourceStream;
@@ -56,23 +59,21 @@ namespace Raven.Database.FileSystem.Synchronization.Multipart
             var credentials = commands.PrimaryCredentials;
             var conventions = commands.Conventions;
 
-			using (var request = commands.RequestFactory.CreateHttpJsonRequest(new CreateHttpJsonRequestParams(this, baseUrl + "/synchronization/MultipartProceed", "POST", credentials, conventions)))
+			using (var request = commands.RequestFactory.CreateHttpJsonRequest(new CreateHttpJsonRequestParams(this, baseUrl + "/synchronization/MultipartProceed", HttpMethods.Post, credentials, conventions)))
 			{
-				// REVIEW: (Oren) There is a mismatch of expectations in the AddHeaders. ETag must always have to be surrounded by quotes. 
-				//         If AddHeader/s ever put an etag it should check for that.
-				//         I was hesitant to do the change though, because I do not understand the complete scope of such a change.
 				request.AddHeaders(sourceMetadata);
 				request.AddHeader("Content-Type", "multipart/form-data; boundary=" + syncingBoundary);
+				request.AddHeader("If-None-Match", "\"" + sourceMetadata.Value<string>(Constants.MetadataEtagField) + "\"");
 
 				request.AddHeader(SyncingMultipartConstants.FileName, fileName);
-				request.AddHeader(SyncingMultipartConstants.SourceServerInfo, serverInfo.AsJson());
+				request.AddHeader(SyncingMultipartConstants.SourceFileSystemInfo, fileSystemInfo.AsJson());
 
 				try
 				{
 					await request.WriteAsync(PrepareMultipartContent(token));
 
 					var response = await request.ReadResponseJsonAsync().ConfigureAwait(false);
-					return new JsonSerializer().Deserialize<SynchronizationReport>(new RavenJTokenReader(response));
+					return JsonExtensions.CreateDefaultJsonSerializer().Deserialize<SynchronizationReport>(new RavenJTokenReader(response));
 				}
 				catch (Exception exception)
 				{

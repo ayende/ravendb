@@ -2,34 +2,40 @@
 using System.ComponentModel.Composition;
 using System.ComponentModel.Composition.Hosting;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
-
+using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
+using Raven.Abstractions.FileSystem;
+using Raven.Abstractions.Logging;
 using Raven.Abstractions.MEF;
 using Raven.Abstractions.Util;
 using Raven.Abstractions.Util.Streams;
 using Raven.Database.Config;
 using Raven.Database.Extensions;
-using Raven.Database.FileSystem.Plugins;
-using Raven.Database.Server.Abstractions;
-using Raven.Database.Server.Connections;
+using Raven.Database.FileSystem.Actions;
 using Raven.Database.FileSystem.Infrastructure;
 using Raven.Database.FileSystem.Notifications;
-using Raven.Database.Util;
+using Raven.Database.FileSystem.Plugins;
 using Raven.Database.FileSystem.Search;
 using Raven.Database.FileSystem.Storage;
+using Raven.Database.FileSystem.Storage.Voron;
 using Raven.Database.FileSystem.Synchronization;
 using Raven.Database.FileSystem.Synchronization.Conflictuality;
 using Raven.Database.FileSystem.Synchronization.Rdc.Wrapper;
 using Raven.Abstractions.FileSystem;
 using Raven.Database.FileSystem.Synchronization.Rdc.Wrapper.Unmanaged;
-using System.Runtime.InteropServices;
-using Raven.Abstractions;
+using Raven.Database.Impl;
+using Raven.Database.Server.Abstractions;
+using Raven.Database.Server.Connections;
+using Raven.Database.Util;
 
 namespace Raven.Database.FileSystem
 {
     public class RavenFileSystem : IResourceStore, IDisposable
 	{
+		private static readonly ILog Log = LogManager.GetCurrentClassLogger();
+
 		private readonly ConflictArtifactManager conflictArtifactManager;
 		private readonly ConflictDetector conflictDetector;
 		private readonly ConflictResolver conflictResolver;
@@ -50,13 +56,16 @@ namespace Raven.Database.FileSystem
 
         private Historian historian;
 
-        public string Name { get; private set;}
+        public string Name { get; private set; }
 
-		public RavenFileSystem(InMemoryRavenConfiguration systemConfiguration, string name, TransportState receivedTransportState = null)
+	    public string ResourceName { get; private set; }
+
+	    public RavenFileSystem(InMemoryRavenConfiguration systemConfiguration, string name, TransportState receivedTransportState = null)
 		{
 			ExtensionsState = new AtomicDictionary<object>();
 
 		    Name = name;
+			ResourceName = string.Concat(Constants.FileSystem.UrlPrefix, "/", name);
 			this.systemConfiguration = systemConfiguration;
 
 			systemConfiguration.Container.SatisfyImportsOnce(this);
@@ -80,20 +89,30 @@ namespace Raven.Database.FileSystem
             search = new IndexStorage(name, systemConfiguration);
 
             conflictArtifactManager = new ConflictArtifactManager(storage, search);
-            storageOperationsTask = new StorageOperationsTask(storage, DeleteTriggers, search, notificationPublisher); 
+
+			Tasks = new TaskActions(this, Log);
+			Files = new FileActions(this, Log);
+			Synchronizations = new SynchronizationActions(this, Log);
 
 			AppDomain.CurrentDomain.ProcessExit += ShouldDispose;
 			AppDomain.CurrentDomain.DomainUnload += ShouldDispose;
-		}        
+		}
 
-        public void Initialize()
+	    public TaskActions Tasks { get; private set; }
+
+		public FileActions Files { get; private set; }
+
+		public SynchronizationActions Synchronizations { get; private set; }
+
+	    public void Initialize()
         {
-            storage.Initialize(FileCodecs);
+		    var generator = new UuidGenerator();
+		    storage.Initialize(generator, FileCodecs);
+			generator.EtagBase = new SequenceActions(storage).GetNextValue("Raven/Etag");
 
-            var replicationHiLo = new SynchronizationHiLo(storage);
-            var sequenceActions = new SequenceActions(storage);
-            var uuidGenerator = new UuidGenerator(sequenceActions);
-            historian = new Historian(storage, replicationHiLo, uuidGenerator);
+            historian = new Historian(storage, new SynchronizationHiLo(storage));
+
+			InitializeTriggersExceptIndexCodecs();
 
             search.Initialize(this);
 
@@ -133,7 +152,11 @@ namespace Raven.Database.FileSystem
             switch (storageType)
             {
                 case InMemoryRavenConfiguration.VoronTypeName:
-                    return new Storage.Voron.TransactionalStorage(configuration);
+					if (Environment.Is64BitProcess == false && configuration.Storage.Voron.AllowOn32Bits == false)
+					{
+						throw new Exception("Voron is prone to failure in 32-bits mode. Use " + Constants.Voron.AllowOn32Bits + " to force voron in 32-bit process.");
+					}
+                    return new TransactionalStorage(configuration);
                 case InMemoryRavenConfiguration.EsentTypeName:
                     return new Storage.Esent.TransactionalStorage(configuration);
                 
@@ -170,9 +193,15 @@ namespace Raven.Database.FileSystem
 
 			PutTriggers.Init(disableAllTriggers).OfType<IRequiresFileSystemInitialization>().Apply(initialization => initialization.Initialize(this));
 
+			MetadataUpdateTriggers.Init(disableAllTriggers).OfType<IRequiresFileSystemInitialization>().Apply(initialization => initialization.Initialize(this));
+
+			RenameTriggers.Init(disableAllTriggers).OfType<IRequiresFileSystemInitialization>().Apply(initialization => initialization.Initialize(this));
+
 			DeleteTriggers.Init(disableAllTriggers).OfType<IRequiresFileSystemInitialization>().Apply(initialization => initialization.Initialize(this));
 
 			ReadTriggers.Init(disableAllTriggers).OfType<IRequiresFileSystemInitialization>().Apply(initialization => initialization.Initialize(this));
+
+			SynchronizationTriggers.Init(disableAllTriggers).OfType<IRequiresFileSystemInitialization>().Apply(initialization => initialization.Initialize(this));
 		}
 
 		private void SecondStageInitialization()
@@ -183,9 +212,15 @@ namespace Raven.Database.FileSystem
 
 			PutTriggers.Apply(initialization => initialization.SecondStageInit());
 
+			MetadataUpdateTriggers.Apply(initialization => initialization.SecondStageInit());
+
+			RenameTriggers.Apply(initialization => initialization.SecondStageInit());
+
 			DeleteTriggers.Apply(initialization => initialization.SecondStageInit());
 
 			ReadTriggers.Apply(initialization => initialization.SecondStageInit());
+
+			SynchronizationTriggers.Apply(initialization => initialization.SecondStageInit());
 		}
 
 		/// <summary>
@@ -200,10 +235,20 @@ namespace Raven.Database.FileSystem
 		public OrderedPartCollection<AbstractFilePutTrigger> PutTriggers { get; set; }
 
 		[ImportMany]
+		public OrderedPartCollection<AbstractFileMetadataUpdateTrigger> MetadataUpdateTriggers { get; set; }
+
+		[ImportMany]
+		public OrderedPartCollection<AbstractFileRenameTrigger> RenameTriggers { get; set; }
+
+		[ImportMany]
 		public OrderedPartCollection<AbstractFileDeleteTrigger> DeleteTriggers { get; set; }
 
 		[ImportMany]
 		public OrderedPartCollection<AbstractFileReadTrigger> ReadTriggers { get; set; }
+
+		[ImportMany]
+		public OrderedPartCollection<AbstractSynchronizationTrigger> SynchronizationTriggers { get; set; }
+
 
 	    public ITransactionalStorage Storage
 		{
@@ -288,12 +333,30 @@ namespace Raven.Database.FileSystem
 
 			disposed = true;
 
-			synchronizationTask.Dispose();
-			storage.Dispose();
-			search.Dispose();
-			sigGenerator.Dispose();
-			BufferPool.Dispose();
-            metricsCounters.Dispose();
+			var exceptionAggregator = new ExceptionAggregator(Log, "Could not properly dispose RavenFileSystem");
+
+			if (synchronizationTask != null)
+				exceptionAggregator.Execute(synchronizationTask.Dispose);
+
+			if (storage != null)
+				exceptionAggregator.Execute(storage.Dispose);
+
+			if (search != null)
+				exceptionAggregator.Execute(search.Dispose);
+
+			if (sigGenerator != null)
+				exceptionAggregator.Execute(sigGenerator.Dispose);
+
+			if (BufferPool != null)
+				exceptionAggregator.Execute(BufferPool.Dispose);
+
+			if (metricsCounters != null)
+				exceptionAggregator.Execute(metricsCounters.Dispose);
+
+			if (Tasks != null)
+				Tasks.Dispose(exceptionAggregator);
+
+			exceptionAggregator.ThrowIfNeeded();
 		}
 
         public FileSystemMetrics CreateMetrics()
@@ -305,7 +368,7 @@ namespace Raven.Database.FileSystem
                 RequestsPerSecond = Math.Round(metrics.RequestsPerSecondCounter.CurrentValue, 3),
                 FilesWritesPerSecond = Math.Round(metrics.FilesPerSecond.CurrentValue, 3),
 
-                RequestsDuration = metrics.RequestDuationMetric.CreateHistogramData(),
+                RequestsDuration = metrics.RequestDurationMetric.CreateHistogramData(),
                 Requests = metrics.ConcurrentRequests.CreateMeterData()
             };
         }
@@ -327,5 +390,6 @@ namespace Raven.Database.FileSystem
 	        Storage.Batch(accessor => { fsStats.FileCount = accessor.GetFileCount(); });
             return fsStats;
 	    }
+
     }
 }

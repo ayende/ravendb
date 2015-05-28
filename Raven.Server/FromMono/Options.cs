@@ -129,7 +129,6 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
-using System.Linq;
 using System.Runtime.Serialization;
 using System.Security.Permissions;
 using System.Text;
@@ -844,7 +843,7 @@ namespace NDesk.Options
 			{
 				currentCategory = p.Category;
 			}
-			else if (p.Category.HasFlag(currentCategory) || p.Category == OptionCategory.None)
+			else if (p.Category.HasFlag(currentCategory) || currentCategory.HasFlag(p.Category) || p.Category == OptionCategory.None)
 			{
 				currentCategory |= p.Category;
 			}
@@ -1255,6 +1254,9 @@ namespace NDesk.Options
 
 		[Description("Import/Export FileSystem")]
 		SmugglerFileSystem = 1 << 12,
+
+		[Description("Import Database/FileSystem")]
+		SmugglerImportDatabaseFileSystem = 1 << 13,
 	}
 }
 

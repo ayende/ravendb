@@ -3,9 +3,7 @@
 //      Copyright (c) Hibernating Rhinos LTD. All rights reserved.
 //  </copyright>
 // -----------------------------------------------------------------------
-
 using System;
-using System.Diagnostics;
 
 namespace Voron.Trees
 {
@@ -13,20 +11,27 @@ namespace Voron.Trees
     {
         public class FoundPage
         {
-            public long Number;
-			public MemorySlice FirstKey;
-			public MemorySlice LastKey;
+            public readonly long Number;
+			public Page Page;
+			public readonly MemorySlice FirstKey;
+			public readonly MemorySlice LastKey;
             public readonly long[] CursorPath;
 
-            public FoundPage(int size)
+            public FoundPage(long number, Page page, MemorySlice firstKey, MemorySlice lastKey, long[] cursorPath)
             {
-                CursorPath = new long[size];
+                Number = number;
+                Page = page;
+                FirstKey = firstKey;
+                LastKey = lastKey;
+                CursorPath = cursorPath;
             }
         }
 
         private readonly FoundPage[] _cache;
 
         private readonly int _cacheSize;
+
+        private int current = 0;
 
         public RecentlyFoundPages(int cacheSize)
         {
@@ -36,42 +41,53 @@ namespace Voron.Trees
 
         public void Add(FoundPage page)
         {
-#if DEBUG
-            if ((page.FirstKey.Options == SliceOptions.BeforeAllKeys) && (page.LastKey.Options == SliceOptions.AfterAllKeys))
+            int itemsLeft = _cacheSize;
+            int position = current + _cacheSize;
+            while (itemsLeft > 0)
             {
-                Debug.Assert(page.CursorPath.Length == 1);
-            }
-#endif
-
-            for (int i = 0; i < _cacheSize; i++)
-            {
-                if (_cache[i] == null || _cache[i].Number == page.Number)
+	            var itemIndex = position % _cacheSize;
+	            var item = _cache[itemIndex];
+                if (item == null || item.Number == page.Number)
                 {
-                    _cache[0] = page;
+                    _cache[itemIndex] = page;
                     return;
                 }
+
+                itemsLeft--;
+                position--;
             }
 
-            for (int i = 1; i < _cacheSize; i++)
-            {
-                _cache[i] = _cache[i - 1];
-            }
-            _cache[0] = page;
+            current = (++current) % _cacheSize;
+            _cache[current] = page;
         }
 
         public FoundPage Find(MemorySlice key)
         {
-            for (int i = 0; i < _cache.Length; i++)
+            int position = current;
+
+            int itemsLeft = _cacheSize;
+            while ( itemsLeft > 0 )
             {
-                var page = _cache[i];
+                var page = _cache[position % _cacheSize];
                 if (page == null)
+                {
+                    itemsLeft--;
+                    position++;
+
                     continue;
+                }
 
                 var first = page.FirstKey;
                 var last = page.LastKey;
-                
+
                 switch (key.Options)
                 {
+                    case SliceOptions.Key:
+                        if ((first.Options != SliceOptions.BeforeAllKeys && key.Compare(first) < 0))
+                            break;
+                        if (last.Options != SliceOptions.AfterAllKeys && key.Compare(last) > 0)
+                            break;
+                        return page;
                     case SliceOptions.BeforeAllKeys:
                         if (first.Options == SliceOptions.BeforeAllKeys)
                             return page;
@@ -80,15 +96,12 @@ namespace Voron.Trees
                         if (last.Options == SliceOptions.AfterAllKeys)
                             return page;
                         break;
-                    case SliceOptions.Key:
-                        if ((first.Options != SliceOptions.BeforeAllKeys && key.Compare(first) < 0))
-                            continue;
-                        if (last.Options != SliceOptions.AfterAllKeys && key.Compare(last) > 0)
-                            continue;
-                        return page;
                     default:
                         throw new ArgumentException(key.Options.ToString());
                 }
+
+                itemsLeft--;
+                position++;
             }
 
             return null;
@@ -98,5 +111,18 @@ namespace Voron.Trees
         {
             Array.Clear(_cache, 0, _cacheSize);
         }
+
+	    public void Reset(long num)
+	    {
+		    for (int i = 0; i < _cache.Length; i++)
+		    {
+			    var page = _cache[i];
+			    if (page != null && page.Number == num)
+			    {
+				    page.Page = null;
+				    return;
+			    }
+		    }
+	    }
     }
 }

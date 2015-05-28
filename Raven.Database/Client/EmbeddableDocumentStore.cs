@@ -287,7 +287,12 @@ namespace Raven.Client.Embedded
             return Inner.OpenAsyncSession(database);
         }
 
-        public IDocumentSession OpenSession()
+	    public IAsyncDocumentSession OpenAsyncSession(OpenSessionOptions sessionOptions)
+	    {
+		    return Inner.OpenAsyncSession(sessionOptions);
+	    }
+
+	    public IDocumentSession OpenSession()
         {
             return Inner.OpenSession();
         }
@@ -316,7 +321,17 @@ namespace Raven.Client.Embedded
             return Inner.ExecuteIndexAsync(indexCreationTask);
         }
 
-        public void ExecuteTransformer(AbstractTransformerCreationTask transformerCreationTask)
+	    public void SideBySideExecuteIndex(AbstractIndexCreationTask indexCreationTask, Etag minimumEtagBeforeReplace = null, DateTime? replaceTimeUtc = null)
+	    {
+			Inner.SideBySideExecuteIndex(indexCreationTask, minimumEtagBeforeReplace, replaceTimeUtc);
+	    }
+
+	    public Task SideBySideExecuteIndexAsync(AbstractIndexCreationTask indexCreationTask, Etag minimumEtagBeforeReplace = null, DateTime? replaceTimeUtc = null)
+	    {
+		    return Inner.SideBySideExecuteIndexAsync(indexCreationTask, minimumEtagBeforeReplace, replaceTimeUtc);
+	    }
+
+	    public void ExecuteTransformer(AbstractTransformerCreationTask transformerCreationTask)
         {
             Inner.ExecuteTransformer(transformerCreationTask);
         }

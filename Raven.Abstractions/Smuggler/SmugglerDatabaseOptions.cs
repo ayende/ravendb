@@ -24,7 +24,8 @@ namespace Raven.Abstractions.Smuggler
 	    private long? totalDocumentSizeInChunkLimitInBytes;
 
         public SmugglerDatabaseOptions()
-		{
+        {
+	        DisableCompressionOnImport = false;
 			Filters = new List<FilterSetting>();
             ConfigureDefaultFilters();
 		    ChunkSize = int.MaxValue;
@@ -93,6 +94,11 @@ namespace Raven.Abstractions.Smuggler
 				chunkSize = value;
 			}
 		}
+
+		/// <summary>
+		/// If this flag is true, during import of documents the smuggler won't use compression. False by default.
+		/// </summary>
+		public bool DisableCompressionOnImport { get; set; }
 
 	    public bool ExportDeletions { get; set; }
 
@@ -164,6 +170,11 @@ namespace Raven.Abstractions.Smuggler
 		/// Should we exclude any documents which have already expired by checking the expiration meta property created by the expiration bundle
 		/// </summary>
 		public bool ShouldExcludeExpired { get; set; }
+
+		/// <summary>
+		/// It allows to turn off versioning bundle for the duration of the import
+		/// </summary>
+		public bool ShouldDisableVersioningBundle { get; set; }
 
         /// <summary>
         /// When set ovverides the default document name.

@@ -1,11 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
-using Raven.Abstractions.Replication;
-using Raven.Client.Document;
+﻿using Raven.Abstractions.Replication;
 
 namespace Raven.Client.FileSystem
 {
@@ -32,6 +25,11 @@ namespace Raven.Client.FileSystem
         /// </summary>
         /// <value>The max number of requests per session.</value>
         public int MaxNumberOfRequestsPerSession { get; set; }
+
+		/// <summary>
+		/// Whether UseOptimisticConcurrency is set to true by default for all opened sessions
+		/// </summary>
+		public bool DefaultUseOptimisticConcurrency { get; set; }
 
 		/// <summary>
 		/// Clone the current conventions to a new instance

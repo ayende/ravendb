@@ -91,6 +91,7 @@ interface databaseStatisticsDto {
     Prefetches: any[];
     StaleIndexes: string[];
     SupportsDtc: boolean;
+	Is64Bit: boolean;
 }
 
 interface indexStatisticsDto {
@@ -368,7 +369,7 @@ interface indexDefinitionDto {
     SortOptions: any;
     Analyzers: any;
     Fields: string[];
-    Suggestions: any;
+	SuggestionsOptions: any;
     TermVectors: any;
     SpatialIndexes: any; // This will be an object with zero or more properties, each property being the name of one of the .Fields, its value being of type spatialIndexDto.
     InternalFieldsMapping: any;
@@ -402,6 +403,8 @@ interface periodicExportSetupDto {
     AwsRegionEndpoint: string;
     AzureStorageContainer: string;
     LocalFolderName: string;
+    S3RemoteFolderName: string;
+    AzureRemoteFolderName: string;
     IntervalMilliseconds: number;
     FullBackupIntervalMilliseconds: number;
 }
@@ -423,13 +426,16 @@ interface indexResultsDto<T extends metadataAwareDto> {
 }
 
 interface indexQueryResultsDto extends indexResultsDto<documentDto> {
-
+	Error?: string;
 }
 
 interface versioningEntryDto extends documentDto {
   Id: string;
   MaxRevisions: number;
   Exclude: boolean;
+  ExcludeUnlessExplicit: boolean;
+  PurgeOnDelete: boolean;
+  ResetOnRename?: boolean;
 }
 
 interface versioningDto {
@@ -448,6 +454,29 @@ interface replicationDestinationDto {
     Disabled: boolean;
     ClientVisibleUrl: string;
     SkipIndexReplication: boolean;
+    SourceCollections: string[];
+    HasGlobal?: boolean;
+    HasLocal?: boolean;
+}
+
+interface configurationDocumentDto<TClass> {
+    LocalExists?: boolean;
+    GlobalExists?: boolean;
+    MergedDocument: TClass;
+    GlobalDocument?: TClass;
+    Etag?: string;
+    Metadata?: any;
+}
+
+interface configurationSettingDto {
+    LocalExists: boolean;
+    GlobalExists: boolean;
+    EffectiveValue: string;
+    GlobalValue: string;
+}
+
+interface configurationSettingsDto {
+    Results: dictionary<configurationSettingDto>;
 }
 
 interface replicationsDto {
@@ -610,12 +639,14 @@ interface restoreStatusDto {
 
 interface compactStatusDto {
     Messages: string[];
+    LastProgressMessage: string;
     State: string;
 }
 
 interface sqlReplicationTableDto {
     TableName: string;
     DocumentKeyColumn: string;
+    InsertOnlyMode: boolean;
 }
 
 interface sqlReplicationDto extends documentDto {
@@ -631,7 +662,8 @@ interface sqlReplicationDto extends documentDto {
     ConnectionStringSettingName: string;
     SqlReplicationTables: sqlReplicationTableDto[];
     ForceSqlServerQueryRecompile?: boolean;
-    PerformTableQuatation?:boolean;
+    QuoteTables?: boolean;
+	PerformTableQuatation?: boolean; //obsolate
 }
 
 interface commandData {
@@ -657,6 +689,8 @@ interface predefinedSqlConnectionDto {
     Name:string;
     FactoryName: string;
     ConnectionString: string;
+    HasGlobal?: boolean;
+    HasLocal?: boolean;
 }
 
 interface facetDto {
@@ -770,6 +804,9 @@ interface statusStorageOnDiskDto {
 interface statusDebugChangesDto {
     Id: string;
     Connected: boolean;
+    DocumentStore: statusDebugChangesDocumentStoreDto;
+    FileSystem: statusDebugChangesFileSystemDto;
+    CounterStorage: statusDebugChangesCounterStorageDto;
     WatchAllDocuments: boolean;
     WatchAllIndexes: boolean;
     WatchConfig: boolean;
@@ -781,6 +818,34 @@ interface statusDebugChangesDto {
     WatchIndexes: Array<string>;
     WatchDocuments: Array<string>;
     WatchedFolders: Array<string>;
+}
+
+interface statusDebugChangesDocumentStoreDto {
+    WatchAllDocuments: boolean;
+    WatchAllIndexes: boolean;
+    WatchAllTransformers: boolean;
+    WatchAllReplicationConflicts: boolean;
+    WatchedIndexes: Array<string>;
+    WatchedDocuments: Array<string>;
+    WatchedDocumentPrefixes: Array<string>;
+    WatchedDocumentsInCollection: Array<string>;
+    WatchedDocumentsOfType: Array<string>;
+    WatchedBulkInserts: Array<string>;
+}
+
+interface statusDebugChangesFileSystemDto {
+    WatchConflicts: boolean;
+    WatchSync: boolean;
+    WatchCancellations: boolean;
+    WatchConfig: boolean;
+    WatchedFolders: Array<string>;
+}
+
+interface statusDebugChangesCounterStorageDto {
+    WatchedChanges: Array<string>;
+    WatchedLocalChanges: Array<string>;
+    WatchedReplicationChanges: Array<string>;
+    WatchedBulkOperationsChanges: Array<string>;
 }
 
 interface statusDebugMetricsDto {
@@ -992,6 +1057,7 @@ interface changesApiEventDto {
 interface databaseDto extends tenantDto {
     IndexingDisabled: boolean;
     RejectClientsEnabled: boolean;
+	ClusterWide: boolean;
 }
 
 interface tenantDto {
@@ -1209,5 +1275,96 @@ enum ResponseCodes {
     Forbidden = 403,
     NotFound = 404,
     PreconditionFailed = 412,
-    InternalServerError = 500
+    InternalServerError = 500,
+    ServiceUnavailable = 503
+}
+
+interface synchronizationConfigDto {
+    FileConflictResolution: string;
+    MaxNumberOfSynchronizationsPerDestination: number;
+    SynchronizationLockTimeoutMiliseconds: number;
+}
+
+interface pluginsInfoDto {
+	Extensions: Array<extensionsLogDto>;
+	Triggers: Array<triggerInfoDto>;
+	CustomBundles: Array<string>;
+}
+
+interface extensionsLogDto {
+	Name: string;
+	Installed: Array<extensionsLogDetailDto>;
+}
+
+interface extensionsLogDetailDto {
+	Name: string;
+	Assembly: string;
+}
+
+interface triggerInfoDto {
+	Type: string;
+	Name: string;
+}
+
+interface copyFromParentDto<T> {
+    copyFromParent(parent: T);
+}
+interface topologyDto {
+    CurrentLeader: string;
+    CurrentTerm: number;
+    State: string;
+    CommitIndex: number;
+    AllVotingNodes: Array<nodeConnectionInfoDto>;
+    PromotableNodes: Array<nodeConnectionInfoDto>;
+    NonVotingNodes: Array<nodeConnectionInfoDto>;
+    TopologyId: string;
+}
+
+interface nodeConnectionInfoDto {
+    Uri: string;
+    Name: string;
+    Username?: string;
+    Password?: string;
+    Domain?: string;
+    ApiKey?: string;
+}
+
+interface clusterConfigurationDto {
+	EnableReplication: boolean;
+}
+
+interface clusterNodeStatusDto {
+	Uri: string;
+	Status: string;
+}
+
+interface serverSmugglingItemDto {
+	Name: string;
+	Incremental: boolean;
+	StripReplicationInformation: boolean;
+	ShouldDisableVersioningBundle: boolean;
+}
+
+interface serverConnectionInfoDto {
+	Url: string;
+	Username: string;
+	Password: string;
+	Domain: string;
+	ApiKey: string;
+}
+
+interface serverSmugglingDto {
+	TargetServer: serverConnectionInfoDto;
+	Config: Array<serverSmugglingItemDto>;
+}
+
+interface serverSmugglingOperationStateDto extends operationStatusDto {
+	Messages: Array<string>;
+}
+
+interface dataExplorationRequestDto {
+	Linq: string;
+	Collection: string;
+	TimeoutSeconds: number;
+	PageSize: number;
 }

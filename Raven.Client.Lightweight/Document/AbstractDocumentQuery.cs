@@ -31,7 +31,6 @@ using Raven.Abstractions.Indexing;
 using Raven.Client.Spatial;
 using Raven.Imports.Newtonsoft.Json;
 using Raven.Imports.Newtonsoft.Json.Linq;
-using Raven.Imports.Newtonsoft.Json.Utilities;
 using Raven.Json.Linq;
 using Raven.Client.Document.Async;
 
@@ -159,7 +158,7 @@ namespace Raven.Client.Document
 		/// </summary>
 		protected int start;
 
-		private DocumentConvention conventions;
+		private readonly DocumentConvention conventions;
 		/// <summary>
 		/// Timeout for this query
 		/// </summary>
@@ -266,6 +265,7 @@ namespace Raven.Client.Document
 		}
 
 		protected Action<QueryResult> afterQueryExecutedCallback;
+		protected AfterStreamExecutedDelegate afterStreamExecutedCallback;
 		protected Etag cutoffEtag;
 
 		private int? _defaultTimeout;
@@ -301,7 +301,7 @@ namespace Raven.Client.Document
 		/// <summary>
 		/// Initializes a new instance of the <see cref="AbstractDocumentQuery{T, TSelf}"/> class.
 		/// </summary>
-		public AbstractDocumentQuery(InMemoryDocumentSessionOperations theSession,
+		protected AbstractDocumentQuery(InMemoryDocumentSessionOperations theSession,
 									 IDatabaseCommands databaseCommands,
 									 IAsyncDatabaseCommands asyncDatabaseCommands,
 									 string indexName,
@@ -310,15 +310,15 @@ namespace Raven.Client.Document
 									 IDocumentQueryListener[] queryListeners,
 									 bool isMapReduce)
 		{
-			this.theDatabaseCommands = databaseCommands;
+			theDatabaseCommands = databaseCommands;
 			this.projectionFields = projectionFields;
 			this.fieldsToFetch = fieldsToFetch;
 			this.queryListeners = queryListeners;
 			this.isMapReduce = isMapReduce;
 			this.indexName = indexName;
 			this.theSession = theSession;
-			this.theAsyncDatabaseCommands = asyncDatabaseCommands;
-			this.AfterQueryExecuted(this.UpdateStatsAndHighlightings);
+			theAsyncDatabaseCommands = asyncDatabaseCommands;
+			AfterQueryExecuted(UpdateStatsAndHighlightings);
 
 			conventions = theSession == null ? new DocumentConvention() : theSession.Conventions;
 			linqPathProvider = new LinqPathProvider(conventions);
@@ -338,8 +338,8 @@ namespace Raven.Client.Document
 
 		private void UpdateStatsAndHighlightings(QueryResult queryResult)
 		{
-			this.queryStats.UpdateQueryStats(queryResult);
-			this.highlightings.Update(queryResult);
+			queryStats.UpdateQueryStats(queryResult);
+			highlightings.Update(queryResult);
 		}
 
 		/// <summary>
@@ -380,7 +380,7 @@ namespace Raven.Client.Document
 			showQueryTimings = other.showQueryTimings;
 			shouldExplainScores = other.shouldExplainScores;
 
-			AfterQueryExecuted(this.UpdateStatsAndHighlightings);
+			AfterQueryExecuted(UpdateStatsAndHighlightings);
 		}
 
 		#region TSelf Members
@@ -596,6 +596,7 @@ namespace Raven.Client.Document
 		protected internal QueryOperation InitializeQueryOperation()
 		{
 			var indexQuery = GetIndexQuery(isAsync: false);
+			this.afterStreamExecutedCallback = afterStreamExecutedCallback;
 
 			if (beforeQueryExecutionAction != null)
 				beforeQueryExecutionAction(indexQuery);
@@ -711,6 +712,17 @@ namespace Raven.Client.Document
 			return Lazily(null);
 		}
 
+		//the assumption here that there is only one of them is not null
+		//and even if not, they should have the same operation headers 
+		private NameValueCollection GetOperationHeaders()
+		{
+			if (DatabaseCommands != null)
+				return DatabaseCommands.OperationsHeaders;
+
+			return AsyncDatabaseCommands != null ?
+				AsyncDatabaseCommands.OperationsHeaders : new NameValueCollection(0);
+		}
+
 		/// <summary>
 		/// Register the query as a lazy query in the session and return a lazy
 		/// instance that will evaluate the query only when needed
@@ -723,8 +735,7 @@ namespace Raven.Client.Document
 				queryOperation = InitializeQueryOperation();
 			}
 
-			var lazyQueryOperation = new LazyQueryOperation<T>(queryOperation, afterQueryExecutedCallback, includes);
-
+			var lazyQueryOperation = new LazyQueryOperation<T>(queryOperation, afterQueryExecutedCallback, includes, GetOperationHeaders());
 			return ((DocumentSession)theSession).AddLazyOperation(lazyQueryOperation, onEval);
 		}
 
@@ -740,8 +751,7 @@ namespace Raven.Client.Document
 				queryOperation = InitializeQueryOperation();
 			}
 
-			var lazyQueryOperation = new LazyQueryOperation<T>(queryOperation, afterQueryExecutedCallback, includes);
-
+			var lazyQueryOperation = new LazyQueryOperation<T>(queryOperation, afterQueryExecutedCallback, includes, GetOperationHeaders());
 			return ((AsyncDocumentSession)theSession).AddLazyOperation(lazyQueryOperation, onEval);
 		}
 
@@ -759,7 +769,8 @@ namespace Raven.Client.Document
 				queryOperation = InitializeQueryOperation();
 			}
 
-			var lazyQueryOperation = new LazyQueryOperation<T>(queryOperation, afterQueryExecutedCallback, includes);
+
+			var lazyQueryOperation = new LazyQueryOperation<T>(queryOperation, afterQueryExecutedCallback, includes, GetOperationHeaders());
 
 			return ((DocumentSession)theSession).AddLazyCountOperation(lazyQueryOperation);
 		}
@@ -804,21 +815,19 @@ namespace Raven.Client.Document
 		}
 
 		/// <summary>
+		/// Order the search results in alphanumeric order
+		/// </summary>
+		public void AlphaNumericOrdering(string fieldName, bool descending)
+		{
+			AddOrder(Constants.AlphaNumericFieldName + ";" + fieldName, descending);
+		}
+
+		/// <summary>
 		/// Order the search results randomly
 		/// </summary>
 		public void RandomOrdering()
 		{
 			AddOrder(Constants.RandomFieldName + ";" + Guid.NewGuid(), false);
-		}
-
-		public void CustomSortUsing(string typeName)
-		{
-			CustomSortUsing(typeName, false);
-		}
-
-		public void CustomSortUsing(string typeName, bool descending)
-		{
-			AddOrder(Constants.CustomSortFieldName + (descending ? "-" : "") + ";" + typeName, false);
 		}
 
 		/// <summary>
@@ -828,6 +837,11 @@ namespace Raven.Client.Document
 		public void RandomOrdering(string seed)
 		{
 			AddOrder(Constants.RandomFieldName + ";" + seed, false);
+		}
+
+		public void CustomSortUsing(string typeName, bool descending)
+		{
+			AddOrder(Constants.CustomSortFieldName + ";" + typeName, descending);
 		}
 
 		public IDocumentQueryCustomization BeforeQueryExecution(Action<IndexQuery> action)
@@ -1813,6 +1827,14 @@ If you really want to do in memory filtering on the data returned from the query
 		}
 
 		/// <summary>
+		/// Callback to get the results of the stream
+		/// </summary>
+        public void AfterStreamExecuted(AfterStreamExecutedDelegate afterStreamExecutedCallback)
+		{
+			this.afterStreamExecutedCallback += afterStreamExecutedCallback;
+		}
+
+		/// <summary>
 		/// Called externally to raise the after query executed callback
 		/// </summary>
 		public void InvokeAfterQueryExecuted(QueryResult result)
@@ -1820,6 +1842,16 @@ If you really want to do in memory filtering on the data returned from the query
 			var queryExecuted = afterQueryExecutedCallback;
 			if (queryExecuted != null)
 				queryExecuted(result);
+		}
+
+		/// <summary>
+		/// Called externally to raise the after stream executed callback
+		/// </summary>
+		public void InvokeAfterStreamExecuted(ref RavenJObject result)
+		{
+			var streamExecuted = afterStreamExecutedCallback;
+			if (streamExecuted != null)
+				streamExecuted(ref result);
 		}
 
 		#endregion
@@ -1922,7 +1954,7 @@ If you really want to do in memory filtering on the data returned from the query
 			return indexQuery;
 		}
 
-		private static readonly Regex espacePostfixWildcard = new Regex(@"\\\*(\s|$)",
+		private static readonly Regex escapePostfixWildcard = new Regex(@"\\\*(\s|$)",
 			RegexOptions.Compiled
 			);
 		protected QueryOperator defaultOperator;
@@ -1945,7 +1977,7 @@ If you really want to do in memory filtering on the data returned from the query
 					break;
 				case EscapeQueryOptions.AllowPostfixWildcard:
 					searchTerms = RavenQuery.Escape(searchTerms, false, false);
-					searchTerms = espacePostfixWildcard.Replace(searchTerms, "*");
+					searchTerms = escapePostfixWildcard.Replace(searchTerms, "*${1}");
 					break;
 				case EscapeQueryOptions.AllowAllWildcards:
 					searchTerms = RavenQuery.Escape(searchTerms, false, false);
@@ -1956,10 +1988,10 @@ If you really want to do in memory filtering on the data returned from the query
 				default:
 					throw new ArgumentOutOfRangeException("escapeQueryOptions", "Value: " + escapeQueryOptions);
 			}
-		    bool hasWhiteSpace = searchTerms.Any(char.IsWhiteSpace);
-		    lastEquality = new KeyValuePair<string, string>(fieldName,
-                hasWhiteSpace ? "(" + searchTerms + ")" : searchTerms
-                );
+			bool hasWhiteSpace = searchTerms.Any(char.IsWhiteSpace);
+			lastEquality = new KeyValuePair<string, string>(fieldName,
+				hasWhiteSpace ? "(" + searchTerms + ")" : searchTerms
+				);
 
 			queryText.Append(fieldName).Append(":").Append("(").Append(searchTerms).Append(")");
 		}
@@ -2222,12 +2254,52 @@ If you really want to do in memory filtering on the data returned from the query
 			rootTypes.Add(type);
 		}
 
+		IDocumentQueryCustomization IDocumentQueryCustomization.AddOrder(string fieldName, bool descending)
+		{
+			AddOrder(fieldName, descending);
+			return this;
+		}
+
+		IDocumentQueryCustomization IDocumentQueryCustomization.AddOrder<TResult>(Expression<Func<TResult, object>> propertySelector, bool descending)
+		{
+			AddOrder(GetMemberQueryPath(propertySelector.Body), descending);
+			return this;
+		}
+
+		IDocumentQueryCustomization IDocumentQueryCustomization.AddOrder(string fieldName, bool descending, Type fieldType)
+		{
+			AddOrder(fieldName, descending, fieldType);
+			return this;
+		}
+
+		IDocumentQueryCustomization IDocumentQueryCustomization.AlphaNumericOrdering(string fieldName, bool descending)
+		{
+			AlphaNumericOrdering(fieldName, descending);
+			return this;
+		}
+
+		IDocumentQueryCustomization IDocumentQueryCustomization.AlphaNumericOrdering<TResult>(Expression<Func<TResult, object>> propertySelector, bool descending)
+		{
+			AlphaNumericOrdering(GetMemberQueryPath(propertySelector.Body), descending);
+			return this;
+		}
+
 		/// <summary>
 		/// Order the search results randomly
 		/// </summary>
 		IDocumentQueryCustomization IDocumentQueryCustomization.RandomOrdering()
 		{
 			RandomOrdering();
+			return this;
+		}
+
+		/// <summary>
+		/// Order the search results randomly using the specified seed
+		/// this is useful if you want to have repeatable random queries
+		/// </summary>
+		IDocumentQueryCustomization IDocumentQueryCustomization.RandomOrdering(string seed)
+		{
+			RandomOrdering(seed);
 			return this;
 		}
 
@@ -2240,16 +2312,6 @@ If you really want to do in memory filtering on the data returned from the query
 		IDocumentQueryCustomization IDocumentQueryCustomization.CustomSortUsing(string typeName, bool descending)
 		{
 			CustomSortUsing(typeName, descending);
-			return this;
-		}
-
-		/// <summary>
-		/// Order the search results randomly using the specified seed
-		/// this is useful if you want to have repeatable random queries
-		/// </summary>
-		IDocumentQueryCustomization IDocumentQueryCustomization.RandomOrdering(string seed)
-		{
-			RandomOrdering(seed);
 			return this;
 		}
 

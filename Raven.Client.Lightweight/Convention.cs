@@ -1,10 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Net;
 using System.Net.Http;
 using System.Reflection;
 using System.Threading.Tasks;
+
+using Raven.Abstractions.Cluster;
 using Raven.Abstractions.Connection;
 using Raven.Abstractions.Replication;
 using Raven.Client.Document;
@@ -16,6 +17,8 @@ namespace Raven.Client
 	public abstract class Convention
 	{
 		protected Dictionary<Type, MemberInfo> idPropertyCache = new Dictionary<Type, MemberInfo>();
+
+		public ClusterBehavior ClusterBehavior { get; set; }
 
 		/// <summary>
 		/// How should we behave in a replicated environment when we can't 
@@ -152,6 +155,8 @@ namespace Raven.Client
         /// Saves Enums as integers and instruct the Linq provider to query enums as integer values.
         /// </summary>
         public bool SaveEnumsAsIntegers { get; set; }
+
+		public double RequestTimeThresholdInMilliseconds { get; set; }
 
 		internal void UpdateFrom(ReplicationClientConfiguration configuration)
 		{

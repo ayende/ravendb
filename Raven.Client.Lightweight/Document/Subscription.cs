@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using System;
 using System.Net;
+using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using Raven.Abstractions.Connection;
@@ -16,6 +17,7 @@ using Raven.Abstractions.Util;
 using Raven.Client.Changes;
 using Raven.Client.Connection;
 using Raven.Client.Connection.Async;
+using Raven.Client.Connection.Implementation;
 using Raven.Client.Extensions;
 using Raven.Client.Util;
 using Raven.Database.Util;
@@ -36,6 +38,7 @@ namespace Raven.Client.Document
 		private readonly ConcurrentSet<IObserver<T>> subscribers = new ConcurrentSet<IObserver<T>>();
 		private readonly SubscriptionConnectionOptions options;
 		private readonly CancellationTokenSource cts = new CancellationTokenSource();
+		private readonly GenerateEntityIdOnTheClient generateEntityIdOnTheClient;
 		private readonly bool isStronglyTyped;
 		private bool completed;
 		private readonly long id;
@@ -45,7 +48,7 @@ namespace Raven.Client.Document
 		public event Action BeforeBatch = delegate { };
 		public event Action AfterBatch = delegate { };
 
-		internal Subscription(long id, SubscriptionConnectionOptions options, IAsyncDatabaseCommands commands, IDatabaseChanges changes, DocumentConvention conventions, Func<Task> ensureOpenSubscription)
+		internal Subscription(long id, string database, SubscriptionConnectionOptions options, IAsyncDatabaseCommands commands, IDatabaseChanges changes, DocumentConvention conventions, Func<Task> ensureOpenSubscription)
 		{
 			this.id = id;
 			this.options = options;
@@ -55,7 +58,10 @@ namespace Raven.Client.Document
 			this.ensureOpenSubscription = ensureOpenSubscription;
 
 			if (typeof (T) != typeof (RavenJObject))
+			{
 				isStronglyTyped = true;
+				generateEntityIdOnTheClient = new GenerateEntityIdOnTheClient(conventions, entity => conventions.GenerateDocumentKeyAsync(database, commands, entity).ResultUnwrap());
+			}
 
 			StartWatchingDocs();
 			StartPullingTask = StartPullingDocs();
@@ -117,7 +123,14 @@ namespace Raven.Client.Document
 											if (isStronglyTyped)
 											{
 												if (instance == null)
+												{
 													instance = jsonDoc.Deserialize<T>(conventions);
+
+													var docId = jsonDoc[Constants.Metadata].Value<string>("@id");
+
+													if (string.IsNullOrEmpty(docId) == false)
+														generateEntityIdOnTheClient.TrySetIdentity(instance, docId);
+												}
 												
 												subscriber.OnNext(instance);
 											}
@@ -207,12 +220,26 @@ namespace Raven.Client.Document
 			{
 				await PullingTask.ConfigureAwait(false);
 			}
-			catch (Exception)
+			catch (Exception ex)
 			{
 				if (cts.Token.IsCancellationRequested)
 					return;
 
 				PullingTask = null;
+
+				SubscriptionException subscriptionEx;
+				var ere = ex as ErrorResponseException;
+
+				if (ere != null && AsyncDocumentSubscriptions.TryGetSubscriptionException(ere, out subscriptionEx))
+				{
+					if (subscriptionEx is SubscriptionClosedException)
+					{
+						// someone forced us to drop the connection by calling Subscriptions.Release
+						OnCompletedNotification();
+						IsClosed = true;
+						return;
+					}
+				}
 
 				RestartPullingTask().ConfigureAwait(false);
 			}
@@ -311,22 +338,22 @@ namespace Raven.Client.Document
 
 		private HttpJsonRequest CreateAcknowledgmentRequest(Etag lastProcessedEtag)
 		{
-			return commands.CreateRequest(string.Format("/subscriptions/acknowledgeBatch?id={0}&lastEtag={1}&connection={2}", id, lastProcessedEtag, options.ConnectionId), "POST");
+			return commands.CreateRequest(string.Format("/subscriptions/acknowledgeBatch?id={0}&lastEtag={1}&connection={2}", id, lastProcessedEtag, options.ConnectionId), HttpMethods.Post);
 		}
 
 		private HttpJsonRequest CreatePullingRequest()
 		{
-			return commands.CreateRequest(string.Format("/subscriptions/pull?id={0}&connection={1}", id, options.ConnectionId), "GET");
+			return commands.CreateRequest(string.Format("/subscriptions/pull?id={0}&connection={1}", id, options.ConnectionId), HttpMethods.Get);
 		}
 
 		private HttpJsonRequest CreateClientAliveRequest()
 		{
-			return commands.CreateRequest(string.Format("/subscriptions/client-alive?id={0}&connection={1}", id, options.ConnectionId), "PATCH");
+			return commands.CreateRequest(string.Format("/subscriptions/client-alive?id={0}&connection={1}", id, options.ConnectionId), HttpMethods.Patch);
 		}
 
 		private HttpJsonRequest CreateCloseRequest()
 		{
-			return commands.CreateRequest(string.Format("/subscriptions/close?id={0}&connection={1}", id, options.ConnectionId), "POST");
+			return commands.CreateRequest(string.Format("/subscriptions/close?id={0}&connection={1}", id, options.ConnectionId), HttpMethods.Post);
 		}
 
 		private void OnCompletedNotification()

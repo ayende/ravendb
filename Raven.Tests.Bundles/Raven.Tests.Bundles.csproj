@@ -91,6 +91,8 @@
     </Compile>
     <Compile Include="Authorization\AuthorizationTest.cs" />
     <Compile Include="Authorization\Bugs\Bowes.cs" />
+    <Compile Include="Authorization\Bugs\PrestonStreaming.cs" />
+    <Compile Include="Authorization\Bugs\PrestonLazy.cs" />
     <Compile Include="Authorization\Bugs\DeanWard.cs" />
     <Compile Include="Authorization\Bugs\fampinheiro.cs" />
     <Compile Include="Authorization\Bugs\Jalchr.cs" />
@@ -146,6 +148,7 @@
     <Compile Include="Replication\Bugs\SameEtagFromDifferentServers.cs" />
     <Compile Include="Replication\Bugs\SameInstanceIdUsedForMultipleDatabases.cs" />
     <Compile Include="Replication\Bugs\Vlad.cs" />
+    <Compile Include="Replication\CollectionSpecific.cs" />
     <Compile Include="Replication\ConflictsInEmbeddableStore.cs" />
     <Compile Include="Replication\ConflictWhenReplicating.cs" />
     <Compile Include="Replication\FailoverBetweenTwoMultiTenantDatabases.cs" />
@@ -169,6 +172,7 @@
     <Compile Include="SqlReplication\CanReplicate.cs" />
     <Compile Include="UniqueConstraints\Bugs\CaseInsensitive.cs" />
     <Compile Include="UniqueConstraints\Bugs\Concurrency.cs" />
+    <Compile Include="UniqueConstraints\Bugs\EmptyValues.cs" />
     <Compile Include="UniqueConstraints\Bugs\JimBolla.cs" />
     <Compile Include="UniqueConstraints\Bugs\Lars.cs" />
     <Compile Include="UniqueConstraints\Bugs\MultiTenancy.cs" />
@@ -224,11 +228,6 @@
       <Project>{41AC479E-1EB2-4D23-AAF2-E4C8DF1BC2BA}</Project>
       <Name>Raven.Abstractions</Name>
     </ProjectReference>
-    <ProjectReference Include="..\Raven.Client.Lightweight\Raven.Client.Lightweight.csproj">
-      <Project>{4E087ECB-E7CA-4891-AC3C-3C76702715B6}</Project>
-      <Name>Raven.Client.Lightweight</Name>
-      <Aliases>global</Aliases>
-    </ProjectReference>
     <ProjectReference Include="..\Raven.Smuggler\Raven.Smuggler.csproj">
       <Project>{3E6401AC-3E33-4B61-A460-49953654A207}</Project>
       <Name>Raven.Smuggler</Name>
@@ -238,9 +237,9 @@
       <Name>Raven.Client.Authorization</Name>
       <Aliases>client</Aliases>
     </ProjectReference>
-    <ProjectReference Include="..\Raven.Database\Raven.Database.csproj">
-      <Project>{212823CD-25E1-41AC-92D1-D6DF4D53FC85}</Project>
-      <Name>Raven.Database</Name>
+    <ProjectReference Include="..\Raven.Voron\Voron\Voron.csproj">
+      <Project>{FF83C7C2-BC7B-4DCC-A782-49EF9BBD9390}</Project>
+      <Name>Voron</Name>
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>

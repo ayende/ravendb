@@ -30,8 +30,8 @@ namespace Raven.Database.Indexing
 
 		private readonly SizeLimitedConcurrentSet<string> recentlyDeleted = new SizeLimitedConcurrentSet<string>(100, StringComparer.OrdinalIgnoreCase);
 
-		private readonly SizeLimitedConcurrentSet<IndexingBatchInfo> lastActualIndexingBatchInfo = new SizeLimitedConcurrentSet<IndexingBatchInfo>(25);
-		private readonly SizeLimitedConcurrentSet<ReducingBatchInfo> lastActualReducingBatchInfo = new SizeLimitedConcurrentSet<ReducingBatchInfo>(25);
+		private SizeLimitedConcurrentSet<IndexingBatchInfo> lastActualIndexingBatchInfo;
+		private SizeLimitedConcurrentSet<ReducingBatchInfo> lastActualReducingBatchInfo;
 		private readonly ConcurrentQueue<IndexingError> indexingErrors = new ConcurrentQueue<IndexingError>();
 		private readonly object waitForWork = new object();
 		private volatile bool doWork = true;
@@ -47,15 +47,19 @@ namespace Raven.Database.Indexing
             CurrentlyRunningQueries = new ConcurrentDictionary<string, ConcurrentSet<ExecutingQueryInfo>>(StringComparer.OrdinalIgnoreCase);
             MetricsCounters = new MetricsCountersManager();
 	        InstallGauges();
-        }
+		    LastIdleTime = SystemTime.UtcNow;
+		}
 
 		public OrderedPartCollection<AbstractIndexUpdateTrigger> IndexUpdateTriggers { get; set; }
 		public OrderedPartCollection<AbstractReadTrigger> ReadTriggers { get; set; }
         public OrderedPartCollection<AbstractIndexReaderWarmer> IndexReaderWarmers { get; set; }
 		public string DatabaseName { get; set; }
 
-		public DateTime LastWorkTime { get; private set; }
-
+	    public DateTime LastWorkTime
+	    {
+            get { return new DateTime(lastWorkTimeTicks); }
+	    }
+	    public DateTime LastIdleTime { get; set; }
 		public bool DoWork
 		{
 			get { return doWork; }
@@ -68,10 +72,18 @@ namespace Raven.Database.Indexing
 
 		public void UpdateFoundWork()
 		{
-			LastWorkTime = SystemTime.UtcNow;
+		    var now = SystemTime.UtcNow;
+		    var lastWorkTime = LastWorkTime;
+		    if ((now - lastWorkTime).TotalSeconds < 2)
+		    {
+                // to avoid too much pressure on this, we only update this every 2 seconds
+		        return;
+		    }
+            // set the value atomically
+		    Interlocked.Exchange(ref lastWorkTimeTicks, now.Ticks);
 		}
 
-        //collection that holds information about currently running queries, in the form of [Index name -> (When query started,IndexQuery data)]
+	    //collection that holds information about currently running queries, in the form of [Index name -> (When query started,IndexQuery data)]
         public ConcurrentDictionary<string,ConcurrentSet<ExecutingQueryInfo>> CurrentlyRunningQueries { get; private set; }
 
 	    private int nextQueryId = 0;
@@ -181,7 +193,7 @@ namespace Raven.Database.Indexing
 				log.Debug("No work was found, workerWorkCounter: {0}, for: {1}, will wait for additional work", workerWorkCounter, name);
 				var forWork = Monitor.Wait(waitForWork, timeout);
 				if (forWork)
-					LastWorkTime = SystemTime.UtcNow;
+					UpdateFoundWork();
 				return forWork;
 			}
 		}
@@ -348,8 +360,9 @@ namespace Raven.Database.Indexing
 		public Action<IndexChangeNotification> RaiseIndexChangeNotification { get; set; }
 
 		private bool disposed;
+	    private long lastWorkTimeTicks;
 
-		[CLSCompliant(false)]
+	    [CLSCompliant(false)]
         public MetricsCountersManager MetricsCounters { get; private set; }
 
 		public IndexingBatchInfo ReportIndexingBatchStarted(int documentsCount, long documentsSize, List<string> indexesToWorkOn)
@@ -367,7 +380,7 @@ namespace Raven.Database.Indexing
 		public void ReportIndexingBatchCompleted(IndexingBatchInfo batchInfo)
 		{
 			batchInfo.BatchCompleted();
-			lastActualIndexingBatchInfo.Add(batchInfo);
+			LastActualIndexingBatchInfo.Add(batchInfo);
 		}
 
 		public ReducingBatchInfo ReportReducingBatchStarted(List<string> indexesToWorkOn)
@@ -383,7 +396,7 @@ namespace Raven.Database.Indexing
 		public void ReportReducingBatchCompleted(ReducingBatchInfo batchInfo)
 		{
 			batchInfo.BatchCompleted();
-			lastActualReducingBatchInfo.Add(batchInfo);
+			LastActualReducingBatchInfo.Add(batchInfo);
 		}
 
 		public ConcurrentSet<FutureBatchStats> FutureBatchStats
@@ -393,12 +406,26 @@ namespace Raven.Database.Indexing
 
 		public SizeLimitedConcurrentSet<IndexingBatchInfo> LastActualIndexingBatchInfo
 		{
-			get { return lastActualIndexingBatchInfo; }
+			get
+			{
+				if (lastActualIndexingBatchInfo == null)
+				{
+					lastActualIndexingBatchInfo = new SizeLimitedConcurrentSet<IndexingBatchInfo>(Configuration.Indexing.MaxNumberOfStoredIndexingBatchInfoElements);
+				}
+				return lastActualIndexingBatchInfo;
+			}
 		}
 
 		public SizeLimitedConcurrentSet<ReducingBatchInfo> LastActualReducingBatchInfo
 		{
-			get { return lastActualReducingBatchInfo; }
+			get
+			{
+				if (lastActualReducingBatchInfo == null)
+				{
+					lastActualReducingBatchInfo = new SizeLimitedConcurrentSet<ReducingBatchInfo>(Configuration.Indexing.MaxNumberOfStoredIndexingBatchInfoElements);
+				}
+				return lastActualReducingBatchInfo;
+			}
 		}
 
 		public DocumentDatabase Database { get; set; }

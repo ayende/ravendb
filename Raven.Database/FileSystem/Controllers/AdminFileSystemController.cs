@@ -13,7 +13,6 @@ using Raven.Database.Config;
 using Raven.Database.Extensions;
 using Raven.Database.Server.Controllers.Admin;
 using Raven.Database.Server.Security;
-using Raven.Database.Server.Tenancy;
 using Raven.Database.Server.WebApi.Attributes;
 using Raven.Json.Linq;
 using System;
@@ -27,7 +26,6 @@ using System.Threading.Tasks;
 using System.Web.Http;
 using System.Web.Http.Controllers;
 using System.Web.Http.Routing;
-using Voron.Impl.Backup;
 
 
 namespace Raven.Database.FileSystem.Controllers
@@ -131,12 +129,12 @@ namespace Raven.Database.FileSystem.Controllers
         private void EnsureFileSystemHasRequiredSettings(string id, FileSystemDocument fsDoc)
         {
             if (!fsDoc.Settings.ContainsKey(Constants.FileSystem.DataDirectory))
-                fsDoc.Settings[Constants.FileSystem.DataDirectory] = "~/Filesystems/" + id;
+                fsDoc.Settings[Constants.FileSystem.DataDirectory] = "~/FileSystems/" + id;
         }
 
 		[HttpDelete]
 		[RavenRoute("admin/fs/{*id}")]
-		public HttpResponseMessage FileSystemDelete(string id)
+		public HttpResponseMessage Delete(string id)
 		{
 			bool result;
 			var isHardDeleteNeeded = bool.TryParse(InnerRequest.RequestUri.ParseQueryString()["hard-delete"], out result) && result;
@@ -152,7 +150,7 @@ namespace Raven.Database.FileSystem.Controllers
 
 		[HttpDelete]
 		[RavenRoute("admin/fs/batch-delete")]
-		public HttpResponseMessage FileSystemBatchDelete()
+		public HttpResponseMessage BatchDelete()
 		{
 			string[] fileSystemsToDelete = GetQueryStringValues("ids");
 			if (fileSystemsToDelete == null)
@@ -179,7 +177,7 @@ namespace Raven.Database.FileSystem.Controllers
 
 		[HttpPost]
 		[RavenRoute("admin/fs/{*id}")]
-		public HttpResponseMessage FileSystemToggleDisable(string id, bool isSettingDisabled)
+		public HttpResponseMessage ToggleDisable(string id, bool isSettingDisabled)
 		{
 			var message = ToggleFileSystemDisabled(id, isSettingDisabled);
 			if (message.ErrorCode != HttpStatusCode.OK)
@@ -192,7 +190,7 @@ namespace Raven.Database.FileSystem.Controllers
 
 		[HttpPost]
 		[RavenRoute("admin/fs/batch-toggle-disable")]
-		public HttpResponseMessage FileSystemBatchToggleDisable(bool isSettingDisabled)
+		public HttpResponseMessage BatchToggleDisable(bool isSettingDisabled)
 		{
 			string[] databasesToToggle = GetQueryStringValues("ids");
 			if (databasesToToggle == null)
@@ -270,8 +268,8 @@ namespace Raven.Database.FileSystem.Controllers
         }
 
         [HttpPost]
-        [RavenRoute("admin/fs/backup")]
-        [RavenRoute("fs/{fileSystemName}/admin/fs/backup")]
+        [RavenRoute("fs/admin/backup")]
+        [RavenRoute("fs/{fileSystemName}/admin/backup")]
         public async Task<HttpResponseMessage> Backup()
         {
             var backupRequest = await ReadJsonObjectAsync<FilesystemBackupRequest>();
@@ -282,7 +280,7 @@ namespace Raven.Database.FileSystem.Controllers
 
             if (backupRequest.FileSystemDocument == null && FileSystem.Name != null)
             {
-                var jsonDocument = DatabasesLandlord.SystemDatabase.Documents.Get("Raven/Filesystems/" + FileSystem.Name, null);
+                var jsonDocument = DatabasesLandlord.SystemDatabase.Documents.Get("Raven/FileSystems/" + FileSystem.Name, null);
                 if (jsonDocument != null)
                 {
                     backupRequest.FileSystemDocument = jsonDocument.DataAsJson.JsonDeserialization<FileSystemDocument>();
@@ -366,9 +364,28 @@ namespace Raven.Database.FileSystem.Controllers
                     var targetFs = FileSystemsLandlord.GetFileSystemInternal(fs).ResultUnwrap();
                     FileSystemsLandlord.Lock(fs, () => targetFs.Storage.Compact(configuration, msg =>
 			        {
-			            compactStatus.Messages.Add(msg);
-			            DatabasesLandlord.SystemDatabase.Documents.Put(CompactStatus.RavenFilesystemCompactStatusDocumentKey(fs), null,
-			                                                           RavenJObject.FromObject(compactStatus), new RavenJObject(), null);
+                        bool skipProgressReport = false;
+                        bool isProgressReport = false;
+                        if (IsUpdateMessage(msg))
+                        {
+                            isProgressReport = true;
+                            var now = SystemTime.UtcNow;
+                            compactStatus.LastProgressMessageTime = compactStatus.LastProgressMessageTime ?? DateTime.MinValue;
+                            var timeFromLastUpdate = (now - compactStatus.LastProgressMessageTime.Value);
+                            if (timeFromLastUpdate >= ReportProgressInterval)
+                            {
+                                compactStatus.LastProgressMessageTime = now;
+                                compactStatus.LastProgressMessage = msg;
+                            }
+                            else skipProgressReport = true;
+
+                        }
+                        if (!skipProgressReport)
+                        {
+                            if (!isProgressReport) compactStatus.Messages.Add(msg);
+                            DatabasesLandlord.SystemDatabase.Documents.Put(CompactStatus.RavenFilesystemCompactStatusDocumentKey(fs), null,
+                                RavenJObject.FromObject(compactStatus), new RavenJObject(), null);
+                        }
 			        }));
                     compactStatus.State = CompactStatusState.Completed;
                     compactStatus.Messages.Add("File system compaction completed.");
@@ -385,6 +402,7 @@ namespace Raven.Database.FileSystem.Controllers
 			    }
                 return GetEmptyMessage();
             });
+
             long id;
             Database.Tasks.AddTask(task, new TaskBasedOperationState(task), new TaskActions.PendingTaskDescription
             {
@@ -399,9 +417,23 @@ namespace Raven.Database.FileSystem.Controllers
             });
         }
 
+        private static bool IsUpdateMessage(string msg)
+        {
+            if (String.IsNullOrEmpty(msg)) return false;
+            //Here we check if we the message is in voron update format
+            if (msg.StartsWith(VoronProgressString)) return true;
+            //Here we check if we the messafe is in esent update format
+            if (msg.Length > 42 && String.Compare(msg, 32, EsentProgressString, 0, 10) == 0) return true;
+            return false;
+        }
+        private static TimeSpan ReportProgressInterval = TimeSpan.FromSeconds(1);
+        private static string EsentProgressString = "JET_SNPROG";
+        private static string VoronProgressString = "Copied";
+
+
         [HttpPost]
         [RavenRoute("admin/fs/restore")]
-        [RavenRoute("fs/{fileSystemName}/admin/fs/restore")]
+        [RavenRoute("fs/{fileSystemName}/admin/restore")]
         public async Task<HttpResponseMessage> Restore()
         {
             if (EnsureSystemDatabase() == false)

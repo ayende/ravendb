@@ -9,9 +9,11 @@ using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.IO;
 using System.Net;
+using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 
+using Raven.Abstractions.Cluster;
 using Raven.Abstractions.Commands;
 using Raven.Abstractions.Connection;
 using Raven.Abstractions.Data;
@@ -20,6 +22,7 @@ using Raven.Abstractions.Indexing;
 using Raven.Abstractions.Replication;
 using Raven.Abstractions.Util;
 using Raven.Client.Changes;
+using Raven.Client.Connection.Implementation;
 using Raven.Client.Connection.Profiling;
 using Raven.Client.Document;
 using Raven.Client.Indexes;
@@ -71,12 +74,12 @@ namespace Raven.Client.Connection.Async
 		/// <param name="txId">transaction identifier</param>
 		Task CommitAsync(string txId, CancellationToken token = default (CancellationToken));
 
-		HttpJsonRequest CreateReplicationAwareRequest(string currentServerUrl, string requestUrl, string method, bool disableRequestCompression = false, bool disableAuthentication = false, TimeSpan? timeout = null);
+		HttpJsonRequest CreateReplicationAwareRequest(string currentServerUrl, string requestUrl, HttpMethod method, bool disableRequestCompression = false, bool disableAuthentication = false, TimeSpan? timeout = null);
 
 		/// <summary>
 		///     Create a http request to the specified relative url on the current database
 		/// </summary>
-		HttpJsonRequest CreateRequest(string relativeUrl, string method, bool disableRequestCompression = false, bool disableAuthentication = false, TimeSpan? timeout = null);
+		HttpJsonRequest CreateRequest(string relativeUrl, HttpMethod method, bool disableRequestCompression = false, bool disableAuthentication = false, TimeSpan? timeout = null);
 
 		/// <summary>
 		///     Deletes the document with the specified key
@@ -122,7 +125,7 @@ namespace Raven.Client.Connection.Async
 		///     Create a new instance of <see cref="IAsyncDatabaseCommands" /> that will interacts
 		///     with the specified database
 		/// </summary>
-		IAsyncDatabaseCommands ForDatabase(string database);
+		IAsyncDatabaseCommands ForDatabase(string database, ClusterBehavior? clusterBehavior = null);
 
 		/// <summary>
 		///     Create a new instance of <see cref="IAsyncDatabaseCommands" /> that will interacts
@@ -238,6 +241,11 @@ namespace Raven.Client.Connection.Async
 		/// </summary>
 		/// <param name="name">name of an index</param>
 		Task<IndexDefinition> GetIndexAsync(string name, CancellationToken token = default (CancellationToken));
+
+		/// <summary>
+		///     Retrieves indexing performance statistics for all indexes
+		/// </summary>
+		Task<IndexingPerformanceStatistics[]> GetIndexingPerformanceStatisticsAsync();
 
 		/// <summary>
 		///     Retrieves all suggestions for an index merging
@@ -468,6 +476,10 @@ namespace Raven.Client.Connection.Async
 		/// <param name="indexDef">definition of an index</param>
 		/// <param name="overwrite">if set to <c>true</c> [overwrite].</param>
 		Task<string> PutIndexAsync(string name, IndexDefinition indexDef, bool overwrite, CancellationToken token = default(CancellationToken));
+
+		Task SetIndexLockAsync(string name, IndexLockMode unLockMode, CancellationToken token = default(CancellationToken));
+
+		Task SetIndexPriorityAsync(string name, IndexingPriority priority, CancellationToken token = default(CancellationToken));
 
 		/// <summary>
 		///     Creates an index with the specified name, based on an index definition that is created by the supplied

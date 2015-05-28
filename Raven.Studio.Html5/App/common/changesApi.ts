@@ -1,13 +1,13 @@
 /// <reference path="../../Scripts/typings/jquery/jquery.d.ts" />
 /// <reference path="../../Scripts/typings/knockout/knockout.d.ts" />
 
-import resource = require('models/resource');
+import resource = require('models/resources/resource');
 import appUrl = require('common/appUrl');
-import changeSubscription = require('models/changeSubscription');
+import changeSubscription = require('common/changeSubscription');
 import changesCallback = require('common/changesCallback');
 import commandBase = require('commands/commandBase');
 import folder = require("models/filesystem/folder");
-import getSingleAuthTokenCommand = require("commands/getSingleAuthTokenCommand");
+import getSingleAuthTokenCommand = require("commands/auth/getSingleAuthTokenCommand");
 import idGenerator = require("common/idGenerator");
 import eventSourceSettingStorage = require("common/eventSourceSettingStorage");
 import changesApiWarnStorage = require("common/changesApiWarnStorage");
@@ -19,7 +19,7 @@ class changesApi {
     private coolDownWithDataLoss: number;
     private isMultyTenantTransport:boolean;
     private resourcePath: string;
-    private connectToChangesApiTask: JQueryDeferred<any>;
+    public connectToChangesApiTask: JQueryDeferred<any>;
     private webSocket: WebSocket;
     static isServerSupportingWebSockets: boolean = true;
     private eventSource: EventSource;
@@ -78,17 +78,27 @@ class changesApi {
 
         getTokenTask
             .done((tokenObject: singleAuthToken) => {
+                this.rs.isLoading(false);
                 var token = tokenObject.Token;
                 var connectionString = 'singleUseAuthToken=' + token + '&id=' + this.eventsId + '&coolDownWithDataLoss=' + this.coolDownWithDataLoss +  '&isMultyTenantTransport=' +this.isMultyTenantTransport;
                 action.call(this, connectionString);
             })
             .fail((e) => {
+                var error = !!e.responseJSON ? e.responseJSON.Error : e.responseText;
                 if (e.status == 0) {
                     // Connection has closed so try to reconnect every 3 seconds.
                     setTimeout(() => this.connect(action), 3 * 1000);
                 }
+                else if (e.status == ResponseCodes.ServiceUnavailable) {
+                    // We're still loading the database, try to reconnect every 2 seconds.
+                    if (this.rs.isLoading() == false) {
+                        this.commandBase.reportError(error);
+                    }
+                    this.rs.isLoading(true);
+                    setTimeout(() => this.connect(action, true), 2 * 1000);
+                }
                 else if (e.status != ResponseCodes.Forbidden) { // authorized connection
-                    this.commandBase.reportError(e.responseJSON.Error);
+                    this.commandBase.reportError(error);
                     this.connectToChangesApiTask.reject();
                 }
             });

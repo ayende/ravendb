@@ -2,7 +2,6 @@
 import file = require("models/filesystem/file");
 import fileMetadata = require("models/filesystem/fileMetadata");
 import filesystem = require("models/filesystem/filesystem");
-import pagedResultSet = require("common/pagedResultSet");
 
 class getFileCommand extends commandBase {
 
@@ -14,7 +13,7 @@ class getFileCommand extends commandBase {
         var url = "/files/" + this.name;
         var resultsSelector = metadata => {
             var fileHeaders = new file();
-            fileHeaders.id = this.name;
+            fileHeaders.id(this.name);
 
             for (var property in metadata) {
                 var value: string = metadata[property];

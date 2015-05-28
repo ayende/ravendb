@@ -75,12 +75,12 @@ namespace Raven.Database.Indexing
 					performance = RecordCurrentBatch("Current", "Index", batch.Docs.Count);
 
 					var deleteExistingDocumentsDuration = new Stopwatch();
+
+						Interlocked.Increment(ref sourceCount);
 					var docIdTerm = new Term(Constants.DocumentIdFieldName);
 					var documentsWrapped = batch.Docs.Select((doc, i) =>
 					{
 						token.ThrowIfCancellationRequested();
-
-						Interlocked.Increment(ref sourceCount);
 						if (doc.__document_id == null)
 							throw new ArgumentException(
 								string.Format("Cannot index something which doesn't have a document id, but got: '{0}'", doc));
@@ -117,8 +117,7 @@ namespace Raven.Database.Indexing
 					var parallelOperations = new ConcurrentQueue<ParallelBatchStats>();
 
 					var parallelProcessingStart = SystemTime.UtcNow;
-
-					BackgroundTaskExecuter.Instance.ExecuteAllBuffered(context, documentsWrapped, (partition) =>
+					context.Database.MappingThreadPool.ExecuteBatch(documentsWrapped, (IEnumerator<dynamic> partition) =>
 					{
                         token.ThrowIfCancellationRequested();
 						var parallelStats = new ParallelBatchStats
@@ -231,7 +230,7 @@ namespace Raven.Database.Indexing
 
 							parallelOperations.Enqueue(parallelStats);
 						}
-					});
+					}, description: string.Format("Mapping index {0} from Etag {1} to Etag {2}", this.PublicName, this.GetLastEtagFromStats(), batch.HighestEtagBeforeFiltering));
 
 					performanceStats.Add(new ParallelPerformanceStats
 					{
@@ -276,11 +275,18 @@ namespace Raven.Database.Indexing
 
 			performanceStats.AddRange(writeToIndexStats);
 
-			performance.OnCompleted = () => BatchCompleted("Current", "Index", sourceCount, count, performanceStats);
+			InitializeIndexingPerformanceCompleteDelegate(performance, sourceCount, count, performanceStats);
+			
+			
 
 			logIndexing.Debug("Indexed {0} documents for {1}", count, indexId);
 
 			return performance;
+		}
+
+		private void InitializeIndexingPerformanceCompleteDelegate(IndexingPerformanceStats performance, int sourceCount, int count, List<BasePerformanceStats> performanceStats)
+		{
+			performance.OnCompleted = () => BatchCompleted("Current", "Index", sourceCount, count, performanceStats);
 		}
 
 		protected override bool IsUpToDateEnoughToWriteToDisk(Etag highestETag)
@@ -295,6 +301,7 @@ namespace Raven.Database.Indexing
 
 		protected override void HandleCommitPoints(IndexedItemsInfo itemsInfo, IndexSegmentsInfo segmentsInfo)
 		{
+			logIndexing.Error("HandlingCommitPoint for index {0} in DB {1}", this.PublicName, this.context.DatabaseName);
 			if (ShouldStoreCommitPoint(itemsInfo) && itemsInfo.HighestETag != null)
 			{
 				context.IndexStorage.StoreCommitPoint(indexId.ToString(), new IndexCommitPoint
@@ -387,17 +394,17 @@ namespace Raven.Database.Indexing
 			};
 		}
 
-		private readonly ConcurrentDictionary<Type, PropertyDescriptorCollection> propertyDescriptorCache = new ConcurrentDictionary<Type, PropertyDescriptorCollection>();
+		private readonly ConcurrentDictionary<Type, PropertyAccessor> propertyAccessorCache = new ConcurrentDictionary<Type, PropertyAccessor>();
 
 		private IndexingResult ExtractIndexDataFromDocument(AnonymousObjectToLuceneDocumentConverter anonymousObjectToLuceneDocumentConverter, object doc)
 		{
-			PropertyDescriptorCollection properties;
-			var newDocId = GetDocumentIdByReflection(doc, out properties);
+			PropertyAccessor propertyAccessor;
+			var newDocId = GetDocumentId(doc, out propertyAccessor);
 
 			List<AbstractField> abstractFields;
 			try
 			{
-				abstractFields = anonymousObjectToLuceneDocumentConverter.Index(doc, properties, Field.Store.NO).ToList();
+				abstractFields = anonymousObjectToLuceneDocumentConverter.Index(doc, propertyAccessor, Field.Store.NO).ToList();
 			}
 			catch (InvalidShapeException e)
 			{
@@ -408,16 +415,16 @@ namespace Raven.Database.Indexing
 			{
 				Fields = abstractFields,
 				NewDocId = newDocId,
-				ShouldSkip = properties.Count > 1  // we always have at least __document_id
+				ShouldSkip = propertyAccessor.Properies.Count > 1  // we always have at least __document_id
 							&& abstractFields.Count == 0
 			};
 		}
 
-		private string GetDocumentIdByReflection(object doc, out PropertyDescriptorCollection properties)
+		private string GetDocumentId(object doc, out PropertyAccessor accessor)
 		{
 			Type type = doc.GetType();
-			properties = propertyDescriptorCache.GetOrAdd(type, TypeDescriptor.GetProperties);
-			return properties.Find(Constants.DocumentIdFieldName, false).GetValue(doc) as string;
+			accessor = propertyAccessorCache.GetOrAdd(type, PropertyAccessor.Create);
+			return accessor.GetValue(Constants.DocumentIdFieldName, doc) as string;
 		}
 
 		public override void Remove(string[] keys, WorkContext context)

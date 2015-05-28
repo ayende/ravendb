@@ -7,6 +7,7 @@ using System.Web.Http;
 using Raven.Abstractions.Connection;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Replication;
+using Raven.Abstractions.Util;
 using Raven.Database.Bundles.Replication.Impl;
 using Raven.Database.Server.Controllers;
 using Raven.Database.Server.WebApi.Attributes;
@@ -97,33 +98,6 @@ namespace Raven.Database.Bundles.Replication.Controllers
 			return GetMessageWithObjectAsTask(topology);
 		}
 
-		[HttpPost]
-		[RavenRoute("admin/replication/topology/discover")]
-		[RavenRoute("databases/{databaseName}/admin/replication/topology/discover")]
-		public async Task<HttpResponseMessage> ReplicationTopologyDiscover()
-		{
-			var ttlAsString = GetQueryStringValue("ttl");
-
-			int ttl;
-			RavenJArray from;
-
-			if (string.IsNullOrEmpty(ttlAsString))
-			{
-				ttl = 10;
-				from = new RavenJArray();
-			}
-			else
-			{
-				ttl = int.Parse(ttlAsString);
-				from = await ReadJsonArrayAsync();
-			}
-
-			var replicationSchemaDiscoverer = new ReplicationTopologyDiscoverer(Database, from, ttl, Log);
-			var node = replicationSchemaDiscoverer.Discover();
-
-			return GetMessageWithObject(node);
-		}
-
 		private ReplicationInfoStatus[] CheckDestinations(ReplicationDocument replicationDocument)
 		{
 			var results = new ReplicationInfoStatus[replicationDocument.Destinations.Count];
@@ -157,7 +131,7 @@ namespace Raven.Database.Bundles.Replication.Controllers
 																					 replicationDestination.Password,
 																					 replicationDestination.Domain ?? string.Empty);
 				}
-				var request = requestFactory.Create(url + "/replication/info", "POST", ravenConnectionStringOptions);
+				var request = requestFactory.Create(url + "/replication/info", HttpMethods.Post, ravenConnectionStringOptions);
 				try
 				{
 					request.ExecuteRequest();

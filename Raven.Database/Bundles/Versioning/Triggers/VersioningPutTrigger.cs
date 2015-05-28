@@ -35,7 +35,7 @@ namespace Raven.Bundles.Versioning.Triggers
 			return VetoResult.Allowed;
 		}
 
-		public override void OnPut(string key, RavenJObject document, RavenJObject metadata, TransactionInformation transactionInformation)
+		public override void OnPut(string key, RavenJObject jsonReplicationDocument, RavenJObject metadata, TransactionInformation transactionInformation)
 		{
 			VersioningConfiguration versioningConfiguration;
 
@@ -43,6 +43,13 @@ namespace Raven.Bundles.Versioning.Triggers
 			{
 				metadata.__ExternalState[Constants.RavenCreateVersion] = metadata[Constants.RavenCreateVersion];
 				metadata.Remove(Constants.RavenCreateVersion);
+			}
+
+			if (metadata.ContainsKey(Constants.RavenIgnoreVersioning))
+			{
+				metadata.__ExternalState[Constants.RavenIgnoreVersioning] = metadata[Constants.RavenIgnoreVersioning];
+				metadata.Remove(Constants.RavenIgnoreVersioning);
+				return;
 			}
 
 			if (TryGetVersioningConfiguration(key, metadata, out versioningConfiguration) == false)
@@ -167,7 +174,8 @@ namespace Raven.Bundles.Versioning.Triggers
 
 			versioningConfiguration = Database.GetDocumentVersioningConfiguration(metadata);
 			if (versioningConfiguration == null || versioningConfiguration.Exclude
-				|| (versioningConfiguration.ExcludeUnlessExplicit && !metadata.__ExternalState.ContainsKey(Constants.RavenCreateVersion)))
+				|| (versioningConfiguration.ExcludeUnlessExplicit && !metadata.__ExternalState.ContainsKey(Constants.RavenCreateVersion))
+				|| metadata.__ExternalState.ContainsKey(Constants.RavenIgnoreVersioning))
 				return false;
 			return true;
 		}

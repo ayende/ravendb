@@ -1,5 +1,20 @@
-﻿using System;
-using System.Collections.Concurrent;
+﻿using System.IO;
+
+using Raven.Abstractions;
+using Raven.Abstractions.Data;
+using Raven.Abstractions.Exceptions;
+using Raven.Abstractions.Extensions;
+using Raven.Abstractions.Indexing;
+using Raven.Abstractions.Logging;
+using Raven.Database.Data;
+using Raven.Database.Extensions;
+using Raven.Database.Indexing;
+using Raven.Database.Queries;
+using Raven.Database.Server.WebApi.Attributes;
+using Raven.Database.Storage;
+using Raven.Json.Linq;
+
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -10,31 +25,11 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Web;
 using System.Web.Http;
-using JetBrains.Annotations;
-using Lucene.Net.Search;
-using Mono.CSharp;
-using Raven.Abstractions;
-using Raven.Abstractions.Connection;
-using Raven.Abstractions.Data;
-using Raven.Abstractions.Exceptions;
-using Raven.Abstractions.Extensions;
-using Raven.Abstractions.Indexing;
-using Raven.Abstractions.Logging;
-using Raven.Abstractions.Replication;
-using Raven.Database.Data;
-using Raven.Database.Extensions;
-using Raven.Database.Indexing;
-using Raven.Database.Queries;
-using Raven.Database.Server.WebApi.Attributes;
-using Raven.Database.Storage;
-using Raven.Json.Linq;
-using Enum = System.Enum;
 
 namespace Raven.Database.Server.Controllers
 {
-	public class IndexController : RavenDbApiController
+	public class IndexController : ClusterAwareRavenDbApiController
 	{
 		[HttpGet]
 		[RavenRoute("indexes")]
@@ -77,8 +72,6 @@ namespace Raven.Database.Server.Controllers
             }
 		}
 
-		
-
 		[HttpPost]
 		[RavenRoute("indexes/last-queried")]
 		[RavenRoute("databases/{databaseName}/indexes/last-queried")]
@@ -104,7 +97,29 @@ namespace Raven.Database.Server.Controllers
 		public async Task<HttpResponseMessage> IndexPut(string id)
 		{
 			var index = id;
-			var jsonIndex = await ReadJsonAsync();
+			RavenJObject jsonIndex;
+
+			try
+			{
+				jsonIndex = await ReadJsonAsync();
+			}
+			catch (InvalidOperationException e)
+			{
+				Log.Debug("Failed to deserialize index request. Error: " + e);
+				return GetMessageWithObject(new
+				{
+					Message = "Could not understand json, please check its validity."
+				}, (HttpStatusCode)422); //http code 422 - Unprocessable entity
+
+			}
+			catch (InvalidDataException e)
+			{
+				Log.Debug("Failed to deserialize index request. Error: " + e);
+				return GetMessageWithObject(new
+				{
+					e.Message
+				}, (HttpStatusCode)422); //http code 422 - Unprocessable entity
+			}
 
 			var data = jsonIndex.JsonDeserialization<IndexDefinition>();
 
@@ -115,7 +130,7 @@ namespace Raven.Database.Server.Controllers
 			// in order to ensure that they don't reset the default value for old clients, we force the default
 			// value to maintain the existing behavior
 			if (jsonIndex.ContainsKey("MaxIndexOutputsPerDocument") == false)
-				data.MaxIndexOutputsPerDocument = 16*1024;
+				data.MaxIndexOutputsPerDocument = 16 * 1024;
 
 			try
 			{
@@ -150,9 +165,20 @@ namespace Raven.Database.Server.Controllers
 		[HttpPost]
 		[RavenRoute("indexes/{*id}")]
 		[RavenRoute("databases/{databaseName}/indexes/{*id}")]
-		public async Task<HttpResponseMessage >IndexPost(string id)
+		public async Task<HttpResponseMessage> IndexPost(string id)
 		{
 			var index = id;
+
+			if ("forceReplace".Equals(GetQueryStringValue("op"), StringComparison.InvariantCultureIgnoreCase))
+			{
+				var indexDefiniton = Database.IndexDefinitionStorage.GetIndexDefinition(id);
+				if (indexDefiniton == null)
+					return GetEmptyMessage(HttpStatusCode.NotFound);
+
+				Database.IndexReplacer.ForceReplacement(indexDefiniton);
+				return GetEmptyMessage();
+			}
+
 			if ("forceWriteToDisk".Equals(GetQueryStringValue("op"), StringComparison.InvariantCultureIgnoreCase))
 			{
                 Database.IndexStorage.ForceWriteToDiskAndWriteInMemoryIndexToDiskIfNecessary(index);
@@ -176,7 +202,6 @@ namespace Raven.Database.Server.Controllers
 				var postedQuery = await ReadStringAsync();
 				
 				SetPostRequestQuery(postedQuery);
-
 				return IndexGet(id);
 			}
 
@@ -200,7 +225,16 @@ namespace Raven.Database.Server.Controllers
 		public HttpResponseMessage IndexDelete(string id)
 		{
 			var index = id;
-			Database.Indexes.DeleteIndex(index);
+
+			var isReplication = GetQueryStringValue("is-replication");
+			if (Database.Indexes.DeleteIndex(index) &&
+				!String.IsNullOrWhiteSpace(isReplication) && isReplication.Equals("true", StringComparison.InvariantCultureIgnoreCase))
+			{
+				const string emptyFrom = "<no hostname>";
+				var from = Uri.UnescapeDataString(GetQueryStringValue("from") ?? emptyFrom);
+				Log.Info("received index deletion from replication (replicating index tombstone, received from = {0})", from);
+			}
+
 			return GetEmptyMessage(HttpStatusCode.NoContent);
 		}
 
@@ -239,7 +273,6 @@ namespace Raven.Database.Server.Controllers
 
 		    return GetMessageWithObject(text);
 		}
-
 	
 		private HttpResponseMessage GetIndexDefinition(string index)
 		{
@@ -300,7 +333,7 @@ namespace Raven.Database.Server.Controllers
                 keys = accessor.MapReduce.GetSourcesForIndexForDebug(definition.IndexId, prefix, GetPageSize(Database.Configuration.MaxPageSize))
                     .ToList(); 
             });
-            return GetMessageWithObject(new { keys.Count, Results = keys });
+	        return GetMessageWithObject(new {keys.Count, Results = keys});
         }
 
 		private HttpResponseMessage GetIndexMappedResult(string index)
@@ -312,8 +345,8 @@ namespace Raven.Database.Server.Controllers
 			var key = GetQueryStringValue("key");
 			if (string.IsNullOrEmpty(key))
 			{
-                var startsWith = GetQueryStringValue("startsWith");
 				var sourceId = GetQueryStringValue("sourceId");
+				var startsWith = GetQueryStringValue("startsWith");
 
 				List<string> keys = null;
 				Database.TransactionalStorage.Batch(accessor =>
@@ -321,14 +354,9 @@ namespace Raven.Database.Server.Controllers
                     keys = accessor.MapReduce.GetKeysForIndexForDebug(definition.IndexId, startsWith, sourceId, GetStart(), GetPageSize(Database.Configuration.MaxPageSize))
 						.ToList();
 				});
-			    var keyToSearch = GetQueryStringValue("contains");
-                if (!String.IsNullOrEmpty(keyToSearch))
+
                     return GetMessageWithObject(new
                     {
-                        Results = keys.Contains(keyToSearch)
-                    });
-				return GetMessageWithObject(new
-				{
 					keys.Count,
 					Results = keys
 				});
@@ -466,8 +494,6 @@ namespace Raven.Database.Server.Controllers
 			string entityName;
 			var dynamicIndexName = GetDynamicIndexName(index, indexQuery, out entityName);
 
-			if (index.Contains("UserIndex"))
-				Debugger.Launch();
 			if (dynamicIndexName != null && Database.IndexStorage.HasIndex(dynamicIndexName))
 			{
 				indexEtag = Database.Indexes.GetIndexEtag(dynamicIndexName, null, indexQuery.ResultsTransformer);
@@ -741,11 +767,8 @@ namespace Raven.Database.Server.Controllers
 				return GetEmptyMessage(HttpStatusCode.NotFound);
 
 			stats.LastQueryTimestamp = Database.IndexStorage.GetLastQueryTime(instance.indexId);
-			stats.Performance = Database.IndexStorage.GetIndexingPerformance(instance.indexId);
 			stats.SetLastDocumentEtag(lastEtag);
 			return GetMessageWithObject(stats);
 		}
-
-
 	}
 }

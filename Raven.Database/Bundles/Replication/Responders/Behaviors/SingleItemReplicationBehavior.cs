@@ -1,18 +1,15 @@
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
-using System.Security.Cryptography;
-using System.Text;
 using Raven.Abstractions.Data;
+using Raven.Abstractions.Json.Linq;
 using Raven.Abstractions.Logging;
-using Raven.Abstractions.Util.Encryptors;
-using Raven.Database;
 using Raven.Database.Bundles.Replication.Impl;
+using Raven.Database.Bundles.Replication.Triggers;
 using Raven.Database.Storage;
 using Raven.Json.Linq;
 
-namespace Raven.Bundles.Replication.Responders
+namespace Raven.Database.Bundles.Replication.Responders.Behaviors
 {
 	public abstract class SingleItemReplicationBehavior<TInternal, TExternal>
 	{
@@ -23,7 +20,6 @@ namespace Raven.Bundles.Replication.Responders
 		}
 
 		private readonly ILog log = LogManager.GetCurrentClassLogger();
-
 		public DocumentDatabase Database { get; set; }
 		public IStorageActionsAccessor Actions { get; set; }
 		public string Src { get; set; }
@@ -89,18 +85,22 @@ namespace Raven.Bundles.Replication.Responders
 			TExternal resolvedItemToSave;
 			if (TryResolveConflict(id, metadata, incoming, existingItem, out resolvedMetadataToSave, out resolvedItemToSave))
 			{
-                if (metadata.ContainsKey("Raven-Remove-Document-Marker") &&
-                   metadata.Value<bool>("Raven-Remove-Document-Marker"))
-                {
-                    DeleteItem(id, null);
-                    MarkAsDeleted(id, metadata);
-                }
-                else
-                {
-                    var etag = deleted == false ? existingEtag : null;
+				if (metadata.ContainsKey("Raven-Remove-Document-Marker") &&
+				    metadata.Value<bool>("Raven-Remove-Document-Marker"))
+				{
+					DeleteItem(id, null);
+					MarkAsDeleted(id, metadata);
+				}
+				else
+				{
+					var etag = deleted == false ? existingEtag : null;
+					var resolvedItemJObject = resolvedItemToSave as RavenJObject;
+					if (resolvedItemJObject != null)
+						ExecuteRemoveConflictOnPutTrigger(id, metadata, resolvedItemJObject);
+
 					AddWithoutConflict(id, etag, resolvedMetadataToSave, resolvedItemToSave);
-                }
-                return;
+				}
+				return;
 			}
 
 			CreatedConflict createdConflict;
@@ -121,19 +121,33 @@ namespace Raven.Bundles.Replication.Responders
 				var existingDocumentConflictId = id + "/conflicts/" + GetReplicationIdentifierForCurrentDatabase();
 
 				createdConflict = CreateConflict(id, newDocumentConflictId, existingDocumentConflictId, existingItem,
-												  existingMetadata);
+					existingMetadata);
 			}
 
 			Database.TransactionalStorage.ExecuteImmediatelyOrRegisterForSynchronization(() =>
 				Database.Notifications.RaiseNotifications(new ReplicationConflictNotification()
-																	{
-																		Id = id,
-																		Etag = createdConflict.Etag,
-																		ItemType = ReplicationConflict,
-																		OperationType = ReplicationOperationTypes.Put,
-																		Conflicts = createdConflict.ConflictedIds
-																	}));
-			}
+				{
+					Id = id,
+					Etag = createdConflict.Etag,
+					ItemType = ReplicationConflict,
+					OperationType = ReplicationOperationTypes.Put,
+					Conflicts = createdConflict.ConflictedIds
+				}));
+		}
+
+		private void ExecuteRemoveConflictOnPutTrigger(string id, RavenJObject metadata, RavenJObject resolvedItemJObject)
+		{
+			//since we are in replication handler, triggers are disabled, and if we are replicating PUT of conflict resolution,
+			//we need to execute the relevant trigger manually
+			// --> AddWithoutConflict() does PUT, but because of 'No Triggers' context the trigger itself is executed
+			var removeConflictTrigger = Database.PutTriggers.GetAllParts()
+				.Select(trg => trg.Value)
+				.OfType<RemoveConflictOnPutTrigger>()
+				.FirstOrDefault();
+
+			Debug.Assert(removeConflictTrigger != null, "If this is null, this means something is very wrong - replication configured, and no relevant plugin is there.");
+			removeConflictTrigger.OnPut(id, resolvedItemJObject, new RavenJObject(metadata), null);
+		}
 
 		protected abstract ReplicationConflictTypes ReplicationConflict { get; }
 
@@ -150,7 +164,7 @@ namespace Raven.Bundles.Replication.Responders
 			return newDocumentConflictId;
 		}
 
-		private void ReplicateDelete(string id, RavenJObject metadata, TExternal incoming)
+		private void ReplicateDelete(string id, RavenJObject newMetadata, TExternal incoming)
 		{
 			TInternal existingItem;
 			Etag existingEtag;
@@ -158,44 +172,60 @@ namespace Raven.Bundles.Replication.Responders
 			var existingMetadata = TryGetExisting(id, out existingItem, out existingEtag, out deleted);
 			if (existingMetadata == null)
 			{
-				log.Debug("Replicating deleted item {0} from {1} that does not exist, ignoring", id, Src);
+				log.Debug("Replicating deleted item {0} from {1} that does not exist, ignoring.", id, Src);
 				return;
 			}
+
+			RavenJObject currentReplicationEntry = null;
+			if (newMetadata.ContainsKey(Constants.RavenReplicationVersion) &&
+			    newMetadata.ContainsKey(Constants.RavenReplicationSource))
+			{
+				currentReplicationEntry = new RavenJObject
+				{
+					{Constants.RavenReplicationVersion, newMetadata[Constants.RavenReplicationVersion]},
+					{Constants.RavenReplicationSource, newMetadata[Constants.RavenReplicationSource]}
+				};
+			}
+			var existingHistory = ReplicationData.GetHistory(existingMetadata);
+			if (currentReplicationEntry != null &&
+				existingHistory.Contains(currentReplicationEntry, RavenJTokenEqualityComparer.Default))
+			{
+				log.Debug("Replicated delete for {0} already exist in item history, ignoring", id);
+				return;
+			}
+			
 			if (existingMetadata.Value<bool>(Constants.RavenDeleteMarker)) //deleted locally as well
 			{
-				log.Debug("Replicating deleted item {0} from {1} that was deleted locally. Merging histories", id, Src);
-				var existingHistory = new RavenJArray(ReplicationData.GetHistory(existingMetadata));
-				var newHistory = new RavenJArray(ReplicationData.GetHistory(metadata));
+				log.Debug("Replicating deleted item {0} from {1} that was deleted locally. Merging histories.", id, Src);
 
-				foreach (var item in newHistory)
+				var newHistory = ReplicationData.GetHistory(newMetadata);
+				if (currentReplicationEntry != null)
+					newHistory.Add(currentReplicationEntry);
+
+				//Merge histories
+				foreach (var historyEntry in newHistory)
 				{
-					existingHistory.Add(item);
+					if (existingHistory.Contains(historyEntry, RavenJTokenEqualityComparer.Default))
+						continue;
+
+					existingHistory.Add(historyEntry);
 				}
 
-
-				if (metadata.ContainsKey(Constants.RavenReplicationVersion) &&
-					metadata.ContainsKey(Constants.RavenReplicationSource))
+				while (newHistory.Length > Constants.ChangeHistoryLength)
 				{
-					existingHistory.Add(new RavenJObject
-						{
-							{Constants.RavenReplicationVersion, metadata[Constants.RavenReplicationVersion]},
-							{Constants.RavenReplicationSource, metadata[Constants.RavenReplicationSource]}
-						});
+					newHistory.RemoveAt(0);
 				}
+				ReplicationData.SetHistory(newMetadata, existingHistory);
+				MarkAsDeleted(id, newMetadata);
 
-				while (existingHistory.Length > Constants.ChangeHistoryLength)
-				{
-					existingHistory.RemoveAt(0);
-				}
-
-				MarkAsDeleted(id, metadata);
 				return;
 			}
-			if (Historian.IsDirectChildOfCurrent(metadata, existingMetadata)) // not modified
+
+			if (Historian.IsDirectChildOfCurrent(newMetadata, existingMetadata)) // not modified
 			{
 				log.Debug("Delete of existing item {0} was replicated successfully from {1}", id, Src);
 				DeleteItem(id, existingEtag);
-				MarkAsDeleted(id, metadata);
+				MarkAsDeleted(id, newMetadata);
 				return;
 			}
 
@@ -204,19 +234,19 @@ namespace Raven.Bundles.Replication.Responders
 			if (existingMetadata.Value<bool>(Constants.RavenReplicationConflict)) // locally conflicted
 			{
 				log.Debug("Replicating deleted item {0} from {1} that is already conflicted, adding to conflicts.", id, Src);
-				var savedConflictedItemId = SaveConflictedItem(id, metadata, incoming, existingEtag);
+				var savedConflictedItemId = SaveConflictedItem(id, newMetadata, incoming, existingEtag);
 				createdConflict = AppendToCurrentItemConflicts(id, savedConflictedItemId, existingMetadata, existingItem);
 			}
 			else
 			{
                 RavenJObject resolvedMetadataToSave;
                 TExternal resolvedItemToSave;
-                if (TryResolveConflict(id, metadata, incoming, existingItem, out resolvedMetadataToSave, out resolvedItemToSave))
+                if (TryResolveConflict(id, newMetadata, incoming, existingItem, out resolvedMetadataToSave, out resolvedItemToSave))
                 {
                     AddWithoutConflict(id, existingEtag, resolvedMetadataToSave, resolvedItemToSave);
                     return;
                 }
-				var newConflictId = SaveConflictedItem(id, metadata, incoming, existingEtag);
+				var newConflictId = SaveConflictedItem(id, newMetadata, incoming, existingEtag);
 				log.Debug("Existing item {0} is in conflict with replicated delete from {1}, marking item as conflicted", id, Src);
 
 				// we have a new conflict  move the existing doc to a conflict and create a conflict document

@@ -1,30 +1,32 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
+using System.Net.WebSockets;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Http;
-using System.Web.Http.Controllers;
 using System.Web.Http.Dispatcher;
 using System.Web.Http.Hosting;
-using System.Web.Http.Routing;
 using Microsoft.Owin;
+using Rachis;
 
 using Raven.Abstractions.Connection;
 using Raven.Abstractions.Data;
 using Raven.Database.Config;
+using Raven.Database.Raft;
+using Raven.Database.FileSystem.Util;
 using Raven.Database.Server;
 using Raven.Database.Server.Connections;
 using Raven.Database.Server.Controllers;
-using Raven.Database.FileSystem.Util;
 using Raven.Database.Server.Security;
 using Raven.Database.Server.Tenancy;
 using Raven.Database.Server.WebApi;
 using Raven.Database.Server.WebApi.Filters;
 using Raven.Database.Server.WebApi.Handlers;
-using System.Net;
 
 // ReSharper disable once CheckNamespace
 namespace Owin
@@ -99,8 +101,15 @@ namespace Owin
 			if (webSocketsTrasport != null)
 			{
 				if (await webSocketsTrasport.TrySetupRequest())
-					accept(null, webSocketsTrasport.Run);
+				{
+					accept(new Dictionary<string, object>()
+					{
+						{"websocket.ReceiveBufferSize", 256},
+						{"websocket.Buffer", webSocketsTrasport.PreAllocatedBuffer},
+						{"websocket.KeepAliveInterval", WebSocket.DefaultKeepAliveInterval}
+					}, webSocketsTrasport.Run);
 			}
+		}
 		}
 
 		private static HttpConfiguration CreateHttpCfg(RavenDBOptions options)
@@ -112,6 +121,7 @@ namespace Owin
 			cfg.Properties[typeof(CountersLandlord)] = options.CountersLandlord;
 			cfg.Properties[typeof(MixedModeRequestAuthorizer)] = options.MixedModeRequestAuthorizer;
 			cfg.Properties[typeof(RequestManager)] = options.RequestManager;
+			cfg.Properties[typeof(ClusterManager)] = options.ClusterManager;
 			cfg.Properties[Constants.MaxConcurrentRequestsForDatabaseDuringLoad] = new SemaphoreSlim(options.SystemDatabase.Configuration.MaxConcurrentRequestsForDatabaseDuringLoad);
             cfg.Properties[Constants.MaxSecondsForTaskToWaitForDatabaseToLoad] = options.SystemDatabase.Configuration.MaxSecondsForTaskToWaitForDatabaseToLoad;
 			cfg.Formatters.Remove(cfg.Formatters.XmlFormatter);
@@ -156,9 +166,30 @@ namespace Owin
 			public ICollection<Assembly> GetAssemblies()
 			{
 				return AppDomain.CurrentDomain.GetAssemblies()
-					.Where(a => !a.IsDynamic && a.ExportedTypes.Any(t => t.IsSubclassOf(typeof(RavenBaseApiController))))
+                    .Where(IsRavenAssembly)
 					.ToArray();
 			}
+
+		    private static bool IsRavenAssembly(Assembly assembly)
+		    {
+		        if (assembly.IsDynamic)
+		            return false;
+
+			    try
+			    {
+				    return assembly.ExportedTypes.Any(t => t.IsSubclassOf(typeof (RavenBaseApiController)));
+			    }
+			    catch (FileLoadException)
+			    {
+					// if we can't figure out, this proably isn't it
+				    return false;
+			    }
+		        catch (FileNotFoundException)
+		        {
+                    //ExportedTypes will throw a FileNotFoundException if the assembly references another assembly which cannot be loaded/found
+		            return false;
+		        }
+		    }
 		}
 
 		public class SelectiveBufferPolicySelector : IHostBufferPolicySelector

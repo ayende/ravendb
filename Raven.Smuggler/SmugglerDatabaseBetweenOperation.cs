@@ -2,9 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Net;
 using System.Threading.Tasks;
 using NDesk.Options;
 using Raven.Abstractions;
+using Raven.Abstractions.Connection;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
 using Raven.Abstractions.Replication;
@@ -13,6 +15,7 @@ using Raven.Abstractions.Util;
 using Raven.Client.Connection;
 using Raven.Client.Connection.Async;
 using Raven.Client.Document;
+using Raven.Database.Smuggler;
 using Raven.Json.Linq;
 
 namespace Raven.Smuggler
@@ -156,15 +159,25 @@ namespace Raven.Smuggler
 				return databaseOptions.BatchSize;
 
 			var url = store.Url.ForDatabase(store.DefaultDatabase) + "/debug/config";
-			using (var request = store.JsonRequestFactory.CreateHttpJsonRequest(new CreateHttpJsonRequestParams(null, url, "GET", store.DatabaseCommands.PrimaryCredentials, store.Conventions)))
+			try
 			{
-				var configuration = (RavenJObject)request.ReadResponseJson();
+				using (var request = store.JsonRequestFactory.CreateHttpJsonRequest(new CreateHttpJsonRequestParams(null, url, "GET", store.DatabaseCommands.PrimaryCredentials, store.Conventions)))
+				{
+					var configuration = (RavenJObject)request.ReadResponseJson();
 
-				var maxNumberOfItemsToProcessInSingleBatch = configuration.Value<int>("MaxNumberOfItemsToProcessInSingleBatch");
-				if (maxNumberOfItemsToProcessInSingleBatch <= 0) 
+					var maxNumberOfItemsToProcessInSingleBatch = configuration.Value<int>("MaxNumberOfItemsToProcessInSingleBatch");
+					if (maxNumberOfItemsToProcessInSingleBatch <= 0) 
+						return databaseOptions.BatchSize;
+
+					return Math.Min(databaseOptions.BatchSize, maxNumberOfItemsToProcessInSingleBatch);
+				}
+			}
+			catch (ErrorResponseException e)
+			{
+				if (e.StatusCode == HttpStatusCode.Forbidden) // let it continue with the user defined batch size
 					return databaseOptions.BatchSize;
 
-				return Math.Min(databaseOptions.BatchSize, maxNumberOfItemsToProcessInSingleBatch);
+				throw;
 			}
 		}
 
@@ -217,7 +230,8 @@ namespace Raven.Smuggler
 				                                                       OverwriteExisting = true,
 			                                                       });
 			bulkInsertOperation.Report += text => ShowProgress(text);
-
+			var jintHelper = new SmugglerJintHelper();
+			jintHelper.Initialize(databaseOptions);
 			try
 			{
 				while (true)
@@ -230,6 +244,11 @@ namespace Raven.Smuggler
 							while (await documentsEnumerator.MoveNextAsync())
 							{
 								var document = documentsEnumerator.Current;
+								var metadata = document.Value<RavenJObject>("@metadata");
+								var id = metadata.Value<string>("@id");
+								var etag = Etag.Parse(metadata.Value<string>("@etag"));
+
+								lastEtag = etag;
 
 								if (!databaseOptions.MatchFilters(document))
 									continue;
@@ -239,9 +258,17 @@ namespace Raven.Smuggler
 								if (databaseOptions.StripReplicationInformation) 
 									document["@metadata"] = StripReplicationInformationFromMetadata(document["@metadata"] as RavenJObject);
 
-								var metadata = document.Value<RavenJObject>("@metadata");
-								var id = metadata.Value<string>("@id");
-								var etag = Etag.Parse(metadata.Value<string>("@etag"));
+								if(databaseOptions.ShouldDisableVersioningBundle)
+									document["@metadata"] = DisableVersioning(document["@metadata"] as RavenJObject);
+
+								if (!string.IsNullOrEmpty(databaseOptions.TransformScript))
+								{
+									document = jintHelper.Transform(databaseOptions.TransformScript, document);
+									if(document == null)
+										continue;
+									metadata = document.Value<RavenJObject>("@metadata");
+								}
+
 								document.Remove("@metadata");
 								bulkInsertOperation.Store(document, metadata, id);
 								totalCount++;
@@ -251,8 +278,6 @@ namespace Raven.Smuggler
 									ShowProgress("Exported {0} documents", totalCount);
 									lastReport = SystemTime.UtcNow;
 								}
-
-								lastEtag = etag;
 							}
 						}
 					}
@@ -278,9 +303,7 @@ namespace Raven.Smuggler
 										var metadata = document.Value<RavenJObject>("@metadata");
 										var id = metadata.Value<string>("@id");
 										var etag = Etag.Parse(metadata.Value<string>("@etag"));
-										document.Remove("@metadata");
-										metadata.Remove("@id");
-										metadata.Remove("@etag");
+										lastEtag = etag;
 
 										if (!databaseOptions.MatchFilters(document))
 											continue;
@@ -290,6 +313,13 @@ namespace Raven.Smuggler
 										if (databaseOptions.StripReplicationInformation)
 											document["@metadata"] = StripReplicationInformationFromMetadata(document["@metadata"] as RavenJObject);
 
+										if (databaseOptions.ShouldDisableVersioningBundle)
+											document["@metadata"] = DisableVersioning(document["@metadata"] as RavenJObject);
+
+										document.Remove("@metadata");
+										metadata.Remove("@id");
+										metadata.Remove("@etag");
+
 										bulkInsertOperation.Store(document, metadata, id);
 										totalCount++;
 
@@ -298,7 +328,6 @@ namespace Raven.Smuggler
 											ShowProgress("Exported {0} documents", totalCount);
 											lastReport = SystemTime.UtcNow;
 										}
-										lastEtag = etag;
 									}
 									break;
 								}
@@ -451,6 +480,17 @@ namespace Raven.Smuggler
 				       };
 			}
 
+			if (intServerVersion == 25)
+			{
+				ShowProgress("Running in legacy mode, importing/exporting identities is not supported. Server version: {0}. Smuggler version: {1}.", subServerVersion, subSmugglerVersion);
+				return new ServerSupportedFeatures
+				{
+					IsTransformersSupported = true,
+					IsDocsStreamingSupported = true,
+					IsIdentitiesSmugglingSupported = false,
+				};
+			}
+
 			return new ServerSupportedFeatures
 			       {
 				       IsTransformersSupported = true,
@@ -473,6 +513,13 @@ namespace Raven.Smuggler
 				metadata.Remove(Constants.RavenReplicationSource);
 				metadata.Remove(Constants.RavenReplicationVersion);
 			}
+
+			return metadata;
+		}
+
+		public static RavenJToken DisableVersioning(RavenJObject metadata)
+		{
+			metadata.Add(Constants.RavenIgnoreVersioning, true);
 
 			return metadata;
 		}

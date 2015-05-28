@@ -77,7 +77,6 @@
       <Link>Properties\CommonAssemblyInfo.cs</Link>
     </Compile>
     <Compile Include="AuthorizationDecisions.cs" />
-    <Compile Include="Constants.cs" />
     <Compile Include="Controllers\IsAllowedController.cs" />
     <Compile Include="Model\AuthorizationRole.cs" />
     <Compile Include="Model\AuthorizationUser.cs" />
@@ -94,10 +93,6 @@
     <ProjectReference Include="..\..\Raven.Abstractions\Raven.Abstractions.csproj">
       <Project>{41AC479E-1EB2-4D23-AAF2-E4C8DF1BC2BA}</Project>
       <Name>Raven.Abstractions</Name>
-    </ProjectReference>
-    <ProjectReference Include="..\..\Raven.Database\Raven.Database.csproj">
-      <Project>{212823CD-25E1-41AC-92D1-D6DF4D53FC85}</Project>
-      <Name>Raven.Database</Name>
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>

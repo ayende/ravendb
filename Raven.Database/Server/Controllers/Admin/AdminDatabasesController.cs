@@ -1,14 +1,12 @@
 ﻿using System.Collections.Generic;
-using System.Diagnostics;
 using System.Net;
 using System.Net.Http;
 using System.Threading.Tasks;
 using System.Web.Http;
-using Mono.CSharp;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
-using Raven.Database.Commercial;
 using Raven.Database.Extensions;
+using Raven.Database.Raft.Util;
 using Raven.Database.Server.WebApi.Attributes;
 using Raven.Database.Util;
 using Raven.Json.Linq;
@@ -20,7 +18,7 @@ namespace Raven.Database.Server.Controllers.Admin
 	{
 		[HttpGet]
 		[RavenRoute("admin/databases/{*id}")]
-		public HttpResponseMessage DatabasesGet(string id)
+		public HttpResponseMessage Get(string id)
 		{
 			if (IsSystemDatabase(id))
 			{
@@ -47,7 +45,7 @@ namespace Raven.Database.Server.Controllers.Admin
 
 		[HttpPut]
 		[RavenRoute("admin/databases/{*id}")]
-		public async Task<HttpResponseMessage> DatabasesPut(string id)
+		public async Task<HttpResponseMessage> Put(string id)
 		{
 			if (IsSystemDatabase(id))
 			{
@@ -61,7 +59,7 @@ namespace Raven.Database.Server.Controllers.Admin
 			}
 
 			Etag etag = GetEtag();
-			string error = CheckExistingDatbaseName(id, etag);
+			string error = CheckExistingDatabaseName(id, etag);
 			if (error != null)
 			{
 				return GetMessageWithString(error, HttpStatusCode.BadRequest);
@@ -80,12 +78,27 @@ namespace Raven.Database.Server.Controllers.Admin
 
 			//TODO: check if paths in document are legal
 
+			if (dbDoc.IsClusterDatabase() && ClusterManager.IsActive())
+			{
+				string dataDir;
+				if (dbDoc.Settings.TryGetValue("Raven/DataDir", out dataDir) == false || string.IsNullOrEmpty(dataDir))
+					return GetMessageWithString(string.Format("Failed to create '{0}' database, because 'Raven/DataDir' setting is missing.", id), HttpStatusCode.BadRequest);
+
+				dataDir = dataDir.ToFullPath(SystemConfiguration.DataDirectory);
+
+				if (System.IO.Directory.Exists(dataDir))
+					return GetMessageWithString(string.Format("Failed to create '{0}' database, because data directory '{1}' exists and it is forbidden to create non-empty cluster-wide databases.", id, dataDir), HttpStatusCode.BadRequest);
+
+				await ClusterManager.Client.SendDatabaseUpdateAsync(id, dbDoc).ConfigureAwait(false);
+				return GetEmptyMessage();
+			}
+
 			DatabasesLandlord.Protect(dbDoc);
 			var json = RavenJObject.FromObject(dbDoc);
 			json.Remove("Id");
 
 			var metadata = (etag != null) ? ReadInnerHeaders.FilterHeadersToObject() : new RavenJObject();
-			var docKey = Constants.RavenDatabasesPrefix + id;
+			var docKey = Constants.Database.Prefix + id;
 			var putResult = Database.Documents.Put(docKey, etag, json, metadata, null);
 
 			return (etag == null) ? GetEmptyMessage() : GetMessageWithObject(putResult);
@@ -94,12 +107,26 @@ namespace Raven.Database.Server.Controllers.Admin
 
 		[HttpDelete]
 		[RavenRoute("admin/databases/{*id}")]
-		public HttpResponseMessage DatabasesDelete(string id)
+		public async Task<HttpResponseMessage> DatabasesDelete(string id)
 		{
 			bool result;
-			var isHardDeleteNeeded = bool.TryParse(InnerRequest.RequestUri.ParseQueryString()["hard-delete"], out result) && result;
+			var hardDelete = bool.TryParse(GetQueryStringValue("hard-delete"), out result) && result;
 
-			var message = DeleteDatabase(id, isHardDeleteNeeded);
+			if (ClusterManager.IsActive() && IsSystemDatabase(id) == false)
+			{
+				var documentJson = Database.Documents.Get(DatabaseHelper.GetDatabaseKey(id), null);
+				if (documentJson == null) 
+					return GetEmptyMessage(HttpStatusCode.NotFound);
+
+				var document = documentJson.DataAsJson.JsonDeserialization<DatabaseDocument>();
+				if (document.IsClusterDatabase())
+				{
+					await ClusterManager.Client.SendDatabaseDeleteAsync(id, hardDelete).ConfigureAwait(false);
+					return GetEmptyMessage();
+				}
+			}
+
+			var message = DeleteDatabase(id, hardDelete);
 			if (message.ErrorCode != HttpStatusCode.OK)
 			{
 				return GetMessageWithString(message.Message, message.ErrorCode);
@@ -110,7 +137,7 @@ namespace Raven.Database.Server.Controllers.Admin
 
 		[HttpDelete]
 		[RavenRoute("admin/databases/batch-delete")]
-		public HttpResponseMessage DatabasesBatchDelete()
+		public HttpResponseMessage BatchDelete()
 		{
 			string[] databasesToDelete = GetQueryStringValues("ids");
 			if (databasesToDelete == null)
@@ -137,7 +164,7 @@ namespace Raven.Database.Server.Controllers.Admin
 
 		[HttpPost]
 		[RavenRoute("admin/databases/{*id}")]
-		public HttpResponseMessage DatabaseToggleDisable(string id, bool isSettingDisabled)
+		public HttpResponseMessage ToggleDisable(string id, bool isSettingDisabled)
 		{
 			var message = ToggeleDatabaseDisabled(id, isSettingDisabled);
 			if (message.ErrorCode != HttpStatusCode.OK)
@@ -150,7 +177,7 @@ namespace Raven.Database.Server.Controllers.Admin
 
         [HttpPost]
         [RavenRoute("admin/databases/toggle-indexing/{*id}")]
-        public HttpResponseMessage DatabaseToggleIndexingDisable(string id, bool isSettingIndexingDisabled)
+        public HttpResponseMessage ToggleIndexingDisable(string id, bool isSettingIndexingDisabled)
         {
             var message = ToggeleDatabaseIndexingDisabled(id, isSettingIndexingDisabled);
             if (message.ErrorCode != HttpStatusCode.OK)
@@ -214,17 +241,7 @@ namespace Raven.Database.Server.Controllers.Admin
 			Database.Documents.Delete(docKey, null, null);
 
 			if (isHardDeleteNeeded)
-			{
-				IOExtensions.DeleteDirectory(configuration.DataDirectory);
-				if (configuration.IndexStoragePath != null)
-					IOExtensions.DeleteDirectory(configuration.IndexStoragePath);
-
-				if (configuration.Storage.Esent.JournalsStoragePath != null)
-					IOExtensions.DeleteDirectory(configuration.Storage.Esent.JournalsStoragePath);
-
-				if (configuration.Storage.Voron.JournalsStoragePath != null)
-					IOExtensions.DeleteDirectory(configuration.Storage.Voron.JournalsStoragePath);
-			}
+				DatabaseHelper.DeleteDatabaseFiles(configuration);
 
 			return new MessageWithStatusCode();
 		}
@@ -309,7 +326,8 @@ namespace Raven.Database.Server.Controllers.Admin
             Database.Documents.Put(docKey, document.Etag, json, new RavenJObject(), null);
             return new MessageWithStatusCode();
         }
-		private string CheckExistingDatbaseName(string id, Etag etag)
+
+		private string CheckExistingDatabaseName(string id, Etag etag)
 		{
 			string errorMessage = null;
 			var docKey = "Raven/Databases/" + id;

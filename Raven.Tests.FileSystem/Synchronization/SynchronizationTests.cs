@@ -4,7 +4,9 @@ using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.IO;
 using System.Threading.Tasks;
+using Raven.Abstractions.Util;
 using Raven.Database.Extensions;
+using Raven.Database.FileSystem.Synchronization;
 using Raven.Database.FileSystem.Util;
 using Raven.Tests.FileSystem.Synchronization.IO;
 using Xunit;
@@ -14,6 +16,7 @@ using Raven.Abstractions.Extensions;
 using Raven.Abstractions.FileSystem;
 using Raven.Client.FileSystem.Connection;
 using Raven.Abstractions.Data;
+using Raven.Client.FileSystem.Extensions;
 
 namespace Raven.Tests.FileSystem.Synchronization
 {
@@ -262,7 +265,7 @@ namespace Raven.Tests.FileSystem.Synchronization
 
 			var sourceMetadataWithEtag = await sourceClient.GetMetadataForAsync("test.bin");
 
-            Assert.Equal(sourceMetadataWithEtag.Value<Guid>(Constants.MetadataEtagField), lastSynchronization.LastSourceFileEtag);
+            Assert.Equal(sourceMetadataWithEtag.Value<string>(Constants.MetadataEtagField), lastSynchronization.LastSourceFileEtag.ToString());
 		}
 
 		[Fact]
@@ -283,10 +286,10 @@ namespace Raven.Tests.FileSystem.Synchronization
 			await sourceClient.Synchronization.StartAsync("test2.bin", destinationClient);
 			await sourceClient.Synchronization.StartAsync("test1.bin", destinationClient);
 
-            var lastSourceETag = sourceClient.GetMetadataForAsync("test2.bin").Result.Value<Guid>(Constants.MetadataEtagField);
+            var lastSourceETag = sourceClient.GetMetadataForAsync("test2.bin").Result.Value<string>(Constants.MetadataEtagField);
 			var lastSynchronization = await destinationClient.Synchronization.GetLastSynchronizationFromAsync(await sourceClient.GetServerIdAsync());
 
-			Assert.Equal(lastSourceETag, lastSynchronization.LastSourceFileEtag);
+			Assert.Equal(lastSourceETag, lastSynchronization.LastSourceFileEtag.ToString());
 		}
 
 		[Fact]
@@ -296,7 +299,7 @@ namespace Raven.Tests.FileSystem.Synchronization
 
 			var lastSynchronization = destinationClient.Synchronization.GetLastSynchronizationFromAsync(Guid.Empty).Result;
 
-			Assert.Equal(Guid.Empty, lastSynchronization.LastSourceFileEtag);
+			Assert.Equal(Etag.Empty, lastSynchronization.LastSourceFileEtag);
 		}
 
 		[Fact]
@@ -427,7 +430,10 @@ namespace Raven.Tests.FileSystem.Synchronization
 			var sourceClient = NewAsyncClient(0);
             var destinationClient = (IAsyncFilesCommandsImpl) NewAsyncClient(1);
 
-            await sourceClient.Configuration.SetKeyAsync(SynchronizationConstants.RavenSynchronizationLimit, -1);
+            await sourceClient.Configuration.SetKeyAsync(SynchronizationConstants.RavenSynchronizationConfig, new SynchronizationConfig
+            {
+	            MaxNumberOfSynchronizationsPerDestination = -1
+            });
 
 			await sourceClient.UploadAsync("test.bin", sourceContent);
 
@@ -597,7 +603,7 @@ namespace Raven.Tests.FileSystem.Synchronization
 			var client = NewAsyncClient(1);
 
 			var id = Guid.NewGuid();
-			var etag = Guid.NewGuid();
+			var etag = EtagUtil.Increment(Etag.Empty, 5);
 
 			client.Synchronization.IncrementLastETagAsync(id, "http://localhost:12345", etag).Wait();
 
@@ -747,7 +753,7 @@ namespace Raven.Tests.FileSystem.Synchronization
 
 			var report = await source.Synchronization.StartAsync("test.bin", destination);
 
-			Assert.NotEqual(Guid.Empty, report.FileETag);
+			Assert.NotEqual(Etag.Empty, report.FileETag);
 		}
 
 		[Fact]
@@ -764,6 +770,46 @@ namespace Raven.Tests.FileSystem.Synchronization
 
 			Assert.Equal(SynchronizationType.Delete, synchronizationReport.Type);
 			Assert.Null(synchronizationReport.Exception);
+		}
+
+		[Fact]
+	    public async Task Should_synchronize_copied_file()
+		{
+			var source = NewAsyncClient(0);
+			var destination = NewAsyncClient(1);
+			await source.UploadAsync("test.bin", new RandomStream(1024));
+			await source.CopyAsync("test.bin", "test-copy.bin");
+			await source.Synchronization.SetDestinationsAsync(destination.ToSynchronizationDestination());
+
+			var syncResult = await source.Synchronization.StartAsync();
+			Assert.Equal(1, syncResult.Length);
+			Assert.True(syncResult[0].Reports.All(r => r.Exception == null));
+
+			var destinationStream  = await destination.DownloadAsync("test-copy.bin");
+			var sourceStream = await destination.DownloadAsync("test-copy.bin");
+			Assert.Equal(sourceStream.GetMD5Hash(), destinationStream.GetMD5Hash());
+		}
+
+		[Fact]
+		public async Task Should_resolve_copied_files()
+		{
+			var source = NewAsyncClient(0);
+			var destination = NewAsyncClient(1);
+			await source.UploadAsync("test.bin", new RandomStream(1024));
+			await source.CopyAsync("test.bin", "test-copy.bin");
+
+			await destination.UploadAsync("test.bin", new RandomStream(1024));
+			await destination.CopyAsync("test.bin", "test-copy.bin");
+
+			var result = SyncTestUtils.ResolveConflictAndSynchronize(source, destination, "test-copy.bin");
+
+			Assert.Null(result.Exception);
+
+			var destinationStream = await destination.DownloadAsync("test-copy.bin");
+			var sourceStream = await destination.DownloadAsync("test-copy.bin");
+			Assert.Equal(sourceStream.GetMD5Hash(), destinationStream.GetMD5Hash());
+
+
 		}
 	}
 }

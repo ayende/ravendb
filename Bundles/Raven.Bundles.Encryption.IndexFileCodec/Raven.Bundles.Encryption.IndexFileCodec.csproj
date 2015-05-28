@@ -69,10 +69,4 @@
   </Target>
   -->
   <Import Project="..\..\Imports\Tasks.targets" Condition="'$(TasksTargetsImported)' == ''" />
-  <ItemGroup>
-    <ProjectReference Include="..\..\Raven.Database\Raven.Database.csproj">
-      <Project>{212823CD-25E1-41AC-92D1-D6DF4D53FC85}</Project>
-      <Name>Raven.Database</Name>
-    </ProjectReference>
-  </ItemGroup>
 </Project>

@@ -1,10 +1,12 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.DirectoryServices.AccountManagement;
 using System.DirectoryServices.ActiveDirectory;
 using System.Linq;
 using System.Security.Principal;
 using System.Threading;
+
 
 using System.DirectoryServices.AccountManagement;
 
@@ -37,6 +39,8 @@ namespace Raven.SpecificPlatform.Windows
 				return cachingRoleFinder.IsInRole(windowsIdentity, role, now, logDebug, isOAuthNull, isGlobalAdmin, logWarn);
 			}
 
+			return principal.IsInRole(WindowsBuiltInRoleToGroupConverter(role));
+		}
 
 			if (isOAuthNull == true)
 				return false;
@@ -51,6 +55,8 @@ namespace Raven.SpecificPlatform.Windows
 
 		public class CachingRoleFinder
 		{
+			private static readonly ILog log = LogManager.GetCurrentClassLogger();
+
 			private class CachedResult
 			{
 				public int Usage;
@@ -197,14 +203,55 @@ namespace Raven.SpecificPlatform.Windows
 						return new PrincipalContext(ContextType.Machine);
 					}
 				}
-				catch(ActiveDirectoryOperationException)
-				//catch (ActiveDirectoryObjectNotFoundException)
+				catch (ActiveDirectoryObjectNotFoundException)
 				{
 					useLocalMachine = true;
 					// not in a domain
 					return new PrincipalContext(ContextType.Machine);
 				}
 			}
+		}
+
+		public static bool IsAdministrator(this IPrincipal principal, DocumentDatabase database)
+		{
+			var name = database.Name ?? "<system>";
+			return IsAdministrator(principal, name);
+		}
+
+		public static bool IsAdministrator(this IPrincipal principal, string databaseNane)
+		{
+			var databaseAccessPrincipal = principal as PrincipalWithDatabaseAccess;
+			if (databaseAccessPrincipal != null)
+			{
+				if (databaseAccessPrincipal.AdminDatabases.Any(name => name == "*")
+					&& databaseNane != null && databaseNane != Constants.SystemDatabase)
+					return true;
+				if (databaseAccessPrincipal.AdminDatabases.Any(name => string.Equals(name, databaseNane, StringComparison.InvariantCultureIgnoreCase)))
+					return true;
+				if (databaseNane == null &&
+					databaseAccessPrincipal.AdminDatabases.Any(
+						name => string.Equals(name, Constants.SystemDatabase, StringComparison.InvariantCultureIgnoreCase)))
+					return true;
+				return false;
+			}
+
+			var oauthPrincipal = principal as OAuthPrincipal;
+			if (oauthPrincipal != null)
+			{
+				foreach (var dbAccess in oauthPrincipal.TokenBody.AuthorizedDatabases.Where(x => x.Admin))
+				{
+					if (dbAccess.TenantId == "*" && databaseNane != null && databaseNane != Constants.SystemDatabase)
+						return true;
+					if (string.Equals(dbAccess.TenantId, databaseNane, StringComparison.InvariantCultureIgnoreCase))
+						return true;
+					if (databaseNane == null &&
+						string.Equals(dbAccess.TenantId, Constants.SystemDatabase, StringComparison.InvariantCultureIgnoreCase))
+						return false;
+				}
+			}
+
+
+			return false;
 		}
 	}
 }

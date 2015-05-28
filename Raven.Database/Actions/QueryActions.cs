@@ -141,7 +141,11 @@ namespace Raven.Database.Actions
 			private bool stale;
 			private IEnumerable<RavenJObject> results;
 			private DocumentRetriever docRetriever;
-			private Stopwatch duration;
+		    internal DocumentRetriever DocRetriever
+		    {
+		        get { return docRetriever; }
+		    }
+		    private Stopwatch duration;
 			private List<string> transformerErrors;
 			private bool nonAuthoritativeInformation;
 			private Etag resultEtag;
@@ -151,6 +155,11 @@ namespace Raven.Database.Actions
 			private HashSet<string> idsToLoad;
 
 			private readonly Dictionary<QueryTimings, double> executionTimes = new Dictionary<QueryTimings, double>();
+
+			public DocumentDatabase Database
+			{
+				get { return database; }
+			}
 
 			public DatabaseQueryOperation(DocumentDatabase database, string indexName, IndexQuery query, IStorageActionsAccessor actions, CancellationTokenSource cancellationTokenSource)
 			{
@@ -228,7 +237,7 @@ namespace Raven.Database.Actions
 				{
 					throw new IndexDisabledException(indexFailureInformation);
 				}
-				docRetriever = new DocumentRetriever(actions, database.ReadTriggers, database.InFlightTransactionalState, query.TransformerParameters, idsToLoad);
+				docRetriever = new DocumentRetriever(database.Configuration, actions, database.ReadTriggers, database.InFlightTransactionalState, query.TransformerParameters, idsToLoad);
 				var fieldsToFetch = new FieldsToFetch(query,
 					viewGenerator.ReduceDefinition == null
 						? Constants.DocumentIdFieldName
@@ -274,6 +283,8 @@ namespace Raven.Database.Actions
 					foreach (var result in results)
 					{
 						cancellationToken.ThrowIfCancellationRequested();
+						database.WorkContext.UpdateFoundWork();
+
 						onResult(result);
 					}
 					if (transformerErrors.Count > 0)

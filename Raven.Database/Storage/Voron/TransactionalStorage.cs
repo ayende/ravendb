@@ -66,7 +66,9 @@ namespace Raven.Storage.Voron
 
 			documentCacher = new DocumentCacher(configuration);
 			exitLockDisposable = new DisposableAction(() => Monitor.Exit(this));
-			bufferPool = new BufferPool((long)configuration.Storage.Voron.MaxBufferPoolSize * 1024 * 1024 * 1024, int.MaxValue); // 2GB max buffer size (voron limit)
+            bufferPool = new BufferPool(
+				configuration.Storage.Voron.MaxBufferPoolSize * 1024L * 1024L * 1024L, 
+				int.MaxValue); // 2GB max buffer size (voron limit)
 		}
 
 		public void Dispose()
@@ -257,7 +259,8 @@ namespace Raven.Storage.Voron
 			var schemaCreator = new SchemaCreator(configuration, tableStorage, Output, Log);
 			schemaCreator.CreateSchema();
 			schemaCreator.SetupDatabaseIdAndSchemaVersion();
-			schemaCreator.UpdateSchemaIfNecessary();
+            if (!configuration.Storage.PreventSchemaUpdate)
+			    schemaCreator.UpdateSchemaIfNecessary();
 
 		    SetupDatabaseId();
 		}

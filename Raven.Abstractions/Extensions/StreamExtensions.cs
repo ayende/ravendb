@@ -59,45 +59,35 @@ namespace Raven.Abstractions.Extensions
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
 	    private static void PartialRead(this Stream stream, byte[] buffer, int size)
 	    {
-			try
-			{
-		    	var totalRead = 0;
-				while (totalRead < size)
-		    	{					
-					var bytesRead = stream.Read(buffer, totalRead, size - totalRead);
-					if(bytesRead == 0 )
-						throw new EndOfStreamException();
-			    	totalRead += bytesRead;
-				}
-			}
-			catch(Exception e) {
-				throw;
-			}
+		    var totalRead = 0;
+			while (totalRead < size)
+		    {
+				var bytesRead = stream.Read(buffer, totalRead, size - totalRead);
+                if (bytesRead == 0)
+                    throw new EndOfStreamException();
+			    totalRead += bytesRead;
+		    }
 	    }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static long ReadInt64(this Stream stream)
         {
-			byte[] buffer = null;
-
-            try
-            {
-				buffer = BufferPool.TakeBuffer(sizeof(long));
-                stream.PartialRead(buffer,sizeof(long));
-                return BitConverter.ToInt64(buffer, 0);
-            }
-			catch(Exception e) {
-				throw;
-			}
-            finally
-            {
-				if(buffer != null)
-                	BufferPool.ReturnBuffer(buffer);
-            }
+	        var buffer = new byte[sizeof(long)];
+            var bytesRead = stream.Read(buffer, 0, sizeof(long));
+            if (bytesRead == 0)
+                throw new EndOfStreamException();
+            return BitConverter.ToInt64(buffer, 0);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
 		public static ulong ReadUInt64(this Stream stream)
 		{
-			var buffer = BufferPool.TakeBuffer(sizeof(ulong));
+            var buffer = new byte[sizeof(ulong)];
+            var bytesRead = stream.Read(buffer, 0, sizeof(ulong));
+            if (bytesRead == 0)
+                throw new EndOfStreamException();
+            return BitConverter.ToUInt64(buffer, 0);
+        
 
 			try
 			{
@@ -110,22 +100,17 @@ namespace Raven.Abstractions.Extensions
 			}
 		}
 
-
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static int ReadInt32(this Stream stream)
         {
-	        var buffer = BufferPool.TakeBuffer(sizeof(int));
-
-            try
-            {
-                stream.PartialRead(buffer,sizeof(int));
-                return BitConverter.ToInt32(buffer, 0);
-            }
-            finally
-            {
-                BufferPool.ReturnBuffer(buffer);
-            }
+            var buffer = new byte[sizeof(int)];
+            var bytesRead = stream.Read(buffer, 0, sizeof(int));
+            if (bytesRead == 0)
+                throw new EndOfStreamException();
+            return BitConverter.ToInt32(buffer, 0);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static string ReadString(this Stream stream)
         {
             return ReadString(stream, Encoding.UTF8);
@@ -133,25 +118,21 @@ namespace Raven.Abstractions.Extensions
 
         public static string ReadString(this Stream stream, Encoding encoding)
         {
-            var stringLength = stream.ReadInt32();
-            var buffer = BufferPool.TakeBuffer(stringLength);
-
-            try
-            {
-	            stream.PartialRead(buffer,stringLength);
-				return encoding.GetString(buffer, 0, stringLength);
-            }
-            finally
-            {
-                BufferPool.ReturnBuffer(buffer);
-            }
+            var stringLength = stream.ReadInt32();            
+            var buffer = new byte[stringLength];
+            var bytesRead = stream.Read(buffer, 0, stringLength);
+            if (bytesRead == 0)
+                throw new EndOfStreamException();
+            return encoding.GetString(buffer, 0, stringLength);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static string ReadStringWithoutPrefix(this Stream stream)
         {
             return ReadStringWithoutPrefix(stream, Encoding.UTF8);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static string ReadStringWithoutPrefix(this Stream stream, Encoding encoding)
         {
             var buffer = stream.ReadData();
@@ -159,11 +140,13 @@ namespace Raven.Abstractions.Extensions
             return encoding.GetString(buffer);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void Write(this Stream stream, string value)
         {
             Write(stream, value, Encoding.UTF8);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void Write(this Stream stream, string value, Encoding encoding)
         {
             var buffer = encoding.GetBytes(value);
@@ -171,26 +154,22 @@ namespace Raven.Abstractions.Extensions
             stream.Write(buffer, 0, buffer.Length);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void Write(this Stream stream, Etag etag)
         {
             var buffer = etag.ToByteArray();
             stream.Write(buffer, 0, 16);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static Etag ReadEtag(this Stream stream)
         {
 	        const int EtagSize = 16;
             var buffer = BufferPool.TakeBuffer(EtagSize); //etag size is 16 bytes
-
-            try
-            {
-	            stream.PartialRead(buffer,EtagSize);
-                return Etag.Parse(buffer);
-            }
-            finally
-            {
-                BufferPool.ReturnBuffer(buffer);
-            }
+            var bytesRead = stream.Read(buffer, 0, EtagSize);
+            if (bytesRead == 0)
+                throw new EndOfStreamException();
+            return Etag.Parse(buffer);
         }
 
         /// <summary>

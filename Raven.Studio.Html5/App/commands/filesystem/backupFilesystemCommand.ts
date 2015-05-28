@@ -1,8 +1,5 @@
 import commandBase = require("commands/commandBase");
 import filesystem = require("models/filesystem/filesystem");
-import document = require("models/document");
-import getDocumentWithMetadataCommand = require("commands/getDocumentWithMetadataCommand");
-import appUrl = require("common/appUrl");
 import getConfigurationByKeyCommand = require("commands/filesystem/getConfigurationByKeyCommand");
 
 class backupFilesystemCommand extends commandBase {
@@ -18,7 +15,7 @@ class backupFilesystemCommand extends commandBase {
                     BackupLocation: this.backupLocation,
                     DatabaseDocument: null
                 };
-        this.post('/admin/fs/backup?incremental=' + this.incremental, JSON.stringify(args), this.fs, { dataType: 'text' })
+        this.post('/admin/backup?incremental=' + this.incremental, JSON.stringify(args), this.fs, { dataType: 'text' })
             .fail((response: JQueryXHR) => {
                 this.reportError("Failed to create backup!", response.responseText, response.statusText);
                 result.reject();

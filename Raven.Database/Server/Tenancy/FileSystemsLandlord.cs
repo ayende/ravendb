@@ -17,23 +17,10 @@ using Raven.Database.Server.Connections;
 using Raven.Database.FileSystem;
 using Raven.Abstractions.FileSystem;
 using System.Collections.Specialized;
-using Raven.Abstractions;
-using Raven.Abstractions.Data;
-using Raven.Abstractions.Extensions;
-using Raven.Abstractions.Logging;
-using Raven.Database.Commercial;
-using Raven.Database.Config;
 using Raven.Database.Extensions;
-using Raven.Database.Server.Connections;
-using System;
 using System.Collections.Generic;
-using System.Collections.Specialized;
-using System.IO;
-using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
 using Raven.Database.Server.Security;
 
 namespace Raven.Database.Server.Tenancy
@@ -41,7 +28,6 @@ namespace Raven.Database.Server.Tenancy
     public class FileSystemsLandlord : AbstractLandlord<RavenFileSystem>
     {
 		private bool initialized;
-        private readonly DocumentDatabase systemDatabase;
 
         public override string ResourcePrefix { get { return Constants.FileSystem.Prefix; } }
 
@@ -52,10 +38,8 @@ namespace Raven.Database.Server.Tenancy
             get { return systemDatabase.Configuration; }
         }
 
-	    public FileSystemsLandlord(DocumentDatabase systemDatabase)
+	    public FileSystemsLandlord(DocumentDatabase systemDatabase) : base(systemDatabase)
 		{
-			this.systemDatabase = systemDatabase;
-
             Init();
 		}
 
@@ -207,6 +191,13 @@ namespace Raven.Database.Server.Tenancy
 			if (Locks.Contains(DisposingLock))
 				throw new ObjectDisposedException("FileSystem", "Server is shutting down, can't access any file systems");
 
+			if (Locks.Contains(tenantId))
+				throw new InvalidOperationException("FileSystem '" + tenantId + "' is currently locked and cannot be accessed");
+
+			ManualResetEvent cleanupLock;
+			if (Cleanups.TryGetValue(tenantId, out cleanupLock) && cleanupLock.WaitOne(MaxSecondsForTaskToWaitForDatabaseToLoad) == false)
+				throw new InvalidOperationException(string.Format("File system '{0}' is currently being restarted and cannot be accessed. We already waited {1} seconds.", tenantId, MaxSecondsForTaskToWaitForDatabaseToLoad));
+
             if (ResourcesStoresCache.TryGetValue(tenantId, out fileSystem))
             {
                 if (fileSystem.IsFaulted || fileSystem.IsCanceled)
@@ -221,9 +212,6 @@ namespace Raven.Database.Server.Tenancy
                     return true;
                 }
             }
-
-            if (Locks.Contains(tenantId))
-                throw new InvalidOperationException("FileSystem '" + tenantId + "' is currently locked and cannot be accessed");
 
             var config = CreateTenantConfiguration(tenantId);
             if (config == null)

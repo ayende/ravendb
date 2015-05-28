@@ -15,7 +15,7 @@ using System.Threading;
 using System.Threading.Tasks;
 
 using Lucene.Net.Analysis.Standard;
-
+using Mono.CSharp;
 using Raven.Abstractions;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Exceptions;
@@ -118,58 +118,67 @@ namespace Raven.Database.Actions
             return indexEtag;
         }
 
-
-
         internal void CheckReferenceBecauseOfDocumentUpdate(string key, IStorageActionsAccessor actions)
         {
             TouchedDocumentInfo touch;
             RecentTouches.TryRemove(key, out touch);
 	        Stopwatch sp = null;
 	        int count = 0;
-	        foreach (var referencing in actions.Indexing.GetDocumentsReferencing(key))
-            {
-                Etag preTouchEtag = null;
-                Etag afterTouchEtag = null;
-                try
-                {
-	                count++;
-	                actions.Documents.TouchDocument(referencing, out preTouchEtag, out afterTouchEtag);
 
-	                var docMetadata = actions.Documents.DocumentMetadataByKey(referencing);
+	        using (Database.TransactionalStorage.DisableBatchNesting())
+	        {
+				// in external transaction number of references will be >= from current transaction references
+		        Database.TransactionalStorage.Batch(externalActions =>
+		        {
+					foreach (var referencing in externalActions.Indexing.GetDocumentsReferencing(key))
+					{
+						Etag preTouchEtag = null;
+						Etag afterTouchEtag = null;
+						try
+						{
+							count++;
+							actions.Documents.TouchDocument(referencing, out preTouchEtag, out afterTouchEtag);
 
-	                if (docMetadata != null)
-	                {
-						var entityName = docMetadata.Metadata.Value<string>(Constants.RavenEntityName);
+							if (afterTouchEtag != null)
+							{
+								var docMetadata = actions.Documents.DocumentMetadataByKey(referencing);
 
-						if(string.IsNullOrEmpty(entityName) == false)
-							Database.LastCollectionEtags.Update(entityName, afterTouchEtag);
-	                }
-                }
-                catch (ConcurrencyException)
-                {
-                }
+								if (docMetadata != null)
+								{
+									var entityName = docMetadata.Metadata.Value<string>(Constants.RavenEntityName);
 
-                if (preTouchEtag == null || afterTouchEtag == null)
-                    continue;
+									if (string.IsNullOrEmpty(entityName) == false) 
+										Database.LastCollectionEtags.Update(entityName, afterTouchEtag);
+								}
+							}
+						}
+						catch (ConcurrencyException)
+						{
+						}
 
-	            if (actions.General.MaybePulseTransaction())
-	            {
-		            if (sp == null)
-			            sp = Stopwatch.StartNew();
-		            if (sp.Elapsed >= TimeSpan.FromSeconds(30))
-		            {
-			            throw new TimeoutException("Early failure when checking references for document '"+ key +"', we waited over 30 seconds to touch all of the documents referenced by this document.\r\n" +
-			                                       "The operation (and transaction) has been aborted, since to try longer (we already touched " + count +" documents) risk a thread abort.\r\n" +
-			                                       "Consider restructuring your indexes to avoid LoadDocument on such a popular document.");
-		            }
-	            }
+						if (preTouchEtag == null || afterTouchEtag == null)
+							continue;
 
-                RecentTouches.Set(referencing, new TouchedDocumentInfo
-                {
-                    PreTouchEtag = preTouchEtag,
-                    TouchedEtag = afterTouchEtag
-                });
-            }
+						if (actions.General.MaybePulseTransaction())
+						{
+							if (sp == null)
+								sp = Stopwatch.StartNew();
+							if (sp.Elapsed >= TimeSpan.FromSeconds(30))
+							{
+								throw new TimeoutException("Early failure when checking references for document '" + key + "', we waited over 30 seconds to touch all of the documents referenced by this document.\r\n" +
+														   "The operation (and transaction) has been aborted, since to try longer (we already touched " + count + " documents) risk a thread abort.\r\n" +
+														   "Consider restructuring your indexes to avoid LoadDocument on such a popular document.");
+							}
+						}
+
+						RecentTouches.Set(referencing, new TouchedDocumentInfo
+						{
+							PreTouchEtag = preTouchEtag,
+							TouchedEtag = afterTouchEtag
+						});
+					}
+		        });
+	        }
         }
 
         private static void IsIndexNameValid(string indexName)
@@ -334,6 +343,7 @@ namespace Raven.Database.Actions
 
 	        Debug.Assert(index != null);
 
+	        Action precomputeTask = null;
 	        if (WorkContext.RunIndexing &&
 				name.Equals(Constants.DocumentsByEntityNameIndex, StringComparison.InvariantCultureIgnoreCase) == false &&
 	            Database.IndexStorage.HasIndex(Constants.DocumentsByEntityNameIndex))
@@ -341,7 +351,7 @@ namespace Raven.Database.Actions
 		        // optimization of handling new index creation when the number of document in a database is significantly greater than
 		        // number of documents that this index applies to - let us use built-in RavenDocumentsByEntityName to get just appropriate documents
 
-		        TryApplyPrecomputedBatchForNewIndex(index, definition);
+		        precomputeTask  = TryCreateTaskForApplyingPrecomputedBatchForNewIndex(index, definition);
 	        }
 	        else
 	        {
@@ -353,12 +363,17 @@ namespace Raven.Database.Actions
 			// index, then we add it to the storage in a way that make it public
 			IndexDefinitionStorage.AddIndex(definition.IndexId, definition);
 			
+			// we start the precomuteTask _after_ we finished adding the index
+	        if (precomputeTask != null)
+	        {
+		        precomputeTask();
+	        }
+
 			WorkContext.ShouldNotifyAboutWork(() => "PUT INDEX " + name);
             WorkContext.NotifyAboutWork();
         }
 
-
-        private void TryApplyPrecomputedBatchForNewIndex(Index index, IndexDefinition definition)
+        private Action TryCreateTaskForApplyingPrecomputedBatchForNewIndex(Index index, IndexDefinition definition)
         {
             var generator = IndexDefinitionStorage.GetViewGenerator(definition.IndexId);
             if (generator.ForEntityNames.Count == 0 && index.IsTestIndex == false)
@@ -366,26 +381,36 @@ namespace Raven.Database.Actions
                 // we don't optimize if we don't have what to optimize _on_, we know this is going to return all docs.
                 // no need to try to optimize that, then
 				index.IsMapIndexingInProgress = false;
-				return;
+	            return null;
             }
 
             try
             {
 				var cts = new CancellationTokenSource();
 
-				var task = Task
-					.Factory
-					.StartNew(() => ApplyPrecomputedBatchForNewIndex(index, generator, index.IsTestIndex == false ? Database.Configuration.MaxNumberOfItemsToProcessInSingleBatch : Database.Configuration.Indexing.MaxNumberOfItemsToProcessInTestIndexes, cts), TaskCreationOptions.LongRunning)
-					.ContinueWith(t =>
+				var task = new Task(() =>
 					{
-						if (t.IsFaulted)
+					try
+					{
+						ApplyPrecomputedBatchForNewIndex(index, generator, index.IsTestIndex == false ? Database.Configuration.MaxNumberOfItemsToProcessInSingleBatch : Database.Configuration.Indexing.MaxNumberOfItemsToProcessInTestIndexes, cts);
+					}
+					catch (Exception e)
 						{
-							Log.Warn("Could not apply precomputed batch for index " + index, t.Exception);
+						Log.Warn("Could not apply precomputed batch for index " + index, e);
 						}
+					finally
+					{
 						index.IsMapIndexingInProgress = false;
 						WorkContext.ShouldNotifyAboutWork(() => "Precomputed indexing batch for " + index.PublicName + " is completed");
 						WorkContext.NotifyAboutWork();
-					});
+					}
+				}, TaskCreationOptions.LongRunning);
+
+	            return () =>
+	            {
+		            try
+		            {
+			            task.Start();
 
 	            long id;
 				Database
@@ -402,6 +427,13 @@ namespace Raven.Database.Actions
 						out id,
 						cts);
             }
+            catch (Exception)
+            {
+                index.IsMapIndexingInProgress = false;
+                throw;
+            }
+	            };
+        }
             catch (Exception)
             {
                 index.IsMapIndexingInProgress = false;
@@ -526,26 +558,18 @@ namespace Raven.Database.Actions
 
 	    private void InvokeSuggestionIndexing(string name, IndexDefinition definition, Index index)
         {
-            foreach (var suggestion in definition.Suggestions)
+            foreach (var suggestion in definition.SuggestionsOptions)
             {
-                var field = suggestion.Key;
-                var suggestionOption = suggestion.Value;
+                var field = suggestion;
 
-                if (suggestionOption.Distance == StringDistanceTypes.None)
-                    continue;
-
-                var indexExtensionKey =
-                    MonoHttpUtility.UrlEncode(field + "-" + suggestionOption.Distance + "-" +
-                                              suggestionOption.Accuracy);
+                var indexExtensionKey = MonoHttpUtility.UrlEncode(field);
 
                 var suggestionQueryIndexExtension = new SuggestionQueryIndexExtension(
 					index,
                      WorkContext,
                      Path.Combine(Database.Configuration.IndexStoragePath, "Raven-Suggestions", name, indexExtensionKey),
-                     SuggestionQueryRunner.GetStringDistance(suggestionOption.Distance),
                      Database.Configuration.RunInMemory,
-                     field,
-                     suggestionOption.Accuracy);
+                     field);
 
                 Database.IndexStorage.SetIndexExtension(name, indexExtensionKey, suggestionQueryIndexExtension);
             }
@@ -627,16 +651,17 @@ namespace Raven.Database.Actions
             PutIndex(index, indexDefinition);
         }
 
-        public void DeleteIndex(string name)
+        public bool DeleteIndex(string name)
         {
             var instance = IndexDefinitionStorage.GetIndexDefinition(name);
             if (instance == null) 
-				return;
+				return false;
 
 			DeleteIndex(instance);
+	        return true;
         }
 
-		internal void DeleteIndex(IndexDefinition instance, bool removeByNameMapping = true, bool clearErrors = true)
+		internal void DeleteIndex(IndexDefinition instance, bool removeByNameMapping = true, bool clearErrors = true, bool removeIndexReplaceDocument = true)
 		{
 			using (IndexDefinitionStorage.TryRemoveIndexContext())
 			{
@@ -658,9 +683,9 @@ namespace Raven.Database.Actions
 				if (clearErrors)
 					WorkContext.ClearErrorsFor(instance.Name);
 
-                if (instance.IsSideBySideIndex)
+                if (removeIndexReplaceDocument && instance.IsSideBySideIndex)
                 {
-                    Database.Documents.Delete(IndexReplacer.IndexReplacePrefix + instance.Name, null, null);
+                    Database.Documents.Delete(Constants.IndexReplacePrefix + instance.Name, null, null);
                 }
 
 				// And delete the data in the background

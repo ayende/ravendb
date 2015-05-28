@@ -4,7 +4,6 @@ using System.Collections.Specialized;
 using System.Collections.ObjectModel;
 using System.Configuration;
 using System.Linq;
-
 using Raven.Abstractions.Data;
 using Raven.Client.Changes;
 using Raven.Client.Connection;
@@ -83,6 +82,7 @@ namespace Raven.Client
 		public abstract IAsyncDatabaseCommands AsyncDatabaseCommands { get; }
 		public abstract IAsyncDocumentSession OpenAsyncSession();
 		public abstract IAsyncDocumentSession OpenAsyncSession(string database);
+		public abstract IAsyncDocumentSession OpenAsyncSession(OpenSessionOptions sessionOptions);
 
 		public abstract IDocumentSession OpenSession();
 		public abstract IDocumentSession OpenSession(string database);
@@ -97,12 +97,31 @@ namespace Raven.Client
 			indexCreationTask.Execute(DatabaseCommands, Conventions);
 		}
 
+		/// <summary>
+		/// Executes the index creation.
+		/// </summary>
 	    public virtual Task ExecuteIndexAsync(AbstractIndexCreationTask indexCreationTask)
 	    {
 	        return indexCreationTask.ExecuteAsync(AsyncDatabaseCommands, Conventions);
 	    }
 
-	    /// <summary>
+		/// <summary>
+		/// Executes the index creation in side-by-side mode.
+		/// </summary>
+		public virtual void SideBySideExecuteIndex(AbstractIndexCreationTask indexCreationTask, Etag minimumEtagBeforeReplace = null, DateTime? replaceTimeUtc = null)
+		{
+			indexCreationTask.SideBySideExecute(DatabaseCommands, Conventions, minimumEtagBeforeReplace, replaceTimeUtc);
+		}
+
+		/// <summary>
+		/// Executes the index creation in side-by-side mode.
+		/// </summary>
+		public virtual Task SideBySideExecuteIndexAsync(AbstractIndexCreationTask indexCreationTask, Etag minimumEtagBeforeReplace = null, DateTime? replaceTimeUtc = null)
+		{
+			return indexCreationTask.SideBySideExecuteAsync(AsyncDatabaseCommands, Conventions, minimumEtagBeforeReplace, replaceTimeUtc);
+		}
+
+		/// <summary>
 		/// Executes the transformer creation
 		/// </summary>
 		public virtual void ExecuteTransformer(AbstractTransformerCreationTask transformerCreationTask)
@@ -302,7 +321,7 @@ namespace Raven.Client
 			return profilingContext.TryGet(id);
 		}
 
-		/// <summary>
+	    /// <summary>
 		/// Setup the context for aggressive caching.
 		/// </summary>
 		public IDisposable AggressivelyCache()

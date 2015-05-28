@@ -6,13 +6,17 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http;
 using System.Threading.Tasks;
 using Raven.Abstractions.Connection;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Exceptions.Subscriptions;
+using Raven.Abstractions.Util;
 using Raven.Client.Connection.Async;
+using Raven.Client.Extensions;
 using Raven.Client.Util;
 using Raven.Database.Util;
+using Raven.Imports.Newtonsoft.Json;
 using Raven.Json.Linq;
 
 namespace Raven.Client.Document
@@ -51,7 +55,7 @@ namespace Raven.Client.Document
 				? documentStore.AsyncDatabaseCommands
 				: documentStore.AsyncDatabaseCommands.ForDatabase(database);
 
-			using (var request = commands.CreateRequest("/subscriptions/create", "POST"))
+			using (var request = commands.CreateRequest("/subscriptions/create", HttpMethods.Post))
 			{
 				await request.WriteAsync(RavenJObject.FromObject(criteria)).ConfigureAwait(false);
 
@@ -81,7 +85,7 @@ namespace Raven.Client.Document
 
 			await SendOpenSubscriptionRequest(commands, id, options).ConfigureAwait(false);
 
-			var subscription = new Subscription<T>(id, options, commands, documentStore.Changes(database), documentStore.Conventions, () => 
+			var subscription = new Subscription<T>(id, database ?? MultiDatabase.GetDatabaseName(documentStore.Url), options, commands, documentStore.Changes(database), documentStore.Conventions, () => 
 				SendOpenSubscriptionRequest(commands, id, options)); // to ensure that subscription is open try to call it with the same connection id
 
 			subscriptions.Add(subscription);
@@ -91,7 +95,7 @@ namespace Raven.Client.Document
 
 		private static async Task SendOpenSubscriptionRequest(IAsyncDatabaseCommands commands, long id, SubscriptionConnectionOptions options)
 		{
-			using (var request = commands.CreateRequest(string.Format("/subscriptions/open?id={0}&connection={1}", id, options.ConnectionId), "POST"))
+			using (var request = commands.CreateRequest(string.Format("/subscriptions/open?id={0}&connection={1}", id, options.ConnectionId), HttpMethods.Post))
 			{
 				try
 				{
@@ -117,7 +121,7 @@ namespace Raven.Client.Document
 
 			List<SubscriptionConfig> configs;
 
-			using (var request = commands.CreateRequest("/subscriptions", "GET"))
+			using (var request = commands.CreateRequest("/subscriptions", HttpMethods.Get))
 			{
 				var response = await request.ReadResponseJsonAsync().ConfigureAwait(false);
 
@@ -127,47 +131,67 @@ namespace Raven.Client.Document
 			return configs;
 		}
 
-		public Task DeleteAsync(long id, string database = null)
+		public async Task DeleteAsync(long id, string database = null)
 		{
 			var commands = database == null
 				? documentStore.AsyncDatabaseCommands
 				: documentStore.AsyncDatabaseCommands.ForDatabase(database);
 
-			using (var request = commands.CreateRequest("/subscriptions?id=" + id, "DELETE"))
+			using (var request = commands.CreateRequest("/subscriptions?id=" + id, HttpMethods.Delete))
 			{
-				return request.ExecuteRequestAsync();
+				await request.ExecuteRequestAsync().ConfigureAwait(false);
 			}
 		}
 
-		public Task ReleaseAsync(long id, string database = null)
+		public async Task ReleaseAsync(long id, string database = null)
 		{
 			var commands = database == null
 				? documentStore.AsyncDatabaseCommands
 				: documentStore.AsyncDatabaseCommands.ForDatabase(database);
 
-			using (var request = commands.CreateRequest(string.Format("/subscriptions/close?id={0}&connection=&force=true", id), "POST"))
+			using (var request = commands.CreateRequest(string.Format("/subscriptions/close?id={0}&connection=&force=true", id), HttpMethods.Post))
 			{
-				return request.ExecuteRequestAsync();
+				await request.ExecuteRequestAsync().ConfigureAwait(false);
 			}
 		}
 
 		public static bool TryGetSubscriptionException(ErrorResponseException ere, out SubscriptionException subscriptionException)
 		{
+			var text = ere.ResponseString;
+
 			if (ere.StatusCode == SubscriptionDoesNotExistExeption.RelevantHttpStatusCode)
 			{
-				subscriptionException = new SubscriptionDoesNotExistExeption(ere.ResponseString);
+				var errorResult = JsonConvert.DeserializeAnonymousType(text, new
+				{
+					url = (string)null,
+					error = (string)null
+				});
+
+				subscriptionException = new SubscriptionDoesNotExistExeption(errorResult.error);
 				return true;
 			}
 
 			if (ere.StatusCode == SubscriptionInUseException.RelavantHttpStatusCode)
 			{
-				subscriptionException = new SubscriptionInUseException(ere.Message);
+				var errorResult = JsonConvert.DeserializeAnonymousType(text, new
+				{
+					url = (string)null,
+					error = (string)null
+				});
+
+				subscriptionException = new SubscriptionInUseException(errorResult.error);
 				return true;
 			}
 
 			if (ere.StatusCode == SubscriptionClosedException.RelevantHttpStatusCode)
 			{
-				subscriptionException = new SubscriptionClosedException(ere.Message);
+				var errorResult = JsonConvert.DeserializeAnonymousType(text, new
+				{
+					url = (string)null,
+					error = (string)null
+				});
+
+				subscriptionException = new SubscriptionClosedException(errorResult.error);
 				return true;
 			}
 

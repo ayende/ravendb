@@ -11,14 +11,21 @@ namespace Raven.Database.FileSystem.Controllers
         [RavenRoute("fs/{fileSystemName}/storage/cleanup")]
 		public Task CleanUp()
 		{
-			return StorageOperationsTask.CleanupDeletedFilesAsync();
+			return Files.CleanupDeletedFilesAsync();
 		}
 
 		[HttpPost]
         [RavenRoute("fs/{fileSystemName}/storage/retryRenaming")]
 		public Task RetryRenaming()
 		{
-			return StorageOperationsTask.ResumeFileRenamingAsync();
+			return Files.ResumeFileRenamingAsync();
+		}
+
+		[HttpPost]
+		[RavenRoute("fs/{fileSystemName}/storage/retryCopying")]
+		public Task RetryCopying()
+		{
+			return Files.ResumeFileCopyingAsync();
 		}
 	}
 }

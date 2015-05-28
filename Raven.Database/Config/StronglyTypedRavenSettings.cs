@@ -6,7 +6,9 @@
 using System;
 using System.Collections.Specialized;
 using System.IO;
+using System.Net;
 using System.Runtime.Caching;
+using Rachis;
 using Raven.Abstractions.Data;
 using Raven.Database.Config.Settings;
 
@@ -30,6 +32,12 @@ namespace Raven.Database.Config
 
 		public IndexingConfiguration Indexing { get; set; }
 
+        public ClusterConfiguration Cluster { get; private set; }
+
+		public WebSocketsConfiguration WebSockets { get; set; }
+
+		public MonitoringConfiguration Monitoring { get; private set; }
+
 		public StronglyTypedRavenSettings(NameValueCollection settings)
 		{
 			Replication = new ReplicationConfiguration();
@@ -39,12 +47,17 @@ namespace Raven.Database.Config
 			FileSystem = new FileSystemConfiguration();
 			Encryption = new EncryptionConfiguration();
 			Indexing = new IndexingConfiguration();
+			WebSockets = new WebSocketsConfiguration();
+            Cluster = new ClusterConfiguration();
+			Monitoring = new MonitoringConfiguration();
 
 			this.settings = settings;
 		}
 
 		public void Setup(int defaultMaxNumberOfItemsToIndexInSingleBatch, int defaultInitialNumberOfItemsToIndexInSingleBatch)
 		{
+			AllowScriptsToAdjustNumberOfSteps = new BooleanSetting(settings[Constants.AllowScriptsToAdjustNumberOfSteps], false);
+
 			IndexAndTransformerReplicationLatencyInSec = new IntegerSetting(settings[Constants.RavenIndexAndTransformerReplicationLatencyInSec], Constants.DefaultRavenIndexAndTransformerReplicationLatencyInSec);
 
 			PrefetchingDurationLimit = new IntegerSetting(settings[Constants.RavenPrefetchingDurationLimit], Constants.DefaultPrefetchingDurationLimit);
@@ -63,9 +76,6 @@ namespace Raven.Database.Config
 				// we allow 1 GB by default, or up to 75% of available memory on startup, if less than that is available
 				Math.Min(1024, (int)(MemoryStatistics.AvailableMemory * 0.75)));
 
-			LowMemoryLimitForLinuxDetectionInMB = 
-				new IntegerSetting(settings[Constants.LowMemoryLimitForLinuxDetectionInMB],
-					Math.Min(16, (int)(MemoryStatistics.AvailableMemory * 0.10))); // AvailableMemory reports in MB
 			MaxPageSize =
 				new IntegerSettingWithMin(settings["Raven/MaxPageSize"], 1024, 10);
 			MemoryCacheLimitMegabytes =
@@ -125,13 +135,15 @@ namespace Raven.Database.Config
 				new BooleanSetting(settings["Raven/ResetIndexOnUncleanShutdown"], false);
 			DisableInMemoryIndexing =
 				new BooleanSetting(settings["Raven/DisableInMemoryIndexing"], false);
+			WorkingDir =
+				new StringSetting(settings["Raven/WorkingDir"], @"~\");
 			DataDir =
-				new StringSetting(settings["Raven/DataDir"], @"~" + Path.DirectorySeparatorChar  +  "Data");
+				new StringSetting(settings["Raven/DataDir"], @"~\Data");
 			IndexStoragePath =
 				new StringSetting(settings["Raven/IndexStoragePath"], (string)null);
 			CountersDataDir =
-				new StringSetting(settings["Raven/Counters/DataDir"], String.Format("~{0}Data{0}Counters", Path.DirectorySeparatorChar));
-			
+				new StringSetting(settings["Raven/Counters/DataDir"], @"~\Data\Counters");
+
 			HostName =
 				new StringSetting(settings["Raven/HostName"], (string)null);
 			Port =
@@ -158,13 +170,13 @@ namespace Raven.Database.Config
 			WebDir =
 				new StringSetting(settings["Raven/WebDir"], GetDefaultWebDir);
 			PluginsDirectory =
-				new StringSetting(settings["Raven/PluginsDirectory"], @"~"+ Path.DirectorySeparatorChar + "Plugins");
+				new StringSetting(settings["Raven/PluginsDirectory"], @"~\Plugins");
             AssembliesDirectory =
-				new StringSetting(settings["Raven/AssembliesDirectory"], @"~" + Path.DirectorySeparatorChar + "Assemblies");
+                new StringSetting(settings["Raven/AssembliesDirectory"], @"~\Assemblies");
             EmbeddedFilesDirectory =
                 new StringSetting(settings["Raven/EmbeddedFilesDirectory"], (string)null);
 			CompiledIndexCacheDirectory =
-				new StringSetting(settings["Raven/CompiledIndexCacheDirectory"], String.Format("~{0}Raven{0}CompiledIndexCache",Path.DirectorySeparatorChar));
+				new StringSetting(settings["Raven/CompiledIndexCacheDirectory"], @"~\CompiledIndexCache");
 			TaskScheduler =
 				new StringSetting(settings["Raven/TaskScheduler"], (string)null);
 			AllowLocalAccessWithoutAuthorization =
@@ -193,6 +205,8 @@ namespace Raven.Database.Config
 
 			DisableClusterDiscovery = new BooleanSetting(settings["Raven/DisableClusterDiscovery"], false);
 
+            TurnOffDiscoveryClient = new BooleanSetting(settings["Raven/TurnOffDiscoveryClient"], false);
+
 			ServerName = new StringSetting(settings["Raven/ServerName"], (string)null);
 
 			MaxStepsForScript = new IntegerSetting(settings["Raven/MaxStepsForScript"], 10 * 1000);
@@ -207,6 +221,7 @@ namespace Raven.Database.Config
             Voron.InitialFileSize = new NullableIntegerSetting(settings[Constants.Voron.InitialFileSize], (int?)null);
 			Voron.MaxScratchBufferSize = new IntegerSetting(settings[Constants.Voron.MaxScratchBufferSize], 1024);
             Voron.AllowIncrementalBackups = new BooleanSetting(settings[Constants.Voron.AllowIncrementalBackups], false);
+			Voron.AllowOn32Bits = new BooleanSetting(settings[Constants.Voron.AllowOn32Bits], false);
             Voron.TempPath = new StringSetting(settings[Constants.Voron.TempPath], (string)null);
 
 			var txJournalPath = settings[Constants.RavenTxJournalPath];
@@ -218,24 +233,48 @@ namespace Raven.Database.Config
 
 			Replication.FetchingFromDiskTimeoutInSeconds = new IntegerSetting(settings["Raven/Replication/FetchingFromDiskTimeout"], 30);
 			Replication.ReplicationRequestTimeoutInMilliseconds = new IntegerSetting(settings["Raven/Replication/ReplicationRequestTimeout"], 60 * 1000);
+            Replication.ForceReplicationRequestBuffering = new BooleanSetting(settings["Raven/Replication/ForceReplicationRequestBuffering"],false);
 			Replication.MaxNumberOfItemsToReceiveInSingleBatch = new NullableIntegerSettingWithMin(settings["Raven/Replication/MaxNumberOfItemsToReceiveInSingleBatch"], (int?)null, 512);
 
             FileSystem.MaximumSynchronizationInterval = new TimeSpanSetting(settings[Constants.FileSystem.MaximumSynchronizationInterval], TimeSpan.FromSeconds(60), TimeSpanArgumentType.FromParse);
             FileSystem.IndexStoragePath = new StringSetting(settings[Constants.FileSystem.IndexStorageDirectory], string.Empty);
-			FileSystem.DataDir = new StringSetting(settings[Constants.FileSystem.DataDirectory], @"~" + Path.DirectorySeparatorChar + "FileSystems");
+            FileSystem.DataDir = new StringSetting(settings[Constants.FileSystem.DataDirectory], @"~\FileSystems");
             FileSystem.DefaultStorageTypeName = new StringSetting(settings[Constants.FileSystem.Storage], string.Empty);
-
+            FileSystem.PreventSchemaUpdate = new BooleanSetting(settings[Constants.FileSystem.PreventSchemaUpdate],false);
 			Encryption.UseFips = new BooleanSetting(settings["Raven/Encryption/FIPS"], false);
 			Encryption.EncryptionKeyBitsPreference = new IntegerSetting(settings[Constants.EncryptionKeyBitsPreferenceSetting], Constants.DefaultKeySizeToUseInActualEncryptionInBits);
 			Encryption.UseSsl = new BooleanSetting(settings["Raven/UseSsl"], false);
 
 			Indexing.MaxNumberOfItemsToProcessInTestIndexes = new IntegerSetting(settings[Constants.MaxNumberOfItemsToProcessInTestIndexes], 512);
+			Indexing.MaxNumberOfStoredIndexingBatchInfoElements = new IntegerSetting(settings[Constants.MaxNumberOfStoredIndexingBatchInfoElements], 20);
+
+            Cluster.ElectionTimeout = new IntegerSetting(settings["Raven/Cluster/ElectionTimeout"], RaftEngineOptions.DefaultElectionTimeout * 5);		// 6000ms
+            Cluster.HeartbeatTimeout = new IntegerSetting(settings["Raven/Cluster/HeartbeatTimeout"], RaftEngineOptions.DefaultHeartbeatTimeout * 5);	// 1500ms
+            Cluster.MaxLogLengthBeforeCompaction = new IntegerSetting(settings["Raven/Cluster/MaxLogLengthBeforeCompaction"], RaftEngineOptions.DefaultMaxLogLengthBeforeCompaction);
+            Cluster.MaxEntriesPerRequest = new IntegerSetting(settings["Raven/Cluster/MaxEntriesPerRequest"], RaftEngineOptions.DefaultMaxEntiresPerRequest);
+            Cluster.MaxStepDownDrainTime = new TimeSpanSetting(settings["Raven/Cluster/MaxStepDownDrainTime"], RaftEngineOptions.DefaultMaxStepDownDrainTime, TimeSpanArgumentType.FromParse);
 
 			DefaultStorageTypeName = new StringSetting(settings["Raven/StorageTypeName"] ?? settings["Raven/StorageEngine"], string.Empty);
 
 			FlushIndexToDiskSizeInMb = new IntegerSetting(settings["Raven/Indexing/FlushIndexToDiskSizeInMb"], 5);
 
 			TombstoneRetentionTime = new TimeSpanSetting(settings["Raven/TombstoneRetentionTime"], TimeSpan.FromDays(14), TimeSpanArgumentType.FromParse);
+
+            ImplicitFetchFieldsFromDocumentMode = new EnumSetting<ImplicitFetchFieldsMode>(settings["Raven/ImplicitFetchFieldsFromDocumentMode"], ImplicitFetchFieldsMode.Enabled);
+		    
+            if (settings["Raven/MaxServicePointIdleTime"] != null) 
+                ServicePointManager.MaxServicePointIdleTime = Convert.ToInt32(settings["Raven/MaxServicePointIdleTime"]);
+
+			WebSockets.InitialBufferPoolSize = new IntegerSetting(settings["Raven/WebSockets/InitialBufferPoolSize"], 128 * 1024);
+
+			FillMonitoringSettings();
+		}
+
+		private void FillMonitoringSettings()
+		{
+			Monitoring.Snmp.Enabled = new BooleanSetting(settings[Constants.Monitoring.Snmp.Enabled], false);
+			Monitoring.Snmp.Community = new StringSetting(settings[Constants.Monitoring.Snmp.Community], "ravendb");
+			Monitoring.Snmp.Port = new IntegerSetting(settings[Constants.Monitoring.Snmp.Port], 161);
 		}
 
 		private string GetDefaultWebDir()
@@ -257,6 +296,8 @@ namespace Raven.Database.Config
 
 			return val;
 		}
+
+		public BooleanSetting AllowScriptsToAdjustNumberOfSteps { get; private set; }
 
 		public IntegerSetting IndexAndTransformerReplicationLatencyInSec { get; private set; }
 
@@ -314,6 +355,8 @@ namespace Raven.Database.Config
 
 		public BooleanSetting DisableInMemoryIndexing { get; private set; }
 
+		public StringSetting WorkingDir { get; private set; }
+
 		public StringSetting DataDir { get; private set; }
 
 		public StringSetting IndexStoragePath { get; private set; }
@@ -345,6 +388,7 @@ namespace Raven.Database.Config
 		public StringSetting WebDir { get; private set; }
 
 		public BooleanSetting DisableClusterDiscovery { get; private set; }
+        public BooleanSetting TurnOffDiscoveryClient { get; private set; }
 
 		public StringSetting ServerName { get; private set; }
 
@@ -396,6 +440,8 @@ namespace Raven.Database.Config
 
 		public TimeSpanSetting TombstoneRetentionTime { get; private set; }
 
+        public EnumSetting<ImplicitFetchFieldsMode> ImplicitFetchFieldsFromDocumentMode { get; private set; }
+
 		public class VoronConfiguration
 		{
 			public IntegerSetting MaxBufferPoolSize { get; set; }
@@ -409,6 +455,8 @@ namespace Raven.Database.Config
 			public StringSetting TempPath { get; set; }
 
 			public StringSetting JournalsStoragePath { get; set; }
+
+			public BooleanSetting AllowOn32Bits { get; set; }
 		}
 
 		public class EsentConfiguration
@@ -419,7 +467,17 @@ namespace Raven.Database.Config
 		public class IndexingConfiguration
 		{
 			public IntegerSetting MaxNumberOfItemsToProcessInTestIndexes { get; set; }
+			public IntegerSetting MaxNumberOfStoredIndexingBatchInfoElements { get; set; }
 		}
+
+	    public class ClusterConfiguration
+	    {
+            public IntegerSetting ElectionTimeout { get; set; }
+            public IntegerSetting HeartbeatTimeout { get; set; }
+            public IntegerSetting MaxLogLengthBeforeCompaction { get; set; }
+            public TimeSpanSetting MaxStepDownDrainTime { get; set; }
+            public IntegerSetting MaxEntriesPerRequest { get; set; }
+	    }
 
 		public class PrefetcherConfiguration
 		{
@@ -431,6 +489,9 @@ namespace Raven.Database.Config
 		public class ReplicationConfiguration
 		{
 			public IntegerSetting FetchingFromDiskTimeoutInSeconds { get; set; }
+
+
+            public BooleanSetting ForceReplicationRequestBuffering { get; set; }
 
 			public IntegerSetting ReplicationRequestTimeoutInMilliseconds { get; set; }
 
@@ -446,6 +507,8 @@ namespace Raven.Database.Config
 			public StringSetting IndexStoragePath { get; set; }
 
 			public StringSetting DefaultStorageTypeName { get; set; }
+
+            public BooleanSetting PreventSchemaUpdate { get; set; }
 		}
 
 		public class EncryptionConfiguration
@@ -456,5 +519,37 @@ namespace Raven.Database.Config
 
 			public BooleanSetting UseSsl { get; set; }
 		}
+
+		public class WebSocketsConfiguration
+		{
+			public IntegerSetting InitialBufferPoolSize { get; set; }
+		}
+
+
+		public class MonitoringConfiguration
+		{
+			public MonitoringConfiguration()
+			{
+				Snmp = new SnmpConfiguration();
+			}
+
+			public SnmpConfiguration Snmp { get; private set; }
+
+			public class SnmpConfiguration
+			{
+				public BooleanSetting Enabled { get; set; }
+
+				public IntegerSetting Port { get; set; }
+
+				public StringSetting Community { get; set; }
+			}
+		}
+	}
+
+	public enum ImplicitFetchFieldsMode
+	{
+		Enabled,
+		DoNothing,
+		Exception
 	}
 }

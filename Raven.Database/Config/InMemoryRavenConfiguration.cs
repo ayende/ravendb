@@ -11,6 +11,7 @@ using System.ComponentModel.Composition.Hosting;
 using System.ComponentModel.Composition.Primitives;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web;
@@ -51,6 +52,12 @@ namespace Raven.Database.Config
 
 		public IndexingConfiguration Indexing { get; set; }
 
+        public ClusterConfiguration Cluster { get; private set; }
+
+		public MonitoringConfiguration Monitoring { get; private set; }
+
+		public WebSocketsConfiguration WebSockets { get; set; }
+
 		public InMemoryRavenConfiguration()
 		{
 			Replication = new ReplicationConfiguration();
@@ -59,6 +66,9 @@ namespace Raven.Database.Config
             FileSystem = new FileSystemConfiguration();
 			Encryption = new EncryptionConfiguration();
 			Indexing = new IndexingConfiguration();
+			WebSockets = new WebSocketsConfiguration();
+            Cluster = new ClusterConfiguration();
+			Monitoring = new MonitoringConfiguration();
 
 			Settings = new NameValueCollection(StringComparer.OrdinalIgnoreCase);
 
@@ -97,7 +107,13 @@ namespace Raven.Database.Config
 			var ravenSettings = new StronglyTypedRavenSettings(Settings);
 			ravenSettings.Setup(defaultMaxNumberOfItemsToIndexInSingleBatch, defaultInitialNumberOfItemsToIndexInSingleBatch);
 
+			WorkingDirectory = CalculateWorkingDirectory(ravenSettings.WorkingDir.Value);
+			FileSystem.InitializeFrom(this);
+
+			AllowScriptsToAdjustNumberOfSteps = ravenSettings.AllowScriptsToAdjustNumberOfSteps.Value;
+
 			IndexAndTransformerReplicationLatencyInSec = ravenSettings.IndexAndTransformerReplicationLatencyInSec.Value;
+
 			BulkImportBatchTimeout = ravenSettings.BulkImportBatchTimeout.Value;
 
 			// Important! this value is synchronized with the max sessions number in esent
@@ -136,6 +152,7 @@ namespace Raven.Database.Config
 
 			MaxStepsForScript = ravenSettings.MaxStepsForScript.Value;
 			AdditionalStepsForScriptBasedOnDocumentSize = ravenSettings.AdditionalStepsForScriptBasedOnDocumentSize.Value;
+		    TurnOffDiscoveryClient = ravenSettings.TurnOffDiscoveryClient.Value;
 
 			// Index settings
 			MaxProcessingRunLatency = ravenSettings.MaxProcessingRunLatency.Value;
@@ -255,13 +272,11 @@ namespace Raven.Database.Config
 			// Misc settings
 			WebDir = ravenSettings.WebDir.Value;
 
-			PluginsDirectory = ravenSettings.PluginsDirectory.Value.ToFullPath();
+			PluginsDirectory = ravenSettings.PluginsDirectory.Value;
+			AssembliesDirectory = ravenSettings.AssembliesDirectory.Value;
+			CompiledIndexCacheDirectory = ravenSettings.CompiledIndexCacheDirectory.Value;
 
-		    AssembliesDirectory = ravenSettings.AssembliesDirectory.Value.ToFullPath();
-
-		    EmbeddedFilesDirectory = ravenSettings.EmbeddedFilesDirectory.Value.ToFullPath();
-
-			CompiledIndexCacheDirectory = ravenSettings.CompiledIndexCacheDirectory.Value.ToFullPath();
+			EmbeddedFilesDirectory = ravenSettings.EmbeddedFilesDirectory.Value.ToFullPath();
 
 			var taskSchedulerType = ravenSettings.TaskScheduler.Value;
 			if (taskSchedulerType != null)
@@ -279,14 +294,16 @@ namespace Raven.Database.Config
 			Storage.Voron.AllowIncrementalBackups = ravenSettings.Voron.AllowIncrementalBackups.Value;
 			Storage.Voron.TempPath = ravenSettings.Voron.TempPath.Value;
 			Storage.Voron.JournalsStoragePath = ravenSettings.Voron.JournalsStoragePath.Value;
+			Storage.Voron.AllowOn32Bits = ravenSettings.Voron.AllowOn32Bits.Value;
 
 			Storage.Esent.JournalsStoragePath = ravenSettings.Esent.JournalsStoragePath.Value;
-
+		    Storage.PreventSchemaUpdate = ravenSettings.FileSystem.PreventSchemaUpdate.Value;
 			Prefetcher.FetchingDocumentsFromDiskTimeoutInSeconds = ravenSettings.Prefetcher.FetchingDocumentsFromDiskTimeoutInSeconds.Value;
 			Prefetcher.MaximumSizeAllowedToFetchFromStorageInMb = ravenSettings.Prefetcher.MaximumSizeAllowedToFetchFromStorageInMb.Value;
 
 			Replication.FetchingFromDiskTimeoutInSeconds = ravenSettings.Replication.FetchingFromDiskTimeoutInSeconds.Value;
 			Replication.ReplicationRequestTimeoutInMilliseconds = ravenSettings.Replication.ReplicationRequestTimeoutInMilliseconds.Value;
+            Replication.ForceReplicationRequestBuffering = ravenSettings.Replication.ForceReplicationRequestBuffering.Value;
 			Replication.MaxNumberOfItemsToReceiveInSingleBatch = ravenSettings.Replication.MaxNumberOfItemsToReceiveInSingleBatch.Value;
 
             FileSystem.MaximumSynchronizationInterval = ravenSettings.FileSystem.MaximumSynchronizationInterval.Value;
@@ -299,19 +316,58 @@ namespace Raven.Database.Config
 			Encryption.EncryptionKeyBitsPreference = ravenSettings.Encryption.EncryptionKeyBitsPreference.Value;
 
 			Indexing.MaxNumberOfItemsToProcessInTestIndexes = ravenSettings.Indexing.MaxNumberOfItemsToProcessInTestIndexes.Value;
+			Indexing.MaxNumberOfStoredIndexingBatchInfoElements = ravenSettings.Indexing.MaxNumberOfStoredIndexingBatchInfoElements.Value;
+
+
+		    Cluster.ElectionTimeout = ravenSettings.Cluster.ElectionTimeout.Value;
+		    Cluster.HeartbeatTimeout = ravenSettings.Cluster.HeartbeatTimeout.Value;
+		    Cluster.MaxLogLengthBeforeCompaction = ravenSettings.Cluster.MaxLogLengthBeforeCompaction.Value;
+		    Cluster.MaxEntriesPerRequest = ravenSettings.Cluster.MaxEntriesPerRequest.Value;
+		    Cluster.MaxStepDownDrainTime = ravenSettings.Cluster.MaxStepDownDrainTime.Value;
 
 			TombstoneRetentionTime = ravenSettings.TombstoneRetentionTime.Value;
 
-			IgnoreSslCertificateErros = GetIgnoreSslCertificateErrorModeMode();
+		    ImplicitFetchFieldsFromDocumentMode = ravenSettings.ImplicitFetchFieldsFromDocumentMode.Value;
+
+			IgnoreSslCertificateErrors = GetIgnoreSslCertificateErrorModeMode();
+
+			WebSockets.InitialBufferPoolSize = ravenSettings.WebSockets.InitialBufferPoolSize.Value;
+
+			FillMonitoringSettings(ravenSettings);
 
 			PostInit();
 
 			return this;
 		}
 
-	    public int MaxSecondsForTaskToWaitForDatabaseToLoad { get; set; }
+		private void FillMonitoringSettings(StronglyTypedRavenSettings settings)
+		{
+			Monitoring.Snmp.Enabled = settings.Monitoring.Snmp.Enabled.Value;
+			Monitoring.Snmp.Community = settings.Monitoring.Snmp.Community.Value;
+			Monitoring.Snmp.Port = settings.Monitoring.Snmp.Port.Value;
+		}
+
+		private static string CalculateWorkingDirectory(string workingDirectory)
+		{
+			if (string.IsNullOrEmpty(workingDirectory)) 
+				workingDirectory = @"~\";
+
+			if (workingDirectory.StartsWith("APPDRIVE:", StringComparison.OrdinalIgnoreCase))
+			{
+				var baseDirectory = AppDomain.CurrentDomain.BaseDirectory;
+				var rootPath = Path.GetPathRoot(baseDirectory);
+				if (string.IsNullOrEmpty(rootPath) == false)
+					workingDirectory = Regex.Replace(workingDirectory, "APPDRIVE:", rootPath.TrimEnd('\\'), RegexOptions.IgnoreCase);
+			}
+
+			return FilePathTools.MakeSureEndsWithSlash(workingDirectory.ToFullPath());
+		}
+
+		public int MaxSecondsForTaskToWaitForDatabaseToLoad { get; set; }
 
 	    public int IndexAndTransformerReplicationLatencyInSec { get; internal set; }
+
+		public bool AllowScriptsToAdjustNumberOfSteps { get; set; }
 
 		/// <summary>
 		/// Determines how long replication and periodic backup tombstones will be kept by a database. After the specified time they will be automatically
@@ -385,7 +441,7 @@ namespace Raven.Database.Config
 			}
 		} 
 
-		private ComposablePartCatalog GetUnfilteredCatalogs(ICollection<ComposablePartCatalog> catalogs)
+		internal static ComposablePartCatalog GetUnfilteredCatalogs(ICollection<ComposablePartCatalog> catalogs)
 		{
 			if (catalogs.Count != 1)
 				return new AggregateCatalog(catalogs.Select(GetUnfilteredCatalog));
@@ -704,11 +760,13 @@ namespace Raven.Database.Config
 		/// </summary>
 		public byte[] OAuthTokenKey { get; set; }
 
-		public IgnoreSslCertificateErrorsMode IgnoreSslCertificateErros { get; set; }
+		public IgnoreSslCertificateErrorsMode IgnoreSslCertificateErrors { get; set; }
 
 		#endregion
 
 		#region Data settings
+
+		public string WorkingDirectory { get; private set; }
 
 		/// <summary>
 		/// The directory for the RavenDB database. 
@@ -718,7 +776,7 @@ namespace Raven.Database.Config
 		public string DataDirectory
 		{
 			get { return dataDirectory; }
-			set { dataDirectory = value == null ? null : FilePathTools.MakeSureEndsWithSlash(value.ToFullPath()); }
+			set { dataDirectory = value == null ? null : FilePathTools.ApplyWorkingDirectoryToPathAndMakeSureThatItEndsWithSlash(WorkingDirectory, value); }
 		}
 
 		/// <summary>
@@ -728,7 +786,7 @@ namespace Raven.Database.Config
 		public string CountersDataDirectory
 		{
 			get { return countersDataDirectory; }
-			set { countersDataDirectory = value == null ? null : FilePathTools.MakeSureEndsWithSlash(value.ToFullPath()); }
+			set { countersDataDirectory = value == null ? null : FilePathTools.ApplyWorkingDirectoryToPathAndMakeSureThatItEndsWithSlash(WorkingDirectory, value); }
 		}
 
 		/// <summary>
@@ -809,7 +867,7 @@ namespace Raven.Database.Config
 					Catalog.Catalogs.Remove(cat);
 				}
 
-				pluginsDirectory = value.ToFullPath();
+				pluginsDirectory = FilePathTools.ApplyWorkingDirectoryToPathAndMakeSureThatItEndsWithSlash(WorkingDirectory, value);
 
 				// add new one
 				if (Directory.Exists(pluginsDirectory))
@@ -823,11 +881,23 @@ namespace Raven.Database.Config
 			}
 		}
 
+		private string assembliesDirectory;
+
         /// <summary>
         /// Where the internal assemblies will be extracted to.
         /// Default: ~\Assemblies
         /// </summary>
-        public string AssembliesDirectory { get; set; }
+        public string AssembliesDirectory 
+		{
+	        get
+	        {
+		        return assembliesDirectory;
+	        }
+	        set
+	        {
+				assembliesDirectory = value == null ? null : FilePathTools.ApplyWorkingDirectoryToPathAndMakeSureThatItEndsWithSlash(WorkingDirectory, value);
+	        } 
+		}
 
         /// <summary>
         /// Where we search for embedded files.
@@ -838,11 +908,23 @@ namespace Raven.Database.Config
 		public bool CreatePluginsDirectoryIfNotExisting { get; set; }
 		public bool CreateAnalyzersDirectoryIfNotExisting { get; set; }
 
+		private string compiledIndexCacheDirectory;
+
 		/// <summary>
-		/// Where to cache the compiled indexes
-		/// Default: ~\Raven\CompiledIndexCache
+		/// Where to cache the compiled indexes. Absolute path or relative to TEMP directory.
+		/// Default: ~\CompiledIndexCache
 		/// </summary>
-		public string CompiledIndexCacheDirectory { get; set; }
+		public string CompiledIndexCacheDirectory
+		{
+			get
+			{
+				return compiledIndexCacheDirectory;
+			}
+			set
+			{
+				compiledIndexCacheDirectory = value == null ? null : FilePathTools.ApplyWorkingDirectoryToPathAndMakeSureThatItEndsWithSlash(WorkingDirectory, value);
+			}
+		}
 
 		public string OAuthTokenServer { get; set; }
 
@@ -936,6 +1018,11 @@ namespace Raven.Database.Config
 		public bool DisableClusterDiscovery { get; set; }
 
 		/// <summary>
+        /// If True, turns off the discovery client.
+        /// </summary>
+        public bool TurnOffDiscoveryClient { get; set; }
+
+		/// <summary>
 		/// The server name
 		/// </summary>
 		public string ServerName { get; set; }
@@ -1002,6 +1089,16 @@ namespace Raven.Database.Config
 		/// How long can we keep the new index in memory before we have to flush it
 		/// </summary>
 		public TimeSpan NewIndexInMemoryMaxTime { get; set; }
+
+        /// <summary>
+        /// How FieldsToFetch are extracted from the document.
+        /// Default: Enabled. 
+        /// Other values are: 
+        ///     DoNothing (fields are not fetched from the document)
+        ///     Exception (an exception is thrown if we need to fetch fields from the document itself)
+        /// </summary>
+        public ImplicitFetchFieldsMode ImplicitFetchFieldsFromDocumentMode { get; set; }
+
 
 	    [Browsable(false)]
 		[EditorBrowsable(EditorBrowsableState.Never)]
@@ -1203,6 +1300,7 @@ namespace Raven.Database.Config
 				Voron = new VoronConfiguration();
 				Esent = new EsentConfiguration();
 	        }
+            public bool PreventSchemaUpdate { get; set; }
 
 			public VoronConfiguration Voron { get; private set; }
 
@@ -1245,6 +1343,11 @@ namespace Raven.Database.Config
 				public string TempPath { get; set; }
 
 				public string JournalsStoragePath { get; set; }
+
+				/// <summary>
+				/// Whether to allow Voron to run in 32 bits process.
+				/// </summary>
+				public bool AllowOn32Bits { get; set; }
 			}
 		}
 
@@ -1273,6 +1376,11 @@ namespace Raven.Database.Config
 			/// </summary>
 			public int ReplicationRequestTimeoutInMilliseconds { get; set; }
 
+            /// <summary>
+            /// Force us to buffer replication requests (useful if using windows auth under certain scenarios).
+            /// </summary>
+            public bool ForceReplicationRequestBuffering { get; set; }
+
 			/// <summary>
 			/// Maximum number of items replication will receive in single batch. Min: 512. Default: null (let source server decide).
 			/// </summary>
@@ -1281,13 +1389,20 @@ namespace Raven.Database.Config
 
         public class FileSystemConfiguration
         {
+	        public void InitializeFrom(InMemoryRavenConfiguration configuration)
+	        {
+		        workingDirectory = configuration.WorkingDirectory;
+	        }
+
 			private string fileSystemDataDirectory;
 
 			private string fileSystemIndexStoragePath;
 
 			private string defaultFileSystemStorageTypeName;
 
-            public TimeSpan MaximumSynchronizationInterval { get; set; }
+	        private string workingDirectory;
+
+	        public TimeSpan MaximumSynchronizationInterval { get; set; }
 
 			/// <summary>
 			/// The directory for the RavenDB file system. 
@@ -1296,7 +1411,7 @@ namespace Raven.Database.Config
 			public string DataDirectory
 			{
 				get { return fileSystemDataDirectory; }
-				set { fileSystemDataDirectory = value == null ? null : FilePathTools.MakeSureEndsWithSlash(value.ToFullPath()); }
+				set { fileSystemDataDirectory = value == null ? null : FilePathTools.ApplyWorkingDirectoryToPathAndMakeSureThatItEndsWithSlash(workingDirectory, value); }
 			}
 
 			public string IndexStoragePath
@@ -1340,6 +1455,40 @@ namespace Raven.Database.Config
 		public class IndexingConfiguration
 		{
 			public int MaxNumberOfItemsToProcessInTestIndexes { get; set; }
+			public int MaxNumberOfStoredIndexingBatchInfoElements { get; set; }
+		}
+
+	    public class ClusterConfiguration
+	    {
+            public int ElectionTimeout { get; set; }
+            public int HeartbeatTimeout { get; set; }
+            public int MaxLogLengthBeforeCompaction { get; set; }
+            public TimeSpan MaxStepDownDrainTime { get; set; }
+            public int MaxEntriesPerRequest { get; set; }
+	    }
+
+		public class MonitoringConfiguration
+		{
+			public MonitoringConfiguration()
+			{
+				Snmp = new SnmpConfiguration();
+			}
+
+			public SnmpConfiguration Snmp { get; private set; }
+
+			public class SnmpConfiguration
+			{
+				public bool Enabled { get; set; }
+
+				public int Port { get; set; }
+
+				public string Community { get; set; }
+			}
+		}
+
+		public class WebSocketsConfiguration
+		{
+			public int InitialBufferPoolSize { get; set; }
 		}
 
 		public void UpdateDataDirForLegacySystemDb()

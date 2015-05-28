@@ -132,16 +132,17 @@ namespace Raven.Database.Server.Security
 				return false;
 			}
 
-            if (string.Equals(value.ResourceName, tenantName, StringComparison.InvariantCultureIgnoreCase) == false &&
+			if (string.Equals(value.ResourceName, tenantName, StringComparison.InvariantCultureIgnoreCase) == false &&
                 (value.ResourceName == Constants.SystemDatabase && tenantName == null) == false)
 			{
                 msg = new
 				{
-					Error = "This single use token cannot be used for this database"
+					Error = "This single use token cannot be used for this resource!"
                 };
                 statusCode = HttpStatusCode.Forbidden;
 				return false;
 			}
+
 			if (value.Age.TotalMinutes > 2.5) // if the value is over 2.5 minutes old, reject it
 			{
                 msg = new
@@ -152,10 +153,6 @@ namespace Raven.Database.Server.Security
 				return false;
 			}
 
-			if (value.User != null)
-			{
-				CurrentOperationContext.RavenAuthenticatedUser.Value = value.User.Identity.Name;
-			}
 	        msg = null;
 	        statusCode = HttpStatusCode.OK;
 
@@ -176,10 +173,7 @@ namespace Raven.Database.Server.Security
             IPrincipal user;
             var success = TryAuthorizeSingleUseAuthToken(token, controller.TenantName, out result, out statusCode, out user);
             controller.User = user;
-            if (success == false)
-                msg = controller.GetMessageWithObject(result, statusCode);
-            else
-                msg = controller.GetEmptyMessage();
+            msg = success == false ? controller.GetMessageWithObject(result, statusCode) : controller.GetEmptyMessage();
 
             controller.WasAlreadyAuthorizedUsingSingleAuthToken = success;
             return success;
@@ -243,7 +237,7 @@ namespace Raven.Database.Server.Security
 		{
 			var token = new OneTimeToken
 			{
-				ResourceName = string.IsNullOrEmpty(resourceName)?"<system>":resourceName,
+				ResourceName = string.IsNullOrEmpty(resourceName)?"<system>" : resourceName,
 				User = user
 			};
 			var tokenString = Guid.NewGuid().ToString();

@@ -1,9 +1,11 @@
-﻿import resource = require("models/resource");
-import license = require("models/license");
+﻿import resource = require("models/resources/resource");
+import license = require("models/auth/license");
 import fileSystemStatistics = require("models/filesystem/fileSystemStatistics");
 
 class filesystem extends resource {
     activeBundles = ko.observableArray<string>();
+    isImporting = ko.observable<boolean>(false);
+    importStatus = ko.observable<string>("");
     statistics = ko.observable<fileSystemStatistics>();
     files = ko.observableArray<filesystemFileHeaderDto>();
     static type = 'filesystem';

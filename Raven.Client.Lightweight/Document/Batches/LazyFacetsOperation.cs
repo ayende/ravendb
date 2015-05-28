@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using Raven.Abstractions;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
 using Raven.Client.Shard;
@@ -39,20 +40,43 @@ namespace Raven.Client.Document.Batches
 		{
 			string addition;
 			if (facetSetupDoc != null)
+			{
 				addition = "facetDoc=" + facetSetupDoc;
-			else
-				addition = "facets=" + Uri.EscapeDataString(JsonConvert.SerializeObject(facets));
-
-			return new GetRequest
+				return new GetRequest
+				{
+					Url = "/facets/" + index,
+					Query = string.Format("{0}&facetStart={1}&facetPageSize={2}&{3}",
+											query.GetQueryString(),
+											start,
+											pageSize,
+											addition)
+				};
+			}
+			var unescapedFacetsJson = JsonConvert.SerializeObject(facets, Default.Converters);
+			if (unescapedFacetsJson.Length < (32*1024)-1)
+			{
+				addition = "facets=" + Uri.EscapeDataString(unescapedFacetsJson);
+				return new GetRequest
+				{
+					Url = "/facets/" + index,
+					Query = string.Format("{0}&facetStart={1}&facetPageSize={2}&{3}",
+											query.GetQueryString(),
+											start,
+											pageSize,
+											addition)
+				};
+			}
+			
+			return new GetRequest()
 			{
 				Url = "/facets/" + index,
-				Query = string.Format("{0}&facetStart={1}&facetPageSize={2}&{3}",
-										query.GetQueryString(),
-										start,
-										pageSize,
-										addition)
+				Method = "POST",
+				Content = unescapedFacetsJson
 			};
+
 		}
+
+		
 
 		public object Result { get; private set; }
 		public QueryResult QueryResult { get; set; }
@@ -60,11 +84,10 @@ namespace Raven.Client.Document.Batches
 
 		public void HandleResponse(GetResponse response)
 		{
-			if (response.Status != 200 && response.Status != 304)
-			{
-				throw new InvalidOperationException("Got an unexpected response code for the request: " + response.Status + "\r\n" +
-													response.Result);
-			}
+            if (response.RequestHasErrors())
+            {
+                throw new InvalidOperationException("Got an unexpected response code for the request: " + response.Status + "\r\n" + response.Result);
+            }
 
 			var result = (RavenJObject)response.Result;
 			Result = result.JsonDeserialization<FacetResults>();

@@ -1,7 +1,9 @@
 ﻿using System;
 using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
+using System.Runtime.ConstrainedExecution;
 using System.Runtime.InteropServices;
+using System.Security;
 using System.Threading.Tasks;
 using Voron.Impl;
 
@@ -9,29 +11,74 @@ namespace Voron.Util
 {
     public unsafe static class MemoryUtils
     {
-        public static SliceComparer MemoryComparerInstance = Compare;
+        public static PrefixedSliceComparer MemoryComparerInstance = Compare;
+
+
+        [SecurityCritical]
+        [ReliabilityContract(Consistency.WillNotCorruptState, Cer.Success)]
+
+        public static int Compare(byte* p1, byte* p2, int size)
+        {
+            return CompareInline(p1, p2, size);
+        }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static int Compare(byte* bpx, byte* bpy, int n)
+        public static int CompareInline(byte* p1, byte* p2, int size)
         {
-            switch (n)
+            byte* bpx = p1, bpy = p2;
+            int l = size;
+
+            int last = 0;
+            for (int i = 0; i < l / 8; i++, bpx += 8, bpy += 8)
             {
-                case 0: return 0;
-                case 1: return *bpx - *bpy;
-                case 2:
-                    {
-                        int v = *bpx - *bpy;
-                        if (v != 0)
-                            return v;
-
-                        bpx++;
-                        bpy++;
-
-                        return *bpx - *bpy;
-                    }
-             
-                default: return StdLib.memcmp(bpx, bpy, n);
+                if (*((long*)bpx) != *((long*)bpy))
+                {
+                    last = 8;
+                    goto TAIL;
+                }
             }
+
+            if ((l & 4) != 0)
+            {
+                if (*((int*)bpx) != *((int*)bpy))
+                {
+                    last = 4;
+                    goto TAIL;
+                }
+                bpx += 4;
+                bpy += 4;                
+            }
+            if ((l & 2) != 0)
+            {
+                if (*((short*)bpx) != *((short*)bpy))
+                {
+                    last = 2;
+                    goto TAIL;
+                }
+
+                bpx += 2;
+                bpy += 2;
+            }            
+
+            if ((l & 1) != 0)
+            {
+                return (*((byte*)bpx) - *((byte*)bpy));
+            }
+
+            return 0;
+
+        TAIL:
+            while (last > 0)
+            {
+                if (*((byte*)bpx) != *((byte*)bpy))
+                    return *bpx - *bpy;
+
+                bpx++;
+                bpy++;
+                last--;
+            }
+
+            return 0;
         }
 
         /// <summary>
@@ -45,12 +92,19 @@ namespace Voron.Util
             StdLib.memcpy(dest, src, n);            
         }
 
+        public unsafe static void Copy(byte* dest, byte* src, int n)
+        {
+            CopyInline(dest, src, n);
+        }
+
         /// <summary>
         /// Copy is optimized to handle copy operations where n is statistically small. 
         /// This method is optimized at the IL level to be extremely efficient for copies smaller than
         /// 4096 bytes or heterogeneous workloads with occasional big copies.         
         /// </summary>
-        public unsafe static void Copy(byte* dest, byte* src, int n)
+        /// <remarks>This is a forced inline version, use with care.</remarks>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe static void CopyInline(byte* dest, byte* src, int n)
         {
         SMALLTABLE:
             switch (n)

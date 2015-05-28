@@ -90,6 +90,30 @@ namespace Raven.Json.Linq
             return token;
         }
 
+		/// <summary>
+		/// Creates the specified .NET type from the <see cref="JToken"/> using the specified <see cref="JsonSerializer"/>.
+		/// </summary>
+		/// <typeparam name="T">The object type that the token will be deserialized to.</typeparam>
+		/// <returns>The new object created from the JSON value.</returns>
+		/// <remarks>Creates new instance of JsonSerializer for each call!</remarks>
+		public T ToObject<T>()
+			where T : class
+	    {
+		    return ToObject<T>(JsonExtensions.CreateDefaultJsonSerializer());
+	    }
+
+		/// <summary>
+		/// Creates the specified .NET type from the <see cref="JToken"/> using the specified <see cref="JsonSerializer"/>.
+		/// </summary>
+		/// <typeparam name="T">The object type that the token will be deserialized to.</typeparam>
+		/// <param name="jsonSerializer">The <see cref="JsonSerializer"/> that will be used when creating the object.</param>
+		/// <returns>The new object created from the JSON value.</returns>
+		public T ToObject<T>(JsonSerializer jsonSerializer)
+			where T : class
+		{
+			return jsonSerializer.Deserialize<T>(new RavenJTokenReader(this));
+		}
+
         /// <summary>
         ///     Creates a <see cref="RavenJToken" /> from an object.
         /// </summary>
@@ -140,6 +164,13 @@ namespace Raven.Json.Linq
                 return sw.ToString();
             }
         }
+
+        /// <summary>
+        ///     Writes this token to a <see cref="JsonWriter" />.
+        /// </summary>
+        /// <param name="writer">A <see cref="JsonWriter" /> into which this method will write.</param>
+        /// <param name="converters">A collection of <see cref="JsonConverter" /> which will be used when writing the token.</param>
+        public abstract void WriteTo(JsonWriter writer, JsonConverterCollection converters);
 
         /// <summary>
         ///     Writes this token to a <see cref="JsonWriter" />.

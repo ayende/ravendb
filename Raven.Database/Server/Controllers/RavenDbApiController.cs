@@ -1,4 +1,7 @@
 ﻿using System.Security.Principal;
+
+using metrics;
+
 using Raven.Abstractions;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Exceptions;
@@ -9,6 +12,7 @@ using Raven.Abstractions.Replication;
 using Raven.Abstractions.Util;
 using Raven.Bundles.Replication.Tasks;
 using Raven.Database.Config;
+using Raven.Database.Config.Retriever;
 using Raven.Database.Extensions;
 using Raven.Database.Server.Abstractions;
 using Raven.Database.Server.Security;
@@ -40,15 +44,6 @@ namespace Raven.Database.Server.Controllers
 		public void SetPostRequestQuery(string query)
 		{
 			queryFromPostRequest = EscapingHelper.UnescapeLongDataString(query);
-		}
-
-		public void InitializeFrom(RavenDbApiController other)
-		{
-			DatabaseName = other.DatabaseName;
-			queryFromPostRequest = other.queryFromPostRequest;
-			Configuration = other.Configuration;
-			ControllerContext = other.ControllerContext;
-			ActionContext = other.ActionContext;
 		}
 
 		public override async Task<HttpResponseMessage> ExecuteAsync(HttpControllerContext controllerContext, CancellationToken cancellationToken)
@@ -109,13 +104,13 @@ namespace Raven.Database.Server.Controllers
 			return result;
 		}
 
-		protected ReplicationDocument GetReplicationDocument(out HttpResponseMessage erroResponseMessage)
+		protected ReplicationDocument<ReplicationDestination.ReplicationDestinationWithConfigurationOrigin> GetReplicationDocument(out HttpResponseMessage erroResponseMessage)
 		{
-			JsonDocument replicationDestinationsDocument;
+			ConfigurationDocument<ReplicationDocument<ReplicationDestination.ReplicationDestinationWithConfigurationOrigin>> configurationDocument;
 			erroResponseMessage = null;
 			try
 			{
-				replicationDestinationsDocument = Database.Documents.Get(Constants.RavenReplicationDestinations, null);
+				configurationDocument = Database.ConfigurationRetriever.GetConfigurationDocument<ReplicationDocument<ReplicationDestination.ReplicationDestinationWithConfigurationOrigin>>(Constants.RavenReplicationDestinations);
 			}
 			catch (Exception e)
 			{
@@ -125,16 +120,14 @@ namespace Raven.Database.Server.Controllers
 				return null;
 			}
 
-			if (replicationDestinationsDocument == null)
+			if (configurationDocument == null)
 			{
 				erroResponseMessage = GetMessageWithObject(new { Message = "Replication destinations not found. Perhaps no replication is configured? Nothing to do in this case..." }, HttpStatusCode.NotFound);
 				return null;
 			}
 
-			var replicationDocument = replicationDestinationsDocument.DataAsJson.JsonDeserialization<ReplicationDocument>();
-
-			if (replicationDocument.Destinations.Count != 0) 
-				return replicationDocument;
+			if (configurationDocument.MergedDocument.Destinations.Count != 0) 
+				return configurationDocument.MergedDocument;
 
 			erroResponseMessage = GetMessageWithObject(new
 			{
@@ -142,7 +135,7 @@ namespace Raven.Database.Server.Controllers
 																Maybe all replication destinations have SkipIndexReplication flag equals to true?  
 																Nothing to do in this case..."
 			},
-				HttpStatusCode.NoContent);
+			HttpStatusCode.Accepted);
 			return null;
 		}
 
@@ -485,6 +478,35 @@ namespace Raven.Database.Server.Controllers
 			return result;
 		}
 
+        protected BulkInsertCompression GetCompression()
+        {
+            var compression = GetQueryStringValue("compression");
+            if (string.IsNullOrWhiteSpace(compression))
+                return BulkInsertCompression.GZip;
+
+            switch (compression.ToLowerInvariant())
+            {
+                case "none": return BulkInsertCompression.None;
+                case "gzip": return BulkInsertCompression.GZip;
+                default: throw new NotSupportedException(string.Format("The compression algorithm '{0}' is not supported.", compression));
+            }
+        }
+
+        protected BulkInsertFormat GetFormat()
+        {
+            var format = GetQueryStringValue("format");
+            if (string.IsNullOrWhiteSpace(format))
+                return BulkInsertFormat.Bson;
+
+            switch (format.ToLowerInvariant())
+            {
+                case "bson": return BulkInsertFormat.Bson;
+                case "json": return BulkInsertFormat.Json;
+                default: throw new NotSupportedException(string.Format("The format '{0}' is not supported", format.ToString()));
+            }
+        }
+
+
         protected int? GetMaxOpsPerSec()
         {
             int? result = null;
@@ -512,6 +534,13 @@ namespace Raven.Database.Server.Controllers
 
 		protected void HandleReplication(HttpResponseMessage msg)
 		{
+
+            if (msg.StatusCode == HttpStatusCode.BadRequest ||
+                msg.StatusCode == HttpStatusCode.ServiceUnavailable ||
+                msg.StatusCode == HttpStatusCode.InternalServerError
+                )
+                return;
+
 			var clientPrimaryServerUrl = GetHeader(Constants.RavenClientPrimaryServerUrl);
 			var clientPrimaryServerLastCheck = GetHeader(Constants.RavenClientPrimaryServerLastCheck);
 			if (string.IsNullOrEmpty(clientPrimaryServerUrl) || string.IsNullOrEmpty(clientPrimaryServerLastCheck))
@@ -538,7 +567,7 @@ namespace Raven.Database.Server.Controllers
 		}
 
 
-        public override bool SetupRequestToProperDatabase(RequestManager rm)
+        public override async Task<bool> SetupRequestToProperDatabase(RequestManager rm)
         {
             var tenantId = this.DatabaseName;
             var landlord = this.DatabasesLandlord;
@@ -589,7 +618,7 @@ namespace Raven.Database.Server.Controllers
 
 						try
 						{
-							if (resourceStoreTask.Wait(TimeSpan.FromSeconds(TimeToWaitForDatabaseToLoad)) == false)
+                            if (await Task.WhenAny(resourceStoreTask, Task.Delay(TimeSpan.FromSeconds(TimeToWaitForDatabaseToLoad))) != resourceStoreTask)
 							{
 								var msg = string.Format("The database {0} is currently being loaded, but after {1} seconds, this request has been aborted. Please try again later, database loading continues.", tenantId, TimeToWaitForDatabaseToLoad);
 								Logger.Warn(msg);
@@ -642,7 +671,8 @@ namespace Raven.Database.Server.Controllers
 	    {
 	        if (Database == null)
 	            return;
-	        Database.WorkContext.MetricsCounters.RequestDuationMetric.Update(duration);
+	        Database.WorkContext.MetricsCounters.RequestDurationMetric.Update(duration);
+			Database.WorkContext.MetricsCounters.RequestDurationLastMinute.AddRecord(duration);
 	    }
 
 	    public bool ClientIsV3OrHigher
@@ -685,7 +715,8 @@ namespace Raven.Database.Server.Controllers
 				{
 					Remark = "Using windows auth",
 					User = windowsPrincipal.Identity.Name,
-					IsAdminGlobal = windowsPrincipal.IsAdministrator(DatabasesLandlord.SystemConfiguration.AnonymousUserAccessMode)
+					IsAdminGlobal = windowsPrincipal.IsAdministrator("<system>") || 
+									windowsPrincipal.IsAdministrator(DatabasesLandlord.SystemConfiguration.AnonymousUserAccessMode)
 				};
 
 				windowsUser.IsAdminCurrentDb = windowsUser.IsAdminGlobal || windowsPrincipal.IsAdministrator(Database);
@@ -700,7 +731,7 @@ namespace Raven.Database.Server.Controllers
 				{
 					Remark = "Using windows auth",
 					User = principalWithDatabaseAccess.Identity.Name,
-					IsAdminGlobal =
+					IsAdminGlobal = principalWithDatabaseAccess.IsAdministrator("<system>") || 
 						principalWithDatabaseAccess.IsAdministrator(
 							DatabasesLandlord.SystemConfiguration.AnonymousUserAccessMode),
 					IsAdminCurrentDb = principalWithDatabaseAccess.IsAdministrator(Database),

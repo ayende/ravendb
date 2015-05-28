@@ -1,10 +1,9 @@
-import database = require("models/database");
+import database = require("models/resources/database");
 import filesystem = require("models/filesystem/filesystem");
 import counterStorage = require("models/counter/counterStorage");
-import resource = require("models/resource");
-import pagedList = require("common/pagedList");
+import resource = require("models/resources/resource");
 import router = require("plugins/router");
-import collection = require("models/collection");
+import collection = require("models/database/documents/collection");
 import messagePublisher = require("common/messagePublisher");
 
 // Helper class with static methods for generating app URLs.
@@ -27,7 +26,8 @@ class appUrl {
     
 	// Stores some computed values that update whenever the current database updates.
     private static currentDbComputeds: computedAppUrls = {
-        adminSettings: ko.computed(() => appUrl.forAdminSettings()),
+		adminSettings: ko.computed(() => appUrl.forAdminSettings()),
+		adminSettingsCluster: ko.computed(() => appUrl.forCluster()),
 
         hasApiKey: ko.computed(() => appUrl.forHasApiKey()),
 
@@ -45,6 +45,7 @@ class appUrl {
         editTransformer: (transformerName?: string) => ko.computed(() => appUrl.forEditTransformer(transformerName, appUrl.currentDatabase())),
         query: (indexName?: string) => ko.computed(() => appUrl.forQuery(appUrl.currentDatabase(), indexName)),
         reporting: ko.computed(() => appUrl.forReporting(appUrl.currentDatabase())),
+		exploration: ko.computed(() => appUrl.forExploration(appUrl.currentDatabase())),
         tasks: ko.computed(() => appUrl.forTasks(appUrl.currentDatabase())),
         status: ko.computed(() => appUrl.forStatus(appUrl.currentDatabase())),
         replicationPerfStats: ko.computed(() => appUrl.forReplicationPerfStats(appUrl.currentDatabase())),
@@ -105,8 +106,10 @@ class appUrl {
         filesystemSearch: ko.computed(() => appUrl.forFilesystemSearch(appUrl.currentFilesystem())),
         filesystemSynchronization: ko.computed(() => appUrl.forFilesystemSynchronization(appUrl.currentFilesystem())),
         filesystemStatus: ko.computed(() => appUrl.forFilesystemStatus(appUrl.currentFilesystem())),
+        filesystemTasks: ko.computed(() => appUrl.forFilesystemTasks(appUrl.currentFilesystem())),
         filesystemSettings: ko.computed(() => appUrl.forFilesystemSettings(appUrl.currentFilesystem())),
         filesystemSynchronizationDestinations: ko.computed(() => appUrl.forFilesystemSynchronizationDestinations(appUrl.currentFilesystem())),
+        filesystemSynchronizationConfiguration: ko.computed(() => appUrl.forFilesystemSynchronizationConfiguration(appUrl.currentFilesystem())),
         filesystemConfiguration: ko.computed(() => appUrl.forFilesystemConfiguration(appUrl.currentFilesystem())),
 
         filesystemVersioning: ko.computed(() => appUrl.forFilesystemVersioning(appUrl.currentFilesystem())),
@@ -159,8 +162,44 @@ class appUrl {
         return "#admin/settings/apiKeys";
     }
 
+    static forCluster(): string {
+        return "#admin/settings/cluster";
+    }
+
     static forWindowsAuth(): string {
         return "#admin/settings/windowsAuth";
+    }
+
+    static forGlobalConfig(): string {
+        return '#admin/settings/globalConfig';
+	}
+
+	static forServerSmugging(): string {
+		return "#admin/settings/serverSmuggling";
+	}
+
+    static forGlobalConfigPeriodicExport(): string {
+        return '#admin/settings/globalConfig';
+    }
+
+    static forGlobalConfigReplication(): string {
+        return '#admin/settings/globalConfigReplication';
+    }
+
+    static forGlobalConfigSqlReplication(): string {
+        return "#admin/settings/globalConfigSqlReplication";
+    }
+
+    static forGlobalConfigQuotas(): string {
+        return '#admin/settings/globalConfigQuotas';
+    }
+
+    static forGlobalConfigCustomFunctions(): string {
+        return '#admin/settings/globalConfigCustomFunctions';
+    }
+
+    static forGlobalConfigVersioning(): string {
+        return "#admin/settings/globalConfigVersioning";
     }
 
     static forBackup(): string {
@@ -512,6 +551,11 @@ class appUrl {
         return "#databases/query/reporting" + indexPart + "?" + databasePart;
     }
 
+	static forExploration(db: database): string {
+        var databasePart = appUrl.getEncodedDbPart(db);
+        return "#databases/query/exploration?" + databasePart;
+    }
+
     static forTasks(db: database): string {
         var databasePart = appUrl.getEncodedDbPart(db);
         return "#databases/tasks?" + databasePart;
@@ -550,6 +594,16 @@ class appUrl {
         return "#databases/tasks/exportDatabase?" + databasePart;
     }
 
+    static forImportFilesystem(fs: filesystem): string {
+        var filesystemPart = appUrl.getEncodedFsPart(fs);
+        return "#filesystems/tasks/importFilesystem?" + filesystemPart;
+    }
+
+    static forExportFilesystem(fs: filesystem): string {
+        var filesystemPart = appUrl.getEncodedFsPart(fs);
+        return "#filesystems/tasks/exportFilesystem?" + filesystemPart;
+    }
+
     static forExportCollectionCsv(collection: collection, db: database): string {
         if (collection.isAllDocuments || collection.isSystemDocuments) {
             return null;
@@ -570,16 +624,6 @@ class appUrl {
     static forCsvImport(db: database): string {
         var databasePart = appUrl.getEncodedDbPart(db);
         return "#databases/tasks/csvImport?" + databasePart;
-    }
-
-    static forDatabase(db: database): string {
-        var databasePart = appUrl.getEncodedDbPart(db);
-        return "#databases?" + databasePart;
-    }
-
-    static forFilesystem(fs: filesystem): string {
-        var filesystemPart = appUrl.getEncodedFsPart(fs);
-        return "#filesystems?" + filesystemPart;
     }
 
     static forCounterStorage(cs: counterStorage): string {
@@ -627,9 +671,19 @@ class appUrl {
         return "#filesystems/synchronization/destinations?" + filesystemPart;
     }
 
+    static forFilesystemSynchronizationConfiguration(fs: filesystem): string {
+        var filesystemPart = appUrl.getEncodedFsPart(fs);
+        return "#filesystems/synchronization/configuration?" + filesystemPart;
+    }
+
     static forFilesystemStatus(fs: filesystem): string {
         var filesystemPart = appUrl.getEncodedFsPart(fs);
         return "#filesystems/status?" + filesystemPart;
+    }
+
+    static forFilesystemTasks(fs: filesystem): string {
+        var filesystemPart = appUrl.getEncodedFsPart(fs);
+        return "#filesystems/tasks?" + filesystemPart;
     }
 
     static forFilesystemSettings(fs: filesystem): string {

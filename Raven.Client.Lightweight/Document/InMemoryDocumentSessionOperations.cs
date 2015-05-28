@@ -23,8 +23,8 @@ using Raven.Abstractions.Linq;
 using Raven.Client.Connection;
 using Raven.Client.Document.DTC;
 using Raven.Client.Exceptions;
+using Raven.Client.Extensions;
 using Raven.Client.Util;
-using Raven.Imports.Newtonsoft.Json.Linq;
 using Raven.Json.Linq;
 
 namespace Raven.Client.Document
@@ -50,7 +50,11 @@ namespace Raven.Client.Document
 		/// <summary>
 		/// The database name for this session
 		/// </summary>
-		public string DatabaseName { get; internal set; }
+		public virtual string DatabaseName
+		{
+			get { return _databaseName ?? MultiDatabase.GetDatabaseName(DocumentStore.Url); }
+			internal set { _databaseName = value; }
+		}
 
 		protected static readonly ILog log = LogManager.GetCurrentClassLogger();
 
@@ -153,7 +157,7 @@ namespace Raven.Client.Document
 			AllowNonAuthoritativeInformation = true;
 			NonAuthoritativeInformationTimeout = TimeSpan.FromSeconds(15);
 			MaxNumberOfRequestsPerSession = documentStore.Conventions.MaxNumberOfRequestsPerSession;
-			GenerateEntityIdOnTheClient = new GenerateEntityIdOnTheClient(documentStore, GenerateKey);
+			GenerateEntityIdOnTheClient = new GenerateEntityIdOnTheClient(documentStore.Conventions, GenerateKey);
 			EntityToJson = new EntityToJson(documentStore, listeners);
 		}
 
@@ -237,22 +241,14 @@ namespace Raven.Client.Document
 			{
 				string id;
 				if (GenerateEntityIdOnTheClient.TryGetIdFromInstance(instance, out id)
-					|| (instance is IDynamicMetaObjectProvider &&
-					   GenerateEntityIdOnTheClient.TryGetIdFromDynamic(instance, out id))
-)
+				    || (instance is IDynamicMetaObjectProvider &&
+				        GenerateEntityIdOnTheClient.TryGetIdFromDynamic(instance, out id))
+					)
 				{
 					AssertNoNonUniqueInstance(instance, id);
 
 					var jsonDocument = GetJsonDocument(id);
-					entitiesByKey[id] = instance;
-					entitiesAndMetadata[instance] = value = new DocumentMetadata
-					{
-						ETag = UseOptimisticConcurrency ? Etag.Empty : null,
-						Key = id,
-						OriginalMetadata = jsonDocument.Metadata,
-						Metadata = (RavenJObject)jsonDocument.Metadata.CloneToken(),
-						OriginalValue = new RavenJObject()
-					};
+					value = GetDocumentMetadataValue(instance, id, jsonDocument);
 				}
 				else
 				{
@@ -266,6 +262,20 @@ namespace Raven.Client.Document
 		/// Get the json document by key from the store
 		/// </summary>
 		protected abstract JsonDocument GetJsonDocument(string documentKey);
+
+	    protected DocumentMetadata GetDocumentMetadataValue<T>(T instance, string id, JsonDocument jsonDocument)
+		{
+			entitiesByKey[id] = instance;
+			return entitiesAndMetadata[instance] = new DocumentMetadata
+			{
+				ETag = UseOptimisticConcurrency ? Etag.Empty : null,
+				Key = id,
+				OriginalMetadata = jsonDocument.Metadata,
+				Metadata = (RavenJObject)jsonDocument.Metadata.CloneToken(),
+				OriginalValue = new RavenJObject()
+			};
+		}
+
 
 		/// <summary>
 		/// Returns whatever a document with the specified id is loaded in the 
@@ -536,16 +546,16 @@ more responsive application.
 													ex);
 			}
 		}
-
-		private void RegisterMissingProperties(object o, string key, JToken value)
+        
+		private void RegisterMissingProperties(object o, string key, object value)
 		{
-			Dictionary<string, JToken> dictionary;
-			if (EntityToJson.MissingDictionary.TryGetValue(o, out dictionary) == false)
-			{
-				EntityToJson.MissingDictionary[o] = dictionary = new Dictionary<string, JToken>();
-			}
+            Dictionary<string, object> dictionary;
+            if (EntityToJson.MissingDictionary.TryGetValue(o, out dictionary) == false)
+            {
+                EntityToJson.MissingDictionary[o] = dictionary = new Dictionary<string, object>();
+            }
 
-			dictionary[key] = value;
+            dictionary[key] = value;
 		}
 
 		/// <summary>
@@ -1186,6 +1196,7 @@ more responsive application.
 		}
 
 		private readonly List<ICommandData> deferedCommands = new List<ICommandData>();
+		protected string _databaseName;
 		public GenerateEntityIdOnTheClient GenerateEntityIdOnTheClient { get; private set; }
 		public EntityToJson EntityToJson { get; private set; }
 

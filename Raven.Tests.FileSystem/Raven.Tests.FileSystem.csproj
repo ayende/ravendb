@@ -23,6 +23,7 @@
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
     <Prefer32Bit>false</Prefer32Bit>
+    <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
     <DebugType>pdbonly</DebugType>
@@ -43,6 +44,7 @@
     <Reference Include="System" />
     <Reference Include="System.Configuration" />
     <Reference Include="System.Core" />
+    <Reference Include="System.IO.Compression.FileSystem" />
     <Reference Include="System.Net" />
     <Reference Include="System.Net.Http" />
     <Reference Include="System.Net.Http.WebRequest" />
@@ -80,6 +82,7 @@
     <Compile Include="Auth\SynchronizationWithOAuth.cs" />
     <Compile Include="Auth\SynchronizationWithWindowsAuth.cs" />
     <Compile Include="BigFileHandling.cs" />
+    <Compile Include="Bugs\Can_query_by_creation_date.cs" />
     <Compile Include="Bugs\CaseSensitiveFileDeletion.cs" />
     <Compile Include="Bugs\ReadingFileIfFileWithGreaterNameExists.cs" />
     <Compile Include="Bugs\GettingListOfFilesAfterSynchronization.cs" />
@@ -90,6 +93,8 @@
     <Compile Include="Bugs\UpdatingMetadata.cs" />
     <Compile Include="Bugs\UploadFilesWithTheSameContentConcurrently.cs" />
     <Compile Include="Bugs\UploadDownload.cs" />
+    <Compile Include="Bundles\Versioning\RavenDB_3295.cs" />
+    <Compile Include="Bundles\Versioning\VersioningAndSynchronization.cs" />
     <Compile Include="Bundles\Versioning\VersioningTests.cs" />
     <Compile Include="ClientApi\FileQueryTests.cs" />
     <Compile Include="ClientApi\FileSessionListenersTests.cs" />
@@ -108,13 +113,18 @@
     <Compile Include="FileNamingTests.cs" />
     <Compile Include="Folders.cs" />
     <Compile Include="Issues\RavenDB_2889.cs" />
+    <Compile Include="Issues\RavenDB_3268_ConcurrencyChecks.cs" />
+    <Compile Include="Migration\MigrationTests.cs" />
     <Compile Include="Search\SearchIndexes.cs" />
     <Compile Include="RavenFilesTestWithLogs.cs" />
     <Compile Include="RavenFilesWebApiTest.cs" />
     <Compile Include="Issues\RavenDB_2784.cs" />
+    <Compile Include="Shard\CustomShardResolutionStrategy.cs" />
     <Compile Include="Shard\SimpleSharding.cs" />
     <Compile Include="Smuggler\SmugglerBetweenOperationTests.cs" />
     <Compile Include="Smuggler\SmugglerExecutionTests.cs" />
+    <Compile Include="Smuggler\SmugglerWithDisabledVersioning_RavenDB_3219.cs" />
+    <Compile Include="Smuggler\SmugglingConfigurations_RavenDB_3347.cs" />
     <Compile Include="Storage\StorageOperationsTests.cs" />
     <Compile Include="MtaFactAttribute.cs" />
     <Compile Include="Notifications.cs" />
@@ -160,6 +170,10 @@
   <ItemGroup>
     <None Include="app.config" />
     <EmbeddedResource Include="DefaultLogging.config" />
+    <None Include="Migration\Backups\from-3628\destination-3628-esent.zip" />
+    <None Include="Migration\Backups\from-3628\destination-3628-voron.zip" />
+    <None Include="Migration\Backups\from-3628\source-3628-esent.zip" />
+    <None Include="Migration\Backups\from-3628\source-3628-voron.zip" />
     <None Include="packages.config">
       <SubType>Designer</SubType>
     </None>
@@ -181,21 +195,13 @@
       <Project>{41AC479E-1EB2-4D23-AAF2-E4C8DF1BC2BA}</Project>
       <Name>Raven.Abstractions</Name>
     </ProjectReference>
-    <ProjectReference Include="..\Raven.Client.Lightweight\Raven.Client.Lightweight.csproj">
-      <Project>{4E087ECB-E7CA-4891-AC3C-3C76702715B6}</Project>
-      <Name>Raven.Client.Lightweight</Name>
-    </ProjectReference>
     <ProjectReference Include="..\Raven.Smuggler\Raven.Smuggler.csproj">
       <Project>{3E6401AC-3E33-4B61-A460-49953654A207}</Project>
       <Name>Raven.Smuggler</Name>
     </ProjectReference>
-    <ProjectReference Include="..\Raven.Database\Raven.Database.csproj">
-      <Project>{212823CD-25E1-41AC-92D1-D6DF4D53FC85}</Project>
-      <Name>Raven.Database</Name>
-    </ProjectReference>
-    <ProjectReference Include="..\Raven.Server\Raven.Server.csproj">
-      <Project>{3B90EB20-AEA3-4972-8219-936F1A62768C}</Project>
-      <Name>Raven.Server</Name>
+    <ProjectReference Include="..\Raven.Voron\Voron\Voron.csproj">
+      <Project>{FF83C7C2-BC7B-4DCC-A782-49EF9BBD9390}</Project>
+      <Name>Voron</Name>
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>

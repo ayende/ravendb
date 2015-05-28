@@ -9,13 +9,16 @@ using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.IO;
 using System.Net;
+using System.Net.Http;
 
+using Raven.Abstractions.Cluster;
 using Raven.Abstractions.Commands;
 using Raven.Abstractions.Connection;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Indexing;
 using Raven.Abstractions.Replication;
 using Raven.Client.Changes;
+using Raven.Client.Connection.Implementation;
 using Raven.Client.Connection.Profiling;
 using Raven.Client.Document;
 using Raven.Client.Indexes;
@@ -67,12 +70,12 @@ namespace Raven.Client.Connection
 		/// <param name="txId">transaction identifier</param>
 		void Commit(string txId);
 
-		HttpJsonRequest CreateReplicationAwareRequest(string currentServerUrl, string requestUrl, string method, bool disableRequestCompression = false, bool disableAuthentication = false, TimeSpan? timeout = null);
+		HttpJsonRequest CreateReplicationAwareRequest(string currentServerUrl, string requestUrl, HttpMethod method, bool disableRequestCompression = false, bool disableAuthentication = false, TimeSpan? timeout = null);
 
 		/// <summary>
 		///     Create a http request to the specified relative url on the current database
 		/// </summary>
-		HttpJsonRequest CreateRequest(string relativeUrl, string method, bool disableRequestCompression = false, bool disableAuthentication = false, TimeSpan? timeout = null);
+		HttpJsonRequest CreateRequest(string relativeUrl, HttpMethod method, bool disableRequestCompression = false, bool disableAuthentication = false, TimeSpan? timeout = null);
 
 		/// <summary>
 		///     Deletes the document with the specified key
@@ -118,7 +121,7 @@ namespace Raven.Client.Connection
 		///     Create a new instance of <see cref="IDatabaseCommands" /> that will interact
 		///     with the specified database
 		/// </summary>
-		IDatabaseCommands ForDatabase(string database);
+		IDatabaseCommands ForDatabase(string database, ClusterBehavior? clusterBehavior = null);
 
 		/// <summary>
 		///     Create a new instance of <see cref="IDatabaseCommands" /> that will interact
@@ -234,6 +237,11 @@ namespace Raven.Client.Connection
 		/// </summary>
 		/// <param name="name">name of an index</param>
 		IndexDefinition GetIndex(string name);
+
+		/// <summary>
+		///     Retrieves indexing performance statistics for all indexes
+		/// </summary>
+		IndexingPerformanceStatistics[] GetIndexingPerformanceStatistics();
 
 		/// <summary>
 		///     Retrieves all suggestions for an index merging
@@ -511,6 +519,11 @@ namespace Raven.Client.Connection
 		/// </summary>
 		/// <param name="name">name of an index to reset</param>
 		void ResetIndex(string name);
+
+
+	    void SetIndexLock(string name, IndexLockMode unlock);
+
+        void SetIndexPriority(string name, IndexingPriority priority);
 
 		/// <summary>
 		///     Rollbacks the specified tx id

@@ -5,7 +5,7 @@ using Raven.Database.Impl;
 
 namespace Raven.Database.Util
 {
-	internal class SequentialUuidGenerator : IUuidGenerator
+	public class SequentialUuidGenerator : IUuidGenerator
 	{
 		private byte[] ticksAsBytes;
 		private long sequentialUuidCounterDocuments;
@@ -20,6 +20,7 @@ namespace Raven.Database.Util
 		private long sequentialUuidCounterTasks;
 		private long sequentialUuidCounterScheduledReductions;
 		private long sequentialUuidCounterIndexing;
+		private long sequentialUuidCounterTransformers;
 		private long sequentialUuidDocumentReferences;
 		private long sequentialUuidSubscriptions;
 
@@ -69,6 +70,9 @@ namespace Raven.Database.Util
 					break;
 				case UuidType.Indexing:
 					increment = Interlocked.Increment(ref sequentialUuidCounterIndexing);
+					break;
+				case UuidType.Transformers:
+					increment = Interlocked.Increment(ref sequentialUuidCounterTransformers);
 					break;
 				case UuidType.DocumentReferences:
 					increment = Interlocked.Increment(ref sequentialUuidDocumentReferences);

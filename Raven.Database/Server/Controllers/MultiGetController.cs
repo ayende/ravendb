@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -22,19 +23,19 @@ using Raven.Imports.Newtonsoft.Json;
 
 namespace Raven.Database.Server.Controllers
 {
-	public class MultiGetController : RavenDbApiController
+	public class MultiGetController : ClusterAwareRavenDbApiController
 	{
-		private static ThreadLocal<bool> recursive = new ThreadLocal<bool>(() => false);
+		private static readonly ThreadLocal<bool> Recursive = new ThreadLocal<bool>(() => false);
 
 		[HttpPost]
 		[RavenRoute("multi_get")]
 		[RavenRoute("databases/{databaseName}/multi_get")]
 		public async Task<HttpResponseMessage> MultiGet()
 		{
-			if (recursive.Value)
+			if (Recursive.Value)
 				throw new InvalidOperationException("Nested requests to multi_get are not supported");
 
-			recursive.Value = true;
+			Recursive.Value = true;
 			try
 			{
 				var requests = await ReadJsonObjectAsync<GetRequest[]>();
@@ -99,7 +100,7 @@ namespace Raven.Database.Server.Controllers
 			}
 			finally
 			{
-				recursive.Value = false;
+				Recursive.Value = false;
 			}
 		}
 
@@ -227,13 +228,27 @@ namespace Raven.Database.Server.Controllers
 			{
 				query = modifiedQuery;
 			}
-
-			var msg = new HttpRequestMessage(HttpMethod.Get, new UriBuilder
+			HttpRequestMessage msg;
+			if (request.Method == "POST")
 			{
-				Host = "multi.get",
-				Query = query,
-				Path = request.Url
-			}.Uri);
+				msg = new HttpRequestMessage(HttpMethod.Post, new UriBuilder
+				{
+					Host = "multi.get",
+					Path = request.Url
+				}.Uri);
+				msg.Content = new StringContent(request.Content);
+				msg.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
+				
+			}
+			else
+			{
+				msg = new HttpRequestMessage(HttpMethod.Get, new UriBuilder
+				{
+					Host = "multi.get",
+					Query = query,
+					Path = request.Url
+				}.Uri);
+			}
 
 			IncrementInnerRequestsCount();
 

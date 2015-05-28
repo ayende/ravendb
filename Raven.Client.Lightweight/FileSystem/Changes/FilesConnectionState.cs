@@ -10,6 +10,7 @@ namespace Raven.Client.FileSystem.Changes
         private readonly Action onZero;
         private readonly Task task;
         private int value;
+
         public Task Task
         {
             get { return task; }
@@ -69,14 +70,6 @@ namespace Raven.Client.FileSystem.Changes
             var onFileChangeNotification = OnFileChangeNotification;
             if (onFileChangeNotification != null)
                 onFileChangeNotification(fileChangeNotification);
-        }
-
-        public event Action<CancellationNotification> OnCancellationNotification = (x) => { };
-        public void Send(CancellationNotification cancellationNotification)
-        {
-            var onCancellationNotification = OnCancellationNotification;
-            if (onCancellationNotification != null)
-                onCancellationNotification(cancellationNotification);
         }
 
         public event Action<Exception> OnError;

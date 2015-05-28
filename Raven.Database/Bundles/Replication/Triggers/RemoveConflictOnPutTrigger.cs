@@ -9,16 +9,15 @@ using Raven.Abstractions.Data;
 using Raven.Database.Bundles.Replication.Impl;
 using Raven.Database.Plugins;
 using Raven.Json.Linq;
-using System.Linq;
 
-namespace Raven.Bundles.Replication.Triggers
+namespace Raven.Database.Bundles.Replication.Triggers
 {
 	[ExportMetadata("Bundle", "Replication")]
 	[ExportMetadata("Order", 10000)]
 	[InheritedExport(typeof(AbstractPutTrigger))]
 	public class RemoveConflictOnPutTrigger : AbstractPutTrigger
 	{
-		public override void OnPut(string key, RavenJObject document, RavenJObject metadata, TransactionInformation transactionInformation)
+		public override void OnPut(string key, RavenJObject jsonReplicationDocument, RavenJObject metadata, TransactionInformation transactionInformation)
 		{
 			using (Database.DisableAllTriggersForCurrentThread())
 			{
@@ -33,7 +32,6 @@ namespace Raven.Bundles.Replication.Triggers
 				var history = new RavenJArray();
 				metadata[Constants.RavenReplicationHistory] = history;
 
-				var ravenJTokenEqualityComparer = new RavenJTokenEqualityComparer();
 				// this is a conflict document, holding document keys in the 
 				// values of the properties
 				var conflicts = oldVersion.DataAsJson.Value<RavenJArray>("Conflicts");

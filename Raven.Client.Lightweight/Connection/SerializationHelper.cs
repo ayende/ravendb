@@ -11,7 +11,6 @@ using System.Globalization;
 using System.Linq;
 using System.Net;
 using System.Net.Http.Headers;
-using Raven.Abstractions.Util;
 using Raven.Imports.Newtonsoft.Json;
 using Raven.Abstractions;
 using Raven.Abstractions.Data;
@@ -141,6 +140,7 @@ namespace Raven.Client.Connection
 				Includes = ((RavenJArray)json["Includes"]).Cast<RavenJObject>().ToList(),
 				TotalResults = Convert.ToInt32(json["TotalResults"].ToString()),
 				IndexName = json.Value<string>("IndexName"),
+                ResultEtag = Etag.Parse(json.Value<string>("ResultEtag")),
 				SkippedResults = Convert.ToInt32(json["SkippedResults"].ToString()),
 				Highlightings = (json.Value<RavenJObject>("Highlightings") ?? new RavenJObject())
 					.JsonDeserialization<Dictionary<string, Dictionary<string, string[]>>>(),

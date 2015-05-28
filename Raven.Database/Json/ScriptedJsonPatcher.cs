@@ -12,11 +12,13 @@ using System.Runtime.Serialization;
 using System.Text;
 using Jint;
 using Jint.Native;
+using Jint.Parser;
 using Jint.Runtime;
 using Jint.Runtime.Environments;
 
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Exceptions;
+using Raven.Database.Extensions;
 using Raven.Json.Linq;
 
 namespace Raven.Database.Json
@@ -43,8 +45,12 @@ namespace Raven.Database.Json
 		private readonly int maxSteps;
 		private readonly int additionalStepsPerSize;
 
+		private int totalScriptSteps;
+		private readonly DocumentDatabase database;
+
 		public ScriptedJsonPatcher(DocumentDatabase database = null)
 		{
+			this.database = database;
 			if (database == null)
 			{
 				maxSteps = 10 * 1000;
@@ -55,6 +61,13 @@ namespace Raven.Database.Json
 				maxSteps = database.Configuration.MaxStepsForScript;
 				additionalStepsPerSize = database.Configuration.AdditionalStepsForScriptBasedOnDocumentSize;
 			}
+
+			totalScriptSteps = maxSteps;
+		}
+
+		public int TotalScriptSteps
+		{
+			get { return totalScriptSteps; }
 		}
 
 		public virtual RavenJObject Apply(ScriptedJsonPatcherOperationScope scope, RavenJObject document, ScriptedPatchRequest patch, int size = 0, string docId = null)
@@ -75,9 +88,10 @@ namespace Raven.Database.Json
 		private RavenJObject ApplySingleScript(RavenJObject doc, ScriptedPatchRequest patch, int size, string docId, ScriptedJsonPatcherOperationScope scope)
 		{
 			Engine jintEngine;
+			var customFunctions = scope.CustomFunctions;
 			try
 			{
-				jintEngine = ScriptsCache.CheckoutScript(CreateEngine, patch);
+				jintEngine = ScriptsCache.CheckoutScript(CreateEngine, patch, customFunctions);
 			}
 			catch (NotSupportedException e)
 			{
@@ -102,8 +116,10 @@ namespace Raven.Database.Json
 				CleanupEngine(patch, jintEngine, scope);
 
 				OutputLog(jintEngine);
+				if (scope.DebugMode)
+					Debug.Add(string.Format("Statements executed: {0}", jintEngine.StatementsCount));
 
-				ScriptsCache.CheckinScript(patch, jintEngine);
+				ScriptsCache.CheckinScript(patch, jintEngine, customFunctions);
 
 				return scope.ConvertReturnValue(jsObject);
 			}
@@ -124,6 +140,9 @@ namespace Raven.Database.Json
 					errorMsg += Environment.NewLine + "Debug information: " + Environment.NewLine +
 								string.Join(Environment.NewLine, Debug);
 
+				if (error != null)
+					errorMsg += Environment.NewLine + "Stacktrace:" + Environment.NewLine + error.CallStack;
+
 				var targetEx = errorEx as TargetInvocationException;
 				if (targetEx != null && targetEx.InnerException != null)
 					throw new InvalidOperationException(errorMsg, targetEx.InnerException);
@@ -143,16 +162,40 @@ namespace Raven.Database.Json
 
 		private void PrepareEngine(ScriptedPatchRequest patch, string docId, int size, ScriptedJsonPatcherOperationScope scope, Engine jintEngine)
 		{
+			scope.AdditionalStepsPerSize = additionalStepsPerSize;
+			scope.MaxSteps = maxSteps;
+
+
+			if (size != 0)
+			{
+				totalScriptSteps = maxSteps + (size * additionalStepsPerSize);
+				jintEngine.Options.MaxStatements(TotalScriptSteps);
+			}
+
 			jintEngine.Global.Delete("PutDocument", false);
 			jintEngine.Global.Delete("LoadDocument", false);
 			jintEngine.Global.Delete("DeleteDocument", false);
+			jintEngine.Global.Delete("IncreaseNumberOfAllowedStepsBy", false);
 
 			CustomizeEngine(jintEngine, scope);
 
-			jintEngine.SetValue("PutDocument", (Action<string, object, object>)((key, document, metadata) => scope.PutDocument(key, document, metadata, jintEngine)));
-			jintEngine.SetValue("LoadDocument", (Func<string, JsValue>)(key => scope.LoadDocument(key, jintEngine)));
+			jintEngine.SetValue("PutDocument", (Func<string, object, object, string>)((key, document, metadata) => scope.PutDocument(key, document, metadata, jintEngine)));
+			jintEngine.SetValue("LoadDocument", (Func<string, JsValue>)(key => scope.LoadDocument(key, jintEngine, ref totalScriptSteps)));
 			jintEngine.SetValue("DeleteDocument", (Action<string>)(scope.DeleteDocument));
 			jintEngine.SetValue("__document_id", docId);
+
+			jintEngine.SetValue("IncreaseNumberOfAllowedStepsBy", (Action<int>)(number =>
+			{
+				if (database != null && database.Configuration.AllowScriptsToAdjustNumberOfSteps)
+				{
+					scope.MaxSteps += number;
+					jintEngine.Options.MaxStatements(totalScriptSteps + number);
+
+					return;
+				}
+
+				throw new InvalidOperationException("Cannot use 'IncreaseNumberOfAllowedStepsBy' method, because `Raven/AllowScriptsToAdjustNumberOfSteps` is set to false.");
+			}));
 
 			foreach (var kvp in patch.Values)
 			{
@@ -168,22 +211,16 @@ namespace Raven.Database.Json
 					jintEngine.SetValue(kvp.Key, jsInstance);
 				}
 			}
-
+			
 			jintEngine.ResetStatementsCount();
-			if (size != 0)
-				jintEngine.Options.MaxStatements(maxSteps + (size * additionalStepsPerSize));
 		}
 
 		private Engine CreateEngine(ScriptedPatchRequest patch)
 		{
-			var scriptWithProperLines = NormalizeLineEnding(patch.Script);
-			var wrapperScript = String.Format(@"
-function ExecutePatchScript(docInner){{
-  (function(doc){{
-	{0}
-  }}).apply(docInner);
-}};
-", scriptWithProperLines);
+			var scriptWithProperLines = patch.Script.NormalizeLineEnding();
+			// NOTE: we merged few first lines of wrapping script to make sure {0} is at line 0.
+			// This will all us to show proper line number using user lines locations.
+			var wrapperScript = string.Format(@"function ExecutePatchScript(docInner){{ (function(doc){{ {0} }}).apply(docInner); }};", scriptWithProperLines);
 
 			var jintEngine = new Engine(cfg =>
 			{
@@ -192,68 +229,38 @@ function ExecutePatchScript(docInner){{
 #else
 				cfg.AllowDebuggerStatement(false);
 #endif
-				cfg.MaxStatements(maxSteps);
+				cfg.LimitRecursion(1024);
+				cfg.MaxStatements(int.MaxValue); // allow lodash to load
 			});
 
 			AddScript(jintEngine, "Raven.Database.Json.lodash.js");
 			AddScript(jintEngine, "Raven.Database.Json.ToJson.js");
 			AddScript(jintEngine, "Raven.Database.Json.RavenDB.js");
 
-			jintEngine.Execute(wrapperScript);
+			jintEngine.Options.MaxStatements(maxSteps);
+
+			jintEngine.Execute(wrapperScript, new ParserOptions
+			{
+				Source = "main.js"
+			});
 
 			return jintEngine;
 		}
 
-		private static string NormalizeLineEnding(string script)
-		{
-			var sb = new StringBuilder();
-			using (var reader = new StringReader(script))
-			{
-				while (true)
-				{
-					var line = reader.ReadLine();
-					if (line == null)
-						return sb.ToString();
-					sb.AppendLine(line);
-				}
-			}
-		}
-
 		private static void AddScript(Engine jintEngine, string ravenDatabaseJsonMapJs)
 		{
-			jintEngine.Execute(GetFromResources(ravenDatabaseJsonMapJs));
+			jintEngine.Execute(GetFromResources(ravenDatabaseJsonMapJs), new ParserOptions
+			{
+				Source = ravenDatabaseJsonMapJs
+			});
 		}
 
 		protected virtual void CustomizeEngine(Engine engine, ScriptedJsonPatcherOperationScope scope)
 		{
-			RavenJToken functions;
-			if (scope.CustomFunctions == null || scope.CustomFunctions.DataAsJson.TryGetValue("Functions", out functions) == false)
-				return;
-
-			engine.Execute(string.Format(@"
-var customFunctions = function() {{ 
-	var exports = {{ }};
-	{0};
-	return exports;
-}}();
-for(var customFunction in customFunctions) {{
-	this[customFunction] = customFunctions[customFunction];
-}};", functions));
 		}
 
 		protected virtual void RemoveEngineCustomizations(Engine engine, ScriptedJsonPatcherOperationScope scope)
 		{
-			RavenJToken functions;
-			if (scope.CustomFunctions == null || scope.CustomFunctions.DataAsJson.TryGetValue("Functions", out functions) == false)
-				return;
-
-			engine.Execute(@"
-if(customFunctions) { 
-	for(var customFunction in customFunctions) { 
-		delete this[customFunction]; 
-	}; 
-};");
-			engine.SetValue("customFunctions", JsValue.Undefined);
 		}
 
 		private void OutputLog(Engine engine)
@@ -269,16 +276,29 @@ if(customFunctions) {
 
 				var jsInstance = property.Value.Value;
 				if (!jsInstance.HasValue)
-					continue;				
-				
-				var output = jsInstance.Value.IsNumber() ? 
-					jsInstance.Value.AsNumber().ToString(CultureInfo.InvariantCulture) : 
-								(jsInstance.Value.IsBoolean() ? //if the parameter is boolean, we need to take it into account, 
-																//since jsInstance.Value.AsString() will not work for boolean values
-										jsInstance.Value.AsBoolean().ToString() : 
-										jsInstance.Value.AsString());
+					continue;
 
-				Debug.Add(output);
+				var value = jsInstance.Value;
+				string output = null;
+				switch (value.Type)
+				{
+					case Types.Boolean:
+						output = value.AsBoolean().ToString();
+						break;
+					case Types.Null:
+					case Types.Undefined:
+						output = value.ToString();
+						break;
+					case Types.Number:
+						output = value.AsNumber().ToString(CultureInfo.InvariantCulture);
+						break;
+					case Types.String:
+						output = value.AsString();
+						break;
+				}
+
+				if (output != null)
+					Debug.Add(output);
 			}
 
 			engine.Invoke("clear_debug_outputs");

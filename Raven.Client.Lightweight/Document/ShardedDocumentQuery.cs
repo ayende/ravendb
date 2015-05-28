@@ -115,6 +115,7 @@ namespace Raven.Client.Document
 				rootTypes = {typeof(T)},
 				beforeQueryExecutionAction = beforeQueryExecutionAction,
 				afterQueryExecutedCallback = afterQueryExecutedCallback,
+				afterStreamExecutedCallback = afterStreamExecutedCallback,
 				defaultField = defaultField,
 				highlightedFields = new List<HighlightedField>(highlightedFields),
 				highlighterPreTags = highlighterPreTags,
@@ -266,7 +267,7 @@ namespace Raven.Client.Document
 				queryOperation = InitializeQueryOperation();
 			}
 
-			var lazyQueryOperation = new LazyQueryOperation<T>(queryOperation, afterQueryExecutedCallback, includes);
+            var lazyQueryOperation = new LazyQueryOperation<T>(queryOperation, afterQueryExecutedCallback, includes, ShardDatabaseCommands.First().OperationsHeaders);
 			return lazyQueryOperation;
 		}
 

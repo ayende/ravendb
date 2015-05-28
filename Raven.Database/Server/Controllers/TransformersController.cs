@@ -1,24 +1,17 @@
-﻿using System;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Linq;
+﻿using Raven.Abstractions.Indexing;
+using Raven.Abstractions.Logging;
+using Raven.Database.Server.WebApi.Attributes;
+using Raven.Json.Linq;
+
+using System;
 using System.Net;
 using System.Net.Http;
 using System.Threading.Tasks;
 using System.Web.Http;
-using JetBrains.Annotations;
-using Raven.Abstractions.Connection;
-using Raven.Abstractions.Data;
-using Raven.Abstractions.Indexing;
-using Raven.Abstractions.Logging;
-using Raven.Abstractions.Replication;
-using Raven.Database.Server.WebApi.Attributes;
-using Raven.Json.Linq;
 
 namespace Raven.Database.Server.Controllers
 {
-	public class TransformersController : RavenDbApiController
+	public class TransformersController : ClusterAwareRavenDbApiController
 	{
 		[HttpGet]
 		[RavenRoute("transformers/{*id}")]
@@ -29,7 +22,7 @@ namespace Raven.Database.Server.Controllers
 			if (string.IsNullOrEmpty(transformer) == false && transformer != "/")
 			{
 				var transformerDefinition = Database.Transformers.GetTransformerDefinition(transformer);
-				if (transformerDefinition == null)
+				if (transformerDefinition == null || transformerDefinition.Temporary)
 					return GetEmptyMessage(HttpStatusCode.NotFound);
 
 				return GetMessageWithObject(new
@@ -86,7 +79,16 @@ namespace Raven.Database.Server.Controllers
 		[RavenRoute("databases/{databaseName}/transformers/{*id}")]
 		public HttpResponseMessage TransformersDelete(string id)
 		{
-			Database.Transformers.DeleteTransform(id);
+			var isReplication = GetQueryStringValue("is-replication");
+
+			if (Database.Transformers.DeleteTransform(id) &&
+				!String.IsNullOrWhiteSpace(isReplication) && isReplication.Equals("true", StringComparison.InvariantCultureIgnoreCase))
+			{
+				const string emptyFrom = "<no hostname>";
+				var from = Uri.UnescapeDataString(GetQueryStringValue("from") ?? emptyFrom);
+				Log.Info("received transformer deletion from replication (replicating transformer tombstone, received from {0})", from);
+			}
+
 			return GetEmptyMessage(HttpStatusCode.NoContent);
 		}
 

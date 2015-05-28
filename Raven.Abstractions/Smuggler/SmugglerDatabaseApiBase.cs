@@ -21,7 +21,6 @@ using Raven.Abstractions.Util;
 using Raven.Abstractions.Extensions;
 using Raven.Json.Linq;
 using Raven.Imports.Newtonsoft.Json;
-using Raven.Abstractions.Extensions;
 
 namespace Raven.Abstractions.Smuggler
 {
@@ -35,7 +34,7 @@ namespace Raven.Abstractions.Smuggler
 
         protected SmugglerDatabaseApiBase(SmugglerDatabaseOptions options)
 		{
-			this.Options = options;
+			Options = options;
 		}
 
         public virtual async Task<OperationState> ExportData(SmugglerExportOptions<RavenConnectionStringOptions> exportOptions)
@@ -89,12 +88,12 @@ namespace Raven.Abstractions.Smuggler
 
 			try
 			{
-				await DetectServerSupportedFeatures(exportOptions.From);
+				SupportedFeatures = await DetectServerSupportedFeatures(Operations, exportOptions.From);
 			}
 			catch (WebException e)
 			{
 				Operations.ShowProgress("Failed to query server for supported features. Reason : " + e.Message);
-				SetLegacyMode(); //could not detect supported features, then run in legacy mode
+				SupportedFeatures = GetLegacyModeFeatures(); //could not detect supported features, then run in legacy mode
 				//				lastException = new SmugglerExportException
 				//				{
 				//					LastEtag = Etag.Empty,
@@ -104,8 +103,7 @@ namespace Raven.Abstractions.Smuggler
 
 			try
 			{
-				using (var gZipStream = new GZipStream(stream, CompressionMode.Compress,
- leaveOpen: true))
+				using (var gZipStream = new GZipStream(stream, CompressionMode.Compress, leaveOpen: true))
 				using (var streamWriter = new StreamWriter(gZipStream))
 				{
 					var jsonWriter = new JsonTextWriter(streamWriter)
@@ -219,7 +217,7 @@ namespace Raven.Abstractions.Smuggler
 							{ "Key", identityInfo.Key }, 
 							{ "Value", identityInfo.Value }
 						}.WriteTo(jsonWriter);
-		}
+		    }
 
 			jsonWriter.WriteEndArray();
 
@@ -299,7 +297,7 @@ namespace Raven.Abstractions.Smuggler
 			int totalCount = 0;
 			while (true)
 			{
-				var transformers = await Operations.GetTransformers(src, totalCount);
+				var transformers = await Operations.GetTransformers(totalCount);
 				if (transformers.Length == 0)
 				{
 					Operations.ShowProgress("Done with reading transformers, total: {0}", totalCount);
@@ -391,7 +389,6 @@ namespace Raven.Abstractions.Smuggler
 			var totalCount = 0;
 			var lastReport = SystemTime.UtcNow;
 			var reportInterval = TimeSpan.FromSeconds(2);
-			var errorsCount = 0;
 			var reachedMaxEtag = false;
 			Operations.ShowProgress("Exporting Documents");
            
@@ -404,10 +401,8 @@ namespace Raven.Abstractions.Smuggler
 					if (maxRecords > 0 && reachedMaxEtag == false)
 					{
 						var amountToFetchFromServer = Math.Min(Options.BatchSize, maxRecords);
-						using (var documents = await Operations.GetDocuments(src, lastEtag, amountToFetchFromServer))
+						using (var documents = await Operations.GetDocuments(lastEtag, amountToFetchFromServer))
 						{
-							var watch = Stopwatch.StartNew();
-
 							while (await documents.MoveNextAsync())
 							{
 								hasDocs = true;
@@ -438,11 +433,6 @@ namespace Raven.Abstractions.Smuggler
                                     Operations.ShowProgress("Exported {0} documents", totalCount);
                                     lastReport = SystemTime.UtcNow;
                                 }
-
-                                if (watch.ElapsedMilliseconds > 100)
-                                    errorsCount++;
-
-								watch.Start();
 							}
 						}
 
@@ -613,8 +603,8 @@ namespace Raven.Abstractions.Smuggler
 		{
             Operations.Configure(Options);
             Operations.Initialize(Options);
-			await DetectServerSupportedFeatures(importOptions.To);
-
+			SupportedFeatures = await DetectServerSupportedFeatures(Operations, importOptions.To);
+			
 			Stream sizeStream;
 
             var sw = Stopwatch.StartNew();
@@ -626,7 +616,7 @@ namespace Raven.Abstractions.Smuggler
 				sizeStream = new CountingStream(new GZipStream(stream, CompressionMode.Decompress));
 				var streamReader = new StreamReader(sizeStream);
 
-				jsonReader = new JsonTextReader(streamReader);
+				jsonReader = new RavenJsonTextReader(streamReader);
 
 				if (jsonReader.Read() == false)
 					return;
@@ -780,15 +770,8 @@ namespace Raven.Abstractions.Smuggler
 
 				var item = RavenJToken.ReadFrom(jsonReader);
 
-				var deletedDocumentInfo =
-					new JsonSerializer
-					{
-						Converters =
-							{
-								new JsonToJsonConverter(),
-                                new StreamFromJsonConverter()
-							}
-					}.Deserialize<Tombstone>(new RavenJTokenReader(item));
+				var deletedDocumentInfo = new JsonSerializer { Converters = DefaultConverters }
+                                                    .Deserialize<Tombstone>(new RavenJTokenReader(item));
 
 				Operations.ShowProgress("Importing deleted documents {0}", deletedDocumentInfo.Key);
 
@@ -811,15 +794,8 @@ namespace Raven.Abstractions.Smuggler
 
 				var item = RavenJToken.ReadFrom(jsonReader);
 
-				var deletedAttachmentInfo =
-					new JsonSerializer
-					{
-						Converters =
-							{
-								new JsonToJsonConverter(),
-                                new StreamFromJsonConverter()
-					}
-					}.Deserialize<Tombstone>(new RavenJTokenReader(item));
+				var deletedAttachmentInfo = new JsonSerializer { Converters = DefaultConverters }
+                                                    .Deserialize<Tombstone>(new RavenJTokenReader(item));
 
 				Operations.ShowProgress("Importing deleted attachments {0}", deletedAttachmentInfo.Key);
 
@@ -855,6 +831,23 @@ namespace Raven.Abstractions.Smuggler
 				return count;
 		}
 
+        private static Lazy<JsonConverterCollection> defaultConverters = new Lazy<JsonConverterCollection>(() =>
+        {
+            var converters = new JsonConverterCollection()
+            {
+                new JsonToJsonConverter(),
+                new StreamFromJsonConverter()
+            };
+            converters.Freeze();
+
+            return converters;
+        }, true);
+
+        private static JsonConverterCollection DefaultConverters 
+        {
+            get { return defaultConverters.Value; }
+        }
+
         [Obsolete("Use RavenFS instead.")]
 		private async Task<int> ImportAttachments(RavenConnectionStringOptions dst, JsonTextReader jsonReader)
 		{
@@ -868,27 +861,20 @@ namespace Raven.Abstractions.Smuggler
                 if ((Options.OperateOnTypes & ItemType.Attachments) != ItemType.Attachments)
 					continue;
 
-				var attachmentExportInfo =
-					new JsonSerializer
-					{
-						Converters =
-							{
-								new JsonToJsonConverter(),
-                                new StreamFromJsonConverter()
-							}
-					}.Deserialize<AttachmentExportInfo>(new RavenJTokenReader(item));
+				var attachmentExportInfo = new JsonSerializer { Converters = DefaultConverters }
+                                                    .Deserialize<AttachmentExportInfo>(new RavenJTokenReader(item));
 
 				Operations.ShowProgress("Importing attachment {0}", attachmentExportInfo.Key);
 
 				if (Options.StripReplicationInformation) 
 					attachmentExportInfo.Metadata = Operations.StripReplicationInformationFromMetadata(attachmentExportInfo.Metadata);
 
-				await Operations.PutAttachment(dst, attachmentExportInfo);
+				await Operations.PutAttachment(attachmentExportInfo);
 
 				count++;
 			}
 
-			await Operations.PutAttachment(dst, null); // force flush
+			await Operations.PutAttachment(null); // force flush
 
 				return count;
 		}
@@ -906,12 +892,12 @@ namespace Raven.Abstractions.Smuggler
             };
 
             JsonDocument lastEtagsDocument = null;
-            if ( Options.UseContinuationFile )
+            if (Options.UseContinuationFile)
             {
                 lastEtagsDocument = Operations.GetDocument(continuationDocId);
                 if ( lastEtagsDocument == null )
                 {
-                    lastEtagsDocument = new JsonDocument()
+                    lastEtagsDocument = new JsonDocument
                     {
                         Key = continuationDocId,                        
                         Etag = Etag.Empty,
@@ -959,16 +945,19 @@ namespace Raven.Abstractions.Smuggler
                     continue;
 
                 var metadata = document["@metadata"] as RavenJObject;
-                if ( metadata != null )
+                if (metadata != null)
                 {
                     if (Options.SkipConflicted && metadata.ContainsKey(Constants.RavenReplicationConflictDocument))
                         continue;
 
                     if (Options.StripReplicationInformation)
                         document["@metadata"] = Operations.StripReplicationInformationFromMetadata(metadata);
+
+					if(Options.ShouldDisableVersioningBundle)
+						document["@metadata"] = Operations.DisableVersioning(metadata);
                 }
 
-                if ( Options.UseContinuationFile )
+                if (Options.UseContinuationFile)
                 {
                     tempLastEtag = Etag.Parse(document.Value<RavenJObject>("@metadata").Value<string>("@etag"));
                     if (tempLastEtag.CompareTo(state.LastDocsEtag) <= 0) // tempLastEtag < lastEtag therefore we are skipping.
@@ -1065,7 +1054,7 @@ namespace Raven.Abstractions.Smuggler
 			int totalCount = 0;
 			while (true)
 			{
-				var indexes = await Operations.GetIndexes(src, totalCount);
+				var indexes = await Operations.GetIndexes(totalCount);
 				if (indexes.Length == 0)
 				{
 					Operations.ShowProgress("Done with reading indexes, total: {0}", totalCount);
@@ -1080,14 +1069,13 @@ namespace Raven.Abstractions.Smuggler
 			}
 		}
 
-		private async Task DetectServerSupportedFeatures(RavenConnectionStringOptions server)
+		protected async Task<ServerSupportedFeatures> DetectServerSupportedFeatures(ISmugglerDatabaseOperations ops, RavenConnectionStringOptions server)
 		{
-			var serverVersion = await Operations.GetVersion(server);
+			var serverVersion = await ops.GetVersion(server);
             if (string.IsNullOrEmpty(serverVersion))
-			{
-				SetLegacyMode();
-				return;
-			}
+            {
+	            return GetLegacyModeFeatures();
+            }
 
             var smugglerVersion = FileVersionInfo.GetVersionInfo(AssemblyHelper.GetAssemblyLocationFor<SmugglerDatabaseApiBase>()).ProductVersion;
 
@@ -1098,24 +1086,61 @@ namespace Raven.Abstractions.Smuggler
 
 			if (intServerVersion < 25)
 			{
-				IsTransformersSupported = false;
-				IsDocsStreamingSupported = false;
-                Operations.ShowProgress("Running in legacy mode, importing/exporting transformers is not supported. Server version: {0}. Smuggler version: {1}.", subServerVersion, subSmugglerVersion);
-				return;
+				
+                ops.ShowProgress("Running in legacy mode, importing/exporting transformers is not supported. Server version: {0}. Smuggler version: {1}.", subServerVersion, subSmugglerVersion);
+				return new ServerSupportedFeatures
+				{
+					IsTransformersSupported = false,
+					IsDocsStreamingSupported = false,
+					IsIdentitiesSmugglingSupported = false
+				};
 			}
 
-			IsTransformersSupported = true;
-			IsDocsStreamingSupported = true;
+			if (intServerVersion == 25)
+			{
+				ops.ShowProgress("Running in legacy mode, importing/exporting identities is not supported. Server version: {0}. Smuggler version: {1}.", subServerVersion, subSmugglerVersion);
+
+				return new ServerSupportedFeatures
+				{
+					IsTransformersSupported = true,
+					IsDocsStreamingSupported = true,
+					IsIdentitiesSmugglingSupported = false
+				};
+			}
+
+			return new ServerSupportedFeatures
+			{
+				IsTransformersSupported = true,
+				IsDocsStreamingSupported = true,
+				IsIdentitiesSmugglingSupported = true
+			};
 		}
 
-		private void SetLegacyMode()
+		private ServerSupportedFeatures GetLegacyModeFeatures()
 		{
-			IsTransformersSupported = false;
-			IsDocsStreamingSupported = false;
+			var result = new ServerSupportedFeatures
+			{
+				IsTransformersSupported = false,
+				IsDocsStreamingSupported = false,
+				IsIdentitiesSmugglingSupported = false
+			};
+			
 			Operations.ShowProgress("Server version is not available. Running in legacy mode which does not support transformers.");
+
+			return result;
 		}
 
-		public bool IsTransformersSupported { get; private set; }
-		public bool IsDocsStreamingSupported { get; private set; }
+		public ServerSupportedFeatures SupportedFeatures { get; private set; }
+
+		protected static void SetDatabaseNameIfEmpty(RavenConnectionStringOptions connection)
+		{
+			if (string.IsNullOrWhiteSpace(connection.DefaultDatabase) == false)
+				return;
+			var index = connection.Url.IndexOf("/databases/", StringComparison.OrdinalIgnoreCase);
+			if (index != -1)
+			{
+				connection.DefaultDatabase = connection.Url.Substring(index + "/databases/".Length).Trim(new[] { '/' });
+			}
+		}
 	}
 }

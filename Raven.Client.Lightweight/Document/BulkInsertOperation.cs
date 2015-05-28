@@ -3,7 +3,6 @@ using System;
 using System.Threading.Tasks;
 using Raven.Abstractions.Data;
 using Raven.Client.Changes;
-using Raven.Client.Connection;
 using Raven.Client.Extensions;
 using Raven.Json.Linq;
 
@@ -56,7 +55,7 @@ namespace Raven.Client.Document
 				? documentStore.AsyncDatabaseCommands.ForSystemDatabase()
 				: documentStore.AsyncDatabaseCommands.ForDatabase(database);
 
-			generateEntityIdOnTheClient = new GenerateEntityIdOnTheClient(documentStore, entity => documentStore.Conventions.GenerateDocumentKeyAsync(database, DatabaseCommands, entity).ResultUnwrap());
+			generateEntityIdOnTheClient = new GenerateEntityIdOnTheClient(documentStore.Conventions, entity => documentStore.Conventions.GenerateDocumentKeyAsync(database, DatabaseCommands, entity).ResultUnwrap());
 			Operation = GetBulkInsertOperation(options, DatabaseCommands, changes);
 			entityToJson = new EntityToJson(documentStore, listeners);
 		}

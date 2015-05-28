@@ -37,6 +37,7 @@ namespace Raven.Database.Commercial
 			{"periodicBackup", "false"},
 			{"encryption", "false"},
 			{"fips", "false"},
+			{"globalConfiguration", "false"},
 			{"compression", "false"},
 			{"quotas","false"},
 			{"ravenfs", "false"},
@@ -45,6 +46,8 @@ namespace Raven.Database.Commercial
 			{"documentExpiration","true"},
 			{"replication","true"},
 			{"versioning","true"},
+			{"cluster","false"},
+			{"monitoring","false"}
 		};
 
 		static ValidateLicense()
@@ -100,7 +103,7 @@ namespace Raven.Database.Commercial
 								config.Catalog.Catalogs.Remove(catalog);
 							}
 						}
-					});
+                    }, config.TurnOffDiscoveryClient);
 				}
 				catch (LicenseExpiredException ex)
 				{
