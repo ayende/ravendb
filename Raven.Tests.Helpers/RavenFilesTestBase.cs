@@ -32,6 +32,8 @@ using Raven.Tests.Helpers.Util;
 
 using Raven.Client.Extensions;
 using Xunit;
+using Raven.Server;
+using Raven.Client.FileSystem;
 
 namespace Raven.Tests.Helpers
 {

@@ -417,7 +417,7 @@ namespace Raven.Client.Shard
 		/// </summary>
 		Lazy<T[]> ILazySessionOperations.Load<T>(IEnumerable<string> ids)
 		{
-			return Lazily.Load<T>(ids, (Action<T[]>)null);
+			return Lazily.Load<T>(ids, null);
 		}
 
 		/// <summary>
@@ -511,7 +511,7 @@ namespace Raven.Client.Shard
 		Lazy<T[]> ILazySessionOperations.Load<T>(IEnumerable<ValueType> ids)
 		{
 			var documentKeys = ids.Select(id => Conventions.FindFullDocumentKeyFromNonStringIdentifier(id, typeof(T), false));
-			return Lazily.Load<T>(documentKeys, (Action<T[]>)null);
+			return Lazily.Load<T>(documentKeys, null);
 		}
 
 		Lazy<T[]> ILazySessionOperations.Load<T>(IEnumerable<ValueType> ids, Action<T[]> onEval)
@@ -561,7 +561,7 @@ namespace Raven.Client.Shard
 		Lazy<T[]> ILazySessionOperations.Load<T>(params ValueType[] ids)
 		{
 			var documentKeys = ids.Select(id => Conventions.FindFullDocumentKeyFromNonStringIdentifier(id, typeof(T), false));
-			return Lazily.Load<T>(documentKeys, (Action<T[]>)null);
+			return Lazily.Load<T>(documentKeys, null);
 		}
 
 		/// <summary>

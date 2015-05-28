@@ -47,6 +47,7 @@ namespace Raven.Abstractions.Connection
 			this.configureRequest = configureRequest;
 			this.handleUnauthorizedResponse = handleUnauthorizedResponse;
 			this.connectionStringOptions = connectionStringOptions;
+			this.allowWriteStreamBuffering = allowWriteStreamBuffering;
 		}
 
 		private HttpWebRequest CreateRequest()

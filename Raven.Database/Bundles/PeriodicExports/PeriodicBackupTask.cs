@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+
 using Raven.Abstractions;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
@@ -183,7 +184,7 @@ namespace Raven.Database.Bundles.PeriodicExports
 			{
 				if (currentTask != null)
 					return;
-				currentTask = Task.Factory.StartNew(new Func<Task>(async () =>
+				currentTask = Task.Factory.StartNew(async () =>
 				{
 					var documentDatabase = Database;
 					if (documentDatabase == null)
@@ -338,7 +339,8 @@ namespace Raven.Database.Bundles.PeriodicExports
 							});
 						}
 					}
-					})).Unwrap();
+				})
+				.Unwrap();
 
 				currentTask.ContinueWith(_ =>
 				{

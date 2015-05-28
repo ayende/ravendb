@@ -66,7 +66,6 @@ namespace Raven.Client.Document
 
 		private HttpJsonRequestFactory jsonRequestFactory;
 
-
 		/// <summary>
 		/// Whatever this instance has json request factory available
 		/// </summary>
@@ -633,7 +632,6 @@ namespace Raven.Client.Document
 			};
 		}
 
-
 		public IDocumentStoreReplicationInformer GetReplicationInformerForDatabase(string dbName = null)
 		{
 			var key = Url;
@@ -750,7 +748,6 @@ namespace Raven.Client.Document
 					Credentials,
 					jsonRequestFactory,
 					Conventions,
-					GetReplicationInformerForDatabase(database),
 					() => databaseChanges.Remove(database),
 					(key, etag, conflictIds, metadata) => ((AsyncServerClient)AsyncDatabaseCommands).TryResolveConflictByUsingRegisteredListenersAsync(key, etag, conflictIds, metadata));
 			}

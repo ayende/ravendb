@@ -1,6 +1,6 @@
 // Type definitions for Knockout v3.2.0-beta
 // Project: http://knockoutjs.com
-// Definitions by: Boris Yankov <https://github.com/borisyankov/>, Igor Oleinikov <https://github.com/Igorbek/>, Clément Bourgeois <https://github.com/moonpyk/>
+// Definitions by: Boris Yankov <https://github.com/borisyankov/>, Igor Oleinikov <https://github.com/Igorbek/>
 // Definitions: https://github.com/borisyankov/DefinitelyTyped
 
 
@@ -38,7 +38,6 @@ interface KnockoutObservableArrayFunctions<T> {
     removeAll(): T[];
 
     destroy(item: T): void;
-    destroy(destroyFunction: (item: T) => boolean): void;
     destroyAll(items: T[]): void;
     destroyAll(): void;
 }
@@ -66,6 +65,7 @@ interface KnockoutComputedStatic {
     <T>(): KnockoutComputed<T>;
     <T>(func: () => T, context?: any, options?: any): KnockoutComputed<T>;
     <T>(def: KnockoutComputedDefine<T>, context?: any): KnockoutComputed<T>;
+	(options?: any, context?: any): KnockoutComputed<any>;
 }
 
 interface KnockoutComputed<T> extends KnockoutObservable<T>, KnockoutComputedFunctions<T> {
@@ -135,7 +135,6 @@ interface KnockoutBindingHandler {
     init? (element: any, valueAccessor: () => any, allBindingsAccessor: KnockoutAllBindingsAccessor, viewModel: any, bindingContext: KnockoutBindingContext): void;
     update? (element: any, valueAccessor: () => any, allBindingsAccessor: KnockoutAllBindingsAccessor, viewModel: any, bindingContext: KnockoutBindingContext): void;
     options?: any;
-    preprocess?: (value: string, name: string, addBindingCallback?: (name: string, value: string) => void) => string;
 }
 
 interface KnockoutBindingHandlers {
@@ -162,7 +161,6 @@ interface KnockoutBindingHandlers {
     enable: KnockoutBindingHandler;
     disable: KnockoutBindingHandler;
     value: KnockoutBindingHandler;
-    textInput: KnockoutBindingHandler;
     hasfocus: KnockoutBindingHandler;
     checked: KnockoutBindingHandler;
     options: KnockoutBindingHandler;
@@ -306,7 +304,7 @@ interface KnockoutUtils {
 
     triggerEvent(element: any, eventType: any): void;
 
-    unwrapObservable<T>(value: KnockoutObservable<T> | T): T;
+    unwrapObservable<T>(value: KnockoutObservable<T>): T;
 
     peekObservable<T>(value: KnockoutObservable<T>): T;
 
@@ -413,13 +411,13 @@ interface KnockoutStatic {
     virtualElements: KnockoutVirtualElements;
     extenders: KnockoutExtenders;
 
-    applyBindings(viewModelOrBindingContext?: any, rootNode?: any): void;
-	applyBindingsToDescendants(viewModelOrBindingContext: any, rootNode: any): void;
+    applyBindings(viewModel: any, rootNode?: any): void;
+	applyBindingsToDescendants(viewModel: any, rootNode: any): void;
 	applyBindingAccessorsToNode(node: Node, bindings: (bindingContext: KnockoutBindingContext, node: Node) => {}, bindingContext: KnockoutBindingContext): void;
 	applyBindingAccessorsToNode(node: Node, bindings: {}, bindingContext: KnockoutBindingContext): void;
 	applyBindingAccessorsToNode(node: Node, bindings: (bindingContext: KnockoutBindingContext, node: Node) => {}, viewModel: any): void;
 	applyBindingAccessorsToNode(node: Node, bindings: {}, viewModel: any): void;
-    applyBindingsToNode(node: Node, bindings: any, viewModelOrBindingContext?: any): any;
+    applyBindingsToNode(node: Element, options: any, viewModel: any): void;
 
     subscribable: KnockoutSubscribableStatic;
     observable: KnockoutObservableStatic;
@@ -442,7 +440,7 @@ interface KnockoutStatic {
     cleanNode(node: Element): Element;
     renderTemplate(template: Function, viewModel: any, options?: any, target?: any, renderMode?: any): any;
     renderTemplate(template: string, viewModel: any, options?: any, target?: any, renderMode?: any): any;
-	unwrap<T>(value: KnockoutObservable<T> | T): T;
+	unwrap(value: any): any;
 
 	computedContext: KnockoutComputedContext;
 
@@ -558,14 +556,7 @@ interface KnockoutBindingProvider {
 }
 
 interface KnockoutComponents {
-    // overloads for register method:
-    register(componentName: string, config: KnockoutComponentRegister): void;
-    register(componentName: string, config: KnockoutComponentRegisterStringTemplate): void;
-    register(componentName: string, config: KnockoutComponentRegisterFnViewModel): void;
-    register(componentName: string, config: KnockoutComponentRegisterStringTemplateFnViewModel): void;
-    register(componentName: string, config: KnockoutComponentRegisterAMD): void;
-    register(componentName: string, config: {}): void;
-
+	register(componentName: string, definition: KnockoutComponentDefinition): void;
 	isRegistered(componentName: string): boolean;
 	unregister(componentName: string): void;
 	get(componentName: string, callback: (definition: KnockoutComponentDefinition) => void): void;
@@ -575,50 +566,6 @@ interface KnockoutComponents {
 	getComponentNameForNode(node: Node): string;
 }
 
-/* interfaces for register overloads*/
-
-interface KnockoutComponentRegister {
-    template: KnockoutComponentTemplate;
-    viewModel?: KnockoutComponentConfigViewModel;
-}
-
-interface KnockoutComponentRegisterAMD {
-    // load self-describing module using AMD module name
-    require: string;
-}
-
-interface KnockoutComponentRegisterFnViewModel {
-    template: KnockoutComponentTemplate;
-    viewModel?: (params: any) => any;
-}
-
-interface KnockoutComponentRegisterStringTemplate {
-    template: string;
-    viewModel?: KnockoutComponentConfigViewModel;
-}
-
-interface KnockoutComponentRegisterStringTemplateFnViewModel {
-    template: string;
-    viewModel?: (params: any) => any;
-}
-
-interface KnockoutComponentConfigViewModel {
-    instance?: any;
-    createViewModel? (params?: any, componentInfo?: KnockoutComponentInfo): any;
-    require?: string;
-}
-
-interface KnockoutComponentTemplate {
-    // specify element id (string) or a node
-    element?: any;
-    // AMD module load
-    require?: string;
-}
-
-interface KnockoutComponentInfo {
-    element: any;
-}
-/* end register overloads */
 interface KnockoutComponentDefinition {
 	template: Node[];
 	createViewModel?(params: any, options: { element: Node; }): any;
@@ -639,7 +586,7 @@ interface KnockoutComponentConfig {
 
 interface KnockoutComputedContext {
 	getDependenciesCount(): number;
-	isInitial: () => boolean;
+	isInitial: boolean;
 	isSleeping: boolean;
 }
 

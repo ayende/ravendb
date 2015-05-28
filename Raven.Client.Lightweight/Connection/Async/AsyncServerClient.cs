@@ -1050,6 +1050,7 @@ namespace Raven.Client.Connection.Async
 					{
 						throw new InvalidOperationException("Got an error from server, status code: " + getResponse.Status +
 													   Environment.NewLine + getResponse.Result);
+
 					}
 					var curFacetDoc = getResponse.Result;
 
@@ -1300,14 +1301,6 @@ namespace Raven.Client.Connection.Async
 					path += "&" + string.Join("&", includes.Select(x => "include=" + x).ToArray());
 				}
 
-	            if (metadataOnly)
-	                path += "&metadata-only=true";
-	            if (indexEntriesOnly)
-	                path += "&debug=entries";
-	            if (includes != null && includes.Length > 0)
-	            {
-	                path += "&" + string.Join("&", includes.Select(x => "include=" + x).ToArray());
-	            }
 
 				using (var request = jsonRequestFactory.CreateHttpJsonRequest(new CreateHttpJsonRequestParams(this, path, method, operationMetadata.Credentials, convention, GetRequestTimeMetric(operationMetadata.Url)) { AvoidCachingRequest = query.DisableCaching }.AddOperationHeaders(OperationsHeaders)))
 				{

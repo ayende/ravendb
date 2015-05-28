@@ -23,12 +23,12 @@ using Raven.Database.FileSystem.Storage.Voron;
 using Raven.Database.FileSystem.Synchronization;
 using Raven.Database.FileSystem.Synchronization.Conflictuality;
 using Raven.Database.FileSystem.Synchronization.Rdc.Wrapper;
-using Raven.Abstractions.FileSystem;
 using Raven.Database.FileSystem.Synchronization.Rdc.Wrapper.Unmanaged;
 using Raven.Database.Impl;
 using Raven.Database.Server.Abstractions;
 using Raven.Database.Server.Connections;
 using Raven.Database.Util;
+using Raven.Abstractions;
 
 namespace Raven.Database.FileSystem
 {
@@ -44,7 +44,6 @@ namespace Raven.Database.FileSystem
 		private readonly IndexStorage search;
 		private readonly SigGenerator sigGenerator;
 		private readonly ITransactionalStorage storage;
-		private readonly StorageOperationsTask storageOperationsTask;
 		private readonly SynchronizationTask synchronizationTask;
 		private readonly InMemoryRavenConfiguration systemConfiguration;
 	    private readonly TransportState transportState;
@@ -116,7 +115,6 @@ namespace Raven.Database.FileSystem
 
             search.Initialize(this);
 
-			InitializeTriggersExceptIndexCodecs();
 			SecondStageInitialization();
         }
 
@@ -290,11 +288,6 @@ namespace Raven.Database.FileSystem
 		public SynchronizationTask SynchronizationTask
 		{
 			get { return synchronizationTask; }
-		}
-
-		public StorageOperationsTask StorageOperationsTask
-		{
-			get { return storageOperationsTask; }
 		}
 
 		public ConflictArtifactManager ConflictArtifactManager

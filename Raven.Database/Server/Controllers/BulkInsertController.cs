@@ -11,13 +11,12 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Web;
 using System.Web.Http;
-using Mono.Unix.Native;
+using Raven.Unix.Native;
 using Raven.Abstractions;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Logging;
 using Raven.Database.Actions;
 using Raven.Database.Extensions;
-using Raven.Database.Indexing;
 using Raven.Database.Server.Security;
 using Raven.Database.Server.WebApi.Attributes;
 using Raven.Database.Util.Streams;
@@ -106,7 +105,6 @@ namespace Raven.Database.Server.Controllers
                     currentDatabase.Notifications.RaiseNotifications(new BulkInsertChangeNotification { OperationId = operationId, Message = "Operation cancelled, likely because of a batch timeout", Type = DocumentChangeTypes.BulkInsertError });
                     status.IsTimedOut = true;
                     status.Faulted = true;
-                    throw;
                 }
                 catch (Exception e)
                 {
@@ -300,10 +298,6 @@ namespace Raven.Database.Server.Controllers
                         Metadata = metadata
                     };
                 }
-
-                increaseDocumentsCount(count);
-            }
-        }
 
         public class BulkInsertStatus : IOperationState
         {

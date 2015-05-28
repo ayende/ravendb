@@ -44,10 +44,6 @@
         // Neither AMD nor CommonJS used. Use global variables.
         if (typeof jQuery === 'undefined') {
             throw 'bootstrap-datetimepicker requires jQuery to be loaded first';
-        } else if (!moment) {
-            throw 'bootstrap-datetimepicker requires moment.js to be loaded first';
-        } else {
-            factory(jQuery, moment);
         }
         if (typeof moment === 'undefined') {
             throw 'bootstrap-datetimepicker requires Moment.js to be loaded first';
@@ -388,8 +384,6 @@
                         vertical = 'bottom';
                     }
                 }
-            }
-            picker.use24hours = picker.format.toLowerCase().indexOf("a") < 1;
 
                 // Left and right logic
                 if (horizontal === 'auto') {
@@ -406,7 +400,6 @@
                 } else {
                     widget.addClass('bottom').removeClass('top');
                 }
-            }
 
                 if (horizontal === 'right') {
                     widget.addClass('pull-right');
@@ -1506,7 +1499,6 @@
             if (arguments.length === 0) {
                 return options.locale;
             }
-        },
 
             if (!moment.localeData(locale)) {
                 throw new TypeError('locale() locale ' + locale + ' is not loaded from moment locales!');
@@ -1630,9 +1622,6 @@
             if (viewModes.indexOf(viewMode) === -1) {
                 throw new TypeError('viewMode() parameter must be one of (' + viewModes.join(', ') + ') value');
             }
-            var f = dpGlobal.modes[picker.viewMode].clsName;
-            picker.widget.find('.datepicker > div').hide().filter('.datepicker-' + dpGlobal.modes[picker.viewMode].clsName).show();
-        },
 
             options.viewMode = viewMode;
             currentViewMode = Math.max(viewModes.indexOf(viewMode), minViewModeNumber);
@@ -1749,7 +1738,6 @@
             if (typeof widgetParent === 'string') {
                 widgetParent = $(widgetParent);
             }
-        },
 
             if (widgetParent !== null && (typeof widgetParent !== 'string' && !(widgetParent instanceof $))) {
                 throw new TypeError('widgetParent() expects a string or a jQuery object parameter');

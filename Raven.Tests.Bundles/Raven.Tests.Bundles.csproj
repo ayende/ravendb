@@ -69,17 +69,17 @@
     <Reference Include="Microsoft.Owin.Hosting">
       <HintPath>..\packages\Microsoft.Owin.Hosting.3.0.0\lib\net45\Microsoft.Owin.Hosting.dll</HintPath>
     </Reference>
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>..\packages\Newtonsoft.Json.6.0.6\lib\net45\Newtonsoft.Json.dll</HintPath>
+    </Reference>
     <Reference Include="Owin">
       <HintPath>..\packages\Owin.1.0\lib\net40\Owin.dll</HintPath>
     </Reference>
-    <Reference Include="Newtonsoft.Json">
-      <HintPath>..\packages\Newtonsoft.Json.6.0.8\lib\net45\Newtonsoft.Json.dll</HintPath>
-    </Reference>
     <Reference Include="System.Net.Http.Formatting">
-      <HintPath>..\packages\Microsoft.AspNet.WebApi.Client.5.2.3\lib\net45\System.Net.Http.Formatting.dll</HintPath>
+      <HintPath>..\packages\Microsoft.AspNet.WebApi.Client.5.2.2\lib\net45\System.Net.Http.Formatting.dll</HintPath>
     </Reference>
     <Reference Include="System.Web.Http">
-      <HintPath>..\packages\Microsoft.AspNet.WebApi.Core.5.2.3\lib\net45\System.Web.Http.dll</HintPath>
+      <HintPath>..\packages\Microsoft.AspNet.WebApi.Core.5.2.2\lib\net45\System.Web.Http.dll</HintPath>
     </Reference>
   </ItemGroup>
   <ItemGroup>
@@ -204,6 +204,10 @@
       <Project>{D9CCC62F-0B4E-4B37-BE7E-203D34B4EC4F}</Project>
       <Name>Raven.Bundles.CascadeDelete</Name>
     </ProjectReference>
+    <ProjectReference Include="..\Bundles\Raven.Bundles.Encryption.IndexFileCodec\Raven.Bundles.Encryption.IndexFileCodec.csproj">
+      <Project>{1BB3D982-9675-400D-A247-547C071FBE35}</Project>
+      <Name>Raven.Bundles.Encryption.IndexFileCodec</Name>
+    </ProjectReference>
     <ProjectReference Include="..\Bundles\Raven.Bundles.LiveTest\Raven.Bundles.LiveTest.csproj">
       <Project>{108260D1-12ED-4EC5-8C6B-1DED1D73271F}</Project>
       <Name>Raven.Bundles.LiveTest</Name>
@@ -212,9 +216,31 @@
       <Project>{4C026F8A-FB36-4A30-82E9-324D207F6B48}</Project>
       <Name>Raven.Bundles.UniqueConstraints</Name>
     </ProjectReference>
+    <ProjectReference Include="..\Bundles\Raven.Client.Authorization\Raven.Client.Authorization.csproj">
+      <Project>{3A852FD2-E0F9-449C-8F66-0C6A180D030A}</Project>
+      <Name>Raven.Client.Authorization</Name>
+      <Aliases>client</Aliases>
+    </ProjectReference>
     <ProjectReference Include="..\Bundles\Raven.Client.UniqueConstraints\Raven.Client.UniqueConstraints.csproj">
       <Project>{D185331D-2B7C-4251-8EBE-140EDE1FAB9F}</Project>
       <Name>Raven.Client.UniqueConstraints</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\Raven.Abstractions\Raven.Abstractions.csproj">
+      <Project>{41AC479E-1EB2-4D23-AAF2-E4C8DF1BC2BA}</Project>
+      <Name>Raven.Abstractions</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\Raven.Client.Lightweight\Raven.Client.Lightweight.csproj">
+      <Project>{4E087ECB-E7CA-4891-AC3C-3C76702715B6}</Project>
+      <Name>Raven.Client.Lightweight</Name>
+      <Aliases>global</Aliases>
+    </ProjectReference>
+    <ProjectReference Include="..\Raven.Database\Raven.Database.csproj">
+      <Project>{212823CD-25E1-41AC-92D1-D6DF4D53FC85}</Project>
+      <Name>Raven.Database</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\Raven.Smuggler\Raven.Smuggler.csproj">
+      <Project>{3E6401AC-3E33-4B61-A460-49953654A207}</Project>
+      <Name>Raven.Smuggler</Name>
     </ProjectReference>
     <ProjectReference Include="..\Raven.Tests.Common\Raven.Tests.Common.csproj">
       <Project>{381234CC-8AA7-41FF-8CAD-22330E15F993}</Project>
@@ -223,19 +249,6 @@
     <ProjectReference Include="..\Raven.Tests.Helpers\Raven.Tests.Helpers.csproj">
       <Project>{14F2D508-8E06-407B-9451-97E99538E26B}</Project>
       <Name>Raven.Tests.Helpers</Name>
-    </ProjectReference>
-    <ProjectReference Include="..\Raven.Abstractions\Raven.Abstractions.csproj">
-      <Project>{41AC479E-1EB2-4D23-AAF2-E4C8DF1BC2BA}</Project>
-      <Name>Raven.Abstractions</Name>
-    </ProjectReference>
-    <ProjectReference Include="..\Raven.Smuggler\Raven.Smuggler.csproj">
-      <Project>{3E6401AC-3E33-4B61-A460-49953654A207}</Project>
-      <Name>Raven.Smuggler</Name>
-    </ProjectReference>
-    <ProjectReference Include="..\Bundles\Raven.Client.Authorization\Raven.Client.Authorization.csproj">
-      <Project>{3A852FD2-E0F9-449C-8F66-0C6A180D030A}</Project>
-      <Name>Raven.Client.Authorization</Name>
-      <Aliases>client</Aliases>
     </ProjectReference>
     <ProjectReference Include="..\Raven.Voron\Voron\Voron.csproj">
       <Project>{FF83C7C2-BC7B-4DCC-A782-49EF9BBD9390}</Project>

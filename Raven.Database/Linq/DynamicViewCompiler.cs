@@ -512,9 +512,7 @@ Reduce only fields: {2}
 
 			private static QueryClause GetRelevantClause(AstNode node)
 			{
-				var relevantClause = node.GetParent<QueryClause> ();
-
-
+				var relevantClause = node.GetParent<QueryClause>();
 				do
 				{
 					if (relevantClause == null)
@@ -536,17 +534,7 @@ Reduce only fields: {2}
 					}
 					if (relevantClause is QueryContinuationClause)
 						return relevantClause;
-
-					AstNode prevNode = relevantClause;
-					while(true)
-					{										
-						prevNode = prevNode.GetPrevNode();
-						if(prevNode == null || prevNode is QueryClause)
-							break;
-					} 
-
-					relevantClause = prevNode as QueryClause;
-
+					relevantClause = relevantClause.GetPrevNode() as QueryClause;
 				} while (true);
 			}
 

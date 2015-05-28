@@ -61,6 +61,15 @@
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
   <ItemGroup>
+    <Reference Include="ICSharpCode.NRefactory">
+      <HintPath>..\packages\ICSharpCode.NRefactory.5.3.0\lib\Net40\ICSharpCode.NRefactory.dll</HintPath>
+    </Reference>
+    <Reference Include="ICSharpCode.NRefactory.CSharp">
+      <HintPath>..\packages\ICSharpCode.NRefactory.5.3.0\lib\Net40\ICSharpCode.NRefactory.CSharp.dll</HintPath>
+    </Reference>
+    <Reference Include="ICSharpCode.NRefactory.Xml">
+      <HintPath>..\packages\ICSharpCode.NRefactory.5.3.0\lib\Net40\ICSharpCode.NRefactory.Xml.dll</HintPath>
+    </Reference>
     <Reference Include="Mono.Cecil">
       <HintPath>..\packages\Mono.Cecil.0.9.5.4\lib\net40\Mono.Cecil.dll</HintPath>
     </Reference>
@@ -89,21 +98,6 @@
     <Reference Include="Microsoft.CSharp" />
     <Reference Include="System.Data" />
     <Reference Include="System.Xml" />
-    <Reference Include="Spatial4n.Core.NTS">
-      <HintPath>..\SharedLibs\Spatial4n.Core.NTS.dll</HintPath>
-    </Reference>
-    <Reference Include="ICSharpCode.NRefactory">
-      <HintPath>..\packages\ICSharpCode.NRefactory.5.5.0\lib\Net40\ICSharpCode.NRefactory.dll</HintPath>
-    </Reference>
-    <Reference Include="ICSharpCode.NRefactory.Cecil">
-      <HintPath>..\packages\ICSharpCode.NRefactory.5.5.0\lib\Net40\ICSharpCode.NRefactory.Cecil.dll</HintPath>
-    </Reference>
-    <Reference Include="ICSharpCode.NRefactory.CSharp">
-      <HintPath>..\packages\ICSharpCode.NRefactory.5.5.0\lib\Net40\ICSharpCode.NRefactory.CSharp.dll</HintPath>
-    </Reference>
-    <Reference Include="ICSharpCode.NRefactory.Xml">
-      <HintPath>..\packages\ICSharpCode.NRefactory.5.5.0\lib\Net40\ICSharpCode.NRefactory.Xml.dll</HintPath>
-    </Reference>
     <Reference Include="System.Web.Http">
       <HintPath>..\packages\Microsoft.AspNet.WebApi.Core.5.2.2\lib\net45\System.Web.Http.dll</HintPath>
     </Reference>
@@ -113,7 +107,7 @@
       <Link>Properties\CommonAssemblyInfo.cs</Link>
     </Compile>
     <Compile Include="..\Imports\Newtonsoft.Json\Src\Newtonsoft.Json\*.cs">
-      <Link>Imports\Newtonsoft.Json\%(FileName)</Link>
+      <Link>Imports\Newtonsoft.Json\%25%28FileName%29</Link>
     </Compile>
     <Compile Include="..\Imports\Newtonsoft.Json\Src\Newtonsoft.Json\Bson\*.cs">
       <Link>Imports\Newtonsoft.Json\Bson\%25%28FileName%29</Link>
@@ -135,9 +129,6 @@
     </Compile>
     <Compile Include="..\Imports\Newtonsoft.Json\Src\Newtonsoft.Json\Utilities\*.cs">
       <Link>Imports\Newtonsoft.Json\Utilities\%25%28FileName%29</Link>
-    </Compile>
-    <Compile Include="..\Imports\Newtonsoft.Json\Src\Newtonsoft.Json\*.cs">
-      <Link>Imports\Newtonsoft.Json\%25%28FileName%29</Link>
     </Compile>
     <Compile Include="Cluster\ClusterBehavior.cs" />
     <Compile Include="Cluster\ClusterInformation.cs" />

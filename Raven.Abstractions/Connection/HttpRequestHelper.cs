@@ -10,8 +10,7 @@ namespace Raven.Abstractions.Connection
 	{
 		public static void WriteDataToRequest(HttpWebRequest req, string data, bool disableCompression)
 		{
-			if(EnvironmentUtils.RunningOnPosix == false)
-				req.SendChunked = true;
+			req.SendChunked = true;
 			// we want to make sure that we use a buffer properly here so we won't send the data
 			// in many different TCP packets
 			using (var requestStream = new BufferedStream(req.GetRequestStream()))

@@ -12,14 +12,11 @@ namespace Raven.Unix.Native
         internal const string LIBC = "libc";
         internal const string MPH = "MonoPosixHelper";
 
-        [DllImport(LIBC, SetLastError = true)]
-        public static extern int close(int fd);
-	
-
 		[DllImport(LIBC, SetLastError = true)]
 		public static extern int sysinfo(ref sysinfo_t info);
 
-
+        [DllImport(LIBC, SetLastError = true)]
+        public static extern int close(int fd);
         // pread(2)
         //    ssize_t pread(int fd, void *buf, size_t count, off_t offset);
         [DllImport(MPH, SetLastError = true,

@@ -35,9 +35,11 @@ namespace Raven.Database.Server.WebApi.Handlers
 			await request.Content.ReadAsStreamAsync().ContinueWith(t =>
 			{
 				Stream inputStream = t.Result;
-				using(var gzipStream = new GZipStream(inputStream, CompressionMode.Decompress))
-					gzipStream.CopyTo(outputStream);
-				
+				var gzipStream = new GZipStream(inputStream, CompressionMode.Decompress);
+
+				gzipStream.CopyTo(outputStream);
+				gzipStream.Dispose();
+
 				outputStream.Seek(0, SeekOrigin.Begin);
 			}, cancellationToken);
 

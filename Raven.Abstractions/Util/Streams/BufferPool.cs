@@ -2,12 +2,13 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.ServiceModel.Channels;
+using Raven.Abstractions;
 
 namespace Raven.Abstractions.Util.Streams
 {
     public class BufferPool : IBufferPool
     {
-		private readonly BufferManager bufferManager;
+        private readonly BufferManager bufferManager;
 #if VALIDATE
         public class BufferTracker
         {

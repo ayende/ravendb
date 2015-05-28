@@ -11,6 +11,7 @@ using Raven.Abstractions.Util.Encryptors;
 using Raven.Bundles.Authorization.Model;
 using Raven.Database.Server.Controllers;
 using Raven.Database.Server.WebApi.Attributes;
+using Raven.Database.Server.WebApi.Attributes;
 
 namespace Raven.Bundles.Authorization.Controllers
 {

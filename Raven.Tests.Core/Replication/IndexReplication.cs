@@ -518,7 +518,6 @@ namespace Raven.Tests.Core.Replication
 				{
 					Url = source.Url
 				});
-				
 				replicationRequest.ExecuteRequest();
 
 				var indexStatsAfterReplication = destination.DatabaseCommands.ForDatabase("testDB").GetStatistics().Indexes;				

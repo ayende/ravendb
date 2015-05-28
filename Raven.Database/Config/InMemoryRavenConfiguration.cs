@@ -15,7 +15,6 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web;
-using Raven.Abstractions;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Util.Encryptors;
 using Raven.Database.Extensions;
@@ -27,6 +26,7 @@ using Raven.Database.Storage;
 using Raven.Database.Util;
 using Raven.Imports.Newtonsoft.Json;
 using Enum = System.Enum;
+using Raven.Abstractions;
 
 namespace Raven.Database.Config
 {

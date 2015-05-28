@@ -10,7 +10,6 @@ using System.Collections.Specialized;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
-using System.Globalization;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -30,7 +29,7 @@ using Raven.Abstractions.Connection;
 using Raven.Client.Connection.Async;
 using Raven.Client.Connection.Profiling;
 using Raven.Json.Linq;
-using System.Collections;
+using Raven.Abstractions;
 
 namespace Raven.Client.Connection.Implementation
 {
@@ -93,7 +92,6 @@ namespace Raven.Client.Connection.Implementation
 			Url = requestParams.Url;
 			Method = requestParams.Method;
 		    
-
 			if (requestParams.Timeout.HasValue)
 			{
 				Timeout = requestParams.Timeout.Value;
@@ -760,14 +758,8 @@ namespace Raven.Client.Connection.Implementation
                 {
 					throw new ErrorResponseException(Response, "Failed request");
                 }
-                return response;
-
-            return Response;
+                return Response;
 		    }).ConfigureAwait(false);
-
-            ResponseStatusCode = Response.StatusCode;
-
-            return Response;
 		}
 
 		public async Task<HttpResponseMessage> ExecuteRawRequestAsync(Action<Stream, TaskCompletionSource<object>> action)
@@ -792,10 +784,9 @@ namespace Raven.Client.Connection.Implementation
                 {
 					throw new ErrorResponseException(Response, "Failed request");
                 }
-                return response;
-            }).ConfigureAwait(false);
 
-            ResponseStatusCode = Response.StatusCode;
+            return Response;		
+            }).ConfigureAwait(false);		
 		}
 
 		private class PushContent : HttpContent

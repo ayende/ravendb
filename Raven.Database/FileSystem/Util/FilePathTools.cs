@@ -41,10 +41,5 @@ namespace Raven.Database.FileSystem.Util
 
 			return MakeSureEndsWithSlash(path.ToFullPath());
 		}
-
-        public static string MakeSureEndsWithSlash(string filePath)
-        {
-            return filePath.TrimEnd('\\') + "\\";
-        }
 	}
 }

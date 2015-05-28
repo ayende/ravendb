@@ -87,18 +87,8 @@ namespace Raven.Abstractions.Extensions
             if (bytesRead == 0)
                 throw new EndOfStreamException();
             return BitConverter.ToUInt64(buffer, 0);
-        
+        }
 
-			try
-			{
-				stream.PartialRead(buffer,sizeof(ulong));
-				return BitConverter.ToUInt64(buffer, 0);
-			}
-			finally
-			{
-				BufferPool.ReturnBuffer(buffer);
-			}
-		}
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static int ReadInt32(this Stream stream)
@@ -165,7 +155,8 @@ namespace Raven.Abstractions.Extensions
         public static Etag ReadEtag(this Stream stream)
         {
 	        const int EtagSize = 16;
-            var buffer = BufferPool.TakeBuffer(EtagSize); //etag size is 16 bytes
+
+            var buffer = new byte[EtagSize]; //etag size is 16 bytes
             var bytesRead = stream.Read(buffer, 0, EtagSize);
             if (bytesRead == 0)
                 throw new EndOfStreamException();

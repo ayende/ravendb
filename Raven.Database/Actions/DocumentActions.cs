@@ -468,10 +468,7 @@ namespace Raven.Database.Actions
                 // first we check the dtc state, then the storage, to avoid race conditions
                 var nonAuthoritativeInformationBehavior = Database.InFlightTransactionalState.GetNonAuthoritativeInformationBehavior<JsonDocument>(transactionInformation, key);
 
-                TransactionalStorage.Batch(actions => 
-					{
-						document = actions.Documents.DocumentByKey(key); 
-					});
+                TransactionalStorage.Batch(actions => { document = actions.Documents.DocumentByKey(key); });
 
                 if (nonAuthoritativeInformationBehavior != null)
                     document = nonAuthoritativeInformationBehavior(document);

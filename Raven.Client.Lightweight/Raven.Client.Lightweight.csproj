@@ -72,20 +72,21 @@
     <Reference Include="System.Runtime.Serialization" />
     <Reference Include="System.Transactions" />
     <Reference Include="System.Web" />
-    <Reference Include="System.Web.Http">
-      <HintPath>..\packages\Microsoft.AspNet.WebApi.Core.5.1.2\lib\net45\System.Web.Http.dll</HintPath>
-    </Reference>
     <Reference Include="System.Reactive.Core">
       <HintPath>..\packages\Rx-Core.2.2.5\lib\net45\System.Reactive.Core.dll</HintPath>
     </Reference>
     <Reference Include="System.Reactive.Interfaces">
       <HintPath>..\packages\Rx-Interfaces.2.2.5\lib\net45\System.Reactive.Interfaces.dll</HintPath>
     </Reference>
+    <Reference Include="System.Web.Http">
+      <HintPath>..\Rachis\Rachis.Tests\bin\Debug\System.Web.Http.dll</HintPath>
+    </Reference>
   </ItemGroup>
   <ItemGroup>
     <Compile Include="..\CommonAssemblyInfo.cs">
       <Link>Properties\CommonAssemblyInfo.cs</Link>
     </Compile>
+    <Compile Include="AfterStreamExecutedDelegate.cs" />
     <Compile Include="Bundles\MoreLikeThis\MoreLikeThisExtensions.cs" />
     <Compile Include="Bundles\Versioning\VersioningExtensions.cs" />
     <Compile Include="Changes\IConnectableChanges.cs" />
@@ -95,8 +96,14 @@
     <Compile Include="Changes\RemoteDatabaseChanges.cs" />
     <Compile Include="Connection\AdminRequestCreator.cs" />
     <Compile Include="Connection\AdminServerClient.cs" />
+    <Compile Include="Connection\Request\AsyncOperationResult.cs" />
     <Compile Include="Connection\Async\AsyncAdminServerClient.cs" />
     <Compile Include="Connection\Async\AsyncServerClientBase.cs" />
+    <Compile Include="Connection\HttpConnectionHelper.cs" />
+    <Compile Include="Connection\Request\ClusterAwareRequestExecuter.cs" />
+    <Compile Include="Connection\Request\FailureCounters.cs" />
+    <Compile Include="Connection\Request\ReplicationAwareRequestExecuter.cs" />
+    <Compile Include="Connection\Request\IRequestExecuter.cs" />
     <Compile Include="Connection\ConnectionOptions.cs" />
     <Compile Include="Connection\CompressedStreamContent.cs" />
     <Compile Include="Connection\HttpContentExtentions.cs" />
@@ -105,8 +112,22 @@
     <Compile Include="Connection\Operation.cs" />
     <Compile Include="Connection\OperationMetadata.cs" />
     <Compile Include="Connection\ReplicationInformer.cs" />
-    <Compile Include="Counters\Connections\CounterConvention.cs" />
-    <Compile Include="Counters\RavenCountersClient.cs" />
+    <Compile Include="Counters\Actions\CountersActionsBase.cs" />
+    <Compile Include="Counters\Actions\ICountersBatchOperation.cs" />
+    <Compile Include="Counters\Changes\CountersChangesClient.cs" />
+    <Compile Include="Counters\Changes\CountersConnectionState.cs" />
+    <Compile Include="Counters\Replication\CounterReplicationInformer.cs" />
+    <Compile Include="Counters\CounterStore.cs" />
+    <Compile Include="Counters\Actions\CountersBatchOperation.cs" />
+    <Compile Include="Counters\Convention.cs" />
+    <Compile Include="Counters\CountersClient.cs" />
+    <Compile Include="Counters\Actions\CountersCommands.cs" />
+    <Compile Include="Counters\Actions\CountersStats.cs">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="Counters\Replication\CountersReplication.cs" />
+    <Compile Include="Counters\Replication\ICountersReplicationInformer.cs" />
+    <Compile Include="Counters\ICounterStore.cs" />
     <Compile Include="Document\AsyncDocumentSubscriptions.cs" />
     <Compile Include="Document\Batches\LazyMoreLikeThisOperation.cs" />
     <Compile Include="Document\Batches\LazyTransformerLoadOperation.cs" />
@@ -139,6 +160,7 @@
     <Compile Include="FileSystem\IAbstractFilesQuery.cs" />
     <Compile Include="FileSystem\IAsyncFilesQuery.cs" />
     <Compile Include="FileSystem\IAsyncFilesQueryBase.cs" />
+    <Compile Include="FileSystem\IFilesChanges.cs" />
     <Compile Include="FileSystem\Impl\DeleteFileOperation.cs" />
     <Compile Include="FileSystem\Impl\IFilesOperation.cs" />
     <Compile Include="FileSystem\FilesQueryStatistics.cs" />
@@ -149,9 +171,10 @@
     <Compile Include="FileSystem\IAsyncAdvancedFilesSessionOperations.cs" />
     <Compile Include="FileSystem\IAsyncFilesCommands.cs" />
     <Compile Include="FileSystem\IAsyncFilesSession.cs" />
-    <Compile Include="FileSystem\IFilesChanges.cs" />
+    <Compile Include="Counters\Changes\ICountersChanges.cs" />
     <Compile Include="FileSystem\Impl\RenameFileOperation.cs" />
     <Compile Include="FileSystem\Impl\UpdateMetadataOperation.cs" />
+    <Compile Include="FileSystem\Impl\DeleteByQueryOperation.cs" />
     <Compile Include="FileSystem\Impl\UploadFileOperation.cs" />
     <Compile Include="FileSystem\InMemoryFilesSessionOperations.cs" />
     <Compile Include="FileSystem\Listeners\IFilesConflictListener.cs" />
@@ -161,6 +184,13 @@
     <Compile Include="FileSystem\OpenFilesSessionOptions.cs" />
     <Compile Include="FileSystem\Shard\IShardAccessStrategy.cs" />
     <Compile Include="FileSystem\Shard\IShardResolutionStrategy.cs" />
+    <Compile Include="Smuggler\ServerValidation.cs" />
+    <Compile Include="Smuggler\SmugglerDatabaseBetweenOperation.cs" />
+    <Compile Include="Metrics\AtomicLong.cs" />
+    <Compile Include="Metrics\EWMA.cs" />
+    <Compile Include="Metrics\RequestTimeMetric.cs" />
+    <Compile Include="Metrics\TimeUnit.cs" />
+    <Compile Include="Metrics\VolatileDouble.cs" />
     <Compile Include="Util\HttpClientCache.cs" />
     <Compile Include="Indexes\RavenMethodAttribute.cs" />
     <Compile Include="Linq\AggregationQuery.cs" />
@@ -361,20 +391,20 @@
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
-    <Content Include="FodyWeavers.xml" />
-  </ItemGroup>
-  <ItemGroup />
-  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" Condition="'$(TasksTargetsImported)' == ''" />
-  <!-- <Import Project="$(MSBuildProjectDirectory)\..\Tools\StyleCop\StyleCop.Targets" Condition="'$(TasksTargetsImported)' == ''" /> -->
-  <Import Project="$(SolutionDir)\.nuget\NuGet.targets" Condition="'$(TasksTargetsImported)' == ''" />
-  <Target Name="AfterBuild">
-  </Target>
-  <Import Project="..\Imports\Fody\Fody.targets" Condition="$(Configuration) == 'Release'" />
-  <Import Project="..\Imports\Tasks.targets" Condition="'$(TasksTargetsImported)' == ''" />
-  <ItemGroup>
     <ProjectReference Include="..\Raven.Abstractions\Raven.Abstractions.csproj">
       <Project>{41AC479E-1EB2-4D23-AAF2-E4C8DF1BC2BA}</Project>
       <Name>Raven.Abstractions</Name>
     </ProjectReference>
   </ItemGroup>
+  <ItemGroup>
+    <Content Include="FodyWeavers.xml" />
+  </ItemGroup>
+  <ItemGroup />
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" Condition="'$(TasksTargetsImported)' == ''" />
+  <!---<Import Project="$(MSBuildProjectDirectory)\..\Tools\StyleCop\StyleCop.Targets" Condition="'$(TasksTargetsImported)' == ''" />-->
+  <Import Project="$(SolutionDir)\.nuget\NuGet.targets" Condition="'$(TasksTargetsImported)' == ''" />
+  <Target Name="AfterBuild">
+  </Target>
+  <Import Project="..\Imports\Fody\Fody.targets" Condition="$(Configuration) == 'Release'" />
+  <Import Project="..\Imports\Tasks.targets" Condition="'$(TasksTargetsImported)' == ''" />
 </Project>

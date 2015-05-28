@@ -72,7 +72,7 @@ namespace Raven.Client.Document
 			ShouldCacheRequest = url => true;
 			FindIdentityProperty = q => q.Name == "Id";
 			FindClrType = (id, doc, metadata) => metadata.Value<string>(Abstractions.Data.Constants.RavenClrType);
-			DisableRequestCompression = false;
+
 			FindClrTypeName = ReflectionUtil.GetFullNameWithoutVersionInformation;
 			TransformTypeTagNameToDocumentKeyPrefix = DefaultTransformTypeTagNameToDocumentKeyPrefix;
 			FindFullDocumentKeyFromNonStringIdentifier = DefaultFindFullDocumentKeyFromNonStringIdentifier;
@@ -201,12 +201,6 @@ namespace Raven.Client.Document
 		/// Disable all profiling support
 		/// </summary>
 		public bool DisableProfiling { get; set; }
-
-		/// <summary>
-		/// A flag indicating whether the requests will be Gzip compressed or not
-		/// </summary>
-		/// <value><c>true</c> if disable request compression; otherwise, <c>false</c>.</value>
-		public bool DisableRequestCompression { get; set; }
 
 		///<summary>
 		/// A list of type converters that can be used to translate the document key (string)
