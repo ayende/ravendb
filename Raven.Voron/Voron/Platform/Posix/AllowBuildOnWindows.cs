@@ -8,12 +8,14 @@ namespace Raven.Unix.Native
     // Used this way to avoid taking a hard dependency on the Mono.Posix.dll
 	public static class Syscall
 	{
-
         internal const string LIBC = "libc";
         internal const string MPH = "MonoPosixHelper";
 
 		[DllImport(LIBC, SetLastError = true)]
 		public static extern int sysinfo(ref sysinfo_t info);
+
+		[DllImport(LIBC, SetLastError = true)]
+		public static extern int mkdir ([MarshalAs (UnmanagedType.LPStr)] string filename, [MarshalAs (UnmanagedType.U4)] uint mode);
 
         [DllImport(LIBC, SetLastError = true)]
         public static extern int close(int fd);
@@ -142,6 +144,8 @@ namespace Raven.Unix.Native
         [DllImport(MPH, SetLastError = true,
                 EntryPoint = "Mono_Posix_Syscall_fstat")]
         public static extern int fstat(int filedes, out Stat buf);
+
+
 
 	}
 
