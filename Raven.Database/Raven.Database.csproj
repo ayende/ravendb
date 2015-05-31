@@ -1286,6 +1286,7 @@
     <Compile Include="Util\Streams\BlockingStream.cs" />
     <Compile Include="Util\WildcardMatcher.cs" />
     <Compile Include="Extensions\FeatureNotSupportedOnPosixException.cs" />
+    <Compile Include="Posix\System\Threading\ThreadLocal.cs" />
   </ItemGroup>
   <ItemGroup>
     <BootstrapperPackage Include="Microsoft.Net.Client.3.5">
@@ -1341,13 +1342,13 @@
       <Project>{4E087ECB-E7CA-4891-AC3C-3C76702715B6}</Project>
       <Name>Raven.Client.Lightweight</Name>
     </ProjectReference>
-    <ProjectReference Include="..\Raven.Voron\Voron\Voron.csproj">
-      <Project>{FF83C7C2-BC7B-4DCC-A782-49EF9BBD9390}</Project>
-      <Name>Voron</Name>
-    </ProjectReference>
     <ProjectReference Include="..\Raven.SpecificPlatform.Windows\Raven.SpecificPlatform.Windows.csproj">
       <Project>{38444EDA-CBD2-4557-8947-F8803A942661}</Project>
       <Name>Raven.SpecificPlatform.Windows</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\Raven.Voron\Voron\Voron.csproj">
+      <Project>{FF83C7C2-BC7B-4DCC-A782-49EF9BBD9390}</Project>
+      <Name>Voron</Name>
     </ProjectReference>
   </ItemGroup>
   <ItemGroup />
@@ -1358,4 +1359,9 @@
   <Import Project="$(SolutionDir)\.nuget\NuGet.targets" Condition="'$(TasksTargetsImported)' == ''" />
   <Import Project="..\Imports\Fody\Fody.targets" Condition="$(Configuration) == 'Release'" />
   <Import Project="..\Imports\Tasks.targets" Condition="'$(TasksTargetsImported)' == ''" />
+  <ItemGroup>
+    <Folder Include="Posix\" />
+    <Folder Include="Posix\System\" />
+    <Folder Include="Posix\System\Threading\" />
+  </ItemGroup>
 </Project>

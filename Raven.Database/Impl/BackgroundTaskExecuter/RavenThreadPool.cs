@@ -9,6 +9,7 @@ using Mono.CSharp;
 using Raven.Abstractions.Extensions;
 using Raven.Abstractions.Logging;
 using Raven.Database.Config;
+using Raven.Database.Posix.System.Threading;
 
 namespace Raven.Database.Impl.BackgroundTaskExecuter
 {
@@ -549,7 +550,9 @@ namespace Raven.Database.Impl.BackgroundTaskExecuter
 
 		public int _partialMaxWait = 2500;
 
-		public ThreadLocal<bool> _freedThreadsValue = new ThreadLocal<bool>(true);
+		public Raven.Database.Posix.System.Threading.ThreadLocal<bool> _freedThreadsValue = new Raven.Database.Posix.System.Threading.ThreadLocal<bool>(true);
+	
+
 		private int _partialMaxWaitChangeFlag = 1;
 
 		private void WaitForBatchAllowingPartialBatchResumption(CountdownEvent completionEvent, BatchStatistics batch, int completedMuliplier = 2, int freeThreadsMultiplier = 2, int maxWaitMultiplier = 1)
