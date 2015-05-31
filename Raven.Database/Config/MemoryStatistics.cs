@@ -128,6 +128,7 @@ namespace Raven.Database.Config
 						RunLowMemoryHandlers ();					
 						break;
 					case WaitHandle.WaitTimeout: // poll available mem
+						
 						lowPosixMemorySimulationEvent.Reset();
 						if ( ++clearInactiveHandlersCounter > 60 ) // 5 minutes == WaitAny 5 Secs * 60
 						{
@@ -139,7 +140,6 @@ namespace Raven.Database.Config
 						if (Syscall.sysinfo (ref info) != 0) {
 							log.Warn ("Failure when trying to wait for low memory notification. No low memory notifications will be raised.");
 						} else {
-							Console.WriteLine("Polling");
 							RavenConfiguration configuration = new RavenConfiguration ();
 							ulong availableMem = info.AvailableRam / (1024L * 1024);
 							if (availableMem < (ulong)configuration.LowMemoryForLinuxDetectionInMB) {
