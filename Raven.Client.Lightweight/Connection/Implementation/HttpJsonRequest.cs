@@ -680,7 +680,7 @@ namespace Raven.Client.Connection.Implementation
 		        Content = new JsonContent(tokenToWrite),
 		        Headers =
 		        {
-			        TransferEncodingChunked = true
+					TransferEncodingChunked = !EnvironmentUtils.RunningOnMono
 		        }
 	        });
         }
@@ -705,7 +705,7 @@ namespace Raven.Client.Connection.Implementation
 				Content = content,
 				Headers =
 				{
-					TransferEncodingChunked = true,
+					TransferEncodingChunked = !EnvironmentUtils.RunningOnMono,
 				}
 			});
 		}
@@ -765,7 +765,7 @@ namespace Raven.Client.Connection.Implementation
 
 		public async Task<HttpResponseMessage> ExecuteRawRequestAsync(Action<Stream, TaskCompletionSource<object>> action)
 		{
-			httpClient.DefaultRequestHeaders.TransferEncodingChunked = true;
+			httpClient.DefaultRequestHeaders.TransferEncodingChunked = !EnvironmentUtils.RunningOnMono;
 
             return await RunWithAuthRetry(async () =>
             {
