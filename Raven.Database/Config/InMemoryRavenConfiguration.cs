@@ -26,6 +26,7 @@ using Raven.Database.Storage;
 using Raven.Database.Util;
 using Raven.Imports.Newtonsoft.Json;
 using Enum = System.Enum;
+using Raven.Abstractions;
 
 namespace Raven.Database.Config
 {
@@ -128,6 +129,8 @@ namespace Raven.Database.Config
 				ConcurrentMultiGetRequests = new SemaphoreSlim(MaxConcurrentMultiGetRequests);
 
 			MemoryLimitForProcessingInMb = ravenSettings.MemoryLimitForProcessing.Value;
+
+			LowMemoryForLinuxDetectionInMB = ravenSettings.LowMemoryLimitForLinuxDetectionInMB.Value;
 
 			PrefetchingDurationLimit = ravenSettings.PrefetchingDurationLimit.Value;
 
@@ -987,6 +990,11 @@ namespace Raven.Database.Config
 		/// </summary>
 		public int MemoryLimitForProcessingInMb { get; set; }
 
+		// <summary>
+		/// Limit for low mem detection in linux
+		/// </summary>
+		public int LowMemoryForLinuxDetectionInMB { get; set; }
+
 		public string IndexStoragePath
 		{
 			get
@@ -1158,6 +1166,8 @@ namespace Raven.Database.Config
 		[CLSCompliant(false)]
 		public ITransactionalStorage CreateTransactionalStorage(string storageEngine, Action notifyAboutWork, Action handleStorageInaccessible)
 		{
+			if (EnvironmentUtils.RunningOnPosix)
+				storageEngine = "voron";
 			storageEngine = StorageEngineAssemblyNameByTypeName(storageEngine);
 			var type = Type.GetType(storageEngine);
 

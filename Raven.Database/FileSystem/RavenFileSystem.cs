@@ -28,6 +28,7 @@ using Raven.Database.Impl;
 using Raven.Database.Server.Abstractions;
 using Raven.Database.Server.Connections;
 using Raven.Database.Util;
+using Raven.Abstractions;
 
 namespace Raven.Database.FileSystem
 {
@@ -121,17 +122,18 @@ namespace Raven.Database.FileSystem
         {
             get
             {
-                try
-                {
-                    var rdcLibrary = new RdcLibrary();
-                    Marshal.ReleaseComObject(rdcLibrary);
+				if (EnvironmentUtils.RunningOnPosix) {
+					return false;
+				} else {
+					try {
+						var rdcLibrary = new RdcLibrary ();
+						Marshal.ReleaseComObject (rdcLibrary);
 
-                    return true;
-                }
-                catch (COMException)
-                {
-                    return false;
-                }
+						return true;
+					} catch (COMException) {
+						return false;
+					}
+				}
             }
         }
 

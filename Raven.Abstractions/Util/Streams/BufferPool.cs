@@ -2,6 +2,7 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.ServiceModel.Channels;
+using Raven.Abstractions;
 
 namespace Raven.Abstractions.Util.Streams
 {
@@ -36,8 +37,11 @@ namespace Raven.Abstractions.Util.Streams
 #endif
 
         public BufferPool(long maxBufferPoolSize, int maxBufferSize)
-        {
-            bufferManager = BufferManager.CreateBufferManager(maxBufferPoolSize, maxBufferSize);
+        {									
+			if (EnvironmentUtils.RunningOnMono)
+				bufferManager = new RavenBufferManager ();
+			else
+            	bufferManager = BufferManager.CreateBufferManager(maxBufferPoolSize, maxBufferSize);
         }
 
         public void Dispose()

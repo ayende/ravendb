@@ -78,7 +78,7 @@ namespace Raven.Database.Linq
 			{
 				unit.Members.Add(new UsingDeclaration(ns));
 			}
-
+				
 			unit.Members.Add(new WindowsNewLine());
 
 			unit.Members.Add(type);

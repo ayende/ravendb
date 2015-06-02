@@ -1,4 +1,4 @@
-using System;
+using System; 
 using System.IO;
 using System.IO.Compression;
 using System.Net;
@@ -63,7 +63,7 @@ namespace Raven.Abstractions.Connection
 			{
 				request.AllowWriteStreamBuffering = allowWriteStreamBuffering.Value;
 				if (allowWriteStreamBuffering.Value == false)
-					request.SendChunked = true;
+					request.SendChunked = !EnvironmentUtils.RunningOnMono;
 			}
 
 			configureRequest(connectionStringOptions, request);

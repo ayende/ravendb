@@ -1,0 +1,17 @@
+﻿<Properties StartupItem="Raven.Server/Raven.Server.csproj">
+  <MonoDevelop.Ide.Workspace ActiveConfiguration="Debug" />
+  <MonoDevelop.Ide.Workbench ActiveDocument="Raven.Voron/Voron.Tests/Bugs/MultiAdds.cs">
+    <Files>
+      <File FileName="Raven.Abstractions/Connection/ErrorResponseException.cs" Line="1" Column="1" />
+      <File FileName="Raven.Database/Linq/QueryParsingUtils.cs" Line="1" Column="1" />
+      <File FileName="Raven.Voron/Voron.Tests/Bugs/MultiAdds.cs" Line="60" Column="11" />
+      <File FileName=".nuget/NuGet.Config" Line="1" Column="1" />
+      <File FileName=".nuget/NuGet.targets" Line="1" Column="1" />
+      <File FileName=".nuget/packages.config" Line="1" Column="1" />
+    </Files>
+  </MonoDevelop.Ide.Workbench>
+  <MonoDevelop.Ide.DebuggingService.Breakpoints>
+    <BreakpointStore />
+  </MonoDevelop.Ide.DebuggingService.Breakpoints>
+  <MonoDevelop.Ide.DebuggingService.PinnedWatches />
+</Properties>

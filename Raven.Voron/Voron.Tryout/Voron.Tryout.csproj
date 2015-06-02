@@ -78,13 +78,13 @@
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\Voron.Tests\Voron.Tests.csproj">
-      <Project>{3C2CD044-CF12-48D1-9C43-64A9058C165E}</Project>
-      <Name>Voron.Tests</Name>
-    </ProjectReference>
     <ProjectReference Include="..\Voron\Voron.csproj">
       <Project>{FF83C7C2-BC7B-4DCC-A782-49EF9BBD9390}</Project>
       <Name>Voron</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\Voron.Tests\Voron.Tests.csproj">
+      <Project>{3C2CD044-CF12-48D1-9C43-64A9058C165E}</Project>
+      <Name>Voron.Tests</Name>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
