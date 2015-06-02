@@ -423,7 +423,6 @@
     <TypeScriptCompile Include="App\common\apiKeyLocalStorage.ts" />
     <TypeScriptCompile Include="App\models\adminLogsConfigEntry.ts" />
     <TypeScriptCompile Include="App\common\helpBindingHandler.ts" />
-    <TypeScriptCompile Include="App\models\adminLogsConfigEntry.ts" />
     <TypeScriptCompile Include="App\models\performanceTestRequest.ts" />
     <TypeScriptCompile Include="App\models\performanceTestResultWrapped.ts" />
     <TypeScriptCompile Include="App\models\indexMergeSuggestion.ts" />
@@ -459,7 +458,6 @@
     <TypeScriptCompile Include="App\viewmodels\statusDebugExplainReplication.ts" />
     <TypeScriptCompile Include="App\viewmodels\createEncryptionConfirmation.ts" />
     <TypeScriptCompile Include="App\viewmodels\cancelSideBySizeConfirm.ts" />
-    <TypeScriptCompile Include="App\viewmodels\createEncryptionConfirmation.ts" />
     <TypeScriptCompile Include="App\viewmodels\customFunctionsEditor.ts" />
     <TypeScriptCompile Include="App\viewmodels\filesystem\resetIndexConfirm.ts" />
     <TypeScriptCompile Include="App\commands\monitorCompactCommand.ts" />
@@ -584,8 +582,6 @@
     <Content Include="App\views\statusDebugChanges.html" />
     <Content Include="App\views\statusDebug.html" />
     <TypeScriptCompile Include="App\common\datePickerBindingHandler.ts" />
-    <Content Include="App\views\alerts.html" />
-    <Content Include="App\views\apiKeys.html" />
     <Content Include="App\views\counter\counterStorageCounters.html" />
     <Content Include="App\views\deleteDocuments.html" />
     <Content Include="App\views\filesystem\deleteFiles.html" />
@@ -599,7 +595,6 @@
     <Content Include="App\views\filesystem\searchSingleInputClause.html" />
     <Content Include="App\views\licensingStatus.html" />
     <Content Include="App\views\queryStatsDialog.html" />
-    <Content Include="App\views\selectColumns.html" />
     <Content Include="App\views\patch.html" />
     <Content Include="App\views\createEncryption.html" />
     <Content Include="App\views\conflicts.html" />
@@ -987,10 +982,6 @@
     <Content Include="web.config">
       <SubType>Designer</SubType>
     </Content>
-    <Content Include="fonts\fontawesome-webfont.woff" />
-    <Content Include="fonts\fontawesome-webfont.ttf" />
-    <Content Include="fonts\fontawesome-webfont.eot" />
-    <Content Include="fonts\FontAwesome.otf" />
     <None Include="web.Debug.config">
       <DependentUpon>web.config</DependentUpon>
       <SubType>Designer</SubType>
@@ -1106,7 +1097,7 @@
     <TypeScriptSourceMap>false</TypeScriptSourceMap>
     <TypeScriptModuleKind>AMD</TypeScriptModuleKind>
   </PropertyGroup>
-  <Import Project="$(VSToolsPath)\TypeScript\Microsoft.TypeScript.targets" />
+  <!--<Import Project="$(VSToolsPath)\TypeScript\Microsoft.TypeScript.targets" />-->
   <Import Project="$(SolutionDir)\.nuget\NuGet.targets" Condition="'$(TasksTargetsImported)' == ''" />
   <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
     <PropertyGroup>
