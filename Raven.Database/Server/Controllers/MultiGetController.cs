@@ -20,12 +20,13 @@ using Raven.Abstractions.Util;
 using Raven.Database.Server.WebApi;
 using Raven.Database.Server.WebApi.Attributes;
 using Raven.Imports.Newtonsoft.Json;
+using Raven.Abstractions.Threading;
 
 namespace Raven.Database.Server.Controllers
 {
 	public class MultiGetController : RavenDbApiController
 	{
-		private static ThreadLocal<bool> recursive = new ThreadLocal<bool>(() => false);
+		private static Raven.Abstractions.Threading.ThreadLocal<bool> recursive = new Raven.Abstractions.Threading.ThreadLocal<bool>(() => false);
 
 		[HttpPost]
 		[RavenRoute("multi_get")]

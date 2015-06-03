@@ -42,6 +42,7 @@ using Raven.Database.Server.Connections;
 using Raven.Database.Storage;
 using Raven.Database.Util;
 using Raven.Database.Plugins.Catalogs;
+using Raven.Abstractions.Threading;
 
 namespace Raven.Database
 {
@@ -55,7 +56,7 @@ namespace Raven.Database
 
 		private readonly TaskScheduler backgroundTaskScheduler;
 
-		private readonly ThreadLocal<bool> disableAllTriggers = new ThreadLocal<bool>(() => false);
+		private readonly Raven.Abstractions.Threading.ThreadLocal<bool> disableAllTriggers = new Raven.Abstractions.Threading.ThreadLocal<bool>(() => false);
 
 		private readonly object idleLocker = new object();
 

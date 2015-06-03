@@ -29,6 +29,7 @@ using System.Runtime.InteropServices;
 using Raven.Abstractions.Data;
 using Raven.Database.FileSystem.Storage.Voron;
 using TaskActions = Raven.Database.FileSystem.Actions.TaskActions;
+using Raven.Abstractions.Threading;
 
 namespace Raven.Database.FileSystem
 {
@@ -49,7 +50,7 @@ namespace Raven.Database.FileSystem
 	    private readonly TransportState transportState;
         private readonly MetricsCountersManager metricsCounters;
 
-		private readonly ThreadLocal<bool> disableAllTriggers = new ThreadLocal<bool>(() => false);
+		private readonly Raven.Abstractions.Threading.ThreadLocal<bool> disableAllTriggers = new Raven.Abstractions.Threading.ThreadLocal<bool>(() => false);
 
 		private volatile bool disposed;
 
