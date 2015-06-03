@@ -49,7 +49,7 @@ namespace Raven.Storage.Voron
 
 		private readonly InMemoryRavenConfiguration configuration;
 
-		private Action onCommit;
+		private readonly Action onCommit;
 		private readonly Action onStorageInaccessible;
 
 		private TableStorage tableStorage;
@@ -107,21 +107,18 @@ namespace Raven.Storage.Voron
 			return exitLockDisposable;
 		}
 
-		public IDisposable DisableBatchNesting(bool skipOnCommitNotification)
+		ThreadLocal<bool> skipOnCommitNotification = new ThreadLocal<bool>(() => false);
+		ThreadLocal<Stack<bool>> skipOnCommitNotificationStack = new ThreadLocal<Stack<bool>>(() => new Stack<bool>(new[] { false }));  
+
+		/// <summary>
+		/// Force current operations inside context to be performed directly
+		/// </summary>
+		/// <param name="skipOnCommitNotification">Will disable fire of commit notification for all nested batches from the current one and on</param>
+		/// <returns></returns>
+		public IDisposable DisableBatchNesting(bool skipOnCommitNotification = false)
 		{
 			disableBatchNesting.Value = new object();
-
-			if (skipOnCommitNotification)
-			{
-				var onCommitBackup = onCommit;
-				disableBatchNesting.Value = new object();
-				onCommit = null;
-				return new DisposableAction(() =>
-				{
-					disableBatchNesting.Value = null;
-					onCommit = onCommitBackup;
-				});
-			}
+			this.skipOnCommitNotification.Value = this.skipOnCommitNotification.Value || skipOnCommitNotification;
 			return new DisposableAction(() => disableBatchNesting.Value = null);
 		}
 
@@ -147,65 +144,80 @@ namespace Raven.Storage.Voron
 
 		public void Batch(Action<IStorageActionsAccessor> action)
 		{
-			if (disposerLock.IsReadLockHeld && disableBatchNesting.Value == null) // we are currently in a nested Batch call and allow to nest batches
-			{
-				if (current.Value != null) // check again, just to be sure
-				{
-					current.Value.IsNested = true;
-					action(current.Value);
-					current.Value.IsNested = false;
-					return;
-				}
-			}
-
-			Action afterStorageCommit;
-			disposerLock.EnterReadLock();
+			var skipOnCommitNotification = this.skipOnCommitNotification.Value;
+			skipOnCommitNotificationStack.Value.Push(skipOnCommitNotification);
 			try
 			{
-				if (disposed)
+				if (disposerLock.IsReadLockHeld && disableBatchNesting.Value == null) // we are currently in a nested Batch call and allow to nest batches
 				{
-					Trace.WriteLine("TransactionalStorage.Batch was called after it was disposed, call was ignored.\r\n" + new StackTrace(true));
-					return; // this may happen if someone is calling us from the finalizer thread, so we can't even throw on that
+					if (current.Value != null) // check again, just to be sure
+					{
+						current.Value.IsNested = true;
+						action(current.Value);
+						current.Value.IsNested = false;
+						return;
+					}
 				}
 
-				afterStorageCommit = ExecuteBatch(action);
-			}
-			catch (Exception e)
-			{
-				if (disposed)
+				Action afterStorageCommit;
+				disposerLock.EnterReadLock();
+				try
 				{
-					Trace.WriteLine("TransactionalStorage.Batch was called after it was disposed, call was ignored.\r\n" + e);
-					if (Environment.StackTrace.Contains(".Finalize()") == false)
-						throw e;
-					return; // this may happen if someone is calling us from the finalizer thread, so we can't even throw on that
+					if (disposed)
+					{
+						Trace.WriteLine("TransactionalStorage.Batch was called after it was disposed, call was ignored.\r\n" + new StackTrace(true));
+						return; // this may happen if someone is calling us from the finalizer thread, so we can't even throw on that
+					}
+
+					afterStorageCommit = ExecuteBatch(action);
+				}
+				catch (Exception e)
+				{
+					if (disposed)
+					{
+						Trace.WriteLine("TransactionalStorage.Batch was called after it was disposed, call was ignored.\r\n" + e);
+						if (Environment.StackTrace.Contains(".Finalize()") == false)
+							throw e;
+						return; // this may happen if someone is calling us from the finalizer thread, so we can't even throw on that
+					}
+
+					if (e.InnerException is VoronExceptions.ConcurrencyException)
+						throw new ConcurrencyException("Concurrent modification to the same document are not allowed", e.InnerException);
+
+					if (e.InnerException is VoronExceptions.VoronUnrecoverableErrorException)
+					{
+						Trace.WriteLine("Voron has encountered unrecoverable error. The database will be disabled.\r\n" + e.InnerException);
+
+						onStorageInaccessible();
+
+						throw e.InnerException;
+					}
+
+					throw;
+				}
+				finally
+				{
+					disposerLock.ExitReadLock();
+					if (disposed == false && disableBatchNesting.Value == null)
+						current.Value = null;
 				}
 
-				if (e.InnerException is VoronExceptions.ConcurrencyException)
-					throw new ConcurrencyException("Concurrent modification to the same document are not allowed", e.InnerException);
+				if (afterStorageCommit != null)
+					afterStorageCommit();
 
-				if (e.InnerException is VoronExceptions.VoronUnrecoverableErrorException)
-				{
-					Trace.WriteLine("Voron has encountered unrecoverable error. The database will be disabled.\r\n" + e.InnerException);
+				if (skipOnCommitNotification == false || !disposerLock.IsReadLockHeld)
+					onCommit(); // call user code after we exit the lock} finally {
 
-					onStorageInaccessible();
-
-					throw e.InnerException;
-				}
-
-				throw;
 			}
 			finally
 			{
-				disposerLock.ExitReadLock();
-				if (disposed == false && disableBatchNesting.Value == null)
-					current.Value = null;
+				this.skipOnCommitNotification.Value = skipOnCommitNotificationStack.Value.Pop();
+				if (skipOnCommitNotificationStack.Value.Count == 1)
+				{
+					this.skipOnCommitNotification.Value = skipOnCommitNotificationStack.Value.Peek();
+				}
 			}
-
-			if (afterStorageCommit != null)
-				afterStorageCommit();
-
-			if (onCommit != null)
-				onCommit(); // call user code after we exit the lock
+			
 		}
 
         private Action ExecuteBatch(Action<IStorageActionsAccessor> action)

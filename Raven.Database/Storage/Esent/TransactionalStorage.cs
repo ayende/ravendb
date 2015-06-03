@@ -51,7 +51,7 @@ namespace Raven.Storage.Esent
         private readonly ThreadLocal<EsentTransactionContext> dtcTransactionContext = new ThreadLocal<EsentTransactionContext>();
         private readonly string database;
         private readonly InMemoryRavenConfiguration configuration;
-        private Action onCommit;
+        private readonly Action onCommit;
         private readonly ReaderWriterLockSlim disposerLock = new ReaderWriterLockSlim(LockRecursionPolicy.SupportsRecursion);
         private readonly string path;
         private volatile bool disposed;
@@ -703,22 +703,18 @@ namespace Raven.Storage.Esent
             }
         }
 
-        public IDisposable DisableBatchNesting(bool skipOnCommitNotification)
+		ThreadLocal<bool> skipOnCommitNotification = new ThreadLocal<bool>(() => false);
+		ThreadLocal<Stack<bool>> skipOnCommitNotificationStack = new ThreadLocal<Stack<bool>>(()=> new Stack<bool>(new []{false}));  
+
+		/// <summary>
+		/// Force current operations inside context to be performed directly
+		/// </summary>
+		/// <param name="skipOnCommitNotification">Will disable fire of commit notification for all nested batches from the current one and on</param>
+		/// <returns></returns>
+        public IDisposable DisableBatchNesting(bool skipOnCommitNotification = false)
         {
             disableBatchNesting.Value = new object();
-	        
-			if (skipOnCommitNotification)
-	        {
-				var onCommitBackup = onCommit;
-				disableBatchNesting.Value = new object();
-				onCommit = null;
-				return new DisposableAction(() =>
-				{
-					disableBatchNesting.Value = null;
-					onCommit = onCommitBackup;
-				});
-	        }
-
+			this.skipOnCommitNotification.Value = this.skipOnCommitNotification.Value || skipOnCommitNotification;
 			return new DisposableAction(() => disableBatchNesting.Value = null);
         }
 
@@ -736,61 +732,77 @@ namespace Raven.Storage.Esent
         [CLSCompliant(false)]
         public void Batch(Action<IStorageActionsAccessor> action)
         {
-            var batchNestingAllowed = disableBatchNesting.Value == null;
+	        var skipOnCommitNotification = this.skipOnCommitNotification.Value;
+			skipOnCommitNotificationStack.Value.Push(skipOnCommitNotification);
 
-            if (disposerLock.IsReadLockHeld && batchNestingAllowed) // we are currently in a nested Batch call and allow to nest batches
-            {
-                if (current.Value != null) // check again, just to be sure
-                {
-                    current.Value.IsNested = true;
-                    action(current.Value);
-                    current.Value.IsNested = false;
-                    return;
-                }
-            }
-            Action afterStorageCommit = null;
+	        try
+	        {
+		        var batchNestingAllowed = disableBatchNesting.Value == null;
 
-            disposerLock.EnterReadLock();
-            try
-            {
-                afterStorageCommit = ExecuteBatch(action, batchNestingAllowed ? dtcTransactionContext.Value : null);
+		        if (disposerLock.IsReadLockHeld && batchNestingAllowed) // we are currently in a nested Batch call and allow to nest batches
+		        {
+			        if (current.Value != null) // check again, just to be sure
+			        {
+				        current.Value.IsNested = true;
+				        action(current.Value);
+				        current.Value.IsNested = false;
+				        return;
+			        }
+		        }
+		        Action afterStorageCommit = null;
 
-                if (dtcTransactionContext.Value != null)
-                {
-                    dtcTransactionContext.Value.AfterCommit((Action)afterStorageCommit.Clone());
-                    afterStorageCommit = null; // delay until transaction will be committed
-                }
-            }
-            catch (EsentErrorException e)
-            {
-                if (disposed)
-                {
-                    Trace.WriteLine("TransactionalStorage.Batch was called after it was disposed, call was ignored.\r\n" + e);
-	                if (Environment.StackTrace.Contains(".Finalize()") == false)
-		                throw e;
-                    return; // this may happen if someone is calling us from the finalizer thread, so we can't even throw on that
-                }
+		        disposerLock.EnterReadLock();
+		        try
+		        {
+			        afterStorageCommit = ExecuteBatch(action, batchNestingAllowed ? dtcTransactionContext.Value : null);
 
-                switch (e.Error)
-                {
-                    case JET_err.WriteConflict:
-                    case JET_err.SessionWriteConflict:
-                    case JET_err.WriteConflictPrimaryIndex:
-                        throw new ConcurrencyException("Concurrent modification to the same document are not allowed", e);
-                    default:
-                        throw;
-                }
-            }
-            finally
-            {
-                disposerLock.ExitReadLock();
-                if (disposed == false && disableBatchNesting.Value == null)
-                    current.Value = null;
-            }
-            if (afterStorageCommit != null)
-                afterStorageCommit();
-			if (onCommit != null)
-				onCommit(); // call user code after we exit the lock
+			        if (dtcTransactionContext.Value != null)
+			        {
+				        dtcTransactionContext.Value.AfterCommit((Action) afterStorageCommit.Clone());
+				        afterStorageCommit = null; // delay until transaction will be committed
+			        }
+		        }
+		        catch (EsentErrorException e)
+		        {
+			        if (disposed)
+			        {
+				        Trace.WriteLine("TransactionalStorage.Batch was called after it was disposed, call was ignored.\r\n" + e);
+				        if (Environment.StackTrace.Contains(".Finalize()") == false)
+					        throw e;
+				        return; // this may happen if someone is calling us from the finalizer thread, so we can't even throw on that
+			        }
+
+			        switch (e.Error)
+			        {
+				        case JET_err.WriteConflict:
+				        case JET_err.SessionWriteConflict:
+				        case JET_err.WriteConflictPrimaryIndex:
+					        throw new ConcurrencyException("Concurrent modification to the same document are not allowed", e);
+				        default:
+					        throw;
+			        }
+		        }
+		        finally
+		        {
+			        disposerLock.ExitReadLock();
+			        if (disposed == false && disableBatchNesting.Value == null)
+				        current.Value = null;
+		        }
+		        if (afterStorageCommit != null)
+			        afterStorageCommit();
+		        if (skipOnCommitNotification == false || !disposerLock.IsReadLockHeld)
+			        onCommit(); // call user code after we exit the lock} finally {
+
+	        }
+	        finally
+	        {
+				this.skipOnCommitNotification.Value = skipOnCommitNotificationStack.Value.Pop();
+				if (skipOnCommitNotificationStack.Value.Count == 1)
+				{
+					this.skipOnCommitNotification.Value = skipOnCommitNotificationStack.Value.Peek();
+				}
+	        }
+	        
         }
 
         //[DebuggerHidden, DebuggerNonUserCode, DebuggerStepThrough]
