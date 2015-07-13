@@ -1887,6 +1887,9 @@ namespace Raven.Database.Indexing
 
 		private void HandleWriteError(Exception e)
 		{
+			if (disposed)
+				return;
+
 			if (e.GetType() == typeof (SystemException)) // ignore transient errors
 				return;
 
