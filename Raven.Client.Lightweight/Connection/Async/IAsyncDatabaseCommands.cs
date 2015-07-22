@@ -544,6 +544,13 @@ namespace Raven.Client.Connection.Async
         /// <param name="token">The cancellation token.</param>
         Task<string> PutIndexAsync<TDocument, TReduceResult>(string name, IndexDefinitionBuilder<TDocument, TReduceResult> indexDef, bool overwrite, CancellationToken token = default(CancellationToken));
 
+		/// <summary>
+		///     Creates multiple indexes with the specified name, based on an index definitions
+		/// </summary>
+		/// <param name="indexDefinitions">definitions of indexes to PUT</param>
+		/// <param name="token">The cancellation token.</param>
+		Task<List<string>> PutIndexesAsync(IEnumerable<IndexDefinitionWithPriority> indexDefinitions, CancellationToken token = default(CancellationToken));
+
         /// <summary>
         ///     Creates a transformer with the specified name, based on an transformer definition
         /// </summary>

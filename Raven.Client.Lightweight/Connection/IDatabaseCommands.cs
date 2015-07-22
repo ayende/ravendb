@@ -475,7 +475,7 @@ namespace Raven.Client.Connection
 		///     Creates multiple indexes with the specified name, based on an index definitions
 		/// </summary>
 		/// <param name="indexDefinitions">definitions of indexes to PUT</param>
-		List<string> PutIndexes(IndexDefinitionWithPriority[] indexDefinitions);
+		List<string> PutIndexes(IEnumerable<IndexDefinitionWithPriority> indexDefinitions);
 
 		/// <summary>
 		///     Creates an index with the specified name, based on an index definition

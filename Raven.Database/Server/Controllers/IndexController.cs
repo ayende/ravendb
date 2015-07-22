@@ -97,10 +97,7 @@ namespace Raven.Database.Server.Controllers
 			IndexDefinitionWithPriority[] indexDefinitionWithPriority;
 			try
 			{
-				var indexDefinitionInfoJson = await ReadJsonArrayAsync().ConfigureAwait(false);
-				indexDefinitionWithPriority = indexDefinitionInfoJson.Cast<JToken>()
-															 .Select(x => x.ToObject<IndexDefinitionWithPriority>())
-															 .ToArray();
+				indexDefinitionWithPriority = await ReadJsonObjectAsync<IndexDefinitionWithPriority[]>().ConfigureAwait(false);
 			}
 			catch (InvalidOperationException e)
 			{

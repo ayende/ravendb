@@ -15,6 +15,8 @@ using Raven.Abstractions.Replication;
 using Raven.Abstractions.Util;
 using Raven.Bundles.Replication.Data;
 using Raven.Bundles.Replication.Impl;
+using Raven.Client.Connection;
+using Raven.Client.Indexes;
 using Raven.Database;
 using Raven.Database.Config;
 using Raven.Database.Config.Retriever;
@@ -1053,20 +1055,32 @@ namespace Raven.Bundles.Replication.Tasks
 							var replicatedTransformerTombstones = new Dictionary<string, int>();
 
 							ReplicateTransformerDeletionIfNeeded(transformerTombstones, destination, replicatedTransformerTombstones);
+							
+							var candidatesForReplication = new List<IndexDefinitionWithPriority>();
 
 							if (docDb.Indexes.Definitions.Length > 0)
 							{
 								var sideBySideIndexes = docDb.Indexes.Definitions.Where(x => x.IsSideBySideIndex)
-																				 .ToDictionary(x => x.Name, x=> x);
+									.ToDictionary(x => x.Name, x => x);
 								foreach (var indexDefinition in docDb.Indexes.Definitions.Where(x => !x.IsSideBySideIndex))
 								{
 									IndexDefinition sideBySideIndexDefinition;
 									if (sideBySideIndexes.TryGetValue("ReplacementOf/" + indexDefinition.Name, out sideBySideIndexDefinition))
+									{
 										ReplicateSingleSideBySideIndex(destination, indexDefinition, sideBySideIndexDefinition);
+									}
 									else
-										ReplicateSingleIndex(destination, indexDefinition);
- 						
+									{
+										candidatesForReplication.Add(new IndexDefinitionWithPriority
+										{
+											Name = indexDefinition.Name,
+											Definition = indexDefinition,
+											Priority = docDb.IndexStorage.GetIndexInstance(indexDefinition.Name).Priority
+										});
+									}
 								}
+
+								ReplicateIndexesMultiPut(destination, candidatesForReplication);
 							}
 
 							if (docDb.Transformers.Definitions.Length > 0)
@@ -1126,6 +1140,16 @@ namespace Raven.Bundles.Replication.Tasks
 			{
 				Monitor.Exit(_indexReplicationTaskLock);
 			}
+		}
+
+		private void ReplicateIndexesMultiPut(ReplicationStrategy destination, List<IndexDefinitionWithPriority> indexDefinitions)
+		{
+			var serializedIndexDefinitions = RavenJToken.FromObject(indexDefinitions);
+			var url = string.Format("{0}/indexes?{1}", destination.ConnectionStringOptions.Url, GetDebugInfomration());
+			
+			var replicationRequest = httpRavenRequestFactory.Create(url, HttpMethods.Put, destination.ConnectionStringOptions, GetRequestBuffering(destination));
+			replicationRequest.Write(serializedIndexDefinitions);
+			replicationRequest.ExecuteRequest();
 		}
 
 		private void ReplicateSingleSideBySideIndex(ReplicationStrategy destination, IndexDefinition indexDefinition, IndexDefinition sideBySideIndexDefinition)

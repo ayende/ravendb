@@ -232,7 +232,7 @@ namespace Raven.Client.Connection
 			return AsyncHelpers.RunSync(() => asyncServerClient.PutIndexAsync(name, definition, false));
 		}
 
-		public List<string> PutIndexes(IndexDefinitionWithPriority[] indexDefinitions)
+		public List<string> PutIndexes(IEnumerable<IndexDefinitionWithPriority> indexDefinitions)
 		{
 			return AsyncHelpers.RunSync(() => asyncServerClient.PutIndexesAsync(indexDefinitions));
 		}

@@ -228,7 +228,7 @@ namespace Raven.Client.Connection.Async
 				}
 			}, token);
 		}
-		public Task<List<string>> PutIndexesAsync(IndexDefinitionWithPriority[] indexDefinitions, CancellationToken token = default(CancellationToken))
+		public Task<List<string>> PutIndexesAsync(IEnumerable<IndexDefinitionWithPriority> indexDefinitions, CancellationToken token = default(CancellationToken))
 		{
 			return ExecuteWithReplication(HttpMethod.Put, operationMetadata => DirectPutIndexesAsync(indexDefinitions, operationMetadata, token), token);
 		}
@@ -279,7 +279,7 @@ namespace Raven.Client.Connection.Async
 			return ExecuteWithReplication(HttpMethod.Put, operationMetadata => DirectPutTransformerAsync(name, transformerDefinition, operationMetadata, token), token);
 		}
 
-		public async Task<List<string>> DirectPutIndexesAsync(IndexDefinitionWithPriority[] indexDefinitions, OperationMetadata operationMetadata, CancellationToken token = default(CancellationToken))
+		public async Task<List<string>> DirectPutIndexesAsync(IEnumerable<IndexDefinitionWithPriority> indexDefinitions, OperationMetadata operationMetadata, CancellationToken token = default(CancellationToken))
 		{
 			var requestUri = operationMetadata.Url + "/indexes";
 			using (var request = jsonRequestFactory.CreateHttpJsonRequest(new CreateHttpJsonRequestParams(this, requestUri, HttpMethod.Put, operationMetadata.Credentials, convention).AddOperationHeaders(OperationsHeaders)))
