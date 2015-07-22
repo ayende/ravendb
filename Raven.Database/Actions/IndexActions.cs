@@ -709,5 +709,175 @@ namespace Raven.Database.Actions
 			}
 		}
 
-    }
+		[MethodImpl(MethodImplOptions.Synchronized)]
+		public string[] PutIndexes(IndexDefinitionWithPriority[] indexDefinitions)
+		{
+			var prioritiesByName = new Dictionary<string, IndexingPriority>();
+			try
+			{
+				foreach(var indexDefinition in indexDefinitions)
+				{
+					var name = indexDefinition.Name;
+					var definition = indexDefinition.Definition;
+					var priority = indexDefinition.Priority;
+					if (name == null)
+						throw new ArgumentNullException("names", "Names cannot contain null values");
+
+					IsIndexNameValid(name);
+
+					var existingIndex = IndexDefinitionStorage.GetIndexDefinition(name);
+
+					if (existingIndex != null)
+					{
+						switch (existingIndex.LockMode)
+						{
+							case IndexLockMode.SideBySide:
+								Log.Info("Index {0} not saved because it might be only updated by side-by-side index");
+								throw new InvalidOperationException("Can not overwrite locked index: " + name + ". This index can be only updated by side-by-side index.");
+
+							case IndexLockMode.LockedIgnore:
+								Log.Info("Index {0} not saved because it was lock (with ignore)", name);
+								continue;
+
+							case IndexLockMode.LockedError:
+								throw new InvalidOperationException("Can not overwrite locked index: " + name);
+						}
+					}
+
+					name = name.Trim();
+
+					if (name.Equals("dynamic", StringComparison.OrdinalIgnoreCase) ||
+						name.StartsWith("dynamic/", StringComparison.OrdinalIgnoreCase))
+					{
+						throw new ArgumentException("Cannot use index name " + name + " because it clashes with reserved dynamic index names", "name");
+					}
+
+					if (name.Contains("//"))
+					{
+						throw new ArgumentException("Cannot use an index with // in the name, but got: " + name, "name");
+					}
+
+					AssertAnalyzersValid(definition);
+
+					switch (FindIndexCreationOptions(definition, ref name))
+					{
+						case IndexCreationOptions.Noop:
+							continue;
+						case IndexCreationOptions.UpdateWithoutUpdatingCompiledIndex:
+							// ensure that the code can compile
+							new DynamicViewCompiler(definition.Name, definition, Database.Extensions, IndexDefinitionStorage.IndexDefinitionsPath, Database.Configuration).GenerateInstance();
+							IndexDefinitionStorage.UpdateIndexDefinitionWithoutUpdatingCompiledIndex(definition);
+							break;
+						case IndexCreationOptions.Update:
+							// ensure that the code can compile
+							new DynamicViewCompiler(definition.Name, definition, Database.Extensions, IndexDefinitionStorage.IndexDefinitionsPath, Database.Configuration).GenerateInstance();
+							DeleteIndex(name);
+							break;
+					}
+
+					PutNewIndexIntoStorage(name, definition, true);
+
+					WorkContext.ClearErrorsFor(name);
+
+					TransactionalStorage.ExecuteImmediatelyOrRegisterForSynchronization(() => Database.Notifications.RaiseNotifications(new IndexChangeNotification
+					{
+						Name = name,
+						Type = IndexChangeTypes.IndexAdded,
+					}));
+
+					prioritiesByName.Add(name,priority);
+				}
+
+				var prioritiesById = prioritiesByName.ToDictionary(x => Database.IndexStorage.GetIndexInstance(x.Key).indexId, x => x.Value);
+				Database.TransactionalStorage.Batch(accessor => accessor.Indexing.SetIndexesPriority(prioritiesById));
+
+				return prioritiesByName.Keys.ToArray();
+			}
+			catch (Exception e)
+			{
+				Log.WarnException("Could not create index batch", e);
+				foreach (var index in prioritiesByName.Keys)
+					DeleteIndex(index);
+
+				throw;
+			}
+		
+		}
+
+		internal void PutNewIndexIntoStorage(string name, IndexDefinition definition, bool disableIndex = false)
+		{
+			Debug.Assert(Database.IndexStorage != null);
+			Debug.Assert(TransactionalStorage != null);
+			Debug.Assert(WorkContext != null);
+
+			Index index = null;
+			TransactionalStorage.Batch(actions =>
+			{
+				var maxId = 0;
+				if (Database.IndexStorage.Indexes.Length > 0)
+				{
+					maxId = Database.IndexStorage.Indexes.Max();
+				}
+				definition.IndexId = (int)Database.Documents.GetNextIdentityValueWithoutOverwritingOnExistingDocuments("IndexId", actions);
+				if (definition.IndexId <= maxId)
+				{
+					actions.General.SetIdentityValue("IndexId", maxId + 1);
+					definition.IndexId = (int)Database.Documents.GetNextIdentityValueWithoutOverwritingOnExistingDocuments("IndexId", actions);
+				}
+
+
+				IndexDefinitionStorage.RegisterNewIndexInThisSession(name, definition);
+
+				// this has to happen in this fashion so we will expose the in memory status after the commit, but 
+				// before the rest of the world is notified about this.
+
+				IndexDefinitionStorage.CreateAndPersistIndex(definition);
+				Database.IndexStorage.CreateIndexImplementation(definition);
+				index = Database.IndexStorage.GetIndexInstance(definition.IndexId);
+				// If we execute multiple indexes at once and want to activate them all at once we will disable the index from the endpoint
+				if (disableIndex) index.Priority = IndexingPriority.Disabled;
+				//ensure that we don't start indexing it right away, let the precomputation run first, if applicable
+				index.IsMapIndexingInProgress = true;
+				if (definition.IsTestIndex)
+					index.MarkQueried(); // test indexes should be mark queried, so the cleanup task would not delete them immediately
+
+				InvokeSuggestionIndexing(name, definition, index);
+
+				actions.Indexing.AddIndex(definition.IndexId, definition.IsMapReduce);
+			});
+
+			Debug.Assert(index != null);
+
+			Action precomputeTask = null;
+			if (WorkContext.RunIndexing &&
+				name.Equals(Constants.DocumentsByEntityNameIndex, StringComparison.InvariantCultureIgnoreCase) == false &&
+				Database.IndexStorage.HasIndex(Constants.DocumentsByEntityNameIndex))
+			{
+				// optimization of handling new index creation when the number of document in a database is significantly greater than
+				// number of documents that this index applies to - let us use built-in RavenDocumentsByEntityName to get just appropriate documents
+
+				precomputeTask = TryCreateTaskForApplyingPrecomputedBatchForNewIndex(index, definition);
+			}
+			else
+			{
+				index.IsMapIndexingInProgress = false;// we can't apply optimization, so we'll make it eligible for running normally
+			}
+
+			// The act of adding it here make it visible to other threads
+			// we have to do it in this way so first we prepare all the elements of the 
+			// index, then we add it to the storage in a way that make it public
+			IndexDefinitionStorage.AddIndex(definition.IndexId, definition);
+
+			// we start the precomuteTask _after_ we finished adding the index
+			if (precomputeTask != null)
+			{
+				precomputeTask();
+			}
+
+			WorkContext.ShouldNotifyAboutWork(() => "PUT INDEX " + name);
+			WorkContext.NotifyAboutWork();
+		}
+
+
+	}
 }

@@ -138,6 +138,7 @@ namespace Raven.Tests.Replication
 				source.Conventions.IndexAndTransformerReplicationMode = IndexAndTransformerReplicationMode.None;
 				// ReSharper disable once AccessToDisposedClosure
 				SetupReplication(source, "testDB", store => false, destination1, destination2, destination3);
+				source.DatabaseCommands.Admin.StopIndexing();
 
 				//make sure not to replicate the index automatically
 				var userIndex = new UserIndex();
