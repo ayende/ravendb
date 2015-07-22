@@ -49,7 +49,6 @@ namespace Raven.Client.Indexes
 				{
 					indexCompilationExceptions.Add(new IndexCompilationException("Failed to compile index name = " + task.IndexName, e));
 				}
-
 			}
 
 			foreach (var task in catalogToGetnIndexingTasksFrom.GetExportedValues<AbstractTransformerCreationTask>())
@@ -203,7 +202,6 @@ namespace Raven.Client.Indexes
 				{
 					indexCompilationExceptions.Add(new IndexCompilationException("Failed to compile index name = " + task.IndexName, e));
 				}
-
 			}
 
 			foreach (var task in catalogToGetnIndexingTasksFrom.GetExportedValues<AbstractTransformerCreationTask>())

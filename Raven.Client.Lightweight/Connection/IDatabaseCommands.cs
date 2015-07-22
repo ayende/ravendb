@@ -472,6 +472,12 @@ namespace Raven.Client.Connection
 		void PutAttachment(string key, Etag etag, Stream data, RavenJObject metadata);
 
 		/// <summary>
+		///     Creates multiple indexes with the specified name, based on an index definitions
+		/// </summary>
+		/// <param name="indexDefinitions">definitions of indexes to PUT</param>
+		List<string> PutIndexes(IndexDefinitionWithPriority[] indexDefinitions);
+
+		/// <summary>
 		///     Creates an index with the specified name, based on an index definition
 		/// </summary>
 		/// <param name="name">name of an index</param>

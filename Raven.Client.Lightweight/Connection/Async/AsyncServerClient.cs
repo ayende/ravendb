@@ -228,6 +228,11 @@ namespace Raven.Client.Connection.Async
 				}
 			}, token);
 		}
+		public Task<List<string>> PutIndexesAsync(IndexDefinitionWithPriority[] indexDefinitions, CancellationToken token = default(CancellationToken))
+		{
+			return ExecuteWithReplication(HttpMethod.Put, operationMetadata => DirectPutIndexesAsync(indexDefinitions, operationMetadata, token), token);
+		}
+
 		public Task<string> PutIndexAsync<TDocument, TReduceResult>(string name, IndexDefinitionBuilder<TDocument, TReduceResult> indexDef, CancellationToken token = default(CancellationToken))
 		{
 			return PutIndexAsync(name, indexDef, false, token);
@@ -274,6 +279,31 @@ namespace Raven.Client.Connection.Async
 			return ExecuteWithReplication(HttpMethod.Put, operationMetadata => DirectPutTransformerAsync(name, transformerDefinition, operationMetadata, token), token);
 		}
 
+		public async Task<List<string>> DirectPutIndexesAsync(IndexDefinitionWithPriority[] indexDefinitions, OperationMetadata operationMetadata, CancellationToken token = default(CancellationToken))
+		{
+			var requestUri = operationMetadata.Url + "/indexes";
+			using (var request = jsonRequestFactory.CreateHttpJsonRequest(new CreateHttpJsonRequestParams(this, requestUri, HttpMethod.Put, operationMetadata.Credentials, convention).AddOperationHeaders(OperationsHeaders)))
+			{
+				ErrorResponseException responseException;
+				try
+				{
+					var serializedIndexDefinitions = RavenJObject.FromObject(indexDefinitions);
+					await request.WriteAsync(serializedIndexDefinitions).ConfigureAwait(false);
+					var result = await request.ReadResponseJsonAsync().ConfigureAwait(false);
+					return result.Value<RavenJArray>("Indexes").Select(x => x.Value<string>()).ToList();
+				}
+				catch (ErrorResponseException e)
+				{
+					if (e.StatusCode != HttpStatusCode.BadRequest) throw;
+					responseException = e;
+				}
+				var error = await responseException.TryReadErrorResponseObject(new { Error = "", Message = "", IndexDefinitionProperty = "", ProblematicText = "" }).ConfigureAwait(false);
+				if (error == null) throw responseException;
+
+				throw new IndexCompilationException(error.Message) { IndexDefinitionProperty = error.IndexDefinitionProperty, ProblematicText = error.ProblematicText };
+			}
+		}
+		
 		public async Task<string> DirectPutIndexAsync(string name, IndexDefinition indexDef, bool overwrite, OperationMetadata operationMetadata, CancellationToken token = default(CancellationToken))
 		{
 			var requestUri = operationMetadata.Url + "/indexes/" + Uri.EscapeUriString(name) + "?definition=yes";
@@ -2536,5 +2566,7 @@ namespace Raven.Client.Connection.Async
 				}
 			}
 		}
+
+
 	}
 }

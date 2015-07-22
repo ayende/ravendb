@@ -11,6 +11,7 @@ using Raven.Database.Indexing;
 using Raven.Database.Queries;
 using Raven.Database.Server.WebApi.Attributes;
 using Raven.Database.Storage;
+using Raven.Imports.Newtonsoft.Json.Linq;
 using Raven.Json.Linq;
 using System;
 using System.Collections.Generic;
@@ -88,6 +89,63 @@ namespace Raven.Database.Server.Controllers
 			return GetEmptyMessage();
 		}
 
+		[HttpPut]
+		[RavenRoute("indexes")]
+		[RavenRoute("databases/{databaseName}/indexes")]
+		public async Task<HttpResponseMessage> IndexMultiPut()
+		{
+			IndexDefinitionWithPriority[] indexDefinitionWithPriority;
+			try
+			{
+				var indexDefinitionInfoJson = await ReadJsonArrayAsync().ConfigureAwait(false);
+				indexDefinitionWithPriority = indexDefinitionInfoJson.Cast<JToken>()
+															 .Select(x => x.ToObject<IndexDefinitionWithPriority>())
+															 .ToArray();
+			}
+			catch (InvalidOperationException e)
+			{
+				Log.DebugException("Failed to deserialize index request. Error: ", e);
+				return GetMessageWithObject(new
+				{
+					Message = "Could not understand json, please check its validity.",
+					Error = e.Message
+				}, (HttpStatusCode)500);
+
+			}
+			catch (InvalidDataException e)
+			{
+				Log.DebugException("Failed to deserialize index request. Error: ", e);
+
+				return GetMessageWithObject(new
+				{
+					Error = e
+				}, (HttpStatusCode)422); //http code 422 - Unprocessable entity
+			}
+
+			if (indexDefinitionWithPriority.Any(x =>
+				x.Definition == null ||
+				(x.Definition.Map == null && (x.Definition.Maps == null || x.Definition.Maps.Count == 0))))
+				return GetMessageWithString("Expected json document with 'Map' or 'Maps' property", HttpStatusCode.BadRequest);
+
+			string[] createdIndexes;
+			try
+			{
+				createdIndexes = Database.Indexes.PutIndexes(indexDefinitionWithPriority);
+			}
+			catch (Exception ex)
+			{
+				var compilationException = ex as IndexCompilationException;
+
+				return GetMessageWithObject(new
+				{
+					ex.Message,
+					IndexDefinitionProperty = compilationException != null ? compilationException.IndexDefinitionProperty : "",
+					ProblematicText = compilationException != null ? compilationException.ProblematicText : "",
+					Error = ex.ToString()
+				}, HttpStatusCode.BadRequest);
+			}
+			return GetMessageWithObject(new { Indexes = createdIndexes }, HttpStatusCode.Created);
+		}
 
 
 		[HttpPut]
