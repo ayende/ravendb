@@ -120,6 +120,7 @@ namespace Raven.Tests.Bundles.Expiration
 			}
 
 			ravenDbServer.SystemDatabase.StartupTasks.OfType<ExpiredDocumentsCleaner>().First().TimerCallback(null);
+			Thread.Sleep(5000);
 
             using (var session = documentStore.OpenSession())
 			{
