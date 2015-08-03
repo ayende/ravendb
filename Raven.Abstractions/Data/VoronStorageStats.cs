@@ -15,6 +15,7 @@ namespace Raven.Abstractions.Data
 		public long UsedDataFileSizeInBytes;
 		public long AllocatedDataFileSizeInBytes;
 		public long NextWriteTransactionId;
+		public long CurrentMaxScratchBufferSize;
 		public List<VoronActiveTransaction> ActiveTransactions;
 	}
 }

@@ -556,7 +556,8 @@ namespace Voron
 				UsedDataFileSizeInBytes = (State.NextPageNumber - 1) * AbstractPager.PageSize,
 				AllocatedDataFileSizeInBytes = numberOfAllocatedPages * AbstractPager.PageSize,
 				NextWriteTransactionId = NextWriteTransactionId,
-				ActiveTransactions = ActiveTransactions 
+				ActiveTransactions = ActiveTransactions,
+				CurrentMaxScratchBufferSize = ScratchBufferPool.MaxSize
 			};
 		}
 

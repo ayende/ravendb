@@ -24,17 +24,47 @@ namespace Voron.Impl.Scratch
 	/// </summary>
 	public unsafe class ScratchBufferPool : IDisposable
 	{
-		private readonly long _sizeLimit;
+		private readonly ReaderWriterLockSlim locker = new ReaderWriterLockSlim();
+		private long _maxSize;
 		private ScratchBufferFile _current;
 		private StorageEnvironmentOptions _options;
 		private int _currentScratchNumber = -1;
 		private long _oldestTransactionWhenFlushWasForced = -1;
         private readonly Dictionary<int, ScratchBufferFile> _scratchBuffers = new Dictionary<int, ScratchBufferFile>(NumericEqualityComparer.Instance);
 
+		public long MaxSize
+		{
+			get
+			{
+				locker.EnterReadLock();
+				try
+				{
+					return _maxSize;
+				}
+				finally
+				{
+					locker.ExitReadLock();
+				}
+			}
+
+			private set
+			{
+				locker.EnterWriteLock();
+				try
+				{
+					_maxSize = value;
+				}
+				finally
+				{
+					locker.ExitWriteLock();
+				}
+			}
+		}
+
 		public ScratchBufferPool(StorageEnvironment env)
 		{
 			_options = env.Options;
-			_sizeLimit = env.Options.MaxScratchBufferSize;
+			MaxSize = env.Options.MaxScratchBufferSize;
 			_current = NextFile();
 		}
 
@@ -113,7 +143,7 @@ namespace Voron.Impl.Scratch
 				}
 			}
 
-			if (sizeAfterAllocation >= (_sizeLimit*3)/4 && oldestActiveTransaction > _oldestTransactionWhenFlushWasForced)
+			if (sizeAfterAllocation >= (MaxSize*3)/4 && oldestActiveTransaction > _oldestTransactionWhenFlushWasForced)
 			{
 				// we may get recursive flushing, so we want to avoid it
 				if (tx.Environment.Journal.Applicator.IsCurrentThreadInFlushOperation == false)
@@ -145,7 +175,7 @@ namespace Voron.Impl.Scratch
 				}
 			}
 
-			if (sizeAfterAllocation > _sizeLimit)
+			if (sizeAfterAllocation > MaxSize)
 			{
 				var sp = Stopwatch.StartNew();
 
@@ -174,8 +204,8 @@ namespace Voron.Impl.Scratch
 
 					createNextFile = true;
 				}
-				else if (_scratchBuffers.Count == 1 && _current.Size < _sizeLimit && 
-						(_current.ActivelyUsedBytes(oldestActiveTransaction) + size * AbstractPager.PageSize) < _sizeLimit)
+				else if (_scratchBuffers.Count == 1 && _current.Size < MaxSize && 
+						(_current.ActivelyUsedBytes(oldestActiveTransaction) + size * AbstractPager.PageSize) < MaxSize)
 				{
 					// there is only one scratch file that hasn't reach the size limit yet and
 					// the number of bytes being in active use allows to allocate the requested size
@@ -240,7 +270,7 @@ namespace Voron.Impl.Scratch
 					_current.Size / 1024,
 					_current.SizeAfterAllocation(size) / 1024,
 					sizeAfterAllocation / 1024,
-					_sizeLimit / 1024,
+					MaxSize / 1024,
 					sp.ElapsedMilliseconds,
 					debugInfo
 					);
@@ -303,6 +333,11 @@ namespace Voron.Impl.Scratch
 		public byte* AcquirePagePointer(int scratchNumber, long p)
 		{
 			return _scratchBuffers[scratchNumber].AcquirePagePointer(p);
+		}
+
+		public void IncreaseMaxSize()
+		{
+			MaxSize += Math.Max(1L * 1024L * 1024L, _options.MaxScratchBufferSize);
 		}
 	}
 }

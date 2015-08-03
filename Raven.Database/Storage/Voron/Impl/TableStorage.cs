@@ -3,12 +3,11 @@
 //      Copyright (c) Hibernating Rhinos LTD. All rights reserved.
 //  </copyright>
 // -----------------------------------------------------------------------
-using System.Threading;
-using System.Web.UI;
-using Mono.CSharp;
+using Raven.Abstractions.Logging;
 using Raven.Abstractions.Util.Streams;
-using Raven.Database.Indexing.Collation.Cultures;
 using Raven.Database.Storage.Voron.StorageActions.StructureSchemas;
+
+using Voron.Exceptions;
 using Voron.Impl.Paging;
 
 namespace Raven.Database.Storage.Voron.Impl
@@ -24,7 +23,9 @@ namespace Raven.Database.Storage.Voron.Impl
 
 	internal class TableStorage : IDisposable
 	{
-	    private readonly StorageEnvironmentOptions _options;
+		private static readonly ILog Log = LogManager.GetCurrentClassLogger();
+
+		private readonly StorageEnvironmentOptions _options;
 	    private readonly IBufferPool bufferPool;
 
 	    private readonly StorageEnvironment env;
@@ -150,15 +151,30 @@ namespace Raven.Database.Storage.Voron.Impl
 
 		public void Write(WriteBatch writeBatch)
 		{
-		    try
-		    {
-                env.Writer.Write(writeBatch);
-		    }
-		    catch (AggregateException ae)
-		    {
-		        if (ae.InnerException is OperationCanceledException == false) // this can happen during storage disposal
-		            throw;
-		    }
+			var retries = 0;
+			while (true)
+			{
+				try
+				{
+					env.Writer.Write(writeBatch);
+					return;
+				}
+				catch (Exception e)
+				{
+					if (e.InnerException is OperationCanceledException) // this can happen during storage disposal
+						return;
+
+					if (e.InnerException is ScratchBufferSizeLimitException == false)
+						throw;
+
+					if (retries >= 3)
+						throw;
+
+					env.ScratchBufferPool.IncreaseMaxSize();
+					Log.WarnException("Increased scratch buffer size to " + env.ScratchBufferPool.MaxSize, e.InnerException);
+					retries++;
+				}
+			}
 		}
 
 		public long GetEntriesCount(TableBase table)
