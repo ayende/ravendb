@@ -1324,7 +1324,7 @@ namespace Raven.Database.Config
 
 				/// <summary>
 				/// The maximum scratch buffer size that can be used by Voron. The value is in megabytes. 
-				/// Default: 512.
+				/// Default: 1024.
 				/// </summary>
 				public int MaxScratchBufferSize { get; set; }
 

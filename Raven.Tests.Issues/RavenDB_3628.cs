@@ -16,7 +16,6 @@ using Raven.Database.Config;
 using Raven.Tests.Common;
 
 using Xunit;
-using Xunit.Extensions;
 
 namespace Raven.Tests.Issues
 {
@@ -81,11 +80,10 @@ namespace Raven.Tests.Issues
 			configuration.Settings[Constants.Voron.MaxScratchBufferSize] = "7";
 		}
 
-		[Theory]
-		[PropertyData("Storages")]
-		public void IfWeHitOutOfMemoryDuringIndexingThenWeShouldDisableIndexAndCreateAnAlert(string requestedStorage)
+		[Fact]
+		public void IfWeHitOutOfMemoryDuringIndexingThenWeShouldDisableIndexAndCreateAnAlertForEsent()
 		{
-			using (var store = NewRemoteDocumentStore(requestedStorage: requestedStorage))
+			using (var store = NewRemoteDocumentStore(requestedStorage: "esent"))
 			{
 				store.DatabaseCommands.Admin.StopIndexing();
 
@@ -116,6 +114,40 @@ namespace Raven.Tests.Issues
 				var alerts = alertsJson.DataAsJson.JsonDeserialization<AlertsDocument>() ?? new AlertsDocument();
 				var alert = alerts.Alerts.FirstOrDefault(x => x.Title == string.Format("Index '{0}' was disabled", index.IndexName));
 				Assert.NotNull(alert);
+			}
+		}
+
+		[Fact]
+		public void IfWeHitOutOfMemoryDuringIndexingThenWeShouldWorkVoron()
+		{
+			using (var store = NewRemoteDocumentStore(requestedStorage: "voron"))
+			{
+				store.DatabaseCommands.Admin.StopIndexing();
+
+				for (int i = 0; i < 3; i++)
+				{
+					using (var session = store.OpenSession())
+					{
+						var city = GenerateCity(i);
+						session.Store(city);
+						session.SaveChanges();
+					}
+				}
+
+				var index = new City_ByDistrictNameAndPostalCode();
+				index.Execute(store);
+				store.DatabaseCommands.Admin.StartIndexing();
+
+				WaitForIndexing(store, timeout: TimeSpan.FromMinutes(5));
+
+				using (var session = store.OpenSession())
+				{
+					var count = session
+						.Query<City_ByDistrictNameAndPostalCode.Result, City_ByDistrictNameAndPostalCode>()
+						.Count();
+
+					Assert.Equal(1, count);
+				}
 			}
 		}
 

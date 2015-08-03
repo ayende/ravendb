@@ -377,9 +377,9 @@ namespace Raven.Storage.Voron
 		{
 			var stats = tableStorage.Environment.Stats();
 
-			return new StorageStats()
+			return new StorageStats
 			{
-				VoronStats = new VoronStorageStats()
+				VoronStats = new VoronStorageStats
 				{
 					FreePagesOverhead = stats.FreePagesOverhead,
 					RootPages = stats.RootPages,
@@ -387,7 +387,8 @@ namespace Raven.Storage.Voron
 					UsedDataFileSizeInBytes = stats.UsedDataFileSizeInBytes,
 					AllocatedDataFileSizeInBytes = stats.AllocatedDataFileSizeInBytes,
 					NextWriteTransactionId = stats.NextWriteTransactionId,
-					ActiveTransactions = stats.ActiveTransactions.Select(x => new VoronActiveTransaction
+					CurrentMaxScratchBufferSize = stats.CurrentMaxScratchBufferSize,
+                    ActiveTransactions = stats.ActiveTransactions.Select(x => new VoronActiveTransaction
 					{
 						Id = x.Id,
 						Flags = x.Flags.ToString()

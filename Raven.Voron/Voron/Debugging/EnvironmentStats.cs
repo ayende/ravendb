@@ -10,7 +10,8 @@ namespace Voron.Debugging
         public long UsedDataFileSizeInBytes;
         public long AllocatedDataFileSizeInBytes;
 	    public long NextWriteTransactionId;
-	    public List<ActiveTransaction> ActiveTransactions;
+		public long CurrentMaxScratchBufferSize;
+        public List<ActiveTransaction> ActiveTransactions;
     }
 
 	public class ActiveTransaction
