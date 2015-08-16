@@ -85,15 +85,17 @@ namespace Raven.Database.Indexing
 	            }
 	        }
 
-	        public void HandleLowMemory()
+			public LowMemoryHandlerStatistics HandleLowMemory()
 	        {
                 FieldCache_Fields.DEFAULT.PurgeAllCaches();
-	            
+				var stat = GetStats();
+				return new LowMemoryHandlerStatistics
+				{
+					Name = stat.Name,
+					DatabaseName = stat.DatabaseName,
+					Summary = "Field Cache forcibly expunges all entries from the underlying caches"
+				};
 	        }
-
-		    public void SoftMemoryRelease()
-		    {
-		    }
 
 		    public LowMemoryHandlerStatistics GetStats()
 		    {

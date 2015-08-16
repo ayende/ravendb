@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
@@ -12,7 +13,10 @@ using System.Management;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
-
+using System.Web.UI.WebControls;
+using Raven.Abstractions;
+using Raven.Abstractions.Data;
+using Raven.Abstractions.Exceptions;
 using Raven.Abstractions.Logging;
 using Raven.Database.Util;
 
@@ -38,8 +42,9 @@ namespace Raven.Database.Config
 		private static int nextWriteIndex;
         private static readonly ManualResetEventSlim _domainUnload = new ManualResetEventSlim();
 	    private static bool dynamicLoadBalancing;
-
 		public static double Average { get; private set; }
+
+		public static readonly FixedSizeConcurrentQueue<cpuUsageCallsRecord> cpuUsageCallsRecords = new FixedSizeConcurrentQueue<cpuUsageCallsRecord>(100);
 
 	    static CpuStatistics()
 		{
@@ -61,6 +66,7 @@ namespace Raven.Database.Config
 			                return;
 
 				        var totalUsage = usage.GetCurrentUsage();
+			
 			            try
 			            {
 			                HandleCpuUsage(totalUsage);
@@ -82,9 +88,13 @@ namespace Raven.Database.Config
 				Name = "CPU usage notification thread"
 			};//.Start();
 		}
-
-		private static void HandleCpuUsage(float usageInPercents)
+		public static void HandleCpuUsage(float usageInPercents)
 		{
+			var stats = new cpuUsageCallsRecord
+			{
+				StartedAt = SystemTime.UtcNow,
+			};
+
 			var previousWriteIndex = nextWriteIndex;
 			LastUsages[previousWriteIndex] = usageInPercents;
 			nextWriteIndex = (nextWriteIndex + 1) % NumberOfItemsInQueue;
@@ -99,10 +109,32 @@ namespace Raven.Database.Config
 		        return; // there was an error in getting the CPU stats, ignoring
 
 			if (average >= HighNotificationThreshold)
+			{
+				if (string.Compare(cpuUsageCallsRecords.GetEnumerator().Current.Reason, "High CPU usage", StringComparison.Ordinal)!=0)
+				{
+					stats.Reason = "High CPU usage";
+					cpuUsageCallsRecords.Enqueue(stats);
+				}
 				RunCpuUsageHandlers(handler => handler.HandleHighCpuUsage());
-			else if(average < LowNotificationThreshold)
+			}
+			else if (average < LowNotificationThreshold)
+			{
+				if ((string.Compare(cpuUsageCallsRecords.GetEnumerator().Current.Reason, "Low CPU usage", StringComparison.Ordinal)!=0))
+				{
+					stats.Reason = "Low CPU usage";
+					cpuUsageCallsRecords.Enqueue(stats);
+				}
 				RunCpuUsageHandlers(handler => handler.HandleLowCpuUsage());
+			}
 
+			//Normal CPU usage
+			else if ((string.Compare(cpuUsageCallsRecords.GetEnumerator().Current.Reason, "Normal CPU usage", StringComparison.Ordinal)!=0))
+			{
+
+				stats.Reason = "Normal CPU usage";
+				cpuUsageCallsRecords.Enqueue(stats);
+		
+			}	
 		}
 
 		public static void RegisterCpuUsageHandler(ICpuUsageHandler handler)

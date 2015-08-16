@@ -700,14 +700,19 @@ namespace Raven.Database.Prefetching
 			autoTuner.HandleOutOfMemory();
 		}
 
-		public void HandleLowMemory()
+		public LowMemoryHandlerStatistics HandleLowMemory()
 		{
-			ClearQueueAndFutureBatches();
-		}
+			var futureIndexBatchesSize = futureIndexBatches.Sum(x => x.Value.Task.IsCompleted ? x.Value.Task.Result.Sum(y => y.SerializedSizeOnDisk) : 0);
+			var futureIndexBatchesDocCount = futureIndexBatches.Sum(x => x.Value.Task.IsCompleted ? x.Value.Task.Result.Count : 0);
 
-		public void SoftMemoryRelease()
-		{
-			
+			ClearQueueAndFutureBatches();
+
+			return new LowMemoryHandlerStatistics
+			{
+				Name = "PrefetchingBehavior",
+				DatabaseName = context.DatabaseName,
+				Summary = string.Format("Clear queue and future batches. Deleted {0} future index batches documents with {1} size ", futureIndexBatchesDocCount, futureIndexBatchesSize)
+			};
 		}
 
 		public LowMemoryHandlerStatistics GetStats()

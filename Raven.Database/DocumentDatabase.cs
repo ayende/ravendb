@@ -5,6 +5,7 @@
 //-----------------------------------------------------------------------
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel.Composition;
 using System.ComponentModel.Composition.Hosting;
@@ -91,6 +92,9 @@ namespace Raven.Database
 		private readonly SizeLimitedConcurrentDictionary<string, TouchedDocumentInfo> recentTouches;
 
 		private readonly CancellationTokenSource _tpCts = new CancellationTokenSource();
+
+		public readonly FixedSizeConcurrentQueue<AutoTunerDecisionDescription> AutoTuningTrace = new FixedSizeConcurrentQueue<AutoTunerDecisionDescription>(100);
+
 		public DocumentDatabase(InMemoryRavenConfiguration configuration, DocumentDatabase systemDatabase, TransportState recievedTransportState = null)
 		{
 			TimerManager = new ResourceTimerManager();
@@ -356,6 +360,7 @@ namespace Raven.Database
 		{
 			get { return lastCollectionEtags; }
 		}
+
 
 		public MaintenanceActions Maintenance { get; private set; }
 
@@ -1007,11 +1012,11 @@ namespace Raven.Database
 
 			workContext.StartWork();
 
-			MappingThreadPool = new RavenThreadPool(Configuration.MaxNumberOfParallelProcessingTasks * 2, _tpCts.Token, "Map Thread Pool", new[]
+			MappingThreadPool = new RavenThreadPool(Configuration.MaxNumberOfParallelProcessingTasks * 2, _tpCts.Token, this, "Map Thread Pool", new[]
 					{
 						new Action(()=> indexingExecuter.Execute())
 					});
-			ReducingThreadPool = new RavenThreadPool(Configuration.MaxNumberOfParallelProcessingTasks * 2, _tpCts.Token, "Reduce Thread Pool", new[]
+			ReducingThreadPool = new RavenThreadPool(Configuration.MaxNumberOfParallelProcessingTasks * 2, _tpCts.Token, this, "Reduce Thread Pool", new[]
 					{
 						new Action(()=>ReducingExecuter.Execute())
 					});

@@ -20,7 +20,7 @@ namespace Raven.SlowTests.RavenThreadPool
 		{
 			var cts = new CancellationTokenSource();
 
-			using (var tp = new RTP(8, cts.Token))
+			using (var tp = new RTP(8, cts.Token, null))
 			{
 				long sum = 0;
 				tp.Start();
@@ -39,7 +39,7 @@ namespace Raven.SlowTests.RavenThreadPool
 		{
 			var cts = new CancellationTokenSource();
 
-			using (var tp = new RTP(8, cts.Token))
+			using (var tp = new RTP(8, cts.Token, null))
 			{
 				long sum = 0;
 				tp.Start();
@@ -65,7 +65,7 @@ namespace Raven.SlowTests.RavenThreadPool
 		{
 			var cts = new CancellationTokenSource();
 
-			using (var tp = new RTP(8, cts.Token))
+			using (var tp = new RTP(8, cts.Token, null))
 			{
 				long sum = 0;
 				tp.Start();
@@ -95,7 +95,7 @@ namespace Raven.SlowTests.RavenThreadPool
 		{
 			var cts = new CancellationTokenSource();
 
-			using (var tp = new RTP(8, cts.Token).Start())
+			using (var tp = new RTP(8, cts.Token, null).Start())
 			{
 				var threadPoolStats = tp.GetThreadPoolStats();
 
@@ -156,7 +156,7 @@ namespace Raven.SlowTests.RavenThreadPool
 		{
 			var cts = new CancellationTokenSource();
 
-			using (var tp = new RTP(8, cts.Token).Start())
+			using (var tp = new RTP(8, cts.Token, null).Start())
 			{
 				var array = Enumerable.Range(0, 6).ToList();
 				var stats = tp.GetThreadPoolStats();
@@ -180,7 +180,7 @@ namespace Raven.SlowTests.RavenThreadPool
 		{
 			var cts = new CancellationTokenSource();
 
-			using (var tp = new RTP(8, cts.Token).Start())
+			using (var tp = new RTP(8, cts.Token, null).Start())
 			{
 				long sum = 0;
 				var wasReturnedPartially = false;
@@ -207,7 +207,7 @@ namespace Raven.SlowTests.RavenThreadPool
 		{
 			var cts = new CancellationTokenSource();
 
-			using (var tp = new RTP(8, cts.Token))
+			using (var tp = new RTP(8, cts.Token, null))
 			{
 				long sum = 0;
 				tp.Start();
@@ -227,8 +227,8 @@ namespace Raven.SlowTests.RavenThreadPool
 		public void TwoLevelParallelBulkCalculationSimple()
 		{
 			var cts = new CancellationTokenSource();
-
-			using (var tp = new RTP(8, cts.Token))
+			
+			using (var tp = new RTP(8,cts.Token, null))
 			{
 				long sum = 0;
 				tp.Start();

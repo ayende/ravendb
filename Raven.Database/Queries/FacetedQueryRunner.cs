@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Runtime.Remoting.Contexts;
 using System.Threading;
 using Lucene.Net.Index;
 using Lucene.Net.Search;
@@ -909,13 +910,14 @@ namespace Raven.Database.Queries
 				});
 			}
 
-			public void HandleLowMemory()
+			public LowMemoryHandlerStatistics HandleLowMemory()
 			{
 				RunIdleOperations();
-			}
-
-			public void SoftMemoryRelease()
-			{
+				return new LowMemoryHandlerStatistics
+				{
+					Name = "IntArraysPool",
+					Summary = "handle low memory called run idle operations for Faceted Query, and removes objects from array pool that weren't used in a long time"
+				};
 			}
 
 			public LowMemoryHandlerStatistics GetStats()

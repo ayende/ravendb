@@ -81,17 +81,19 @@ namespace Raven.Database.Prefetching
 			}
 		}
 
-		public void HandleLowMemory()
+		public LowMemoryHandlerStatistics HandleLowMemory()
 		{
+			var count = prefetchingBehaviors.Count;
 			foreach (var prefetchingBehavior in prefetchingBehaviors)
 			{
 				prefetchingBehavior.ClearQueueAndFutureBatches();
 			}
-		}
-
-		public void SoftMemoryRelease()
-		{
-			
+			return new LowMemoryHandlerStatistics
+			{
+				Name = "Prefetcher",
+				DatabaseName = workContext.DatabaseName,
+				Summary = string.Format("Clear {0} queue and future batches", count)
+			};
 		}
 
 		// todo: consider removing ILowMemoryHandler implementation, because the prefetching behaviors already implement it

@@ -163,8 +163,10 @@
     <Compile Include="Data\AccessTokenBody.cs" />
     <Compile Include="Data\AbstractRestoreRequest.cs" />
     <Compile Include="Data\BulkOperationOptions.cs" />
+    <Compile Include="Data\AutoTunerInfo.cs" />
     <Compile Include="Data\CompactStatus.cs" />
     <Compile Include="Data\DatabaseOperationsStatus.cs" />
+    <Compile Include="Data\AutoTunerDescionDescription.cs" />
     <Compile Include="Data\EtagJsonConverter.cs" />
     <Compile Include="Data\CounterStorageBackupRequest.cs" />
     <Compile Include="Data\FilesystemRestoreRequest.cs" />
@@ -261,6 +263,7 @@
     <Compile Include="Exceptions\BadRequestException.cs" />
     <Compile Include="Exceptions\ClientNotSupportedException.cs" />
     <Compile Include="Exceptions\DocumentDoesNotExistsException.cs" />
+    <Compile Include="Exceptions\FixedSizeConcurrentQueue.cs" />
     <Compile Include="Exceptions\ImplicitFetchFieldsFromDocumentNotAllowedException.cs" />
     <Compile Include="Exceptions\InvalidSpatialShapeException.cs" />
     <Compile Include="Exceptions\SmugglerException.cs" />

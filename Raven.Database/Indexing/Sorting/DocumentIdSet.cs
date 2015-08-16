@@ -8,6 +8,7 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Web.UI.WebControls;
 using Lucene.Net.Index;
+using Raven.Abstractions.Data;
 using Raven.Database.Config;
 using Raven.Database.Linq.PrivateExtensions;
 using Sparrow.Collections;
@@ -18,16 +19,51 @@ namespace Raven.Database.Indexing.Sorting
 	{
 		public class DocumentIdSetCleaner : ILowMemoryHandler
 		{
-			public void HandleLowMemory()
+			public LowMemoryHandlerStatistics HandleLowMemory()
 			{
-				documentIdsSetBuildersCache = new ConditionalWeakTable<IndexReader, ConcurrentDictionary<Tuple<string, Predicate<string>>, Predicate<int>>>();
+				var allReaders = _keys.Select(x =>
+				{
+					IndexReader reader;
+					x.TryGetTarget(out reader);
+					return reader;
+				})
+					.Where(x => x != null)
+					.Distinct();
+
+				var documentIdsSetsCount = allReaders.Sum(x =>
+				{
+					var c = 0;
+						ConcurrentDictionary<Tuple<string, Predicate<string>>, Predicate<int>> documentIdsSets;
+					if (documentIdsSetBuildersCache.TryGetValue(x, out documentIdsSets))
+					{
+						c += documentIdsSets.Count;
+					}
+					return c;
+				});
+
+				var valuesInReadersCacheCount = allReaders.Sum(x =>
+				{
+					var c = 0;
+					ConcurrentDictionary<string, Dictionary<int, string>> valuesInReadersCache;
+					if (fieldsStringValuesInReadersCache.TryGetValue(x, out valuesInReadersCache))
+					{
+						c += valuesInReadersCache.Count;
+					}
+					return c;
+				});
+
+				documentIdsSetBuildersCache = new ConditionalWeakTable<IndexReader, ConcurrentDictionary<Tuple<string, Predicate<string>>, Predicate<int>>>();			
 				fieldsStringValuesInReadersCache = new ConditionalWeakTable<IndexReader, ConcurrentDictionary<string, Dictionary<int, string>>>();
 				_keys = new ConcurrentSet<WeakReference<IndexReader>>();
-			}
 
-			public void SoftMemoryRelease()
-			{
-				
+				return new LowMemoryHandlerStatistics
+				{
+					Name = "DocumentIdSet",
+					DatabaseName = null,
+					Summary = string.Format("Cleared {0} Document Ids sets with {1} readers" +
+											"Cleared {2} values in readers cache with {1} readers", documentIdsSetsCount, allReaders, valuesInReadersCacheCount)
+					
+				};
 			}
 
 			public LowMemoryHandlerStatistics GetStats()
