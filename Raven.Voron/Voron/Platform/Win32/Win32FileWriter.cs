@@ -26,7 +26,11 @@ namespace Voron.Platform.Win32
         private Queue<ManualResetEvent> _eventsQueue = new Queue<ManualResetEvent>();
         private List<PendingWrite> _pendingWrites = new List<PendingWrite>();
         private List<Page> _pendingPages = new List<Page>();
-        private const int _maxPendingWrites = 64; // max number that we can pass to WaitAny
+
+        // EventWaitHandle.WaitAny cannot work with more than 64 elements. It is probably not a good idea either to build something more complex
+        // just to bypass this limit. We should be able to keep up with a queue of 64 parallel IO request (probably even lower would be better).
+        // http://stackoverflow.com/questions/16646224/why-the-eventwaithandle-waitany-method-have-64-handle-limit
+        private const int _maxPendingWrites = 64;
 
         private class PendingWrite
         {
@@ -75,7 +79,7 @@ namespace Voron.Platform.Win32
                 return;
             }
 
-            // check if we have a continious write
+            // check if we have a continuous write
             var lastPage = _pendingPages[_pendingPages.Count-1];
             int pagesToWrite = lastPage.IsOverflow ? _pager.GetNumberOfOverflowPages(lastPage.OverflowSize) : 1;
             if (lastPage.PageNumber + pagesToWrite == page.PageNumber && _pendingPages.Count < _maxPendingWrites)
@@ -93,7 +97,7 @@ namespace Voron.Platform.Win32
 
         private void WaitIfHaveTooManyPendingWrites()
         {
-            if (_pendingWrites.Count < _maxPendingWrites)
+            if (_pendingWrites.Count == 0 || _pendingWrites.Count < _maxPendingWrites)
                 return;
 
             var index = WaitHandle.WaitAny(GetPendingWaitHandles());
@@ -141,6 +145,7 @@ namespace Voron.Platform.Win32
                 if (WaitHandle.WaitAll(GetPendingWaitHandles()) == false)
                     throw new Win32Exception();
             }
+
             for (int i = 0; i < _pendingWrites.Count; i++)
             {
                 if(_pendingWrites[i].Status != 0)
@@ -164,8 +169,7 @@ namespace Voron.Platform.Win32
                 pagesToWrite+=_pendingPages[i].IsOverflow ? _pager.GetNumberOfOverflowPages(_pendingPages[i].OverflowSize) : 1;
             }
 
-            var segments =  (Win32NativeFileMethods.FileSegmentElement*)(Marshal.AllocHGlobal(
-                (pagesToWrite+1) * sizeof(Win32NativeFileMethods.FileSegmentElement)));
+            var segments =  (Win32NativeFileMethods.FileSegmentElement*)(Marshal.AllocHGlobal( (pagesToWrite+1) * sizeof(Win32NativeFileMethods.FileSegmentElement)));
             int segmentsIndex = 0;
             for (int i = 0; i < _pendingPages.Count; i++)
             {
