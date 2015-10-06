@@ -223,7 +223,8 @@ namespace Raven.Database.Client
         public IDocumentStore Initialize()
         {
             server.Initialize();
-            return this;
+			server.DocumentStore.JsonRequestFactory.DisableRequestCompression = true;
+			return this;
         }
 
         /// <summary>

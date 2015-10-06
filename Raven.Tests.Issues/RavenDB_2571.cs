@@ -11,7 +11,6 @@ using Raven.Client.Exceptions;
 using Raven.Tests.Bugs;
 using Raven.Tests.Bundles.Replication;
 using Raven.Tests.Common;
-using Raven.Tests.Common.Dto;
 
 using Xunit;
 

@@ -419,6 +419,7 @@
     <Compile Include="Util\ComparableByteArray.cs" />
     <Compile Include="Util\CompletedTask.cs" />
     <Compile Include="Util\DocumentHelpers.cs" />
+    <Compile Include="Util\DumpHelper.cs" />
     <Compile Include="Util\EasyReaderWriterLock.cs" />
     <Compile Include="Util\Encryptors\DefaultEncryptor.cs" />
     <Compile Include="Util\Encryptors\Encryptor.cs" />
