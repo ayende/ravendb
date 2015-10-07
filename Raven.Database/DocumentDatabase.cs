@@ -14,6 +14,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Lucene.Net.Search;
@@ -1007,6 +1008,7 @@ namespace Raven.Database
 					return;
 				WorkContext.LastIdleTime = SystemTime.UtcNow;
 				TransportState.OnIdle();
+			    LogMetrics();
 				IndexStorage.RunIdleOperations();
 				IndexReplacer.ReplaceIndexes(IndexDefinitionStorage.Indexes);
 				Tasks.ClearCompletedPendingTasks();
@@ -1020,7 +1022,29 @@ namespace Raven.Database
 			}
 		}
 
-		public RavenThreadPool MappingThreadPool;
+	    private void LogMetrics()
+	    {
+	        if (Log.IsDebugEnabled == false)
+	            return;
+	        using (LogManager.OpenMappedContext("database", Name ?? Constants.SystemDatabase))
+	        {
+	            var metrics = CreateMetrics();
+
+	            var logLine = new StringBuilder("Metrics for Database ", 256);
+	            logLine.AppendFormat("'{0}' are: ", Name ?? Constants.SystemDatabase).AppendLine();	            
+
+	            logLine.AppendFormat("RequestsPerSecond({0})", metrics.RequestsPerSecond).AppendLine();
+                logLine.AppendFormat("Requests.Count({0})", metrics.Requests.Count).AppendLine();
+                logLine.AppendFormat("Requests.FiveMinuteRate({0})", metrics.Requests.FiveMinuteRate).AppendLine();
+                logLine.AppendFormat("DocsWritesPerSecond({0})", metrics.DocsWritesPerSecond).AppendLine();
+                logLine.AppendFormat("IndexedPerSecond({0})", metrics.IndexedPerSecond).AppendLine();
+                logLine.AppendFormat("ReducedPerSecond({0})", metrics.ReducedPerSecond).AppendLine();
+
+	            Log.Debug(logLine.ToString());
+	        }
+	    }
+
+	    public RavenThreadPool MappingThreadPool;
 		public RavenThreadPool ReducingThreadPool;
 
 		public void SpinBackgroundWorkers(bool manualStart = false)
