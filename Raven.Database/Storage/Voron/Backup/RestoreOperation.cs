@@ -28,8 +28,25 @@ namespace Raven.Database.Storage.Voron.Backup
 
             try
             {
-                CopyIndexes();
-				CopyIndexDefinitions();
+                try
+                {
+                    CopyIndexDefinitions();
+                }
+                catch (IOException ioException)
+                {
+                    log.ErrorException("Restore operation couldn't CopyIndexDefinitions due to IOException.  Restore operation will continue",
+                        ioException);
+                }
+
+                try
+                {
+                    CopyIndexes();
+                }
+                catch (IOException ioException)
+                {
+                    log.ErrorException("Restore operation couldn't CopyIndexes due to IOException.  Restore operation will continue",
+                        ioException);
+                }
 
 				var backupFilenamePath = BackupFilenamePath(BackupMethods.Filename);
 
