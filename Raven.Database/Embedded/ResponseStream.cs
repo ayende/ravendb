@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Raven.Abstractions.Logging;
 using Raven.Abstractions.Util;
+using Sparrow;
 
 namespace Raven.Database.Embedded
 {
@@ -100,12 +101,13 @@ namespace Raven.Database.Embedded
 			return new CompletedTask();
 		}
 
-		public override int Read(byte[] buffer, int offset, int count)
+		public unsafe override int Read(byte[] buffer, int offset, int count)
 		{
 			VerifyBuffer(buffer, offset, count, allowEmpty: false);
 
 			var bytesRead = 0;
 
+			fixed (byte* bufferPtr = buffer)		
 			while (true)
 			{
 				try
@@ -115,7 +117,12 @@ namespace Raven.Database.Embedded
 					if (currentBlock != null)
 					{
 						int copy = Math.Min(count - bytesRead, currentBlock.Length - currentBlockIndex);
-						Buffer.BlockCopy(currentBlock, currentBlockIndex, buffer, offset + bytesRead, copy);
+
+						fixed (byte* currentBlockPtr = currentBlock)
+						{
+							Memory.BulkCopy(bufferPtr + offset + bytesRead, currentBlockPtr + currentBlockIndex, copy);
+						}
+
 						currentBlockIndex += copy;
 						bytesRead += copy;
 

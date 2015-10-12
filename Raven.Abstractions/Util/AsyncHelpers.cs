@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.ExceptionServices;
@@ -17,13 +18,15 @@ namespace Raven.Abstractions.Util
 {
 	public static class AsyncHelpers
 	{
+
 		public static void RunSync(Func<Task> task)
 		{
 			var oldContext = SynchronizationContext.Current;
 			try
 			{
-				var synch = new ExclusiveSynchronizationContext();
+				var synch = new LightweightSynchronizationContext();
 				SynchronizationContext.SetSynchronizationContext(synch);
+				var mre = new ManualResetEventSlim();
 				synch.Post(async _ =>
 				{
 					try
@@ -38,9 +41,11 @@ namespace Raven.Abstractions.Util
 					finally
 					{
 						synch.EndMessageLoop();
-					}
+						mre.Set();
+                    }
 				}, null);
 				synch.BeginMessageLoop();
+				mre.Wait();
 			}
 			catch (AggregateException ex)
 			{
@@ -60,9 +65,9 @@ namespace Raven.Abstractions.Util
 			var oldContext = SynchronizationContext.Current;
 			try
 			{
-				var synch = new ExclusiveSynchronizationContext();
+				var synch = new LightweightSynchronizationContext();
 				SynchronizationContext.SetSynchronizationContext(synch);
-
+				var mre = new ManualResetEventSlim();
 				synch.Post(async _ =>
 				{
 					try
@@ -78,9 +83,11 @@ namespace Raven.Abstractions.Util
 					{
                         sp.Stop();
 						synch.EndMessageLoop();
-					}
+						mre.Set();
+                    }
 				}, null);
 				synch.BeginMessageLoop();
+				mre.Wait();
 			}
 			catch (AggregateException ex)
 			{
@@ -97,13 +104,12 @@ namespace Raven.Abstractions.Util
 			return result;
 		}
 
-		private class ExclusiveSynchronizationContext : SynchronizationContext
+		private class LightweightSynchronizationContext : SynchronizationContext
 		{
-			private readonly AutoResetEvent workItemsWaiting = new AutoResetEvent(false);
-			private readonly Queue<Tuple<SendOrPostCallback, object>> items = new Queue<Tuple<SendOrPostCallback, object>>();
+			private readonly BlockingCollection<Tuple<SendOrPostCallback, object>> executionCollection = new BlockingCollection<Tuple<SendOrPostCallback, object>>();
+			private CancellationTokenSource cts = new CancellationTokenSource();
 
-			private bool done;
-			public Exception InnerException { get; set; }
+			public Exception InnerException { get; set; }			
 
 			public override void Send(SendOrPostCallback d, object state)
 			{
@@ -112,43 +118,36 @@ namespace Raven.Abstractions.Util
 
 			public override void Post(SendOrPostCallback d, object state)
 			{
-				lock (items)
-				{
-					items.Enqueue(Tuple.Create(d, state));
-				}
-				workItemsWaiting.Set();
+				executionCollection.Add(Tuple.Create(d,state),cts.Token);
 			}
 
 			public void EndMessageLoop()
 			{
-				Post(_ => done = true, null);
+				cts.Cancel();
+				cts = new CancellationTokenSource();
+            }
+
+			private void MessageLoop()
+			{
+				var cancellationToken = cts.Token;
+				do
+				{
+					cancellationToken.ThrowIfCancellationRequested();
+
+					Tuple<SendOrPostCallback, object> taskTuple;
+					if (!executionCollection.TryTake(out taskTuple, 250, cancellationToken))
+						continue;
+
+					taskTuple.Item1(taskTuple.Item2);
+
+					if (InnerException != null) // the method threw an exeption
+						throw new AggregateException("AsyncHelpers.Run method threw an exception.", InnerException);
+				} while (!cts.IsCancellationRequested);
 			}
 
 			public void BeginMessageLoop()
 			{
-				while (!done)
-				{
-					Tuple<SendOrPostCallback, object> task = null;
-					lock (items)
-					{
-						if (items.Count > 0)
-						{
-							task = items.Dequeue();
-						}
-					}
-					if (task != null)
-					{
-						task.Item1(task.Item2);
-						if (InnerException != null) // the method threw an exeption
-						{
-							throw new AggregateException("AsyncHelpers.Run method threw an exception.", InnerException);
-						}
-					}
-					else
-					{
-						workItemsWaiting.WaitOne();
-					}
-				}
+				Task.Run(() => MessageLoop(),cts.Token);
 			}
 
 			public override SynchronizationContext CreateCopy()
