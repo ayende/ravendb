@@ -8,6 +8,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -18,87 +19,68 @@ namespace Raven.Abstractions.Util
 {
 	public static class AsyncHelpers
 	{
+		private static readonly ConcurrentQueue<LightweightSynchronizationContext> contextCache = new ConcurrentQueue<LightweightSynchronizationContext>(); 
 
 		public static void RunSync(Func<Task> task)
 		{
-			var oldContext = SynchronizationContext.Current;
-			try
+			AggregateException ex = null;
+			var mre = new ManualResetEventSlim();
+
+			LightweightSynchronizationContext sync;
+			if(!contextCache.TryDequeue(out sync))
+				sync = new LightweightSynchronizationContext();
+
+			sync.Post(async _ =>
 			{
-				var synch = new LightweightSynchronizationContext();
-				SynchronizationContext.SetSynchronizationContext(synch);
-				var mre = new ManualResetEventSlim();
-				synch.Post(async _ =>
-				{
-					try
-					{
-						await task();
-					}
-					catch (Exception e)
-					{
-						synch.InnerException = e;
-						throw;
-					}
-					finally
-					{
-						synch.EndMessageLoop();
-						mre.Set();
-                    }
-				}, null);
-				synch.BeginMessageLoop();
-				mre.Wait();
-			}
-			catch (AggregateException ex)
+				var t = task();
+				await t;
+				if (t.IsFaulted)
+					ex = t.Exception;
+
+				mre.Set();
+			}, null);
+
+			mre.Wait();
+
+			contextCache.Enqueue(sync);
+			if(ex != null)
 			{
 				var exception = ex.ExtractSingleInnerException();
 				ExceptionDispatchInfo.Capture(exception).Throw();
-			}
-			finally
-			{
-				SynchronizationContext.SetSynchronizationContext(oldContext);
 			}
 		}
 
 		public static T RunSync<T>(Func<Task<T>> task)
 		{
+			var sp = Stopwatch.StartNew();
+			AggregateException ex = null;
 			var result = default(T);
-		    Stopwatch sp = Stopwatch.StartNew();
-			var oldContext = SynchronizationContext.Current;
-			try
+			var mre = new ManualResetEventSlim();
+
+			LightweightSynchronizationContext sync;
+			if (!contextCache.TryDequeue(out sync))
+				sync = new LightweightSynchronizationContext();
+
+			sync.Post(async _ =>
 			{
-				var synch = new LightweightSynchronizationContext();
-				SynchronizationContext.SetSynchronizationContext(synch);
-				var mre = new ManualResetEventSlim();
-				synch.Post(async _ =>
-				{
-					try
-					{
-						result = await task();
-					}
-					catch (Exception e)
-					{
-						synch.InnerException = e;
-						throw;
-					}
-					finally
-					{
-                        sp.Stop();
-						synch.EndMessageLoop();
-						mre.Set();
-                    }
-				}, null);
-				synch.BeginMessageLoop();
-				mre.Wait();
-			}
-			catch (AggregateException ex)
+				var t = task();
+				await t;
+				if (t.IsFaulted)
+					ex = t.Exception;
+
+				mre.Set();
+				result = t.Result;
+			}, null);
+
+			mre.Wait();
+
+			contextCache.Enqueue(sync);
+			if (ex != null)
 			{
 				var exception = ex.ExtractSingleInnerException();
-			    if (exception is OperationCanceledException)
-			        throw new TimeoutException("Operation timed out after: " + sp.Elapsed, ex);
+				if (exception is OperationCanceledException)
+					throw new TimeoutException("Operation timed out after: " + sp.Elapsed, ex);
 				ExceptionDispatchInfo.Capture(exception).Throw();
-			}
-			finally
-			{
-				SynchronizationContext.SetSynchronizationContext(oldContext);
 			}
 
 			return result;
@@ -106,48 +88,39 @@ namespace Raven.Abstractions.Util
 
 		private class LightweightSynchronizationContext : SynchronizationContext
 		{
-			private readonly BlockingCollection<Tuple<SendOrPostCallback, object>> executionCollection = new BlockingCollection<Tuple<SendOrPostCallback, object>>();
-			private CancellationTokenSource cts = new CancellationTokenSource();
-
-			public Exception InnerException { get; set; }			
-
+			private readonly ConcurrentQueue<Tuple<SendOrPostCallback,object>> executionQueue = new ConcurrentQueue<Tuple<SendOrPostCallback, object>>();
 			public override void Send(SendOrPostCallback d, object state)
 			{
-				throw new NotSupportedException("We cannot send to our same thread");
+				throw new NotSupportedException("Executing synchronous actions is not supported.");
 			}
 
 			public override void Post(SendOrPostCallback d, object state)
 			{
-				executionCollection.Add(Tuple.Create(d,state),cts.Token);
+				executionQueue.Enqueue(Tuple.Create(d,state));
+				ExecuteOne();
 			}
 
-			public void EndMessageLoop()
+			private void ExecuteOne()
 			{
-				cts.Cancel();
-				cts = new CancellationTokenSource();
-            }
-
-			private void MessageLoop()
-			{
-				var cancellationToken = cts.Token;
-				do
+				var originalContext = Current;
+				try
 				{
-					cancellationToken.ThrowIfCancellationRequested();
+					int @try = 0;
+					Tuple<SendOrPostCallback, object> actionData;
+					while(!executionQueue.TryDequeue(out actionData) && @try++ < 10)
+						Thread.SpinWait(1);
 
-					Tuple<SendOrPostCallback, object> taskTuple;
-					if (!executionCollection.TryTake(out taskTuple, 250, cancellationToken))
-						continue;
+					if(actionData == null)
+						throw new ApplicationException(@"Could not dequeue action for Synchronization Context. 
+													This should not happen and is probably a bug");
 
-					taskTuple.Item1(taskTuple.Item2);
-
-					if (InnerException != null) // the method threw an exeption
-						throw new AggregateException("AsyncHelpers.Run method threw an exception.", InnerException);
-				} while (!cts.IsCancellationRequested);
-			}
-
-			public void BeginMessageLoop()
-			{
-				Task.Run(() => MessageLoop(),cts.Token);
+					SetSynchronizationContext(this);
+					actionData.Item1(actionData.Item2);
+				}
+				finally
+				{
+					SetSynchronizationContext(originalContext);
+				}
 			}
 
 			public override SynchronizationContext CreateCopy()

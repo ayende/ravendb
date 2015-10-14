@@ -342,6 +342,7 @@ namespace Raven.Client.Document
 
 	                await Task.Delay(100);
                 }
+
 				if (previousTask == null)
 	            {
 		            ReportInternal("Done writing to server");
