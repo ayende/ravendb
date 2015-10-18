@@ -41,7 +41,7 @@ namespace Raven.Tryouts
 				Console.WriteLine("Start loading test");
 				long total = 0;
 				int counter = 0;
-				Parallel.For(0, 1, _ =>
+				Parallel.For(0, 5, _ =>
 				{
 					for (int i = 0; i < 15; i++)
 					{

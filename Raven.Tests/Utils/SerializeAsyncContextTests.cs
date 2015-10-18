@@ -49,13 +49,13 @@ namespace Raven.Tests.Utils
 			Assert.Equal(4321, SerializeAsyncContext.Run(() => AsyncMethod(4321)));
 		}
 
-		[Fact]
+		[Fact(Timeout = 1000)]
 		public void Run_for_exception_throwing_task_should_propagate_exception1()
 		{
 			Assert.Throws<ApplicationException>(() => SerializeAsyncContext.Run(AsyncMethodWithException));
 		}
 
-		[Fact]
+		[Fact(Timeout = 1000)]
 		public void Run_for_exception_throwing_task_should_propagate_exception2()
 		{
 			Assert.Throws<ApplicationException>(() => SerializeAsyncContext.Run(AsyncMethodWithInternalException));
