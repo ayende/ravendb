@@ -5,17 +5,7 @@
 // -----------------------------------------------------------------------
 
 using System;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Runtime.CompilerServices;
-using System.Runtime.ExceptionServices;
-using System.ServiceModel;
-using System.Threading;
 using System.Threading.Tasks;
-using System.Transactions;
-using Raven.Abstractions.Extensions;
-using Raven.Client.Connection;
 
 namespace Raven.Abstractions.Util
 {
