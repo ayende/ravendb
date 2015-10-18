@@ -23,6 +23,7 @@ using Raven.Imports.Newtonsoft.Json;
 using Raven.Imports.Newtonsoft.Json.Bson;
 using Raven.Json.Linq;
 using System.IO.Compression;
+using Raven.Abstractions.Util;
 using Raven.Client.Extensions;
 
 namespace Raven.Client.Document
@@ -372,11 +373,7 @@ namespace Raven.Client.Document
             if (disposed)
                 return;
 
-            using (NoSynchronizationContext.Scope())
-            {
-                var disposeAsync = DisposeAsync().ConfigureAwait(false);
-                disposeAsync.GetAwaiter().GetResult();
-            }
+	        AsyncHelpers.RunSync(DisposeAsync);
         }
 
         private void FlushBatch(Stream requestStream, ICollection<RavenJObject> localBatch)
