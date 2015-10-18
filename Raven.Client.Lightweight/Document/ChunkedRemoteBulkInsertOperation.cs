@@ -121,11 +121,7 @@ namespace Raven.Client.Document
 			if (disposed)
 				return;
 
-			using (NoSynchronizationContext.Scope())
-			{
-				var disposeAsync = DisposeAsync().ConfigureAwait(false);
-				disposeAsync.GetAwaiter().GetResult();
-			}
+			AsyncHelpers.RunSync(DisposeAsync);
 		}
 		
 		public bool IsAborted

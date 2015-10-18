@@ -108,6 +108,7 @@ namespace Raven.Server
 			Func<HttpMessageHandler> httpMessageHandlerFactory = ()=>new OwinClientHandler(owinHttpServer.Invoke, options.SystemDatabase.Configuration.EnableResponseLoggingForEmbeddedDatabases);
 			documentStore.HttpMessageHandlerFactory = httpMessageHandlerFactory;
 			documentStore.Url = string.IsNullOrWhiteSpace(Url) ? "http://localhost" : Url;
+			
 			documentStore.Initialize();
 
 			filesStore.HttpMessageHandlerFactory = httpMessageHandlerFactory;

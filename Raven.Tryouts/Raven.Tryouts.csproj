@@ -226,10 +226,6 @@
       <Project>{212823CD-25E1-41AC-92D1-D6DF4D53FC85}</Project>
       <Name>Raven.Database</Name>
     </ProjectReference>
-    <ProjectReference Include="..\Raven.SlowTests\Raven.SlowTests.csproj">
-      <Project>{46152256-7443-426C-A20D-B2F354B51810}</Project>
-      <Name>Raven.SlowTests</Name>
-    </ProjectReference>
     <ProjectReference Include="..\Raven.Sparrow\Sparrow\Sparrow.csproj">
       <Project>{104699C8-0FD3-4AB9-8542-E8FA89ED199B}</Project>
       <Name>Sparrow</Name>

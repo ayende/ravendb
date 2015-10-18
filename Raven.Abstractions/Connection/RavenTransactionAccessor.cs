@@ -7,6 +7,7 @@ using System;
 using System.Collections.Generic;
 using System.Transactions;
 using Raven.Abstractions.Extensions;
+using Raven.Abstractions.Util;
 using TransactionInformation = Raven.Abstractions.Data.TransactionInformation;
 
 namespace Raven.Client.Connection
@@ -19,13 +20,12 @@ namespace Raven.Client.Connection
 		[ThreadStatic]
 		private static Stack<TransactionInformation> currentRavenTransactions;
 
-		private static Stack<TransactionInformation> CurrentRavenTransactions
+		internal static Stack<TransactionInformation> CurrentRavenTransactions
 		{
 			get
 			{
-				if(currentRavenTransactions == null)
-					currentRavenTransactions =  new Stack<TransactionInformation>();
-				return currentRavenTransactions;
+				return currentRavenTransactions ?? 
+					(currentRavenTransactions = new Stack<TransactionInformation>());
 			}
 		}
 
@@ -75,7 +75,7 @@ namespace Raven.Client.Connection
 			};
 		}
 
-		internal static IDisposable SupressExplicitRavenTransaction()
+		public static IDisposable SupressExplicitRavenTransaction()
 		{
 			supressExplicitRavenTransaction = true;
 			return new DisposableAction(() =>
