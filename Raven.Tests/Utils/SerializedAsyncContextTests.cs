@@ -9,7 +9,7 @@ using Xunit;
 
 namespace Raven.Tests.Utils
 {
-	public class SerializeAsyncContextTests
+	public class SerializedAsyncContextTests
 	{
 		private async Task VoidAsyncMethod(ManualResetEventSlim mre)
 		{
@@ -38,7 +38,7 @@ namespace Raven.Tests.Utils
 		public void Run_for_void_task_should_work()
 		{
 			var mre = new ManualResetEventSlim();
-			SerializeAsyncContext.Run(() => VoidAsyncMethod(mre));
+			SerializedAsyncContext.Run(() => VoidAsyncMethod(mre));
 
 			Assert.True(mre.IsSet);
 		}
@@ -46,19 +46,19 @@ namespace Raven.Tests.Utils
 		[Fact(Timeout = 1000)]
 		public void Run_for_int_task_should_work()
 		{
-			Assert.Equal(4321, SerializeAsyncContext.Run(() => AsyncMethod(4321)));
+			Assert.Equal(4321, SerializedAsyncContext.Run(() => AsyncMethod(4321)));
 		}
 
 		[Fact(Timeout = 1000)]
 		public void Run_for_exception_throwing_task_should_propagate_exception1()
 		{
-			Assert.Throws<ApplicationException>(() => SerializeAsyncContext.Run(AsyncMethodWithException));
+			Assert.Throws<ApplicationException>(() => SerializedAsyncContext.Run(AsyncMethodWithException));
 		}
 
 		[Fact(Timeout = 1000)]
 		public void Run_for_exception_throwing_task_should_propagate_exception2()
 		{
-			Assert.Throws<ApplicationException>(() => SerializeAsyncContext.Run(AsyncMethodWithInternalException));
+			Assert.Throws<ApplicationException>(() => SerializedAsyncContext.Run(AsyncMethodWithInternalException));
 		}
 	}
 }

@@ -958,7 +958,7 @@
     <Compile Include="Utils\DictionaryComparer.cs" />
     <Compile Include="Utils\DynamicListTests.cs" />
     <Compile Include="Utils\RavenInternalTestUtil.cs" />
-    <Compile Include="Utils\SerializeAsyncContextTests.cs" />
+    <Compile Include="Utils\SerializedAsyncContextTests.cs" />
     <Compile Include="Utils\SettingsDat.cs" />
     <Compile Include="Utils\SortedEtagsListTests.cs" />
     <Compile Include="Util\ReflectionUtilTest.cs" />
