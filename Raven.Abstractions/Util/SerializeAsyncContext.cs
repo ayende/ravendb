@@ -8,8 +8,7 @@ using Raven.Abstractions.Logging;
 
 namespace Raven.Abstractions.Util
 {
-	//credit to Nito.AsyncEx library (https://github.com/StephenCleary/AsyncEx)
-	//adapted and changed code from AsyncContext
+	//adapted and changed code from AsyncContext https://github.com/StephenCleary/AsyncEx
 	public class SerializeAsyncContext 
 	{
 		private readonly LinkedListQueue<Task> executionQueue = new LinkedListQueue<Task>();
