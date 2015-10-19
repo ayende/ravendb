@@ -227,11 +227,13 @@ namespace Raven.Database.Server.WebApi
 							}
 							else
 							{
-								response = await action().ConfigureAwait(false);
+                                controllerContext.Request.Properties["requestNum"] = PreActionLog(controller);
+                                response = await action().ConfigureAwait(false);
 							}
 						}
 						else
 						{
+                            controllerContext.Request.Properties["requestNum"] = PreActionLog(controller); 
 							response = await action().ConfigureAwait(false);
 						}
 					}
@@ -269,7 +271,57 @@ namespace Raven.Database.Server.WebApi
 			return response;
 		}
 
-		/// <summary>
+	    private long PreActionLog(IResourceApiController controller)
+	    {
+            LogHttpRequestStatsParams logHttpRequestStatsParam = null;
+            try
+            {
+                StringBuilder sb = null;
+                if (controller.CustomRequestTraceInfo != null && controller.CustomRequestTraceInfo.Count > 0)
+                {
+                    sb = new StringBuilder();
+                    foreach (var action in controller.CustomRequestTraceInfo)
+                    {
+                        action(sb);
+                        sb.AppendLine();
+                    }
+                    while (sb.Length > 0)
+                    {
+                        if (!char.IsWhiteSpace(sb[sb.Length - 1]))
+                            break;
+                        sb.Length--;
+                    }
+                }
+                var innerRequest = controller.InnerRequest;
+                var httpRequestHeaders = innerRequest.Headers;
+                var httpContentHeaders = innerRequest.Content == null ? null : innerRequest.Content.Headers;
+                Stopwatch dummyStopwatch = new Stopwatch();
+                logHttpRequestStatsParam = new LogHttpRequestStatsParams(
+                    dummyStopwatch,
+                    new Lazy<HttpHeaders>(() => RavenBaseApiController.CloneRequestHttpHeaders(httpRequestHeaders, httpContentHeaders)),
+                    controller.InnerRequest.Method.Method,
+                    0,
+                    controller.InnerRequest.RequestUri.ToString(),
+                    sb != null ? sb.ToString() : null,
+                    controller.InnerRequestsCount
+                    );
+            }
+            catch (Exception e)
+            {
+                Logger.WarnException("Could not gather information to log pre-request stats", e);
+            }
+
+            if (logHttpRequestStatsParam == null)
+                return 0;
+
+            var curReq = Interlocked.Increment(ref reqNum);
+
+            LogHttpRequestStats(controller, logHttpRequestStatsParam, controller.ResourceName, curReq, true);
+
+	        return curReq;
+	    }
+
+	    /// <summary>
 		/// If set all client request to the server will be rejected with 
 		/// the http 503 response.
 		/// And no replication can be done from this database.
@@ -422,9 +474,10 @@ namespace Raven.Database.Server.WebApi
 
 			MarkRequestDuration(controller, sw.ElapsedMilliseconds);
 
-			var curReq = Interlocked.Increment(ref reqNum);
+		    long? nullableCurReq = controller.InnerRequest.Properties["requestNum"] as long? ?? 0;
+		    long curReq = nullableCurReq.Value;
 
-			LogHttpRequestStats(controller, logHttpRequestStatsParam, controller.ResourceName, curReq);
+		    LogHttpRequestStats(controller, logHttpRequestStatsParam, controller.ResourceName, curReq);
 
 			if (controller.IsInternalRequest == false)
 			{
@@ -530,7 +583,7 @@ namespace Raven.Database.Server.WebApi
 
 			return resourceName;
 		}
-		private void LogHttpRequestStats(IResourceApiController controller, LogHttpRequestStatsParams logHttpRequestStatsParams, string databaseName, long curReq)
+		private void LogHttpRequestStats(IResourceApiController controller, LogHttpRequestStatsParams logHttpRequestStatsParams, string databaseName, long curReq, bool preActionMessage = false)
 		{
 			if (Logger.IsDebugEnabled == false)
 				return;
@@ -538,14 +591,29 @@ namespace Raven.Database.Server.WebApi
 			if (controller is StudioController || controller is HardRouteController || controller is SilverlightController)
 				return;
 
-			var message = string.Format(CultureInfo.InvariantCulture, "Request #{0,4:#,0}: {1,-7} - {2,5:#,0} ms - {5,-10} - {3} - {4}",
-				curReq,
-				logHttpRequestStatsParams.HttpMethod,
-				logHttpRequestStatsParams.Stopwatch.ElapsedMilliseconds,
-				logHttpRequestStatsParams.ResponseStatusCode,
-				logHttpRequestStatsParams.RequestUri,
-				databaseName);
-			if (Logger.IsDebugEnabled)
+			string message;
+		    if (preActionMessage == false)
+		    {
+		        message = string.Format(CultureInfo.InvariantCulture, "Request #{0,4:#,0}: {1,-7} - {2,5:#,0} ms - {5,-10} - {3} - {4}",
+		            curReq,
+		            logHttpRequestStatsParams.HttpMethod,
+		            logHttpRequestStatsParams.Stopwatch.ElapsedMilliseconds,
+		            logHttpRequestStatsParams.ResponseStatusCode,
+		            logHttpRequestStatsParams.RequestUri,
+		            databaseName);
+		    }
+		    else
+		    {
+                message = string.Format(CultureInfo.InvariantCulture, "Receive #{0,4:#,0}: {1,-7} - {3,-10} - {2}",
+                    curReq,
+                    logHttpRequestStatsParams.HttpMethod,
+                    logHttpRequestStatsParams.RequestUri,
+                    databaseName);
+		    }
+
+
+
+		    if (Logger.IsDebugEnabled)
 				Logger.Debug(message);
 			if (Logger.IsDebugEnabled && string.IsNullOrWhiteSpace(logHttpRequestStatsParams.CustomInfo) == false)
 			{
