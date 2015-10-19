@@ -5,12 +5,10 @@ using System.Threading.Tasks;
 using Raven.Abstractions.Commands;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
-using Raven.Client.Connection;
 using Raven.Client.Document;
 using Raven.Client.Document.Batches;
 using Raven.Client.Indexes;
 using Raven.Client.Linq;
-using Raven.Client.Util;
 using Raven.Json.Linq;
 
 namespace Raven.Client.Shard
@@ -115,13 +113,12 @@ namespace Raven.Client.Shard
 				saveChangesData.Commands.AddRange(deferredCommands.Value);
 			}
 			deferredCommandsByShard.Clear();
-
-			for (int index = 0; index < data.Entities.Count; index++)
+			
+			for (var index = 0; index < data.Entities.Count; index++)
 			{
 				var entity = data.Entities[index];
-				var metadata = GetMetadataFor(entity);
-				var shardId = metadata.Value<string>(Constants.RavenShardId);
-			    if (shardId == null)
+				var shardId = shardStrategy.ShardResolutionStrategy.MetadataShardIdFor(entity);
+				if (shardId == null)
 			        throw new InvalidOperationException("Cannot save a document when the shard id isn't defined. Missing Raven-Shard-Id in the metadata");
 				var shardSaveChangesData = saveChangesPerShard.GetOrAdd(shardId);
 				shardSaveChangesData.Entities.Add(entity);
