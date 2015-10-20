@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Net;
 using System.Net.Http;
@@ -38,30 +39,41 @@ namespace Raven.Abstractions.Connection
             ResponseString = responseString;
         }
 
-        public static ErrorResponseException FromResponseMessage(HttpResponseMessage response, bool readErrorString = true)
-		{
-			var sb = new StringBuilder("Status code: ").Append(response.StatusCode).AppendLine();
+		private static readonly ConcurrentDictionary<Tuple<HttpStatusCode, string>, ErrorResponseException> exceptionsWithErrorStringCache =
+			   new ConcurrentDictionary<Tuple<HttpStatusCode, string>, ErrorResponseException>();
 
-	        string responseString = null;
-            if (readErrorString && response.Content != null)
+		private static readonly ConcurrentDictionary<HttpStatusCode, ErrorResponseException> exceptionsCache =
+			new ConcurrentDictionary<HttpStatusCode, ErrorResponseException>();
+
+		private const string statusCodeWithResponseString = "Status code: {0}{1}{2}";
+		private const string statusCode = "Status code: {0}";
+
+		public static ErrorResponseException FromResponseMessage(HttpResponseMessage response, bool readErrorString = true)
+		{
+			if (readErrorString && response.Content != null)
 			{
-                var readAsStringAsync = response.GetResponseStreamWithHttpDecompression();
-			    if (readAsStringAsync.IsCompleted)
-			    {
-			        using (var streamReader = new StreamReader(readAsStringAsync.Result))
-			        {
-			            responseString = streamReader.ReadToEnd();
-			            sb.AppendLine(responseString);
-			        }
-			    }
+				var readAsStringAsync = response.GetResponseStreamWithHttpDecompression();
+				if (readAsStringAsync.IsCompleted)
+				{
+					using (var streamReader = new StreamReader(readAsStringAsync.Result))
+					{
+						var responseString = streamReader.ReadToEnd();
+						return exceptionsWithErrorStringCache.GetOrAdd(Tuple.Create(response.StatusCode, responseString), key =>
+						{
+							var responseRef = response;
+							return new ErrorResponseException(responseRef, String.Format(statusCodeWithResponseString, key.Item1, Environment.NewLine, key.Item2))
+							{
+								ResponseString = key.Item2
+							};
+						});
+					}
+				}
 			}
-            return new ErrorResponseException(response, sb.ToString())
-            {
-                ResponseString = responseString
-            };
+
+			return exceptionsCache.GetOrAdd(response.StatusCode, key => new ErrorResponseException(response, string.Format(statusCode, response.StatusCode)));
 		}
 
-	    public string ResponseString { get; private set; }
+		public string ResponseString { get; private set; }
 
 	    public Etag Etag
 	    {
