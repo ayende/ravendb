@@ -9,7 +9,6 @@ using System.Diagnostics;
 using System.IO;
 
 using Raven.Abstractions.Util.Streams;
-using Raven.Abstractions.Util;
 using Sparrow;
 
 namespace Raven.Database.Util.Streams
