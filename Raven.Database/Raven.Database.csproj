@@ -285,6 +285,7 @@
     <Compile Include="Indexing\Analyzers\RavenStandardAnalyzer.cs" />
     <Compile Include="Indexing\Analyzers\RavenStandardFilter.cs" />
     <Compile Include="Indexing\LuceneAST.cs" />
+    <Compile Include="Indexing\TemporaryCulture.cs" />
     <Compile Include="JsConsole\AdminJsConsole.cs" />
     <Compile Include="JsConsole\AdminJsScript.cs" />
     <Compile Include="Plugins\Builtins\HotSpareReplicationBehavior.cs" />
