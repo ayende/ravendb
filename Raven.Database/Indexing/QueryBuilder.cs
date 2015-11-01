@@ -5,6 +5,7 @@
 //-----------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -52,53 +53,56 @@ namespace Raven.Database.Indexing
 
         public static Query BuildQuery(string query, IndexQuery indexQuery, RavenPerFieldAnalyzerWrapper analyzer)
         {
-            if (UseLuceneASTParser)
+            using (new TemporaryCulture(CultureInfo.InvariantCulture))
             {
+                if (UseLuceneASTParser)
+                {
+                    try
+                    {
+                        var parser = new LuceneQueryParser();
+                        parser.Parse(query);
+                        var res = parser.LuceneAST.ToQuery(
+                            new LuceneASTQueryConfiguration
+                            {
+                                Analayzer = analyzer,
+                                DefaultOperator = indexQuery.DefaultOperator,
+                                FieldName = indexQuery.DefaultField ?? string.Empty
+                            });
+                        // The parser should throw ParseException in this case.
+                        if (res == null) throw new GeoAPI.IO.ParseException("Could not parse query");
+                        return res;
+                    }
+                    catch (ParseException pe)
+                    {
+                        throw new ParseException("Could not parse: '" + query + "'", pe);
+                    }
+                }
+                var originalQuery = query;
                 try
                 {
-                    var parser = new LuceneQueryParser();
-                    parser.Parse(query);
-                    var res = parser.LuceneAST.ToQuery(
-                        new LuceneASTQueryConfiguration
-                        {
-                            Analayzer = analyzer,
-                            DefaultOperator = indexQuery.DefaultOperator,
-                            FieldName = indexQuery.DefaultField ?? string.Empty
-                        });
-                    // The parser should throw ParseException in this case.
-                    if (res == null) throw new GeoAPI.IO.ParseException("Could not parse query");
-                    return res;
+                    var queryParser = new RangeQueryParser(Version.LUCENE_29, indexQuery.DefaultField ?? string.Empty, analyzer)
+                    {
+                        DefaultOperator = indexQuery.DefaultOperator == QueryOperator.Or
+                            ? QueryParser.Operator.OR
+                            : QueryParser.Operator.AND,
+                        AllowLeadingWildcard = true
+                    };
+                    query = PreProcessComments(query);
+                    query = PreProcessMixedInclusiveExclusiveRangeQueries(query);
+                    query = PreProcessUntokenizedTerms(query, queryParser);
+                    query = PreProcessSearchTerms(query);
+                    query = PreProcessDateTerms(query, queryParser);
+                    var generatedQuery = queryParser.Parse(query);
+                    generatedQuery = HandleMethods(generatedQuery, analyzer);
+                    return generatedQuery;
                 }
                 catch (ParseException pe)
                 {
-                    throw new ParseException("Could not parse: '" + query + "'", pe);
-                }
-            }
-            var originalQuery = query;
-            try
-            {
-                var queryParser = new RangeQueryParser(Version.LUCENE_29, indexQuery.DefaultField ?? string.Empty, analyzer)
-                {
-                    DefaultOperator = indexQuery.DefaultOperator == QueryOperator.Or
-                                        ? QueryParser.Operator.OR
-                                        : QueryParser.Operator.AND,
-                    AllowLeadingWildcard = true
-                };
-                query = PreProcessComments(query);
-                query = PreProcessMixedInclusiveExclusiveRangeQueries(query);
-                query = PreProcessUntokenizedTerms(query, queryParser);
-                query = PreProcessSearchTerms(query);
-                query = PreProcessDateTerms(query, queryParser);
-                var generatedQuery = queryParser.Parse(query);
-                generatedQuery = HandleMethods(generatedQuery, analyzer);
-                return generatedQuery;
-            }
-            catch (ParseException pe)
-            {
-                if (originalQuery == query)
-                    throw new ParseException("Could not parse: '" + query + "'", pe);
-                throw new ParseException("Could not parse modified query: '" + query + "' original was: '" + originalQuery + "'", pe);
+                    if (originalQuery == query)
+                        throw new ParseException("Could not parse: '" + query + "'", pe);
+                    throw new ParseException("Could not parse modified query: '" + query + "' original was: '" + originalQuery + "'", pe);
 
+                }
             }
         }
 
