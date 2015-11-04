@@ -6,7 +6,7 @@ if($env:BUILD_NUMBER -ne $null) {
 else {
     $env:buildlabel = "13"
 }
-
+ 
 properties {
     $base_dir  = resolve-path .
     $lib_dir = "$base_dir\SharedLibs"
