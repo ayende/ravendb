@@ -82,6 +82,48 @@ namespace Voron.Tests.RawData
         }
 
         [Fact]
+        public void CanReuseRepeatablyFreeSpace()
+        {
+            long pageNumber;
+            using (var tx = Env.WriteTransaction())
+            {
+                var section = ActiveRawDataSmallSection.Create(tx.LowLevelTransaction);
+                pageNumber = section.PageNumber;
+                tx.Commit();
+            }
+
+            long idToFree = -1;
+            using (var tx = Env.WriteTransaction())
+            {
+                var section = new ActiveRawDataSmallSection(tx.LowLevelTransaction, pageNumber);
+                for (int i = 0; i < 1536; i++)
+                {
+                    long id;
+                    Assert.True(section.TryAllocate(1020, out id));
+                    if (i == 700)
+                    {
+                        idToFree = id;
+                    }
+                }
+
+                section.Free(idToFree);
+                tx.Commit();
+            }
+
+            using (var tx = Env.WriteTransaction())
+            {
+                var section = new ActiveRawDataSmallSection(tx.LowLevelTransaction, pageNumber);
+                for (int i = 0; i < 100; i++)
+                {
+                    long id;
+                    Assert.True(section.TryAllocate(1020,out id));
+                    Assert.Equal(id,idToFree);
+                    section.Free(id);
+                }
+            }
+        }
+
+        [Fact]
         public void CanReuseSeveralFreeSpacesInTheMiddle()
         {
             long pageNumber;
