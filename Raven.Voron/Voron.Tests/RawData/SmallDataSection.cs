@@ -82,6 +82,83 @@ namespace Voron.Tests.RawData
         }
 
         [Fact]
+        public void CanReuseSeveralFreeSpacesInTheMiddle()
+        {
+            long pageNumber;
+            using (var tx = Env.WriteTransaction())
+            {
+                var section = ActiveRawDataSmallSection.Create(tx.LowLevelTransaction);
+                pageNumber = section.PageNumber;
+                tx.Commit();
+            }
+
+            var idsToFree = new List<long>();
+            using (var tx = Env.WriteTransaction())
+            {
+                var section = new ActiveRawDataSmallSection(tx.LowLevelTransaction, pageNumber);
+                for (int i = 0; i < 1536; i++)
+                {
+                    long id;
+                    Assert.True(section.TryAllocate(1020, out id));
+                    if (i%50 == 0)
+                        idsToFree.Add(id);
+                }
+
+                idsToFree.ForEach(freeId => section.Free(freeId));
+                tx.Commit();
+            }
+
+            using (var tx = Env.WriteTransaction())
+            {
+                var section = new ActiveRawDataSmallSection(tx.LowLevelTransaction, pageNumber);
+                foreach (var expectedId in idsToFree)
+                {
+                    long id;
+                    Assert.True(section.TryAllocate(1020, out id));
+                    Assert.Equal(id,expectedId);
+                }
+            }
+        }
+
+        [Fact]
+        public void CanReuseFreespaceInTheMiddle()
+        {
+            long pageNumber;
+            using (var tx = Env.WriteTransaction())
+            {
+                var section = ActiveRawDataSmallSection.Create(tx.LowLevelTransaction);
+                pageNumber = section.PageNumber;
+                tx.Commit();
+            }
+
+            long idToFree = -1;
+            using (var tx = Env.WriteTransaction())
+            {
+                var section = new ActiveRawDataSmallSection(tx.LowLevelTransaction, pageNumber);
+                for (int i = 0; i < 1536; i++)
+                {
+                    long id;
+                    Assert.True(section.TryAllocate(1020, out id));
+                    if (i == 700)
+                    {
+                        idToFree = id;
+                    }
+                }
+
+                section.Free(idToFree);
+                tx.Commit();
+            }
+
+            using (var tx = Env.WriteTransaction())
+            {
+                var section = new ActiveRawDataSmallSection(tx.LowLevelTransaction, pageNumber);
+                long id;
+                Assert.True(section.TryAllocate(1020, out id));
+                Assert.Equal(idToFree,id);
+            }
+        }
+
+        [Fact]
         public void CanAllocateEnoughToFillEntireSection()
         {
             long pageNumber;

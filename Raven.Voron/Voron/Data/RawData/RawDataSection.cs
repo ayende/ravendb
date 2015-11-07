@@ -29,7 +29,6 @@ namespace Voron.Data.RawData
 
         public long PageNumber { get; }
 
-
         public int AllocatedSize => _sectionHeader->AllocatedSize;
 
         public int Size => _sectionHeader->NumberOfPages*_pageSize;
@@ -155,7 +154,7 @@ namespace Voron.Data.RawData
             var posInPage = (int) (id%_pageSize);
             var pageNumberInSection = (id - posInPage)/_pageSize;
             var pageHeader = PageHeaderFor(pageNumberInSection);
-
+            
             if (Contains(id) == false)
             {
                 // this is in another section, cannot free it directly, so we'll forward to the right section
@@ -180,12 +179,36 @@ namespace Voron.Data.RawData
             _sectionHeader->NumberOfEntries--;
             var sizeFreed = sizes[0] + (sizeof (short)*2);
             _sectionHeader->AllocatedSize -= sizeFreed;
-            AvailableSpace[pageHeader->PageNumber - _sectionHeader->PageNumber] += (ushort) sizeFreed;
+            AvailableSpace[pageHeader->PageNumberInSection] += (ushort) sizeFreed;
+
+            var currentPos = ((byte*)pageHeader + sizeof(RawDataSmallPageHeader));
+            int offset = sizeof(RawDataSmallPageHeader);
+            for (int i = 0; i < pageHeader->NumberOfEntries; i++)
+            {
+                var sizesA = (short*) currentPos;
+                var allocatedSize = sizesA[0];
+                var usedSize = sizesA[1];
+                currentPos += allocatedSize;
+                offset += allocatedSize;
+            }
 
             return Density;
         }
 
         public event DataMovedDelegate DataMoved;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        protected bool DataMovedHasSubscriptions()
+        {
+            return DataMoved != null;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        protected virtual void OnDataMoved(long previousid, long newid, byte* data, int size)
+        {
+            DataMoved?.Invoke(previousid, newid, data, size);
+        }
+
 
         public override string ToString()
         {
@@ -220,5 +243,6 @@ namespace Voron.Data.RawData
         {
             return (RawDataSmallPageHeader*) (_tx.GetPage(pageNumber).Pointer);
         }
+
     }
 }

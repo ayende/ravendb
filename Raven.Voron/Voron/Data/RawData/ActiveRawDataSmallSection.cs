@@ -48,10 +48,11 @@ namespace Voron.Data.RawData
                     continue;
 
                 var pageHeader = PageHeaderFor(_sectionHeader->PageNumber + i + 1);
+
+                // best case, we have enough space, and we don't need to defrag
                 if (pageHeader->NextAllocation + size > _pageSize)
                     continue;
 
-                // best case, we have enough space, and we don't need to defrag
                 pageHeader = ModifyPage(pageHeader);
                 id = (pageHeader->PageNumber)*_pageSize + pageHeader->NextAllocation;
                 ((short*) ((byte*) pageHeader + pageHeader->NextAllocation))[0] = allocatedSize;
@@ -74,6 +75,18 @@ namespace Voron.Data.RawData
                     continue;
                 // we have space, but we need to defrag
                 var pageHeader = PageHeaderFor(_sectionHeader->PageNumber + i + 1);
+
+                if (TryFindFreeSpace(pageHeader, (short)size, out id))
+                {
+                    pageHeader->NumberOfEntries++;
+                    EnsureHeaderModified();
+                    AvailableSpace[i] -= (ushort)size;
+                    _sectionHeader->NumberOfEntries++;
+                    _sectionHeader->LastUsedPage = i;
+                    _sectionHeader->AllocatedSize += size;
+                    return true;
+                }
+
                 pageHeader = DefragPage(pageHeader);
 
                 id = (pageHeader->PageNumber)*_pageSize + pageHeader->NextAllocation;
@@ -92,6 +105,66 @@ namespace Voron.Data.RawData
             // we don't have space, caller need to allocate new small section?
             id = -1;
             return false;
+        }
+
+        private bool TryFindFreeSpace(RawDataSmallPageHeader* pageHeader, short desiredSize, out long id)
+        {
+            id = -1;
+            int matchingOffset = -1;
+            short lastMatchingSize = -1;
+            var currentPos = ((byte*)pageHeader + sizeof(RawDataSmallPageHeader));
+            int offset = sizeof (RawDataSmallPageHeader);
+            var desiredSizeWithoutHeaders = (desiredSize - (sizeof(short) * 2));
+            while(offset < _pageSize)
+            {
+                var sizes = (short*)currentPos;
+                var allocatedSize = sizes[0];
+                var usedSize = sizes[1];
+                if (usedSize != -1 || allocatedSize < desiredSizeWithoutHeaders)
+                {
+                    currentPos += allocatedSize + (sizeof(short) * 2);
+                    offset += allocatedSize + (sizeof(short) * 2);
+                    continue;
+                }
+
+                if (allocatedSize == desiredSizeWithoutHeaders) //exact match, no need to look further
+                {
+                    pageHeader = ModifyPage(pageHeader);
+                    currentPos = (byte*)pageHeader + offset;
+                    ((short*) currentPos)[1] = 0;
+                    id = (pageHeader->PageNumber * _pageSize) + offset;
+                    return true;
+                }
+
+                //find the smallest possible free space
+                if (allocatedSize < lastMatchingSize)
+                {
+                    matchingOffset = offset;
+                    lastMatchingSize = allocatedSize;
+                }
+
+                currentPos += allocatedSize + (sizeof(short) * 2);
+                offset += allocatedSize + (sizeof(short) * 2);
+            }
+            if (matchingOffset == -1)
+                return false;
+
+
+            //too much free space? split to two chunks
+            if (lastMatchingSize >= (desiredSizeWithoutHeaders * 2 + sizeof(short)*4))
+            {
+                pageHeader = ModifyPage(pageHeader);
+                currentPos = (byte*) pageHeader + matchingOffset;
+                ((short*)currentPos)[0] = (short)desiredSizeWithoutHeaders;
+                ((short*)(currentPos))[1] = 0;
+
+                ((short*) currentPos)[desiredSizeWithoutHeaders] = (short) (lastMatchingSize - desiredSizeWithoutHeaders - (sizeof (short)*2));
+                ((short*) (currentPos))[desiredSizeWithoutHeaders + 1] = -1;
+            }
+
+            id = (pageHeader->PageNumber*_pageSize) + matchingOffset;
+
+            return true;
         }
 
         private RawDataSmallPageHeader* DefragPage(RawDataSmallPageHeader* pageHeader)
@@ -124,13 +197,13 @@ namespace Voron.Data.RawData
                         continue; // this was freed
                     }
 
-                    if (DataMoved != null)
+                    if (DataMovedHasSubscriptions())
                     {
                         var prevId = (pageHeader->PageNumber)*_pageSize + pos;
                         var newId = (pageHeader->PageNumber)*_pageSize + pageHeader->NextAllocation;
                         if (prevId != newId)
                         {
-                            DataMoved(prevId, newId, tmp.TempPagePointer + pos, usedSize);
+                            OnDataMoved(prevId, newId, tmp.TempPagePointer + pos, usedSize);
                         }
                     }
 
@@ -180,7 +253,7 @@ namespace Voron.Data.RawData
                 var pageHeader = (RawDataSmallPageHeader*) (sectionStart.Pointer + (i + 1)*tx.DataPager.PageSize);
                 Debug.Assert(pageHeader->PageNumber == sectionStart.PageNumber + i + 1);
                 pageHeader->NumberOfEntries = 0;
-                pageHeader->PageNumberInSection = (ushort)(i + 1);
+                pageHeader->PageNumberInSection = i;
                 pageHeader->RawDataFlags = RawDataPageFlags.Small;
                 pageHeader->Flags = PageFlags.RawData | PageFlags.Single;
                 pageHeader->NextAllocation = (ushort) sizeof (RawDataSmallPageHeader);
