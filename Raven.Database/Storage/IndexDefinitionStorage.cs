@@ -7,6 +7,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
@@ -69,7 +70,6 @@ namespace Raven.Database.Storage
 
         private readonly OrderedPartCollection<AbstractDynamicCompilationExtension> extensions;
 
-
         [CLSCompliant(false)]
         public IndexDefinitionStorage(
             InMemoryRavenConfiguration configuration,
@@ -84,11 +84,16 @@ namespace Raven.Database.Storage
 
             if (Directory.Exists(this.path) == false && configuration.RunInMemory == false)
                 Directory.CreateDirectory(this.path);
+        }
 
+        internal Dictionary<int, DocumentDatabase.IndexFailDetails> Initialize()
+        {
+            Dictionary<int, DocumentDatabase.IndexFailDetails> reason = null;
             if (configuration.RunInMemory == false)
-                ReadFromDisk();
-
+                reason = ReadFromDisk();
             newDefinitionsThisSession.Clear();
+
+            return reason;
         }
 
         public bool IsNewThisSession(IndexDefinition definition)
@@ -96,8 +101,12 @@ namespace Raven.Database.Storage
             return newDefinitionsThisSession.ContainsKey(definition.IndexId);
         }
 
-        private void ReadFromDisk()
+        private Dictionary<int, DocumentDatabase.IndexFailDetails> ReadFromDisk()
         {
+            var indexFailReason = new Dictionary<int, DocumentDatabase.IndexFailDetails>();
+            if (logger.IsDebugEnabled)
+                logger.Debug("Reading index definitions from disk...");
+
             foreach (var indexDefinition in ReadIndexDefinitionsFromDisk())
             {
                 try
@@ -111,8 +120,27 @@ namespace Raven.Database.Storage
                 }
                 catch (Exception e)
                 {
-                    logger.WarnException(string.Format("Could not compile index '{0} ({1})', skipping bad index", indexDefinition.IndexId, indexDefinition.Name), e);
+                    var reason = new DocumentDatabase.IndexFailDetails
+                    {
+                        IndexName = indexDefinition.Name,
+                        Reason = string.Format("Index '{0}-({1})' couldn't be compiled", indexDefinition.IndexId, indexDefinition.Name),
+                        Ex = e
+                    };
+
+                    indexFailReason.Add(indexDefinition.IndexId, reason);
+
+                    using (LogContext.WithDatabase(configuration.DatabaseName))
+                    {
+                        logger.WarnException(string.Format("Could not compile index '{0} ({1})', skipping bad index", indexDefinition.IndexId, indexDefinition.Name), e);
+                    }
                 }
+            }
+
+            if (logger.IsDebugEnabled)
+            {
+                logger.Debug("Read {0} index definitions", indexDefinitions.Count);
+
+                logger.Debug("Reading transformer definitions from disk...");
             }
 
             foreach (var transformerDefinition in ReadTransformerDefinitionsFromDisk())
@@ -130,6 +158,11 @@ namespace Raven.Database.Storage
                     logger.WarnException(string.Format("Could not compile transformer '{0} ({1})', skipping bad transformer", transformerDefinition.TransfomerId, transformerDefinition.Name), e);
                 }
             }
+
+            if (logger.IsDebugEnabled)
+                logger.Debug("Read {0} transform definitions", transformDefinitions.Count);
+
+            return indexFailReason;
         }
 
         private IEnumerable<IndexDefinition> ReadIndexDefinitionsFromDisk()
@@ -176,7 +209,7 @@ namespace Raven.Database.Storage
         private void RemoveIndexAndCleanup(string name)
         {
             var index = GetIndexDefinition(name);
-            if (index == null) 
+            if (index == null)
                 return;
 
             transactionalStorage.Batch(accessor =>
@@ -218,6 +251,7 @@ namespace Raven.Database.Storage
             get
             {
                 return transformDefinitions.Values
+                                           .Where(x => !x.Temporary)
                                            .OrderBy(x => x.Name)
                                            .Select(x => x.Name)
                                            .ToArray();
@@ -243,9 +277,9 @@ namespace Raven.Database.Storage
         {
             if (configuration.RunInMemory)
                 return;
-            var indexName = Path.Combine(path, indexDefinition.IndexId + ".index");
-            File.WriteAllText(indexName,
-                              JsonConvert.SerializeObject(indexDefinition, Formatting.Indented, Default.Converters));
+            var indexName = System.IO.Path.Combine(path, indexDefinition.IndexId + ".index");
+            var serializedObject = JsonConvert.SerializeObject(indexDefinition, Formatting.Indented, Default.Converters);
+            File.WriteAllText(indexName, serializedObject);
         }
 
         private void WriteTransformerDefinition(TransformerDefinition transformerDefinition)
@@ -253,21 +287,26 @@ namespace Raven.Database.Storage
             if (configuration.RunInMemory)
                 return;
 
-            string transformerFileName = Path.Combine(path, transformerDefinition.TransfomerId + ".transform");
+            string transformerFileName = System.IO.Path.Combine(path, transformerDefinition.TransfomerId + ".transform");
 
             File.WriteAllText(transformerFileName,
                               JsonConvert.SerializeObject(transformerDefinition, Formatting.Indented, Default.Converters));
         }
 
         [CLSCompliant(false)]
-        public string CreateAndPersistTransform(TransformerDefinition transformerDefinition, AbstractTransformer transformer)
+        public string CreateTransform(TransformerDefinition transformerDefinition, AbstractTransformer transformer)
         {
             transformCache.AddOrUpdate(transformerDefinition.TransfomerId, transformer, (s, viewGenerator) => transformer);
+            return transformer.Name;
+        }
+
+        [CLSCompliant(false)]
+        public void PersistTransform(TransformerDefinition transformerDefinition)
+        {
             if (configuration.RunInMemory == false)
             {
                 WriteTransformerDefinition(transformerDefinition);
             }
-            return transformer.Name;
         }
 
         public void UpdateIndexDefinitionWithoutUpdatingCompiledIndex(IndexDefinition definition)
@@ -349,7 +388,7 @@ namespace Raven.Database.Storage
 
         private string GetIndexSourcePath(int id)
         {
-            return Path.Combine(path, id.ToString());
+            return System.IO.Path.Combine(path, id.ToString());
         }
 
         public IndexDefinition GetIndexDefinition(string name)
@@ -390,7 +429,7 @@ namespace Raven.Database.Storage
 
         public IndexMergeResults ProposeIndexMergeSuggestions()
         {
-            var indexMerger = new IndexMerger(IndexDefinitions.ToDictionary(x=>x.Key,x=>x.Value));
+            var indexMerger = new IndexMerger(IndexDefinitions.ToDictionary(x => x.Key, x => x.Value));
             return indexMerger.ProposeIndexMergeSuggestions();
         }
 
@@ -423,8 +462,19 @@ namespace Raven.Database.Storage
         {
             var currentIndexDefinition = GetIndexDefinition(newIndexDef.Name);
             if (currentIndexDefinition == null)
+            {
+                if (CheckIfIndexIsBeenDeleted(newIndexDef))
+                {
+                    //index is been deleted ignoring this index
+                    return IndexCreationOptions.Noop;
+                }
+                if (newIndexDef.IndexVersion == null)
+                    newIndexDef.IndexVersion = 0;
                 return IndexCreationOptions.Create;
-
+            }
+            
+            if (newIndexDef.IndexVersion == null)
+                newIndexDef.IndexVersion = currentIndexDefinition.IndexVersion + 1;
             if (currentIndexDefinition.IsTestIndex) // always update test indexes
                 return IndexCreationOptions.Update;
 
@@ -438,7 +488,41 @@ namespace Raven.Database.Storage
                 ? IndexCreationOptions.UpdateWithoutUpdatingCompiledIndex : IndexCreationOptions.Update;
         }
 
-        public bool Contains(string indexName)
+        private bool CheckIfIndexIsBeenDeleted(IndexDefinition definition)
+        {
+            return CheckIfIndexVersionIsEqualOrSmaller(definition, Constants.RavenReplicationIndexesTombstones)
+                || CheckIfIndexVersionIsEqualOrSmaller(definition, "Raven/Indexes/PendingDeletion");
+        }
+
+        private bool CheckIfIndexVersionIsEqualOrSmaller(IndexDefinition definition, string listName)
+        {
+            bool res = false;
+            if (definition.IndexVersion == null) return false;
+            transactionalStorage.Batch(action =>
+            {
+                var li = action.Lists.Read(listName, definition.Name);
+                if (li == null) return;
+                int version;
+                string versionStr = li.Data.Value<string>("IndexVersion");
+                // The index that we are trying to add is deleted
+                if (int.TryParse(versionStr, out version))
+                {
+                    if (version >= definition.IndexVersion.Value)
+                    {
+                        if (version > definition.IndexVersion.Value)
+                            logger.Error("Trying to add an index ({0}) with a version smaller than the deleted version, this should not happen", definition.Name);
+                        res = true;
+                    }
+                }
+                else
+                {
+                    logger.Error("Failed to parse index version of index {0}", definition.Name);
+                }
+            });
+            return res;
+        }
+
+public bool Contains(string indexName)
         {
             return indexNameToId.ContainsKey(indexName);
         }
@@ -489,7 +573,7 @@ namespace Raven.Database.Storage
         public bool RemoveTransformer(string name)
         {
             var transformer = GetTransformerDefinition(name);
-            if (transformer == null) 
+            if (transformer == null)
                 return false;
             RemoveTransformer(transformer.TransfomerId);
 
@@ -565,7 +649,7 @@ namespace Raven.Database.Storage
                 sb.Append(string.Format("{0} - {1}{2}", index.Value, index.Key, Environment.NewLine));
             }
 
-            File.WriteAllText(Path.Combine(path, "indexes.txt"), sb.ToString());
+            File.WriteAllText(System.IO.Path.Combine(path, "indexes.txt"), sb.ToString());
         }
 
         private void UpdateTransformerMappingFile()
@@ -580,7 +664,7 @@ namespace Raven.Database.Storage
                 sb.Append(string.Format("{0} - {1}{2}", transform.Value, transform.Key, Environment.NewLine));
             }
 
-            File.WriteAllText(Path.Combine(path, "transformers.txt"), sb.ToString());
+            File.WriteAllText(System.IO.Path.Combine(path, "transformers.txt"), sb.ToString());
         }
 
         public void UpdateTransformerDefinitionWithoutUpdatingCompiledTransformer(TransformerDefinition definition)
@@ -594,5 +678,4 @@ namespace Raven.Database.Storage
             WriteTransformerDefinition(definition);
         }
     }
-
 }

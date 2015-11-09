@@ -6,24 +6,24 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Linq;
 using System.Net;
 using System.Net.Http;
-using System.Security;
 using System.Threading;
 
+using Raven.Abstractions.Cluster;
 using Raven.Abstractions.Connection;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
-using Raven.Abstractions.OAuth;
 using Raven.Abstractions.Util;
 using Raven.Client.Changes;
 using Raven.Client.Connection;
 using Raven.Client.Connection.Profiling;
+using Raven.Client.Connection.Request;
 using Raven.Client.Extensions;
 using Raven.Client.Connection.Async;
 using System.Threading.Tasks;
 using Raven.Client.Document.Async;
+using Raven.Client.Metrics;
 using Raven.Client.Util;
 
 using Raven.Client.Document.DTC;
@@ -35,27 +35,33 @@ namespace Raven.Client.Document
     /// </summary>
     public class DocumentStore : DocumentStoreBase
     {
+        private readonly ConcurrentDictionary<string, IDocumentStoreReplicationInformer> replicationInformers = new ConcurrentDictionary<string, IDocumentStoreReplicationInformer>(StringComparer.OrdinalIgnoreCase);
+
+        private readonly ConcurrentDictionary<string, ClusterAwareRequestExecuter> clusterAwareRequestExecuters = new ConcurrentDictionary<string, ClusterAwareRequestExecuter>(StringComparer.OrdinalIgnoreCase);
+
+        private readonly AtomicDictionary<IDatabaseChanges> databaseChanges = new AtomicDictionary<IDatabaseChanges>(StringComparer.OrdinalIgnoreCase);
+
+        private readonly ConcurrentDictionary<string, EvictItemsFromCacheBasedOnChanges> observeChangesAndEvictItemsFromCacheForDatabases = new ConcurrentDictionary<string, EvictItemsFromCacheBasedOnChanges>();
+
+        private readonly ConcurrentDictionary<string, RequestTimeMetric> requestTimeMetrics = new ConcurrentDictionary<string, RequestTimeMetric>(StringComparer.OrdinalIgnoreCase);
+
+        private readonly ConcurrentDictionary<string, bool> _dtcSupport = new ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+
         /// <summary>
         /// The current session id - only used during construction
         /// </summary>
         [ThreadStatic]
-        protected static Guid? currentSessionId;
+        private static Guid? currentSessionId;
         private const int DefaultNumberOfCachedRequests = 2048;
         private int maxNumberOfCachedRequests = DefaultNumberOfCachedRequests;
         private bool aggressiveCachingUsed;
-        private readonly ConcurrentDictionary<string, bool> _dtcSupport = new ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        
         /// <summary>
         /// Generate new instance of database commands
         /// </summary>
         protected Func<IDatabaseCommands> databaseCommandsGenerator;
 
-        private readonly ConcurrentDictionary<string, IDocumentStoreReplicationInformer> replicationInformers = new ConcurrentDictionary<string, IDocumentStoreReplicationInformer>(StringComparer.OrdinalIgnoreCase);
-
-        private readonly AtomicDictionary<IDatabaseChanges> databaseChanges = new AtomicDictionary<IDatabaseChanges>(StringComparer.OrdinalIgnoreCase);
-
         private HttpJsonRequestFactory jsonRequestFactory;
-
-        private readonly ConcurrentDictionary<string, EvictItemsFromCacheBasedOnChanges> observeChangesAndEvictItemsFromCacheForDatabases = new ConcurrentDictionary<string, EvictItemsFromCacheBasedOnChanges>();
 
         /// <summary>
         /// Whatever this instance has json request factory available
@@ -261,7 +267,7 @@ namespace Raven.Client.Document
             // try to wait until all the async disposables are completed
             Task.WaitAll(tasks.ToArray(), TimeSpan.FromSeconds(3));
 
-            if(Subscriptions != null)
+            if (Subscriptions != null)
                 Subscriptions.Dispose();
 
             // if this is still going, we continue with disposal, it is for grace only, anyway
@@ -372,7 +378,12 @@ namespace Raven.Client.Document
 
             try
             {
-                InitializeSecurity();
+
+                if (string.IsNullOrEmpty(ApiKey) == false)
+                {
+                    Credentials = null;
+                }
+                SecurityExtensions.InitializeSecurity(Conventions, jsonRequestFactory, Url, Credentials);
 
                 InitializeInternal();
 
@@ -447,137 +458,6 @@ namespace Raven.Client.Document
             pendingTransactionRecovery.Execute(ResourceManagerId, DatabaseCommands);
         }
 
-        private void InitializeSecurity()
-        {
-            if (Conventions.HandleUnauthorizedResponseAsync != null)
-                return; // already setup by the user
-
-            if (string.IsNullOrEmpty(ApiKey) == false)
-            {
-                Credentials = null;
-            }
-
-            var basicAuthenticator = new BasicAuthenticator(jsonRequestFactory.EnableBasicAuthenticationOverUnsecuredHttpEvenThoughPasswordsWouldBeSentOverTheWireInClearTextToBeStolenByHackers);
-            var securedAuthenticator = new SecuredAuthenticator();
-
-            jsonRequestFactory.ConfigureRequest += basicAuthenticator.ConfigureRequest;
-            jsonRequestFactory.ConfigureRequest += securedAuthenticator.ConfigureRequest;
-
-            Conventions.HandleForbiddenResponseAsync = (forbiddenResponse, credentials) =>
-            {
-                if (credentials.ApiKey == null)
-                {
-                    AssertForbiddenCredentialSupportWindowsAuth(forbiddenResponse);
-                    return null;
-                }
-
-                return null;
-            };
-
-            Conventions.HandleUnauthorizedResponseAsync = (unauthorizedResponse, credentials) =>
-            {
-                var oauthSource = unauthorizedResponse.Headers.GetFirstValue("OAuth-Source");
-
-#if DEBUG && FIDDLER
-                // Make sure to avoid a cross DNS security issue, when running with Fiddler
-                if (string.IsNullOrEmpty(oauthSource) == false)
-                    oauthSource = oauthSource.Replace("localhost:", "localhost.fiddler:");
-#endif
-
-                // Legacy support
-                if (string.IsNullOrEmpty(oauthSource) == false &&
-                    oauthSource.EndsWith("/OAuth/API-Key", StringComparison.CurrentCultureIgnoreCase) == false)
-                {
-                    return basicAuthenticator.HandleOAuthResponseAsync(oauthSource, credentials.ApiKey);
-                }
-
-                if (credentials.ApiKey == null)
-                {
-                    AssertUnauthorizedCredentialSupportWindowsAuth(unauthorizedResponse, credentials.Credentials);
-                    return null;
-                }
-
-                if (string.IsNullOrEmpty(oauthSource))
-                    oauthSource = Url + "/OAuth/API-Key";
-
-                return securedAuthenticator.DoOAuthRequestAsync(Url, oauthSource, credentials.ApiKey);
-            };
-
-        }
-
-        private void AssertUnauthorizedCredentialSupportWindowsAuth(HttpWebResponse response, ICredentials credentials)
-        {
-            if (credentials == null)
-                return;
-
-            var authHeaders = response.Headers["WWW-Authenticate"];
-            if (authHeaders == null ||
-                (authHeaders.Contains("NTLM") == false && authHeaders.Contains("Negotiate") == false)
-                )
-            {
-                // we are trying to do windows auth, but we didn't get the windows auth headers
-                throw new SecurityException(
-                    "Attempted to connect to a RavenDB Server that requires authentication using Windows credentials," + Environment.NewLine
-                    + " but either wrong credentials were entered or the specified server does not support Windows authentication." +
-                    Environment.NewLine +
-                    "If you are running inside IIS, make sure to enable Windows authentication.");
-            }
-        }
-
-        private void AssertUnauthorizedCredentialSupportWindowsAuth(HttpResponseMessage response, ICredentials credentials)
-        {
-            if (credentials == null)
-                return;
-
-            var authHeaders = response.Headers.WwwAuthenticate.FirstOrDefault();
-            if (authHeaders == null ||
-                (authHeaders.ToString().Contains("NTLM") == false && authHeaders.ToString().Contains("Negotiate") == false)
-                )
-            {
-                // we are trying to do windows auth, but we didn't get the windows auth headers
-                throw new SecurityException(
-                    "Attempted to connect to a RavenDB Server that requires authentication using Windows credentials," + Environment.NewLine
-                    + " but either wrong credentials were entered or the specified server does not support Windows authentication." +
-                    Environment.NewLine +
-                    "If you are running inside IIS, make sure to enable Windows authentication.");
-            }
-        }
-
-        private void AssertUnauthorizedCredentialSupportWindowsAuth(HttpResponseMessage response)
-        {
-            if (Credentials == null)
-                return;
-
-            var authHeaders = response.Headers.GetFirstValue("WWW-Authenticate");
-            if (authHeaders == null ||
-                (authHeaders.Contains("NTLM") == false && authHeaders.Contains("Negotiate") == false)
-                )
-            {
-                // we are trying to do windows auth, but we didn't get the windows auth headers
-                throw new SecurityException(
-                    "Attempted to connect to a RavenDB Server that requires authentication using Windows credentials," + Environment.NewLine
-                    + " but either wrong credentials were entered or the specified server does not support Windows authentication." +
-                    Environment.NewLine +
-                    "If you are running inside IIS, make sure to enable Windows authentication.");
-            }
-        }
-
-        private void AssertForbiddenCredentialSupportWindowsAuth(HttpResponseMessage response)
-        {
-            if (Credentials == null)
-                return;
-
-            var requiredAuth = response.Headers.GetFirstValue("Raven-Required-Auth");
-            if (requiredAuth == "Windows")
-            {
-                // we are trying to do windows auth, but we didn't get the windows auth headers
-                throw new SecurityException(
-                    "Attempted to connect to a RavenDB Server that requires authentication using Windows credentials, but the specified server does not support Windows authentication." +
-                    Environment.NewLine +
-                    "If you are running inside IIS, make sure to enable Windows authentication.");
-            }
-        }
-
         /// <summary>
         /// validate the configuration for the document store
         /// </summary>
@@ -609,20 +489,19 @@ namespace Raven.Client.Document
                     databaseUrl = databaseUrl + "/databases/" + DefaultDatabase;
                 }
                 return new ServerClient(new AsyncServerClient(databaseUrl, Conventions, new OperationCredentials(ApiKey, Credentials), jsonRequestFactory,
-                    currentSessionId, GetReplicationInformerForDatabase, null,
-                    Listeners.ConflictListeners, true));
+                    currentSessionId, GetRequestExecuterForDatabase, GetRequestTimeMetricForDatabase, null,
+                    Listeners.ConflictListeners, true, Conventions.ClusterBehavior));
             };
 
             asyncDatabaseCommandsGenerator = () =>
             {
-                var asyncServerClient = new AsyncServerClient(Url, Conventions, new OperationCredentials(ApiKey, Credentials), jsonRequestFactory, currentSessionId, GetReplicationInformerForDatabase, null, Listeners.ConflictListeners, true);
+                var asyncServerClient = new AsyncServerClient(Url, Conventions, new OperationCredentials(ApiKey, Credentials), jsonRequestFactory, currentSessionId, GetRequestExecuterForDatabase, GetRequestTimeMetricForDatabase, null, Listeners.ConflictListeners, true, Conventions.ClusterBehavior);
 
                 if (string.IsNullOrEmpty(DefaultDatabase))
                     return asyncServerClient;
                 return asyncServerClient.ForDatabase(DefaultDatabase);
             };
         }
-
 
         public IDocumentStoreReplicationInformer GetReplicationInformerForDatabase(string dbName = null)
         {
@@ -650,6 +529,48 @@ namespace Raven.Client.Document
             }
 
             return result;
+        }
+
+        private IRequestExecuter GetRequestExecuterForDatabase(AsyncServerClient serverClient, string databaseName, ClusterBehavior clusterBehavior, bool incrementStrippingBase)
+        {
+            var key = Url;
+            databaseName = databaseName ?? DefaultDatabase;
+            if (string.IsNullOrEmpty(databaseName) == false)
+                key = MultiDatabase.GetRootDatabaseUrl(Url) + "/databases/" + databaseName;
+
+            IRequestExecuter requestExecuter;
+            if (clusterBehavior == ClusterBehavior.None)
+                requestExecuter = new ReplicationAwareRequestExecuter(replicationInformers.GetOrAdd(key, url => Conventions.ReplicationInformerFactory(url, jsonRequestFactory)), GetRequestTimeMetricForDatabase(databaseName));
+            else
+                requestExecuter = clusterAwareRequestExecuters.GetOrAdd(key, url => new ClusterAwareRequestExecuter());
+
+            requestExecuter.GetReadStripingBase(incrementStrippingBase);
+
+            if (FailoverServers == null)
+                return requestExecuter;
+
+            if (databaseName == DefaultDatabase)
+            {
+                if (FailoverServers.IsSetForDefaultDatabase && requestExecuter.FailoverServers == null)
+                    requestExecuter.FailoverServers = FailoverServers.ForDefaultDatabase;
+            }
+            else
+            {
+                if (FailoverServers.IsSetForDatabase(databaseName) && requestExecuter.FailoverServers == null)
+                    requestExecuter.FailoverServers = FailoverServers.GetForDatabase(databaseName);
+            }
+
+            return requestExecuter;
+        }
+
+        public RequestTimeMetric GetRequestTimeMetricForDatabase(string databaseName)
+        {
+            var key = Url;
+            databaseName = databaseName ?? DefaultDatabase;
+            if (string.IsNullOrEmpty(databaseName) == false)
+                key = MultiDatabase.GetRootDatabaseUrl(Url) + "/databases/" + databaseName;
+
+            return requestTimeMetrics.GetOrAdd(key, new RequestTimeMetric());
         }
 
         /// <summary>
@@ -698,9 +619,8 @@ namespace Raven.Client.Document
                     Credentials,
                     jsonRequestFactory,
                     Conventions,
-                    GetReplicationInformerForDatabase(database),
                     () => databaseChanges.Remove(database),
-                    (key, etag, conflictIds, metadata) => ((AsyncServerClient) AsyncDatabaseCommands).TryResolveConflictByUsingRegisteredListenersAsync(key, etag, conflictIds, metadata));
+                    (key, etag, conflictIds, metadata) => ((AsyncServerClient)AsyncDatabaseCommands).TryResolveConflictByUsingRegisteredListenersAsync(key, etag, conflictIds, metadata));
             }
         }
 
@@ -817,7 +737,8 @@ namespace Raven.Client.Document
             set
             {
                 maxNumberOfCachedRequests = value;
-                jsonRequestFactory.ResetCache(maxNumberOfCachedRequests);
+                if (initialized == true)
+                    jsonRequestFactory.ResetCache(maxNumberOfCachedRequests);
             }
         }
 

@@ -91,6 +91,30 @@ namespace Raven.Json.Linq
         }
 
         /// <summary>
+        /// Creates the specified .NET type from the <see cref="JToken"/> using the specified <see cref="JsonSerializer"/>.
+        /// </summary>
+        /// <typeparam name="T">The object type that the token will be deserialized to.</typeparam>
+        /// <returns>The new object created from the JSON value.</returns>
+        /// <remarks>Creates new instance of JsonSerializer for each call!</remarks>
+        public T ToObject<T>()
+            where T : class
+        {
+            return ToObject<T>(JsonExtensions.CreateDefaultJsonSerializer());
+        }
+
+        /// <summary>
+        /// Creates the specified .NET type from the <see cref="JToken"/> using the specified <see cref="JsonSerializer"/>.
+        /// </summary>
+        /// <typeparam name="T">The object type that the token will be deserialized to.</typeparam>
+        /// <param name="jsonSerializer">The <see cref="JsonSerializer"/> that will be used when creating the object.</param>
+        /// <returns>The new object created from the JSON value.</returns>
+        public T ToObject<T>(JsonSerializer jsonSerializer)
+            where T : class
+        {
+            return jsonSerializer.Deserialize<T>(new RavenJTokenReader(this));
+        }
+
+        /// <summary>
         ///     Creates a <see cref="RavenJToken" /> from an object.
         /// </summary>
         /// <param name="o">The object that will be used to create <see cref="RavenJToken" />.</param>
@@ -248,11 +272,11 @@ namespace Raven.Json.Linq
         public static async Task<RavenJToken> TryLoadAsync(Stream stream)
         {
             var jsonTextReader = new JsonTextReaderAsync(new StreamReader(stream));
-            if (await jsonTextReader.ReadAsync() == false || jsonTextReader.TokenType == JsonToken.None)
+            if (await jsonTextReader.ReadAsync().ConfigureAwait(false) == false || jsonTextReader.TokenType == JsonToken.None)
             {
                 return null;
             }
-            return await ReadFromAsync(jsonTextReader);
+            return await ReadFromAsync(jsonTextReader).ConfigureAwait(false);
         }
 
         /// <summary>

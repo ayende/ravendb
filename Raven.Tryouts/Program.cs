@@ -1,19 +1,24 @@
 using System;
-using System.Linq;
-using System.Threading.Tasks;
-using Raven.Client.Document;
-using Raven.Client.Indexes;
-using Raven.Tests.MailingList;
+using NLog;
+using NLog.Config;
+using NLog.Targets;
+using Rachis.Tests;
 
 namespace Raven.Tryouts
 {
-    class Program
+    public class Program
     {
-        static void Main(string[] args)
+        public static void Main()
         {
-            using(var x = new MbsCountIndex())
+            
+            for (int i = 0; i < 10; i++)
             {
-                x.TypeIssue();
+                Console.Clear();
+                Console.WriteLine(i);
+                using (var x = new TopologyChangesTests())
+                {
+                    x.Leader_removed_from_cluster_modifies_member_lists_on_remaining_nodes(2);
+                }
             }
         }
     }
