@@ -1419,6 +1419,6 @@ namespace Raven.Database.Server.Controllers.Admin
 
             var url = $"http://{Request.RequestUri.Host}:{Request.RequestUri.Port}";
             return GetMessageWithString(MiniDumper.Instance.StartTimer(timerCount, period, options, useStats, url), HttpStatusCode.Accepted);
-            }
+        }
     }
 }
