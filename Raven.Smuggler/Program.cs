@@ -201,6 +201,7 @@ namespace Raven.Smuggler
             databaseOptionSet.Add("strip-replication-information", OptionCategory.SmugglerDatabase, "Remove all replication information from metadata (import only)", _ => databaseOptions.StripReplicationInformation = true);
             databaseOptionSet.Add("continuation-token:", OptionCategory.SmugglerDatabase, "Activates the usage of a continuation token in case of unreliable connections or huge imports", s => databaseOptions.ContinuationToken = s);
             databaseOptionSet.Add("skip-conflicted", OptionCategory.SmugglerDatabase, "The database will issue and error when conflicted documents are put. The default is to alert the user, this allows to skip them to continue.", _ => databaseOptions.SkipConflicted = true);
+            databaseOptionSet.Add("max-file-size:", OptionCategory.SmugglerDatabase, "Set max file size in MB to export", s => databaseOptions.MaxFileSize = int.Parse(s));
         }
 
         private NetworkCredential GetCredentials(FilesConnectionStringOptions connectionStringOptions)
