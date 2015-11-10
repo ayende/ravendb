@@ -49,6 +49,7 @@ namespace Raven.Abstractions.Smuggler
         public override string DestinationUrl { get { return Destination.Url; } }
 
         public int Limit { get; set; }
+        public int MaxFileSize { get; set; }
 
 
         /// <summary>

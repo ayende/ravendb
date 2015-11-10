@@ -13,6 +13,7 @@ using Raven.Abstractions.Json;
 using Raven.Json.Linq;
 using System.Linq;
 using System.Text.RegularExpressions;
+using Raven.Abstractions.Util;
 
 namespace Raven.Abstractions.Smuggler
 {
@@ -229,6 +230,11 @@ namespace Raven.Abstractions.Smuggler
         public bool StripReplicationInformation { get; set; }
 
         public bool SkipConflicted { get; set; }
+
+        public bool DocumentSizeOverLimit(RavenJObject item, int maxFileSize)
+        {
+            return maxFileSize > 0 && DocumentHelpers.GetRoughSize(item) > 1024L*1024*maxFileSize;
+        }
     }
 
  

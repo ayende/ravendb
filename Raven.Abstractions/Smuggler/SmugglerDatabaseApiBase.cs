@@ -547,6 +547,9 @@ namespace Raven.Abstractions.Smuggler
                                 }
                                 lastEtag = tempLastEtag;
 
+                                if (Options.DocumentSizeOverLimit(document, Options.MaxFileSize))
+                                    continue;
+
                                 if (!Options.MatchFilters(document))
                                     continue;
 
