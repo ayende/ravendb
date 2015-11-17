@@ -97,7 +97,7 @@ namespace Raven.Abstractions.Connection
             var statusCode = HttpStatusCode.ServiceUnavailable;
             if (webException != null)
             {
-                builder.Append("WebExceptionMessage: ");
+                builder.Append("WebException Message: ");
                 builder.AppendLine(webException.Message);
                 builder.Append("Status Code: ");
                 builder.AppendLine(webException.Status.ToString());
@@ -108,18 +108,27 @@ namespace Raven.Abstractions.Connection
                     statusCode = webResponse.StatusCode;
                     builder.AppendLine(statusCode.ToString());
 
-                    using (var stream = webResponse.GetResponseStreamWithHttpDecompression())
-                    using (var reader = new StreamReader(stream))
+                    try
                     {
-                        builder.Append("Response: ");
-                        builder.AppendLine(reader.ReadToEnd());
+                        using (var stream = webResponse.GetResponseStreamWithHttpDecompression())
+                        using (var reader = new StreamReader(stream))
+                        {
+                            builder.Append("Response: ");
+                            builder.AppendLine(reader.ReadToEnd());
+                        }
                     }
+                    catch (Exception e2)
+                    {
+                        builder.Append("Failed to read the response: " + e2);
+                    }
+
                 }
 
                 var win32Exception = webException.InnerException as Win32Exception;
                 if (win32Exception != null)
                 {
-                    //  builder.AppendLine(win32Exception.);
+                    builder.Append("Win32 Error: ");
+                    builder.AppendLine(win32Exception.Message);
                 }
             }
 
