@@ -210,9 +210,8 @@ namespace Raven.Client.Connection.Implementation
                 }
                 catch (HttpRequestException e)
                 {
-                    e.Data.Add(Constants.RequestFailedExceptionMarker, true);
-
                     var exception = ErrorResponseException.FromException(e);
+                    exception.Data.Add(Constants.RequestFailedExceptionMarker, true);
                     Response = exception.Response;
                     ResponseStatusCode = Response.StatusCode;
                     throw exception;
