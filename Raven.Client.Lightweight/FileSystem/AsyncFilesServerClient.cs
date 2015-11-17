@@ -731,7 +731,12 @@ namespace Raven.Client.FileSystem
                 }
                 catch (Exception e)
                 {
-                    var simplified = e.SimplifyException();
+					if (e.Message.Contains("Raven.Abstractions.Exceptions.OperationVetoedException"))
+						throw new OperationVetoedException("The versioning bundle is enabled. " +
+						                                   "You should disable versioning when uploading files. " +
+						                                   "Please set the 'ShouldDisableVersioning flag to true before import'");
+
+					var simplified = e.SimplifyException();
 
                     if (simplified != e)
                         throw simplified;

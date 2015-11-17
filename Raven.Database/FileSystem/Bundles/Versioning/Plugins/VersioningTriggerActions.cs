@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using System;
 using System.Linq;
+using ICSharpCode.NRefactory.Editor;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.FileSystem;
 using Raven.Database.Bundles.Versioning.Data;
@@ -26,20 +27,37 @@ namespace Raven.Database.FileSystem.Bundles.Versioning.Plugins
         public VetoResult AllowOperation(string name, RavenJObject metadata)
         {
             VetoResult veto = VetoResult.Allowed;
-            fileSystem.Storage.Batch(accessor =>
-            {
-                var file = accessor.ReadFile(name);
-                if (file == null)
-                    return;
+	        fileSystem.Storage.Batch(accessor =>
+	        {
+		        var file = accessor.ReadFile(name);
+		        if (file == null)
+		        {
+					if (fileSystem.IsVersioningActive(name) == false)
+						veto = VetoResult.Allowed;
 
-                if (fileSystem.ChangesToRevisionsAllowed() == false &&
-                    file.Metadata.Value<string>(VersioningUtil.RavenFileRevisionStatus) == "Historical" &&
-                    accessor.IsVersioningActive(name))
-                {
-                    veto = VetoResult.Deny("Modifying a historical revision is not allowed");
-                }
-            });
+					else if (accessor.IsVersioningDisabledForImport(metadata))
+						veto = VetoResult.Allowed;
 
+					else if (fileSystem.ChangesToRevisionsAllowed() == false &&
+						metadata.Value<string>(VersioningUtil.RavenFileRevisionStatus) == "Historical")
+					{
+						veto = VetoResult.Deny("Creating a historical revision is not allowed");
+					}
+			        return;
+		        }
+
+		        if (accessor.IsVersioningActive(name))
+		        {
+					if(accessor.IsVersioningDisabledForImport(metadata))
+						veto = VetoResult.Allowed;
+
+			        else if (fileSystem.ChangesToRevisionsAllowed() == false &&
+			                 file.Metadata.Value<string>(VersioningUtil.RavenFileRevisionStatus) == "Historical")
+			        {
+				        veto = VetoResult.Deny("Modifying a historical revision is not allowed");
+			        }
+		        }
+	        });
             return veto;
         }
 

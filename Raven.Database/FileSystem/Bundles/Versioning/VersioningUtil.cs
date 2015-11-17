@@ -8,10 +8,12 @@ using System.IO;
 using Lucene.Net.Documents;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
+using Raven.Abstractions.FileSystem;
 using Raven.Bundles.Versioning.Data;
 using Raven.Database.Bundles.Versioning.Data;
 using Raven.Database.FileSystem.Storage;
 using Raven.Database.FileSystem.Util;
+using Raven.Json.Linq;
 
 namespace Raven.Database.FileSystem.Bundles.Versioning
 {
@@ -34,7 +36,13 @@ namespace Raven.Database.FileSystem.Bundles.Versioning
             return result;
         }
 
-        public static bool IsVersioningActive(this RavenFileSystem fileSystem, string filePath)
+		public static bool IsVersioningDisabledForImport(this IStorageActionsAccessor accessor, RavenJObject metadata)
+		{
+			var ignoreVersioning = metadata.Value<string>(Constants.RavenIgnoreVersioning);
+			return ignoreVersioning != null && ignoreVersioning.Equals("True");
+		}
+
+		public static bool IsVersioningActive(this RavenFileSystem fileSystem, string filePath)
         {
             var exists = false;
             fileSystem.Storage.Batch(accessor => exists = accessor.IsVersioningActive(filePath));
