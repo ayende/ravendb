@@ -18,6 +18,8 @@ namespace Raven.Tests.Bugs
         [Fact]
         public void DtcCommitWillGiveNewResultIfNonAuthoritativeIsSetToFalse()
         {
+            ShowLogs = true;
+
             using (var documentStore = NewDocumentStore(requestedStorage: "esent"))
             {
                 EnsureDtcIsSupported(documentStore);
@@ -56,6 +58,8 @@ namespace Raven.Tests.Bugs
         [Fact]
         public void DtcCommitWillGiveNewResultIfNonAuthoritativeIsSetToFalseWhenQuerying()
         {
+            ShowLogs = true;
+
             using (var documentStore = NewDocumentStore(requestedStorage: "esent"))
             {
                 EnsureDtcIsSupported(documentStore);

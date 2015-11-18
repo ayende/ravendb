@@ -16,6 +16,7 @@ using Raven.Abstractions.Logging;
 using Raven.Database.Storage;
 using Raven.Json.Linq;
 using System.Linq;
+using System.Text;
 using TransactionInformation = Raven.Abstractions.Data.TransactionInformation;
 
 namespace Raven.Database.Impl.DTC
@@ -132,10 +133,36 @@ namespace Raven.Database.Impl.DTC
         {
             ChangedDoc existing;
             if (changedInTransaction.TryGetValue(key, out existing) == false || (tx != null && tx.Id == existing.transactionId))
+            {
+                if (log.IsDebugEnabled)
+                {
+                    var debugMessage = new StringBuilder();
+
+                    debugMessage.AppendFormat("Document with key {0} isn't non authoritative because it wasn't changed in another DTC transaction. In transaction - {1}. ", key, tx != null);
+
+                    if (existing != null)
+                    {
+                        debugMessage.AppendFormat("Existing doc etags: {0} (current) / {1} (committed)", existing.currentEtag, existing.committedEtag);
+                    }
+
+                    log.Debug(debugMessage.ToString());
+                }
+
                 return null;
+            }
 
             if (transactionStates.ContainsKey(existing.transactionId) == false)
             {
+                if (log.IsDebugEnabled)
+                {
+                    var debugMessage = new StringBuilder();
+
+                    debugMessage.AppendFormat("Document with key {0} isn't non authoritative because the relevant transaction with id {1} no longer exists. ", key, existing.transactionId);
+                    debugMessage.AppendFormat("Existing doc etags: {0} (current) / {1} (committed)", existing.currentEtag, existing.committedEtag);
+
+                    log.Debug(debugMessage.ToString());
+                }
+                
                 changedInTransaction.TryRemove(key, out existing);
                 return null;// shouldn't happen, but we have better be on the safe side
             }
