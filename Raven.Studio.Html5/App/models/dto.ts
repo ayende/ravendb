@@ -802,11 +802,11 @@ interface ICollectionBase {
 }
 
 interface smugglerOptionsDto {
-    IncludeDocuments: boolean;
-    IncludeIndexes: boolean;
-    IncludeTransformers: boolean;
-    IncludeAttachments: boolean;
-    RemoveAnalyzers: boolean;
+    OperateOnTypes: number;
+    BatchSize: number;
+    ShouldExcludeExpired: boolean;
+    Filters: filterSettingDto[];
+    TransformScript: string;
     NoneDefualtFileName: string;
 }
 
@@ -873,6 +873,11 @@ interface statusDebugDataSubscriptionsDto {
     TimeOfLastClientActivity: string;
     IsOpen: boolean;
     ConnectionOptions: subscriptionConnectionOptionsDto;
+}
+
+interface subscriptionDto {
+    SubscriptionId: number;
+    AckEtag: string;
 }
 
 interface subscriptionCriteriaDto {
