@@ -7,12 +7,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Transactions;
 using Raven.Abstractions.Indexing;
-using Raven.Client.Document;
-using Raven.Database.Indexing;
 using Raven.Tests.Common;
 
 using Xunit;
-using System.Linq;
 
 namespace Raven.Tests.Bugs
 {
@@ -21,6 +18,8 @@ namespace Raven.Tests.Bugs
         [Fact]
         public void DtcCommitWillGiveNewResultIfNonAuthoritativeIsSetToFalse()
         {
+            ShowLogs = true;
+
             using (var documentStore = NewDocumentStore(requestedStorage: "esent"))
             {
                 EnsureDtcIsSupported(documentStore);
@@ -31,27 +30,36 @@ namespace Raven.Tests.Bugs
                     s.SaveChanges();
                 }
 
+                var task = new Task(() =>
+                {
+                    using (var s = documentStore.OpenSession())
+                    {
+                        s.Advanced.AllowNonAuthoritativeInformation = false;
+                        var user = s.Load<AccurateCount.User>("users/1");
+                        Assert.Equal("Rahien", user.Name);
+                    }
+                });
+
                 using (var s = documentStore.OpenSession())
                 using (var scope = new TransactionScope())
                 {
                     var user = s.Load<AccurateCount.User>("users/1");
                     user.Name = "Rahien";
                     s.SaveChanges();
+                    task.Start();
+                    Assert.False(task.Wait(250, CancellationToken.None));
                     scope.Complete();
                 }
 
-                using (var s = documentStore.OpenSession())
-                {
-                    s.Advanced.AllowNonAuthoritativeInformation = false;
-                    var user = s.Load<AccurateCount.User>("users/1");
-                    Assert.Equal("Rahien", user.Name);
-                }
+                task.Wait();
             }
         }
 
         [Fact]
         public void DtcCommitWillGiveNewResultIfNonAuthoritativeIsSetToFalseWhenQuerying()
         {
+            ShowLogs = true;
+
             using (var documentStore = NewDocumentStore(requestedStorage: "esent"))
             {
                 EnsureDtcIsSupported(documentStore);
