@@ -46,11 +46,11 @@ namespace Raven.Client.FileSystem
             : base(serverUrl, conventions, credentials, requestFactory, sessionId, operationsHeaders, replicationInformerGetter, fileSystemName)
         {
             try
-            {                
+            {
                 FileSystemName = fileSystemName;
                 ApiKey = credentials.ApiKey;
                 this.conflictListeners = conflictListeners ?? new IFilesConflictListener[0];
-                if (replicationInformerGetter != null && ReplicationInformer!= null)
+                if (replicationInformerGetter != null && ReplicationInformer != null)
                     ReplicationInformer.UpdateReplicationInformationIfNeeded(this);
             }
             catch (Exception)
@@ -325,7 +325,7 @@ namespace Raven.Client.FileSystem
 
             var operationMetadata = new OperationMetadata(this.BaseUrl, this.CredentialsThatShouldBeUsedOnlyInOperationsWithoutReplication, null);
 
-            if ( pageSize != int.MaxValue )
+            if (pageSize != int.MaxValue)
             {
                 return new EtagStreamResults(this, fromEtag, pageSize);
             }
@@ -440,7 +440,7 @@ namespace Raven.Client.FileSystem
                     currentPageCount++;
 
                     return true;
-                }                
+                }
             }
 
             public FileHeader Current
@@ -582,7 +582,7 @@ namespace Raven.Client.FileSystem
         private async Task<FileHeader[]> GetAsyncImpl(string[] filenames, OperationMetadata operation)
         {
             var requestUriBuilder = new StringBuilder("/files?");
-            for( int i = 0; i < filenames.Length; i++ )
+            for (int i = 0; i < filenames.Length; i++)
             {
                 requestUriBuilder.Append("fileNames=" + Uri.EscapeDataString(filenames[i]));
                 if (i < filenames.Length - 1)
@@ -593,7 +593,7 @@ namespace Raven.Client.FileSystem
             {
                 try
                 {
-                    var response = (RavenJArray) await request.ReadResponseJsonAsync().ConfigureAwait(false);
+                    var response = (RavenJArray)await request.ReadResponseJsonAsync().ConfigureAwait(false);
 
                     var results = response.JsonDeserialization<FileHeader>();
 
@@ -731,8 +731,10 @@ namespace Raven.Client.FileSystem
                 }
                 catch (Exception e)
                 {
-                    var simplified = e.SimplifyException();
+                    if (e.Message.Contains("Raven.Abstractions.Exceptions.OperationVetoedException"))
+                        throw new OperationVetoedException(e.Message);
 
+                    var simplified = e.SimplifyException();
                     if (simplified != e)
                         throw simplified;
 
@@ -745,7 +747,7 @@ namespace Raven.Client.FileSystem
         {
             var files = await this.GetAsync(new[] { filename }).ConfigureAwait(false);
             FileHeader local = files.FirstOrDefault();
-            
+
             // File does not exists anymore on the server.
             if (local == null)
                 return false;
@@ -779,13 +781,13 @@ namespace Raven.Client.FileSystem
                         await client.ResolveConflictAsync(filename, resolutionStrategy).ConfigureAwait(false);
 
                         // Refreshing the file information.
-                        files = await this.GetAsync(new[] { filename }).ConfigureAwait(false);                        
-                        files.ApplyIfNotNull ( x => 
-                        {
+                        files = await this.GetAsync(new[] { filename }).ConfigureAwait(false);
+                        files.ApplyIfNotNull(x =>
+                      {
                             // We notify the listeners.
                             foreach (var conflictListener in conflictListeners)
-                                conflictListener.ConflictResolved(x);
-                        });
+                              conflictListener.ConflictResolved(x);
+                      });
 
                         return true;
                     }
@@ -797,7 +799,7 @@ namespace Raven.Client.FileSystem
                 }
             }
             else // No resolution listeners, therefore we notify the subscribers.
-            {                
+            {
                 beforeConflictResolution();
             }
 
@@ -826,10 +828,10 @@ namespace Raven.Client.FileSystem
 
         private static void AddHeaders(RavenJObject metadata, HttpJsonRequest request)
         {
-            foreach( var item in metadata )
+            foreach (var item in metadata)
             {
                 var value = item.Value is RavenJValue ? item.Value.ToString() : item.Value.ToString(Formatting.None);
-                request.AddHeader(item.Key, value);     
+                request.AddHeader(item.Key, value);
             }
         }
 
@@ -1390,7 +1392,7 @@ namespace Raven.Client.FileSystem
             public AdminClient(AsyncFilesServerClient client, FilesConvention convention)
             {
                 this.client = client;
-                this.convention = convention;                
+                this.convention = convention;
             }
 
             public async Task<string[]> GetNamesAsync()
@@ -1497,7 +1499,7 @@ namespace Raven.Client.FileSystem
                     return;
 
                 await CreateOrUpdateFileSystemAsync(MultiDatabase.CreateFileSystemDocument(fileSystem), fileSystem).ConfigureAwait(false);
-                        }
+            }
 
             public async Task<long> StartRestore(FilesystemRestoreRequest restoreRequest)
             {

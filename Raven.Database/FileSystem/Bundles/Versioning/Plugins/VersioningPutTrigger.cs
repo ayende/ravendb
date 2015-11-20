@@ -43,7 +43,7 @@ namespace Raven.Database.FileSystem.Bundles.Versioning.Plugins
             FileSystem.Storage.Batch(accessor =>
             {
                 FileVersioningConfiguration versioningConfiguration;
-                if (actions.TryGetVersioningConfiguration(name, metadata, accessor, out versioningConfiguration) == false) 
+                if (actions.TryGetVersioningConfiguration(name, metadata, accessor, out versioningConfiguration) == false)
                     return;
 
                 object value;
@@ -58,7 +58,7 @@ namespace Raven.Database.FileSystem.Bundles.Versioning.Plugins
             FileSystem.Storage.Batch(accessor =>
             {
                 FileVersioningConfiguration versioningConfiguration;
-                if (actions.TryGetVersioningConfiguration(name, metadata, accessor, out versioningConfiguration) == false) 
+                if (actions.TryGetVersioningConfiguration(name, metadata, accessor, out versioningConfiguration) == false)
                     return;
 
                 object value;
@@ -73,6 +73,6 @@ namespace Raven.Database.FileSystem.Bundles.Versioning.Plugins
 
                 accessor.UpdateFileMetadata(fileName, currentMetadata, null);
             });
-        }	
+        }
     }
 }

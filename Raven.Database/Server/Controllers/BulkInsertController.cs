@@ -13,6 +13,7 @@ using System.Web.Http;
 using Raven.Unix.Native;
 using Raven.Abstractions;
 using Raven.Abstractions.Data;
+using Raven.Abstractions.Exceptions;
 using Raven.Database.Actions;
 using Raven.Database.Extensions;
 using Raven.Database.Server.Security;
@@ -78,7 +79,7 @@ namespace Raven.Database.Server.Controllers
             var documents = 0;
             var mre = new ManualResetEventSlim(false);
             var tre = new CancellationTokenSource();
-            
+
             var inputStream = await InnerRequest.Content.ReadAsStreamAsync().ConfigureAwait(false);
             var currentDatabase = Database;
             var timeout = tre.TimeoutAfter(currentDatabase.Configuration.BulkImportBatchTimeout);
@@ -107,6 +108,11 @@ namespace Raven.Database.Server.Controllers
                     status.IsTimedOut = true;
                     status.Faulted = true;
                 }
+                catch (OperationVetoedException e)
+                {
+                    status.Faulted = true;
+                    error = e;
+                }
                 catch (Exception e)
                 {
                     status.Faulted = true;
@@ -126,11 +132,11 @@ namespace Raven.Database.Server.Controllers
 
             long id;
             Database.Tasks.AddTask(task, status, new TaskActions.PendingTaskDescription
-                                                 {
-                                                     StartTime = SystemTime.UtcNow,
-                                                     TaskType = TaskActions.PendingTaskType.BulkInsert,
-                                                     Payload = operationId.ToString()
-                                                 }, out id, tre);
+            {
+                StartTime = SystemTime.UtcNow,
+                TaskType = TaskActions.PendingTaskType.BulkInsert,
+                Payload = operationId.ToString()
+            }, out id, tre);
 
             await task.ConfigureAwait(false);
 
@@ -217,7 +223,7 @@ namespace Raven.Database.Server.Controllers
                 {
                     case BulkInsertFormat.Bson:
                         {
-                var count = reader.ReadInt32();
+                            var count = reader.ReadInt32();
 
                             return YieldBsonDocumentsInBatch(timeout, reader, count, increaseDocumentsCount).ToArray();
                         }
@@ -241,7 +247,7 @@ namespace Raven.Database.Server.Controllers
                     timeout.Delay();
 
                     while (jsonReader.Read())
-                                                                 {
+                    {
                         if (jsonReader.TokenType == JsonToken.StartObject)
                             break;
                     }
@@ -326,7 +332,7 @@ namespace Raven.Database.Server.Controllers
 
             public bool Faulted { get; set; }
 
-            public RavenJToken State { get; set; } 
+            public RavenJToken State { get; set; }
 
             public bool IsTimedOut { get; set; }
 
