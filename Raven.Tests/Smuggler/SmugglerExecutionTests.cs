@@ -738,9 +738,9 @@ namespace Raven.Tests.Smuggler
                 return ExportAttachments(new RavenConnectionStringOptions(), jsonWriter, lastEtag, maxEtag);
             }
 
-            public override Task ExportDeletions(JsonTextWriter jsonWriter, OperationState result, LastEtagsInfo maxEtags)
+            public override Task ExportDeletions(JsonTextWriter jsonWriter, OperationState result, LastEtagsInfo maxEtags, SmugglerSpinFileWriter smugglerSpinFileWriter = null)
             {
-                return base.ExportDeletions(jsonWriter, result, maxEtags);
+                return base.ExportDeletions(jsonWriter, result, maxEtags, smugglerSpinFileWriter);
             }
         }
 

@@ -229,6 +229,7 @@ namespace Raven.Abstractions.Smuggler
         public bool StripReplicationInformation { get; set; }
 
         public bool SkipConflicted { get; set; }
+        public int SplitOutfileSize { get; set; }
     }
 
  

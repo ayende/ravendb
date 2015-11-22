@@ -110,34 +110,27 @@ namespace Raven.Abstractions.Smuggler
                 //				};
             }
 
-            try
+            using (var smugglerSpinFileWriter = new SmugglerSpinFileWriter(stream, Options.SplitOutfileSize, ownedStream, result.FilePath))
             {
-                using (var gZipStream = new GZipStream(stream, CompressionMode.Compress, leaveOpen: true))
-                using (var streamWriter = new StreamWriter(gZipStream))
+                smugglerSpinFileWriter.WriteStartObject();
+
+                smugglerSpinFileWriter.WritePropertyName("Indexes");
+                if (Options.OperateOnTypes.HasFlag(ItemType.Indexes))
                 {
-                    var jsonWriter = new JsonTextWriter(streamWriter)
-                    {
-                        Formatting = Formatting.Indented
-                    };
-                    jsonWriter.WriteStartObject();
-                    jsonWriter.WritePropertyName("Indexes");
-                    jsonWriter.WriteStartArray();
-                    if (Options.OperateOnTypes.HasFlag(ItemType.Indexes))
-                    {
-                        await ExportIndexes(exportOptions.From, jsonWriter).ConfigureAwait(false);
-                    }
-                    jsonWriter.WriteEndArray();
+                    await ExportIndexes(exportOptions.From, null, smugglerSpinFileWriter).ConfigureAwait(false);
+                }
+                smugglerSpinFileWriter.WriteEndArray();
+                
+                // used to synchronize max returned values for put/delete operations
+                var maxEtags = Operations.FetchCurrentMaxEtags();
 
-                    // used to synchronize max returned values for put/delete operations
-                    var maxEtags = Operations.FetchCurrentMaxEtags();
 
-                    jsonWriter.WritePropertyName("Docs");
-                    jsonWriter.WriteStartArray();
-                    if (Options.OperateOnTypes.HasFlag(ItemType.Documents))
+                smugglerSpinFileWriter.WritePropertyName("Docs");
+                if (Options.OperateOnTypes.HasFlag(ItemType.Documents))
                     {
                         try
                         {
-                            result.LastDocsEtag = await ExportDocuments(exportOptions.From, jsonWriter, result.LastDocsEtag, maxEtags.LastDocsEtag).ConfigureAwait(false);
+                            result.LastDocsEtag = await ExportDocuments(exportOptions.From, null, result.LastDocsEtag, maxEtags.LastDocsEtag, smugglerSpinFileWriter).ConfigureAwait(false);
                         }
                         catch (SmugglerExportException e)
                         {
@@ -146,15 +139,14 @@ namespace Raven.Abstractions.Smuggler
                             lastException = e;
                         }
                     }
-                    jsonWriter.WriteEndArray();
+                smugglerSpinFileWriter.WriteEndArray();
 
-                    jsonWriter.WritePropertyName("Attachments");
-                    jsonWriter.WriteStartArray();
-                    if (Options.OperateOnTypes.HasFlag(ItemType.Attachments) && lastException == null)
+                smugglerSpinFileWriter.WritePropertyName("Attachments");
+                if (Options.OperateOnTypes.HasFlag(ItemType.Attachments) && lastException == null)
                     {
                         try
                         {
-                            result.LastAttachmentsEtag = await ExportAttachments(exportOptions.From, jsonWriter, result.LastAttachmentsEtag, maxEtags.LastAttachmentsEtag).ConfigureAwait(false);
+                            result.LastAttachmentsEtag = await ExportAttachments(exportOptions.From, null, result.LastAttachmentsEtag, maxEtags.LastAttachmentsEtag, smugglerSpinFileWriter).ConfigureAwait(false);
                         }
                         catch (SmugglerExportException e)
                         {
@@ -163,25 +155,23 @@ namespace Raven.Abstractions.Smuggler
                             lastException = e;
                         }
                     }
-                    jsonWriter.WriteEndArray();
+                smugglerSpinFileWriter.WriteEndArray();
 
-                    jsonWriter.WritePropertyName("Transformers");
-                    jsonWriter.WriteStartArray();
+                smugglerSpinFileWriter.WritePropertyName("Transformers");
                     if (Options.OperateOnTypes.HasFlag(ItemType.Transformers) && lastException == null)
                     {
-                        await ExportTransformers(exportOptions.From, jsonWriter).ConfigureAwait(false);
+                        await ExportTransformers(exportOptions.From, null, smugglerSpinFileWriter).ConfigureAwait(false);
                     }
-                    jsonWriter.WriteEndArray();
+                smugglerSpinFileWriter.WriteEndArray();
 
-                    if (Options.ExportDeletions)
+                if (Options.ExportDeletions)
                     {
-                        await ExportDeletions(jsonWriter, result, maxEtags).ConfigureAwait(false);
+                        await ExportDeletions(null, result, maxEtags, smugglerSpinFileWriter).ConfigureAwait(false);
                     }
 
-                    await ExportIdentities(jsonWriter, Options.OperateOnTypes).ConfigureAwait(false);
+                    await ExportIdentities(null, Options.OperateOnTypes, smugglerSpinFileWriter).ConfigureAwait(false);
 
-                    jsonWriter.WriteEndObject();
-                    streamWriter.Flush();
+                smugglerSpinFileWriter.WriteEndObject();
                 }
 
                 if (Options.Incremental)
@@ -196,15 +186,9 @@ namespace Raven.Abstractions.Smuggler
                     throw lastException;
 
                 return result;
-            }
-            finally
-            {
-                if (ownedStream && stream != null)
-                    stream.Dispose();
-            }
         }
 
-        private async Task ExportIdentities(JsonTextWriter jsonWriter, ItemType operateOnTypes)
+        private async Task ExportIdentities(JsonTextWriter jsonWriter, ItemType operateOnTypes, SmugglerSpinFileWriter smugglerSpinFileWriter = null)
         {
             var retries = RetriesCount;
 
@@ -238,13 +222,17 @@ namespace Raven.Abstractions.Smuggler
 
                 Operations.ShowProgress("After filtering {0} identities need to be exported: {1}", filteredIdentities.Count, string.Join(", ", filteredIdentities.Select(x => x.Key)));
 
-                jsonWriter.WritePropertyName("Identities");
-                jsonWriter.WriteStartArray();
+                if (smugglerSpinFileWriter != null)
+                    jsonWriter = smugglerSpinFileWriter.GetJsonWriter(); // set incase filteredIdentities is empty
+
+                smugglerSpinFileWriter.WritePropertyName("Identities");
 
                 foreach (var identityInfo in filteredIdentities)
                 {
                     try
                     {
+                        if (smugglerSpinFileWriter != null)
+                            jsonWriter = smugglerSpinFileWriter.GetJsonWriter();
                         new RavenJObject
                         {
                             { "Key", identityInfo.Key },
@@ -339,7 +327,7 @@ namespace Raven.Abstractions.Smuggler
             WriteLastEtagsToFile(result, etagFileLocation);
         }
 
-        private async Task ExportTransformers(RavenConnectionStringOptions src, JsonTextWriter jsonWriter)
+        private async Task ExportTransformers(RavenConnectionStringOptions src, JsonTextWriter jsonWriter, SmugglerSpinFileWriter smugglerSpinFileWriter = null)
         {
             var totalCount = 0;
             var retries = RetriesCount;
@@ -380,6 +368,8 @@ namespace Raven.Abstractions.Smuggler
                 {
                     try
                     {
+                        if (smugglerSpinFileWriter != null)
+                            jsonWriter = smugglerSpinFileWriter.GetJsonWriter();
                         transformer.WriteTo(jsonWriter);
                     }
                     catch (Exception e)
@@ -393,10 +383,10 @@ namespace Raven.Abstractions.Smuggler
             }
         }
 
-        public abstract Task ExportDeletions(JsonTextWriter jsonWriter, OperationState result, LastEtagsInfo maxEtagsToFetch);
+        public abstract Task ExportDeletions(JsonTextWriter jsonWriter, OperationState result, LastEtagsInfo maxEtagsToFetch, SmugglerSpinFileWriter smugglerSpinFileWriter = null);
 
         [Obsolete("Use RavenFS instead.")]
-        protected virtual async Task<Etag> ExportAttachments(RavenConnectionStringOptions src, JsonTextWriter jsonWriter, Etag lastEtag, Etag maxEtag)
+        protected virtual async Task<Etag> ExportAttachments(RavenConnectionStringOptions src, JsonTextWriter jsonWriter, Etag lastEtag, Etag maxEtag, SmugglerSpinFileWriter smugglerSpinFileWriter = null)
         {
             var totalCount = 0;
             var retries = RetriesCount;
@@ -480,6 +470,8 @@ namespace Raven.Abstractions.Smuggler
                             if (attachmentData == null)
                                 continue;
 
+                            if (smugglerSpinFileWriter != null)
+                                jsonWriter = smugglerSpinFileWriter.GetJsonWriter();
                             new RavenJObject
                             {
                                 { "Data", attachmentData },
@@ -511,7 +503,7 @@ namespace Raven.Abstractions.Smuggler
             }
         }
 
-        protected async Task<Etag> ExportDocuments(RavenConnectionStringOptions src, JsonTextWriter jsonWriter, Etag lastEtag, Etag maxEtag)
+        protected async Task<Etag> ExportDocuments(RavenConnectionStringOptions src, JsonTextWriter jsonWriter, Etag lastEtag, Etag maxEtag, SmugglerSpinFileWriter smugglerSpinFileWriter = null)
         {
             var now = SystemTime.UtcNow;
             var totalCount = 0;
@@ -562,6 +554,8 @@ namespace Raven.Abstractions.Smuggler
 
                                 try
                                 {
+                                    if (smugglerSpinFileWriter != null)
+                                        jsonWriter = smugglerSpinFileWriter.GetJsonWriter();
                                     document.WriteTo(jsonWriter);
                                 }
                                 catch (Exception e)
@@ -613,6 +607,8 @@ namespace Raven.Abstractions.Smuggler
                                 if (doc != null)
                                 {
                                     doc.Metadata["@id"] = doc.Key;
+                                    if (smugglerSpinFileWriter != null)
+                                        jsonWriter = smugglerSpinFileWriter.GetJsonWriter();
                                     doc.ToJson().WriteTo(jsonWriter);
                                     totalCount++;
                                 }
@@ -1331,7 +1327,7 @@ namespace Raven.Abstractions.Smuggler
             return count;
         }
 
-        private async Task ExportIndexes(RavenConnectionStringOptions src, JsonTextWriter jsonWriter)
+        private async Task ExportIndexes(RavenConnectionStringOptions src, JsonTextWriter jsonWriter, SmugglerSpinFileWriter smugglerSpinFileWriter = null)
         {
             var totalCount = 0;
             int retries = RetriesCount;
@@ -1370,6 +1366,8 @@ namespace Raven.Abstractions.Smuggler
                 {
                     try
                     {
+                        if (smugglerSpinFileWriter != null)
+                            jsonWriter = smugglerSpinFileWriter.GetJsonWriter();
                         index.WriteTo(jsonWriter);
                     }
                     catch (Exception e)
