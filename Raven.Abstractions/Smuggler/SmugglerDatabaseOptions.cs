@@ -230,6 +230,7 @@ namespace Raven.Abstractions.Smuggler
 
         public bool SkipConflicted { get; set; }
         public int SplitOutfileSize { get; set; }
+        public bool ImportAllSplittedFiles { get; set; }
     }
 
  

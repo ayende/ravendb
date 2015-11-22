@@ -20,8 +20,7 @@ namespace Raven.Abstractions.Smuggler
 
         private string lastPropertyName;
         private int spinFileNumber;
-        private const long MB = 1;
-        // private const long MB = 1024L*1024;
+        private const long MB = 1024L*1024;
 
 
         public SmugglerSpinFileWriter(Stream stream, long splitOutfileSize, bool shouldSplitStream, string filePath)

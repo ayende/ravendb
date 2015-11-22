@@ -694,12 +694,31 @@ namespace Raven.Abstractions.Smuggler
                 bool ownStream = false;
                 try
                 {
-                    if (stream == null)
+                    bool hasNextSplittedFileToImport = false;
+                    int splittedFileCounter = 0;
+                    var nextFileName = importOptions.FromFile;
+                    do
                     {
-                        stream = File.OpenRead(importOptions.FromFile);
-                        ownStream = true;
-                    }
-                    await ImportData(importOptions, stream).ConfigureAwait(false);
+                        if (stream == null)
+                        {
+                            stream = File.OpenRead(nextFileName);
+                            ownStream = true;
+                        }
+                        await ImportData(importOptions, stream).ConfigureAwait(false);
+
+                        if (Options.ImportAllSplittedFiles == true && ownStream)
+                        {
+                            nextFileName = $"{importOptions.FromFile}.{++splittedFileCounter}";
+                            if (File.Exists(nextFileName))
+                            {
+                                stream?.Dispose();
+                                stream = null;
+                                hasNextSplittedFileToImport = true;
+                            }
+                            else
+                                hasNextSplittedFileToImport = false;
+                        }
+                    } while (hasNextSplittedFileToImport == true);
                 }
                 finally
                 {
