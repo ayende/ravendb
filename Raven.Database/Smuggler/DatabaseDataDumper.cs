@@ -26,17 +26,30 @@ namespace Raven.Database.Smuggler
             Operations = new SmugglerEmbeddedDatabaseOperations(database);
         }
 
-        public override async Task ExportDeletions(JsonTextWriter jsonWriter, OperationState result, LastEtagsInfo maxEtagsToFetch)
+        public override async Task ExportDeletions(JsonTextWriter jsonWriter, OperationState result, LastEtagsInfo maxEtagsToFetch, SmugglerSpinFileWriter smugglerSpinFileWriter = null)
         {
-            jsonWriter.WritePropertyName("DocsDeletions");
-            jsonWriter.WriteStartArray();
-            result.LastDocDeleteEtag = await Operations.ExportDocumentsDeletion(jsonWriter, result.LastDocDeleteEtag, maxEtagsToFetch.LastDocDeleteEtag.IncrementBy(1)).ConfigureAwait(false);
-            jsonWriter.WriteEndArray();
+            if (smugglerSpinFileWriter != null)
+            {
+                smugglerSpinFileWriter.WritePropertyName("DocsDeletions");
+                result.LastDocDeleteEtag = await Operations.ExportDocumentsDeletion(null, result.LastDocDeleteEtag, maxEtagsToFetch.LastDocDeleteEtag.IncrementBy(1), smugglerSpinFileWriter).ConfigureAwait(false);
+                smugglerSpinFileWriter.WriteEndArray();
 
-            jsonWriter.WritePropertyName("AttachmentsDeletions");
-            jsonWriter.WriteStartArray();
-            result.LastAttachmentsDeleteEtag = await Operations.ExportAttachmentsDeletion(jsonWriter, result.LastAttachmentsDeleteEtag, maxEtagsToFetch.LastAttachmentsDeleteEtag.IncrementBy(1)).ConfigureAwait(false);
-            jsonWriter.WriteEndArray();
+                smugglerSpinFileWriter.WritePropertyName("AttachmentsDeletions");
+                result.LastAttachmentsDeleteEtag = await Operations.ExportAttachmentsDeletion(null, result.LastAttachmentsDeleteEtag, maxEtagsToFetch.LastAttachmentsDeleteEtag.IncrementBy(1), smugglerSpinFileWriter).ConfigureAwait(false);
+                smugglerSpinFileWriter.WriteEndArray();
+            }
+            else
+            {
+                jsonWriter.WritePropertyName("DocsDeletions");
+                jsonWriter.WriteStartArray();
+                result.LastDocDeleteEtag = await Operations.ExportDocumentsDeletion(jsonWriter, result.LastDocDeleteEtag, maxEtagsToFetch.LastDocDeleteEtag.IncrementBy(1)).ConfigureAwait(false);
+                jsonWriter.WriteEndArray();
+
+                jsonWriter.WritePropertyName("AttachmentsDeletions");
+                jsonWriter.WriteStartArray();
+                result.LastAttachmentsDeleteEtag = await Operations.ExportAttachmentsDeletion(jsonWriter, result.LastAttachmentsDeleteEtag, maxEtagsToFetch.LastAttachmentsDeleteEtag.IncrementBy(1)).ConfigureAwait(false);
+                jsonWriter.WriteEndArray();
+            }
         }
 
         public override async Task Between(SmugglerBetweenOptions<RavenConnectionStringOptions> betweenOptions)

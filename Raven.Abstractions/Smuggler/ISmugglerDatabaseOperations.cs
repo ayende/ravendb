@@ -27,9 +27,9 @@ namespace Raven.Abstractions.Smuggler
         Task DeleteDocument(string key);
 
         [Obsolete("Use RavenFS instead.")]
-        Task<Etag> ExportAttachmentsDeletion(JsonTextWriter jsonWriter, Etag startAttachmentsDeletionEtag, Etag maxAttachmentEtag);
+        Task<Etag> ExportAttachmentsDeletion(JsonTextWriter jsonWriter, Etag startAttachmentsDeletionEtag, Etag maxAttachmentEtag, SmugglerSpinFileWriter smugglerSpinFileWriter = null);
 
-        Task<Etag> ExportDocumentsDeletion(JsonTextWriter jsonWriter, Etag startDocsEtag, Etag maxEtag);
+        Task<Etag> ExportDocumentsDeletion(JsonTextWriter jsonWriter, Etag startDocsEtag, Etag maxEtag, SmugglerSpinFileWriter smugglerSpinFileWriter = null);
 
         LastEtagsInfo FetchCurrentMaxEtags();
 

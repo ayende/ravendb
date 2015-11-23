@@ -445,6 +445,7 @@
     <Compile Include="Smuggler\SmugglerHelper.cs" />
     <Compile Include="Smuggler\SmugglerMode.cs" />
     <Compile Include="Smuggler\SmugglerOptions.cs" />
+    <Compile Include="Smuggler\SmugglerSpinFileWriter.cs" />
     <Compile Include="Spatial\ShapeConverter.cs" />
     <Compile Include="Spatial\GeoJsonWktConverter.cs" />
     <Compile Include="Spatial\WktSanitizer.cs" />
