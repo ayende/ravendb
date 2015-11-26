@@ -1,8 +1,11 @@
 using System;
+using System.IO;
+
 using Raven.Abstractions.Data;
-using Raven.Database.Config;
 using Raven.Json.Linq;
-using Raven.Tests.Bundles.Versioning;
+using Raven.Tests.Common;
+using Raven.Tests.Common.Util;
+
 using Xunit;
 
 namespace Raven.Tests.Bundles.Compression
@@ -51,6 +54,29 @@ namespace Raven.Tests.Bundles.Compression
             Assert.True(jsonDocument.Metadata.Value<bool>(Constants.RavenDocumentDoesNotExists));
 
             AssertPlainTextIsNotSavedInDatabase_ExceptIndexes(FirstCompany);
+        }
+    }
+
+    public class CrudWithDtc : RavenTest
+    {
+        [Fact]
+        public void Transactional()
+        {
+            var compressedDataPath = NewDataPath("Compressed");
+
+            const string FirstCompany = "FirstCompany";
+
+            using (var server = GetNewServer(activeBundles: "Compression", dataDirectory: compressedDataPath, runInMemory: false, requestedStorage: "esent"))
+            using (var documentStore = NewRemoteDocumentStore(ravenDbServer: server))
+            {
+                // write in transaction
+                documentStore.DatabaseCommands.Put("docs/1", null, new RavenJObject { { "Name", FirstCompany } }, new RavenJObject { { "Raven-Transaction-Information", Guid.NewGuid() + ", " + TimeSpan.FromMinutes(1) } });
+
+                var jsonDocument = documentStore.DatabaseCommands.Get("docs/1");
+                Assert.True(jsonDocument.Metadata.Value<bool>(Constants.RavenDocumentDoesNotExists));
+            }
+
+            EncryptionTestUtil.AssertPlainTextIsNotSavedInAnyFileInPath(new [] {FirstCompany}, compressedDataPath, file => Path.GetExtension(file) != ".cfs");
         }
     }
 }
