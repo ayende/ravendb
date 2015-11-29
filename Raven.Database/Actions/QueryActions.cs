@@ -154,6 +154,8 @@ namespace Raven.Database.Actions
             private Dictionary<string, string> scoreExplanations;
             private HashSet<string> idsToLoad;
 
+            private readonly ILog logger = LogManager.GetCurrentClassLogger();
+
             private readonly Dictionary<QueryTimings, double> executionTimes = new Dictionary<QueryTimings, double>();
 
             public DocumentDatabase Database
@@ -289,8 +291,9 @@ namespace Raven.Database.Actions
 
                         onResult(result);
                     }
-                    if (transformerErrors.Count > 0)
+                    if (transformerErrors.Count == 0)
                     {
+                        logger.Error("The transform results function failed.\r\n{0}", string.Join("\r\n", transformerErrors));
                         throw new InvalidOperationException("The transform results function failed.\r\n" + string.Join("\r\n", transformerErrors));
                     }
                 }
