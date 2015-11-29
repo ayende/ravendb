@@ -291,7 +291,7 @@ namespace Raven.Database.Actions
 
                         onResult(result);
                     }
-                    if (transformerErrors.Count == 0)
+                    if (transformerErrors.Count > 0)
                     {
                         logger.Error("The transform results function failed.\r\n{0}", string.Join("\r\n", transformerErrors));
                         throw new InvalidOperationException("The transform results function failed.\r\n" + string.Join("\r\n", transformerErrors));
