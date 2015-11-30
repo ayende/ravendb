@@ -131,8 +131,7 @@ namespace Raven.Database.Counters.Controllers
             var inputStream = await InnerRequest.Content.ReadAsStreamAsync().ConfigureAwait(false);
             var task = Task.Factory.StartNew(() =>
             {
-                var timeout = timeoutTokenSource.TimeoutAfter(TimeSpan.FromSeconds(360)); //TODO : make this configurable
-
+                var timeout = timeoutTokenSource.TimeoutAfter(SystemConfiguration.Counter.BatchTimeout); 
                 var changeBatches = YieldChangeBatches(inputStream, timeout, countOfChanges => counterChanges += countOfChanges);
                 try
                 {

@@ -148,17 +148,17 @@ namespace Raven.Database.Counters.Controllers
             var replicationTask = Task.Factory.StartNew(
                 () =>
                 {
-                    //using (LogContext.WithDatabase(storage.Name)) //TODO: log with counter storage contexe
-                    //{
-                    try
+                    using (LogContext.WithResource(storage.Name))
                     {
-                        if (ReplicateTo(destination)) SignalCounterUpdate();
+                        try
+                        {
+                            if (ReplicateTo(destination)) SignalCounterUpdate();
+                        }
+                        catch (Exception e)
+                        {
+                            Log.ErrorException("Could not replicate to " + dest, e);
+                        }
                     }
-                    catch (Exception e)
-                    {
-                        Log.ErrorException("Could not replicate to " + dest, e);
-                    }
-                    //}
                 });
 
             activeTasks.Enqueue(replicationTask);
@@ -178,7 +178,6 @@ namespace Raven.Database.Counters.Controllers
         private bool ReplicateTo(CounterReplicationDestination destination)
         {
             var replicationStopwatch = Stopwatch.StartNew();
-            //todo: here, build url according to :destination.Url + '/counters/' + destination.
             try
             {
                 string lastError;
@@ -194,7 +193,7 @@ namespace Raven.Database.Counters.Controllers
                         result = true;
                         break;
                     case ReplicationResult.NotReplicated:
-                        //TODO: Record not replicated
+                        Log.Info($"Nothing to replicate to {destination.CounterStorageUrl}");
                         RecordSuccess(destination.CounterStorageUrl, SystemTime.UtcNow);
                         break;
                     default:
@@ -364,13 +363,12 @@ namespace Raven.Database.Counters.Controllers
             return true;
         }
 
-        private ReplicationMessage GetCountersDataSinceEtag(long etag, out long lastEtagSent)
+        private ReplicationMessage GetCountersDataSinceEtag(long etag, out long lastEtagSent, int take = 1024)
         {
             var message = new ReplicationMessage { ServerId = storage.ServerId, SendingServerName = storage.CounterStorageUrl };
-
             using (var reader = storage.CreateReader())
             {
-                message.Counters = reader.GetCountersSinceEtag(etag + 1).Take(1024).ToList(); //TODO: Capped this...how to get remaining values?
+                message.Counters = reader.GetCountersSinceEtag(etag + 1,take: take).ToList(); 
                 lastEtagSent = message.Counters.Count > 0 ? message.Counters.Max(x => x.Etag) : etag; // change this once changed this function do a reall paging
             }
 
@@ -429,7 +427,7 @@ namespace Raven.Database.Counters.Controllers
 
         private void NotifySibling(BlockingCollection<RavenConnectionStringOptions> collection)
         {
-            // using (LogContext.WithDatabase(docDb.Name)) todo:implement log context
+            using (LogContext.WithResource(storage.Name))
             while (true)
             {
                 RavenConnectionStringOptions connectionStringOptions;
@@ -446,7 +444,7 @@ namespace Raven.Database.Counters.Controllers
                 }
                 try
                 {
-                    var url = connectionStringOptions.Url + "/cs/" + storage.Name + "/replication/heartbeat?from=" + Uri.EscapeDataString(storage.CounterStorageUrl);
+                    var url = $"{connectionStringOptions.Url}/cs/{storage.Name}/replication/heartbeat?from={Uri.EscapeDataString(storage.CounterStorageUrl)}";
                     var request = httpRavenRequestFactory.Create(url, HttpMethods.Post, connectionStringOptions);
                     request.WebRequest.ContentLength = 0;
                     request.ExecuteRequest();

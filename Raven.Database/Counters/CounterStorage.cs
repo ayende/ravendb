@@ -223,7 +223,7 @@ namespace Raven.Database.Counters
                     LastCounterEtag = lastEtag,
                     ReplicationTasksCount = replicationTask.GetActiveTasksCount(),
                     CounterStorageSize = SizeHelper.Humane(Environment.Stats().UsedDataFileSizeInBytes),
-                    ReplicatedServersCount = 0, //TODO: get the correct number
+                    ReplicatedServersCount = replicationTask.DestinationStats.Count,
                     RequestsPerSecond = Math.Round(metricsCounters.RequestsPerSecondCounter.CurrentValue, 3),
                 };
                 return stats;
@@ -430,15 +430,15 @@ namespace Raven.Database.Counters
                                 var counterIdBuffer = valueReader.ReadBytes(sizeof(long), out used);
                                 counterDetails.IdSlice = new Slice(counterIdBuffer, sizeof(long));
 
-								yield return counterDetails;
+                                yield return counterDetails;
                             } while (iterator.MoveNext());
                         }
                     } while (isEmptyGroup && it.MoveNext());
                 }
             }
 
-			//TODO : discuss whether this is redundant with GetCounterSummariesByPrefix()
-			public IEnumerable<CounterSummary> GetCounterSummariesByGroup(string groupName, int skip, int take)
+            //TODO : discuss whether this is redundant with GetCounterSummariesByPrefix()
+            public IEnumerable<CounterSummary> GetCounterSummariesByGroup(string groupName, int skip, int take)
             {
                 ThrowIfDisposed();
                 var countersDetails = (take != -1) ? GetCountersDetails(groupName, skip).Take(take) : GetCountersDetails(groupName, skip);
@@ -564,13 +564,13 @@ namespace Raven.Database.Counters
                 {
                     if (!it.Seek(Slice.BeforeAllKeys))
                         yield break;
-	                if (!string.IsNullOrEmpty(counterNamePrefix))
-	                {
-		                it.RequiredPrefix = counterNamePrefix;
-		                it.Seek(it.RequiredPrefix);
-	                }
+                    if (!string.IsNullOrEmpty(counterNamePrefix))
+                    {
+                        it.RequiredPrefix = counterNamePrefix;
+                        it.Seek(it.RequiredPrefix);
+                    }
 
-	                var taken = 0;
+                    var taken = 0;
                     var skipped = 0;
                     do
                     {

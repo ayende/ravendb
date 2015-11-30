@@ -162,7 +162,7 @@ namespace Raven.Bundles.Replication.Tasks
 
         private void Execute()
         {
-            using (LogContext.WithDatabase(docDb.Name))
+            using (LogContext.WithResource(docDb.Name))
             {
                 if (log.IsDebugEnabled)
                     log.Debug("Replication task started.");
@@ -244,7 +244,7 @@ namespace Raven.Bundles.Replication.Tasks
                     var replicationTask = Task.Factory.StartNew(
                         () =>
                         {
-                            using (LogContext.WithDatabase(docDb.Name))
+                            using (LogContext.WithResource(docDb.Name))
                             using (CultureHelper.EnsureInvariantCulture())
                             {
                                 try
@@ -377,7 +377,7 @@ namespace Raven.Bundles.Replication.Tasks
 
         private void NotifySibling(BlockingCollection<RavenConnectionStringOptions> collection)
         {
-            using (LogContext.WithDatabase(docDb.Name))
+            using (LogContext.WithResource(docDb.Name))
                 while (true)
                 {
                     RavenConnectionStringOptions connectionStringOptions;
