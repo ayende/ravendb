@@ -61,7 +61,7 @@ namespace Rachis.Tests
 
             nonLeaderNode.CommitIndexChanged += (oldIndex, newIndex) =>
             {
-                //essentially fire event for (CommandCount - 1) + Nop command
+                //essentially fire event for (CommandCount - 1) +  Nop command
                 if (newIndex == CommandCount)
                     commitsAppliedEvent.Set();
             };

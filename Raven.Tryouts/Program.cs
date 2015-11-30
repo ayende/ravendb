@@ -7,18 +7,23 @@ namespace Raven.Tryouts
     {
         public static void Main()
         {
-            using (var testClass = new Tests.Raft.Client.Documents())
+
+            for (int i = 0; i < 100; i++)
             {
-                try
+                using (var testClass = new Rachis.Tests.CommandsTests())
                 {
-                    testClass.DeleteShouldBePropagated(5);
-                    Console.WriteLine("Test is done");
+                    try
+                    {
+                        Console.WriteLine($"Test {i} is starting");
+                        testClass.Command_not_committed_after_timeout_CompletionTaskSource_is_notified();
+                        Console.WriteLine($"Test {i} is done");
+                    }
+                    catch (Exception e)
+                    {
+                        Debugger.Break();
+                    }
+                    Console.WriteLine($"Test {i} is done");
                 }
-                catch (Exception e)
-                {
-                    Debugger.Break();
-                }
-                Console.WriteLine("Dispose is done");
             }
         }
     }
