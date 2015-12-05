@@ -340,18 +340,18 @@ namespace Raven.Bundles.Replication.Tasks
             while (true)
             {
                 int nextPageStart = skip; // will trigger rapid pagination
-                var docs = docDb.Documents.GetDocumentsWithIdStartingWith(Constants.RavenReplicationSourcesBasePath, null, null, skip, 128, CancellationToken.None, ref nextPageStart);
-                if (docs.Length == 0)
+                var replicationSourceDocs = docDb.Documents.GetDocumentsWithIdStartingWith(Constants.RavenReplicationSourcesBasePath, null, null, skip, 128, CancellationToken.None, ref nextPageStart);
+                if (replicationSourceDocs.Length == 0)
                 {
                     notifications.TryAdd(null, 15 * 1000); // marker to stop notify this
                     return;
                 }
 
-                skip += docs.Length;
+                skip += replicationSourceDocs.Length;
 
-                foreach (RavenJObject doc in docs)
+                foreach (var replicationSourceDoc in replicationSourceDocs)
                 {
-                    var sourceReplicationInformation = doc.JsonDeserialization<SourceReplicationInformation>();
+                    var sourceReplicationInformation = replicationSourceDoc.JsonDeserialization<SourceReplicationInformation>();
                     if (string.IsNullOrEmpty(sourceReplicationInformation.Source))
                         continue;
 
@@ -392,6 +392,7 @@ namespace Raven.Bundles.Replication.Tasks
                         log.ErrorException("Could not get connection string options to notify sibling servers about restart", e);
                         return;
                     }
+
                     try
                     {
                         var url = connectionStringOptions.Url + "/replication/heartbeat?from=" + UrlEncodedServerUrl() + "&dbid=" + docDb.TransactionalStorage.Id;

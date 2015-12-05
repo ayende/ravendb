@@ -45,7 +45,7 @@ namespace Raven.Database.Counters.Controllers
                 return Request.CreateResponse(HttpStatusCode.BadRequest, e.Message);
             }
 
-            long lastEtag = 0;
+			long lastEtag = 0;
             var wroteCounter = false;
             using (var writer = CounterStorage.CreateWriter())
             {
