@@ -28,6 +28,8 @@ namespace Raven.Abstractions.Data
 
         public ICredentials Credentials { get; set; }
 
+        public string AuthenticationScheme { get; set; }
+
         public override string ToString()
         {
             var user = Credentials == null ? "<none>" : ((NetworkCredential)Credentials).UserName;
@@ -54,10 +56,9 @@ namespace Raven.Abstractions.Data
         public Guid ResourceManagerId { get; set; }
 
         public bool EnlistInDistributedTransactions { get; set; }
-
-		/// <summary>
-		/// For databases its database name, for counters its counter storage name etc.
-		/// </summary>
+        /// <summary>
+        /// For databases its database name, for counters its counter storage name etc.
+        /// </summary>
         public string DefaultResource { get; set; }
 
         
