@@ -392,6 +392,8 @@ namespace Raven.Database.Counters.Controllers
                         : new NetworkCredential(destination.Username, destination.Password, destination.Domain);
                 }
                 lastError = string.Empty;
+
+	            connectionStringOptions.DefaultResource = destination.CounterStorageName;
                 return connectionStringOptions;
             }
             catch (Exception e)
@@ -430,7 +432,7 @@ namespace Raven.Database.Counters.Controllers
 
 			    IEnumerable<CounterStorage.ReplicationSourceInfo> replicationSources;
 			    using (var reader = storage.CreateReader())
-				    replicationSources = reader.GetReplicationSources();
+				    replicationSources = reader.GetReplicationSources().ToList();
 
 			    foreach (var sourceInfo in replicationSources)
 			    {
@@ -477,7 +479,8 @@ namespace Raven.Database.Counters.Controllers
                 }
                 try
                 {
-                    var url = $"{connectionStringOptions.Url}/cs/{storage.Name}/replication/heartbeat?from={Uri.EscapeDataString(storage.CounterStorageUrl)}";
+						
+					var url = $"{connectionStringOptions.Url}/cs/{connectionStringOptions.DefaultResource}/replication/heartbeat?sourceServer={Uri.EscapeDataString(storage.CounterStorageUrl)}";
                     var request = httpRavenRequestFactory.Create(url, HttpMethods.Post, connectionStringOptions);
                     request.WebRequest.ContentLength = 0;
                     request.ExecuteRequest();

@@ -100,7 +100,7 @@ namespace Raven.Database.Server.Controllers.Admin
                             To = new RavenConnectionStringOptions
                             {
                                 Url = request.TargetServer.Url,
-                                DefaultDatabase = serverSmugglingItem.Name
+                                DefaultResource = serverSmugglingItem.Name
                             },
                             ReportProgress = message => status.Messages.Add(message)
                         }).ConfigureAwait(false);
