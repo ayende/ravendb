@@ -343,7 +343,7 @@ namespace Voron
                 if (RunningOnPosix)
                     _dataPager = new PosixTempMemoryMapPager(PageSize, "data.pager", InitialFileSize);
                 else
-                    _dataPager = new Win32PageFileBackedMemoryMappedPager(PageSize, "data.pager", InitialFileSize);
+                    _dataPager = new Win32PageFileMemoryMappedPager(PageSize, "data.pager", InitialFileSize);
             }
 
             public override IVirtualPager DataPager
@@ -427,7 +427,7 @@ namespace Voron
             {
                 if (RunningOnPosix)
                     return new PosixTempMemoryMapPager(PageSize, name, InitialFileSize);
-                return new Win32PageFileBackedMemoryMappedPager(PageSize, name, InitialFileSize);
+                return new Win32PageFileMemoryMappedPager(PageSize, name, InitialFileSize);
             }
 
             public override IVirtualPager OpenPager(string filename)
