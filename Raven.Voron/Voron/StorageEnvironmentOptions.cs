@@ -111,9 +111,11 @@ namespace Voron
 
         public int ScratchBufferOverflowTimeout { get; set; }
 
-        public static StorageEnvironmentOptions CreateMemoryOnly()
+        public static StorageEnvironmentOptions CreateMemoryOnly(string configTempPath = null)
         {
-            return new PureMemoryStorageEnvironmentOptions();
+            if (string.IsNullOrEmpty(configTempPath))
+                configTempPath = Path.GetTempPath();
+            return new PureMemoryStorageEnvironmentOptions(configTempPath);
         }
 
         public static StorageEnvironmentOptions ForPath(string path, string tempPath = null, string journalPath = null)
@@ -319,13 +321,17 @@ namespace Voron
                 new Dictionary<string, IntPtr>(StringComparer.OrdinalIgnoreCase);
             private int _instanceId;
 
-            public PureMemoryStorageEnvironmentOptions()
+            private string tempPath { get; set; }
+
+            public PureMemoryStorageEnvironmentOptions(string configTempPath)
             {
+                tempPath = configTempPath;
                 _instanceId = Interlocked.Increment(ref _counter);
                 if (RunningOnPosix)
                     _dataPager = new PosixTempMemoryMapPager("_data.pager", InitialFileSize);
                 else
-                    _dataPager = new Win32PageFileBackedMemoryMappedPager("data.pager", InitialFileSize);
+                    _dataPager = new Win32MemoryMapPager(Path.Combine(tempPath, "data.pager"), InitialFileSize,
+                        Win32NativeFileAttributes.RandomAccess | Win32NativeFileAttributes.DeleteOnClose | Win32NativeFileAttributes.Temporary);
             }
 
             public override IVirtualPager DataPager
@@ -409,7 +415,9 @@ namespace Voron
             {
                 if (RunningOnPosix)
                     return new PosixTempMemoryMapPager(name, InitialFileSize);
-                return new Win32PageFileBackedMemoryMappedPager(name, InitialFileSize);
+
+                return new Win32MemoryMapPager(Path.Combine(tempPath, name), InitialFileSize,
+                        Win32NativeFileAttributes.RandomAccess | Win32NativeFileAttributes.DeleteOnClose | Win32NativeFileAttributes.Temporary);
             }
 
             public override IVirtualPager OpenPager(string filename)
