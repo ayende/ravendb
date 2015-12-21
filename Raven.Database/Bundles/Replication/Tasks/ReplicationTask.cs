@@ -203,7 +203,7 @@ namespace Raven.Bundles.Replication.Tasks
                     {
                         try
                         {
-                            ExecuteReplicationOnce(runningBecauseOfDataModifications);
+                            ExecuteReplicationOnce(runningBecauseOfDataModifications).Wait();
                         }
                         catch (Exception e)
                         {
@@ -299,27 +299,23 @@ namespace Raven.Bundles.Replication.Tasks
                                 if (!task.IsCompleted && !task.IsCanceled && !task.IsFaulted) break;
                                 activeTasks.TryDequeue(out task); // remove it from end
                             }
-
+                            DestinationStats destinationStat = null;
+                            if (destinationStats.TryGetValue(dest.ConnectionStringOptions.Url, out destinationStat))
+                            {
+                                if (destinationStat.LastReplicatedEtag == null) return;
+                                //TODO: do we want to clean the prefetcher if the task is faulted?
+                                PrefetchingBehavior prefetchingBehavior;
+                                if (prefetchingBehaviors.TryGetValue(dest.ConnectionStringOptions.Url, out prefetchingBehavior))
+                                {
+                                    prefetchingBehavior.CleanupDocuments(destinationStat.LastReplicatedEtag);
+                                }
+                            }
                             if (t.Result)
                                 docDb.WorkContext.ReplicationResetEvent.Set();
                         });
                 }
 
-                return Task.WhenAll(startedTasks.ToArray()).ContinueWith(
-                    t =>
-                    {
-                        if (destinationStats.Count == 0)
-                            return;
-
-                        foreach (var stats in destinationStats.Where(stats => stats.Value.LastReplicatedEtag != null))
-                        {
-                            PrefetchingBehavior prefetchingBehavior;
-                            if (prefetchingBehaviors.TryGetValue(stats.Key, out prefetchingBehavior))
-                            {
-                                prefetchingBehavior.CleanupDocuments(stats.Value.LastReplicatedEtag);
-                            }
-                        }
-                    }).ContinueWith(t => OnReplicationExecuted()).AssertNotFailed();
+                return Task.WhenAny(startedTasks.ToArray()).ContinueWith(t => OnReplicationExecuted()).AssertNotFailed();
             }
         }
 
