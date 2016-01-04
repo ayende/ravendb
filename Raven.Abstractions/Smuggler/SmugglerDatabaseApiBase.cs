@@ -530,6 +530,9 @@ namespace Raven.Abstractions.Smuggler
             var reportInterval = TimeSpan.FromSeconds(2);
             var reachedMaxEtag = false;
             Operations.ShowProgress("Exporting Documents");
+            int numberOfSkippedDocs = 0;
+            var lastForcedFlush = SystemTime.UtcNow;
+            var maxFlushInterval = TimeSpan.FromSeconds(1);
 
             while (true)
             {
@@ -544,6 +547,14 @@ namespace Raven.Abstractions.Smuggler
                         {
                             while (await documents.MoveNextAsync())
                             {
+                                if (numberOfSkippedDocs > 0 && (SystemTime.UtcNow - lastForcedFlush) > maxFlushInterval)
+                                {
+                                    Operations.ShowProgress("Skipped {0:#,#} documents", numberOfSkippedDocs);
+                                    jsonWriter.WriteWhitespace(" ");
+                                    jsonWriter.Flush();
+                                    lastForcedFlush = SystemTime.UtcNow;
+                                    numberOfSkippedDocs = 0;
+                                }
                                 if (Options.ExportDeletions && updateLastDocDeleteEtag != null)
                                     updateLastDocDeleteEtag();
 
@@ -562,17 +573,26 @@ namespace Raven.Abstractions.Smuggler
                                 lastEtag = tempLastEtag;
 
                                 if (!Options.MatchFilters(document))
+                                {
+                                    numberOfSkippedDocs++;
                                     continue;
+                                }
 
                                 if (Options.ShouldExcludeExpired && Options.ExcludeExpired(document, now))
+                                {
+                                    numberOfSkippedDocs++;
                                     continue;
+                                }
 
                                 if (string.IsNullOrEmpty(Options.TransformScript) == false)
                                     document = await Operations.TransformDocument(document, Options.TransformScript);
 
                                 // If document is null after a transform we skip it. 
                                 if (document == null)
+                                {
+                                    numberOfSkippedDocs++;
                                     continue;
+                                }
 
                                 try
                                 {
@@ -1407,25 +1427,24 @@ namespace Raven.Abstractions.Smuggler
                 return;
             }
 
-            var smugglerVersion = FileVersionInfo.GetVersionInfo(AssemblyHelper.GetAssemblyLocationFor<SmugglerDatabaseApiBase>()).ProductVersion;
 
-            var subServerVersion = serverVersion.Substring(0, 3);
-            var subSmugglerVersion = smugglerVersion.Substring(0, 3);
+            var customAttributes = typeof(SmugglerDatabaseApiBase).Assembly.GetCustomAttributes(false);
+            dynamic versionAtt = customAttributes.Single(x => x.GetType().Name == "RavenVersionAttribute");
+            var intServerVersion = int.Parse(versionAtt.Version.Replace(".", ""));
 
-            var intServerVersion = int.Parse(subServerVersion.Replace(".", string.Empty));
 
             if (intServerVersion < 25)
             {
                 IsTransformersSupported = false;
                 IsDocsStreamingSupported = false;
                 IsIdentitiesSmugglingSupported = false;
-                Operations.ShowProgress("Running in legacy mode, importing/exporting transformers is not supported. Server version: {0}. Smuggler version: {1}.", subServerVersion, subSmugglerVersion);
+                Operations.ShowProgress("Running in legacy mode, importing/exporting transformers is not supported. Server version: {0}. Smuggler version: {1}.", serverVersion, versionAtt.Version);
                 return;
             }
 
             if (intServerVersion == 25)
             {
-                Operations.ShowProgress("Running in legacy mode, importing/exporting identities is not supported. Server version: {0}. Smuggler version: {1}.", subServerVersion, subSmugglerVersion);
+                Operations.ShowProgress("Running in legacy mode, importing/exporting identities is not supported. Server version: {0}. Smuggler version: {1}.", serverVersion, versionAtt.Version);
 
                 IsTransformersSupported = true;
                 IsDocsStreamingSupported = true;

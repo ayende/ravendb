@@ -172,9 +172,17 @@ namespace Raven.Database.Actions
                                                          .Select(x => JsonExtensions.ToJObject(x))
                                                          .ToArray();
 
-                                    if (transformed.Length == 0)
+                                    RavenJObject ravenJObject;
+                                    switch (transformed.Length)
                                     {
-                                        throw new InvalidOperationException("The transform results function failed on a document: " + document.Key);
+                                        case 0:
+                                            throw new InvalidOperationException("The transform results function failed on a document: " + document.Key);
+                                        case 1:
+                                            ravenJObject = transformed[0];
+                                            break;
+                                        default:
+                                    ravenJObject = new RavenJObject { { "$values", new RavenJArray(transformed) } };
+                                            break;
                                     }
 
                                     var transformedJsonDocument = new JsonDocument
@@ -182,7 +190,7 @@ namespace Raven.Database.Actions
                                         Etag = document.Etag.HashWith(storedTransformer.GetHashCodeBytes()).HashWith(documentRetriever.Etag),
                                         NonAuthoritativeInformation = document.NonAuthoritativeInformation,
                                         LastModified = document.LastModified,
-                                        DataAsJson = new RavenJObject { { "$values", new RavenJArray(transformed) } },
+                                        DataAsJson = ravenJObject,
                                     };
 
                                     addDoc(transformedJsonDocument);
@@ -845,11 +853,9 @@ namespace Raven.Database.Actions
                 }
 
                 var instance = IndexDefinitionStorage.GetIndexDefinition(indexName);
-                var task = actions.GetTask(x => x.Index == instance.IndexId, new RemoveFromIndexTask
-                {
-                    Index = instance.IndexId
-                });
-                task.Keys.Add(key);
+                var task = actions.GetTask(x => x.Index == instance.IndexId, 
+                    new RemoveFromIndexTask(instance.IndexId));
+                task.AddKey(key);
             }
         }
     }
