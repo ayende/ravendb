@@ -82,9 +82,6 @@ namespace Raven.Database.Config.Retriever
         {
             get
             {
-                DevelopmentHelper.TimeBomb();
-                return true;
-
                 if (licenseEnabled != null)
                 {
                     if (SystemTime.UtcNow < licenseEnabled.Value)
