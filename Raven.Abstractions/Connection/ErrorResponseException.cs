@@ -1,9 +1,9 @@
 using System;
+using System.ComponentModel;
 using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Text;
-using System.Threading.Tasks;
 using Raven.Abstractions.Data;
 
 namespace Raven.Abstractions.Connection
@@ -27,11 +27,11 @@ namespace Raven.Abstractions.Connection
         }
 
         public ErrorResponseException()
-        {
+        {				
         }
 
         public ErrorResponseException(ErrorResponseException e, string message)
-            : base(message)
+            :base(message)
         {
             response = e.Response;
             ResponseString = e.ResponseString;
@@ -43,7 +43,7 @@ namespace Raven.Abstractions.Connection
             this.response = response;
         }
 
-        public ErrorResponseException(HttpResponseMessage response, string msg, string responseString = null)
+        public ErrorResponseException(HttpResponseMessage response, string msg, string responseString= null)
             : base(msg)
         {
             this.response = response;
@@ -108,5 +108,28 @@ namespace Raven.Abstractions.Connection
         {
         }
 #endif
+    }
+}
+                    catch (Exception e2)
+                    {
+                        builder.Append("Failed to read the response: " + e2);
+                    }
+
+                }
+
+                var win32Exception = webException.InnerException as Win32Exception;
+                if (win32Exception != null)
+                {
+                    builder.Append("Win32 Error: ");
+                    builder.AppendLine(win32Exception.Message);
+                }
+            }
+
+            return new ErrorResponseException
+            {
+                Response = new HttpResponseMessage(statusCode),
+                ResponseString = builder.ToString(),
+            };
+        }
     }
 }
