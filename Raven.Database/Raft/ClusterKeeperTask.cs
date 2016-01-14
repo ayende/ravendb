@@ -57,9 +57,6 @@ namespace Raven.Database.Raft
 
         private static bool IsValidLicense()
         {
-            DevelopmentHelper.TimeBomb();
-            return true;
-
             if (ValidateLicense.CurrentLicense.IsCommercial == false)
                 return false;
 

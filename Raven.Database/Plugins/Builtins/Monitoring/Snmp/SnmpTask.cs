@@ -72,9 +72,6 @@ namespace Raven.Database.Plugins.Builtins.Monitoring.Snmp
 
         private static bool IsLicenseValid()
         {
-            DevelopmentHelper.TimeBomb();
-            return true;
-
             string monitoring;
             if (ValidateLicense.CurrentLicense.Attributes.TryGetValue("monitoring", out monitoring))
             {
