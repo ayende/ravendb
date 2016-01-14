@@ -1,12 +1,8 @@
 using System;
-using System.Collections;
 using System.Collections.Generic;
-using System.Data;
-using System.Diagnostics;
 using System.ComponentModel;
 using System.IO;
 using System.Text;
-
 
 namespace Raven.Abstractions.Util
 {
@@ -40,30 +36,36 @@ namespace Raven.Abstractions.Util
             this.reader = reader;
         }
 
+#if !DNXCORE50
         public TextFieldParser(string path)
         {
             reader = new StreamReader(path);
         }
+#endif
 
         public TextFieldParser(Stream stream, Encoding defaultEncoding)
         {
             reader = new StreamReader(stream, defaultEncoding);
         }
 
+#if !DNXCORE50
         public TextFieldParser(string path, Encoding defaultEncoding)
         {
             reader = new StreamReader(path, defaultEncoding);
         }
+#endif
 
         public TextFieldParser(Stream stream, Encoding defaultEncoding, bool detectEncoding)
         {
             reader = new StreamReader(stream, defaultEncoding, detectEncoding);
         }
 
+#if !DNXCORE50
         public TextFieldParser(string path, Encoding defaultEncoding, bool detectEncoding)
         {
             reader = new StreamReader(path, defaultEncoding, detectEncoding);
         }
+#endif
 
         public TextFieldParser(Stream stream, Encoding defaultEncoding, bool detectEncoding, bool leaveOpen)
         {
@@ -98,19 +100,16 @@ namespace Raven.Abstractions.Util
         private string GetNextField(string line, int startIndex, ref int nextIndex)
         {
             bool inQuote = false;
-            int currentindex = 0;
 
             if (nextIndex == int.MinValue) {
                 nextIndex = int.MaxValue;
                 return string.Empty;
             }
 
-            if (hasFieldsEnclosedInQuotes && line[currentindex] == '"') {
+            if (hasFieldsEnclosedInQuotes && line[startIndex] == '"') {
                 inQuote = true;
                 startIndex += 1;
             }
-
-            currentindex = startIndex;
 
             bool mustMatch = false;
             for (int j = startIndex; j <= line.Length - 1; j++) {
@@ -233,8 +232,13 @@ namespace Raven.Abstractions.Util
 
         public void Close()
         {
-            if (reader != null && leaveOpen == false) {
+            if (reader != null && leaveOpen == false)
+            {
+#if !DNXCORE50
                 reader.Close();
+#else
+                reader.Dispose();
+#endif
             }
             reader = null;
         }

@@ -190,6 +190,7 @@ class shell extends viewModelBase {
         ko.postbox.subscribe("LoadProgress", (alertType?: alertType) => this.dataLoadProgress(alertType));
         ko.postbox.subscribe("ActivateDatabaseWithName", (databaseName: string) => this.activateDatabaseWithName(databaseName));
         ko.postbox.subscribe("SetRawJSONUrl", (jsonUrl: string) => this.currentRawUrl(jsonUrl));
+        ko.postbox.subscribe("SelectNone", () => this.selectNone());
         ko.postbox.subscribe("ActivateDatabase", (db: database) => this.activateDatabase(db));
         ko.postbox.subscribe("ActivateFilesystem", (fs: fileSystem) => this.activateFileSystem(fs));
         ko.postbox.subscribe("ActivateCounterStorage", (cs: counterStorage) => this.activateCounterStorage(cs));
@@ -393,6 +394,11 @@ class shell extends viewModelBase {
     }
 
     private activateDatabase(db: database) {
+        if (db == null) {
+            this.disconnectFromCurrentResource();
+            return;
+        }
+
         this.fecthStudioConfigForDatabase(db);
 
         var changeSubscriptionArray = () => [
@@ -415,6 +421,11 @@ class shell extends viewModelBase {
     }
 
     private activateFileSystem(fs: fileSystem) {
+        if (fs == null) {
+            this.disconnectFromCurrentResource();
+            return;
+        }
+
         this.fecthStudioConfigForDatabase(new database(fs.name));
 
         var changesSubscriptionArray = () => [
@@ -430,8 +441,15 @@ class shell extends viewModelBase {
         if (!!fs && !fs.disabled() && fs.isLicensed()) {
             new getFileSystemStatsCommand(fs, true)
                 .execute()
-                .done((result: filesystemStatisticsDto) => fs.saveStatistics(result));
+                .done((result: filesystemStatisticsDto) => fs.saveStatistics(result))
+                .fail((response: JQueryXHR) => messagePublisher.reportError("Failed to get file system stats", response.responseText, response.statusText));
         }
+    }
+
+    private disconnectFromCurrentResource() {
+        shell.disconnectFromResourceChangesApi();
+        this.lastActivatedResource(null);
+        this.currentConnectedResource = appUrl.getSystemDatabase();
     }
 
     private activateCounterStorage(cs: counterStorage) {
@@ -655,7 +673,7 @@ class shell extends viewModelBase {
                 if (!!resourceToDelete) {
                     resourceObservableArray.remove(resourceToDelete);
 
-                    this.selectNewActiveResourceIfNeeded(resourceObservableArray, activeResourceObservable);
+                    //this.selectNewActiveResourceIfNeeded(resourceObservableArray, activeResourceObservable);
                     if (resourceType == TenantType.Database)
                         recentQueriesStorage.removeRecentQueries(resourceToDelete);
                 }
@@ -1120,6 +1138,11 @@ class shell extends viewModelBase {
 
     navigateToClusterSettings() {
         this.navigate(this.appUrls.adminSettingsCluster());
+    }
+
+    selectNone() {
+        this.activateDatabase(null);
+        this.activeFilesystem(null);
     }
 
     private spinnerOptions = {

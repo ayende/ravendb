@@ -262,14 +262,38 @@ namespace Raven.Database.Indexing
                                          .Select(g => new { g.Key, Count = g.Sum(x => x.Value) })
                                          .ToList();
 
+            var reduceKeyToCount = new ConcurrentDictionary<string, int>();
+            foreach (var singleDeleted in deleted)
+            {
+                var reduceKey = singleDeleted.Key.ReduceKey;
+                reduceKeyToCount[reduceKey] = reduceKeyToCount.GetOrDefault(reduceKey) + singleDeleted.Value;
+            }
+
             context.Database.ReducingThreadPool.ExecuteBatch(reduceKeyStats, enumerator => context.TransactionalStorage.Batch(accessor =>
             {
                 while (enumerator.MoveNext())
                 {
                     var reduceKeyStat = enumerator.Current;
-                    accessor.MapReduce.IncrementReduceKeyCounter(indexId, reduceKeyStat.Key, reduceKeyStat.Count);
+                    var value = 0;
+                    reduceKeyToCount.TryRemove(reduceKeyStat.Key, out value);
+
+                    var changeValue = reduceKeyStat.Count - value;
+                    if (changeValue == 0)
+                    {
+                        // nothing to change
+                        continue;
+                    }
+
+                    accessor.MapReduce.IncrementReduceKeyCounter(indexId, reduceKeyStat.Key, changeValue);
                 }
             }), description: string.Format("Incrementing Reducing key counter fo index {0} for operation from Etag {1} to Etag {2}", this.PublicName, this.GetLastEtagFromStats(), batch.HighestEtagBeforeFiltering));
+
+            foreach (var keyValuePair in reduceKeyToCount)
+            {
+                // those are the remaining keys that weren't used,
+                // reduce keys that were replaced
+                actions.MapReduce.IncrementReduceKeyCounter(indexId, keyValuePair.Key, -keyValuePair.Value);
+            }
 
             actions.General.MaybePulseTransaction();
 
@@ -309,7 +333,7 @@ namespace Raven.Database.Indexing
 
             performance.OnCompleted = () => BatchCompleted("Current Map", "Map", sourceCount, count, performanceStats);
             if (logIndexing.IsDebugEnabled)
-            logIndexing.Debug("Mapped {0} documents for {1}", count, PublicName);
+                logIndexing.Debug("Mapped {0} documents for {1}", count, PublicName);
 
             return performance;
         }
@@ -351,8 +375,8 @@ namespace Raven.Database.Indexing
                     if (reduceValue == null)
                     {
                         if (logIndexing.IsDebugEnabled)
-                        logIndexing.Debug("Field {0} is used as the reduce key and cannot be null, skipping document {1}",
-                                          viewGenerator.GroupByExtraction, currentKey);
+                            logIndexing.Debug("Field {0} is used as the reduce key and cannot be null, skipping document {1}",
+                                              viewGenerator.GroupByExtraction, currentKey);
                         continue;
                     }
                     string reduceKey = ReduceKeyToString(reduceValue);
@@ -494,41 +518,15 @@ namespace Raven.Database.Indexing
                 foreach (var key in keys)
                 {
                     actions.MapReduce.DeleteMappedResultsForDocumentId(key, indexId, reduceKeyAndBuckets);
+                    context.CancellationToken.ThrowIfCancellationRequested();
                 }
 
-                actions.MapReduce.UpdateRemovedMapReduceStats(indexId, reduceKeyAndBuckets);
+                actions.MapReduce.UpdateRemovedMapReduceStats(indexId, reduceKeyAndBuckets, context.CancellationToken);
                 foreach (var reduceKeyAndBucket in reduceKeyAndBuckets)
                 {
                     actions.MapReduce.ScheduleReductions(indexId, 0, reduceKeyAndBucket.Key);
+                    context.CancellationToken.ThrowIfCancellationRequested();
                 }
-            });
-            Write((writer, analyzer, stats) =>
-            {
-                stats.Operation = IndexingWorkStats.Status.Ignore;
-                if (logIndexing.IsDebugEnabled)
-                logIndexing.Debug(() => string.Format("Deleting ({0}) from {1}", string.Join(", ", keys), PublicName));
-
-                var batchers = context.IndexUpdateTriggers.Select(x => x.CreateBatcher(indexId))
-                    .Where(x => x != null)
-                    .ToList();
-
-                keys.Apply(
-                    key =>
-                    InvokeOnIndexEntryDeletedOnAllBatchers(batchers, new Term(Constants.ReduceKeyFieldName, key.ToLowerInvariant())));
-
-                writer.DeleteDocuments(keys.Select(k => new Term(Constants.ReduceKeyFieldName, k.ToLowerInvariant())).ToArray());
-                batchers.ApplyAndIgnoreAllErrors(
-                    e =>
-                    {
-                        logIndexing.WarnException("Failed to dispose on index update trigger in " + PublicName, e);
-                        context.AddError(indexId, PublicName, null, e, "Dispose Trigger");
-                    },
-                    batcher => batcher.Dispose());
-
-                return new IndexedItemsInfo(null)
-                {
-                    ChangedDocs = keys.Length
-                };
             });
         }
 
@@ -700,12 +698,12 @@ namespace Raven.Database.Indexing
                     stats.Operation = IndexingWorkStats.Status.Reduce;
 
                     try
-                    {                                                
+                    {
                         if (Level == 2)
                         {
                             RemoveExistingReduceKeysFromIndex(indexWriter, deleteExistingDocumentsDuration);
                         }
-                        
+
                         foreach (var mappedResults in MappedResultsByBucket)
                         {
                             var input = mappedResults.Select(x =>
@@ -736,7 +734,7 @@ namespace Raven.Database.Indexing
 
                                 stats.ReduceSuccesses++;
                             }
-                        }                        
+                        }
                     }
                     catch (Exception e)
                     {
@@ -785,7 +783,7 @@ namespace Raven.Database.Indexing
 
                 parent.BatchCompleted("Current Reduce #" + Level, "Reduce Level " + Level, sourceCount, count, performanceStats);
                 if (logIndexing.IsDebugEnabled)
-                logIndexing.Debug(() => string.Format("Reduce resulted in {0} entries for {1} for reduce keys at level {3}: {2}", count, parent.PublicName, string.Join(", ", ReduceKeys), Level));
+                    logIndexing.Debug(() => string.Format("Reduce resulted in {0} entries for {1} for reduce keys at level {3}: {2}", count, parent.PublicName, string.Join(", ", ReduceKeys), Level));
 
                 return performance;
             }

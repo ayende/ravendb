@@ -205,15 +205,24 @@ namespace Raven.Storage.Voron
             return accessor;
         }
 
+        public bool SkipConsistencyCheck
+        {
+            get
+            {
+                return configuration.Storage.SkipConsistencyCheck;
+            }
+        }
+
         public void Batch(Action<IStorageActionsAccessor> action)
         {
             if (disposerLock.IsReadLockHeld && disableBatchNesting.Value == null) // we are currently in a nested Batch call and allow to nest batches
             {
-                if (current.Value != null) // check again, just to be sure
+                var storageActionsAccessor = current.Value;
+                if (storageActionsAccessor != null) // check again, just to be sure
                 {
-                    current.Value.IsNested = true;
-                    action(current.Value);
-                    current.Value.IsNested = false;
+                    storageActionsAccessor.IsNested = true;
+                    action(storageActionsAccessor);
+                    storageActionsAccessor.IsNested = false;
                     return;
                 }
             }
@@ -318,7 +327,7 @@ namespace Raven.Storage.Voron
             current.Value.OnStorageCommit += action;
         }
 
-        public void Initialize(IUuidGenerator generator, OrderedPartCollection<AbstractDocumentCodec> documentCodecs)
+        public void Initialize(IUuidGenerator generator, OrderedPartCollection<AbstractDocumentCodec> documentCodecs, Action<string> putResourceMarker = null)
         {
             if (generator == null) throw new ArgumentNullException("generator");
             if (documentCodecs == null) throw new ArgumentNullException("documentCodecs");
@@ -352,8 +361,10 @@ namespace Raven.Storage.Voron
 
             SetupDatabaseId();
 
-            Log.Info("Voron storage initialized");
-        }
+            if (putResourceMarker != null)
+                putResourceMarker(configuration.DataDirectory);
+
+            Log.Info("Voron storage initialized");        }
 
         private void SetupDatabaseId()
         {
@@ -362,7 +373,7 @@ namespace Raven.Storage.Voron
 
         private static StorageEnvironmentOptions CreateMemoryStorageOptionsFromConfiguration(InMemoryRavenConfiguration configuration)
         {
-            var options = StorageEnvironmentOptions.CreateMemoryOnly();
+            var options = StorageEnvironmentOptions.CreateMemoryOnly(configuration.Storage.Voron.TempPath);
             options.InitialFileSize = configuration.Storage.Voron.InitialFileSize;
             options.MaxScratchBufferSize = configuration.Storage.Voron.MaxScratchBufferSize * 1024L * 1024L;
 
@@ -617,7 +628,7 @@ namespace Raven.Storage.Voron
         }
 
         [CLSCompliant(false)]
-        public InFlightTransactionalState GetInFlightTransactionalState(DocumentDatabase self, Func<string, Etag, RavenJObject, RavenJObject, TransactionInformation, PutResult> put, Func<string, Etag, TransactionInformation, bool> delete)
+        public InFlightTransactionalState InitializeInFlightTransactionalState(DocumentDatabase self, Func<string, Etag, RavenJObject, RavenJObject, TransactionInformation, PutResult> put, Func<string, Etag, TransactionInformation, bool> delete)
         {            
             return new DtcNotSupportedTransactionalState(FriendlyName, put, delete);
         }

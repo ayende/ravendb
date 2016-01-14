@@ -1,3 +1,4 @@
+#if !DNXCORE50
 // -----------------------------------------------------------------------
 //  <copyright file="ConfigurationTests.cs" company="Hibernating Rhinos LTD">
 //      Copyright (c) Hibernating Rhinos LTD. All rights reserved.
@@ -202,6 +203,14 @@ namespace Raven.Tests.Core.Configuration
             configurationComparer.Assert(expected => expected.Voron.MaxBufferPoolSize.Value, actual => actual.Storage.Voron.MaxBufferPoolSize);
             configurationComparer.Assert(expected => expected.Voron.MaxScratchBufferSize.Value, actual => actual.Storage.Voron.MaxScratchBufferSize);
             configurationComparer.Assert(expected => expected.Voron.TempPath.Value, actual => actual.Storage.Voron.TempPath);
+            configurationComparer.Assert(expected => expected.Esent.CacheSizeMax.Value, actual => actual.Storage.Esent.CacheSizeMax);
+            configurationComparer.Assert(expected => expected.Esent.MaxVerPages.Value, actual => actual.Storage.Esent.MaxVerPages);
+            configurationComparer.Assert(expected => expected.Esent.PreferredVerPages.Value, actual => actual.Storage.Esent.PreferredVerPages);
+            configurationComparer.Assert(expected => expected.Esent.DbExtensionSize.Value, actual => actual.Storage.Esent.DbExtensionSize);
+            configurationComparer.Assert(expected => expected.Esent.LogFileSize.Value, actual => actual.Storage.Esent.LogFileSize);
+            configurationComparer.Assert(expected => expected.Esent.LogBuffers.Value, actual => actual.Storage.Esent.LogBuffers);
+            configurationComparer.Assert(expected => expected.Esent.MaxCursors.Value, actual => actual.Storage.Esent.MaxCursors);
+            configurationComparer.Assert(expected => expected.Esent.CircularLog.Value, actual => actual.Storage.Esent.CircularLog);
             configurationComparer.Assert(expected => expected.FileSystem.MaximumSynchronizationInterval.Value, actual => actual.FileSystem.MaximumSynchronizationInterval);
             configurationComparer.Assert(expected => expected.Encryption.EncryptionKeyBitsPreference.Value, actual => actual.Encryption.EncryptionKeyBitsPreference);
             configurationComparer.Assert(expected => expected.Encryption.UseFips.Value, actual => actual.Encryption.UseFips);
@@ -288,6 +297,7 @@ namespace Raven.Tests.Core.Configuration
             configurationComparer.Assert(expected => expected.Counter.ReplicationLatencyInMs.Value, actual => actual.Counter.ReplicationLatencyInMs);
             configurationComparer.Assert(expected => expected.Counter.TombstoneRetentionTime.Value, actual => actual.Counter.TombstoneRetentionTime);
             configurationComparer.Assert(expected => expected.Counter.DeletedTombstonesInBatch.Value, actual => actual.Counter.DeletedTombstonesInBatch);
+            configurationComparer.Assert(expected => expected.Counter.BatchTimeout.Value, actual => actual.Counter.BatchTimeout);
             configurationComparer.Assert(expected => expected.TimeSeries.TombstoneRetentionTime.Value, actual => actual.TimeSeries.TombstoneRetentionTime);
             configurationComparer.Assert(expected => expected.TimeSeries.DeletedTombstonesInBatch.Value, actual => actual.TimeSeries.DeletedTombstonesInBatch);
             configurationComparer.Assert(expected => expected.TimeSeries.ReplicationLatencyInMs.Value, actual => actual.TimeSeries.ReplicationLatencyInMs);
@@ -310,13 +320,13 @@ namespace Raven.Tests.Core.Configuration
             configurationComparer.Assert(expected => expected.Cluster.MaxStepDownDrainTime.Value, actual => actual.Cluster.MaxStepDownDrainTime);
             configurationComparer.Assert(expected => expected.Cluster.MaxLogLengthBeforeCompaction.Value, actual => actual.Cluster.MaxLogLengthBeforeCompaction);
             configurationComparer.Assert(expected => expected.TempPath.Value, actual => actual.TempPath);    
-            configurationComparer.Assert(expected => expected.Http.AuthenticationSchemes.Value, actual => actual.Http.AuthenticationSchemes);
             
             configurationComparer.Ignore(x => x.Storage.Esent.JournalsStoragePath);
             configurationComparer.Ignore(x => x.Storage.Voron.JournalsStoragePath);
             configurationComparer.Ignore(x => x.IgnoreSslCertificateErrors);
             configurationComparer.Ignore(x => x.AnonymousUserAccessMode);
             configurationComparer.Ignore(x => x.TransactionMode);
+            configurationComparer.Ignore(x => x.Storage.SkipConsistencyCheck);
 
             Assert.NotNull(inMemoryConfiguration.OAuthTokenKey);
             Assert.Equal("/", inMemoryConfiguration.VirtualDirectory);
@@ -372,8 +382,25 @@ namespace Raven.Tests.Core.Configuration
                 if (propertyPathsToCheck.Contains(propertyPath) == false)
                     throw new InvalidOperationException("Cannot assert property that is not on a list of properties to assert. Path: " + propertyPath);
 
-                var e = expected.Compile();
-                var expectedValue = e(stronglyTypedConfiguration);
+                Func<StronglyTypedRavenSettings, T> e;
+                try
+                {
+                    e = expected.Compile();
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException("Failure when compiling " + expected, ex);
+                }
+                T expectedValue;
+                try
+                {
+                    expectedValue = e(stronglyTypedConfiguration);
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException("Failure when running " + expected, ex);
+
+                }
 
                 var a = actual.Compile();
                 var actualValue = a(inMemoryConfiguration);
@@ -451,3 +478,4 @@ namespace Raven.Tests.Core.Configuration
         }
     }
 }
+#endif

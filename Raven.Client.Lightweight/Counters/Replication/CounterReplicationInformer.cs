@@ -24,6 +24,12 @@ namespace Raven.Client.Counters.Replication
 {
     public class CounterReplicationInformer
     {
+#if !DNXCORE50
+        private readonly static ILog log = LogManager.GetCurrentClassLogger();
+#else
+        private readonly static ILog log = LogManager.GetLogger(typeof(CounterReplicationInformer));
+#endif
+
         private readonly HttpJsonRequestFactory requestFactory;
         private readonly CounterStore counterStore;
         private readonly CountersConvention countersConvention;
@@ -34,7 +40,6 @@ namespace Raven.Client.Counters.Replication
         private readonly object updateReplicationInformationSyncObj = new object();
         private Task refreshReplicationInformationTask;
         private DateTime lastReplicationUpdate;
-        private readonly ILog log = LogManager.GetCurrentClassLogger();
         private readonly FailureCounters failureCounters;
         private int currentReadStripingBase;
 
@@ -177,7 +182,7 @@ namespace Raven.Client.Counters.Replication
             {
                 var storeUrl = localReplicationDestinations[replicationIndex].ServerUrl;
                 var storeName = localReplicationDestinations[replicationIndex].CounterStorageName;
-                if (ShouldExecuteUsing(storeUrl, operationCredentials, token))
+                if (ShouldExecuteUsing(storeUrl, storeName, operationCredentials, token))
                 {
                     operationResult = await TryExecuteOperationAsync(storeUrl,storeName, operation, true, operationCredentials, token).ConfigureAwait(false);
                     if (operationResult.Success)
@@ -186,7 +191,7 @@ namespace Raven.Client.Counters.Replication
             }
             else //read from primary node
             {
-                if (ShouldExecuteUsing(counterStoreUrl, operationCredentials, token))
+                if (ShouldExecuteUsing(counterStoreUrl, counterStore.Name, operationCredentials, token))
                 {
                     operationResult = await TryExecuteOperationAsync(counterStoreUrl, counterStore.Name, operation, true, operationCredentials, token).ConfigureAwait(false);
                     if (operationResult.Success)
@@ -289,10 +294,10 @@ namespace Raven.Client.Counters.Replication
             return await TryExecuteOperationAsync(url,counterStoreName, operation, avoidThrowing, credentials, cancellationToken).ConfigureAwait(false);
         }
 
-        private bool ShouldExecuteUsing(string counterStoreUrl, OperationCredentials credentials, CancellationToken token)
+        private bool ShouldExecuteUsing(string serverUrl, string counterStoreName, OperationCredentials credentials, CancellationToken token)
         {
 
-            var failureCounter = failureCounters.GetHolder(counterStoreUrl);
+            var failureCounter = failureCounters.GetHolder(serverUrl);
             if (failureCounter.Value == 0)
                 return true;
 
@@ -309,20 +314,20 @@ namespace Raven.Client.Counters.Replication
                         token.ThrowCancellationIfNotDefault();
                         try
                         {
-                            var r = await TryExecuteOperationAsync<object>(counterStoreUrl,null, async (url, counterStoreName) =>
+                            var r = await TryExecuteOperationAsync<object>(serverUrl, counterStoreName, async (url, name) =>
                             {
-                                var serverCheckUrl = GetServerCheckUrl(url);
-                                var requestParams = new CreateHttpJsonRequestParams(null, serverCheckUrl, HttpMethods.Get, credentials, CountersConventions);
+                                var serverCheckUrl = GetServerCheckUrl($"{url}/cs/{name}");
+                                var requestParams = new CreateHttpJsonRequestParams(null, serverCheckUrl, HttpMethods.Post, credentials, CountersConventions);
                                 using (var request = requestFactory.CreateHttpJsonRequest(requestParams))
                                 {
                                     await request.ReadResponseJsonAsync().WithCancellation(token).ConfigureAwait(false);
                                 }
                                 return null;
 
-                            }, false, credentials, token).ConfigureAwait(false);
+                            }, true, credentials, token).ConfigureAwait(false);
                             if (r.Success)
                             {
-                                failureCounters.ResetFailureCount(counterStoreUrl);
+                                failureCounters.ResetFailureCount(serverUrl);
                                 return;
                             }
                         }
@@ -330,6 +335,11 @@ namespace Raven.Client.Counters.Replication
                         {
                             return; // disposed, nothing to do here
                         }
+                        catch (Exception)
+                        {
+                            // safely ignore and let it try once again
+                        }
+
                         await Task.Delay(delayTimeInMiliSec, token).ConfigureAwait(false);
                     }
                 });
@@ -351,7 +361,7 @@ namespace Raven.Client.Counters.Replication
                 token.ThrowCancellationIfNotDefault();
 
                 var replicationDestination = localReplicationDestinations[i];
-                if (ShouldExecuteUsing(replicationDestination.CounterStorageUrl, operationCredentials, token) == false)
+                if (ShouldExecuteUsing(replicationDestination.ServerUrl, replicationDestination.CounterStorageName, operationCredentials, token) == false)
                     continue;
 
                 var hasMoreReplicationDestinations = localReplicationDestinations.Count > i + 1;
@@ -380,7 +390,7 @@ namespace Raven.Client.Counters.Replication
 
         private async Task<AsyncOperationResult<T>> TryExecuteOperationOnPrimaryNode<T>(string counterStoreUrl, Func<string, string, Task<T>> operation, CancellationToken token, OperationCredentials operationCredentials)
         {
-            if (ShouldExecuteUsing(counterStoreUrl, operationCredentials, token))
+            if (ShouldExecuteUsing(counterStoreUrl, counterStore.Name, operationCredentials, token))
             {
                 var operationResult = await TryExecuteOperationAsync(counterStoreUrl, counterStore.Name, operation, true, operationCredentials, token).ConfigureAwait(false);
                 if (operationResult.Success)

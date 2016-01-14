@@ -11,7 +11,15 @@ namespace Raven.Abstractions.Connection
     [Serializable]
     public class ErrorResponseException : Exception
     {
-        public HttpResponseMessage Response { get; private set; }
+#if !DNXCORE50
+        [NonSerialized]
+#endif
+        private readonly HttpResponseMessage response;
+
+        public HttpResponseMessage Response
+        {
+            get { return response; }
+        }
 
         public HttpStatusCode StatusCode
         {
@@ -25,21 +33,31 @@ namespace Raven.Abstractions.Connection
         public ErrorResponseException(ErrorResponseException e, string message)
             :base(message)
         {
-            Response = e.Response;
+            response = e.Response;
             ResponseString = e.ResponseString;
         }
 
         public ErrorResponseException(HttpResponseMessage response, string msg, Exception exception)
             : base(msg, exception)
         {
-            Response = response;
+            this.response = response;
         }
 
         public ErrorResponseException(HttpResponseMessage response, string msg, string responseString= null)
             : base(msg)
         {
-            Response = response;
+            this.response = response;
             ResponseString = responseString;
+        }
+
+        public static ErrorResponseException FromHttpRequestException(HttpRequestException exception)
+        {
+            var ex = new ErrorResponseException(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable), exception.Message, exception.Message);
+
+            foreach (var key in exception.Data.Keys)
+                ex.Data[key] = exception.Data[key];
+
+            return ex;
         }
 
         public static ErrorResponseException FromResponseMessage(HttpResponseMessage response, bool readErrorString = true)
@@ -82,41 +100,16 @@ namespace Raven.Abstractions.Connection
             }
         }
 
+#if !DNXCORE50
         protected ErrorResponseException(
             System.Runtime.Serialization.SerializationInfo info,
             System.Runtime.Serialization.StreamingContext context)
             : base(info, context)
         {
         }
-
-        public static ErrorResponseException FromException(HttpRequestException e)
-        {
-            var builder = new StringBuilder();
-
-            var webException = e.InnerException as WebException;
-            var statusCode = HttpStatusCode.ServiceUnavailable;
-            if (webException != null)
-            {
-                builder.Append("WebException Message: ");
-                builder.AppendLine(webException.Message);
-                builder.Append("Status Code: ");
-                builder.AppendLine(webException.Status.ToString());
-                var webResponse = webException.Response as HttpWebResponse;
-                if (webResponse != null)
-                {
-                    builder.Append("Response Status Code: ");
-                    statusCode = webResponse.StatusCode;
-                    builder.AppendLine(statusCode.ToString());
-
-                    try
-                    {
-                        using (var stream = webResponse.GetResponseStreamWithHttpDecompression())
-                        using (var reader = new StreamReader(stream))
-                        {
-                            builder.Append("Response: ");
-                            builder.AppendLine(reader.ReadToEnd());
-                        }
-                    }
+#endif
+    }
+}
                     catch (Exception e2)
                     {
                         builder.Append("Failed to read the response: " + e2);

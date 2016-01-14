@@ -172,7 +172,9 @@ namespace Raven.Abstractions.Data
 
         public const int DefaultIndexFileBlockSize = 12 * 1024;
 
+#if !DNXCORE50
         public static readonly Type DefaultCryptoServiceProvider = typeof(System.Security.Cryptography.AesCryptoServiceProvider);
+#endif
 
         //Quotas
         public const string DocsHardLimit = "Raven/Quotas/Documents/HardLimit";
@@ -285,6 +287,9 @@ namespace Raven.Abstractions.Data
         public const string MaxClauseCount = "Raven/MaxClauseCount";
 
         // General
+
+        public const string ResourceMarkerPrefix = ".resource.";
+
         public static class Database
         {
             public const string Prefix = "Raven/Databases/";
@@ -292,6 +297,7 @@ namespace Raven.Abstractions.Data
             public const string DataDirectory = "Raven/Databases/DataDir";
 
             public const string UrlPrefix = "databases";
+            public const string DbResourceMarker = ResourceMarkerPrefix + "database";
         }
         
         //File System
@@ -311,6 +317,7 @@ namespace Raven.Abstractions.Data
 
             public const string RavenFsSize = "RavenFS-Size";
             public const string PreventSchemaUpdate = "Raven/PreventSchemaUpdate";
+            public const string FsResourceMarker = ResourceMarkerPrefix + "file-system";
 
             public static class Versioning
             {
@@ -328,6 +335,9 @@ namespace Raven.Abstractions.Data
             public const string TombstoneRetentionTime = "Raven/Counter/TombstoneRetentionTime";
 
             public const string DeletedTombstonesInBatch = "Raven/Counter/DeletedTombstonesInBatch";
+
+            //in seconds
+            public const string BatchTimeout = "Raven/Counter/BatchTimeout";
 
             //in milliseconds
             public const string ReplicationLatencyMs = "Raven/Counter/ReplicationLatency";
@@ -396,6 +406,8 @@ namespace Raven.Abstractions.Data
             public const string RavenVersioningPrefix = "Raven/Versioning/";
 
             public const string RavenVersioningDefaultConfiguration = "Raven/Versioning/DefaultConfiguration";
+
+            public const string ChangesToRevisionsAllowed = "Raven/Versioning/ChangesToRevisionsAllowed";
         }
 
         public class SqlReplication

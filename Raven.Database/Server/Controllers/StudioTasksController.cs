@@ -29,6 +29,7 @@ using Raven.Abstractions.Extensions;
 using Raven.Abstractions.Json;
 using Raven.Abstractions.Smuggler;
 using Raven.Abstractions.Util;
+using Raven.Bundles.Versioning.Triggers;
 using Raven.Client.Util;
 using Raven.Database.Actions;
 using Raven.Database.Bundles.SqlReplication;
@@ -207,9 +208,11 @@ for(var customFunction in customFunctions) {{
                     {
                         status.ExceptionDetails = "Failed to load JSON Data. Please make sure you are importing .ravendump file, exported by smuggler (aka database export). If you are importing a .ravnedump file then the file may be corrupted";
                     }
-                    else if (e is OperationVetoedException)
+                    else if (e is OperationVetoedException && e.Message.Contains(VersioningPutTrigger.CreationOfHistoricalRevisionIsNotAllowed))
                     {
-                        status.ExceptionDetails = "The versioning bundle is enabled. You should disable versioning during import. Please mark the checkbox 'Disable versioning bundle during import' at Import Database: Advanced settings before importing";
+                        status.ExceptionDetails = "You are trying to import historical documents while the versioning bundle is enabled. " +
+                                                  "The versioning bundle is enabled. You should disable versioning during import. " + 
+                                                  "Please mark the checkbox 'Disable versioning bundle during import' at Import Database: Advanced settings before importing";
                     }
                     else
                     {
@@ -309,35 +312,36 @@ for(var customFunction in customFunctions) {{
             return GetEmptyMessage();
         }
 
-        [HttpGet]
+        [HttpPost]
         [RavenRoute("studio-tasks/simulate-sql-replication")]
         [RavenRoute("databases/{databaseName}/studio-tasks/simulate-sql-replication")]
-        public Task<HttpResponseMessage> SimulateSqlReplication(string documentId, bool performRolledBackTransaction)
+        public async Task<HttpResponseMessage> SimulateSqlReplication()
         {
+            var sqlSimulate = await ReadJsonObjectAsync<SimulateSqlReplicationResult>().ConfigureAwait(false);
 
             var task = Database.StartupTasks.OfType<SqlReplicationTask>().FirstOrDefault();
             if (task == null)
-                return GetMessageWithObjectAsTask(new
+                return GetMessageWithObject(new
                 {
                     Error = "SQL Replication bundle is not installed"
                 }, HttpStatusCode.NotFound);
+            
             try
             {
                 Alert alert = null;
                 var sqlReplication =
-                    JsonConvert.DeserializeObject<SqlReplicationConfig>(GetQueryStringValue("sqlReplication"));
+                    JsonConvert.DeserializeObject<SqlReplicationConfig>(sqlSimulate.SqlReplication);
 
                 // string strDocumentId, SqlReplicationConfig sqlReplication, bool performRolledbackTransaction, out Alert alert, out Dictionary<string,object> parameters
-                var results = task.SimulateSqlReplicationSqlQueries(documentId, sqlReplication, performRolledBackTransaction, out alert);
-
-                return GetMessageWithObjectAsTask(new {
+                var results = task.SimulateSqlReplicationSqlQueries(sqlSimulate.DocumentId, sqlReplication, sqlSimulate.PerformRolledBackTransaction, out alert);
+                return GetMessageWithObject(new {
                     Results = results,
                     LastAlert = alert
                 });
             }
             catch (Exception ex)
             {
-                    return GetMessageWithObjectAsTask(new
+                    return GetMessageWithObject(new
                     {
                         Error = "Executeion failed",
                         Exception = ex

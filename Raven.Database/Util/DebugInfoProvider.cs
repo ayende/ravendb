@@ -138,6 +138,15 @@ namespace Raven.Database.Util
                 streamWriter.Flush();
             }
 
+            var indexingBatchStats = package.CreateEntry(zipEntryPrefix + "indexing-batch-stats.json", CompressionLevel);
+
+            using (var indexingBatchStatsStream = indexingBatchStats.Open())
+            using (var streamWriter = new StreamWriter(indexingBatchStatsStream))
+            {
+                jsonSerializer.Serialize(streamWriter, database.WorkContext.LastActualIndexingBatchInfo.ToArray());
+                streamWriter.Flush();
+            }
+
             var currentlyIndexing = package.CreateEntry(zipEntryPrefix + "currently-indexing.json", CompressionLevel);
 
             using (var currentlyIndexingStream = currentlyIndexing.Open())
@@ -294,10 +303,10 @@ namespace Raven.Database.Util
         {
             var cfg = RavenJObject.FromObject(database.Configuration);
             cfg["OAuthTokenKey"] = "<not shown>";
-            var changesAllowed = database.Configuration.Settings["Raven/Versioning/ChangesToRevisionsAllowed"];
+            var changesAllowed = database.Configuration.Settings[Constants.Versioning.ChangesToRevisionsAllowed];
 
             if (string.IsNullOrWhiteSpace(changesAllowed) == false)
-                cfg["Raven/Versioning/ChangesToRevisionsAllowed"] = changesAllowed;
+                cfg[Constants.Versioning.ChangesToRevisionsAllowed] = changesAllowed;
 
             return cfg;
         }

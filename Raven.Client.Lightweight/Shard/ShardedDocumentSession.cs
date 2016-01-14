@@ -889,8 +889,9 @@ namespace Raven.Client.Shard
                             exclude: exclude, transformer: transformer,
                             transformerParameters: configuration.TransformerParameters,
                             skipAfter: skipAfter));
+            var queryOperation = new QueryOperation(this, "Load/StartingWith", null, null, false, TimeSpan.Zero, null, null, false);
 
-            return results.SelectMany(x => x).Select(TrackEntity<TResult>)
+            return results.SelectMany(x => x).Select(x=>queryOperation.Deserialize<TResult>(x.ToJson()))
                           .ToArray();
         }
 
@@ -963,9 +964,39 @@ namespace Raven.Client.Shard
             throw new NotSupportedException("Streams are currently not supported by sharded document store");
         }
 
+        public Operation DeleteByIndex<T, TIndexCreator>(Expression<Func<T, bool>> expression) where TIndexCreator : AbstractIndexCreationTask, new()
+        {
+            var indexCreator = new TIndexCreator();
+            return DeleteByIndex<T>(indexCreator.IndexName, expression);
+        }
+
+        public Operation DeleteByIndex<T>(string indexName, Expression<Func<T, bool>> expression)
+        {
+            var query = Query<T>(indexName).Where(expression);
+            var indexQuery = new IndexQuery()
+            {
+                Query = query.ToString()
+            };
+
+            var shards = GetCommandsToOperateOn(new ShardRequestData
+            {
+                EntityType = typeof(T),
+                Keys = { indexName }
+            });
+            var operations = shardStrategy.ShardAccessStrategy.Apply(shards, new ShardRequestData
+            {
+                EntityType = typeof(T),
+                Keys = { indexName }
+            }, (dbCmd, i) => dbCmd.DeleteByIndex(indexName, indexQuery));
+
+            var shardOperation = new ShardsOperation(operations);
+
+            return shardOperation;
+        }
+
         public FacetResults[] MultiFacetedSearch(params FacetQuery[] queries)
         {
             throw new NotSupportedException("Multi faceted searching is currently not supported by sharded document store");
+        }
     }
-}
 }

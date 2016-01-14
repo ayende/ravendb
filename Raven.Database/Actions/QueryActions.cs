@@ -154,6 +154,8 @@ namespace Raven.Database.Actions
             private Dictionary<string, string> scoreExplanations;
             private HashSet<string> idsToLoad;
 
+            private readonly ILog logger = LogManager.GetCurrentClassLogger();
+
             private readonly Dictionary<QueryTimings, double> executionTimes = new Dictionary<QueryTimings, double>();
 
             public DocumentDatabase Database
@@ -236,7 +238,7 @@ namespace Raven.Database.Actions
                 {
                     throw new IndexDisabledException(indexFailureInformation);
                 }
-                docRetriever = new DocumentRetriever(database.Configuration, actions, database.ReadTriggers, database.InFlightTransactionalState, query.TransformerParameters, idsToLoad);
+                docRetriever = new DocumentRetriever(database.Configuration, actions, database.ReadTriggers, query.TransformerParameters, idsToLoad);
                 var fieldsToFetch = new FieldsToFetch(query,
                     viewGenerator.ReduceDefinition == null
                         ? Constants.DocumentIdFieldName
@@ -291,6 +293,7 @@ namespace Raven.Database.Actions
                     }
                     if (transformerErrors.Count > 0)
                     {
+                        logger.Error("The transform results function failed.\r\n{0}", string.Join("\r\n", transformerErrors));
                         throw new InvalidOperationException("The transform results function failed.\r\n" + string.Join("\r\n", transformerErrors));
                     }
                 }

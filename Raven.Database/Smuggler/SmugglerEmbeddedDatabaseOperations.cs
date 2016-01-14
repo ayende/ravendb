@@ -9,7 +9,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-
+using Raven.Abstractions;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
 using Raven.Abstractions.Indexing;
@@ -29,6 +29,7 @@ namespace Raven.Database.Smuggler
         private List<JsonDocument> bulkInsertBatch = new List<JsonDocument>();
 
         private readonly SmugglerJintHelper scriptedJsonPatcher = new SmugglerJintHelper();
+        private readonly Etag etagEmpty = Etag.Empty;
 
         public SmugglerEmbeddedDatabaseOperations(DocumentDatabase database)
         {
@@ -59,7 +60,7 @@ namespace Raven.Database.Smuggler
         }
 
         [Obsolete("Use RavenFS instead.")]
-        public Task<Etag> ExportAttachmentsDeletion(JsonTextWriter jsonWriter, Etag startAttachmentsDeletionEtag, Etag maxAttachmentEtag)
+        public Task<Etag> ExportAttachmentsDeletion(SmugglerJsonTextWriter jsonWriter, Etag startAttachmentsDeletionEtag, Etag maxAttachmentEtag)
         {
             var lastEtag = startAttachmentsDeletionEtag;
             database.TransactionalStorage.Batch(accessor =>
@@ -70,7 +71,8 @@ namespace Raven.Database.Smuggler
                     {
                         {"Key", listItem.Key}
                     };
-                    o.WriteTo(jsonWriter);
+                    jsonWriter.Write(o);
+
                     lastEtag = listItem.Etag;
                 }
             });
@@ -82,18 +84,19 @@ namespace Raven.Database.Smuggler
             return new CompletedTask<RavenJArray>(database.Transformers.GetTransformers(start, Options.BatchSize));
         }
 
-        public Task<Etag> ExportDocumentsDeletion(JsonTextWriter jsonWriter, Etag startDocsEtag, Etag maxEtag)
+        public Task<Etag> ExportDocumentsDeletion(SmugglerJsonTextWriter jsonWriter, Etag startDocsEtag, Etag maxEtag)
         {
             var lastEtag = startDocsEtag;
             database.TransactionalStorage.Batch(accessor =>
             {
                 foreach (var listItem in accessor.Lists.Read(Constants.RavenPeriodicExportsDocsTombstones, startDocsEtag, maxEtag, int.MaxValue))
                 {
-                    var o = new RavenJObject
+                    var ravenJObj = new RavenJObject
                     {
                         {"Key", listItem.Key}
                     };
-                    o.WriteTo(jsonWriter);
+                    jsonWriter.Write(ravenJObj);
+
                     lastEtag = listItem.Etag;
                 }
             });
@@ -103,6 +106,7 @@ namespace Raven.Database.Smuggler
         public LastEtagsInfo FetchCurrentMaxEtags()
         {
             LastEtagsInfo result = null;
+
             database.TransactionalStorage.Batch(accessor =>
             {
                 result = new LastEtagsInfo
@@ -116,11 +120,43 @@ namespace Raven.Database.Smuggler
                     result.LastDocDeleteEtag = lastDocumentTombstone.Etag;
 
                 var attachmentTombstones =
-                    accessor.Lists.Read(Constants.RavenPeriodicExportsAttachmentsTombstones, Etag.Empty, null, int.MaxValue)
+                    accessor.Lists.Read(Constants.RavenPeriodicExportsAttachmentsTombstones, etagEmpty, null, int.MaxValue)
                             .OrderBy(x => x.Etag).ToArray();
                 if (attachmentTombstones.Any())
                 {
                     result.LastAttachmentsDeleteEtag = attachmentTombstones.Last().Etag;
+                }
+            });
+
+            return result;
+        }
+
+        public Etag FetchLastDocDeleteEtag()
+        {
+            var result = etagEmpty;
+
+            database.TransactionalStorage.Batch(accessor =>
+            {
+                var lastDocumentTombstone = accessor.Lists.ReadLast(Constants.RavenPeriodicExportsDocsTombstones);
+                if (lastDocumentTombstone != null)
+                    result = lastDocumentTombstone.Etag;
+            });
+
+            return result;
+        }
+
+        public Etag FetchLastAttachmentsDeleteEtag()
+        {
+            var result = etagEmpty;
+
+            database.TransactionalStorage.Batch(accessor =>
+            {
+                var attachmentTombstones =
+                    accessor.Lists.Read(Constants.RavenPeriodicExportsAttachmentsTombstones, etagEmpty, null, int.MaxValue)
+                            .OrderBy(x => x.Etag).ToArray();
+                if (attachmentTombstones.Any())
+                {
+                    result = attachmentTombstones.Last().Etag;
                 }
             });
 
@@ -336,6 +372,6 @@ namespace Raven.Database.Smuggler
         public string GetIdentifier()
         {
             return string.Format("embedded: {0}/{1}", database.Name ?? Constants.SystemDatabase, database.TransactionalStorage.Id);
-        }
     }
+}
 }

@@ -21,7 +21,6 @@ using Raven.Json.Linq;
 using Raven.Client.Document.Batches;
 using System.Diagnostics;
 using System.Dynamic;
-using System.Runtime.Remoting.Messaging;
 
 namespace Raven.Client.Document.Async
 {
@@ -376,13 +375,14 @@ namespace Raven.Client.Document.Async
             {
                 configure(configuration);
             }
+            var queryOperation = new QueryOperation(this, "Load/StartingWith", null, null, false, TimeSpan.Zero, null, null, false);
 
             return AsyncDatabaseCommands.StartsWithAsync(keyPrefix, matches, start, pageSize, exclude: exclude,
                                                          pagingInformation: pagingInformation, transformer: transformer,
                                                          transformerParameters: configuration.TransformerParameters,
                                                          skipAfter: skipAfter, token: token)
                                         .ContinueWith(
-                                            task => (IEnumerable<TResult>) task.Result.Select(TrackEntity<TResult>).ToList(), token);
+                                            task => (IEnumerable<TResult>) task.Result.Select(x=> queryOperation.Deserialize<TResult>(x.ToJson())).ToList(), token);
         }
 
         public Task<IAsyncEnumerator<StreamResult<T>>> StreamAsync<T>(IAsyncDocumentQuery<T> query, CancellationToken token = default (CancellationToken))
@@ -494,7 +494,10 @@ namespace Raven.Client.Document.Async
                 Etag etag = null;
                 if (meta != null)
                 {
-                    key = meta.Value<string>(Constants.DocumentIdFieldName);
+                    key = meta.Value<string>("@id") ??
+                          meta.Value<string>(Constants.DocumentIdFieldName) ??
+                          ravenJObject.Value<string>(Constants.DocumentIdFieldName);
+
                     var value = meta.Value<string>("@etag");
                     if (value != null)
                         etag = Etag.Parse(value);
@@ -927,6 +930,7 @@ namespace Raven.Client.Document.Async
             throw new NotSupportedException("Cannot get a document in a synchronous manner using async document session");
         }
 
+#if !DNXCORE50
         /// <summary>
         /// Commits the specified tx id.
         /// </summary>
@@ -952,6 +956,7 @@ namespace Raven.Client.Document.Async
             await AsyncDatabaseCommands.PrepareTransactionAsync(txId, resourceManagerId, recoveryInformation).ConfigureAwait(false);
             ClearEnlistment();
         }
+#endif
 
         /// <summary>
         /// Dynamically queries RavenDB using LINQ
@@ -1071,6 +1076,23 @@ namespace Raven.Client.Document.Async
             if (jsonDocument == null)
                 throw new InvalidOperationException("Document '" + documentKey + "' no longer exists and was probably deleted");
             return jsonDocument;
+        }
+
+        public async Task<Operation> DeleteByIndexAsync<T, TIndexCreator>(Expression<Func<T, bool>> expression) where TIndexCreator : AbstractIndexCreationTask, new()
+        {
+            var indexCreator = new TIndexCreator();
+            var operation = await DeleteByIndexAsync<T>(indexCreator.IndexName, expression).ConfigureAwait(false);
+            return operation;
+        }
+
+        public async Task<Operation> DeleteByIndexAsync<T>(string indexName, Expression<Func<T, bool>> expression)
+        {
+            var query = Query<T>(indexName).Where(expression);
+            var indexQuery = new IndexQuery()
+            {
+                Query = query.ToString()
+            };
+            return await AsyncDatabaseCommands.DeleteByIndexAsync(indexName, indexQuery).ConfigureAwait(false);
         }
     }
 }

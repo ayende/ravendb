@@ -79,12 +79,12 @@ namespace Raven.Smuggler
         }
 
         [Obsolete("Use RavenFS instead.")]
-        public Task<Etag> ExportAttachmentsDeletion(JsonTextWriter jsonWriter, Etag startAttachmentsDeletionEtag, Etag maxAttachmentEtag)
+        public Task<Etag> ExportAttachmentsDeletion(SmugglerJsonTextWriter jsonWriter, Etag startAttachmentsDeletionEtag, Etag maxAttachmentEtag)
         {
             throw new NotSupportedException("Exporting deletions is not supported for Command Line Smuggler");
         }
 
-        public Task<Etag> ExportDocumentsDeletion(JsonTextWriter jsonWriter, Etag startDocsEtag, Etag maxEtag)
+        public Task<Etag> ExportDocumentsDeletion(SmugglerJsonTextWriter jsonWriter, Etag startDocsEtag, Etag maxEtag)
         {
             throw new NotSupportedException("Exporting deletions is not supported for Command Line Smuggler");
         }
@@ -98,6 +98,16 @@ namespace Raven.Smuggler
                 LastAttachmentsEtag = null,
                 LastDocsEtag = null
             };
+        }
+
+        public Etag FetchLastDocDeleteEtag()
+        {
+            return null;
+        }
+
+        public Etag FetchLastAttachmentsDeleteEtag()
+        {
+            return null;
         }
 
         [Obsolete("Use RavenFS instead.")]

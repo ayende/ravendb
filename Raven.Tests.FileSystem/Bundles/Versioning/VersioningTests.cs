@@ -9,6 +9,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Raven.Abstractions.Connection;
 using Raven.Abstractions.Data;
+using Raven.Abstractions.Exceptions;
 using Raven.Abstractions.FileSystem;
 using Raven.Client.FileSystem.Bundles.Versioning;
 using Raven.Database.Bundles.Versioning.Data;

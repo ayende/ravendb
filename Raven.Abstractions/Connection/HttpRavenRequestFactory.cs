@@ -1,3 +1,4 @@
+#if !DNXCORE50
 using System;
 using System.Collections.Concurrent;
 using System.Net;
@@ -24,7 +25,25 @@ namespace Raven.Abstractions.Connection
 
             if (options.ApiKey == null)
             {
-                request.Credentials = options.Credentials ?? CredentialCache.DefaultNetworkCredentials;
+                ICredentials credentialsToUse = CredentialCache.DefaultNetworkCredentials;
+                if (options.Credentials != null)
+                {
+                    var networkCredentials = options.Credentials as NetworkCredential;
+                    if (networkCredentials != null && options.AuthenticationScheme != null)
+                    {
+                        var credentialCache = new CredentialCache();
+                        var uri = new Uri(options.Url);
+                        credentialCache.Add(new Uri(string.Format("{0}://{1}:{2}/", uri.Scheme, uri.Host, uri.Port)), options.AuthenticationScheme, networkCredentials);
+
+                        credentialsToUse = credentialCache;
+                    }
+                    else
+                    {
+                        credentialsToUse = options.Credentials;
+                    }
+                }
+
+                request.Credentials = credentialsToUse;
                 return;
             }
 
@@ -92,3 +111,4 @@ namespace Raven.Abstractions.Connection
         }
     }
 }
+#endif

@@ -187,8 +187,8 @@ namespace Raven.Database
 
                     ConfigurationRetriever = new ConfigurationRetriever(systemDatabase ?? this, this);
 
-                    inFlightTransactionalState = TransactionalStorage.GetInFlightTransactionalState(this, 
-                        (key, etag, document, metadata, transactionInformation) => Documents.Put(key, etag, document, metadata, transactionInformation), 
+                    inFlightTransactionalState = TransactionalStorage.InitializeInFlightTransactionalState(this,
+                        (key, etag, document, metadata, transactionInformation) => Documents.Put(key, etag, document, metadata, transactionInformation),
                         (key, etag, transactionInformation) => Documents.Delete(key, etag, transactionInformation));
 
                     InitializeTriggersExceptIndexCodecs();
@@ -202,7 +202,7 @@ namespace Raven.Database
                     CompleteWorkContextSetup();
 
                     prefetcher = new Prefetcher(workContext);
-                    
+
                     IndexReplacer = new IndexReplacer(this);
                     indexingExecuter = new IndexingExecuter(workContext, prefetcher, IndexReplacer);
                     InitializeTriggersExceptIndexCodecs();
@@ -263,7 +263,19 @@ namespace Raven.Database
 
         public Action<DiskSpaceNotification> OnDiskSpaceChanged = delegate { };
 
-        public static string BuildVersion => buildVersion ?? (buildVersion = GetBuildVersion().ToString(CultureInfo.InvariantCulture));
+        public static string BuildVersion
+        {
+            get
+            {
+                if (buildVersion == null)
+                {
+                    var customAttributes = typeof (DocumentDatabase).Assembly.GetCustomAttributes(false);
+                    dynamic versionAtt = customAttributes.Single(x => x.GetType().Name == "RavenVersionAttribute");
+                    buildVersion = versionAtt.Build;
+                }
+                return buildVersion;
+            }
+        }
 
         public static string ProductVersion
         {
@@ -274,7 +286,10 @@ namespace Raven.Database
                     return productVersion;
                 }
 
-                productVersion = FileVersionInfo.GetVersionInfo(AssemblyHelper.GetAssemblyLocationFor<DocumentDatabase>()).ProductVersion;
+                var customAttributes = typeof (DocumentDatabase).Assembly.GetCustomAttributes(false);
+                dynamic versionAtt = customAttributes.Single(x => x.GetType().Name == "RavenVersionAttribute");
+
+                productVersion = versionAtt.CommitHash;
                 return productVersion;
             }
         }
@@ -435,20 +450,20 @@ namespace Raven.Database
                     Type = "Put"
                 })
                    .Concat(DeleteTriggers.Select(x => new TriggerInfo
-                    {
-                        Name = x.ToString(),
-                        Type = "Delete"
-                    }))
+                   {
+                       Name = x.ToString(),
+                       Type = "Delete"
+                   }))
                    .Concat(ReadTriggers.Select(x => new TriggerInfo
-                    {
-                        Name = x.ToString(),
-                        Type = "Read"
-                    }))
+                   {
+                       Name = x.ToString(),
+                       Type = "Read"
+                   }))
                    .Concat(IndexUpdateTriggers.Select(x => new TriggerInfo
-                        {
-                            Name = x.ToString(),
-                            Type = "Index Update"
-                        })).ToList();
+                   {
+                       Name = x.ToString(),
+                       Type = "Index Update"
+                   })).ToList();
 
                 var types = new[]
                 {
@@ -473,13 +488,13 @@ namespace Raven.Database
 
                 var customBundles = FindPluginBundles(types);
                 return new PluginsInfo
-                            {
-                                Triggers = triggerInfos,
-                                Extensions = extensions,
-                                CustomBundles = customBundles
-                            };
+                {
+                    Triggers = triggerInfos,
+                    Extensions = extensions,
+                    CustomBundles = customBundles
+                };
             }
-        }	
+        }
 
         private List<string> FindPluginBundles(Type[] types)
         {
@@ -506,13 +521,13 @@ namespace Raven.Database
         }
 
         public IndexingPerformanceStatistics[] IndexingPerformanceStatistics => (from pair in IndexDefinitionStorage.IndexDefinitions
-            let performance = IndexStorage.GetIndexingPerformance(pair.Key)
-            select new IndexingPerformanceStatistics
-            {
-                IndexId = pair.Key,
-                IndexName = pair.Value.Name,
-                Performance = performance
-            }).ToArray();
+                                                                                 let performance = IndexStorage.GetIndexingPerformance(pair.Key)
+                                                                                 select new IndexingPerformanceStatistics
+                                                                                 {
+                                                                                     IndexId = pair.Key,
+                                                                                     IndexName = pair.Value.Name,
+                                                                                     Performance = performance
+                                                                                 }).ToArray();
 
         public DatabaseStatistics Statistics
         {
@@ -546,20 +561,20 @@ namespace Raven.Database
 
                     result.StaleIndexes = IndexStorage.Indexes.Where(indexId => IndexStorage.IsIndexStale(indexId, LastCollectionEtags))
                     .Select(indexId =>
-        {
-            Index index = IndexStorage.GetIndexInstance(indexId);
-            return index == null ? null : index.PublicName;
-        }).ToArray();
+                    {
+                        Index index = IndexStorage.GetIndexInstance(indexId);
+                        return index == null ? null : index.PublicName;
+                    }).ToArray();
 
                     result.Indexes = actions.Indexing.GetIndexesStats().Where(x => x != null).Select(x =>
-        {
-            Index indexInstance = IndexStorage.GetIndexInstance(x.Id);
-            if (indexInstance == null)
-                return null;
-            x.Name = indexInstance.PublicName;
-            x.SetLastDocumentEtag(result.LastDocEtag);
-            return x;
-        })
+                    {
+                        Index indexInstance = IndexStorage.GetIndexInstance(x.Id);
+                        if (indexInstance == null)
+                            return null;
+                        x.Name = indexInstance.PublicName;
+                        x.SetLastDocumentEtag(result.LastDocEtag);
+                        return x;
+                    })
                         .Where(x => x != null)
                         .ToArray();
 
@@ -709,21 +724,21 @@ namespace Raven.Database
         {
             MetricsCountersManager metrics = WorkContext.MetricsCounters;
             return new DatabaseMetrics
-        {
-            RequestsPerSecond = Math.Round(metrics.RequestsPerSecondCounter.CurrentValue, 3),
-            DocsWritesPerSecond = Math.Round(metrics.DocsPerSecond.CurrentValue, 3),
-            IndexedPerSecond = Math.Round(metrics.IndexedPerSecond.CurrentValue, 3),
-            ReducedPerSecond = Math.Round(metrics.ReducedPerSecond.CurrentValue, 3),
+            {
+                RequestsPerSecond = Math.Round(metrics.RequestsPerSecondCounter.CurrentValue, 3),
+                DocsWritesPerSecond = Math.Round(metrics.DocsPerSecond.CurrentValue, 3),
+                IndexedPerSecond = Math.Round(metrics.IndexedPerSecond.CurrentValue, 3),
+                ReducedPerSecond = Math.Round(metrics.ReducedPerSecond.CurrentValue, 3),
                 RequestsDuration = metrics.RequestDurationMetric.CreateHistogramData(),
                 RequestDurationLastMinute = metrics.RequestDurationLastMinute.GetData(),
-            Requests = metrics.ConcurrentRequests.CreateMeterData(),
-            Gauges = metrics.Gauges,
-            StaleIndexMaps = metrics.StaleIndexMaps.CreateHistogramData(),
-            StaleIndexReduces = metrics.StaleIndexReduces.CreateHistogramData(),
-            ReplicationBatchSizeMeter = metrics.ReplicationBatchSizeMeter.ToMeterDataDictionary(),
-            ReplicationBatchSizeHistogram = metrics.ReplicationBatchSizeHistogram.ToHistogramDataDictionary(),
-            ReplicationDurationHistogram = metrics.ReplicationDurationHistogram.ToHistogramDataDictionary()
-        };
+                Requests = metrics.ConcurrentRequests.CreateMeterData(),
+                Gauges = metrics.Gauges,
+                StaleIndexMaps = metrics.StaleIndexMaps.CreateHistogramData(),
+                StaleIndexReduces = metrics.StaleIndexReduces.CreateHistogramData(),
+                ReplicationBatchSizeMeter = metrics.ReplicationBatchSizeMeter.ToMeterDataDictionary(),
+                ReplicationBatchSizeHistogram = metrics.ReplicationBatchSizeHistogram.ToHistogramDataDictionary(),
+                ReplicationDurationHistogram = metrics.ReplicationDurationHistogram.ToHistogramDataDictionary()
+            };
         }
 
 
@@ -772,8 +787,8 @@ namespace Raven.Database
                 Thread.Sleep(100);
             }
 
-            if ( EnvironmentUtils.RunningOnPosix )				
-                MemoryStatistics.StopPosixLowMemThread ();
+            if (EnvironmentUtils.RunningOnPosix)
+                MemoryStatistics.StopPosixLowMemThread();
 
             EventHandler onDisposing = Disposing;
             _tpCts.Cancel();
@@ -792,19 +807,19 @@ namespace Raven.Database
             var exceptionAggregator = new ExceptionAggregator(Log, "Could not properly dispose of DatabaseDocument");
 
             exceptionAggregator.Execute(() =>
-                            {
-                                if (prefetcher != null)
-                                    prefetcher.Dispose();
-                            });
+            {
+                if (prefetcher != null)
+                    prefetcher.Dispose();
+            });
 
             exceptionAggregator.Execute(() =>
-                            {
-                                initializer.UnsubscribeToDomainUnloadOrProcessExit();
-                                disposed = true;
+            {
+                initializer.UnsubscribeToDomainUnloadOrProcessExit();
+                disposed = true;
 
-                                if (workContext != null)
-                                    workContext.StopWorkRude();
-                            });
+                if (workContext != null)
+                    workContext.StopWorkRude();
+            });
 
             if (initializer != null)
             {
@@ -1103,17 +1118,6 @@ namespace Raven.Database
                 indexingWiringComplete();
         }
 
-        private static int GetBuildVersion()
-        {
-            string location = AssemblyHelper.GetAssemblyLocationFor<DocumentDatabase>();
-
-            FileVersionInfo fileVersionInfo = FileVersionInfo.GetVersionInfo(location);
-            if (fileVersionInfo.FilePrivatePart != 0)
-                return fileVersionInfo.FilePrivatePart;
-
-            return fileVersionInfo.FileBuildPart;
-        }
-
         private BatchResult[] BatchWithRetriesOnConcurrencyErrorsAndNoTransactionMerging(IList<ICommandData> commands, CancellationToken token)
         {
             int retries = 128;
@@ -1161,7 +1165,7 @@ namespace Raven.Database
 
         private void ExecuteStartupTasks()
         {
-            using (LogContext.WithDatabase(Name))
+            using (LogContext.WithResource(Name))
             {
                 foreach (var task in StartupTasks)
                 {
@@ -1259,12 +1263,38 @@ namespace Raven.Database
 
             public void ValidateStorage()
             {
-                var storageEngineTypeName = configuration.SelectStorageEngineAndFetchTypeName();
+                var storageEngineTypeName = configuration.SelectDatabaseStorageEngineAndFetchTypeName();
                 if (InMemoryRavenConfiguration.VoronTypeName == storageEngineTypeName
-                    && configuration.Storage.Voron.AllowOn32Bits == false && 
+                    && configuration.Storage.Voron.AllowOn32Bits == false &&
                     Environment.Is64BitProcess == false)
                 {
                     throw new Exception("Voron is prone to failure in 32-bits mode. Use " + Constants.Voron.AllowOn32Bits + " to force voron in 32-bit process.");
+                }
+
+                if (string.IsNullOrEmpty(configuration.DefaultStorageTypeName) == false && 
+                    configuration.DefaultStorageTypeName.Equals(storageEngineTypeName, StringComparison.OrdinalIgnoreCase) == false)
+                {
+                    throw new Exception(string.Format("The database is configured to use '{0}' storage engine, but it points to '{1}' data", configuration.DefaultStorageTypeName, storageEngineTypeName));
+                }
+
+                if (configuration.RunInMemory == false && string.IsNullOrEmpty(configuration.DataDirectory) == false && Directory.Exists(configuration.DataDirectory))
+                {
+                    var resourceTypeFiles = Directory.EnumerateFiles(configuration.DataDirectory, Constants.ResourceMarkerPrefix + "*").Select(Path.GetFileName).ToArray();
+
+                    if (resourceTypeFiles.Length == 0)
+                        return;
+
+                    if (resourceTypeFiles.Length > 1)
+                    {
+                        throw new Exception(string.Format("The database directory cannot contain more than one resource file marker, but it contains: {0}", string.Join(", ", resourceTypeFiles)));
+                    }
+
+                    var resourceType = resourceTypeFiles[0];
+
+                    if (resourceType.Equals(Constants.Database.DbResourceMarker) == false)
+                    {
+                        throw new Exception(string.Format("The database data directory contains data of a different resource kind: {0}", resourceType.Substring(Constants.ResourceMarkerPrefix.Length)));
+                    }
                 }
             }
 
@@ -1344,14 +1374,24 @@ namespace Raven.Database
 
             public void InitializeTransactionalStorage(IUuidGenerator uuidGenerator)
             {
-                string storageEngineTypeName = configuration.SelectStorageEngineAndFetchTypeName();
+                string storageEngineTypeName = configuration.SelectDatabaseStorageEngineAndFetchTypeName();
                 database.TransactionalStorage = configuration.CreateTransactionalStorage(storageEngineTypeName, database.WorkContext.HandleWorkNotifications, () =>
-                            {
-                                if (database.StorageInaccessible != null)
-                                    database.StorageInaccessible(database, EventArgs.Empty);
+                {
+                    if (database.StorageInaccessible != null)
+                        database.StorageInaccessible(database, EventArgs.Empty);
 
-                            }, database.WorkContext.NestedTransactionEnter, database.WorkContext.NestedTransactionExit);
-                database.TransactionalStorage.Initialize(uuidGenerator, database.DocumentCodecs);
+                }, database.WorkContext.NestedTransactionEnter, database.WorkContext.NestedTransactionExit);
+
+                database.TransactionalStorage.Initialize(uuidGenerator, database.DocumentCodecs, storagePath =>
+                {
+                    if (configuration.RunInMemory)
+                        return;
+
+                    var resourceTypeFile = Path.Combine(storagePath, Constants.Database.DbResourceMarker);
+
+                    if (File.Exists(resourceTypeFile) == false)
+                        using (File.Create(resourceTypeFile)) { }
+                });
             }
 
             public Dictionary<int, IndexFailDetails> InitializeIndexDefinitionStorage()
@@ -1391,7 +1431,7 @@ namespace Raven.Database
                             Title = string.Format("Index disk '{0}' has {1}MB ({2}%) of free space and it has reached the {3}MB threshold. Indexing was disabled.", notification.Path, freeSpaceInMb, (int)(notification.FreeSpaceInPercentage * 100), thresholdInMb),
                             UniqueKey = "Free space (index)"
                         });
-        }
+                    }
                     else
                     {
                         if (freeSpaceInMb <= warningThresholdInMb)
@@ -1427,8 +1467,5 @@ namespace Raven.Database
         {
             throw new NotImplementedException();
         }
-
-        
-
     }
 }

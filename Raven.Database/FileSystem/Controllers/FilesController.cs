@@ -65,13 +65,8 @@ namespace Raven.Database.FileSystem.Controllers
                             if (WildcardMatcher.Matches(matches, keyTest) == false)
                                 continue;
 
-                            if (FileSystem.ReadTriggers.CanReadFile(FileHeader.Canonize(file.FullPath), file.Metadata, ReadOperation.Load) == false) 
+                            if (FileSystem.ReadTriggers.CanReadFile(file.FullPath, file.Metadata, ReadOperation.Load) == false) 
                                 continue;
-
-                            if (file.Metadata.Keys.Contains(SynchronizationConstants.RavenDeleteMarker))
-                            {
-                                continue;
-                            }
 
                             matchedFiles++;
 
@@ -110,7 +105,8 @@ namespace Raven.Database.FileSystem.Controllers
                 else
                 {
                     int results;
-                    var keys = Search.Query(null, null, Paging.Start, Paging.PageSize, out results);
+                    long durationInMs;
+                    var keys = Search.Query(null, null, Paging.Start, Paging.PageSize, out results, out durationInMs);
 
                     Storage.Batch(accessor => list.AddRange(keys.Select(accessor.ReadFile).Where(x => x != null)));
                 }

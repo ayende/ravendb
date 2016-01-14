@@ -18,6 +18,7 @@ using Raven.Client.Document.Batches;
 using Raven.Client.Document.SessionOperations;
 using Raven.Client.Connection.Async;
 using System.Threading.Tasks;
+using Raven.Client.Connection;
 using Raven.Client.Extensions;
 using Raven.Client.Indexes;
 using Raven.Client.Linq;
@@ -534,6 +535,7 @@ namespace Raven.Client.Shard
                 EntityType = typeof(TResult),
                 Keys = { keyPrefix }
             });
+            var queryOperation = new QueryOperation(this, "Load/StartingWith", null, null, false, TimeSpan.Zero, null, null, false);
 
             return shardStrategy.ShardAccessStrategy.ApplyAsync(shards, new ShardRequestData
             {
@@ -542,7 +544,7 @@ namespace Raven.Client.Shard
             }, (dbCmd, i) => dbCmd.StartsWithAsync(keyPrefix, matches, start, pageSize, exclude: exclude, transformer: transformer,
                                                          transformerParameters: configuration.TransformerParameters,
                                                          skipAfter: skipAfter, token: token))
-                                .ContinueWith(task => (IEnumerable<TResult>)task.Result.SelectMany(x => x).Select(TrackEntity<TResult>).ToList())
+                                .ContinueWith(task => (IEnumerable<TResult>)task.Result.SelectMany(x => x).Select(x=> queryOperation.Deserialize<TResult>(x.ToJson())).ToList())
                                 .WithCancellation(token);
         }
 
@@ -804,6 +806,57 @@ namespace Raven.Client.Shard
 
             throw new InvalidOperationException("Document '" + documentKey + "' no longer exists and was probably deleted");
              
+        }
+
+        public async Task<Operation> DeleteByIndexAsync<T, TIndexCreator>(Expression<Func<T, bool>> expression) where TIndexCreator : AbstractIndexCreationTask, new()
+        {
+            var indexCreator = new TIndexCreator();
+            return await DeleteByIndexAsync(indexCreator.IndexName, expression).ConfigureAwait(false);
+        }
+
+        private IRavenQueryable<T> QueryInternal<T>(IAsyncDatabaseCommands assyncDatabaseCommands, string indexName, bool isMapReduce = false)
+        {
+            var ravenQueryStatistics = new RavenQueryStatistics();
+            var highlightings = new RavenQueryHighlightings();
+            var ravenQueryInspector = new RavenQueryInspector<T>();
+            var ravenQueryProvider = new RavenQueryProvider<T>(this, indexName, ravenQueryStatistics, highlightings, null, assyncDatabaseCommands, isMapReduce);
+            ravenQueryInspector.Init(ravenQueryProvider,
+                ravenQueryStatistics,
+                highlightings,
+                indexName,
+                null,
+                this, null, assyncDatabaseCommands, isMapReduce);
+            return ravenQueryInspector;
+        }
+
+        public async Task<Operation> DeleteByIndexAsync<T>(string indexName, Expression<Func<T, bool>> expression)
+        {
+            var shards = GetCommandsToOperateOn(new ShardRequestData
+            {
+                EntityType = typeof(T),
+                Keys = { indexName }
+            });
+
+            var operations = shardStrategy.ShardAccessStrategy.ApplyAsync(shards, new ShardRequestData
+            {
+                EntityType = typeof(T),
+                Keys = { indexName }
+            }, (dbCmd, i) =>
+            {
+                var query = QueryInternal<T>(dbCmd, indexName).Where(expression);
+                var indexQuery = new IndexQuery()
+                {
+                    Query = query.ToString()
+                };
+
+                return dbCmd.DeleteByIndexAsync(indexName, indexQuery);
+            });
+
+            var result = await operations.ConfigureAwait(false);
+
+            var shardOperation = new ShardsOperation(result);
+
+            return shardOperation;
         }
     }
 }
