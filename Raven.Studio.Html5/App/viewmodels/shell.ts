@@ -23,6 +23,7 @@ import alertType = require("common/alertType");
 import pagedList = require("common/pagedList");
 import dynamicHeightBindingHandler = require("common/dynamicHeightBindingHandler");
 import autoCompleteBindingHandler = require("common/autoCompleteBindingHandler");
+import enableResizeBindingHandler = require("common/enableResizeBindingHandler");
 import helpBindingHandler = require("common/helpBindingHandler");
 import changesApi = require("common/changesApi");
 import changesContext = require("common/changesContext");
@@ -160,6 +161,7 @@ class shell extends viewModelBase {
         ko.postbox.subscribe("LoadProgress", (alertType?: alertType) => this.dataLoadProgress(alertType));
         ko.postbox.subscribe("ActivateDatabaseWithName", (databaseName: string) => this.activateDatabaseWithName(databaseName));
         ko.postbox.subscribe("SetRawJSONUrl", (jsonUrl: string) => this.currentRawUrl(jsonUrl));
+        ko.postbox.subscribe("SelectNone", () => this.selectNone());
         ko.postbox.subscribe("ActivateDatabase", (db: database) => this.activateDatabase(db));
         ko.postbox.subscribe("ActivateFilesystem", (fs: fileSystem) => this.activateFileSystem(fs));
         ko.postbox.subscribe("UploadFileStatusChanged", (uploadStatus: uploadItem) => this.uploadStatusChanged(uploadStatus));
@@ -172,6 +174,7 @@ class shell extends viewModelBase {
         this.goToDocumentSearch.throttle(250).subscribe(search => this.fetchGoToDocSearchResults(search));
         dynamicHeightBindingHandler.install();
         autoCompleteBindingHandler.install();
+        enableResizeBindingHandler.install();
         helpBindingHandler.install();
 
         this.isSystemConnected = ko.computed(() => {
@@ -360,6 +363,11 @@ class shell extends viewModelBase {
     }
 
     private activateDatabase(db: database) {
+        if (db == null) {
+            this.disconnectFromCurrentResource();
+            return;
+        }
+
         this.fecthStudioConfigForDatabase(db);
 
         var changeSubscriptionArray = () => [
@@ -382,6 +390,11 @@ class shell extends viewModelBase {
     }
 
     private activateFileSystem(fs: fileSystem) {
+        if (fs == null) {
+            this.disconnectFromCurrentResource();
+            return;
+        }
+
         this.fecthStudioConfigForDatabase(new database(fs.name));
 
         var changesSubscriptionArray = () => [
@@ -400,6 +413,12 @@ class shell extends viewModelBase {
                 .done((result: filesystemStatisticsDto) => fs.saveStatistics(result))
                 .fail((response: JQueryXHR) => messagePublisher.reportError("Failed to get file system stats", response.responseText, response.statusText));
         }
+    }
+
+    private disconnectFromCurrentResource() {
+        shell.disconnectFromResourceChangesApi();
+        this.lastActivatedResource(null);
+        this.currentConnectedResource = appUrl.getSystemDatabase();
     }
 
     private updateChangesApi(rs: resource, isPreviousDifferentKind: boolean, fetchStats: () => void, subscriptionsArray: () => changeSubscription[]) {
@@ -578,7 +597,7 @@ class shell extends viewModelBase {
                 if (!!resourceToDelete) {
                     resourceObservableArray.remove(resourceToDelete);
 
-                    this.selectNewActiveResourceIfNeeded(resourceObservableArray, activeResourceObservable);
+                    //this.selectNewActiveResourceIfNeeded(resourceObservableArray, activeResourceObservable);
                     if (resourceType == logTenantType.Database)
                         recentQueriesStorage.removeRecentQueries(resourceToDelete);
                 }
@@ -922,8 +941,8 @@ class shell extends viewModelBase {
                 this.serverBuildVersion(serverBuildResult);
 
                 var currentBuildVersion = serverBuildResult.BuildVersion;
-                if (serverBuildReminder.isReminderNeeded() && currentBuildVersion != 13) {
-                    new getLatestServerBuildVersionCommand(true, 3000, 3999) //pass false as a parameter to get the latest unstable
+                if (serverBuildReminder.isReminderNeeded() && currentBuildVersion !== 13) {
+                    new getLatestServerBuildVersionCommand(true, 3000, 34999) //pass false as a parameter to get the latest unstable
                         .execute()
                         .done((latestServerBuildResult: latestServerBuildVersionDto) => {
                             if (latestServerBuildResult.LatestBuild > currentBuildVersion) { //
@@ -1054,8 +1073,11 @@ class shell extends viewModelBase {
         position: "absolute" // Element positioning
     };
     private spinner = new Spinner(this.spinnerOptions);
+
+    selectNone() {
+        this.activateDatabase(null);
+        this.activeFilesystem(null);
+    }
 }
-
-
 
 export = shell;

@@ -77,7 +77,8 @@ namespace Raven.Storage.Voron
 
             RecoverFromFailedCompact(configuration.DataDirectory);
 
-            documentCacher = new DocumentCacher(configuration);
+            documentCacher = CreateDocumentCacher(configuration);
+
             exitLockDisposable = new DisposableAction(() => Monitor.Exit(this));
             bufferPool = new BufferPool(
                 configuration.Storage.Voron.MaxBufferPoolSize * 1024L * 1024L * 1024L, 
@@ -214,11 +215,12 @@ namespace Raven.Storage.Voron
         {
             if (disposerLock.IsReadLockHeld && disableBatchNesting.Value == null) // we are currently in a nested Batch call and allow to nest batches
             {
-                if (current.Value != null) // check again, just to be sure
+                var storageActionsAccessor = current.Value;
+                if (storageActionsAccessor != null) // check again, just to be sure
                 {
-                    current.Value.IsNested = true;
-                    action(current.Value);
-                    current.Value.IsNested = false;
+                    storageActionsAccessor.IsNested = true;
+                    action(storageActionsAccessor);
+                    storageActionsAccessor.IsNested = false;
                     return;
                 }
             }
@@ -595,7 +597,7 @@ namespace Raven.Storage.Voron
         public void ClearCaches()
         {
             var oldDocumentCacher = documentCacher;
-            documentCacher = new DocumentCacher(configuration);
+            documentCacher = CreateDocumentCacher(configuration);
             oldDocumentCacher.Dispose();
         }
 
@@ -748,6 +750,14 @@ namespace Raven.Storage.Voron
             Log.Info(message);
             Console.Write(message);
             Console.WriteLine();
+        }
+
+        private IDocumentCacher CreateDocumentCacher(InMemoryRavenConfiguration configuration)
+        {
+            if (configuration.CacheDocumentsInMemory == false)
+                return new NullDocumentCacher();
+
+            return new DocumentCacher(configuration);
         }
     }
 }

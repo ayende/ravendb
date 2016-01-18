@@ -87,7 +87,12 @@ namespace Raven.Storage.Esent
         public TransactionalStorage(InMemoryRavenConfiguration configuration, Action onCommit, Action onStorageInaccessible, Action onNestedTransactionEnter, Action onNestedTransactionExit)
         {
             configuration.Container.SatisfyImportsOnce(this);
-            documentCacher = new DocumentCacher(configuration);
+
+            if (configuration.CacheDocumentsInMemory == false)
+                documentCacher = new NullDocumentCacher();
+            else
+                documentCacher = new DocumentCacher(configuration);    
+            
             database = configuration.DataDirectory;
             this.configuration = configuration;
             this.onCommit = onCommit;
@@ -758,11 +763,12 @@ namespace Raven.Storage.Esent
 
             if (disposerLock.IsReadLockHeld && batchNestingAllowed) // we are currently in a nested Batch call and allow to nest batches
             {
-                if (current.Value != null) // check again, just to be sure
+                var storageActionsAccessor = current.Value;
+                if (storageActionsAccessor != null) // check again, just to be sure
                 {
-                    current.Value.IsNested = true;
-                    action(current.Value);
-                    current.Value.IsNested = false;
+                    storageActionsAccessor.IsNested = true;
+                    action(storageActionsAccessor);
+                    storageActionsAccessor.IsNested = false;
                     return;
                 }
             }

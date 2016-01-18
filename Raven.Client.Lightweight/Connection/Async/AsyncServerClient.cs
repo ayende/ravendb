@@ -11,7 +11,6 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
-using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -35,6 +34,7 @@ using Raven.Client.Document;
 using Raven.Client.Exceptions;
 using Raven.Client.Extensions;
 using Raven.Client.Listeners;
+using Raven.Client.Util.Auth;
 using Raven.Imports.Newtonsoft.Json;
 using Raven.Json.Linq;
 using Constants = Raven.Abstractions.Data.Constants;
@@ -1345,6 +1345,9 @@ namespace Raven.Client.Connection.Async
 
                         var queryResult = SerializationHelper.ToQueryResult(json, request.ResponseHeaders.GetEtagHeader(), request.ResponseHeaders.Get("Temp-Request-Time"), request.Size);
 
+                        if (request.ResponseStatusCode == HttpStatusCode.NotModified)
+                            queryResult.DurationMilliseconds = -1;
+
                         var docResults = queryResult.Results.Concat(queryResult.Includes);
                         return await RetryOperationBecauseOfConflict(operationMetadata, docResults, queryResult, 
                             () => QueryAsync(index, query, includes, metadataOnly, indexEntriesOnly, token), 
@@ -1778,10 +1781,13 @@ namespace Raven.Client.Connection.Async
                 .AddReplicationStatusHeaders(Url, operationMetadata.Url, replicationInformer, convention.FailoverBehavior, HandleReplicationStatusChanges);
 
             request.RemoveAuthorizationHeader();
-            var token = await GetSingleAuthToken(operationMetadata).WithCancellation(cancellationToken).ConfigureAwait(false);
+
+            var tokenRetriever = new SingleAuthTokenRetriever(this, jsonRequestFactory, convention, OperationsHeaders, operationMetadata);
+
+            var token = await tokenRetriever.GetToken().WithCancellation(cancellationToken).ConfigureAwait(false);
             try
             {
-                token = await ValidateThatWeCanUseAuthenticateTokens(operationMetadata, token).WithCancellation(cancellationToken).ConfigureAwait(false);
+                token = await tokenRetriever.ValidateThatWeCanUseToken(token).WithCancellation(cancellationToken).ConfigureAwait(false);
             }
             catch (Exception e)
             {
@@ -2071,18 +2077,21 @@ namespace Raven.Client.Connection.Async
 
             request.RemoveAuthorizationHeader();
 
-            var token = await GetSingleAuthToken(operationMetadata).WithCancellation(cancellationToken).ConfigureAwait(false);
+            var tokenRetriever = new SingleAuthTokenRetriever(this, jsonRequestFactory, convention, OperationsHeaders, operationMetadata);
+
+            var token = await tokenRetriever.GetToken().WithCancellation(cancellationToken).ConfigureAwait(false);
             try
             {
-                token = await ValidateThatWeCanUseAuthenticateTokens(operationMetadata, token).WithCancellation(cancellationToken).ConfigureAwait(false);
+                token = await tokenRetriever.ValidateThatWeCanUseToken(token).WithCancellation(cancellationToken).ConfigureAwait(false);
             }
             catch (Exception e)
             {
                 request.Dispose();
 
-                throw new InvalidOperationException("Could not authenticate token for docs streaming, if you are using ravendb in IIS make sure you have Anonymous Authentication enabled in the IIS configuration", e);
+                throw new InvalidOperationException(
+                    "Could not authenticate token for query streaming, if you are using ravendb in IIS make sure you have Anonymous Authentication enabled in the IIS configuration",
+                    e);
             }
-
             request.AddOperationHeader("Single-Use-Auth-Token", token);
 
             HttpResponseMessage response;
@@ -2185,17 +2194,6 @@ namespace Raven.Client.Connection.Async
             var metadata = new RavenJObject();
             AddTransactionInformation(metadata);
             var createHttpJsonRequestParams = new CreateHttpJsonRequestParams(this, url + requestUrl, method, metadata, credentialsThatShouldBeUsedOnlyInOperationsWithoutReplication, convention, timeout)
-                .AddOperationHeaders(OperationsHeaders);
-            createHttpJsonRequestParams.DisableRequestCompression = disableRequestCompression;
-            createHttpJsonRequestParams.DisableAuthentication = disableAuthentication;
-            return jsonRequestFactory.CreateHttpJsonRequest(createHttpJsonRequestParams);
-        }
-
-        public HttpJsonRequest CreateRequest(OperationMetadata operationMetadata, string requestUrl, string method, bool disableRequestCompression = false, bool disableAuthentication = false, TimeSpan? timeout = null)
-        {
-            var metadata = new RavenJObject();
-            AddTransactionInformation(metadata);
-            var createHttpJsonRequestParams = new CreateHttpJsonRequestParams(this, (operationMetadata.Url + requestUrl), method, metadata, operationMetadata.Credentials, convention, timeout)
                 .AddOperationHeaders(OperationsHeaders);
             createHttpJsonRequestParams.DisableRequestCompression = disableRequestCompression;
             createHttpJsonRequestParams.DisableAuthentication = disableAuthentication;
@@ -2499,25 +2497,6 @@ namespace Raven.Client.Connection.Async
                     if (e.StatusCode == HttpStatusCode.NotFound) return null;
                     throw;
                 }
-            }
-        }
-
-        private async Task<string> GetSingleAuthToken(OperationMetadata operationMetadata)
-        {
-            using (var request = CreateRequest(operationMetadata, "/singleAuthToken", "GET", disableRequestCompression: true))
-            {
-                var response = await request.ReadResponseJsonAsync().ConfigureAwait(false);
-                return response.Value<string>("Token");
-            }
-        }
-
-        private async Task<string> ValidateThatWeCanUseAuthenticateTokens(OperationMetadata operationMetadata, string token)
-        {
-            using (var request = CreateRequest(operationMetadata, "/singleAuthToken", "GET", disableRequestCompression: true, disableAuthentication: true))
-            {
-                request.AddOperationHeader("Single-Use-Auth-Token", token);
-                var result = await request.ReadResponseJsonAsync().ConfigureAwait(false);
-                return result.Value<string>("Token");
             }
         }
 
