@@ -269,33 +269,33 @@ namespace Raven.Tests.Issues
                     source.DatabaseCommands.PutAttachment("foo", null, stream, new RavenJObject());
                 }
 
-                //				var exportSmugglerApi = new SmugglerDatabaseApi(new SmugglerOptions
-                //				{					
-                //					OperateOnTypes = ItemType.Documents | ItemType.Indexes | ItemType.Attachments | ItemType.Transformers
-                //				}, new RavenConnectionStringOptions
-                //				{
-                //					Url = source.Url,
-                //					DefaultDatabase = "fooDB"
-                //				});
-                var exportSmugglerApi = new SmugglerDatabaseApi();
-
-                var importSmugglerApi = new SmugglerDatabaseApi();
+                var smugglerApi = new SmugglerDatabaseApi();
 
                 var filename = "large-attachment-test.ravendump";
                 using (var fs = new FileStream(filename, FileMode.Create))
                 {
-                    exportSmugglerApi.ExportData(fs, new SmugglerOptions
+                    smugglerApi.ExportData(new SmugglerExportOptions<RavenConnectionStringOptions>
                     {
-                        OperateOnTypes = ItemType.Documents | ItemType.Indexes | ItemType.Attachments | ItemType.Transformers
-                    }, false).Wait();
+                        ToStream = fs,
+                        From = new RavenConnectionStringOptions
+                        {
+                            Url = source.Url,
+                            DefaultDatabase = "fooDB"
+                        }
+                    }).Wait();
                     fs.Flush();
                 }
 
                 using (var fs = new FileStream(filename, FileMode.Open))
                 {
-                    importSmugglerApi.ImportData(fs, new SmugglerOptions
+                    smugglerApi.ImportData(new SmugglerImportOptions<RavenConnectionStringOptions>
                     {
-                        OperateOnTypes = ItemType.Documents | ItemType.Indexes | ItemType.Attachments | ItemType.Transformers
+                        FromStream = fs,
+                        To = new RavenConnectionStringOptions
+                        {
+                            Url = source.Url,
+                            DefaultDatabase = "fooDB2"
+                        }
                     }).Wait();
                 }
 
@@ -373,39 +373,33 @@ namespace Raven.Tests.Issues
                     }
                 }
 
-                var exportSmugglerApi = new SmugglerDatabaseApi(new SmugglerOptions
-                {
-                    OperateOnTypes = ItemType.Documents | ItemType.Indexes | ItemType.Attachments | ItemType.Transformers
-                }, new RavenConnectionStringOptions
-                {
-                    Url = source.Url,
-                    DefaultDatabase = "fooDB"
-                });
-
-                var importSmugglerApi = new SmugglerDatabaseApi(new SmugglerOptions
-                {
-                    OperateOnTypes = ItemType.Documents | ItemType.Indexes | ItemType.Attachments | ItemType.Transformers
-                }, new RavenConnectionStringOptions
-                {
-                    Url = source.Url,
-                    DefaultDatabase = "fooDB2"
-                });
+                var smugglerApi = new SmugglerDatabaseApi();
 
                 var filename = "large-attachment-test.ravendump";
                 using (var fs = new FileStream(filename, FileMode.Create))
                 {
-                    exportSmugglerApi.ExportData(fs, new SmugglerOptions
+                    smugglerApi.ExportData(new SmugglerExportOptions<RavenConnectionStringOptions>
                     {
-                        OperateOnTypes = ItemType.Documents | ItemType.Indexes | ItemType.Attachments | ItemType.Transformers
-                    }, false).Wait();
+                        From = new RavenConnectionStringOptions
+                        {
+                            Url = source.Url,
+                            DefaultDatabase = "fooDB"
+                        },
+                        ToStream = fs
+                    }).Wait();
                     fs.Flush();
                 }
 
                 using (var fs = new FileStream(filename, FileMode.Open))
                 {
-                    importSmugglerApi.ImportData(fs, new SmugglerOptions
+                    smugglerApi.ImportData(new SmugglerImportOptions<RavenConnectionStringOptions>()
                     {
-                        OperateOnTypes = ItemType.Documents | ItemType.Indexes | ItemType.Attachments | ItemType.Transformers
+                        FromStream = fs,
+                        To = new RavenConnectionStringOptions
+                        {
+                            Url = source.Url,
+                            DefaultDatabase = "fooDB2"
+                        }
                     }).Wait();
                 }
 
