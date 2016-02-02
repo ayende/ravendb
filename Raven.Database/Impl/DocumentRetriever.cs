@@ -131,30 +131,18 @@ namespace Raven.Database.Impl
 
             if (fieldsToFetch.IsProjection)
             {
-                if (indexDefinition.IsMapReduce == false)
-                {
-                    bool hasStoredFields = false;
-                    FieldStorage value;
-                    if (indexDefinition.Stores.TryGetValue(Constants.AllFields, out value))
-                    {
-                        hasStoredFields = value != FieldStorage.No;
-                    }
-                    foreach (var fieldToFetch in fieldsToFetch.Fields)
-                    {
-                        if (indexDefinition.Stores.TryGetValue(fieldToFetch, out value) == false && value != FieldStorage.No) continue;
-                        hasStoredFields = true;
-                    }
-                    if (hasStoredFields == false)
-                    {
-                        // duplicate document, filter it out
-                        if (loadedIds.Add(queryResult.Key) == false) return null;
-                    }
-                }
+				//filter out duplicates if relevant
+	            if (indexDefinition.IsMapReduce == false &&
+	                loadedIds.Add(queryResult.Key) == false &&
+	                fieldsToFetch.Query.AllowMultipleIndexEntriesForSameDocumentToResultTransformer == false)
+	            {
+		            return null;
+	            }
 
-                // We have to load the document if user explicitly asked for the id, since 
-                // we normalize the casing for the document id on the index, and we need to return
-                // the id to the user with the same casing they gave us.
-                var fetchingId = fieldsToFetch.HasField(Constants.DocumentIdFieldName);
+	            // We have to load the document if user explicitly asked for the id, since 
+				// we normalize the casing for the document id on the index, and we need to return
+				// the id to the user with the same casing they gave us.
+				var fetchingId = fieldsToFetch.HasField(Constants.DocumentIdFieldName);
                 var fieldsToFetchFromDocument = fieldsToFetch.Fields.Where(fieldToFetch => queryResult.Projection[fieldToFetch] == null).ToArray();
                 if (fieldsToFetchFromDocument.Length > 0 || fetchingId)
                 {
