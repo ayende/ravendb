@@ -34,17 +34,20 @@ namespace Raven.Json.Linq
 
         private DictionaryWithParentSnapshot(DictionaryWithParentSnapshot previous)
         {
-            comparer = previous.comparer;
-            if (previous.parentSnapshot != null)
-            {
-                if(previous.localChanges != null)
-                    localChanges = new Dictionary<string, RavenJToken>(previous.localChanges, comparer);
-                parentSnapshot = previous.parentSnapshot;
-            }
-            else
-            {
-                parentSnapshot = previous;
-            }
+	        lock (this)
+	        {
+		        comparer = previous.comparer;
+		        if (previous.parentSnapshot != null)
+		        {
+			        if (previous.localChanges != null)
+				        localChanges = new Dictionary<string, RavenJToken>(previous.localChanges, comparer);
+			        parentSnapshot = previous.parentSnapshot;
+		        }
+		        else
+		        {
+			        parentSnapshot = previous;
+		        }
+	        }
         }
 
         #region Dictionary<string,TValue> Members
