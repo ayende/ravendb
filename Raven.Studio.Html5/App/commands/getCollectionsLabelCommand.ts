@@ -40,7 +40,10 @@ class getCollectionsLabelCommand extends commandBase {
                         if (result[i].Result.Results[0].Label)
                             this.collections[i].label = result[i].Result.Results[0].Label;
                 }
-                task.resolve(this.collections);
+                // ensure that the collections are sorted by either entity name or label name.
+                task.resolve(this.collections.sort(function(n, r){
+                    return (n.getLabel() == r.getLabel()) ? 0 : (n.getLabel() > r.getLabel()) ? 1 : -1;
+                }));
             })
             .fail((response: JQueryXHR) => {
                 this.reportError("the result transformer: Raven/LabelsByCollectionName was not found", response.responseText, response.statusText);
