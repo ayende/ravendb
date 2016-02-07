@@ -79,6 +79,7 @@ class getCollectionsCommand extends commandBase {
     createSystemIndexAndTryAgain(deferred: JQueryDeferred<collection[]>, originalReadError: JQueryXHR) {
         // Most often, failure to get the collections is due to the missing system index, Raven/DocumentsByEntityName.
         // This appears to be new behavior as of 3.0: Raven doesn't create this index automatically for the system database.
+        
         // Calling silverlight/ensureStartup creates the system index.
         this.query("/silverlight/ensureStartup", null, this.ownerDb)
             .done(() => this.retryQuery(deferred, originalReadError))
