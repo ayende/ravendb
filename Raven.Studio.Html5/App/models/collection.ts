@@ -9,6 +9,7 @@ import database = require("models/database");
 
 class collection {
 
+    label: string = "";
     colorClass = ""; 
     documentCount: any = ko.observable(0);
     documentsCountWithThousandsSeparator = ko.computed(() => this.documentCount().toLocaleString());
@@ -25,6 +26,14 @@ class collection {
         this.isSystemDocuments = name === collection.systemDocsCollectionName;
         this.colorClass = collection.getCollectionCssClass(name, ownerDatabase);
         this.documentCount(docCount);
+    }
+
+    getLabel() {
+        return this.label.length > 0
+            ? this.label            // display custom label defined in metadata
+            : this.name != null     // display native raven entity name
+                ? this.name.replace(/__/g, '/') // prettify double underscores
+                : "";
     }
 
     // Notifies consumers that this collection should be the selected one.

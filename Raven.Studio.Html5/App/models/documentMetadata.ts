@@ -3,6 +3,7 @@
 class documentMetadata {
     ravenEntityName: string;
     ravenClrType: string;
+    ravenEntityLabel: string = "";
     nonAuthoritativeInfo: boolean;
     id: string;
     tempIndexScore: number;
@@ -18,6 +19,7 @@ class documentMetadata {
         if (dto) {
             this.ravenEntityName = dto['Raven-Entity-Name'];
             this.ravenClrType = dto['Raven-Clr-Type'];
+            this.ravenEntityLabel = dto['Raven-Entity-Label'];
             this.nonAuthoritativeInfo = dto['Non-Authoritative-Information'];
             this.id = dto['@id'];
             this.tempIndexScore = dto['Temp-Index-Score'];
@@ -39,6 +41,7 @@ class documentMetadata {
 
             for (var property in dto) {
                 if (property.toUpperCase() !== 'Raven-Entity-Name'.toUpperCase() &&
+                    property.toUpperCase() !== 'Raven-Entity-Label'.toUpperCase() &&
                     property.toUpperCase() !== 'Raven-Clr-Type'.toUpperCase() &&
                     property.toUpperCase() !== 'Non-Authoritative-Information'.toUpperCase() &&
                     property.toUpperCase() !== '@id'.toUpperCase() &&
@@ -54,13 +57,15 @@ class documentMetadata {
             }
         }
     }
-    prettyLabel(text: string) {
-        return text !== null ? text.replace(/__/g, '/') : text;
+
+    getLabel() {
+        return this.ravenEntityName !== null ? this.ravenEntityName.replace(/__/g, '/') : this.ravenEntityName;
     }
     toDto(): documentMetadataDto {
         var dto: any = {
             'Raven-Entity-Name': this.ravenEntityName,
             'Raven-Clr-Type': this.ravenClrType,
+            'Raven-Entity-Label': this.ravenEntityLabel,
             'Non-Authoritative-Information': this.nonAuthoritativeInfo,
             '@id': this.id,
             'Temp-Index-Score': this.tempIndexScore,

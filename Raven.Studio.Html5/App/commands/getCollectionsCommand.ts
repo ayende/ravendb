@@ -3,6 +3,7 @@ import database = require("models/database");
 import collection = require("models/collection");
 import getIndexTermsCommand = require("commands/getIndexTermsCommand");
 import getCollectionsCountCommand = require("commands/getCollectionsCountCommand");
+import getCollectionsLabelCommand = require("commands/getCollectionsLabelCommand");
 import getCachedCollectionsCount = require("commands/getCachedCollectionsCount");
 
 class getCollectionsCommand extends commandBase {
@@ -57,6 +58,11 @@ class getCollectionsCommand extends commandBase {
                         .execute()
                         .done(result => task.resolve(result))
                         .fail(result => task.reject(result));
+
+                    new getCollectionsLabelCommand(collections, this.ownerDb)
+                        .execute()
+                        .done(result => task.resolve(result))
+                        .fail(result => task.reject(result));
                 }
                 if (this.lastQueryDate != null) {
                     this.lastQueryDate(xhr.getResponseHeader('Date'));
@@ -73,7 +79,6 @@ class getCollectionsCommand extends commandBase {
     createSystemIndexAndTryAgain(deferred: JQueryDeferred<collection[]>, originalReadError: JQueryXHR) {
         // Most often, failure to get the collections is due to the missing system index, Raven/DocumentsByEntityName.
         // This appears to be new behavior as of 3.0: Raven doesn't create this index automatically for the system database.
-
         // Calling silverlight/ensureStartup creates the system index.
         this.query("/silverlight/ensureStartup", null, this.ownerDb)
             .done(() => this.retryQuery(deferred, originalReadError))
