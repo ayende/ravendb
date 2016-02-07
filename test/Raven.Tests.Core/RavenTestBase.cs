@@ -31,7 +31,8 @@ namespace Raven.Tests.Core
             var configuration = new RavenConfiguration();
             configuration.Initialize();
 
-            configuration.Core.ServerUrls = new[] { "http://localhost:8080" };
+            // TODO (fitzchak): We need to make sure that this settings go to configuration.Settings so the database settings that created for each DB would have those too
+            configuration.Core.ServerUrl = "http://localhost:8080";
             configuration.Server.Name = ServerName;
             configuration.Core.RunInMemory = true;
             configuration.Core.DataDirectory = Path.Combine(configuration.Core.DataDirectory, "Tests");
@@ -65,7 +66,7 @@ namespace Raven.Tests.Core
             
             var store = new DocumentStore
             {
-                Url = UseFiddler(Server.Configuration.Core.ServerUrls.First()),
+                Url = UseFiddler(Server.Configuration.Core.ServerUrl),
                 DefaultDatabase = databaseName,
             };
             store.Initialize();

@@ -31,7 +31,7 @@ namespace Raven.Server.Routing
             if (tryMatch.Match.Success == false)
             {
                 context.Response.StatusCode = 400;
-                await context.Response.WriteAsync("There is no handler for path: " + context.Request.Path);
+                await context.Response.WriteAsync($"There is no handler for path: {context.Request.Path}, method used: {context.Request.Method}");
                 return;
             }
 

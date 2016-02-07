@@ -90,6 +90,9 @@ namespace Raven.Server.Config
 
         public RavenConfiguration Initialize()
         {
+            LoadConfiguration(_configBuilder.Build());
+            WebHostConfig = new RavenWebHostConfiguration(this);
+
             Core.Initialize(Settings);
             Replication.Initialize(Settings);
             Queries.Initialize(Settings);
@@ -114,13 +117,17 @@ namespace Raven.Server.Config
             return this;
         }
 
+        private void LoadConfiguration(IConfigurationRoot configurationRoot)
+        {
+            foreach (var section in configurationRoot.GetChildren())
+            {
+                Settings[section.Key] = section.Value;
+            }
+        }
+
         public void PostInit()
         {
-            WebHostConfig = new RavenWebHostConfiguration(this);
-            var root = _configBuilder.Build();
-            Core.RunInMemory = root.Get<bool>("run.in.memory");
-            Core.DataDirectory = root.Get<string>("system.path").ToFullPath();
-            Core.ServerUrls = new[] { root.Get<string>("server.urls")};
+            
         }
 
         public void CopyParentSettings(RavenConfiguration serverConfiguration)
@@ -183,7 +190,7 @@ namespace Raven.Server.Config
             switch (key)
             {
                 case "server.urls":
-                    return new RavenConfigurationSection(key, "", _configuration.Core.ServerUrls.First());
+                    return new RavenConfigurationSection(key, "", _configuration.Core.ServerUrl);
                 default:
                     throw new NotImplementedException($"{key} should be supported");
             }
@@ -214,7 +221,7 @@ namespace Raven.Server.Config
                     case "Hosting:Application":
                         return "";
                     case "server.urls":
-                        return _configuration.Core.ServerUrls.First();
+                        return _configuration.Core.ServerUrl;
                     case "HTTP_PLATFORM_PORT":
                         return "";
                     /*var url = _configuration.Core.ServerUrls.First();

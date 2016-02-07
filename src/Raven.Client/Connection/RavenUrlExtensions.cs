@@ -113,7 +113,7 @@ namespace Raven.Client.Connection
 
         public static string Queries(this string url)
         {
-            return $"{url}/queries/";
+            return $"{url}/docs";
         }
 
         public static Uri ToUri(this string url)
