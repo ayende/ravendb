@@ -11,7 +11,6 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
-using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -28,6 +27,7 @@ using Raven.Abstractions.Extensions;
 using Raven.Abstractions.Indexing;
 using Raven.Abstractions.Json;
 using Raven.Abstractions.Replication;
+using Raven.Abstractions.Smuggler;
 using Raven.Abstractions.Util;
 using Raven.Client.Changes;
 using Raven.Client.Connection.Profiling;
@@ -35,6 +35,7 @@ using Raven.Client.Document;
 using Raven.Client.Exceptions;
 using Raven.Client.Extensions;
 using Raven.Client.Listeners;
+using Raven.Client.Util.Auth;
 using Raven.Imports.Newtonsoft.Json;
 using Raven.Json.Linq;
 using Constants = Raven.Abstractions.Data.Constants;
@@ -316,7 +317,7 @@ namespace Raven.Client.Connection.Async
         public async Task<string[]> DirectPutIndexesAsync(IndexToAdd[] indexesToAdd, OperationMetadata operationMetadata, CancellationToken token = default(CancellationToken))
         {
             var requestUri = operationMetadata.Url + "/indexes";
-            return await PutIndexes(operationMetadata, token, requestUri, indexesToAdd);
+            return await PutIndexes(operationMetadata, token, requestUri, indexesToAdd).ConfigureAwait(false);
         }
 
         public async Task<string[]> DirectPutSideBySideIndexesAsync(IndexToAdd[] indexesToAdd, OperationMetadata operationMetadata, Etag minimumEtagBeforeReplace, DateTime? replaceTimeUtc, CancellationToken token = default(CancellationToken))
@@ -329,7 +330,7 @@ namespace Raven.Client.Connection.Async
             };
 
             var requestUri = operationMetadata.Url + "/side-by-side-indexes";
-            return await PutIndexes(operationMetadata, token, requestUri, sideBySideIndexes);
+            return await PutIndexes(operationMetadata, token, requestUri, sideBySideIndexes).ConfigureAwait(false);
         }
 
         private async Task<string[]> PutIndexes(OperationMetadata operationMetadata, CancellationToken token, string requestUri, object obj)
@@ -1345,6 +1346,9 @@ namespace Raven.Client.Connection.Async
 
                         var queryResult = SerializationHelper.ToQueryResult(json, request.ResponseHeaders.GetEtagHeader(), request.ResponseHeaders.Get("Temp-Request-Time"), request.Size);
 
+                        if (request.ResponseStatusCode == HttpStatusCode.NotModified)
+                            queryResult.DurationMilliseconds = -1;
+
                         var docResults = queryResult.Results.Concat(queryResult.Includes);
                         return await RetryOperationBecauseOfConflict(operationMetadata, docResults, queryResult, 
                             () => QueryAsync(index, query, includes, metadataOnly, indexEntriesOnly, token), 
@@ -1751,6 +1755,49 @@ namespace Raven.Client.Connection.Async
             return ExecuteWithReplication("HEAD", u => DirectHeadAsync(u, key, token), token);
         }
 
+        public async Task<IAsyncEnumerator<RavenJObject>> StreamExportAsync(ExportOptions options, CancellationToken cancellationToken = default(CancellationToken))
+        {
+            var path = "/smuggler/export";
+            var request = CreateRequest(path, "POST");
+
+            request.RemoveAuthorizationHeader();
+
+            var tokenRetriever = new SingleAuthTokenRetriever(this, jsonRequestFactory, convention, OperationsHeaders, new OperationMetadata(Url, PrimaryCredentials));
+
+            var token = await tokenRetriever.GetToken().WithCancellation(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                token = await tokenRetriever.ValidateThatWeCanUseToken(token).WithCancellation(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                request.Dispose();
+
+                throw new InvalidOperationException(
+                    "Could not authenticate token for export streaming, if you are using ravendb in IIS make sure you have Anonymous Authentication enabled in the IIS configuration",
+                    e);
+            }
+            request.AddOperationHeader("Single-Use-Auth-Token", token);
+
+            HttpResponseMessage response;
+            try
+            {
+                    response = await request.ExecuteRawResponseAsync(RavenJObject.FromObject(options))
+                                            .WithCancellation(cancellationToken)
+                                            .ConfigureAwait(false);
+
+                await response.AssertNotFailingResponse().WithCancellation(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                request.Dispose();
+
+                throw;
+            }
+
+            return new YieldStreamResults(request, await response.GetResponseStreamWithHttpDecompression().ConfigureAwait(false));
+        }
+
         public Task<IAsyncEnumerator<RavenJObject>> StreamQueryAsync(string index, IndexQuery query, Reference<QueryHeaderInformation> queryHeaderInfo, CancellationToken token = default(CancellationToken))
         {
             return ExecuteWithReplication("GET", operationMetadata => DirectStreamQueryAsync(index, query, queryHeaderInfo, operationMetadata, token), token);
@@ -1778,10 +1825,13 @@ namespace Raven.Client.Connection.Async
                 .AddReplicationStatusHeaders(Url, operationMetadata.Url, replicationInformer, convention.FailoverBehavior, HandleReplicationStatusChanges);
 
             request.RemoveAuthorizationHeader();
-            var token = await GetSingleAuthToken(operationMetadata).WithCancellation(cancellationToken).ConfigureAwait(false);
+
+            var tokenRetriever = new SingleAuthTokenRetriever(this, jsonRequestFactory, convention, OperationsHeaders, operationMetadata);
+
+            var token = await tokenRetriever.GetToken().WithCancellation(cancellationToken).ConfigureAwait(false);
             try
             {
-                token = await ValidateThatWeCanUseAuthenticateTokens(operationMetadata, token).WithCancellation(cancellationToken).ConfigureAwait(false);
+                token = await tokenRetriever.ValidateThatWeCanUseToken(token).WithCancellation(cancellationToken).ConfigureAwait(false);
             }
             catch (Exception e)
             {
@@ -1855,7 +1905,7 @@ namespace Raven.Client.Connection.Async
             private bool complete;
 
             private bool wasInitialized;
-            private Func<JsonTextReaderAsync, bool> customizedEndResult;
+            private readonly Func<JsonTextReaderAsync, bool> customizedEndResult;
 
             public YieldStreamResults(HttpJsonRequest request, Stream stream, int start = 0, int pageSize = 0, RavenPagingInformation pagingInformation = null, Func<JsonTextReaderAsync, bool> customizedEndResult = null)
             {
@@ -2071,18 +2121,21 @@ namespace Raven.Client.Connection.Async
 
             request.RemoveAuthorizationHeader();
 
-            var token = await GetSingleAuthToken(operationMetadata).WithCancellation(cancellationToken).ConfigureAwait(false);
+            var tokenRetriever = new SingleAuthTokenRetriever(this, jsonRequestFactory, convention, OperationsHeaders, operationMetadata);
+
+            var token = await tokenRetriever.GetToken().WithCancellation(cancellationToken).ConfigureAwait(false);
             try
             {
-                token = await ValidateThatWeCanUseAuthenticateTokens(operationMetadata, token).WithCancellation(cancellationToken).ConfigureAwait(false);
+                token = await tokenRetriever.ValidateThatWeCanUseToken(token).WithCancellation(cancellationToken).ConfigureAwait(false);
             }
             catch (Exception e)
             {
                 request.Dispose();
 
-                throw new InvalidOperationException("Could not authenticate token for docs streaming, if you are using ravendb in IIS make sure you have Anonymous Authentication enabled in the IIS configuration", e);
+                throw new InvalidOperationException(
+                    "Could not authenticate token for query streaming, if you are using ravendb in IIS make sure you have Anonymous Authentication enabled in the IIS configuration",
+                    e);
             }
-
             request.AddOperationHeader("Single-Use-Auth-Token", token);
 
             HttpResponseMessage response;
@@ -2185,17 +2238,6 @@ namespace Raven.Client.Connection.Async
             var metadata = new RavenJObject();
             AddTransactionInformation(metadata);
             var createHttpJsonRequestParams = new CreateHttpJsonRequestParams(this, url + requestUrl, method, metadata, credentialsThatShouldBeUsedOnlyInOperationsWithoutReplication, convention, timeout)
-                .AddOperationHeaders(OperationsHeaders);
-            createHttpJsonRequestParams.DisableRequestCompression = disableRequestCompression;
-            createHttpJsonRequestParams.DisableAuthentication = disableAuthentication;
-            return jsonRequestFactory.CreateHttpJsonRequest(createHttpJsonRequestParams);
-        }
-
-        public HttpJsonRequest CreateRequest(OperationMetadata operationMetadata, string requestUrl, string method, bool disableRequestCompression = false, bool disableAuthentication = false, TimeSpan? timeout = null)
-        {
-            var metadata = new RavenJObject();
-            AddTransactionInformation(metadata);
-            var createHttpJsonRequestParams = new CreateHttpJsonRequestParams(this, (operationMetadata.Url + requestUrl), method, metadata, operationMetadata.Credentials, convention, timeout)
                 .AddOperationHeaders(OperationsHeaders);
             createHttpJsonRequestParams.DisableRequestCompression = disableRequestCompression;
             createHttpJsonRequestParams.DisableAuthentication = disableAuthentication;
@@ -2499,25 +2541,6 @@ namespace Raven.Client.Connection.Async
                     if (e.StatusCode == HttpStatusCode.NotFound) return null;
                     throw;
                 }
-            }
-        }
-
-        private async Task<string> GetSingleAuthToken(OperationMetadata operationMetadata)
-        {
-            using (var request = CreateRequest(operationMetadata, "/singleAuthToken", "GET", disableRequestCompression: true))
-            {
-                var response = await request.ReadResponseJsonAsync().ConfigureAwait(false);
-                return response.Value<string>("Token");
-            }
-        }
-
-        private async Task<string> ValidateThatWeCanUseAuthenticateTokens(OperationMetadata operationMetadata, string token)
-        {
-            using (var request = CreateRequest(operationMetadata, "/singleAuthToken", "GET", disableRequestCompression: true, disableAuthentication: true))
-            {
-                request.AddOperationHeader("Single-Use-Auth-Token", token);
-                var result = await request.ReadResponseJsonAsync().ConfigureAwait(false);
-                return result.Value<string>("Token");
             }
         }
 
