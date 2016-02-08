@@ -1,11 +1,22 @@
 using System;
 using System.Diagnostics;
-using Microsoft.AspNet.Hosting;
-using Microsoft.AspNet.Hosting.Internal;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Hosting.Internal;
 using Microsoft.Extensions.DependencyInjection;
 using Raven.Abstractions.Logging;
 using Raven.Server.Config;
 using Raven.Server.ServerWide;
+using System;
+using System.IO;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Server.Kestrel;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Raven.Server
 {
@@ -16,7 +27,7 @@ namespace Raven.Server
         public readonly RavenConfiguration Configuration;
 
         public readonly ServerStore ServerStore;
-        private IApplication _application;
+        private IWebHost _webHost;
 
         public RavenServer(RavenConfiguration configuration)
         {
@@ -48,14 +59,14 @@ namespace Raven.Server
             }
             sp.Restart();
 
-            IHostingEngine hostingEngine;
             try
             {
-                hostingEngine = new WebHostBuilder(Configuration.WebHostConfig, true)
+                _webHost = new WebHostBuilder()
                     .UseServer("Microsoft.AspNet.Server.Kestrel")
+                    .UseUrls(Configuration.Core.ServerUrl)
+                    .UseEnvironment(EnvironmentName.Production)
+                    .UseCaptureStartupErrors(true)
                     .UseStartup<RavenServerStartup>()
-                    .UseServices(services => services.AddInstance(ServerStore))
-                    // ReSharper disable once AccessToDisposedClosure
                     .Build();
             }
             catch (Exception e)
@@ -71,7 +82,7 @@ namespace Raven.Server
 
             try
             {
-                _application = hostingEngine.Start();
+                _webHost.Start();
             }
             catch (Exception e)
             {
@@ -82,7 +93,7 @@ namespace Raven.Server
 
         public void Dispose()
         {
-            _application?.Dispose();
+            _webHost?.Dispose();
             ServerStore?.Dispose();
         }
     }

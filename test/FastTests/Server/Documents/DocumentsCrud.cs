@@ -265,12 +265,6 @@ namespace FastTests.Server.Documents
             options.OwnsPagers = false;
             _documentsStorage.Dispose();
             options.OwnsPagers = true;
-            var configBuilder = new ConfigurationBuilder()
-             .Add(new MemoryConfigurationProvider(new Dictionary<string, string>
-             {
-                 //["run.in.memory"] = "false",
-                 //["system.path"] = Path.GetTempPath() + "\\crud"
-             }));
             _documentsStorage = new DocumentsStorage("test", new RavenConfiguration());
             _documentsStorage.Initialize(options);
         }

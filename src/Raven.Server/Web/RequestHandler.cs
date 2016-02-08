@@ -2,7 +2,7 @@
 using System.IO;
 using System.IO.Compression;
 using System.Threading.Tasks;
-using Microsoft.AspNet.Http;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Primitives;
 using Raven.Abstractions.Logging;
 using Raven.Server.Routing;

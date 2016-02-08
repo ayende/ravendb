@@ -16,40 +16,41 @@
       "dependencies": {
         "xunit": "2.2.0-beta1-build3239",
         "xunit.runner.dnx": "2.1.0-rc1-build204",
+        "xunit.runner.aspnet": "2.0.0-aspnet-rc2-16105",
 
-        "System.Linq": "4.0.1-beta-23516",
+        "System.Linq": "4.0.1-rc2-23728",
 
-        "Microsoft.Win32.Primitives": "4.0.1-beta-23516",
+        "Microsoft.Win32.Primitives": "4.0.1-rc2-23728",
 
-        "System.Collections": "4.0.11-beta-23516",
-        "System.Collections.Immutable": "1.1.38-beta-23516",
-        "System.Collections.Concurrent": "4.0.11-beta-23516",
+        "System.Collections": "4.0.11-rc2-23728",
+        "System.Collections.Immutable": "1.2.0-rc2-23728",
+        "System.Collections.Concurrent": "4.0.11-rc2-23728",
 
-        "System.Diagnostics.Tools": "4.0.1-beta-23516",
-        "System.Diagnostics.Debug": "4.0.11-beta-23516",
-        "System.Diagnostics.Process": "4.1.0-beta-23516",
-        "System.Diagnostics.StackTrace": "4.0.1-beta-23516",
+        "System.Diagnostics.Tools": "4.0.1-rc2-23728",
+        "System.Diagnostics.Debug": "4.0.11-rc2-23728",
+        "System.Diagnostics.Process": "4.1.0-rc2-23728",
+        "System.Diagnostics.StackTrace": "4.0.1-rc2-23728",
 
-        "System.IO": "4.0.11-beta-23516",
-        "System.IO.Compression": "4.1.0-beta-23516",
-        "System.IO.MemoryMappedFiles": "4.0.0-beta-23516",
-        "System.IO.Compression.ZipFile": "4.0.1-beta-23516",
-        "System.IO.FileSystem.DriveInfo": "4.0.0-beta-23516",
-        "System.IO.FileSystem.Primitives": "4.0.1-beta-23516",
+        "System.IO": "4.1.0-rc2-23728",
+        "System.IO.Compression": "4.1.0-rc2-23728",
+        "System.IO.MemoryMappedFiles": "4.0.0-rc2-23728",
+        "System.IO.Compression.ZipFile": "4.0.1-rc2-23728",
+        "System.IO.FileSystem.DriveInfo": "4.0.0-rc2-23728",
+        "System.IO.FileSystem.Primitives": "4.0.1-rc2-23728",
 
-        "System.Threading": "4.0.11-beta-23516",
-        "System.Threading.Tasks": "4.0.11-beta-23516",
-        "System.Threading.Thread": "4.0.0-beta-23516",
-        "System.Threading.Overlapped": "4.0.1-beta-23516",
-        "System.Threading.Tasks.Parallel": "4.0.1-beta-23516",
+        "System.Threading": "4.0.11-rc2-23728",
+        "System.Threading.Tasks": "4.0.11-rc2-23728",
+        "System.Threading.Thread": "4.0.0-rc2-23728",
+        "System.Threading.Overlapped": "4.0.1-rc2-23728",
+        "System.Threading.Tasks.Parallel": "4.0.1-rc2-23728",
 
-        "System.Text.Encoding": "4.0.11-beta-23516",
+        "System.Text.Encoding": "4.0.11-rc2-23728",
 
-        "System.Runtime": "4.0.21-beta-23516",
+        "System.Runtime": "4.0.21-rc2-23728",
 
-        "System.Reflection.TypeExtensions": "4.1.0-beta-23516",
+        "System.Reflection.TypeExtensions": "4.1.0-rc2-23728",
 
-        "System.Runtime.InteropServices.RuntimeInformation": "4.0.0-beta-23516"
+        "System.Runtime.InteropServices.RuntimeInformation": "4.0.0-rc2-23728"
 
 
       }
@@ -58,6 +59,5 @@
   "dependencies": {
     "Sparrow": "4.0.0-*",
     "Voron": "4.0.0-*",
-    "xunit": "2.2.0-beta1-build3239"
   }
 }
