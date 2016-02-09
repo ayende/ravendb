@@ -62,7 +62,7 @@ namespace Raven.Server.Documents
             using (ContextPool.AllocateOperationContext(out context))
             {
                 context.Transaction = context.Environment.ReadTransaction();
-
+                var includePaths = GetQueryStringValues("include") ?? new string[0];
                 var writer = new BlittableJsonTextWriter(context, HttpContext.Response.Body);
                 writer.WriteStartObject();
                 writer.WritePropertyName(context.GetLazyStringFor("Results"));
@@ -78,15 +78,17 @@ namespace Raven.Server.Documents
                     first = false;
                     var mutableMetadata = GetMutableMetadata(result);
                     mutableMetadata["@id"] = result.Key;
-                    mutableMetadata["@etag"] = result.Etag;
-
+                    mutableMetadata["@etag"] = result.Etag;					
+                    
                     result.Data.WriteTo(writer);       
                 }
                 writer.WriteEndArray();
                 writer.WriteComma();
                 writer.WritePropertyName(context.GetLazyStringFor("Includes"));
                 writer.WriteStartArray();
+
                 //TODO: Includes
+
                 writer.WriteEndArray();
 
                 writer.WriteEndObject();

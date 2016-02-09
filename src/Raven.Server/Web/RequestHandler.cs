@@ -1,8 +1,8 @@
-﻿using System.IO;
+﻿using System;
+using System.Linq;
+using System.IO;
 using System.IO.Compression;
-using System.Threading.Tasks;
 using Microsoft.AspNet.Http;
-using Microsoft.Extensions.Primitives;
 using Raven.Abstractions.Logging;
 using Raven.Server.Routing;
 using Raven.Server.ServerWide;
@@ -22,6 +22,14 @@ namespace Raven.Server.Web
             HttpContext = context.HttpContext;
             ServerStore = context.ServerStore;
             RouteMatch = context.RouteMatch;
+        }
+
+        public string[] GetQueryStringValues(string key)
+        {
+            var items = HttpContext.Request.Query.Where(pair => pair.Key == key);
+            return items.SelectMany(pair => pair.Value)
+                        .Select(v => v != null ? Uri.UnescapeDataString(v) : null)
+                        .ToArray();
         }
 
         protected Stream RequestBodyStream()
