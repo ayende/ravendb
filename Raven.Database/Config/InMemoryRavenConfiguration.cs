@@ -103,6 +103,8 @@ namespace Raven.Database.Config
             WorkingDirectory = CalculateWorkingDirectory(ravenSettings.WorkingDir.Value);
             FileSystem.InitializeFrom(this);
 
+            ShouldApplyPrecomputedBatchForNewIndex = ravenSettings.ShouldApplyPrecomputedBatchForNewIndex.Value;
+
             MaxClauseCount = ravenSettings.MaxClauseCount.Value;
 
             AllowScriptsToAdjustNumberOfSteps = ravenSettings.AllowScriptsToAdjustNumberOfSteps.Value;
@@ -358,6 +360,8 @@ namespace Raven.Database.Config
 
             return FilePathTools.MakeSureEndsWithSlash(workingDirectory.ToFullPath());
         }
+
+        public bool ShouldApplyPrecomputedBatchForNewIndex { get; private set; }
 
         public TimeSpan ConcurrentResourceLoadTimeout { get; private set; }
 
