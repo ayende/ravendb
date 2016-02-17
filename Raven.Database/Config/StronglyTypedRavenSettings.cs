@@ -49,6 +49,8 @@ namespace Raven.Database.Config
 
         public void Setup(int defaultMaxNumberOfItemsToIndexInSingleBatch, int defaultInitialNumberOfItemsToIndexInSingleBatch)
         {
+            ShouldApplyPrecomputedBatchForNewIndex = new BooleanSetting(settings["Raven/ShouldApplyPrecomputedBatchForNewIndex"],true);
+
             //1024 is Lucene.net default - so if the setting is not set it will be the same as not touching Lucene's settings at all
             MaxClauseCount = new IntegerSetting(settings[Constants.MaxClauseCount], 1024);
 
@@ -306,6 +308,8 @@ namespace Raven.Database.Config
 
             return val;
         }
+
+        public BooleanSetting ShouldApplyPrecomputedBatchForNewIndex { get; set; }
 
         public BooleanSetting CacheDocumentsInMemory { get; set; }
 

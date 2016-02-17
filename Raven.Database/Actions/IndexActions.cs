@@ -501,6 +501,9 @@ namespace Raven.Database.Actions
 
         private Action TryCreateTaskForApplyingPrecomputedBatchForNewIndex(Index index, IndexDefinition definition)
         {
+            if (!Database.Configuration.ShouldApplyPrecomputedBatchForNewIndex)
+                return null;
+
             var generator = IndexDefinitionStorage.GetViewGenerator(definition.IndexId);
             if (generator.ForEntityNames.Count == 0 && index.IsTestIndex == false)
             {
