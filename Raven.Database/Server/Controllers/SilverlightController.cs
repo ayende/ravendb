@@ -17,6 +17,7 @@ namespace Raven.Database.Server.Controllers
         [RavenRoute("databases/{databaseName}/silverlight/ensureStartup")]
         public HttpResponseMessage SilverlightEnsureStartup()
         {
+            new CreateSilverlightIndexes().SilverlightTransformerWasRequested(Database);
             Database.ExtensionsState.GetOrAdd("SilverlightUI.NotifiedAboutSilverlightBeingRequested", s =>
             {
                 var skipCreatingStudioIndexes = Database.Configuration.Settings["Raven/SkipCreatingStudioIndexes"];
@@ -28,6 +29,16 @@ namespace Raven.Database.Server.Controllers
                 return true;
             });
 
+            
+
+            return GetMessageWithObject(new { ok = true });
+        }
+
+        [HttpGet]
+        [RavenRoute("silverlight/ensureTransformer")]
+        [RavenRoute("databases/{databaseName}/silverlight/ensureTransformer")]
+        public HttpResponseMessage SilverlightEnsureTransformer() {
+            new CreateSilverlightIndexes().SilverlightTransformerWasRequested(Database);
             return GetMessageWithObject(new { ok = true });
         }
 

@@ -3,6 +3,7 @@ import database = require("models/database");
 import collection = require("models/collection");
 import getIndexTermsCommand = require("commands/getIndexTermsCommand");
 import getCollectionsCountCommand = require("commands/getCollectionsCountCommand");
+import getCollectionsLabelCommand = require("commands/getCollectionsLabelCommand");
 import getCachedCollectionsCount = require("commands/getCachedCollectionsCount");
 
 class getCollectionsCommand extends commandBase {
@@ -34,7 +35,6 @@ class getCollectionsCommand extends commandBase {
             .done((terms: string[], status, xhr) => {
 
                 if (this.previousValues.length > 0 && this.lastQueryDate()) {
-
                     var collections = this.previousValues.filter(v => !v.isAllDocuments && !v.isSystemDocuments).map(v => new collection(v.name, this.ownerDb, v.documentCount()));
                     // apply optimalization fetch only changes, based on last query time. 
                     new getCachedCollectionsCount(this.ownerDb, this.lastQueryDate())
@@ -55,8 +55,13 @@ class getCollectionsCommand extends commandBase {
                     var collections = terms.map(term => new collection(term, this.ownerDb, 0));
                     new getCollectionsCountCommand(collections, this.ownerDb)
                         .execute()
-                        .done(result => task.resolve(result))
-                        .fail(result => task.reject(result));
+                        .done(result =>
+                            new getCollectionsLabelCommand(collections, this.ownerDb)
+                                .execute()
+                                .done(result => task.resolve(result))
+                                .fail(result => task.reject(result))
+                        ).fail(result => task.reject(result));
+
                 }
                 if (this.lastQueryDate != null) {
                     this.lastQueryDate(xhr.getResponseHeader('Date'));
@@ -73,7 +78,7 @@ class getCollectionsCommand extends commandBase {
     createSystemIndexAndTryAgain(deferred: JQueryDeferred<collection[]>, originalReadError: JQueryXHR) {
         // Most often, failure to get the collections is due to the missing system index, Raven/DocumentsByEntityName.
         // This appears to be new behavior as of 3.0: Raven doesn't create this index automatically for the system database.
-
+        
         // Calling silverlight/ensureStartup creates the system index.
         this.query("/silverlight/ensureStartup", null, this.ownerDb)
             .done(() => this.retryQuery(deferred, originalReadError))

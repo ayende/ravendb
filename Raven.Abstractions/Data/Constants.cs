@@ -182,6 +182,7 @@ namespace Raven.Abstractions.Data
         public const string DefaultRequestEncoding = "UTF-8";
 
         public const string DocumentsByEntityNameIndex = "Raven/DocumentsByEntityName";
+        public const string LabelsByCollectionNameTransformer = "Raven/LabelsByCollectionName";
 
         //Counters
         public static partial class Counter
