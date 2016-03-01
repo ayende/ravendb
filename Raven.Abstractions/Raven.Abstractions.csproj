@@ -477,6 +477,7 @@
     <Compile Include="Util\Base62Util.cs" />
     <Compile Include="Util\ConfigurationManager.cs" />
     <Compile Include="Util\EnvironmentUtils.cs" />
+    <Compile Include="Util\FixedSizeConcurrentQueue.cs" />
     <Compile Include="Util\Streams\BufferPoolMemoryStream.cs" />
     <Compile Include="Util\ComparableByteArray.cs" />
     <Compile Include="Util\CompletedTask.cs" />
