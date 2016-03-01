@@ -396,9 +396,15 @@ namespace Raven.Database.Server.Controllers
             }
 
             var instance = Database.IndexStorage.GetIndexInstance(index);
-
+            var oldPriority = instance.Priority;
             Database.TransactionalStorage.Batch(accessor => accessor.Indexing.SetIndexPriority(instance.indexId, indexingPriority));
             instance.Priority = indexingPriority;
+
+            if (oldPriority == IndexingPriority.Disabled &&
+                (indexingPriority == IndexingPriority.Normal || indexingPriority == IndexingPriority.Idle))
+            {
+                Database.WorkContext.NotifyAboutWork();
+            }
 
             return GetEmptyMessage();
         }
@@ -435,11 +441,11 @@ namespace Raven.Database.Server.Controllers
                     }
                 });
 
-                Database.Tasks.AddTask(task, null, new TaskActions.PendingTaskDescription
+                Database.Tasks.AddTask(task, new TaskBasedOperationState(task), new TaskActions.PendingTaskDescription
                 {
                     StartTime = SystemTime.UtcNow,
                     TaskType = TaskActions.PendingTaskType.RecoverCorruptedIndexOperation,
-                    Payload = index.PublicName
+                    Description = index.PublicName
                 }, out taskId);
             }
 

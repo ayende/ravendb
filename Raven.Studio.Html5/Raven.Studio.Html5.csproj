@@ -40,6 +40,8 @@
     <TypeScriptCompile Include="App\commands\database\subscriptions\getSubscriptionCommand.ts" />
     <TypeScriptCompile Include="App\commands\database\subscriptions\setSubscriptionAckEtagCommand.ts" />
     <TypeScriptCompile Include="App\commands\filesystem\fsCheckSufficientDiskSpaceCommand.ts" />
+    <TypeScriptCompile Include="App\commands\filesystem\getConfigurationsByPrefixCommand.ts" />
+    <TypeScriptCompile Include="App\commands\resources\getResourceDrives.ts" />
     <TypeScriptCompile Include="App\commands\resources\getGlobalReplicationTopology.ts" />
     <TypeScriptCompile Include="App\commands\database\studio\checkEncryptionKey.ts" />
     <TypeScriptCompile Include="App\commands\auth\forceLicenseUpdate.ts" />
@@ -82,12 +84,15 @@
     <TypeScriptCompile Include="App\commands\saveTransformerLockModeCommand.ts" />
     <TypeScriptCompile Include="App\commands\filesystem\uploadFileToFilesystemCommand.ts" />
     <TypeScriptCompile Include="App\common\appUrl.ts" />
+    <TypeScriptCompile Include="App\common\bindingHelpers\autoRefreshBindingHandler.ts" />
     <TypeScriptCompile Include="App\common\changesApiSharedConnection.ts" />
     <TypeScriptCompile Include="App\common\cssGenerator.ts" />
     <TypeScriptCompile Include="App\common\changesContext.ts" />
+    <TypeScriptCompile Include="App\common\recentPatchesStorage.ts" />
     <TypeScriptCompile Include="App\common\svgDownloader.ts" />
     <TypeScriptCompile Include="App\models\counter\counterGroup.ts" />
     <TypeScriptCompile Include="App\models\database\debug\debugDocumentStats.ts" />
+    <TypeScriptCompile Include="App\models\database\debug\runningTask.ts" />
     <TypeScriptCompile Include="App\models\database\debug\statusDebugQueriesGroup.ts" />
     <TypeScriptCompile Include="App\models\database\debug\statusDebugQueriesQuery.ts" />
     <TypeScriptCompile Include="App\models\database\subscription\subscription.ts" />
@@ -111,6 +116,7 @@
     <TypeScriptCompile Include="App\models\counter\counterStorage.ts" />
     <TypeScriptCompile Include="App\models\counter\counterStorageReplicationDestination.ts" />
     <TypeScriptCompile Include="App\models\counter\counterStorageReplicationSetup.ts" />
+    <TypeScriptCompile Include="App\viewmodels\common\selectCsvColumns.ts" />
     <TypeScriptCompile Include="App\viewmodels\counter\deleteCounterStorageConfirm.ts" />
     <TypeScriptCompile Include="App\viewmodels\counter\editCounterDialog.ts" />
     <TypeScriptCompile Include="App\viewmodels\databaseStudioConfig.ts" />
@@ -141,8 +147,11 @@
     <TypeScriptCompile Include="App\viewmodels\database\status\indexing\perfDialogs\mapBatchInfo.ts" />
     <TypeScriptCompile Include="App\viewmodels\database\status\requests\requestTracing.ts" />
     <TypeScriptCompile Include="App\viewmodels\database\tasks\subscriptionsTask.ts" />
+    <TypeScriptCompile Include="App\viewmodels\filesystem\search\resetIndexConfirm.ts" />
     <TypeScriptCompile Include="App\viewmodels\filesystem\settings\settings.ts" />
     <TypeScriptCompile Include="App\viewmodels\filesystem\settings\versioning.ts" />
+    <TypeScriptCompile Include="App\viewmodels\filesystem\status\activityItems.ts" />
+    <TypeScriptCompile Include="App\viewmodels\filesystem\status\sourceSynchronizationInformation.ts" />
     <TypeScriptCompile Include="App\viewmodels\manage\console.ts" />
     <TypeScriptCompile Include="App\viewmodels\manage\topology.ts" />
     <TypeScriptCompile Include="App\viewmodels\resources\createTimeSeries.ts" />
@@ -164,6 +173,7 @@
     <TypeScriptCompile Include="App\common\changesApiWarnStorage.ts" />
     <TypeScriptCompile Include="App\common\apiKeyLocalStorage.ts" />
     <TypeScriptCompile Include="App\viewmodels\database\status\indexing\indexPerformance.ts" />
+    <Content Include="App\commands\database\replication\resolveAllConflictsCommand.ts" />
     <Content Include="App\main.js" />
     <Content Include="App\views\common\confirmationDialog.html" />
     <Content Include="App\views\common\deleteDocuments.html" />
@@ -172,6 +182,7 @@
     <Content Include="App\views\common\latestBuildReminder.html" />
     <Content Include="App\views\common\licensingStatus.html" />
     <Content Include="App\views\common\recentErrors.html" />
+    <Content Include="App\views\common\selectCsvColumns.html" />
     <Content Include="App\views\common\selectColumns.html" />
     <Content Include="App\views\common\showDataDialog.html" />
     <Content Include="App\views\common\upgrade.html" />
@@ -739,7 +750,6 @@
     <TypeScriptCompile Include="App\commands\database\documents\executeBulkDocsCommand.ts" />
     <TypeScriptCompile Include="App\commands\database\documents\generateClassCommand.ts" />
     <TypeScriptCompile Include="App\commands\database\documents\getAllDocumentsCommand.ts" />
-    <TypeScriptCompile Include="App\commands\database\documents\getCollectionInfoCommand.ts" />
     <TypeScriptCompile Include="App\commands\database\documents\getCollectionsCommand.ts" />
     <TypeScriptCompile Include="App\commands\database\documents\getCollectionsCountCommand.ts" />
     <TypeScriptCompile Include="App\commands\database\documents\getCustomColumnsCommand.ts" />
@@ -953,11 +963,6 @@
     <TypeScriptCompile Include="App\models\database\debug\alert.ts" />
     <TypeScriptCompile Include="App\models\database\debug\performanceTestRequest.ts" />
     <TypeScriptCompile Include="App\models\database\debug\performanceTestResultWrapped.ts" />
-    <TypeScriptCompile Include="App\models\database\debug\debugDocumentStats.ts" />
-    <TypeScriptCompile Include="App\models\database\debug\performanceTestRequest.ts" />
-    <TypeScriptCompile Include="App\models\database\debug\performanceTestResultWrapped.ts" />
-    <TypeScriptCompile Include="App\models\database\debug\statusDebugQueriesGroup.ts" />
-    <TypeScriptCompile Include="App\models\database\debug\statusDebugQueriesQuery.ts" />
     <TypeScriptCompile Include="App\models\database\documents\collection.ts" />
     <TypeScriptCompile Include="App\models\database\documents\collectionInfo.ts" />
     <TypeScriptCompile Include="App\models\database\documents\customColumnParams.ts" />
@@ -1153,10 +1158,8 @@
     <TypeScriptCompile Include="App\viewmodels\filesystem\search\fieldRangeFilter.ts" />
     <TypeScriptCompile Include="App\viewmodels\filesystem\search\fieldStringFilter.ts" />
     <TypeScriptCompile Include="App\viewmodels\filesystem\search\inMethodFilter.ts" />
-    <TypeScriptCompile Include="App\viewmodels\filesystem\search\search.ts" />
     <TypeScriptCompile Include="App\viewmodels\filesystem\settings\settings.ts" />
     <TypeScriptCompile Include="App\viewmodels\filesystem\settings\versioning.ts" />
-    <TypeScriptCompile Include="App\viewmodels\filesystem\status\resetIndexConfirm.ts" />
     <TypeScriptCompile Include="App\viewmodels\filesystem\status\status.ts" />
     <TypeScriptCompile Include="App\viewmodels\filesystem\synchronization\resolveConflict.ts" />
     <TypeScriptCompile Include="App\viewmodels\filesystem\synchronization\synchronization.ts" />
@@ -1266,6 +1269,10 @@
     <Content Include="Content\bootstrap.css.map">
       <DependentUpon>bootstrap.css</DependentUpon>
     </Content>
+    <None Include="compilerconfig.json" />
+    <None Include="compilerconfig.json.defaults">
+      <DependentUpon>compilerconfig.json</DependentUpon>
+    </None>
     <None Include="web.Debug.config">
       <DependentUpon>web.config</DependentUpon>
       <SubType>Designer</SubType>

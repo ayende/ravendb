@@ -312,6 +312,15 @@ namespace Raven.Database.Actions
                 var indexesIds = createdIndexes.Select(x => Database.IndexStorage.GetIndexInstance(x).indexId).ToArray();
                 Database.TransactionalStorage.Batch(accessor => accessor.Indexing.SetIndexesPriority(indexesIds, prioritiesList.ToArray()));
 
+                for (var i = 0; i < createdIndexes.Count; i++)
+                {
+                    var index = createdIndexes[i];
+                    var priority = prioritiesList[i];
+
+                    var instance = Database.IndexStorage.GetIndexInstance(index);
+                    instance.Priority = priority;
+                }
+
                 return createdIndexes.ToArray();
             }
             catch (Exception e)
@@ -374,6 +383,15 @@ namespace Raven.Database.Actions
 
                 var indexesIds = createdIndexes.Select(x => Database.IndexStorage.GetIndexInstance(x.Name).indexId).ToArray();
                 Database.TransactionalStorage.Batch(accessor => accessor.Indexing.SetIndexesPriority(indexesIds, prioritiesList.ToArray()));
+
+                for (var i = 0; i < createdIndexes.Count; i++)
+                {
+                    var index = createdIndexes[i].Name;
+                    var priority = prioritiesList[i];
+
+                    var instance = Database.IndexStorage.GetIndexInstance(index);
+                    instance.Priority = priority;
+                }
 
                 return createdIndexes.ToArray();
             }
@@ -484,6 +502,9 @@ namespace Raven.Database.Actions
 
         private Action TryCreateTaskForApplyingPrecomputedBatchForNewIndex(Index index, IndexDefinition definition)
         {
+            if (Database.Configuration.MaxPrecomputedBatchSizeForNewIndex <= 0) //precaution -> should never be lower than 0
+                return null;
+
             var generator = IndexDefinitionStorage.GetViewGenerator(definition.IndexId);
             if (generator.ForEntityNames.Count == 0 && index.IsTestIndex == false)
             {
@@ -511,7 +532,10 @@ namespace Raven.Database.Actions
                 {
                     try
                     {
-                        ApplyPrecomputedBatchForNewIndex(index, generator, index.IsTestIndex == false ? Database.Configuration.MaxNumberOfItemsToProcessInSingleBatch : Database.Configuration.Indexing.MaxNumberOfItemsToProcessInTestIndexes, cts);
+                        ApplyPrecomputedBatchForNewIndex(index, generator, 
+                            index.IsTestIndex == false ?
+                            Database.Configuration.MaxPrecomputedBatchSizeForNewIndex :  
+                            Database.Configuration.Indexing.MaxNumberOfItemsToProcessInTestIndexes, cts);
                     }
                     catch (Exception e)
                     {
@@ -541,7 +565,7 @@ namespace Raven.Database.Actions
                                 new TaskActions.PendingTaskDescription
                                 {
                                     StartTime = DateTime.UtcNow,
-                                    Payload = index.PublicName,
+                                    Description = index.PublicName,
                                     TaskType = TaskActions.PendingTaskType.NewIndexPrecomputedBatch
                                 },
                                 out id,
@@ -733,11 +757,11 @@ namespace Raven.Database.Actions
             });
 
             long taskId;
-            Database.Tasks.AddTask(deleteIndexTask, null, new TaskActions.PendingTaskDescription
+            Database.Tasks.AddTask(deleteIndexTask, new TaskBasedOperationState(deleteIndexTask), new TaskActions.PendingTaskDescription
             {
                 StartTime = SystemTime.UtcNow,
                 TaskType = TaskActions.PendingTaskType.IndexDeleteOperation,
-                Payload = indexName
+                Description = indexName
             }, out taskId);
 
             deleteIndexTask.ContinueWith(t =>

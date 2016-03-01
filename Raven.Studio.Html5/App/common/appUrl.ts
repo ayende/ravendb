@@ -594,9 +594,15 @@ class appUrl {
         return "#databases/conflicts?" + databasePart;
     }
 
-    static forPatch(db: database): string {
+    static forPatch(db: database, hashOfRecentPatch?: number): string {
         var databasePart = appUrl.getEncodedDbPart(db);
-        return "#databases/patch?" + databasePart;
+
+        if (hashOfRecentPatch) {
+            var patchPath = "recentpatch-" + hashOfRecentPatch;
+            return "#databases/patch/" + encodeURIComponent(patchPath) + "?" + databasePart;
+        } else {
+            return "#databases/patch?" + databasePart;    
+        }
     }
 
     static forIndexes(db: database): string {
@@ -706,11 +712,19 @@ class appUrl {
         return "#filesystems/tasks/exportFilesystem?" + filesystemPart;
     }
 
-    static forExportCollectionCsv(collection: collection, db: database): string {
+    static forExportCollectionCsv(collection: collection, db: database, customColumns?: string[]): string {
         if (collection.isAllDocuments || collection.isSystemDocuments) {
             return null;
         }
-        return appUrl.forResourceQuery(db) + "/streams/query/Raven/DocumentsByEntityName?format=excel&download=true&query=Tag:" + encodeURIComponent(collection.name);
+        var args = {
+            format: "excel",
+            download: true,
+            query: "Tag:" + collection.name,
+            column: customColumns
+        }
+
+
+        return appUrl.forResourceQuery(db) + "/streams/query/Raven/DocumentsByEntityName" + appUrl.urlEncodeArgs(args);
     }
 
     static forToggleIndexing(db: database): string {
@@ -1103,6 +1117,22 @@ class appUrl {
                 location.href = newLoationHref;
             }
         });
+    }
+
+    public static urlEncodeArgs(args: any): string {
+        var propNameAndValues = [];
+        for (var prop in args) {
+            var value = args[prop];
+            if (value instanceof Array) {
+                for (var i = 0; i < value.length; i++) {
+                    propNameAndValues.push(prop + "=" + encodeURIComponent(value[i]));
+                }
+            } else if (value !== undefined) {
+                propNameAndValues.push(prop + "=" + encodeURIComponent(value));
+            }
+        }
+
+        return "?" + propNameAndValues.join("&");
     }
 }
 

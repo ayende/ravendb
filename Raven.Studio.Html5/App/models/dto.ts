@@ -611,6 +611,10 @@ interface storedQueryDto {
     Hash: number;
 }
 
+interface storedPatchDto extends patchDto {
+    Hash: number;
+}
+
 interface indexDataDto {
     name: string;
     hasReduce: boolean;
@@ -625,6 +629,8 @@ interface bulkDocumentDto {
     Etag?: string; // Often is null on sending to server, non-null when returning from server.
     PatchResult?: any;
     Deleted?: any;
+    DebugMode?: boolean;
+    Patch?: any;
 }
 
 interface databaseDocumentSaveDto {
@@ -1213,11 +1219,16 @@ interface operationIdDto {
 interface operationStatusDto {
     Completed: boolean;
     Faulted: boolean;
-    State: any;
+    Canceled: boolean;
+    State: operationStateDto;
 }
 
-interface bulkOperationStatusDto extends operationStatusDto{
-    State: documentStateDto[];
+interface operationStateDto {
+    Error?: string;
+    Progress?: string;
+}
+
+interface bulkOperationStatusDto extends operationStatusDto {
     OperationProgress: bulkOperationProgress;
 }
 
@@ -1231,8 +1242,7 @@ interface bulkOperationProgress {
     ProcessedEntries: number;
 }
 
-interface importOperationStatusDto extends operationStatusDto{
-    LastProgress: string;
+interface importOperationStatusDto extends operationStatusDto {
     ExceptionDetails: string;
 }
 
@@ -1300,10 +1310,13 @@ interface countersReplicationTopologyConnectionDto {
 
 interface runningTaskDto {
     Id: number;
-    TaskStatus: string;
+    Status: operationStateDto;
     Exception: string;
-    ExceptionText: string;
-    Payload: string;
+    Killable: boolean;
+    Completed: boolean;
+    Faulted: boolean;
+    Canceled: boolean;
+    Description: string;
     TaskType: string;
     StartTime: string;
 }

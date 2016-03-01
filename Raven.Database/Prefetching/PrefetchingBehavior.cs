@@ -17,6 +17,7 @@ using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
 using Raven.Abstractions.Logging;
 using Raven.Database.Config;
+using Raven.Database.Impl;
 using Raven.Database.Indexing;
 
 namespace Raven.Database.Prefetching
@@ -126,8 +127,18 @@ namespace Raven.Database.Prefetching
         {
             foreach (var futureIndexBatch in futureIndexBatches)
             {
-                if (futureIndexBatch.Value.CancellationTokenSource != null)
-                    futureIndexBatch.Value.CancellationTokenSource.Cancel();
+                var cts = futureIndexBatch.Value.CancellationTokenSource;
+                if (cts != null)
+                {
+                    try
+                    {
+                        cts.Cancel();
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // this is expected because we are racing with the future batch completion
+                    }
+                }
             }
 
             Task.WaitAll(futureIndexBatches.Values.Select(ObserveDiscardedTask).ToArray());
@@ -209,8 +220,19 @@ namespace Raven.Database.Prefetching
             foreach (FutureIndexBatch source in futureIndexBatches.Values.Where(x => etag.CompareTo(x.StartingEtag) > 0))
             {
                 ObserveDiscardedTask(source);
-                if (source.CancellationTokenSource != null)
-                    source.CancellationTokenSource.Cancel();
+                var cts = source.CancellationTokenSource;
+                if (cts != null)
+                {
+                    try
+                    {
+                        cts.Cancel();
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // this is expected with a race against the prefetching queue
+                        
+                    }
+                }
                 FutureIndexBatch batch;
                 futureIndexBatches.TryRemove(source.StartingEtag, out batch);
             }
@@ -326,7 +348,7 @@ namespace Raven.Database.Prefetching
                 docsLoaded = TryGetDocumentsFromQueue(nextEtagToIndex, result, take);
 
                 // we don't need to add a future batch to a prefetcher that
-                // gets the documents after commit -> the default o,
+                // gets the documents after commit -> the default one,
                 // except when we disabled collecting documents after commit
                 if (ShouldHandleUnusedDocumentsAddedAfterCommit == false ||
                     DisableCollectingDocumentsAfterCommit)
@@ -573,6 +595,7 @@ namespace Raven.Database.Prefetching
             // Taking the snapshot should be safe enough. 
             long currentlyUsedBatchSizesInBytes = autoTuner.CurrentlyUsedBatchSizesInBytes.Values.Sum();
 
+            using (DocumentCacher.SkipSetDocumentsInDocumentCache())
             context.TransactionalStorage.Batch(actions =>
             {
                 //limit how much data we load from disk --> better adhere to memory limits
@@ -1065,9 +1088,10 @@ namespace Raven.Database.Prefetching
                 .ContinueWith(t =>
                 {
                     t.AssertNotFailed();
-                    linkedToken = null;
+                    cts.Dispose();
+                    linkedToken.Dispose();
                     return t.Result;
-                }, linkedToken.Token)
+                })
             };
 
             futureIndexBatch.Task.ContinueWith(t =>
@@ -1260,7 +1284,9 @@ namespace Raven.Database.Prefetching
 
         public void CleanupDocuments(Etag lastIndexedEtag)
         {
-            if (lastIndexedEtag == null) return;
+            if (lastIndexedEtag == null)
+                return;
+
             foreach (var docToRemove in documentsToRemove)
             {
                 if (docToRemove.Value == null)
@@ -1270,12 +1296,6 @@ namespace Raven.Database.Prefetching
 
                 HashSet<Etag> _;
                 documentsToRemove.TryRemove(docToRemove.Key, out _);
-            }
-
-            JsonDocument result;
-            while (prefetchingQueue.TryPeek(out result) && lastIndexedEtag.CompareTo(result.Etag) >= 0)
-            {
-                prefetchingQueue.TryDequeue(out result);
             }
 
             HandleCleanupOfUnusedDocumentsInQueue();
@@ -1404,8 +1424,18 @@ namespace Raven.Database.Prefetching
             //cancel any running future batches and prevent the creation of new ones
             foreach (var futureIndexBatch in futureIndexBatches)
             {
-                if (futureIndexBatch.Value.CancellationTokenSource != null)
-                    futureIndexBatch.Value.CancellationTokenSource.Cancel();
+                var cancellationTokenSource = futureIndexBatch.Value.CancellationTokenSource;
+                if (cancellationTokenSource != null)
+                {
+                    try
+                    {
+                        cancellationTokenSource.Cancel();
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // race with the actual task, this is fine
+                    }
+                }
             }
 
             futureIndexBatches.Clear();

@@ -68,9 +68,17 @@ namespace Raven.Client.Connection
                     var faulted = status.Value<bool>("Faulted");
                     if (faulted)
                     {
-                        var error = status.Value<RavenJObject>("State");
+                        var error = status.Value<RavenJToken>("State");
                         var errorMessage = error.Value<string>("Error");
                         throw new InvalidOperationException("Operation failed: " + errorMessage);
+                    }
+
+                    var canceled = status.Value<bool>("Canceled");
+                    if (canceled)
+                    {
+                        var error = status.Value<RavenJToken>("State");
+                        var errorMessage = error.Value<string>("Error");
+                        throw new InvalidOperationException("Operation canceled: " + errorMessage);
                     }
 
                     return status.Value<RavenJToken>("State");

@@ -262,7 +262,10 @@ namespace Raven.Abstractions.Data
         public const string DefaultRequestEncoding = "UTF-8";
         
         public const string DocumentsByEntityNameIndex = "Raven/DocumentsByEntityName";
-        
+
+        public const string ConflictDocumentsIndex = "Raven/ConflictDocuments";
+
+
         public const string MetadataEtagField = "ETag";
 
         public const string TempUploadsDirectoryName = "RavenTempUploads";
@@ -398,6 +401,7 @@ namespace Raven.Abstractions.Data
 
             public const string MaxScratchBufferSize = "Raven/Voron/MaxScratchBufferSize";
             public const string AllowOn32Bits = "Raven/Voron/AllowOn32Bits";
+            public const string SkipConsistencyChecks = "Raven/Voron/SkipConsistencyChecks";
             public const string ScratchBufferSizeNotificationThreshold = "Raven/Voron/ScratchBufferSizeNotificationThreshold";
         }
 
