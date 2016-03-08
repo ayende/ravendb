@@ -649,6 +649,11 @@ div.btn-group[data-toggle=buttons-radio] button.active {
     
     li {
         outline: none;
+        padding-left: 15px;
+    }
+
+    li.all-docs-collection {
+        padding-left: 0;
     }
 
     .collection-color-strip {
@@ -671,11 +676,6 @@ div.btn-group[data-toggle=buttons-radio] button.active {
         -o-text-overflow: ellipsis;
         text-overflow: ellipsis;
         max-width: 90%;
-    }
-
-    li:not(:first-child) {
-        // All collections except the first one ("All Documents") are indented.
-        padding-left: 15px;
     }
 }
 
@@ -2286,11 +2286,11 @@ Don't use remove-icon. Instead, use Bootstrap's built-in close/remove button:
     line-height: 34px;
 }
 
-#matchingDocumentsGrid {
-    margin-bottom: -30px;
-}
-
 .alert-danger a {
     color: white;
     text-decoration: underline;
+}
+
+.no-outline {
+    outline-style: none;
 }

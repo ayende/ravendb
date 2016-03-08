@@ -1209,7 +1209,7 @@ If you really want to do in memory filtering on the data returned from the query
         {
             EnsureValidFieldName(whereParams);
 
-            if (theSession != null && whereParams.Value != null)
+            if (theSession != null && whereParams.Value != null && whereParams.Value != "*")
                 sortByHints.Add(new KeyValuePair<string, SortOptions?>(whereParams.FieldName, theSession.Conventions.GetDefaultSortOption(whereParams.Value.GetType())));
 
             var transformToEqualValue = TransformToEqualValue(whereParams);
@@ -1361,7 +1361,7 @@ If you really want to do in memory filtering on the data returned from the query
         /// <param name = "value">The value.</param>
         public void WhereEndsWith(string fieldName, object value)
         {
-            //https://lucene.apache.org/core/2_9_4/queryparsersyntax.html#Wildcard%20Searches
+            // https://lucene.apache.org/core/2_9_4/queryparsersyntax.html#Wildcard%20Searches
             // You cannot use a * or ? symbol as the first character of a search
 
             // NOTE: doesn't fully match EndsWith semantics
