@@ -10,7 +10,7 @@ namespace Raven.Tests.Bugs.Queries
         [Fact]
         public void CanQueryOnNegation()
         {
-            using(var store = NewDocumentStore())
+            using (var store = NewDocumentStore())
             {
                 using(var s = store.OpenSession())
                 {

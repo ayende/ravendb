@@ -800,7 +800,7 @@ namespace Raven.Client.Connection.Async
 
             var uniqueIds = new HashSet<string>(keys);
             // if it is too big, we drop to POST (note that means that we can't use the HTTP cache any longer)
-            // we are fine with that, requests to load > 128 items are going to be rare
+            // we are fine with that, requests to load > 128 items are going to be rares
             var isGet = uniqueIds.Sum(x => x.Length) < 1024;
             var method = isGet ? "GET" : "POST";
             if (isGet)
