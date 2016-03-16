@@ -72,7 +72,7 @@ namespace Raven.Server.Indexing.Corax
                     }
                     analyzedEntry[field] = dynamicJsonArray;
                 }
-                else
+                else if ( values.Count != 0 )
                 {
                     analyzedEntry[field] = values[0];
                 }
