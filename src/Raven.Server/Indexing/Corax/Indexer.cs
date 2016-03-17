@@ -189,7 +189,8 @@ namespace Raven.Server.Indexing.Corax
                 var property = propertyByIndex.Item1;
 
                 if (property.Size > byte.MaxValue)
-                    throw new InvalidOperationException("Field name cannot exceed 255 bytes");
+                    continue; // We cant fail, we will ignore the field to index.
+                    // throw new InvalidOperationException("Field name cannot exceed 255 bytes");
 
                 //TODO: implement this without the field allocations
                 //var slice = new Slice(lazyStringValue.Buffer, (u short)lazyStringValue.Size);
@@ -211,7 +212,8 @@ namespace Raven.Server.Indexing.Corax
             {
                 var value = stringValue;
                 if (value.Size > byte.MaxValue)
-                    throw new InvalidOperationException("Field value cannot exceed 255 bytes");
+                    return new Slice[0]; // We cannot fail, we will ignore the field to index.
+                    // throw new InvalidOperationException("Field value cannot exceed 255 bytes");
 
                 var valueSlice = new Slice(value.Buffer, (ushort)value.Size);
                 return new[] { valueSlice };

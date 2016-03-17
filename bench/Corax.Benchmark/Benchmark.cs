@@ -8,26 +8,29 @@ using System.Threading.Tasks;
 
 namespace Corax.Benchmark
 {
-    public interface IHasStorageLocation
+    public interface IBenchmark
     {
-        string Path { get; }
+        int Documents { get; }
+        int SizeInKb { get; }
+
+        void Clean();
     }
 
     public static class Benchmark
     {
-        public static void Time(string name, Action<Stopwatch> action, IHasStorageLocation storage, bool delete = true)
+        public static void Time(string name, Action<Stopwatch> action, IBenchmark bench, bool delete = true)
         {
             if (delete)
-                DeleteDirectory(storage.Path);
+                bench.Clean();
 
             var sp = new Stopwatch();
             Console.Write("{0,-35}: running...", name);
             action(sp);
 
-            Console.WriteLine("\r{0,-35}: {1,10:#,#} ms {2,10:#,#} ops / sec", name, sp.ElapsedMilliseconds, Configuration.Transactions * Configuration.ItemsPerTransaction / sp.Elapsed.TotalSeconds);
+            Console.WriteLine("\r{0,-35}: {1,10:#,#} ms {2,10:#,#} docs / sec", name, sp.ElapsedMilliseconds, bench.Documents / sp.Elapsed.TotalSeconds);
         }
 
-        private static void DeleteDirectory(string dir)
+        public static void DeleteDirectory(string dir)
         {
             if (Directory.Exists(dir) == false)
                 return;
