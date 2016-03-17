@@ -31,17 +31,16 @@ namespace Raven.Server.Indexing.Corax.Queries
             {
                 if (it.Seek(long.MinValue) == false)
                     return Array.Empty<QueryMatch>();
+
                 var termFreqInDocs = fixedSizeTree.NumberOfEntries;
                 var numberOfDocs = IndexEntries.NumberOfEntries;
                 var idf = IndexingConventions.Idf(termFreqInDocs, numberOfDocs);
                 var weight = (idf * idf) * Boost;
                 var results = new QueryMatch[fixedSizeTree.NumberOfEntries];
                 int index = 0;
+
                 do
                 {
-                    if (it.Seek(long.MinValue) == false)
-                        throw new InvalidOperationException("Inconsistent number of results with can't seek to first");
-
                     results[index++] = new QueryMatch
                     {
                         DocumentId = (it.CurrentKey),
