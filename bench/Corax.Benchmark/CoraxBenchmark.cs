@@ -19,8 +19,12 @@ namespace Corax.Benchmark
 
         public void Run()
         {
-            Benchmark.Time(nameof(InsertWikipediaFromMemory), sw => InsertWikipediaFromMemory(sw), this, delete: true);
-            Benchmark.Time(nameof(InsertWikipediaFromDisk), sw => InsertWikipediaFromDisk(sw), this, delete: true);            
+            Console.WriteLine("Corax Benchmark");
+            Console.WriteLine();
+
+            Benchmark.Time(nameof(InsertWikipediaFromDisk), sw => InsertWikipediaFromDisk(sw), this, delete: true);
+
+            Console.WriteLine();
         }
 
         public void InsertWikipediaFromDisk(Stopwatch sw)
@@ -42,34 +46,11 @@ namespace Corax.Benchmark
                     Documents++;
                 }
 
-                sw.Stop();
-            }
-        }
-
-        public void InsertWikipediaFromMemory(Stopwatch sw)
-        {
-            Documents = 0;
-
-            // You should download the wikipedia text only version provided at http://kopiwiki.dsd.sztaki.hu/ to play around with this.
-            var loader = new WikipediaLoader(new DirectoryInfo(Configuration.WikipediaDir));
-
-            using (var _fullTextIndex = new FullTextIndex(StorageEnvironmentOptions.ForPath(_path), new DefaultAnalyzer()))
-            {
-                var documents = loader.LoadAsDocuments().Take(1000).ToList();
-
-                sw.Start();
-
-                var indexer = _fullTextIndex.CreateIndexer();
-
-                foreach (var doc in documents)
-                {
-                    indexer.NewEntry(doc.Item2, doc.Item1);
-                    Documents++;
-                }
+                indexer.Flush();    
 
                 sw.Stop();
             }
-        }
+        }    
 
         public void Clean()
         {

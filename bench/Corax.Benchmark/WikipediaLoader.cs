@@ -19,18 +19,18 @@ namespace Corax.Benchmark
 
         public IEnumerable<Tuple<string, DynamicJsonValue>> LoadAsDocuments()
         {
-            foreach(var fileInfo in this._path.EnumerateFiles("20140615-wiki-en_*"))
+            foreach (var fileInfo in this._path.EnumerateFiles("20140615-wiki-en_*"))
             {
                 using (var stream = new BufferedStream(fileInfo.OpenRead()))
                 using (var reader = new StreamReader(stream))
                 {
                     string name = string.Empty;
                     DynamicJsonValue textValue = null;
-                    
-                    var builder = new StringBuilder();                    
+
+                    var builder = new StringBuilder();
 
                     bool isFirst = true;
-                    while ( !reader.EndOfStream )
+                    while (!reader.EndOfStream)
                     {
                         var line = reader.ReadLine().Trim();
                         if (line.StartsWith("[[", StringComparison.Ordinal) && line.EndsWith("]]", StringComparison.Ordinal))
@@ -42,10 +42,10 @@ namespace Corax.Benchmark
                                 yield return new Tuple<string, DynamicJsonValue>(name, textValue);
 
                                 builder.Clear();
-                            }                                
+                            }
 
                             textValue = new DynamicJsonValue();
-                            name = line.Substring(2, line.Length - 4);                            
+                            name = line.Substring(2, line.Length - 4);
 
                             isFirst = false;
                         }
@@ -55,7 +55,44 @@ namespace Corax.Benchmark
                                 continue;
 
                             builder.AppendLine(line);
-                        }                                                    
+                        }
+                    }
+                }
+            }
+        }
+
+        public IEnumerable<Tuple<string, string>> Load()
+        {
+            foreach (var fileInfo in this._path.EnumerateFiles("20140615-wiki-en_*"))
+            {
+                using (var stream = new BufferedStream(fileInfo.OpenRead()))
+                using (var reader = new StreamReader(stream))
+                {
+                    string name = string.Empty;                    
+
+                    var builder = new StringBuilder();
+
+                    bool isFirst = true;
+                    while (!reader.EndOfStream)
+                    {
+                        var line = reader.ReadLine().Trim();
+                        if (line.StartsWith("[[", StringComparison.Ordinal) && line.EndsWith("]]", StringComparison.Ordinal))
+                        {
+                            if (!isFirst)
+                            {
+                                yield return new Tuple<string, string>(name, builder.ToString());
+
+                                builder.Clear();
+                            }
+
+                            name = line.Substring(2, line.Length - 4);
+
+                            isFirst = false;
+                        }
+                        else
+                        {
+                            builder.AppendLine(line);
+                        }
                     }
                 }
             }

@@ -103,39 +103,42 @@ namespace Raven.Server.Indexing.Corax
 
 
 
-        private unsafe void Flush()
+        public void Flush()
         {
             if (_newEntries.Count == 0 && _deletes.Count == 0)
                 return;
 
-            using (var tx = _parent.Env.WriteTransaction())
+            unsafe
             {
-                var entries = new Table(_parent.EntriesSchema, "IndexEntries", tx);
-
-                var identifiersTree = tx.CreateTree(Constants.DocumentIdFieldName);
-
-                foreach (var identifier in _deletes)
+                using (var tx = _parent.Env.WriteTransaction())
                 {
-                    DeleteEntry(tx, entries, identifiersTree, identifier);
+                    var entries = new Table(_parent.EntriesSchema, "IndexEntries", tx);
+
+                    var identifiersTree = tx.CreateTree(Constants.DocumentIdFieldName);
+
+                    foreach (var identifier in _deletes)
+                    {
+                        DeleteEntry(tx, entries, identifiersTree, identifier);
+                    }
+
+                    var options = tx.CreateTree("Options");
+
+                    var readResult = options.Read("LastEntryId");
+                    long lastEntryId = 1;
+                    if (readResult != null)
+                        lastEntryId = readResult.Reader.ReadLittleEndianInt64();
+
+                    foreach (var entry in _newEntries)
+                    {
+                        AddEntry(tx, entries, entry, lastEntryId++);
+                        entry.Dispose();
+                    }
+                    options.Add("LastEntryId", new Slice((byte*)&lastEntryId, sizeof(long)));
+                    tx.Commit();
                 }
-
-                var options = tx.CreateTree("Options");
-
-                var readResult = options.Read("LastEntryId");
-                long lastEntryId = 1;
-                if (readResult != null)
-                    lastEntryId = readResult.Reader.ReadLittleEndianInt64();
-
-                foreach (var entry in _newEntries)
-                {
-                    AddEntry(tx, entries, entry, lastEntryId++);
-                    entry.Dispose();
-                }
-                options.Add("LastEntryId", new Slice((byte*)&lastEntryId, sizeof(long)));
-                tx.Commit();
+                _size = 0;
+                _newEntries.Clear();
             }
-            _size = 0;
-            _newEntries.Clear();
         }
 
         private unsafe void DeleteEntry(Transaction tx, Table entries, Tree identifiersTree, string identifier)

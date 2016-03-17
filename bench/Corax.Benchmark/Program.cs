@@ -25,7 +25,10 @@ namespace Corax.Benchmark
             Console.BackgroundColor = oldbg;
 #endif
             var corax = new CoraxBenchmark();
-            corax.Run();            
+            corax.Run();
+
+            var lucene = new LuceneBenchmark();
+            lucene.Run();
 
             Console.ReadLine();
         }
