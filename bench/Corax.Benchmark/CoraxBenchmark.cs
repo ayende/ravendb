@@ -22,12 +22,12 @@ namespace Corax.Benchmark
             Console.WriteLine("Corax Benchmark");
             Console.WriteLine();
 
-            Benchmark.Time(nameof(InsertWikipediaFromDisk), sw => InsertWikipediaFromDisk(sw), this, delete: true);
+            Benchmark.Time(nameof(Insert), sw => Insert(sw), this, delete: true);
 
             Console.WriteLine();
         }
 
-        public void InsertWikipediaFromDisk(Stopwatch sw)
+        public void Insert(Stopwatch sw)
         {
             Documents = 0;
 
