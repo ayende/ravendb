@@ -72,7 +72,7 @@ namespace Raven.Server.Indexing.Corax
                     }
                     analyzedEntry[field] = dynamicJsonArray;
                 }
-                else
+                else if ( values.Count != 0 )
                 {
                     analyzedEntry[field] = values[0];
                 }
@@ -103,39 +103,42 @@ namespace Raven.Server.Indexing.Corax
 
 
 
-        private unsafe void Flush()
+        public void Flush()
         {
             if (_newEntries.Count == 0 && _deletes.Count == 0)
                 return;
 
-            using (var tx = _parent.Env.WriteTransaction())
+            unsafe
             {
-                var entries = new Table(_parent.EntriesSchema, "IndexEntries", tx);
-
-                var identifiersTree = tx.CreateTree(Constants.DocumentIdFieldName);
-
-                foreach (var identifier in _deletes)
+                using (var tx = _parent.Env.WriteTransaction())
                 {
-                    DeleteEntry(tx, entries, identifiersTree, identifier);
+                    var entries = new Table(_parent.EntriesSchema, "IndexEntries", tx);
+
+                    var identifiersTree = tx.CreateTree(Constants.DocumentIdFieldName);
+
+                    foreach (var identifier in _deletes)
+                    {
+                        DeleteEntry(tx, entries, identifiersTree, identifier);
+                    }
+
+                    var options = tx.CreateTree("Options");
+
+                    var readResult = options.Read("LastEntryId");
+                    long lastEntryId = 1;
+                    if (readResult != null)
+                        lastEntryId = readResult.Reader.ReadLittleEndianInt64();
+
+                    foreach (var entry in _newEntries)
+                    {
+                        AddEntry(tx, entries, entry, lastEntryId++);
+                        entry.Dispose();
+                    }
+                    options.Add("LastEntryId", new Slice((byte*)&lastEntryId, sizeof(long)));
+                    tx.Commit();
                 }
-
-                var options = tx.CreateTree("Options");
-
-                var readResult = options.Read("LastEntryId");
-                long lastEntryId = 1;
-                if (readResult != null)
-                    lastEntryId = readResult.Reader.ReadLittleEndianInt64();
-
-                foreach (var entry in _newEntries)
-                {
-                    AddEntry(tx, entries, entry, lastEntryId++);
-                    entry.Dispose();
-                }
-                options.Add("LastEntryId", new Slice((byte*)&lastEntryId, sizeof(long)));
-                tx.Commit();
+                _size = 0;
+                _newEntries.Clear();
             }
-            _size = 0;
-            _newEntries.Clear();
         }
 
         private unsafe void DeleteEntry(Transaction tx, Table entries, Tree identifiersTree, string identifier)
@@ -189,7 +192,8 @@ namespace Raven.Server.Indexing.Corax
                 var property = propertyByIndex.Item1;
 
                 if (property.Size > byte.MaxValue)
-                    throw new InvalidOperationException("Field name cannot exceed 255 bytes");
+                    continue; // We cant fail, we will ignore the field to index.
+                    // throw new InvalidOperationException("Field name cannot exceed 255 bytes");
 
                 //TODO: implement this without the field allocations
                 //var slice = new Slice(lazyStringValue.Buffer, (u short)lazyStringValue.Size);
@@ -211,7 +215,8 @@ namespace Raven.Server.Indexing.Corax
             {
                 var value = stringValue;
                 if (value.Size > byte.MaxValue)
-                    throw new InvalidOperationException("Field value cannot exceed 255 bytes");
+                    return new Slice[0]; // We cannot fail, we will ignore the field to index.
+                    // throw new InvalidOperationException("Field value cannot exceed 255 bytes");
 
                 var valueSlice = new Slice(value.Buffer, (ushort)value.Size);
                 return new[] { valueSlice };

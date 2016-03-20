@@ -1,7 +1,7 @@
 {
   "profiles": {
-    "Voron.Benchmark": {
-      "commandName": "Voron.Benchmark",
+    "Corax.Benchmark": {
+      "commandName": "Corax.Benchmark",
       "sdkVersion": "dnx-coreclr-win-x64.1.0.0-rc1-update1"
     }
   }

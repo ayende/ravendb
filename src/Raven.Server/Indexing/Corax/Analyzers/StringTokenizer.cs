@@ -5,7 +5,6 @@ namespace Raven.Server.Indexing.Corax.Analyzers
 {
     public class StringTokenizer : ITokenSource
     {
-        private bool _quoted;
         private TextReader _reader;
 
         public StringTokenizer(int maxBufferSize = 256)
@@ -17,7 +16,6 @@ namespace Raven.Server.Indexing.Corax.Analyzers
         {
             _reader = reader;
             Size = 0;
-            _quoted = false;
         }
 
         public char[] Buffer { get; }
@@ -47,13 +45,6 @@ namespace Raven.Server.Indexing.Corax.Analyzers
                 Column++;
                 if (r == -1) // EOF
                 {
-                    if (_quoted && Size > 0)
-                    {
-                        // we have an unterminated string, so we will ignore the quote, instead of errorring
-                        SetReader(new StringReader(new string(Buffer, 0, Size)));
-                        ch = '\0';
-                        continue;
-                    }
                     return Size > 0;
                 }
 
@@ -65,44 +56,19 @@ namespace Raven.Server.Indexing.Corax.Analyzers
                     {
                         Line++; // only move to new line if it isn't the \n in a \r\n pair
                     }
-                    if (_quoted)
-                    {
-                        AppendToBuffer(ch);
-                        if (BufferFull)
-                        {
-                            return true;
-                        }
-                    }
-                    else if (Size > 0)
+                    if (Size > 0)
                         return true;
                     continue;
                 }
                 if (char.IsWhiteSpace(ch))
                 {
-                    if (_quoted) // for a quoted string, we will continue until the end of the string
-                    {
-                        AppendToBuffer(ch);
-                        if (BufferFull)
-                        {
-                            return true;
-                        }
-                    }
-                    else if (Size > 0) // if we have content before, we will return this token
+                    if (Size > 0) // if we have content before, we will return this token
                         return true;
                     continue;
                 }
+
                 if (ch == '"')
-                {
-                    if (_quoted == false)
-                    {
-                        _quoted = true;
-                        if (Size > 0)
-                            return true; // return the current token
-                        continue;
-                    }
-                    _quoted = false;
-                    return true;
-                }
+                    continue;
 
                 if (char.IsPunctuation(ch))
                 {
