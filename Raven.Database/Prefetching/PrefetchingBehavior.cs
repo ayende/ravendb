@@ -62,6 +62,21 @@ namespace Raven.Database.Prefetching
         private readonly string userDescription;
         private Etag recentEtag = Etag.Empty;
 
+        internal int DocumentsToRemoveCount
+        {
+            get
+            {
+                try
+                {
+                    return documentsToRemove.Count;
+                }
+                catch (OverflowException)
+                {
+                    return -1;
+                }
+            }
+        }
+
         public PrefetchingBehavior(PrefetchingUser prefetchingUser, 
             WorkContext context, 
             BaseBatchSizeAutoTuner autoTuner, 
@@ -1131,9 +1146,11 @@ namespace Raven.Database.Prefetching
                 }, linkedToken.Token)
                 .ContinueWith(t =>
                 {
-                    t.AssertNotFailed();
-                    cts.Dispose();
-                    linkedToken.Dispose();
+                    using (cts)
+                    using (linkedToken)
+                    {
+                        t.AssertNotFailed();
+                    }
                     return t.Result;
                 })
             };
