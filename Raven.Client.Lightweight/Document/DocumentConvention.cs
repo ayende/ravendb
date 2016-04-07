@@ -601,6 +601,12 @@ namespace Raven.Client.Document
             };
 
             CustomizeJsonSerializer(jsonSerializer);
+
+            if (jsonSerializer.DateTimeZoneHandling != DateTimeZoneHandling.RoundtripKind)
+            {
+                throw new NotSupportedException("DateTimeZoneHandling is not supported: " + jsonSerializer.DateTimeZoneHandling);
+            }
+
             if (jsonSerializer.Converters.IsFrozen)  // if the user froze the collection, we don't need to do anything
                 return jsonSerializer;
             var convertersToUse = SaveEnumsAsIntegers ? DefaultConvertersEnumsAsIntegers : DefaultConverters;
