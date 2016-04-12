@@ -134,6 +134,8 @@ namespace Raven.Abstractions.Smuggler
                         {
                             var maxEtags = Operations.FetchCurrentMaxEtags();
                             lastException = await RunSingleExportAsync(exportOptions, result, maxEtags, jsonWriter, ownedStream).ConfigureAwait(false);
+                            if (SupportedFeatures.IsMultiPartExportSupported == false)
+                                isLastExport = true;
                         }
                         else
                             await RunLastExportAsync(exportOptions, result, jsonWriter).ConfigureAwait(false);
@@ -575,10 +577,10 @@ namespace Raven.Abstractions.Smuggler
                                 continue;
                             var ravenJsonObj = new RavenJObject
                             {
-                                {"Data", attachmentData},
-                                {"Metadata", attachmentInformation.Metadata},
-                                {"Key", attachmentInformation.Key},
-                                {"Etag", new RavenJValue(attachmentInformation.Etag.ToString())}
+                                { "Data", attachmentData },
+                                { "Metadata", attachmentInformation.Metadata },
+                                { "Key", attachmentInformation.Key },
+                                { "Etag", new RavenJValue(attachmentInformation.Etag.ToString()) }
                             };
                             jsonWriter.Write(ravenJsonObj);
 
@@ -1611,47 +1613,66 @@ namespace Raven.Abstractions.Smuggler
 
         protected async Task<ServerSupportedFeatures> DetectServerSupportedFeatures(ISmugglerDatabaseOperations ops, RavenConnectionStringOptions server)
         {
-            var serverVersion = await ops.GetVersion(server).ConfigureAwait(false);
-            if (string.IsNullOrEmpty(serverVersion))
+            var version = await Operations.GetVersion(server).ConfigureAwait(false);
+            if (string.IsNullOrEmpty(version?.ProductVersion))
             {
                 return GetLegacyModeFeatures();
             }
-
 
             var customAttributes = typeof(SmugglerDatabaseApiBase).Assembly.GetCustomAttributes(false);
             dynamic versionAtt = customAttributes.Single(x => x.GetType().Name == "RavenVersionAttribute");
             var intServerVersion = int.Parse(versionAtt.Version.Replace(".", ""));
 
-
             if (intServerVersion < 25)
             {
 
-                ops.ShowProgress("Running in legacy mode, importing/exporting transformers is not supported. Server version: {0}. Smuggler version: {1}.", serverVersion, versionAtt.Version);
+                ops.ShowProgress("Running in legacy mode, importing/exporting transformers is not supported. Server version: {0}. Smuggler version: {1}.", version.ProductVersion, versionAtt.Version);
                 return new ServerSupportedFeatures
                 {
                     IsTransformersSupported = false,
                     IsDocsStreamingSupported = false,
-                    IsIdentitiesSmugglingSupported = false
+                    IsIdentitiesSmugglingSupported = false,
+                    IsMultiPartExportSupported = false
                 };
             }
 
             if (intServerVersion == 25)
             {
-                ops.ShowProgress("Running in legacy mode, importing/exporting identities is not supported. Server version: {0}. Smuggler version: {1}.", serverVersion, versionAtt.Version);
+                ops.ShowProgress("Running in legacy mode, importing/exporting identities is not supported. Server version: {0}. Smuggler version: {1}.", version.ProductVersion, versionAtt.Version);
 
                 return new ServerSupportedFeatures
                 {
                     IsTransformersSupported = true,
                     IsDocsStreamingSupported = true,
-                    IsIdentitiesSmugglingSupported = false
+                    IsIdentitiesSmugglingSupported = false,
+                    IsMultiPartExportSupported = false
                 };
+            }
+
+            if (intServerVersion == 30)
+            {
+                var features = new ServerSupportedFeatures
+                {
+                    IsDocsStreamingSupported = true,
+                    IsTransformersSupported = true,
+                    IsIdentitiesSmugglingSupported = true
+                };
+
+                int build;
+                if (int.TryParse(version.BuildVersion, out build) == false)
+                    features.IsMultiPartExportSupported = false;
+                else
+                    features.IsMultiPartExportSupported = build == 13 || build >= 30100;
+
+                return features;
             }
 
             return new ServerSupportedFeatures
             {
                 IsTransformersSupported = true,
                 IsDocsStreamingSupported = true,
-                IsIdentitiesSmugglingSupported = true
+                IsIdentitiesSmugglingSupported = true,
+                IsMultiPartExportSupported = true
             };
         }
 
