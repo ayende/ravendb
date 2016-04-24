@@ -17,6 +17,7 @@ namespace Raven.Client.Document
             ConversionListeners = new IDocumentConversionListener[0];
             QueryListeners = new IDocumentQueryListener[0];
             StoreListeners = new IDocumentStoreListener[0];
+            SaveChangesListeners = new IDocumentSaveChangesListener[0];
             DeleteListeners = new IDocumentDeleteListener[0];
             ConflictListeners = new IDocumentConflictListener[0];
         }
@@ -33,6 +34,10 @@ namespace Raven.Client.Document
         ///     The store listeners
         /// </summary>
         public IDocumentStoreListener[] StoreListeners { get; set; }
+        /// <summary>
+        ///     The SaveChanges listeners
+        /// </summary>
+        public IDocumentSaveChangesListener[] SaveChangesListeners { get; set; }
         /// <summary>
         ///     The delete listeners
         /// </summary>
@@ -59,6 +64,11 @@ namespace Raven.Client.Document
         public void RegisterListener(IDocumentStoreListener conversionListener)
         {
             StoreListeners = StoreListeners.Concat(new[] { conversionListener }).ToArray();
+        }
+
+        public void RegisterListener(IDocumentSaveChangesListener saveChangesListener)
+        {
+            SaveChangesListeners = SaveChangesListeners.Concat(new[] { saveChangesListener }).ToArray();
         }
 
 

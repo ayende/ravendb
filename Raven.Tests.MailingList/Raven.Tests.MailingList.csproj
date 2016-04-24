@@ -479,6 +479,7 @@
     <Compile Include="UrlInIdsRepro.cs" />
     <Compile Include="UsingLoadStartsWithAndDashSepartor.cs" />
     <Compile Include="VacancyCampaignsTests.cs" />
+    <Compile Include="ValerioBorioni2.cs" />
     <Compile Include="ValerioBorioni.cs" />
     <Compile Include="Vicente.cs" />
     <Compile Include="Victor.cs" />

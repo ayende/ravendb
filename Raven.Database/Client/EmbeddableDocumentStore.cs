@@ -449,6 +449,12 @@ namespace Raven.Client.Embedded
             return this;
         }
 
+        public IDocumentStore RegisterListener(IDocumentSaveChangesListener listener)
+        {
+            Listeners.RegisterListener(listener);
+            return this;
+        }
+
         public void InitializeProfiling()
         {
             _inner.InitializeProfiling();

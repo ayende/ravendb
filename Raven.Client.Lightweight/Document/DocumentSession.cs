@@ -718,6 +718,11 @@ namespace Raven.Client.Document
 
         public void SaveChanges()
         {
+            foreach (var listener in theListeners.SaveChangesListeners)
+            {
+                listener.BeforeSaveChanges(this);
+            }
+           
             using (EntityToJson.EntitiesToJsonCachingScope())
             {
                 var data = PrepareForSaveChanges();
@@ -731,6 +736,11 @@ namespace Raven.Client.Document
                 if (batchResults == null)
                     throw new InvalidOperationException("Cannot call Save Changes after the document store was disposed.");
                 UpdateBatchResults(batchResults, data);
+            }
+
+            foreach (var listener in theListeners.SaveChangesListeners)
+            {
+                listener.AfterSaveChanges(this);
             }
         }
 
