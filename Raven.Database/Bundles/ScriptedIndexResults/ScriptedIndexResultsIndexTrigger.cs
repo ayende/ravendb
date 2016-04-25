@@ -4,7 +4,6 @@
 //  </copyright>
 // -----------------------------------------------------------------------
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel.Composition;
 using System.Threading;
@@ -53,8 +52,8 @@ namespace Raven.Database.Bundles.ScriptedIndexResults
             private readonly Abstractions.Data.ScriptedIndexResults scriptedIndexResults;
             private readonly HashSet<string> forEntityNames;
 
-            private readonly ConcurrentDictionary<string, ConcurrentBag<RavenJObject>> created = new ConcurrentDictionary<string, ConcurrentBag<RavenJObject>>(StringComparer.InvariantCultureIgnoreCase);
-            private readonly ConcurrentDictionary<string, ConcurrentBag<RavenJObject>> removed = new ConcurrentDictionary<string, ConcurrentBag<RavenJObject>>(StringComparer.InvariantCultureIgnoreCase);
+            private readonly Dictionary<string, List<RavenJObject>> created = new Dictionary<string, List<RavenJObject>>(StringComparer.InvariantCultureIgnoreCase);
+            private readonly Dictionary<string, List<RavenJObject>> removed = new Dictionary<string, List<RavenJObject>>(StringComparer.InvariantCultureIgnoreCase);
 
             public Batcher(DocumentDatabase database, Abstractions.Data.ScriptedIndexResults scriptedIndexResults, HashSet<string> forEntityNames)
             {
@@ -72,7 +71,7 @@ namespace Raven.Database.Bundles.ScriptedIndexResults
             {
                 if (created.ContainsKey(entryKey) == false)
                 {
-                    created[entryKey] = new ConcurrentBag<RavenJObject>();
+                    created.Add(entryKey, new List<RavenJObject>());
                 }
 
                 if (Log.IsDebugEnabled)
@@ -85,7 +84,7 @@ namespace Raven.Database.Bundles.ScriptedIndexResults
             {
                 if (removed.ContainsKey(entryKey) == false)
                 {
-                    removed[entryKey] = new ConcurrentBag<RavenJObject>();
+                    removed[entryKey] = new List<RavenJObject>();
                 }
 
                 if (Log.IsDebugEnabled)
