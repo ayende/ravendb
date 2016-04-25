@@ -295,6 +295,7 @@
     <Compile Include="Indexing\Sorting\Custom\IndexEntriesToComparablesGenerator.cs" />
     <Compile Include="Indexing\Sorting\DocumentIdSet.cs" />
     <Compile Include="Server\Connections\WebSocketBufferPool.cs" />
+    <Compile Include="Server\Controllers\Admin\BenchmarkController.cs" />
     <Compile Include="Server\Controllers\DebugVoronController.cs" />
     <Compile Include="Server\Controllers\SmugglerController.cs" />
     <Compile Include="Server\WebApi\MultiGetSafeStringContent.cs" />
@@ -1228,6 +1229,8 @@
     <None Include="App.config">
       <SubType>Designer</SubType>
     </None>
+    <None Include="ClassDiagram1.cd" />
+    <None Include="ClassDiagram2.cd" />
     <None Include="packages.config" />
     <None Include="RavenDB.snk" />
     <EmbeddedResource Include="Server\Assets\EmbeddedData\Northwind.dump" />
