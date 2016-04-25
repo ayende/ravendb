@@ -71,7 +71,7 @@ namespace Raven.Database.Bundles.ScriptedIndexResults
             {
                 if (created.ContainsKey(entryKey) == false)
                 {
-                    created.Add(entryKey, new List<RavenJObject>());
+                    created[entryKey] = new List<RavenJObject>();
                 }
 
                 if (Log.IsDebugEnabled)
