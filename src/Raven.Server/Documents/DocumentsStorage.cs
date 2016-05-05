@@ -8,6 +8,7 @@ using System.Text;
 using Raven.Abstractions.Data;
 using Constants = Raven.Abstractions.Data.Constants;
 using Raven.Abstractions.Logging;
+using Raven.Server.Documents.Versioning;
 using Raven.Server.Json;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
@@ -41,6 +42,7 @@ namespace Raven.Server.Documents
         public string DataDirectory;
         public DocumentsContextPool ContextPool;
         private UnmanagedBuffersPool _unmanagedBuffersPool;
+        private VersioningStorage _versioningStorage;
         private const string NoCollectionSpecified = "Raven/Empty";
         private const string SystemDocumentsCollection = "Raven/SystemDocs";
 
@@ -93,6 +95,8 @@ namespace Raven.Server.Documents
                 StartIndex = 2,
                 IsGlobal = false
             });
+
+            _versioningStorage = new VersioningStorage(documentDatabase);
         }
 
         public StorageEnvironment Environment { get; private set; }
@@ -307,8 +311,7 @@ namespace Raven.Server.Documents
             if (string.IsNullOrWhiteSpace(key))
                 throw new ArgumentException("Argument is null or whitespace", nameof(key));
             if (context.Transaction == null)
-                throw new ArgumentException("Context must be set with a valid transaction before calling Put",
-                    nameof(context));
+                throw new ArgumentException("Context must be set with a valid transaction before calling Put", nameof(context));
 
             var table = new Table(_docsSchema, context.Transaction.InnerTransaction);
 
@@ -443,7 +446,7 @@ namespace Raven.Server.Documents
             }
         }
 
-        private void GetLowerKeySliceAndStorageKey(JsonOperationContext context, string str, out byte* lowerKey, out int lowerSize,
+        public static void GetLowerKeySliceAndStorageKey(JsonOperationContext context, string str, out byte* lowerKey, out int lowerSize,
             out byte* key, out int keySize)
         {
             var byteCount = Encoding.UTF8.GetMaxByteCount(str.Length);
@@ -666,7 +669,6 @@ namespace Raven.Server.Documents
                 {document.BasePointer, document.Size}
             };
 
-
             var oldValue = table.ReadByKey(new Slice(lowerKey, (ushort)lowerSize));
             if (oldValue == null)
             {
@@ -693,6 +695,8 @@ namespace Raven.Server.Documents
                     throw new InvalidOperationException(
                         $"Changing '{key}' from '{oldCollectionName}' to '{originalCollectionName}' via update is not supported.{System.Environment.NewLine}" +
                         $"Delete the document and recreate the document {key}.");
+
+                _versioningStorage.PutVersion(context, collectionName, key, document, oldValue, isSystemDocument);
 
                 table.Update(oldValue.Id, tbv);
             }
@@ -724,6 +728,11 @@ namespace Raven.Server.Documents
                 return finalKey;
             }
 
+            /* We get here if the user inserted a document with a specified id.
+            e.g. your identity is 100
+            but you forced a put with 101
+            so you are trying to insert next document and it would overwrite the one with 101 */
+
             var lastKnownBusy = nextIdentityValue;
             var maybeFree = nextIdentityValue * 2;
             var lastKnownFree = long.MaxValue;
@@ -754,7 +763,7 @@ namespace Raven.Server.Documents
 
             originalCollectionName = collectionName;
 
-            // we have to have some way to distinguish between dynamic tree names
+            // TODO: we have to have some way to distinguish between dynamic tree names
             // and our fixed ones, otherwise a collection call Docs will corrupt our state
             return "@" + collectionName;
         }
