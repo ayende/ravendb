@@ -72,6 +72,6 @@
     "Raven.Client": "4.0.0-*",
     "Raven.Server": "4.0.0-*",
     "Sparrow": "4.0.0-*",
-    "Voron": "4.0.0-*",
+    "Voron": "4.0.0-*"
   }
 }

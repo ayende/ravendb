@@ -8,6 +8,7 @@ using System.Text;
 using Raven.Abstractions.Data;
 using Constants = Raven.Abstractions.Data.Constants;
 using Raven.Abstractions.Logging;
+using Raven.Server.Documents.Versioning;
 using Raven.Server.Json;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
@@ -41,6 +42,7 @@ namespace Raven.Server.Documents
         public string DataDirectory;
         public DocumentsContextPool ContextPool;
         private UnmanagedBuffersPool _unmanagedBuffersPool;
+        private VersioningStorage _versioningStorage;
         private const string NoCollectionSpecified = "Raven/Empty";
         private const string SystemDocumentsCollection = "Raven/SystemDocs";
 
@@ -103,20 +105,26 @@ namespace Raven.Server.Documents
 
             exceptionAggregator.Execute(() =>
             {
-            _unmanagedBuffersPool?.Dispose();
-            _unmanagedBuffersPool = null;
+                _versioningStorage?.Dispose();
+                _versioningStorage = null;
             });
 
             exceptionAggregator.Execute(() =>
             {
-            ContextPool?.Dispose();
-            ContextPool = null;
+                _unmanagedBuffersPool?.Dispose();
+                _unmanagedBuffersPool = null;
             });
 
             exceptionAggregator.Execute(() =>
             {
-            Environment?.Dispose();
-            Environment = null;
+                ContextPool?.Dispose();
+                ContextPool = null;
+            });
+
+            exceptionAggregator.Execute(() =>
+            {
+                Environment?.Dispose();
+                Environment = null;
             });
 
             exceptionAggregator.ThrowIfNeeded();
@@ -163,6 +171,8 @@ namespace Raven.Server.Documents
 
                     tx.Commit();
                 }
+
+                _versioningStorage = new VersioningStorage(_documentDatabase);
             }
             catch (Exception e)
             {
@@ -307,8 +317,7 @@ namespace Raven.Server.Documents
             if (string.IsNullOrWhiteSpace(key))
                 throw new ArgumentException("Argument is null or whitespace", nameof(key));
             if (context.Transaction == null)
-                throw new ArgumentException("Context must be set with a valid transaction before calling Put",
-                    nameof(context));
+                throw new ArgumentException("Context must be set with a valid transaction before calling Put", nameof(context));
 
             var table = new Table(_docsSchema, context.Transaction.InnerTransaction);
 
@@ -443,7 +452,7 @@ namespace Raven.Server.Documents
             }
         }
 
-        private void GetLowerKeySliceAndStorageKey(JsonOperationContext context, string str, out byte* lowerKey, out int lowerSize,
+        public static void GetLowerKeySliceAndStorageKey(JsonOperationContext context, string str, out byte* lowerKey, out int lowerSize,
             out byte* key, out int keySize)
         {
             var byteCount = Encoding.UTF8.GetMaxByteCount(str.Length);
@@ -577,6 +586,7 @@ namespace Raven.Server.Documents
 
             CreateTombstone(context, table, doc, originalCollectionName);
 
+            _versioningStorage.Delete(context, collectionName, key, doc, isSystemDocument);
             table.Delete(doc.StorageId);
 
             context.Transaction.AddAfterCommitNotification(new DocumentChangeNotification
@@ -622,11 +632,47 @@ namespace Raven.Server.Documents
             table.Insert(tbv);
         }
 
-        public bool DeleteCollection(DocumentsOperationContext context, string name, List<long> deletedList, long untilEtag)
+        public void DeleteCollection(DocumentsOperationContext context, string name, BlittableJsonTextWriter writer)
         {
+            _versioningStorage.DeleteCollection(context, name);
+
             name = "@" + name; //todo: avoid this allocation
-            var table = new Table(_docsSchema, name, context.Transaction.InnerTransaction);
-            return table.DeleteAll(_docsSchema.FixedSizeIndexes["CollectionEtags"], deletedList, untilEtag);
+
+            var deletedList = new List<long>();
+            long totalDocsDeletes = 0;
+            long maxEtag = -1;
+            while (true)
+            {
+                bool isAllDeleted;
+                using (context.OpenWriteTransaction())
+                {
+                    if (maxEtag == -1)
+                        maxEtag = ReadLastEtag(context.Transaction.InnerTransaction);
+
+                    var table = new Table(_docsSchema, name, context.Transaction.InnerTransaction);
+
+                    isAllDeleted = table.DeleteAll(_docsSchema.FixedSizeIndexes["CollectionEtags"], deletedList, maxEtag);
+                    context.Transaction.Commit();
+                }
+                context.Write(writer, new DynamicJsonValue
+                {
+                    ["BatchSize"] = deletedList.Count
+                });
+                writer.WriteComma();
+                writer.WriteNewLine();
+                writer.Flush();
+
+                totalDocsDeletes += deletedList.Count;
+
+                if (isAllDeleted)
+                    break;
+
+                deletedList.Clear();
+            }
+            context.Write(writer, new DynamicJsonValue
+            {
+                ["TotalDocsDeleted"] = totalDocsDeletes
+            });
         }
 
         public PutResult Put(DocumentsOperationContext context, string key, long? expectedEtag,
@@ -666,7 +712,6 @@ namespace Raven.Server.Documents
                 {document.BasePointer, document.Size}
             };
 
-
             var oldValue = table.ReadByKey(new Slice(lowerKey, (ushort)lowerSize));
             if (oldValue == null)
             {
@@ -693,6 +738,8 @@ namespace Raven.Server.Documents
                     throw new InvalidOperationException(
                         $"Changing '{key}' from '{oldCollectionName}' to '{originalCollectionName}' via update is not supported.{System.Environment.NewLine}" +
                         $"Delete the document and recreate the document {key}.");
+
+                _versioningStorage.PutVersion(context, collectionName, key, document, oldDoc, isSystemDocument);
 
                 table.Update(oldValue.Id, tbv);
             }
@@ -724,6 +771,11 @@ namespace Raven.Server.Documents
                 return finalKey;
             }
 
+            /* We get here if the user inserted a document with a specified id.
+            e.g. your identity is 100
+            but you forced a put with 101
+            so you are trying to insert next document and it would overwrite the one with 101 */
+
             var lastKnownBusy = nextIdentityValue;
             var maybeFree = nextIdentityValue * 2;
             var lastKnownFree = long.MaxValue;
@@ -754,7 +806,7 @@ namespace Raven.Server.Documents
 
             originalCollectionName = collectionName;
 
-            // we have to have some way to distinguish between dynamic tree names
+            // TODO: we have to have some way to distinguish between dynamic tree names
             // and our fixed ones, otherwise a collection call Docs will corrupt our state
             return "@" + collectionName;
         }

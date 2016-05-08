@@ -168,11 +168,6 @@ namespace Raven.Abstractions.Data
         public const double EarthMeanRadiusKm = 6371.0087714;
 
         public const double MilesToKm = 1.60934;
-        
-        //Versioning
-        public const string RavenCreateVersion = "Raven-Create-Version";
-
-        public const string RavenIgnoreVersioning = "Raven-Ignore-Versioning";
 
         public const string RavenClientVersion = "Raven-Client-Version";
 
@@ -250,9 +245,11 @@ namespace Raven.Abstractions.Data
 
         public class Versioning
         {
-            public const string RavenVersioningPrefix = "Raven/Versioning/";
+            public const string RavenVersioningConfiguration = "Raven/Versioning/Configuration";
 
-            public const string RavenVersioningDefaultConfiguration = "Raven/Versioning/DefaultConfiguration";
+            public const string RavenEnableVersioning = "Raven-Enable-Versioning";
+
+            public const string RavenDisableVersioning = "Raven-Disable-Versioning";
         }
 
         public class SqlReplication
