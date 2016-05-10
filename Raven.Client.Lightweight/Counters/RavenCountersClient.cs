@@ -60,8 +60,9 @@ namespace Raven.Client.Counters
             get { return credentialsThatShouldBeUsedOnlyInOperationsWithoutReplication; }
         }
 
-        public RavenCountersClient(string serverUrl, string counterStorageName, ICredentials credentials = null, string apiKey = null)
+        public RavenCountersClient(string serverUrl, string counterStorageName, OperationCredentials credentialsThatShouldBeUsedOnlyInOperationsWithoutReplication, ICredentials credentials = null, string apiKey = null)
         {
+            this.credentialsThatShouldBeUsedOnlyInOperationsWithoutReplication = credentialsThatShouldBeUsedOnlyInOperationsWithoutReplication;
             try
             {
                 ServerUrl = serverUrl;
