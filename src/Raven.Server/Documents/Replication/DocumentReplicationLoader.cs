@@ -1,14 +1,10 @@
 ﻿using System;
 using System.Linq;
-using System.Runtime.CompilerServices;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Logging;
 using Raven.Server.Json;
 using Raven.Server.ReplicationUtil;
-using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
-using Sparrow.Json;
-using Sparrow.Json.Parsing;
 
 namespace Raven.Server.Documents.Replication
 {
@@ -21,7 +17,6 @@ namespace Raven.Server.Documents.Replication
         {
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         protected override bool ShouldReloadConfiguration(string systemDocumentKey)
         {
             return systemDocumentKey.Equals(Constants.DocumentReplication.DocumentReplicationConfiguration,
@@ -40,9 +35,6 @@ namespace Raven.Server.Documents.Replication
 
                 if (configurationDocument == null)
                     return;
-
-                var tenantChangeVectorDocument = _database.DocumentsStorage.Get(context,
-                    Constants.DocumentReplication.DocumentReplicationTenantChangeVector);
 
                 var configuration = JsonDeserialization.DocumentReplicationConfiguration(configurationDocument.Data);				
                 //TODO: make sure that destinations are unique (check uniqueness for urls?)

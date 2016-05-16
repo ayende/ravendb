@@ -3,16 +3,14 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Runtime.CompilerServices;
 using System.Text;
-
 using Raven.Abstractions.Data;
 using Constants = Raven.Abstractions.Data.Constants;
 using Raven.Abstractions.Logging;
-using Raven.Server.Json;
-using Raven.Server.ReplicationUtil;
-using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.Utils;
+using Sparrow;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using Voron;
@@ -158,6 +156,7 @@ namespace Raven.Server.Documents
                     tx.CreateTree("Docs");
                     tx.CreateTree("Identities");
                     tx.CreateTree("Tombstones");
+                    tx.CreateTree("ChangeVector");
 
                     _docsSchema.Create(tx, SystemDocumentsCollection);
                     _lastEtag = ReadLastEtag(tx);
@@ -175,6 +174,38 @@ namespace Raven.Server.Documents
                 Dispose();
                 throw;
             }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public long? GetChangeVectorForCurrentDb(DocumentsOperationContext context)
+        {
+            return GetChangeVectorFor(context,Environment.DbId);
+        }
+
+        public long? GetChangeVectorFor(DocumentsOperationContext context, Guid dbId)
+        {			
+            var tree = context.Transaction.InnerTransaction.CreateTree("ChangeVector");
+
+            //not sure if possible to reduce allocations here
+            var readResult = tree.Read(new Slice(dbId.ToByteArray()));
+
+            return readResult?.Reader.ReadBigEndianInt64();
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void SetChangeVectorForCurrentDb(DocumentsOperationContext context, long val)
+        {
+            SetChangeVectorFor(context, Environment.DbId, val);
+        }
+
+        public void SetChangeVectorFor(DocumentsOperationContext context, Guid dbId, long val)
+        {
+            //not sure if possible to reduce allocations here
+            var tree = context.Transaction.InnerTransaction.CreateTree("ChangeVector");
+            var sliceWriter = new SliceWriter(context.GetManagedBuffer());
+            sliceWriter.WriteBigEndian(val);
+
+            tree.Add(new Slice(dbId.ToByteArray()), sliceWriter.CreateSlice());
         }
 
         public static long ReadLastEtag(Transaction tx)
@@ -659,19 +690,13 @@ namespace Raven.Server.Documents
 
             var newEtag = ++_lastEtag;
             var newEtagBigEndian = IPAddress.HostToNetworkOrder(newEtag);
-                    
-//            var changeVector = _documentDatabase.
-//                    DocumentReplicationLoader.
-//                    TenantChangeVector.
-//                    ToBlittable(context, string.Empty);
-            
+                   
             var tbv = new TableValueBuilder
             {
                 {lowerKey, lowerSize}, //0
                 {(byte*) &newEtagBigEndian , sizeof (long)}, //1
                 {keyPtr, keySize}, //2
                 {document.BasePointer, document.Size}, //3
-                //{changeVector.BasePointer, changeVector.Size} //4
             };			
 
             var oldValue = table.ReadByKey(new Slice(lowerKey, (ushort)lowerSize));
@@ -712,6 +737,10 @@ namespace Raven.Server.Documents
                 Type = DocumentChangeTypes.Put,
                 IsSystemDocument = isSystemDocument,
             });
+
+            var vectorValue = GetChangeVectorForCurrentDb(context);
+            if(vectorValue.HasValue)
+                SetChangeVectorForCurrentDb(context,newEtag);
 
             return new PutResult
             {
