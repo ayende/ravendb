@@ -4,13 +4,10 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Text;
-
 using Raven.Abstractions.Data;
 using Constants = Raven.Abstractions.Data.Constants;
 using Raven.Abstractions.Logging;
-using Raven.Server.Json;
-using Raven.Server.ReplicationUtil;
-using Raven.Server.ServerWide;
+using Raven.Server.Documents.Replication;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.Utils;
 using Sparrow.Json;
@@ -158,7 +155,7 @@ namespace Raven.Server.Documents
                     tx.CreateTree("Docs");
                     tx.CreateTree("Identities");
                     tx.CreateTree("Tombstones");
-
+                    tx.CreateTree("ChangeVector");
                     _docsSchema.Create(tx, SystemDocumentsCollection);
                     _lastEtag = ReadLastEtag(tx);
 
@@ -175,6 +172,46 @@ namespace Raven.Server.Documents
                 Dispose();
                 throw;
             }
+        }
+
+        public ChangeVectorEntry[] GetChangeVector(DocumentsOperationContext context)
+        {
+            var tree = context.Transaction.InnerTransaction.CreateTree("ChangeVector");
+            var changeVector = new ChangeVectorEntry[tree.State.NumberOfEntries];
+            using (var iter = tree.Iterate())
+            {
+                if (iter.Seek(Slice.BeforeAllKeys) == false)
+                    return changeVector;
+                var buffer = new byte[16];
+                int index = 0;
+                do
+                {
+                    var read = iter.CurrentKey.CreateReader().Read(buffer,0, 16);
+                    if(read != 16)
+                        throw new InvalidDataException($"Expected guid, but got {read} bytes back for change vector");
+
+                    changeVector[index].DbId = new Guid(buffer);
+                    changeVector[index].Etag = iter.CreateReaderForCurrent().ReadBigEndianInt64();
+                    index++;
+                } while (iter.MoveNext());
+            }
+            return changeVector;
+        }
+
+        public void SetChangeVector(DocumentsOperationContext context, ChangeVectorEntry changeVectorEntry)
+        {
+            var tree = context.Transaction.InnerTransaction.CreateTree("ChangeVector");
+            tree.Add(new Slice((byte*)&changeVectorEntry.DbId, (ushort)sizeof(Guid)), 
+                new Slice((byte*)&changeVectorEntry.Etag, (ushort)sizeof(Guid)));
+        }
+
+        public long? GetChangeVectorEntryFor(DocumentsOperationContext context, Guid dbId)
+        {
+            var tree = context.Transaction.InnerTransaction.CreateTree("ChangeVector");
+
+            var dbIdPtr = (byte*)&dbId;
+            var readResult = tree.Read(new Slice(dbIdPtr, (ushort)sizeof (Guid)));
+            return readResult?.Reader.ReadBigEndianInt64();
         }
 
         public static long ReadLastEtag(Transaction tx)
@@ -659,19 +696,13 @@ namespace Raven.Server.Documents
 
             var newEtag = ++_lastEtag;
             var newEtagBigEndian = IPAddress.HostToNetworkOrder(newEtag);
-                    
-//            var changeVector = _documentDatabase.
-//                    DocumentReplicationLoader.
-//                    TenantChangeVector.
-//                    ToBlittable(context, string.Empty);
-            
+                   
             var tbv = new TableValueBuilder
             {
                 {lowerKey, lowerSize}, //0
                 {(byte*) &newEtagBigEndian , sizeof (long)}, //1
                 {keyPtr, keySize}, //2
                 {document.BasePointer, document.Size}, //3
-                //{changeVector.BasePointer, changeVector.Size} //4
             };			
 
             var oldValue = table.ReadByKey(new Slice(lowerKey, (ushort)lowerSize));

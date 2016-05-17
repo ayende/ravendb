@@ -47,7 +47,6 @@ namespace Raven.Server.Documents.Handlers
 
         public unsafe void InsertDocuments()
         {
-            var lastHeartbeat = SystemTime.UtcNow;
             try
             {
                 DocumentsOperationContext context;
@@ -101,7 +100,6 @@ namespace Raven.Server.Documents.Handlers
                             _freeBuffers.Add(current);
                             tx.Commit();
                         }
-                        lastHeartbeat = SendHeartbeatIfNecessary(lastHeartbeat);
                         if (Log.IsDebugEnabled)
                             Log.Debug(
                                 $"Completed bulk insert batch with {count} documents in {sp.ElapsedMilliseconds:#,#;;0} ms");
@@ -127,24 +125,6 @@ namespace Raven.Server.Documents.Handlers
             {
                 Console.WriteLine("Done inserting documents server side");
             }
-        }
-
-        private DateTime SendHeartbeatIfNecessary(DateTime lastHeartbeat)
-        {
-            if ((SystemTime.UtcNow - lastHeartbeat).TotalSeconds >= 15)
-            {
-                _webSocket.SendAsync(HeartbeatMessage, WebSocketMessageType.Text, false,
-                    Database.DatabaseShutdown)
-                    .ContinueWith(t =>
-                    {
-                        // ignore the exception, we don't care here
-                        // this just force us to call the Exception property, thereby consuming the exception
-                        GC.KeepAlive(t.Exception);
-                    }, TaskContinuationOptions.OnlyOnFaulted);
-                lastHeartbeat = SystemTime.UtcNow;
-            }
-
-            return lastHeartbeat;
         }
 
         [RavenAction("/databases/*/bulkInsert", "GET", "/databases/{databaseName:string}/bulkInsert")]
@@ -216,7 +196,16 @@ namespace Raven.Server.Documents.Handlers
                             // error in the insert, we'll get it when we await on the insert task
                         }
                         _fullBuffers.CompleteAdding();
-                        await task;
+                        
+                        while (true)
+                        {
+                            var res = await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(5)));
+                            if (res == task)
+                                break;
+                            // send heartbeat to client so we'll keep the connection open
+                            await _webSocket.SendAsync(HeartbeatMessage, WebSocketMessageType.Text, false,
+                                    Database.DatabaseShutdown);
+                        }
                         var msg = $"Successfully bulk inserted {count} documents in {sp.ElapsedMilliseconds:#,#;;0} ms";
                         if (Log.IsDebugEnabled)
                             Log.Debug(msg);
