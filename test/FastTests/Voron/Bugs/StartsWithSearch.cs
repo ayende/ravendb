@@ -30,7 +30,7 @@ namespace FastTests.Voron.Bugs
                 using (var tx = env.ReadTransaction())
                 {
                     var tree = tx.ReadTree("data");
-                    using (var it = tree.Iterate())
+                    using (var it = tree.Iterate(false))
                     {
                         Assert.True(it.Seek("users-7"));
 
