@@ -215,7 +215,11 @@ namespace Voron.Impl.Scratch
                     createNextFile = true;
                 }
 
-                if (createNextFile)
+                if (createNextFile ||
+                    // if we are trying to flush, we must succeed here, because otherwise we'll never
+                    // be able to actually complete the sync
+                    tx.Environment.Journal.Applicator.IsCurrentThreadInFlushOperation
+                    )
                 {
                     // We need to ensure that _current stays constant through the codepath until return. 
                     current = NextFile();
@@ -233,7 +237,7 @@ namespace Voron.Impl.Scratch
                         _current = current;
                     }
                 }
-                Debugger.Launch();
+               
                 ThrowScratchBufferTooBig(tx, numberOfPages, size, oldestActiveTransaction, sizeAfterAllocation, sp, current);
             }
 
@@ -373,6 +377,11 @@ namespace Voron.Impl.Scratch
         {
             var item = _scratchBuffers[value.ScratchFileNumber];
             item.File.BreakLargeAllocationToSeparatePages(value);
+        }
+
+        public long GetAvailablePagesCount()
+        {
+            return _current.File.NumberOfAllocatedPages - _current.File.AllocatedPagesUsedSize;
         }
     }
 }

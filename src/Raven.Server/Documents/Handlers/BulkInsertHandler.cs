@@ -116,7 +116,7 @@ namespace Raven.Server.Documents.Handlers
             }
             catch (Exception e)
             {
-                Console.WriteLine("ERROR"); // TODO :: ADIADI :: thrown? what about server exit?
+                Console.WriteLine("ERROR"); // TODO: Does the exception stops client from continue sending? (and also when server brutally stopped - client should stop sending..)
                 Console.WriteLine(e);
                 _fullBuffers.CompleteAdding();
                 throw;

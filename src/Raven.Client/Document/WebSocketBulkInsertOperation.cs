@@ -278,8 +278,8 @@ namespace Raven.Client.Document
                             break;
                         if (SystemTime.UtcNow - _lastHeartbeat > timeDelay + TimeSpan.FromSeconds(30))
                         {
-                            // throw new TimeoutException("Wait for bulk-insert closing message from server, but it didn't happen. Maybe the server went down (most likely) and maybe this is due to a bug. In any case,this needs to be investigated.");
-                            Console.WriteLine("Waiting too much without heartbeat"); // ADIADI ?
+                            throw new TimeoutException("Wait for bulk-insert closing message from server, but it didn't happen. Maybe the server went down (most likely) and maybe this is due to a bug. In any case,this needs to be investigated.");
+                            // TODO: the above check is still problematic in Lazy Tx, need to be checked when LazyTx feature will work. // Console.WriteLine("Waiting too much without heartbeat");
                         }
                     }
                 }

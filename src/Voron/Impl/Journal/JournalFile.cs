@@ -158,10 +158,10 @@ namespace Voron.Impl.Journal
                 lazyTransactionScratch.AddToBuffer(position, pages, uncompressedPageCount);
 
                 // non lazy tx will add itself to the buffer and then flush scratch to journal
-                if (tx.IsLazyTransaction == false || (lazyTransactionScratch.NumberOfPages * tx.DataPager.PageSize) > tx.Environment.Options.MaxScratchBufferSize/2)
+                if (tx.IsLazyTransaction == false || 
+                    lazyTransactionScratch.NumberOfPages > tx.Environment.ScratchBufferPool.GetAvailablePagesCount()/2)
                 {
-                    lazyTransactionScratch.WriteBufferToFile(this);
-                    tx.IsLazyTransaction = false;// so it will notify the flush thread it has work to do
+                    lazyTransactionScratch.WriteBufferToFile(this, tx);
                 }
                 else 
                 {
