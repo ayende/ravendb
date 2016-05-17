@@ -263,7 +263,7 @@ namespace Voron.Impl.Paging
             for (int i = 0; i < entries.Length; i++)
             {
                 entries[i].NumberOfBytes = (IntPtr)(4*PageSize);
-                entries[i].VirtualAddress = AcquirePagePointer(pagesToPrefetch[i]);
+                entries[i].VirtualAddress = AcquirePagePointer(null, pagesToPrefetch[i]);
             }
 
             fixed (Win32MemoryMapNativeMethods.WIN32_MEMORY_RANGE_ENTRY* entriesPtr = entries)
