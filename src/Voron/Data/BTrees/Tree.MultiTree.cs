@@ -309,7 +309,7 @@ namespace Voron.Data.BTrees
             {
                 var tree = OpenMultiValueTree(key, node);
 
-                return tree.Iterate();
+                return tree.Iterate(false);
             }
 
             var nestedPage = new TreePage(TreeNodeHeader.DirectAccess(_llt, node), "multi tree", (ushort)TreeNodeHeader.GetDataSize(_llt, node));

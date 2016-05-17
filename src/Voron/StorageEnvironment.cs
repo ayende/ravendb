@@ -414,7 +414,7 @@ namespace Voron
 
             var trees = new List<Tree>();
             var fixedSizeTrees = new List<FixedSizeTree>();
-            using (var rootIterator = tx.LowLevelTransaction.RootObjects.Iterate())
+            using (var rootIterator = tx.LowLevelTransaction.RootObjects.Iterate(false))
             {
                 if (rootIterator.Seek(Slice.BeforeAllKeys))
                 {

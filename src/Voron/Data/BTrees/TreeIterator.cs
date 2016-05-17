@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using Voron.Impl;
+using Voron.Impl.Paging;
 
 namespace Voron.Data.BTrees
 {
@@ -8,6 +9,7 @@ namespace Voron.Data.BTrees
     {
         private readonly Tree _tree;
         private readonly LowLevelTransaction _tx;
+        private readonly bool _prefetch;
         private TreeCursor _cursor;
         private TreePage _currentPage;
         private Slice _currentKey = new Slice(SliceOptions.Key);
@@ -16,10 +18,11 @@ namespace Voron.Data.BTrees
 
         public event Action<IIterator> OnDisposal;
 
-        public TreeIterator(Tree tree, LowLevelTransaction tx)
+        public TreeIterator(Tree tree, LowLevelTransaction tx, bool prefetch)
         {
             _tree = tree;
             _tx = tx;
+            _prefetch = prefetch;
 
             _currentInternalKey = new Slice(SliceOptions.Key); 				
         }
@@ -118,6 +121,9 @@ namespace Voron.Data.BTrees
                         var node = _currentPage.GetNode(_currentPage.LastSearchPosition);
                         _currentPage = _tx.GetReadOnlyTreePage(node->PageNumber);
                         _currentPage.LastSearchPosition = _currentPage.NumberOfEntries - 1;
+
+                        if (_prefetch && _currentPage.IsLeaf)
+                            MaybePrefetchOverflowPages(_currentPage);
                     }
                     var current = _currentPage.GetNode(_currentPage.LastSearchPosition);
                     if (this.ValidateCurrentKey(current, _currentPage) == false)
@@ -133,6 +139,15 @@ namespace Voron.Data.BTrees
             }
             _currentPage = null;
             return false;
+        }
+
+        
+        private void MaybePrefetchOverflowPages(TreePage page)
+        {
+            if (Sparrow.Platform.Platform.CanPrefetch)
+            {
+                _tx.DataPager.MaybePrefetchMemory(page.GetAllOverflowPages());
+            }
         }
 
         public bool MoveNext()

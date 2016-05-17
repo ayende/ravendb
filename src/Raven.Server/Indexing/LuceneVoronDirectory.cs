@@ -36,7 +36,7 @@ namespace Raven.Server.Indexing
         {
             var files = new List<string>();
             var filesTree = _currentTransaction.Value.ReadTree("Files");
-            using (var it = filesTree.Iterate())
+            using (var it = filesTree.Iterate(false))
             {
                 if (it.Seek(Slice.BeforeAllKeys))
                 {
