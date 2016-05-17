@@ -28,7 +28,7 @@ namespace Tryouts
             if (args.Length == 1)
                 Numofdocs = Convert.ToInt32(args[0]);
             while (true)
-            { 
+            {
                 try
                 {
                     for (int i = 0; i < 10; i++)

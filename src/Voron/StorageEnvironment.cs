@@ -307,6 +307,7 @@ namespace Voron
                 if (flags == TransactionFlags.ReadWrite)
                 {
                     var wait = timeout ?? (Debugger.IsAttached ? TimeSpan.FromMinutes(30) : TimeSpan.FromSeconds(30));
+
                     Monitor.TryEnter(_txWriter, wait, ref txLockTaken);
                     if (txLockTaken == false)
                     {
@@ -391,7 +392,7 @@ namespace Voron
             }
 
             Interlocked.Add(ref _sizeOfUnflushedTransactionsInJournalFile, totalPages);
-            if (tx.IsLazyTransaction)
+            if (tx.IsLazyTransaction == false)
                 _flushWriter.Set();
         }
 

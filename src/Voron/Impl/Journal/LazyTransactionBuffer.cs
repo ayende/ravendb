@@ -12,6 +12,7 @@ namespace Voron.Impl.Journal
         private int _lastUsedPage;
         private readonly StorageEnvironmentOptions _options;
         private readonly IVirtualPager _lazyTransactionPager;
+        public long NumberOfPages;
 
 
         public LazyTransactionBuffer(StorageEnvironmentOptions options)
@@ -25,8 +26,9 @@ namespace Voron.Impl.Journal
             _lazyTransactionPager.EnsureContinuous(0, sizeInPages);
         }
 
-        public void AddToBuffer(long position, IntPtr[] pages)
+        public void AddToBuffer(long position, IntPtr[] pages, int uncompressedPageCount)
         {
+            NumberOfPages += uncompressedPageCount;
             if (_firstPositionInJournalFile == null)
             {
                 _firstPositionInJournalFile = position; // first lazy tx saves position to all lazy tx that comes afterwards
@@ -58,9 +60,11 @@ namespace Voron.Impl.Journal
             }
 
             _readTransaction?.Dispose();
+
             _firstPositionInJournalFile = null;
             _lastUsedPage = 0;
             _readTransaction = null;
+            NumberOfPages = 0;
         }
 
         public void Dispose()

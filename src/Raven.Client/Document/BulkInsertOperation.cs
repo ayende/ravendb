@@ -52,7 +52,7 @@ namespace Raven.Client.Document
         }
 
         protected virtual WebSocketBulkInsertOperation GetBulkInsertOperation(IAsyncDatabaseCommands commands)
-        {			
+        {
             return commands.GetBulkInsertOperation();
         }
 
@@ -92,7 +92,7 @@ namespace Raven.Client.Document
             if (generateEntityIdOnTheClient.TryGetIdFromInstance(entity, out id) == false)
             {
                 id = generateEntityIdOnTheClient.GenerateDocumentKeyForStorage(entity);
-                generateEntityIdOnTheClient.TrySetIdentity(entity,id); //set Id property if it was null
+                generateEntityIdOnTheClient.TrySetIdentity(entity, id); //set Id property if it was null
             }
             return id;
         }

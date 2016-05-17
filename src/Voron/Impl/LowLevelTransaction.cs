@@ -51,7 +51,19 @@ namespace Voron.Impl
         private readonly Dictionary<int, PagerState> _scratchPagerStates;
 
         public TransactionFlags Flags { get; }
-        public bool IsLazyTransaction { get; set; }
+
+        public bool IsLazyTransaction
+        {
+            get { return _isLazyTransaction; }
+            set
+            {
+                if (_isLazyTransaction && value == false)
+                    WasLazyTransaction = true;
+                _isLazyTransaction = value;
+            }
+        }
+
+        public bool WasLazyTransaction { get; private set; }
 
 
         internal bool CreatedByJournalApplicator;
@@ -229,6 +241,7 @@ namespace Voron.Impl
         private const int InvalidScratchFile = -1;
         private PagerStateCacheItem lastScratchFileUsed = new PagerStateCacheItem(InvalidScratchFile, null);
         private bool _disposed;
+        private bool _isLazyTransaction;
 
         public Page GetPage(long pageNumber)
         {	        

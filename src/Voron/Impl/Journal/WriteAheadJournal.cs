@@ -800,6 +800,7 @@ namespace Voron.Impl.Journal
             public IDisposable TakeFlushingLock()
             {
                 bool lockTaken = false;
+
                 Monitor.Enter(_flushingLock, ref lockTaken);
                 ignoreLockAlreadyTaken = true;
 
@@ -855,7 +856,7 @@ namespace Voron.Impl.Journal
                 CurrentFile = NextFile(pages.Length);
             }
 
-            CurrentFile.Write(tx, pages, _lazyTransactionBuffer);
+            CurrentFile.Write(tx, pages, _lazyTransactionBuffer, pageCount);
 
             if (CurrentFile.AvailablePages == 0)
             {
