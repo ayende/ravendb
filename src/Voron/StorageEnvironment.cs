@@ -343,7 +343,7 @@ namespace Voron
 
                 _activeTransactions.Add(tx);
                 var state = _dataPager.PagerState;
-                tx.AddPagerState(state);
+                tx.EnsurePagerStateReference(state);
 
                 return tx;
             }
