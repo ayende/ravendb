@@ -307,6 +307,7 @@ namespace Voron
                 if (flags == TransactionFlags.ReadWrite)
                 {
                     var wait = timeout ?? (Debugger.IsAttached ? TimeSpan.FromMinutes(30) : TimeSpan.FromSeconds(30));
+
                     Monitor.TryEnter(_txWriter, wait, ref txLockTaken);
                     if (txLockTaken == false)
                     {
@@ -413,7 +414,7 @@ namespace Voron
 
             var trees = new List<Tree>();
             var fixedSizeTrees = new List<FixedSizeTree>();
-            using (var rootIterator = tx.LowLevelTransaction.RootObjects.Iterate())
+            using (var rootIterator = tx.LowLevelTransaction.RootObjects.Iterate(false))
             {
                 if (rootIterator.Seek(Slice.BeforeAllKeys))
                 {

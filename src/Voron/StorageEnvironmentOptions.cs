@@ -122,7 +122,7 @@ namespace Voron
 
             MaxScratchBufferSize = 512 * Constants.Size.Megabyte;
 
-            MaxNumberOfPagesInJournalBeforeFlush = 1024; // 4 MB when 4Kb             
+            MaxNumberOfPagesInJournalBeforeFlush = 4096; // 16 MB when 4Kb
             MaxNumberOfPagesInMergedTransaction = 1024 * 128;// Ends up being 512 MB when 4Kb
 
             IdleFlushTimeout = 5000; // 5 seconds

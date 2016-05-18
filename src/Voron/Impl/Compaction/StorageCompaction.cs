@@ -58,7 +58,7 @@ namespace Voron.Impl.Compaction
         private static void CopyTrees(StorageEnvironment existingEnv, StorageEnvironment compactedEnv, Action<CompactionProgress> progressReport = null)
         {
             using (var txr = existingEnv.ReadTransaction())
-            using (var rootIterator = txr.LowLevelTransaction.RootObjects.Iterate())
+            using (var rootIterator = txr.LowLevelTransaction.RootObjects.Iterate(false))
             {
                 if (rootIterator.Seek(Slice.BeforeAllKeys) == false)
                     return;
@@ -140,7 +140,7 @@ namespace Voron.Impl.Compaction
 
             Report(treeName, copiedTrees, totalTreesCount, 0, existingTree.State.NumberOfEntries, progressReport);
 
-            using (var existingTreeIterator = existingTree.Iterate())
+            using (var existingTreeIterator = existingTree.Iterate(true))
             {
                 if (existingTreeIterator.Seek(Slice.BeforeAllKeys) == false)
                     return copiedTrees;

@@ -107,7 +107,7 @@ namespace FastTests.Voron.Trees
         public List<Slice> Keys(Tree t, Transaction tx)
         {
             var results = new List<Slice>();
-            using (var it = t.Iterate())
+            using (var it = t.Iterate(false))
             {
                 if (it.Seek(Slice.BeforeAllKeys) == false)
                     return results;

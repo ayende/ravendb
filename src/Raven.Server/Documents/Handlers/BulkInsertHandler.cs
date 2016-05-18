@@ -43,6 +43,7 @@ namespace Raven.Server.Documents.Handlers
         private static readonly ArraySegment<byte> HeartbeatMessage = new ArraySegment<byte>(Encoding.UTF8.GetBytes("Heartbeat"));
 
         private WebSocket _webSocket;
+        private int i;
 
         public unsafe void InsertDocuments()
         {
@@ -93,6 +94,7 @@ namespace Raven.Server.Documents.Handlers
                                     const string message = "bad doc key";
                                     throw new InvalidDataException(message);
                                 }
+
                                 Database.DocumentsStorage.Put(context, docKey, null, reader);
                             }
                             _freeBuffers.Add(current);
@@ -112,10 +114,16 @@ namespace Raven.Server.Documents.Handlers
                     }
                 }
             }
-            catch (Exception)
+            catch (Exception e)
             {
+                Console.WriteLine("ERROR"); // TODO: Does the exception stops client from continue sending? (and also when server brutally stopped - client should stop sending..)
+                Console.WriteLine(e);
                 _fullBuffers.CompleteAdding();
                 throw;
+            }
+            finally
+            {
+                Console.WriteLine("Done inserting documents server side");
             }
         }
 

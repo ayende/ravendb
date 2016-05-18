@@ -632,5 +632,20 @@ namespace Voron.Data.BTrees
         {
             return new Slice(SliceOptions.Key);
         }
+
+        public List<long> GetAllOverflowPages()
+        {
+            var results = new List<long>(NumberOfEntries);
+            for (int i = 0; i < NumberOfEntries; i++)
+            {
+                var nodeOffset = KeysOffsets[i];
+                var nodeHeader = (TreeNodeHeader*)(Base + nodeOffset);
+
+                if (nodeHeader->Flags == TreeNodeFlags.PageRef)
+                    results.Add(nodeHeader->PageNumber);
+            }
+
+            return results;
+        }
     }
 }

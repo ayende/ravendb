@@ -129,30 +129,45 @@ namespace Voron.Impl.Scratch
 
             if (sizeAfterAllocation >= (_sizeLimit * 3) / 4 && oldestActiveTransaction > current.OldestTransactionWhenFlushWasForced)
             {
-                // we may get recursive flushing, so we want to avoid it
-                if (tx.Environment.Journal.Applicator.IsCurrentThreadInFlushOperation == false)
-                {
-                    // We are starting to force a flush to free scratch pages. We are doing it at this point (80% of the max scratch size)
-                    // to make sure that next transactions will be able to allocate pages that we are going to free in the current transaction.
-                    // Important notice: all pages freed by this run will get ValidAfterTransactionId == tx.Id (so only next ones can use it)
+                // because we already know that we have a lazy transaction, we'll skip forcing a flush here, in favor of setting the
+                // transaction to be non lazy, which will trigger a flush after this is over. This will also release the pending read
+                // transaction, which can run in parallel to the next transactions, and allow us to free up scratch space without stalling
+                // the current write transaction until the entire scratch file (which can be very large) is flushed
 
-                    bool flushLockTaken = false;
-                    using (tx.Environment.Journal.Applicator.TryTakeFlushingLock(ref flushLockTaken))
+                // if the transaction is lazy, then there is a long running lazy transaction that is being held to prevent us 
+                // from flushing from the scratch buffer to the data file. In this case, setting this transaction as non lazy
+                // will force us to actually flush everything when this transaction is committed. This will allow us to flush
+                // the data to the data file before we run out of space in the scratch file
+
+                tx.IsLazyTransaction = false;
+
+                if (tx.WasLazyTransaction == false)
+                {
+                    // we may get recursive flushing, so we want to avoid it
+                    if (tx.Environment.Journal.Applicator.IsCurrentThreadInFlushOperation == false)
                     {
-                        if (flushLockTaken) // if we are already flushing, we don't need to force a flush
+                        // We are starting to force a flush to free scratch pages. We are doing it at this point (80% of the max scratch size)
+                        // to make sure that next transactions will be able to allocate pages that we are going to free in the current transaction.
+                        // Important notice: all pages freed by this run will get ValidAfterTransactionId == tx.Id (so only next ones can use it)
+
+                        bool flushLockTaken = false;
+                        using (tx.Environment.Journal.Applicator.TryTakeFlushingLock(ref flushLockTaken))
                         {
-                            try
+                            if (flushLockTaken) // if we are already flushing, we don't need to force a flush
                             {
-                                tx.Environment.ForceLogFlushToDataFile(tx, allowToFlushOverwrittenPages: true);
-                                current.OldestTransactionWhenFlushWasForced = oldestActiveTransaction;
-                            }
-                            catch (TimeoutException)
-                            {
-                                // we'll try next time
-                            }
-                            catch (InvalidJournalFlushRequestException)
-                            {
-                                // journals flushing already in progress
+                                try
+                                {
+                                    tx.Environment.ForceLogFlushToDataFile(tx, allowToFlushOverwrittenPages: true);
+                                    current.OldestTransactionWhenFlushWasForced = oldestActiveTransaction;
+                                }
+                                catch (TimeoutException)
+                                {
+                                    // we'll try next time
+                                }
+                                catch (InvalidJournalFlushRequestException)
+                                {
+                                    // journals flushing already in progress
+                                }
                             }
                         }
                     }
@@ -170,7 +185,7 @@ namespace Voron.Impl.Scratch
                 // we can continue running. It is possible that a long running read transaction
                 // would in fact generate enough work for us to timeout, but hopefully we can avoid that.
 
-                while (
+                while (tx.WasLazyTransaction == false && // lazy transaction is holding a read tx that will stop this, nothing to do here
                     tx.Environment.Options.ManualFlushing == false &&
                     sp.ElapsedMilliseconds < tx.Environment.Options.ScratchBufferOverflowTimeout)
                 {
@@ -200,7 +215,11 @@ namespace Voron.Impl.Scratch
                     createNextFile = true;
                 }
 
-                if (createNextFile)
+                if (createNextFile ||
+                    // if we are trying to flush, we must succeed here, because otherwise we'll never
+                    // be able to actually complete the sync
+                    tx.Environment.Journal.Applicator.IsCurrentThreadInFlushOperation
+                    )
                 {
                     // We need to ensure that _current stays constant through the codepath until return. 
                     current = NextFile();
@@ -218,7 +237,7 @@ namespace Voron.Impl.Scratch
                         _current = current;
                     }
                 }
-
+               
                 ThrowScratchBufferTooBig(tx, numberOfPages, size, oldestActiveTransaction, sizeAfterAllocation, sp, current);
             }
 
@@ -236,17 +255,17 @@ namespace Voron.Impl.Scratch
             var totalPages = tx.GetTransactionPages().Count;
 
             debugInfoBuilder.AppendFormat("Current transaction id: {0}\r\n", tx.Id);
-            if ((totalPages + numberOfPages)*tx.Environment.Options.PageSize >= _sizeLimit/2)
+            if ((totalPages + numberOfPages) * tx.Environment.Options.PageSize >= _sizeLimit / 2)
             {
                 debugInfoBuilder.Append("- - - - - - - - - - - - -\r\n");
                 debugInfoBuilder.AppendFormat(
                     "This transaction is VERY big, and requires {0:##,###;;0} kb out of {1:##,###;;0} kb allows!\r\n",
-                    ((totalPages + numberOfPages)*tx.Environment.Options.PageSize)/1024,
-                    _sizeLimit/1024
+                    ((totalPages + numberOfPages) * tx.Environment.Options.PageSize) / 1024,
+                    _sizeLimit / 1024
                     );
                 debugInfoBuilder.Append("- - - - - - - - - - - - -\r\n");
             }
-            
+
             debugInfoBuilder.AppendFormat("Requested number of pages: {0} (adjusted size: {1} == {2:#,#;;0} KB)\r\n", numberOfPages,
                 size, size * tx.Environment.Options.PageSize / 1024);
             debugInfoBuilder.AppendFormat("Total number of pages in tx: {0} (adjusted size: {1} == {2:#,#;;0} KB)\r\n", totalPages,
@@ -358,6 +377,11 @@ namespace Voron.Impl.Scratch
         {
             var item = _scratchBuffers[value.ScratchFileNumber];
             item.File.BreakLargeAllocationToSeparatePages(value);
+        }
+
+        public long GetAvailablePagesCount()
+        {
+            return _current.File.NumberOfAllocatedPages - _current.File.AllocatedPagesUsedSize;
         }
     }
 }
