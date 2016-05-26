@@ -13,7 +13,8 @@ class collection implements ICollectionBase {
     isSystemDocuments = false;
     bindings = ko.observable<string[]>();
 
-    public collectionName : string;
+    public collectionName: string;
+    public collectionLabel: string;
     private documentsList: pagedList;
     public static allDocsCollectionName = "All Documents";
     private static systemDocsCollectionName = "System Documents";
@@ -32,11 +33,9 @@ class collection implements ICollectionBase {
     activate() {
         ko.postbox.publish("ActivateCollection", this);
     }
-
-    prettyLabel(text: string) {
-        return text.replace(/__/g, '/');
+    getLabel() {
+        return this.collectionLabel || this.collectionName.replace(/__/g, '/');
     }
-
     getDocuments(): pagedList {
         if (!this.documentsList) {
             this.documentsList = this.createPagedList();

@@ -3,6 +3,7 @@ import database = require("models/resources/database");
 import collection = require("models/database/documents/collection");
 import getIndexTermsCommand = require("commands/database/index/getIndexTermsCommand");
 import getCollectionsCountCommand = require("commands/database/documents/getCollectionsCountCommand");
+import getCollectionsLabelsCommand = require("commands/database/documents/getCollectionsLabelsCommand");
 import getCachedCollectionsCount = require("commands/database/studio/getCachedCollectionsCount");
 
 class getCollectionsCommand extends commandBase {
@@ -55,7 +56,12 @@ class getCollectionsCommand extends commandBase {
                     var collections = terms.map(term => new collection(term, this.ownerDb, 0));
                     new getCollectionsCountCommand(collections, this.ownerDb)
                         .execute()
-                        .done(result => task.resolve(result))
+                        .done(r => {
+                            new getCollectionsLabelsCommand(collections, this.ownerDb)
+                                .execute()
+                                .done(result => task.resolve(result))
+                                .fail(result => task.reject(result));
+                        })
                         .fail(result => task.reject(result));
                 }
                 if (this.lastQueryDate != null) {
