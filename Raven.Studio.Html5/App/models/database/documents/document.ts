@@ -35,7 +35,14 @@ class document implements documentBase {
 
         return propertyNames;
     }
-
+    getDocumentCollectionLabel(queryResult: any): string {
+        var name = this.getEntityName();
+        if (queryResult[0] !== undefined) {
+            if (queryResult[0].Labels[name] !== undefined) {
+                return queryResult[0].Labels[name];
+            }
+        }
+    }
     toDto(includeMeta: boolean = false): documentDto {
         var dto = { '@metadata': undefined };
         var properties = this.getDocumentPropertyNames();

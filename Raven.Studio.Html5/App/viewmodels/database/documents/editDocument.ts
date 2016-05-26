@@ -23,12 +23,15 @@ import genUtils = require("common/generalUtils");
 import deleteDocuments = require("viewmodels/common/deleteDocuments");
 import viewModelBase = require("viewmodels/viewModelBase");
 import generateClassCommand = require("commands/database/documents/generateClassCommand");
+import getCollectionLabelCommand = require("commands/database/documents/getCollectionLabelCommand");
 import showDataDialog = require("viewmodels/common/showDataDialog");
 
 class editDocument extends viewModelBase {
 
     isConflictDocument = ko.observable<boolean>();
     document = ko.observable<document>();
+    documentLabel = ko.observable<string>();
+    documentHasCustomLabeling = ko.observable<boolean>(false);
     metadata: KnockoutComputed<documentMetadata>;
     documentText = ko.observable('').extend({ required: true });
     metadataText = ko.observable('').extend({ required: true });
@@ -920,17 +923,33 @@ class editDocument extends viewModelBase {
     prettyLabel(text: string) {
         return text ? text.replace(/__/g, '/') : text;
     }
+    hasLabel() {
+        return this.documentHasCustomLabeling();
+    }
 
     generateCollectionName(ravenEntityName: string, withPrettyLabel: boolean = false) {
+        this.generateCollectionLabel(withPrettyLabel);
         if (withPrettyLabel) {
             return ravenEntityName
-                ? this.prettyLabel(ravenEntityName)
+                ? this.documentLabel()
                 : (this.isSystemDocumentByDocTitle() ? 'System Documents' : 'No Collection');
         } else {
-            return ravenEntityName || (this.isSystemDocumentByDocTitle() ? 'System Documents' : 'No Collection');    
+            return this.documentLabel() ||
+            (this.isSystemDocumentByDocTitle() ? 'System Documents' : 'No Collection');
         }
     }
 
+    generateCollectionLabel(pretty: boolean): JQueryPromise<string> {
+        var doc: document = this.document();
+        var name: string = doc.getEntityName();
+        var getLabelCommand = new getCollectionLabelCommand(this.activeDatabase(), name, pretty);
+        var deferred = getLabelCommand.execute();
+        deferred.always(results => {
+            this.documentHasCustomLabeling(getLabelCommand.checkLabel());
+            this.documentLabel(getLabelCommand.getLabelText());
+        });
+        return deferred;
+    }
     generateCode() {
         var doc: document = this.document();
         var generate = new generateClassCommand(this.activeDatabase(), doc.getId(), "csharp");

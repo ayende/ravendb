@@ -90,6 +90,10 @@
                         <label class="col-md-5">Raven-Entity-Name</label>
                         <span class="col-md-7" data-bind="text: $root.prettyLabel(ravenEntityName), attr: {title:ravenEntityName}"></span>
                     </div>
+                    <div class="row" data-bind="if: $root.hasLabel()">
+                        <label class="col-md-5">Label</label>
+                        <span class="col-md-7" data-bind="text: $root.documentLabel, attr: {title:ravenEntityName}"></span>
+                    </div>
                     <div class="row">
                         <label class="col-md-5">Etag</label>
                         <span class="col-md-7" data-bind="text: etag, attr: {title:etag}"></span>
