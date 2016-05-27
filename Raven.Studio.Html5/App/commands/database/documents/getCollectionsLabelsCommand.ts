@@ -16,6 +16,7 @@ class getCollectionsLabelsCommand extends commandBase {
         }
     }
 
+
     execute(): JQueryPromise<collection[]> {
         var task = $.Deferred();
 
