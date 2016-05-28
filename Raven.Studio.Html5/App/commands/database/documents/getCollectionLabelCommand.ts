@@ -11,7 +11,7 @@ class getCollectionLabelCommand extends commandBase {
     execute(): JQueryPromise<string> {
         var url = "/docs/";
         var args = {
-            docId: "Raven/Labels"
+            docId: "Raven/StudioConfig"
         }
         return this.query(url, args, this.db)
             .done((result) => {

@@ -24,7 +24,7 @@ class getCollectionsLabelsCommand extends commandBase {
             return {
                 Url: "/queries/",
                 Headers: {},
-                Query: "?id=" + queryUtil.escapeTerm("Raven/Labels")
+                Query: "?id=" + queryUtil.escapeTerm("Raven/StudioConfig")
             }
         });
         this.post("/multi_get?parallel=yes", JSON.stringify(requests), this.ownerDb, null, 0)
