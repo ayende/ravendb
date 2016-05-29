@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using Lucene.Net.Support;
 using Raven.Client.Document;
 
 #if !DNXCORE50
@@ -36,14 +35,18 @@ namespace Raven.Tryouts
             };
             // With the constructor initializing this list, if you add a value to it then the FieldName will be correct for PreviousOwner.FirstName
             car.Owners.Add(new Owner { FirstName = "Sam" });
-            car.Owners.Add(new Owner { FirstName = "Dan" });
-            car.SecondeOwners.Add(new Owner { FirstName = "first",StringTest = new List<string>
+            
+            car.SecondeOwners.Add(new Owner
             {
-                { "ssss"},
-                {"ssdsdsds" }
+                FirstName = "first",
+                StringTest = new List<Owner>
+            {
+                new Owner{ FirstName = "ssss"},
+                new Owner{FirstName = "ssdsdsds" }
 
-    
-            }});
+
+            }
+            });
 
             var carId = "Car/1";
 
@@ -53,7 +56,7 @@ namespace Raven.Tryouts
                 session.SaveChanges();
             }
 
-            
+
             using (var session = store.OpenSession())
             {
                 var returnedCar = session.Load<Car>(carId);
@@ -61,10 +64,11 @@ namespace Raven.Tryouts
                 returnedCar.PreviousOwner.FirstName = "Starbuck";
                 // If you change the value of a List item, then the FieldName will NOT be correct for the List item
                 returnedCar.Owners[0].FirstName = "Frodo";
-                returnedCar.Owners[1].FirstName = "Auriel";
+                car.Owners.Add(new Owner { FirstName = "Dan" });
                 returnedCar.SecondeOwners[0].FirstName = "firstfirst";
-                returnedCar.SecondeOwners[0].StringTest[0] = "stringtest";
-                returnedCar.SecondeOwners[0].StringTest[1] = "stringtestssss";
+                returnedCar.SecondeOwners[0].StringTest[0] = new Owner { FirstName = "test" };
+                returnedCar.SecondeOwners[0].StringTest[1] = new Owner { FirstName = "stringtestssss" };
+                returnedCar.SecondeOwners[0].StringTest.Add(new Owner { FirstName = "killian" });
 
                 //                returnedCar.SecondeOwners.Add(new Owner {FirstName = "second"});
                 //                returnedCar.Owners[1].FirstName = "Dana";
@@ -100,7 +104,7 @@ namespace Raven.Tryouts
     {
         public string FirstName { get; set; }
         public string LastName { get; set; }
-        public List<string> StringTest { get; set; }
+        public List<Owner> StringTest { get; set; }
     }
 
     public class Lissing

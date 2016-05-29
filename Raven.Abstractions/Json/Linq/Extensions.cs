@@ -234,16 +234,17 @@ namespace Raven.Json.Linq
             {
                 var changes = new DocumentsChanges
                 {
-                    FieldName = string.Format("{0}[{1}].", fieldArrName, index)
+                    FieldName = string.Format("{0}[{1}]", fieldArrName, index)
                 };
 
                 if (selfArray.Length < otherArray.Length)
                 {
                     if (index < selfArray.Length)
                     {
-                        otherArray[index].DeepEquals(selfArray[index], docChanges as List<DocumentsChanges>);
+                        selfArray[index].DeepEquals(otherArray[index], (List<DocumentsChanges>)docChanges);
                         List<DocumentsChanges> docChangesList = docChanges.ToList();
-                        ((List<DocumentsChanges>)docChanges)[docChanges.Count-1].FieldName = String.Format("{0}.{1}", changes.FieldName, docChangesList[docChangesList.Count-1].FieldName);
+                        docChangesList[docChangesList.Count - 1].FieldName = String.Format("{0}.{1}", changes.FieldName, docChangesList[docChangesList.Count - 1].FieldName);
+
                     }
                     else
                     {
@@ -259,10 +260,9 @@ namespace Raven.Json.Linq
                 {
                     if (index < otherArray.Length)
                     {
-                        otherArray[index].DeepEquals(selfArray[index], docChanges as List<DocumentsChanges>);
+                        selfArray[index].DeepEquals(otherArray[index], (List<DocumentsChanges>)docChanges);
                         List<DocumentsChanges> docChangesList = docChanges.ToList();
                         docChangesList[docChangesList.Count-1].FieldName = String.Format("{0}.{1}", changes.FieldName, docChangesList[docChangesList.Count - 1].FieldName);
-                        ((List<DocumentsChanges>)docChanges)[docChanges.Count-1].FieldName = String.Format("{0}.{1}", changes.FieldName, docChangesList[docChangesList.Count-1].FieldName);
                     }
                     else
                     {
