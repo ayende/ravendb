@@ -471,5 +471,80 @@ namespace Sparrow.Json
             Memory.Copy(ptr, _mem, _size);
         }
 
+        public void BlittableValidation(int size)
+        {
+            byte offset;
+            var currentSize = size - 1;
+
+            var rootToken = (BlittableJsonToken)(*(_mem + currentSize));
+            currentSize--;
+
+            var propsOffsetList = ReadVariableSizeIntInReverse(_mem, currentSize, out offset);
+            currentSize -= offset;
+            if (propsOffsetList > currentSize)
+                throw new InvalidDataException("Properties names offset not valid");
+
+            var objStartOffset = ReadVariableSizeIntInReverse(_mem, currentSize, out offset);
+            currentSize -= offset;
+            if (objStartOffset > currentSize)
+                throw new InvalidDataException("Root metadata offset not valid");
+
+            var token = (BlittableJsonToken)(*(_mem + propsOffsetList));
+            var propOffsetSize = ProcessTokenOffsetFlags(token);
+            var numberOfProps = (currentSize - propsOffsetList)/propOffsetSize;
+
+            currentSize = propsOffsetList;
+
+            for (var i = 1; i < numberOfProps + 1; i++)
+            {
+                int count = 0;
+                for (var j = 1; j < propOffsetSize; j++)
+                {
+                    var currentOffset = *(_mem + propsOffsetList + i*j);
+                    count |= currentOffset << 8;
+                }
+                count |= *(_mem + propsOffsetList + i*propOffsetSize);
+
+                if (count > currentSize)
+                    throw new InvalidDataException("Properties names offset not valid");
+            }
+
+            currentSize = objStartOffset;
+            PropertiesValidation(rootToken, currentSize);
+        }
+
+        private void PropertiesValidation( BlittableJsonToken token, int size)
+        {
+            var propOffsetSize = ProcessTokenOffsetFlags(token);
+            var propIdSize = ProcessTokenPropertyFlags(token);
+            byte offset;
+            var current = _mem + size ;
+            var numberOfProperties = ReadVariableSizeInt(current, 0, out offset);
+            current += offset;
+
+            for (var i = 0; i < numberOfProperties; i++)
+            {
+                var count = 0;
+                for (var j = 1; j < propOffsetSize; j++)
+                {
+                    var propOffset = *(current);
+                    count |= propOffset << 8;
+                    current++;
+                }
+                count |= *(current);
+                current += propOffsetSize;
+                current += propIdSize;
+
+                if (count > size)
+                    throw new InvalidDataException("Properties offset not valid");
+
+                token = (BlittableJsonToken)(*(current));
+                if ( ( ( TypesMask & token ) == BlittableJsonToken.StartObject ) ||
+                    ( ( TypesMask & token ) == BlittableJsonToken.StartArray) )
+                    PropertiesValidation( token, size - count);
+                current++;
+
+            }
+        }
     }
 }
