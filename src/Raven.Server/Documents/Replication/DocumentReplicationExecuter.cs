@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using Raven.Abstractions.Replication;
 using Raven.Abstractions.Util;
 using Raven.Server.ReplicationUtil;
@@ -45,7 +46,7 @@ namespace Raven.Server.Documents.Replication
         public void ReceiveReplicatedDocuments(DocumentsOperationContext context, 
             List<BlittableJsonReaderObject> docs) => _incoming.ReceiveReplicatedDocuments(context, docs);
 
-        protected override void ExecuteReplicationOnce() => _outgoing?.ExecuteReplicationOnce();
+        protected override Task ExecuteReplicationOnce() => _outgoing?.ExecuteReplicationOnce();
 
         protected override bool HasMoreDocumentsToSend() => _outgoing?.HasMoreDocumentsToSend ?? true;
 

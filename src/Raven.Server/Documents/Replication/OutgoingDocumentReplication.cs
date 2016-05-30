@@ -32,11 +32,11 @@ namespace Raven.Server.Documents.Replication
 
         public bool HasMoreDocumentsToSend => _hasMoreDocumentsToSend;
 
-        public void ExecuteReplicationOnce()
+        public async Task ExecuteReplicationOnce()
         {
-            AsyncHelpers.RunSync(() => _transport.EnsureConnectionAsync());
+            await _transport.EnsureConnectionAsync();
             if (_lastSentEtag == -1)
-                _lastSentEtag = AsyncHelpers.RunSync(() => _transport.GetLastEtag());
+                _lastSentEtag = await _transport.GetLastEtag();
             var lastSendEtag = _lastSentEtag;
 
             //just for shorter code
@@ -62,7 +62,7 @@ namespace Raven.Server.Documents.Replication
 
                 try
                 {
-                    AsyncHelpers.RunSync(() => _transport.SendDocumentBatchAsync(replicationBatch));
+                    await _transport.SendDocumentBatchAsync(replicationBatch);
                 }
                 catch (WebSocketException e)
                 {
