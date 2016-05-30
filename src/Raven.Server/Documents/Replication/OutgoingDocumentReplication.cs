@@ -36,7 +36,7 @@ namespace Raven.Server.Documents.Replication
         {
             AsyncHelpers.RunSync(() => _transport.EnsureConnectionAsync());
             if (_lastSentEtag == -1)
-                _lastSentEtag = _transport.GetLastEtag();
+                _lastSentEtag = AsyncHelpers.RunSync(() => _transport.GetLastEtag());
             var lastSendEtag = _lastSentEtag;
 
             //just for shorter code

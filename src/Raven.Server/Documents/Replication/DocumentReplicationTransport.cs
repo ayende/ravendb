@@ -56,7 +56,7 @@ namespace Raven.Server.ReplicationUtil
             }
         }
 
-        public long GetLastEtag()
+        public async Task<long> GetLastEtag()
         {
             using (var writer = new BlittableJsonTextWriter(_context, _websocketStream))
             {
@@ -68,7 +68,7 @@ namespace Raven.Server.ReplicationUtil
                 writer.Flush();
             }
 
-            var lastEtagMessage = _context.ReadForMemory(_websocketStream, null);
+            var lastEtagMessage = await _context.ReadForMemoryAsync(_websocketStream, null);
 
             long etag;
             if (!lastEtagMessage.TryGet("Raven/LastSentEtag", out etag))

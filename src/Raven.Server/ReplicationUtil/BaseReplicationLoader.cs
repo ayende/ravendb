@@ -23,7 +23,7 @@ namespace Raven.Server.ReplicationUtil
         private void WakeReplication(DocumentChangeNotification documentChangeNotification)
         {
             foreach (var replication in Replications)
-                replication.WaitForChanges.Set();
+                replication.WaitForChanges.SetByAsyncCompletion();
         }
 
         protected abstract bool ShouldReloadConfiguration(string systemDocumentKey);

@@ -92,21 +92,7 @@ namespace Raven.Server.Json
 
         public override int Read(byte[] buffer, int offset, int count)
         {
-            ThrowOnDisposed();
-
-            int read = 0;
-            while (read < count)
-            {
-                var bufferSegment = new ArraySegment<byte>(buffer, read, count - read);
-                var result = AsyncHelpers.RunSync(() =>
-                                _webSocket.ReceiveAsync(bufferSegment, _cancellationToken));
-
-                read += result.Count;
-                if (result.EndOfMessage)
-                    break;
-            }
-
-            return read;
+            throw new NotSupportedException();
         }
 
         //reading and writing byte-by-byte does not make sense 
