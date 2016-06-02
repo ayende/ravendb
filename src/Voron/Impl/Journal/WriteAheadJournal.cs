@@ -323,7 +323,7 @@ namespace Voron.Impl.Journal
             // we cannot dispose the journal until we are done with all of the pending writes
             if (_lazyTransactionBuffer != null)
             {
-                _lazyTransactionBuffer.WriteBufferToFile(CurrentFile);
+                _lazyTransactionBuffer.WriteBufferToFile(CurrentFile, null);
                 _lazyTransactionBuffer.Dispose();
             }
             _compressionPager.Dispose();
@@ -433,9 +433,9 @@ namespace Voron.Impl.Journal
                     throw new InvalidJournalFlushRequestException("Applying journals to the data file has been already requested on the same thread");
 
                 bool lockTaken = false;
-
                 try
                 {
+                    _waj._env.IsFlushingScratchBuffer = true;
                     Monitor.TryEnter(_flushingLock, Debugger.IsAttached ? TimeSpan.FromMinutes(30) : TimeSpan.FromSeconds(30), ref lockTaken);
 
                     if (lockTaken == false)
@@ -558,26 +558,46 @@ namespace Voron.Impl.Journal
                         _journalsToDelete.Add(unused.Number, unused);
                     }
 
-                    using (var txw = alreadyInWriteTx ? null : _waj._env.NewLowLevelTransaction(TransactionFlags.ReadWrite).JournalApplicatorTransaction())
+                    var timeout = TimeSpan.FromSeconds(3);
+                    bool tryEnterReadLock = false;
+                    if (alreadyInWriteTx == false)
+                        tryEnterReadLock = _waj._env.FlushInProgressLock.TryEnterWriteLock(timeout);
+                    try
                     {
-                        _lastSyncedJournal = lastProcessedJournal;
-                        _lastSyncedTransactionId = lastFlushedTransactionId;
-
-                        _lastFlushedJournal = _waj._files.First(x => x.Number == _lastSyncedJournal);
-                        
-                        if (unusedJournals.Count > 0)
+                        using (var txw = alreadyInWriteTx ? null : _waj._env.NewLowLevelTransaction(TransactionFlags.ReadWrite).JournalApplicatorTransaction())
                         {
-                            var lastUnusedJournalNumber = unusedJournals.Last().Number;
-                            _waj._files = _waj._files.RemoveWhile(x => x.Number <= lastUnusedJournalNumber);
+                            _lastSyncedJournal = lastProcessedJournal;
+                            _lastSyncedTransactionId = lastFlushedTransactionId;
+
+                            _lastFlushedJournal = _waj._files.First(x => x.Number == _lastSyncedJournal);
+
+                            if (unusedJournals.Count > 0)
+                            {
+                                var lastUnusedJournalNumber = unusedJournals.Last().Number;
+                                _waj._files = _waj._files.RemoveWhile(x => x.Number <= lastUnusedJournalNumber);
+                            }
+
+                            if (_waj._files.Count == 0)
+                                _waj.CurrentFile = null;
+
+                            FreeScratchPages(unusedJournals, txw ?? transaction);
+
+                            if (txw != null)
+                            {
+                                // we force a dummy change to a page, so when we commit, this will be written to the journal
+                                // as well as force us to generate a new transaction id, which will mean that the next time
+                                // that we run, we have freed lazy transactions, we have freed all the pages that were freed
+                                // in this transaction
+                                txw.ModifyPage(0); 
+
+                                txw.Commit();
+                            }
                         }
-
-                        if (_waj._files.Count == 0)
-                            _waj.CurrentFile = null;
-
-                        FreeScratchPages(unusedJournals, txw ?? transaction);
-
-                        if (txw != null)
-                            txw.Commit();
+                    }
+                    finally
+                    {
+                        if(tryEnterReadLock)
+                            _waj._env.FlushInProgressLock.ExitWriteLock();
                     }
                     
                     if (_totalWrittenButUnsyncedBytes > DelayedDataFileSynchronizationBytesLimit ||
@@ -591,6 +611,7 @@ namespace Voron.Impl.Journal
                 {
                     if(lockTaken)
                         Monitor.Exit(_flushingLock);
+                    _waj._env.IsFlushingScratchBuffer = false;
                 }
             }
 
@@ -782,9 +803,17 @@ namespace Voron.Impl.Journal
                 get { return Monitor.IsEntered(_flushingLock); }
             }
 
-            public IDisposable TryTakeFlushingLock(ref bool lockTaken)
+            public IDisposable TryTakeFlushingLock(ref bool lockTaken, TimeSpan? timeout = null)
             {
-                Monitor.TryEnter(_flushingLock, ref lockTaken);
+                if (timeout == null)
+                {
+                    Monitor.TryEnter(_flushingLock, ref lockTaken);
+                }
+                else
+                {
+                    Monitor.TryEnter(_flushingLock, timeout.Value, ref lockTaken);
+                }
+
                 bool localLockTaken = lockTaken;
 
                 ignoreLockAlreadyTaken = true;
@@ -851,15 +880,15 @@ namespace Voron.Impl.Journal
 
             if (CurrentFile == null || CurrentFile.AvailablePages < pages.Length)
             {
-                _lazyTransactionBuffer?.WriteBufferToFile(CurrentFile);
+                _lazyTransactionBuffer?.WriteBufferToFile(CurrentFile, tx);
                 CurrentFile = NextFile(pages.Length);
             }
 
-            CurrentFile.Write(tx, pages, _lazyTransactionBuffer);
+            CurrentFile.Write(tx, pages, _lazyTransactionBuffer, pageCount);
 
             if (CurrentFile.AvailablePages == 0)
             {
-                _lazyTransactionBuffer?.WriteBufferToFile(CurrentFile);
+                _lazyTransactionBuffer?.WriteBufferToFile(CurrentFile, tx);
                 CurrentFile = null;
             }
         }
