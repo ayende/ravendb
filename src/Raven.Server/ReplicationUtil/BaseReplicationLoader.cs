@@ -50,7 +50,7 @@ namespace Raven.Server.ReplicationUtil
             LoadConfigurations();
         }
 
-        public void Dispose()
+        public virtual void Dispose()
         {
             _database.Notifications.OnDocumentChange -= WakeReplication;
             _database.Notifications.OnSystemDocumentChange -= HandleSystemDocumentChange;

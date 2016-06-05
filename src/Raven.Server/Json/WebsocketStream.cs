@@ -71,14 +71,6 @@ namespace Raven.Server.Json
         }
 
         private static readonly ArraySegment<byte> emptyBuffer = new ArraySegment<byte>(new byte[0]);
-        public async Task WriteEndOfMessageAsync()
-        {
-            ThrowOnDisposed();
-
-            await _webSocket.SendAsync(emptyBuffer,
-                WebSocketMessageType.Text,
-                true, _cancellationToken).ConfigureAwait(false);
-        }
 
         public override void SetLength(long value)
         {

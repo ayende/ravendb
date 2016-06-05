@@ -85,15 +85,15 @@ namespace Raven.Server.ReplicationUtil
                     _log.WarnException($"Exception occured for '{ReplicationUniqueName}'.", e);
                 }
 
-                if (!HasMoreDocumentsToSend())
+                if (HasMoreDocumentsToSend())
                     continue;
 
                 try
                 {
-                    //if this returns false, this means canceled token is activated
-                    //thus, end the thread in such a case
+                    //if this returns false, this means canceled token is activated                    
                     if (await WaitForChanges.WaitAsync() == false)
-                        return;
+                        //thus, if code reaches here, cancellation token source has "cancel" requested
+                        return; 
                 }
                 catch (OperationCanceledException)
                 {
