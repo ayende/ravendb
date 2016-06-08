@@ -25,7 +25,6 @@ namespace Voron.Impl
         private Tree _root;
 
         public bool FlushedToJournal { get; private set; }
-
         public Tree RootObjects => _root;
 
         private readonly WriteAheadJournal _journal;
@@ -514,6 +513,9 @@ namespace Voron.Impl
             _state.Root.CopyTo(&_txHeader->Root);
 
             _txHeader->TxMarker |= TransactionMarker.Commit;
+
+            if (IsLazyTransaction && Environment.IsFlushingScratchBuffer)
+                IsLazyTransaction = false;
 
             if (_allocatedPagesInTransaction + _overflowPagesInTransaction > 0 || // nothing changed in this transaction
                 (IsLazyTransaction == false && _journal != null && _journal.HasDataInLazyTxBuffer()))  // allow call to writeToJournal for flushing lazy tx
