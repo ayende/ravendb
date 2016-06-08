@@ -95,7 +95,7 @@ namespace Sparrow.Json
             }
         }
 
-        public unsafe BlittableJsonReaderObject(int pos, BlittableJsonReaderObject parent, BlittableJsonToken type)
+        public BlittableJsonReaderObject(int pos, BlittableJsonReaderObject parent, BlittableJsonToken type)
         {
             _parent = parent;
             _context = parent._context;
@@ -250,8 +250,11 @@ namespace Sparrow.Json
             {
                 try
                 {
-                    if (typeof(T).GetTypeInfo().IsEnum)
-                        result = Enum.Parse(typeof(T), result.ToString());
+                    if (typeof (T).GetTypeInfo().IsEnum)
+                    {
+                        obj = (T)Enum.Parse(typeof (T), result.ToString());
+                        return;
+                    }
 
                     obj = result == null ? default(T) : (T)Convert.ChangeType(result, typeof(T));
                 }
@@ -310,16 +313,15 @@ namespace Sparrow.Json
         {
             // try get value from cache, works only with Blittable types, other objects are not stored for now
             if (_objectsPathCache != null && _objectsPathCache.TryGetValue(name, out result))
-            {
                 return true;
-            }
+
             var index = GetPropertyIndex(name);
             if (index == -1)
             {
                 result = null;
                 return false;
             }
-            var metadataSize = (_currentOffsetSize + _currentPropertyIdSize + sizeof(byte));
+            var metadataSize = _currentOffsetSize + _currentPropertyIdSize + sizeof(byte);
             var propertyTag = GetPropertyTag(index, metadataSize);
             result = GetObject((BlittableJsonToken) propertyTag.Type, (int) (_objStart - _mem - propertyTag.Position));
             if (result is BlittableJsonReaderBase)
@@ -379,7 +381,7 @@ namespace Sparrow.Json
                 mid = max;
             do
             {
-                var metadataSize = (_currentOffsetSize + _currentPropertyIdSize + sizeof(byte));
+                var metadataSize = _currentOffsetSize + _currentPropertyIdSize + sizeof(byte);
                 var propertyIntPtr = (long)_metadataPtr + (mid) * metadataSize;
 
                 var propertyId = ReadNumber((byte*)propertyIntPtr + _currentOffsetSize, _currentPropertyIdSize);
@@ -412,7 +414,7 @@ namespace Sparrow.Json
         /// <param name="comparer">Comparer of a specific string value</param>
         /// <returns></returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private unsafe int ComparePropertyName(int propertyId, LazyStringValue comparer)
+        private int ComparePropertyName(int propertyId, LazyStringValue comparer)
         {
             // Get the offset of the property name from the _proprNames position
             var propertyNameOffsetPtr = _propNames + 1 + propertyId * _propNamesDataOffsetSize;
@@ -483,5 +485,14 @@ namespace Sparrow.Json
             Memory.Copy(ptr, _mem, _size);
         }
 
+        public bool TryGetEmbedded(string key, out BlittableJsonReaderObject embedded)
+        {
+            embedded = null;
+            BlittableJsonReaderObject innerEmbedded = null;
+            if (!TryGet(key, out innerEmbedded))
+                return false;
+            embedded = _context.ReadObject(innerEmbedded, key);			
+            return true;
+        }
     }
 }
