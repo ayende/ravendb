@@ -1,4 +1,5 @@
 ﻿using Raven.Server.Documents;
+using Sparrow;
 using Sparrow.Json;
 
 namespace Raven.Server.ServerWide.Context
@@ -13,14 +14,14 @@ namespace Raven.Server.ServerWide.Context
             _documentDatabase = documentDatabase;
         }
 
-        protected override DocumentsTransaction CreateReadTransaction()
+        protected override DocumentsTransaction CreateReadTransaction(ByteStringContext context)
         {
-            return new DocumentsTransaction(this, _documentDatabase.DocumentsStorage.Environment.ReadTransaction(), _documentDatabase.Notifications);
+            return new DocumentsTransaction(this, _documentDatabase.DocumentsStorage.Environment.ReadTransaction(context), _documentDatabase.Notifications);
         }
 
-        protected override DocumentsTransaction CreateWriteTransaction()
+        protected override DocumentsTransaction CreateWriteTransaction(ByteStringContext context)
         {
-            return new DocumentsTransaction(this, _documentDatabase.DocumentsStorage.Environment.WriteTransaction(), _documentDatabase.Notifications);
+            return new DocumentsTransaction(this, _documentDatabase.DocumentsStorage.Environment.WriteTransaction(context), _documentDatabase.Notifications);
         }
     }
 }

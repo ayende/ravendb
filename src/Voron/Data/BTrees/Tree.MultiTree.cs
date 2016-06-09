@@ -39,7 +39,9 @@ namespace Voron.Data.BTrees
 
         public void MultiAdd(Slice key, Slice value, ushort? version = null)
         {
-            if (value == null) throw new ArgumentNullException(nameof(value));
+            if (!value.HasValue)
+                throw new ArgumentNullException(nameof(value));
+
             int maxNodeSize = Llt.DataPager.NodeMaxSize;
             if (value.Size > maxNodeSize)
                 throw new ArgumentException("Cannot add a value to child tree that is over " + maxNodeSize + " bytes in size", nameof(value));
@@ -75,7 +77,7 @@ namespace Voron.Data.BTrees
 
             var nestedPage = new TreePage(nestedPagePtr, "multi tree", (ushort)TreeNodeHeader.GetDataSize(_llt, item));
 
-            var existingItem = nestedPage.Search(value);
+            var existingItem = nestedPage.Search(_llt, value);
             if (nestedPage.LastMatch != 0)
                 existingItem = null;// not an actual match, just greater than
 
@@ -85,9 +87,10 @@ namespace Voron.Data.BTrees
             if (existingItem != null)
             {
                 // maybe same value added twice?
-                var tmpKey = page.GetNodeKey(item);
-                if (tmpKey.Compare(value) == 0)
+                var tmpKey = TreeNodeHeader.ToSlicePtr(_llt.Allocator, item);
+                if (SliceComparer.Equals( tmpKey, value))
                     return; // already there, turning into a no-op
+
                 nestedPage.RemoveNode(nestedPage.LastSearchPosition);
             }
 
@@ -125,7 +128,7 @@ namespace Voron.Data.BTrees
             var tree = Create(_llt, _tx, TreeFlags.MultiValue);
             for (int i = 0; i < nestedPage.NumberOfEntries; i++)
             {
-                var existingValue = nestedPage.GetNodeKey(i);
+                var existingValue = nestedPage.GetNodeKey(_llt, i);
                 tree.DirectAdd(existingValue, 0);
             }
             tree.DirectAdd(value, 0, version: version);
@@ -155,16 +158,18 @@ namespace Voron.Data.BTrees
                     TreeFlags = TreePageFlags.Leaf,
                     PageNumber = -1L // mark as invalid page number
                 };
-            
-                Slice nodeKey = nestedPage.CreateNewEmptyKey();
+
+                var nodeKey = new Slice();
                 for (int i = 0; i < nestedPage.NumberOfEntries; i++)
                 {
                     var nodeHeader = nestedPage.GetNode(i);
-                    nestedPage.SetNodeKey(nodeHeader, ref nodeKey);
+
+                    nodeKey = TreeNodeHeader.ToSlicePtr(_tx.Allocator, nodeHeader, ByteStringType.Mutable);
+
                     newNestedPage.AddDataNode(i, nodeKey, 0, (ushort)(nodeHeader->Version - 1)); // we dec by one because AdddataNode will inc by one, and we don't want to change those values
                 }
 
-                newNestedPage.Search(value);
+                newNestedPage.Search(_llt, value);
                 newNestedPage.AddDataNode(newNestedPage.LastSearchPosition, value, 0, 0);
             }
         }
@@ -238,7 +243,7 @@ namespace Voron.Data.BTrees
             else // we use a nested page here
             {
                 var nestedPage = new TreePage(TreeNodeHeader.DirectAccess(_llt, item), "multi tree", (ushort)TreeNodeHeader.GetDataSize(_llt, item));
-                var nestedItem = nestedPage.Search(value);
+                var nestedItem = nestedPage.Search(_llt, value);
                 if (nestedPage.LastMatch != 0) // value not found
                     return;
 
@@ -269,11 +274,9 @@ namespace Voron.Data.BTrees
 
             Debug.Assert(node != null);
 
-            var fetchedNodeKey = page.GetNodeKey(node);
-            if (fetchedNodeKey.Compare(key) != 0)
-            {
+            var fetchedNodeKey = TreeNodeHeader.ToSlicePtr(_llt.Allocator, node);
+            if (!SliceComparer.EqualsInline(fetchedNodeKey,key))
                 throw new InvalidDataException("Was unable to retrieve the correct node. Data corruption possible");
-            }
 
             if (node->Flags == TreeNodeFlags.MultiValuePageRef)
             {
@@ -296,11 +299,9 @@ namespace Voron.Data.BTrees
 
             Debug.Assert(node != null);
 
-            var fetchedNodeKey = page.GetNodeKey(node);
-            if (fetchedNodeKey.Compare(key) != 0)
-            {
+            var fetchedNodeKey = TreeNodeHeader.ToSlicePtr(_llt.Allocator, node);
+            if (!SliceComparer.EqualsInline(fetchedNodeKey,key))
                 throw new InvalidDataException("Was unable to retrieve the correct node. Data corruption possible");
-            }
 
             if (node->Flags == TreeNodeFlags.MultiValuePageRef)
             {
@@ -314,11 +315,11 @@ namespace Voron.Data.BTrees
             if (allowWrites)
             {
                 ptr = DirectAdd(key, dataSize);//make sure that the memory we pass is writable
-                key = key.Clone(); // ensure that we won't have a key that is going to be modified
+                key = key.Clone(_tx.Allocator, ByteStringType.Immutable); // ensure that we won't have a key that is going to be modified
             }
             var nestedPage = new TreePage(ptr, "multi tree", dataSize);
                 
-            return new TreePageIterator(key ,this, nestedPage, allowWrites);
+            return new TreePageIterator(_tx.LowLevelTransaction, key ,this, nestedPage, allowWrites);
         }
 
         private Tree OpenMultiValueTree(Slice key, TreeNodeHeader* item)

@@ -72,7 +72,9 @@ namespace Voron.Data
 
         public void Dispose()
         {
-            OnDisposal?.Invoke(this);
+            var action = OnDisposal;
+            if (action != null)
+                action(this);
         }
     }
 }

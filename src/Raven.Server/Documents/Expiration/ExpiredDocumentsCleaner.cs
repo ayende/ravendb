@@ -114,14 +114,14 @@ namespace Raven.Server.Documents.Expiration
                         var tree = tx.InnerTransaction.CreateTree(DocumentsByExpiration);
                         using (var it = tree.Iterate())
                         {
-                            if (it.Seek(Slice.BeforeAllKeys) == false)
+                            if (it.Seek(Slices.BeforeAllKeys) == false)
                                 return;
 
                             while (it.CurrentKey.CreateReader().ReadBigEndianInt64() < currentTicks)
                             {
                                 using (var multiIt = tree.MultiRead(it.CurrentKey, allowWrites: true))
                                 {
-                                    if (multiIt.Seek(Slice.BeforeAllKeys))
+                                    if (multiIt.Seek(Slices.BeforeAllKeys))
                                     {
                                         do
                                         {
@@ -205,7 +205,7 @@ namespace Raven.Server.Documents.Expiration
             var ticksBigEndian = IPAddress.HostToNetworkOrder(date.Ticks);
 
             var tree = context.Transaction.InnerTransaction.CreateTree(DocumentsByExpiration);
-            tree.MultiAdd(new Slice((byte*)&ticksBigEndian, sizeof(long)), loweredKey);
+            tree.MultiAdd(Slice.From(context.Allocator, (byte*)&ticksBigEndian, sizeof(long)), loweredKey);
         }
     }
 }

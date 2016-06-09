@@ -9,17 +9,19 @@ namespace Voron.Data.BTrees
         private readonly Tree _parent;
         private readonly TreePage _page;
         private readonly bool _allowWritable;
-        private Slice _currentKey = new Slice(SliceOptions.Key);
-        private Slice _currentInternalKey;
+        private readonly LowLevelTransaction _tx;
+
+        private Slice _currentInternalKey = default(Slice);    
+        private Slice _currentKey = default(Slice);
         private bool _disposed;
 
-        public TreePageIterator(Slice treeKey, Tree parent, TreePage page, bool allowWritable)
+        public TreePageIterator(LowLevelTransaction tx, Slice treeKey, Tree parent, TreePage page, bool allowWritable)
         {
+            _tx = tx;
             _treeKey = treeKey;
             _parent = parent;
             _page = page;
-            _allowWritable = allowWritable;
-            _currentInternalKey = page.CreateNewEmptyKey();
+            _allowWritable = allowWritable;          
         }
 
         public void Dispose()
@@ -33,14 +35,15 @@ namespace Voron.Data.BTrees
         {
             if(_disposed)
                 throw new ObjectDisposedException("PageIterator");
-            var current = _page.Search(key);
+
+            var current = _page.Search(_tx, key);
             if (current == null)
                 return false;
 
-            _page.SetNodeKey(current, ref _currentInternalKey);
-            _currentKey = _currentInternalKey.ToSlice();
+            _currentInternalKey = TreeNodeHeader.ToSlicePtr(_tx.Allocator, current);
+            _currentKey = _currentInternalKey;
 
-            return this.ValidateCurrentKey(current, _page);
+            return this.ValidateCurrentKey(_tx, current);
         }
 
         public TreeNodeHeader* Current
@@ -110,12 +113,13 @@ namespace Voron.Data.BTrees
                 return false;
 
             var current = _page.GetNode(_page.LastSearchPosition);
-            if (this.ValidateCurrentKey(current, _page) == false)
+            if (this.ValidateCurrentKey(_tx, current) == false)
             {
                 return false;
             }
-            _page.SetNodeKey(current, ref _currentInternalKey);
-            _currentKey = _currentInternalKey.ToSlice();
+
+            _currentInternalKey = TreeNodeHeader.ToSlicePtr(_tx.Allocator, current);
+            _currentKey = _currentInternalKey;
             return true;
         }
 
