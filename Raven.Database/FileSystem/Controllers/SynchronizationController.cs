@@ -217,12 +217,10 @@ namespace Raven.Database.FileSystem.Controllers
 
             Storage.Batch(accessor =>
             {
-                var configs = accessor.GetConfigsStartWithPrefix(RavenFileNameHelper.SyncResultNamePrefix,
-                                                                 Paging.Start, Paging.PageSize);
                 int totalCount = 0;
-                accessor.GetConfigNamesStartingWithPrefix(RavenFileNameHelper.SyncResultNamePrefix,
+                var configs = accessor.GetConfigsStartWithPrefix(RavenFileNameHelper.SyncResultNamePrefix,
                                                                  Paging.Start, Paging.PageSize, out totalCount);
-
+                
                 var reports = configs.Select(config => config.JsonDeserialization<SynchronizationReport>()).ToList();
                 page = new ItemsPage<SynchronizationReport>(reports, totalCount);
             });
@@ -280,12 +278,12 @@ namespace Raven.Database.FileSystem.Controllers
 
             Storage.Batch(accessor =>
             {
-                var conflicts = accessor.GetConfigurationValuesStartWithPrefix<ConflictItem>(
-                                                    RavenFileNameHelper.ConflictConfigNamePrefix,
-                                                    Paging.PageSize * Paging.Start,
-                                                    Paging.PageSize).ToList();
+                int totalCount;
+                var values = accessor.GetConfigsStartWithPrefix(RavenFileNameHelper.ConflictConfigNamePrefix, Paging.Start, Paging.PageSize, out totalCount);
 
-                page = new ItemsPage<ConflictItem>(conflicts, conflicts.Count);
+                var conflicts = values.Select(x => JsonExtensions.JsonDeserialization<ConflictItem>(x));
+
+                page = new ItemsPage<ConflictItem>(conflicts, totalCount);
             });
 
             return GetMessageWithObject(page, HttpStatusCode.OK)
