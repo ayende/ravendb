@@ -291,6 +291,25 @@ namespace Raven.Database.FileSystem.Controllers
         }
 
         [HttpPatch]
+        [RavenRoute("fs/{fileSystemName}/synchronization/ResolveConflicts")]
+        public HttpResponseMessage ResolveConflicts(ConflictResolutionStrategy strategy)
+        {
+            IList<ConflictItem> conflicts = null;
+            Storage.Batch(accessor =>
+            {
+                int totalCount;
+                var values = accessor.GetConfigsStartWithPrefix(RavenFileNameHelper.ConflictConfigNamePrefix, 0, int.MaxValue, out totalCount);
+                conflicts = values.Select(x => JsonExtensions.JsonDeserialization<ConflictItem>(x)).ToList();
+            });
+
+            foreach (var conflict in conflicts)
+            {
+                ResolveConflict(conflict.FileName, strategy);
+            }
+            return GetEmptyMessage(HttpStatusCode.NoContent);
+        }
+
+        [HttpPatch]
         [RavenRoute("fs/{fileSystemName}/synchronization/ResolveConflict/{*filename}")]
         public HttpResponseMessage ResolveConflict(string filename, ConflictResolutionStrategy strategy)
         {
