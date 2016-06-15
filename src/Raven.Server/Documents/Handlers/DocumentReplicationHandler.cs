@@ -3,12 +3,10 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Raven.Abstractions.Data;
-using Raven.Abstractions.Util;
 using Raven.Server.Documents.Replication;
 using Raven.Server.Extensions;
 using Raven.Server.Json;
 using Raven.Server.Routing;
-using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
@@ -17,36 +15,16 @@ namespace Raven.Server.Documents.Handlers
 {
     public class DocumentReplicationRequestHandler : DatabaseRequestHandler
     {	
-        [RavenAction("/databases/*/documentReplication/changeVector", "GET",
-            @"@/databases/{databaseName:string}/documentReplication/changeVector")]
-        public Task GetChangeVector()
-        {
-            DocumentsOperationContext context;
-            using (Database.DocumentsStorage.ContextPool.AllocateOperationContext(out context))
-            using (context.OpenReadTransaction())
-            {
-                var serverChangeVector = Database.DocumentsStorage.GetChangeVector(context);
-                using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
-                    writer.WriteChangeVector(context, serverChangeVector);
-            }
-
-            return Task.CompletedTask;
-        }      
-
+    
         //an endpoint to establish replication websocket
         [RavenAction("/databases/*/documentReplication", "GET",
-            @"@/databases/{databaseName:string}/documentReplication?
+			@"@/databases/{databaseName:string}/documentReplication?
                 srcDbId={databaseUniqueId:string}
                 &srcDbName={databaseName:string}")]
         public async Task DocumentReplicationConnection()
         {
             var srcDbId = Guid.Parse(GetQueryStringValueAndAssertIfSingleAndNotEmpty("srcDbId"));
             var srcDbName = GetQueryStringValueAndAssertIfSingleAndNotEmpty("srcDbName");
-            long lastSentEtag;
-            if (!long.TryParse(GetQueryStringValueAndAssertIfSingleAndNotEmpty("lastSentEtag"), out lastSentEtag))
-            {
-                throw new ArgumentException("lastSentEtag should be a Int64 number, failed to parse...");
-            }
             var srcUrl = HttpContext.Request.GetHostnameUrl();
 
             var ReplicationReceiveDebugTag = $"document-replication/receive <{Database.DocumentReplicationLoader.ReplicationUniqueName}>";

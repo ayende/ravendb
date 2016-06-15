@@ -19,7 +19,7 @@ namespace FastTests.Server.Documents.Replication
             public int Age { get; set; }
         }
 
-        [Fact(Skip = "WIP, should not pass yet")]
+        [Fact]
         public async Task Master_master_replication_from_etag_zero_without_conflict_should_work()
         {
             var dbName1 = DbName + "-1";
@@ -76,8 +76,8 @@ namespace FastTests.Server.Documents.Replication
             }
         }		
 
-        [Fact(Skip = "WIP, should not pass yet")]
-        public async Task TryGetEmbedded_should_work_properly()
+        [Fact]
+        public async Task TryGetDetached_embedded_object_should_work_properly()
         {
             string dbName = $"TestDB{Guid.NewGuid()}";
             using (await GetDocumentStore(modifyDatabaseDocument: document => document.Id = dbName))
@@ -98,37 +98,55 @@ namespace FastTests.Server.Documents.Replication
                     using (context.OpenWriteTransaction())
                     {
                         BlittableJsonReaderObject inner;
-                        doc.TryGet("Inner", out inner);
-                        Assert.NotNull(inner);
-                        db.DocumentsStorage.Put(context, "foo/bar", null, inner);
-                        context.Transaction.Commit();
-                    }
+                        doc.TryGetDetached("Inner", out inner);
+						
+						Assert.NotNull(inner);
 
-                    using (context.OpenWriteTransaction())
-                    {
-                        BlittableJsonReaderObject inner;
-                        doc.TryGet("Inner", out inner);
-                        inner.Modifications = new DynamicJsonValue(inner)
-                        {
-                            ["Bar"] = "AAA"
-                        };
-                        db.DocumentsStorage.Put(context, "foo/bar", null, inner);
-                        context.Transaction.Commit();
+						//save only the inner object
+						db.DocumentsStorage.Put(context, "foo/bar", null, inner);
+						context.Transaction.Commit();
                     }
 
                     using (context.OpenReadTransaction())
                     {
                         //should fetch only embedded object and not its parent
                         var fetchedDoc =  db.DocumentsStorage.Get(context, "foo/bar");
-                        object _;
-                        Assert.False(fetchedDoc.Data.TryGet("Inner",out _));
-                        Assert.True(fetchedDoc.Data.TryGet("Bar", out _));
+                        object inner;
+
+						Assert.False(fetchedDoc.Data.TryGet("Inner", out inner));
+						Assert.True(fetchedDoc.Data.TryGet("Bar", out inner));
                     }
-                }
-            }
+				}
+			}
         }
 
-        [Fact(Skip = "WIP, should not pass yet")]
+		[Fact]
+		public async Task TryGetDetached_embedded_array_should_work_properly()
+		{
+			string dbName = $"TestDB{Guid.NewGuid()}";
+			using (await GetDocumentStore(modifyDatabaseDocument: document => document.Id = dbName))
+			using (var db = await Server.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(dbName))
+			{
+				DocumentsOperationContext context;
+				using (db.DocumentsStorage.ContextPool.AllocateOperationContext(out context))
+				{
+					var doc = context.ReadObject(new DynamicJsonValue
+					{
+						["Foo"] = "A",
+						["Inner"] = new DynamicJsonArray(new[] { "foo/1", "foo/2", "foo/3" })
+					}, "foo/bar");
+
+					BlittableJsonReaderArray inner;
+					doc.TryGetDetached("Inner", out inner);
+
+					Assert.NotNull(inner);
+					Assert.Equal(3,inner.Length);
+					Assert.Equal(inner.Select(x => x.ToString()), new[] { "foo/1", "foo/2", "foo/3" });
+				}
+			}
+		}
+
+		[Fact]
         public async Task Master_slave_replication_from_etag_zero_should_work()
         {
             var dbName1 = DbName + "-1";
@@ -158,7 +176,7 @@ namespace FastTests.Server.Documents.Replication
                     session.SaveChanges();		
                 }
 
-                var replicated1 = WaitForDocumentToReplicate<User>(store2, "users/1", 15000);
+	            var replicated1 = WaitForDocumentToReplicate<User>(store2, "users/1", 15000);
 
                 Assert.NotNull(replicated1);
                 Assert.Equal("John Dow", replicated1.Name);
@@ -171,7 +189,7 @@ namespace FastTests.Server.Documents.Replication
             }
         }
 
-        [Fact(Skip = "WIP, should not pass yet")]
+        [Fact]
         public async Task Master_slave_replication_with_multiple_PUTS_should_work()
         {
             var dbName1 = DbName + "-1";

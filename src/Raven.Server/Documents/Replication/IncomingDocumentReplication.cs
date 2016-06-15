@@ -34,11 +34,15 @@ namespace Raven.Server.Documents.Replication
                 foreach (var currentEntry in changeVector)
                 {
                     Debug.Assert(currentEntry.DbId != Guid.Empty); //should never happen, but..
+
+					//note: documents in a replication batch are ordered in incremental etag order
                     maxReceivedChangeVector[currentEntry.DbId] = currentEntry.Etag;
                 }
-                ReceiveReplicated(context, doc);
+	            var detachedDoc = context.ReadObject(doc, null);
+				ReceiveReplicated(context, detachedDoc);
             }
 
+			//if any of [dbId -> etag] is larger than server pair, update it
             for (int i = 0; i < dbChangeVector.Length; i++)
             {
                 long dbEtag;
