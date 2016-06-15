@@ -365,7 +365,7 @@ namespace Voron.Data.Tables
 
                 var pkIndex = GetTree(pk);
 
-                pkIndex.Add(pkval, Slice.External(_tx.Allocator, (byte*)&id, sizeof(long), ByteStringType.Immutable));                      
+                pkIndex.Add(pkval, Slice.External(_tx.Allocator, (byte*)&id, sizeof(long)));                      
             }
 
             foreach (var indexDef in _schema.Indexes.Values)
@@ -534,7 +534,7 @@ namespace Voron.Data.Tables
         public IEnumerable<SeekResult> SeekForwardFrom(TableSchema.SchemaIndexDef index, Slice value, bool startsWith = false)
         {
             var tree = GetTree(index);
-            using (var it = tree.Iterate())
+            using (var it = tree.Iterate(false))
             {
                 if (startsWith)
                     it.RequiredPrefix = value.Clone(_tx.Allocator);
@@ -557,7 +557,7 @@ namespace Voron.Data.Tables
         {
             var pk = _schema.Key;
             var tree = GetTree(pk);
-            using (var it = tree.Iterate())
+            using (var it = tree.Iterate(false))
             {
                 if (it.Seek(value) == false)
                     yield break;
@@ -574,7 +574,7 @@ namespace Voron.Data.Tables
         {
             var pk = _schema.Key;
             var tree = GetTree(pk);
-            using (var it = tree.Iterate())
+            using (var it = tree.Iterate(false))
             {
                 if (it.Seek(Slices.AfterAllKeys) == false)
                     return null;
@@ -642,7 +642,7 @@ namespace Voron.Data.Tables
             var read = builder.Read(_schema.Key.StartIndex, out size);
 
             long id;
-            if (TryFindIdFromPrimaryKey(Slice.External(_tx.Allocator, read, (ushort)size, ByteStringType.Immutable), out id))
+            if (TryFindIdFromPrimaryKey(Slice.External(_tx.Allocator, read, (ushort)size), out id))
             {
                 id = Update(id, builder);
                 return id;
@@ -687,7 +687,7 @@ namespace Voron.Data.Tables
 
             var toDelete = new List<long>();
             var tree = GetTree(index);
-            using (var it = tree.Iterate())
+            using (var it = tree.Iterate(false))
             {
                 if (it.Seek(value) == false)
                     return 0;

@@ -36,7 +36,7 @@ namespace Voron
 
         private readonly ConcurrentSet<LowLevelTransaction> _activeTransactions = new ConcurrentSet<LowLevelTransaction>();
 
-        private readonly IVirtualPager _dataPager;
+        private readonly AbstractPager _dataPager;
 
         private readonly WriteAheadJournal _journal;
         private readonly object _txWriter = new object();
@@ -430,7 +430,7 @@ namespace Voron
 
             var trees = new List<Tree>();
             var fixedSizeTrees = new List<FixedSizeTree>();
-            using (var rootIterator = tx.LowLevelTransaction.RootObjects.Iterate())
+            using (var rootIterator = tx.LowLevelTransaction.RootObjects.Iterate(false))
             {
                 if (rootIterator.Seek(Slices.BeforeAllKeys))
                 {
