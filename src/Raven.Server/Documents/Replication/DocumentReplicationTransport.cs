@@ -25,7 +25,9 @@ namespace Raven.Server.ReplicationUtil
         private bool _disposed;
         private WebsocketStream _websocketStream;
         private readonly DocumentsOperationContext _context;
-        private readonly string _targetDbName;	    
+        private readonly string _targetDbName;
+
+	    private const int MaxRetries = 3;
 
         public DocumentReplicationTransport(string url, 
             Guid srcDbId, 
@@ -73,29 +75,52 @@ namespace Raven.Server.ReplicationUtil
             return etag;
         }
 
-        //TODO : add here logic so reconnection is attempted couple of times before giving up
-        private async Task<WebSocket> GetAndConnectWebSocketAsync()
-        {
-            var uri = new Uri($"{_url?.Replace("http://", "ws://")?.Replace(".fiddler", "")}/databases/{_targetDbName?.Replace("/", string.Empty)}/documentReplication?srcDbId={_srcDbId}&srcDbName={EscapingHelper.EscapeLongDataString(_srcDbName)}");
-            try
-            {
-                if (Sparrow.Platform.Platform.RunningOnPosix)
-                {
-                    var webSocketUnix = new RavenUnixClientWebSocket();
-                    await webSocketUnix.ConnectAsync(uri, _cancellationToken);
+		//TODO : add here logic so reconnection is attempted couple of times before giving up
+		private async Task<WebSocket> GetAndConnectWebSocketAsync()
+		{
+			var uri = new Uri($"{_url?.Replace("http://", "ws://")?.Replace(".fiddler", "")}/databases/{_targetDbName?.Replace("/", string.Empty)}/documentReplication?srcDbId={_srcDbId}&srcDbName={EscapingHelper.EscapeLongDataString(_srcDbName)}");
+			try
+			{
+				if (Sparrow.Platform.Platform.RunningOnPosix)
+				{
+					var webSocketUnix = new RavenUnixClientWebSocket();					;
+					await ExecuteWithRetry(webSocketUnix,
+						async () => await webSocketUnix.ConnectAsync(uri, _cancellationToken));
 
-                    return webSocketUnix;
-                }
+					return webSocketUnix;
+				}
 
-                var webSocket = new ClientWebSocket();			    
-                await webSocket.ConnectAsync(uri, _cancellationToken);
-                return webSocket;
-            }
-            catch (Exception e)
-            {
-                throw new InvalidOperationException("Failed to connect websocket for remote replication node.", e);
-            }
-        }
+				var webSocket = new ClientWebSocket();
+				await ExecuteWithRetry(webSocket, 
+					async () => await webSocket.ConnectAsync(uri, _cancellationToken));
+				
+				return webSocket;
+			}
+			catch (Exception e)
+			{
+				throw new InvalidOperationException("Failed to connect websocket for remote replication node.", e);
+			}
+		}
+
+	    private async Task ExecuteWithRetry(WebSocket webSocket,Func<Task> connectAction)
+	    {
+		    for (int i = 0; i < MaxRetries; i++)
+		    {
+			    try
+			    {
+				    await connectAction();
+					if(webSocket.State == WebSocketState.Open)
+						break;
+			    }
+			    catch (Exception e)
+			    {
+					if(i >= MaxRetries)
+						throw new InvalidOperationException("Failed to connect websocket for remote replication node.", e);
+					//otherwise try again
+				}
+
+		    }
+	    }
 
         public async Task<long> SendDocumentBatchAsync(IEnumerable<Document> docs)
         {
