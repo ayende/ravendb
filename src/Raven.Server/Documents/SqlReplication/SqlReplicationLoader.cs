@@ -3,32 +3,66 @@ using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using Raven.Abstractions;
 using Raven.Abstractions.Data;
+using Raven.Abstractions.Logging;
 using Raven.Server.Json;
-using Raven.Server.ReplicationUtil;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.Utils.Metrics;
+using Sparrow.Collections;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 
 namespace Raven.Server.Documents.SqlReplication
 {
-    public class SqlReplicationLoader : BaseReplicationLoader
+    public class SqlReplicationLoader
     {
         private readonly MetricsScheduler _metricsScheduler;
         private const int MaxSupportedSqlReplication = int.MaxValue; // TODO: Maybe this should be 128, 1024 or configurable?
 
         private BlittableJsonReaderObject _connections;
+		protected readonly ILog _log;
+		protected readonly DocumentDatabase _database;
+		public readonly ConcurrentSet<SqlReplication> Replications = new ConcurrentSet<SqlReplication>();
 
-        public Action<SqlReplicationStatistics> AfterReplicationCompleted;
+
+		public Action<SqlReplicationStatistics> AfterReplicationCompleted;
 
         public SqlReplicationLoader(DocumentDatabase database, MetricsScheduler metricsScheduler)
-            : base(database)
         {
             _metricsScheduler = metricsScheduler;
-        }
+			_database = database;
+			_log = LogManager.GetLogger(GetType());
+			_database.Notifications.OnDocumentChange += WakeReplication;
+			_database.Notifications.OnSystemDocumentChange += HandleSystemDocumentChange;
+		}
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        protected override bool ShouldReloadConfiguration(string systemDocumentKey)
+		public void Initialize()
+		{
+			LoadConfigurations();
+		}
+
+		private void WakeReplication(DocumentChangeNotification documentChangeNotification)
+		{
+			foreach (var replication in Replications)
+				replication.WaitForChanges.SetByAsyncCompletion();
+		}
+
+		private void HandleSystemDocumentChange(DocumentChangeNotification notification)
+		{
+			if (ShouldReloadConfiguration(notification.Key))
+			{
+				foreach (var replication in Replications)
+					replication.Dispose();
+
+				Replications.Clear();
+				LoadConfigurations();
+
+				if (_log.IsDebugEnabled)
+					_log.Debug($"Replication configuration was changed: {notification.Key}");
+			}
+		}
+
+		[MethodImpl(MethodImplOptions.AggressiveInlining)]
+        protected bool ShouldReloadConfiguration(string systemDocumentKey)
         {
             return
                 systemDocumentKey.StartsWith(Constants.SqlReplication.SqlReplicationConfigurationPrefix,
@@ -36,7 +70,7 @@ namespace Raven.Server.Documents.SqlReplication
                 systemDocumentKey.Equals(Constants.SqlReplication.SqlReplicationConnections, StringComparison.OrdinalIgnoreCase);
         }
 
-        protected override void LoadConfigurations()
+        protected void LoadConfigurations()
         {
             DocumentsOperationContext context;
             using (_database.DocumentsStorage.ContextPool.AllocateOperationContext(out context))
@@ -102,5 +136,11 @@ namespace Raven.Server.Documents.SqlReplication
                 };
             }
         }
-    }
+
+		public void Dispose()
+		{
+			_database.Notifications.OnDocumentChange -= WakeReplication;
+			_database.Notifications.OnSystemDocumentChange -= HandleSystemDocumentChange;
+		}
+	}
 }

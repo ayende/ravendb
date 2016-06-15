@@ -121,32 +121,6 @@ namespace FastTests.Server.Documents.Replication
         }
 
 		[Fact]
-		public async Task TryGetDetached_embedded_array_should_work_properly()
-		{
-			string dbName = $"TestDB{Guid.NewGuid()}";
-			using (await GetDocumentStore(modifyDatabaseDocument: document => document.Id = dbName))
-			using (var db = await Server.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(dbName))
-			{
-				DocumentsOperationContext context;
-				using (db.DocumentsStorage.ContextPool.AllocateOperationContext(out context))
-				{
-					var doc = context.ReadObject(new DynamicJsonValue
-					{
-						["Foo"] = "A",
-						["Inner"] = new DynamicJsonArray(new[] { "foo/1", "foo/2", "foo/3" })
-					}, "foo/bar");
-
-					BlittableJsonReaderArray inner;
-					doc.TryGetDetached("Inner", out inner);
-
-					Assert.NotNull(inner);
-					Assert.Equal(3,inner.Length);
-					Assert.Equal(inner.Select(x => x.ToString()), new[] { "foo/1", "foo/2", "foo/3" });
-				}
-			}
-		}
-
-		[Fact]
         public async Task Master_slave_replication_from_etag_zero_should_work()
         {
             var dbName1 = DbName + "-1";
