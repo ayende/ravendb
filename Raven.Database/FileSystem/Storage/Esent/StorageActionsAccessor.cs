@@ -865,8 +865,6 @@ namespace Raven.Database.FileSystem.Storage.Esent
 
         public IList<RavenJObject> GetConfigsStartWithPrefix(string prefix, int start, int take, out int totalCount)
         {
-            totalCount = 0;
-
             var configs = new List<RavenJObject>();
 
             Api.JetSetCurrentIndex(session, Config, "by_name");
@@ -874,17 +872,20 @@ namespace Raven.Database.FileSystem.Storage.Esent
             Api.MakeKey(session, Config, prefix, Encoding.Unicode, MakeKeyGrbit.NewKey);
             if (Api.TrySeek(session, Config, SeekGrbit.SeekGE) == false)
             {
+                totalCount = 0;
                 return configs;
             }
 
             Api.MakeKey(session, Config, prefix, Encoding.Unicode, MakeKeyGrbit.NewKey | MakeKeyGrbit.PartialColumnEndLimit);
+            Api.TrySetIndexRange(session, Config, SetIndexRangeGrbit.RangeInclusive | SetIndexRangeGrbit.RangeUpperLimit);
+
             try
             {
                 Api.JetMove(session, Config, start, MoveGrbit.MoveKeyNE);
             }
             catch (EsentNoCurrentRecordException)
             {
-                // looke like we requested start higher then amount of available objects
+                // looks like we requested start higher then amount of available objects
                 // however we have to provide total count
                 // restart index and compute total count
                 Api.MakeKey(session, Config, prefix, Encoding.Unicode, MakeKeyGrbit.NewKey);
@@ -907,25 +908,21 @@ namespace Raven.Database.FileSystem.Storage.Esent
                 return configs;
             }
 
-            if (Api.TrySetIndexRange(session, Config, SetIndexRangeGrbit.RangeInclusive | SetIndexRangeGrbit.RangeUpperLimit))
+            var hasNextRecord = false;
+            do
             {
-                var hasNextRecord = false;
-                do
-                {
-                    var metadata = Api.RetrieveColumnAsString(session, Config, tableColumnsCache.ConfigColumns["metadata"], Encoding.Unicode);
-                    configs.Add(RavenJObject.Parse(metadata));
-                    hasNextRecord = Api.TryMoveNext(session, Config);
-                } 
-                while (hasNextRecord && configs.Count < take);
+                var metadata = Api.RetrieveColumnAsString(session, Config, tableColumnsCache.ConfigColumns["metadata"], Encoding.Unicode);
+                configs.Add(RavenJObject.Parse(metadata));
+                hasNextRecord = Api.TryMoveNext(session, Config);
+            } while (hasNextRecord && configs.Count < take);
 
-                var extraRecords = 0;
-                if (hasNextRecord)
-                {
-                    Api.JetIndexRecordCount(session, Config, out extraRecords, 0);
-                }
-                    
-                totalCount = start + configs.Count + extraRecords;
+            var extraRecords = 0;
+            if (hasNextRecord)
+            {
+                Api.JetIndexRecordCount(session, Config, out extraRecords, 0);
             }
+
+            totalCount = start + configs.Count + extraRecords;
 
             return configs;
         }
@@ -945,8 +942,9 @@ namespace Raven.Database.FileSystem.Storage.Esent
                     return configs;
                 }
 
-                Api.MakeKey(session, Config, prefix, Encoding.Unicode,
-                            MakeKeyGrbit.NewKey | MakeKeyGrbit.PartialColumnEndLimit);
+                Api.MakeKey(session, Config, prefix, Encoding.Unicode, MakeKeyGrbit.NewKey | MakeKeyGrbit.PartialColumnEndLimit);
+                Api.TrySetIndexRange(session, Config, SetIndexRangeGrbit.RangeInclusive | SetIndexRangeGrbit.RangeUpperLimit);
+
                 try
                 {
                     Api.JetMove(session, Config, start, MoveGrbit.MoveKeyNE);
@@ -973,13 +971,6 @@ namespace Raven.Database.FileSystem.Storage.Esent
                         } while (Api.TryMoveNext(session, Config));
                     }
                         
-                    return configs;
-                }
-
-                if (!Api.TrySetIndexRange(session, Config,
-                                          SetIndexRangeGrbit.RangeInclusive | SetIndexRangeGrbit.RangeUpperLimit))
-                {
-                    total = 0;
                     return configs;
                 }
             }

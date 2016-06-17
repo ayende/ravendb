@@ -796,11 +796,12 @@ namespace Raven.Database.FileSystem.Storage.Voron
                     return results;
 
                 var skippedCount = 0;
+
                 for (var i = 0; i < start; i++)
                 {
                     skippedCount++;
 
-                    if (iterator.MoveNext() == false)
+                    if (iterator.MoveNext() == false || iterator.CurrentKey.StartsWith(key) == false)
                     {
                         total = skippedCount;
                         return results;
@@ -854,7 +855,7 @@ namespace Raven.Database.FileSystem.Storage.Voron
                 {
                     skippedCount++;
 
-                    if (iterator.MoveNext() == false)
+                    if (iterator.MoveNext() == false || iterator.CurrentKey.StartsWith(key) == false)
                     {
                         total = skippedCount;
                         return results;
