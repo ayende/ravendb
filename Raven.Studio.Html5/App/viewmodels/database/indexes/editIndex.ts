@@ -2,11 +2,9 @@ import router = require("plugins/router");
 import viewModelBase = require("viewmodels/viewModelBase");
 import index = require("models/database/index/index");
 import indexDefinition = require("models/database/index/indexDefinition");
-import indexPriority = require("models/database/index/indexPriority");
 import luceneField = require("models/database/index/luceneField");
 import spatialIndexField = require("models/database/index/spatialIndexField");
 import getIndexDefinitionCommand = require("commands/database/index/getIndexDefinitionCommand");
-import getDatabaseStatsCommand = require("commands/resources/getDatabaseStatsCommand");
 import appUrl = require("common/appUrl");
 import dialog = require("plugins/dialog");
 import jsonUtil = require("common/jsonUtil");
@@ -478,6 +476,11 @@ class editIndex extends viewModelBase {
         }
 
         return $.when.apply($, commands).done(() => {
+
+            if (this.scriptedIndex()) {
+                this.fetchOrCreateScriptedIndex(); // reload scripted index to obtain fresh etag and metadata
+            }
+            
             this.initializeDirtyFlag();
             this.editedIndex().name.valueHasMutated();
             var isSavingMergedIndex = this.mergeSuggestion() != null;
