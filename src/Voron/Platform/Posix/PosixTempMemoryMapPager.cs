@@ -7,6 +7,7 @@ using Voron.Impl.Paging;
 using Voron.Util;
 using Sparrow;
 using System.IO;
+using Voron.Data.BTrees;
 
 namespace Voron.Platform.Posix
 {
@@ -23,7 +24,7 @@ namespace Voron.Platform.Posix
     /// files for that purpose (so we'll get assured allocation of space on disk, and then be able to mmap them).
     /// 
     /// </summary>
-    public unsafe class PosixTempMemoryMapPager : AbstractPager
+    public unsafe class PosixTempMemoryMapPager : PosixAbstractPager
     {
         private readonly string _file;
         private int _fd;

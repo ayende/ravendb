@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -7,10 +8,11 @@ using Voron.Impl;
 using Voron.Impl.Paging;
 using Voron.Util;
 using Sparrow;
+using Voron.Data.BTrees;
 
 namespace Voron.Platform.Posix
 {
-    public unsafe class PosixMemoryMapPager : AbstractPager
+    public unsafe class PosixMemoryMapPager : PosixAbstractPager
     {
         private readonly string _file;
         private int _fd;
@@ -187,6 +189,26 @@ namespace Voron.Platform.Posix
             {
                 var err = Marshal.GetLastWin32Error();
                 PosixHelper.ThrowLastError(err);
+            }
+        }
+
+        public override void MaybePrefetchMemory(List<long> pagesToPrefetch)
+        {
+            if (Sparrow.Platform.Platform.CanPrefetch == false)
+                return; // not supported
+
+            if (pagesToPrefetch.Count == 0)
+                return;
+
+            for (int i = 0; i < pagesToPrefetch.Count; i++)
+            {
+                var ptr = (IntPtr)AcquirePagePointer(null, pagesToPrefetch[i]);
+                if (Syscall.madvise(ptr, 4 * PageSize, MAdvFlags.MADV_WILLNEED) == -1)
+                {
+                    // TODO :: ignore error ?
+                    var err = Marshal.GetLastWin32Error();
+                    PosixHelper.ThrowLastError(err);
+                }
             }
         }
 
