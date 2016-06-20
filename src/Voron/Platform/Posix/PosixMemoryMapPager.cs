@@ -12,7 +12,7 @@ using Voron.Data.BTrees;
 
 namespace Voron.Platform.Posix
 {
-    public unsafe class PosixMemoryMapPager : AbstractPager
+    public unsafe class PosixMemoryMapPager : PosixAbstractPager
     {
         private readonly string _file;
         private int _fd;
@@ -209,86 +209,6 @@ namespace Voron.Platform.Posix
                     var err = Marshal.GetLastWin32Error();
                     PosixHelper.ThrowLastError(err);
                 }
-            }
-        }
-
-        public override void TryPrefetchingWholeFile()
-        {
-            if (Sparrow.Platform.Platform.CanPrefetch == false)
-                return; // not supported
-
-            var pagerState = PagerState;
-            for (var i = 0; i < pagerState.AllocationInfos.Length; i++)
-            {
-                var ptr = pagerState.AllocationInfos[i].BaseAddress;
-                if (Syscall.madvise(new IntPtr(ptr), (int)pagerState.AllocationInfos[i].Size, MAdvFlags.MADV_WILLNEED) == -1)
-                {
-                    // TODO :: ignore error ?
-                    var err = Marshal.GetLastWin32Error();
-                    PosixHelper.ThrowLastError(err);
-                }
-            }
-        }
-
-        public override void MaybePrefetchMemory(List<TreePage> sortedPages)
-        {
-            if (Sparrow.Platform.Platform.CanPrefetch == false)
-                return; // not supported
-
-            if (sortedPages.Count == 0)
-                return;
-
-            long lastPage = -1;
-            const int numberOfPagesInBatch = 8;
-            var sizeInPages = numberOfPagesInBatch; // OS uses 32K when you touch a page, let us reuse this
-            foreach (var page in sortedPages)
-            {
-                if (lastPage == -1)
-                {
-                    lastPage = page.PageNumber;
-                }
-
-                var numberOfPagesInLastPage = page.IsOverflow == false
-                    ? 1
-                    : this.GetNumberOfOverflowPages(page.OverflowSize);
-
-                var endPage = page.PageNumber + numberOfPagesInLastPage - 1;
-
-                if (endPage <= lastPage + sizeInPages)
-                    continue; // already within the allocation granularity we have
-
-                if (page.PageNumber <= lastPage + sizeInPages + numberOfPagesInBatch)
-                {
-                    while (endPage > lastPage + sizeInPages)
-                    {
-                        sizeInPages += numberOfPagesInBatch;
-                    }
-
-                    continue;
-                }
-
-                var ptr = (IntPtr)AcquirePagePointer(null, lastPage);
-                if (Syscall.madvise(ptr, sizeInPages * PageSize, MAdvFlags.MADV_WILLNEED) == -1)
-                {
-                    // TODO :: ignore error ?
-                    var err = Marshal.GetLastWin32Error();
-                    PosixHelper.ThrowLastError(err);
-                }
-
-                lastPage = page.PageNumber;
-                sizeInPages = numberOfPagesInBatch;
-                while (endPage > lastPage + sizeInPages)
-                {
-                    sizeInPages += numberOfPagesInBatch;
-                }
-            }
-
-            var ptrLastPage = (IntPtr)AcquirePagePointer(null, lastPage);
-            if (Syscall.madvise(ptrLastPage, sizeInPages * PageSize, MAdvFlags.MADV_WILLNEED) == -1)
-            {
-                // TODO :: ignore error ?
-                var err = Marshal.GetLastWin32Error();
-                PosixHelper.ThrowLastError(err);
             }
         }
 
