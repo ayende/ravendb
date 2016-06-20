@@ -76,10 +76,7 @@ namespace Raven.Server.ReplicationUtil
         //TODO : add here logic so reconnection is attempted couple of times before giving up
         private async Task<WebSocket> GetAndConnectWebSocketAsync()
         {
-            var uri = new Uri(
-                $@"{_url?.Replace("http://", "ws://")
-                    ?.Replace(".fiddler", "")}/databases/{_targetDbName?.Replace("/", string.Empty)}/documentReplication?srcDbId={_srcDbId}&srcDbName={EscapingHelper
-                        .EscapeLongDataString(_srcDbName)}");
+            var uri = new Uri($"{_url?.Replace("http://", "ws://")?.Replace(".fiddler", "")}/databases/{_targetDbName?.Replace("/", string.Empty)}/documentReplication?srcDbId={_srcDbId}&srcDbName={EscapingHelper.EscapeLongDataString(_srcDbName)}");
             try
             {
                 if (Sparrow.Platform.Platform.RunningOnPosix)
