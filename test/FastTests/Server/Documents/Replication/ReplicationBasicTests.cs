@@ -1,7 +1,9 @@
 ﻿using System;
-using System.Linq;
+using System.Collections.Generic;
+using System.Net;
 using System.Threading.Tasks;
 using Raven.Abstractions.Data;
+using Raven.Abstractions.Replication;
 using Raven.Server.ServerWide.Context;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
@@ -41,6 +43,7 @@ namespace FastTests.Server.Documents.Replication
                     }, "users/1");
                     session.SaveChanges();
                 }
+
                 using (var session = store2.OpenSession())
                 {
                     session.Store(new User
@@ -52,27 +55,17 @@ namespace FastTests.Server.Documents.Replication
                     session.SaveChanges();
                 }
 
-                var replicated1 = WaitForDocumentToReplicate<User>(store1, "users/1", 10000);
-
-                Assert.NotNull(replicated1);
-                Assert.Equal("John Dow", replicated1.Name);
-                Assert.Equal(30, replicated1.Age);
-
-                var replicated2 = WaitForDocumentToReplicate<User>(store1, "users/2", 10000);
+				var replicated2 = WaitForDocumentToReplicate<User>(store1, "users/2", 10000);
+				var replicated3 = WaitForDocumentToReplicate<User>(store2, "users/1", 10000);
+			
                 Assert.NotNull(replicated2);
                 Assert.Equal("Jane Dow", replicated2.Name);
                 Assert.Equal(31, replicated2.Age);
 
-                replicated1 = WaitForDocumentToReplicate<User>(store2, "users/1", 10000);
+                Assert.NotNull(replicated3);
+                Assert.Equal("John Dow", replicated3.Name);
+                Assert.Equal(30, replicated3.Age);
 
-                Assert.NotNull(replicated1);
-                Assert.Equal("John Dow", replicated1.Name);
-                Assert.Equal(30, replicated1.Age);
-
-                replicated2 = WaitForDocumentToReplicate<User>(store2, "users/2", 10000);
-                Assert.NotNull(replicated2);
-                Assert.Equal("Jane Dow", replicated2.Name);
-                Assert.Equal(31, replicated2.Age);
             }
         }		
 
@@ -120,7 +113,63 @@ namespace FastTests.Server.Documents.Replication
 			}
         }
 
-		[Fact]
+		//add endpoint to get replication statistics, so it can contain errors for the document replication,
+		//and possibly also other replications, such as sql replication, and maybe ravenfs one
+	 //   [Fact]
+	 //   public async Task Master_slave_replication_disconnected_destination_will_throw_proper_error()
+	 //   {
+		//    var dbName1 = DbName + "-1";
+		//    var dbName2 = DbName + "-2";
+		//    var store2 = await GetDocumentStore(modifyDatabaseDocument: document => document.Id = dbName2);
+
+		//	using (var store1 = await GetDocumentStore(modifyDatabaseDocument: document => document.Id = dbName1))		    
+		//    {
+		//	    store1.DefaultDatabase = dbName1;
+		//	    store2.DefaultDatabase = dbName2;
+		//		var store1Url = new Uri(store1.Url);
+		//		var store1IP = (await Dns.GetHostAddressesAsync(store1Url.Host))[1];
+		//		var store2Url = new Uri(store2.Url);
+		//		var store2IP = (await Dns.GetHostAddressesAsync(store2Url.Host))[1];
+
+		//		using (var session = store1.OpenSession())
+		//		using (var proxy = new DebugHttpProxy(store1IP.ToString(),store1Url.Port, store2IP.ToString(),store2Url.Port))
+		//		{
+		//			session.Store(new User
+		//			{
+		//				Name = "John Dow",
+		//				Age = 30
+		//			}, "users/1");
+
+		//			session.Store(new User
+		//			{
+		//				Name = "Jane Dow",
+		//				Age = 31
+		//			}, "users/2");
+
+		//			session.SaveChanges();
+		//		}
+
+		//		using (var session = store1.OpenSession())
+		//		{
+		//			session.Store(new ReplicationDocument
+		//			{
+		//				Destinations = new List<ReplicationDestination>
+		//			{
+		//				new ReplicationDestination
+		//				{
+		//					Database = dbName2,
+		//					Url = store2.Url
+		//				}
+		//			}
+		//			}, Constants.Replication.DocumentReplicationConfiguration);
+		//			session.SaveChanges();
+		//		}
+
+		//		var replicated1 = WaitForDocumentToReplicate<User>(store2, "users/1", 15000);
+		//	}
+		//}
+
+	    [Fact]
         public async Task Master_slave_replication_from_etag_zero_should_work()
         {
             var dbName1 = DbName + "-1";
@@ -210,7 +259,8 @@ namespace FastTests.Server.Documents.Replication
                     session.SaveChanges();
                 }
 
-                await store2.Replication.WaitAsync();
+	            WaitForDocumentToReplicate<User>(store2, "users/4", 10000);
+
                 using (var session = store2.OpenSession())
                 {
                     var docs = session.Load<User>(new[]

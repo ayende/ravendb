@@ -19,26 +19,24 @@ namespace Raven.Server.Documents.Replication
 
         //by design this method won't handle opening and commit of the transaction
         //(that should happen at the calling code)
-        public void ReceiveDocuments(DocumentsOperationContext context,
-            BlittableJsonReaderArray docs)
+        public void ReceiveDocuments(DocumentsOperationContext context, BlittableJsonReaderArray docs)
         {
-            var dbChangeVector = _database.DocumentsStorage.GetChangeVector(context);
+            var dbChangeVector = _database.DocumentsStorage.GetDatabaseChangeVector(context);
             var changeVectorUpdated = false;
-            var maxReceivedChangeVector = new Dictionary<Guid, long>();
-            foreach (var member in docs)
+            var maxReceivedChangeVectorByDatabase = new Dictionary<Guid, long>();
+            foreach (BlittableJsonReaderObject doc in docs)
             {
-                var doc = member as BlittableJsonReaderObject;
-                Debug.Assert(doc != null);
-
                 var changeVector = doc.EnumerateChangeVector();
                 foreach (var currentEntry in changeVector)
                 {
                     Debug.Assert(currentEntry.DbId != Guid.Empty); //should never happen, but..
 
 					//note: documents in a replication batch are ordered in incremental etag order
-                    maxReceivedChangeVector[currentEntry.DbId] = currentEntry.Etag;
+                    maxReceivedChangeVectorByDatabase[currentEntry.DbId] = currentEntry.Etag;
                 }
-	            var detachedDoc = context.ReadObject(doc, null);
+
+	            const string DetachObjectDebugTag = "IncomingDocumentReplication -> Detach object from parent array";
+	            var detachedDoc = context.ReadObject(doc, DetachObjectDebugTag);
 				ReceiveReplicated(context, detachedDoc);
             }
 
@@ -46,9 +44,9 @@ namespace Raven.Server.Documents.Replication
             for (int i = 0; i < dbChangeVector.Length; i++)
             {
                 long dbEtag;
-                if (maxReceivedChangeVector.TryGetValue(dbChangeVector[i].DbId, out dbEtag) == false)
+                if (maxReceivedChangeVectorByDatabase.TryGetValue(dbChangeVector[i].DbId, out dbEtag) == false)
                     continue;
-                maxReceivedChangeVector.Remove(dbChangeVector[i].DbId);
+                maxReceivedChangeVectorByDatabase.Remove(dbChangeVector[i].DbId);
                 if (dbEtag > dbChangeVector[i].Etag)
                 {
                     changeVectorUpdated = true;
@@ -56,13 +54,13 @@ namespace Raven.Server.Documents.Replication
                 }
             }
 
-            if (maxReceivedChangeVector.Count > 0)
+            if (maxReceivedChangeVectorByDatabase.Count > 0)
             {
                 changeVectorUpdated = true;
                 var oldSize = dbChangeVector.Length;
-                Array.Resize(ref dbChangeVector,oldSize + maxReceivedChangeVector.Count);
+                Array.Resize(ref dbChangeVector,oldSize + maxReceivedChangeVectorByDatabase.Count);
 
-                foreach (var kvp in maxReceivedChangeVector)
+                foreach (var kvp in maxReceivedChangeVectorByDatabase)
                 {
                     dbChangeVector[oldSize++] = new ChangeVectorEntry
                     {
@@ -73,7 +71,7 @@ namespace Raven.Server.Documents.Replication
             }
 
             if (changeVectorUpdated)
-                _database.DocumentsStorage.SetChangeVector(context, dbChangeVector);
+                _database.DocumentsStorage.SetChangeVector(context, dbChangeVector);			
         }
 
         private void ReceiveReplicated(DocumentsOperationContext context, BlittableJsonReaderObject doc)

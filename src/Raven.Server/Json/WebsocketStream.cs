@@ -11,7 +11,7 @@ namespace Raven.Server.Json
     public class WebsocketStream : Stream
     {
         private readonly WebSocket _webSocket;
-        private readonly CancellationToken _cancellationToken;
+        private readonly CancellationToken _token;
         public override bool CanRead => true;
         public override bool CanSeek => false;
         public override bool CanWrite => true;
@@ -25,7 +25,7 @@ namespace Raven.Server.Json
         /// </summary>
         /// <remarks>This is not a thread-safe implementation</remarks>
         /// <param name="webSocket"></param>
-        public WebsocketStream(WebSocket webSocket, CancellationToken cancellationToken)
+        public WebsocketStream(WebSocket webSocket, CancellationToken token)
         {
             _isDisposed = false;
             if (webSocket == null)
@@ -33,7 +33,7 @@ namespace Raven.Server.Json
             if (webSocket.State != WebSocketState.Open)
                 throw new InvalidOperationException("The passed websocket is not open, it must be open when passed to the WebSocketStream");
             _webSocket = webSocket;
-            _cancellationToken = cancellationToken;
+            _token = token;
         }
 
         public override long Length
@@ -43,16 +43,18 @@ namespace Raven.Server.Json
 
         public override long Position { get; set; }
 
+		//TODO: refactor so the sync Write() is not supported
+		//we should not support _any_ sync functionality at the server side
         public override void Write(byte[] buffer, int offset, int count)
         {
             ThrowOnDisposed();
-            var sendTask = _webSocket.SendAsync(new ArraySegment<byte>(buffer), 
+			 var sendTask = _webSocket.SendAsync(new ArraySegment<byte>(buffer), 
                                                 WebSocketMessageType.Text, 
-                                                false,_cancellationToken);
+                                                false,_token);
             _activeWriteTasks.Add(sendTask);
             try
             {
-                sendTask.ContinueWith(t => _activeWriteTasks.TryRemove(t), _cancellationToken);
+                sendTask.ContinueWith(t => _activeWriteTasks.TryRemove(t), _token);
             }
             catch (ObjectDisposedException)
             {
@@ -70,9 +72,7 @@ namespace Raven.Server.Json
                 false, cancellationToken).ConfigureAwait(false);
         }
 
-        private static readonly ArraySegment<byte> emptyBuffer = new ArraySegment<byte>(new byte[0]);
-
-        public override void SetLength(long value)
+	    public override void SetLength(long value)
         {
             throw new NotSupportedException("Makes no sense for a websocket stream");
         }
@@ -110,6 +110,7 @@ namespace Raven.Server.Json
             {
                 var bufferSegment = new ArraySegment<byte>(buffer, read, count - read);
                 var result = await _webSocket.ReceiveAsync(bufferSegment, cancellationToken).ConfigureAwait(false);
+				
                 read += result.Count;
 
                 if (result.EndOfMessage)

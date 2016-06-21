@@ -1,12 +1,15 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading;
 using System.Threading.Tasks;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Logging;
 using Raven.Abstractions.Replication;
 using Raven.Server.Json;
 using Raven.Server.ServerWide.Context;
+using Sparrow.Collections;
 
 namespace Raven.Server.Documents.Replication
 {
@@ -18,23 +21,19 @@ namespace Raven.Server.Documents.Replication
         private readonly DocumentDatabase _database;
 
         private ReplicationDocument _replicationDocument;
-        private readonly List<OutgoingDocumentReplication> _outgoingReplications;
+        private readonly ConcurrentSet<OutgoingDocumentReplication> _outgoingReplications;
 
         public DocumentReplicationLoader(DocumentDatabase database) 
         {
-            _outgoingReplications = new List<OutgoingDocumentReplication>();
+            _outgoingReplications = new ConcurrentSet<OutgoingDocumentReplication>();
             _database = database;
             _log = LogManager.GetLogger(GetType());
             _database.Notifications.OnSystemDocumentChange += HandleSystemDocumentChange;
             ReplicationUniqueName = $"{_database.Name} -> {_database.DbId}";
-        }
+			LoadConfigurations();
+		}
 
         public string ReplicationUniqueName { get; }
-
-        public void Initialize()
-        {
-            LoadConfigurations();
-        }
 
         protected bool ShouldReloadConfiguration(string systemDocumentKey)
         {
@@ -86,8 +85,42 @@ namespace Raven.Server.Documents.Replication
                 foreach (var dest in destinations)
                 {
                     var outgoingDocumentReplication = new OutgoingDocumentReplication(_database, dest);
-                    initializationTasks.Add(outgoingDocumentReplication.InitializeAsync());
-                    _outgoingReplications.Add(outgoingDocumentReplication);
+                    initializationTasks.Add(
+						outgoingDocumentReplication.InitializeAsync()
+												   .ContinueWith(t =>
+													{
+														var currentReplicationInstance = outgoingDocumentReplication;
+														var currentDestination = dest;
+														if (t.IsFaulted)
+														{
+															var hasSucceeded = false;
+
+															//retry connecting here
+															for (int i = 0; i < 3; i++)
+															{
+																try
+																{
+																	currentReplicationInstance = new OutgoingDocumentReplication(_database, currentDestination);
+																	currentReplicationInstance.InitializeAsync().Wait();
+																	hasSucceeded = true;
+																}
+																catch (Exception)
+																{
+																}
+																if (hasSucceeded)
+																	break;
+
+																Thread.Sleep(i * 1000);//increasingly wait between retries
+															}
+
+															if(hasSucceeded)
+																_outgoingReplications.Add(currentReplicationInstance);
+														}
+														else
+														{
+															_outgoingReplications.Add(currentReplicationInstance);
+														}
+													},_database.DatabaseShutdown));
                 }
 
                 Task.WhenAll(initializationTasks).Wait(_database.DatabaseShutdown);

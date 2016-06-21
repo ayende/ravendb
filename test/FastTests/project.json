@@ -11,7 +11,8 @@
       "**/*.json",
       "Voron/Bugs/Data/*.txt",
       "**/*.ravendump"
-    ]
+    ],
+    "defines": [ "INCLUDE_MIDDLEWARE" ]
   },
 
   "configurations": {
@@ -45,6 +46,7 @@
     }
   },
   "dependencies": {
+    "Microsoft.CSharp": "4.0.0",
     "Raven.Client": "4.0.0-*",
     "Raven.Server": "4.0.0-*",
     "Sparrow": "4.0.0-*",

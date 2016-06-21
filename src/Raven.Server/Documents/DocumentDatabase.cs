@@ -41,7 +41,6 @@ namespace Raven.Server.Documents
             DocumentsStorage = new DocumentsStorage(this);
             IndexStore = new IndexStore(this);
             SqlReplicationLoader = new SqlReplicationLoader(this, metricsScheduler);
-            DocumentReplicationLoader = new DocumentReplicationLoader(this);
             DocumentTombstoneCleaner = new DocumentTombstoneCleaner(this);
             SubscriptionStorage = new SubscriptionStorage(this);
             Metrics = new MetricsCountersManager(metricsScheduler);
@@ -93,10 +92,10 @@ namespace Raven.Server.Documents
         {
             _indexStoreTask = IndexStore.InitializeAsync();
             SqlReplicationLoader.Initialize();
-            DocumentReplicationLoader.Initialize();
 
             DocumentTombstoneCleaner.Initialize();
-            BundleLoader = new BundleLoader(this);
+			DocumentReplicationLoader = new DocumentReplicationLoader(this);
+			BundleLoader = new BundleLoader(this);
 
             try
             {

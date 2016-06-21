@@ -425,8 +425,9 @@ namespace Sparrow.Json
                     _disposables.Add(writer);
                     return writer.CreateReader();
                 }
-                catch (Exception)
+                catch (Exception e)
                 {
+					Console.WriteLine(e);
                     writer.Dispose();
                     throw;
                 }
