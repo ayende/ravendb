@@ -1,13 +1,6 @@
 using System;
-using System.Collections.Generic;
 using System.Runtime.InteropServices;
-using System.Threading;
 using Voron.Impl;
-using Voron.Impl.Paging;
-using Voron.Util;
-using Sparrow;
-using System.IO;
-using Voron.Data.BTrees;
 
 namespace Voron.Platform.Posix
 {

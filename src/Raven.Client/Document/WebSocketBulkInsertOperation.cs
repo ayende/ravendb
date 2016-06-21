@@ -337,8 +337,6 @@ namespace Raven.Client.Document
             _documents.Add(jsonBuffer);
         }
 
-        private int verify;
-
         private async Task FlushBufferAsync()
         {
             ArraySegment<byte> segment;

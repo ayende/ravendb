@@ -251,10 +251,8 @@ namespace Voron.Platform.Win32
             if (Disposed)
                 ThrowAlreadyDisposedException();
 
-            long sizeToWrite = 0;
             foreach (var allocationInfo in PagerState.AllocationInfos)
             {
-                sizeToWrite += allocationInfo.Size;
                 if (Win32MemoryMapNativeMethods.FlushViewOfFile(allocationInfo.BaseAddress, new IntPtr(allocationInfo.Size)) == false)
                     throw new Win32Exception();
             }
@@ -340,60 +338,12 @@ namespace Voron.Platform.Win32
 
             if (sortedPages.Count == 0)
                 return;
-
-            var list = new List<Win32MemoryMapNativeMethods.WIN32_MEMORY_RANGE_ENTRY>();
-
-            long lastPage = -1;
-            const int numberOfPagesInBatch = 8;
-            var sizeInPages = numberOfPagesInBatch; // OS uses 32K when you touch a page, let us reuse this
-            foreach (var page in sortedPages)
-            {
-                if (lastPage == -1)
-                {
-                    lastPage = page.PageNumber;
-                }
-
-                var numberOfPagesInLastPage = page.IsOverflow == false
-                    ? 1
-                    : this.GetNumberOfOverflowPages(page.OverflowSize);
-
-                var endPage = page.PageNumber + numberOfPagesInLastPage - 1;
-
-                if (endPage <= lastPage + sizeInPages)
-                    continue; // already within the allocation granularity we have
-
-                if (page.PageNumber <= lastPage + sizeInPages + numberOfPagesInBatch)
-                {
-                    while (endPage > lastPage + sizeInPages)
-                    {
-                        sizeInPages += numberOfPagesInBatch;
-                    }
-
-                    continue;
-                }
-
-                list.Add(new Win32MemoryMapNativeMethods.WIN32_MEMORY_RANGE_ENTRY
-                {
-                    NumberOfBytes = (IntPtr)(sizeInPages * PageSize),
-                    VirtualAddress = AcquirePagePointer(null, lastPage)
-                });
-                lastPage = page.PageNumber;
-                sizeInPages = numberOfPagesInBatch;
-                while (endPage > lastPage + sizeInPages)
-                {
-                    sizeInPages += numberOfPagesInBatch;
-                }
-            }
-            list.Add(new Win32MemoryMapNativeMethods.WIN32_MEMORY_RANGE_ENTRY
-            {
-                NumberOfBytes = (IntPtr)(sizeInPages * PageSize),
-                VirtualAddress = AcquirePagePointer(null, lastPage)
-            });
-
-            fixed (Win32MemoryMapNativeMethods.WIN32_MEMORY_RANGE_ENTRY* entries = list.ToArray())
+            
+            var ranges = SortedPagesToList(sortedPages);
+            fixed (Win32MemoryMapNativeMethods.WIN32_MEMORY_RANGE_ENTRY* entries = ranges.ToArray())
             {
                 Win32MemoryMapNativeMethods.PrefetchVirtualMemory(Win32Helper.CurrentProcess,
-                    (UIntPtr)list.Count,
+                    (UIntPtr)ranges.Count,
                     entries, 0);
             }
         }

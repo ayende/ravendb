@@ -7,7 +7,6 @@ using System.Threading.Tasks;
 using Sparrow;
 using Sparrow.Binary;
 using Voron.Platform.Win32;
-using System.Runtime.InteropServices;
 using Voron.Data.BTrees;
 
 namespace Voron.Impl.Paging
@@ -224,7 +223,7 @@ namespace Voron.Impl.Paging
 
             return toCopy;
         }
-        public override abstract string ToString();
+        public abstract override string ToString();
 
         public void RegisterDisposal(Task run)
         {
@@ -261,8 +260,64 @@ namespace Voron.Impl.Paging
             return true;
         }
 
-        public abstract void MaybePrefetchMemory(List<long> pagesToPrefetch);
+        protected List<Win32MemoryMapNativeMethods.WIN32_MEMORY_RANGE_ENTRY> SortedPagesToList(List<TreePage> sortedPages)
+        {
+            var rangesList = new List<Win32MemoryMapNativeMethods.WIN32_MEMORY_RANGE_ENTRY>();
+
+            long lastPage = -1;
+            const int numberOfPagesInBatch = 8;
+            var sizeInPages = numberOfPagesInBatch; // OS uses 32K when you touch a page, let us reuse this
+            foreach (var page in sortedPages)
+            {
+                if (lastPage == -1)
+                {
+                    lastPage = page.PageNumber;
+                }
+
+                var numberOfPagesInLastPage = page.IsOverflow == false
+                    ? 1
+                    : this.GetNumberOfOverflowPages(page.OverflowSize);
+
+                var endPage = page.PageNumber + numberOfPagesInLastPage - 1;
+
+                if (endPage <= lastPage + sizeInPages)
+                    continue; // already within the allocation granularity we have
+
+                if (page.PageNumber <= lastPage + sizeInPages + numberOfPagesInBatch)
+                {
+                    while (endPage > lastPage + sizeInPages)
+                    {
+                        sizeInPages += numberOfPagesInBatch;
+                    }
+
+                    continue;
+                }
+
+                rangesList.Add(new Win32MemoryMapNativeMethods.WIN32_MEMORY_RANGE_ENTRY
+                {
+                   VirtualAddress = AcquirePagePointer(null, lastPage),
+                    NumberOfBytes = (IntPtr)(sizeInPages * PageSize)
+                });
+
+                lastPage = page.PageNumber;
+                sizeInPages = numberOfPagesInBatch;
+                while (endPage > lastPage + sizeInPages)
+                {
+                    sizeInPages += numberOfPagesInBatch;
+                }
+            }
+
+            rangesList.Add(new Win32MemoryMapNativeMethods.WIN32_MEMORY_RANGE_ENTRY
+            {
+                VirtualAddress = AcquirePagePointer(null, lastPage),
+                NumberOfBytes = (IntPtr)(sizeInPages * PageSize)
+            });
+            
+            return rangesList;
+        }
+
         public abstract void TryPrefetchingWholeFile();
+        public abstract void MaybePrefetchMemory(List<long> pagesToPrefetch);
         public abstract void MaybePrefetchMemory(List<TreePage> sortedPagesToWrite);
     }
 }

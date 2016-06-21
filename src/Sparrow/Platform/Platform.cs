@@ -32,7 +32,7 @@ namespace Sparrow.Platform
                 ver = string.Concat(ver.Substring(0, index), ver.Substring(index + 1));
 
                 decimal output;
-                if (decimal.TryParse(ver, out output) == true)
+                if (decimal.TryParse(ver, out output))
                 {
                     return output >= 6.19M; // 6.2 is win8, 6.1 win7..
                 }

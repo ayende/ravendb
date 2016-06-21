@@ -1,9 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Runtime.InteropServices;
-using Voron.Data.BTrees;
-using Voron.Platform.Win32;
+﻿using Voron.Data.BTrees;
 
 namespace Voron.Impl.Paging
 {
