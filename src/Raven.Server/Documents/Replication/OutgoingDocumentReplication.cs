@@ -17,15 +17,17 @@ namespace Raven.Server.Documents.Replication
     public class OutgoingDocumentReplication : IDisposable
     {
         private readonly DocumentDatabase _database;
-        protected long _lastSentEtag;
+	    private readonly ReplicationDestination _destination;
+	    protected long _lastSentEtag;
         private readonly DocumentReplicationTransport _transport;
         private readonly ILog _log = LogManager.GetLogger(typeof (OutgoingDocumentReplication));
         private readonly DocumentsOperationContext _context;
         private bool _isInitialized;
-
+	    private DateTime _lastSentHeartbeat;
         private readonly Thread _replicationThread;
         private readonly CancellationTokenSource _cancellationTokenSource;
-
+	    private const int RetriesCount = 3;
+		private readonly TimeSpan _minimalHeartbeatInterval = TimeSpan.FromSeconds(15);
         public readonly AsyncManualResetEvent _waitForChanges;
         private readonly string _replicationUniqueName;
 
@@ -34,11 +36,13 @@ namespace Raven.Server.Documents.Replication
             DocumentReplicationTransport transport = null)
         {
             _database = database;
-            _database.Notifications.OnDocumentChange += HandleDocumentChange;
+	        _destination = destination;
+	        _database.Notifications.OnDocumentChange += HandleDocumentChange;
             _lastSentEtag = -1;
             _database.DocumentsStorage.ContextPool.AllocateOperationContext(out _context);
-            
-            _transport = transport ?? new DocumentReplicationTransport(
+			_lastSentHeartbeat = DateTime.MinValue;			
+
+			_transport = transport ?? new DocumentReplicationTransport(
                 destination.Url,
                 _database.DbId,
                 _database.Name,
@@ -74,14 +78,20 @@ namespace Raven.Server.Documents.Replication
 
                 _waitForChanges.Reset();
 
-                try
-                {
+				var result = ReplicationBatchResult.NothingToDo;
+				try
+				{
                     _cancellationTokenSource.Token.ThrowIfCancellationRequested();
-                    await ExecuteReplicationOnce();
+	                result = await ExecuteReplicationOnce();
 
-                    if (_log.IsDebugEnabled)
+	                if (_log.IsDebugEnabled)
                         _log.Debug($"Finished replication for '{_replicationUniqueName}'.");
-                }
+
+					//if this is a transient result, don't retry immediately
+					//TODO: add here a back-off strategy?
+					if (result == ReplicationBatchResult.RemoteFailure)
+						await Task.Delay(1000);
+				}
                 catch (OutOfMemoryException oome)
                 {
                     _log.WarnException($"Out of memory occured for '{_replicationUniqueName}'.", oome);
@@ -93,18 +103,18 @@ namespace Raven.Server.Documents.Replication
                 }
                 catch (Exception e)
                 {
-                    _log.WarnException($"Exception occured for '{_replicationUniqueName}'.", e);
+                    _log.ErrorException($"Exception occured for '{_replicationUniqueName}'.", e);
+	                throw;
                 }
 
-                if (HasMoreDocumentsToSend)
+                if (HasMoreDocumentsToSend || result == ReplicationBatchResult.RemoteFailure)
                     continue;
 
                 try
                 {
-                    //if this returns false, this means canceled token is activated                    
-                    if (await _waitForChanges.WaitAsync() == false)
-                        //thus, if code reaches here, cancellation token source has "cancel" requested
-                        return;
+                    //if this returns false, this means either timeout or canceled token is activated                    
+	                while (await _waitForChanges.WaitAsync(_minimalHeartbeatInterval) == false)
+		                _transport.SendHeartbeat();
                 }
                 catch (OperationCanceledException)
                 {
@@ -123,7 +133,19 @@ namespace Raven.Server.Documents.Replication
             }
         }
 
-        private async Task ExecuteReplicationOnce()
+	    public ReplicationDestination Destination
+	    {
+		    get { return _destination; }
+	    }
+
+	    private enum ReplicationBatchResult
+	    {
+		    SuccessfullySent,
+			NothingToDo,
+			RemoteFailure
+	    }
+
+        private async Task<ReplicationBatchResult> ExecuteReplicationOnce()
         {
             Debug.Assert(_isInitialized);
 
@@ -145,21 +167,37 @@ namespace Raven.Server.Documents.Replication
                         //alternatively 2 -> create a "filter system" that would abstract the logic -> what documents 
                         //should and should not be replicated
                 if (replicationBatch.Count == 0)
-                    return;
+                    return ReplicationBatchResult.NothingToDo;
                 try
                 {
-                    _lastSentEtag = await _transport.SendDocumentBatchAsync(replicationBatch)
-                                                    .WithCancellation(_cancellationTokenSource.Token);
+					var currentLastSentEtag = await _transport.SendDocumentBatchAsync(replicationBatch)
+															  .WithCancellation(_cancellationTokenSource.Token);
+	                if (currentLastSentEtag != -1)
+	                {
+		                //sent batch successfully, but something went wrong on the other side
+		                //do not advance last sent etag, so the batch would be resent next cycle
+		                //TODO : consider retry logic here, so after multiple tries, it will fail loudly
+		                _lastSentEtag = currentLastSentEtag;
+	                }
+	                else
+	                {
+		                _log.Warn(
+			                $"Sent the batch successfully, but something went wrong on the other side; thus, do not advance last sent etag. Current last sent etag -> {_lastSentEtag}");
+						return ReplicationBatchResult.RemoteFailure;
+	                }
                 }
                 catch (WebSocketException e)
                 {
                     _log.Warn("Sending document replication batch is interrupted. This is not necessarily an issue. Reason: " + e);
-                }
-                catch (Exception e)
+					return ReplicationBatchResult.RemoteFailure;
+				}
+				catch (Exception e)
                 {
-                    _log.Error("Sending document replication batch has failed. Reason: " + e);
+                    _log.Error("Sending document replication batch has failed. Apparently, remote server had an exception thrown. Reason: " + e);
+	                return ReplicationBatchResult.RemoteFailure;
                 }
             }
+			return ReplicationBatchResult.SuccessfullySent;
         }
 
         public async Task InitializeAsync()

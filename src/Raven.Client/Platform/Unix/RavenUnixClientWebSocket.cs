@@ -8,11 +8,10 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Raven.Abstractions.Extensions;
 
 namespace Raven.Client.Platform.Unix
 {
-    public class RavenUnixClientWebSocket : WebSocket, IDisposable
+    public class RavenUnixClientWebSocket : WebSocket
     {
         private const int MessageTypeText = 1;
         private const int MessageTypeBinary = 2;

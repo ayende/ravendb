@@ -66,7 +66,7 @@ namespace Raven.Abstractions.Extensions
         }
 
         public static void ThrowCancellationIfNotDefault(this CancellationToken token)
-        {
+        {			
             if(token != default (CancellationToken))
                 token.ThrowIfCancellationRequested();
         }
