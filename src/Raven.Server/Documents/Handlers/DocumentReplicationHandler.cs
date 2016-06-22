@@ -85,7 +85,7 @@ namespace Raven.Server.Documents.Handlers
 				                        throw new InvalidDataException(
 					                        $"Got websocket message without a type. Expected property with name {Constants.MessageType}, but found none.");
 
-			                        HandleMessage(
+			                        await HandleMessage(
 				                        messageTypeAsString,
 				                        message,
 				                        webSocketStream,
@@ -110,8 +110,7 @@ namespace Raven.Server.Documents.Handlers
             }
         }
 
-	    private static int test = 0;
-        private void HandleMessage(string messageTypeAsString, 
+        private async Task HandleMessage(string messageTypeAsString, 
             BlittableJsonReaderObject message, 
             WebsocketStream webSocketStream, 
             DocumentsOperationContext context, 
@@ -128,7 +127,7 @@ namespace Raven.Server.Documents.Handlers
 		            try
 		            {
 			            using (context.OpenReadTransaction())
-				            WriteLastEtagResponse(webSocketStream, context, srcDbId);
+				            await WriteLastEtagResponse(webSocketStream, context, srcDbId);
 		            }
 		            catch (Exception e)
 		            {
@@ -152,12 +151,12 @@ namespace Raven.Server.Documents.Handlers
 		            catch (Exception e)
 		            {
 						Log.Error($"Received replication batch with {replicatedDocs.Length} documents, but failed to write it locally. Reason : {e}");
-						WriteReplicationBatchAcknowledge(webSocketStream, context, false);
+						await WriteReplicationBatchAcknowledge(webSocketStream, context, false);
 						return; //do not rethrow - maybe failing to write the batch is a transient error;
 						//write negative ack to the other side, so the current batch will be resent
 						//TODO: maybe maximum retries should be added here?
 		            }
-		            WriteReplicationBatchAcknowledge(webSocketStream,context, true);
+		            await WriteReplicationBatchAcknowledge(webSocketStream,context, true);
                     break;
                 default:
                     throw new NotSupportedException($"Received not supported message type : {messageTypeAsString}");
@@ -172,19 +171,25 @@ namespace Raven.Server.Documents.Handlers
             return vectorEntry.Etag;
         }
 
-	    private void WriteReplicationBatchAcknowledge(WebsocketStream webSocketStream, 
+	    private async Task WriteReplicationBatchAcknowledge(WebsocketStream webSocketStream, 
 			DocumentsOperationContext context,
 			bool hasSucceeded)
 	    {
 		    try
 		    {
-			    using (var responseWriter = new BlittableJsonTextWriter(context, webSocketStream))
+			    var responseWriter = new BlittableJsonTextWriter(context, webSocketStream);
+			    try
 			    {
 				    context.Write(responseWriter, new DynamicJsonValue
 				    {
 					    [Constants.MessageType] = Constants.Replication.MessageTypes.ReplicationBatchAcknowledge,
 					    [Constants.HadSuccess] = hasSucceeded
 				    });
+			    }
+			    finally
+			    {
+					//WebSocketStream does not support synchronous writes to the stream
+				    await responseWriter.DisposeAsync();
 			    }
 		    }
 		    catch (Exception e)
@@ -194,16 +199,21 @@ namespace Raven.Server.Documents.Handlers
 		    }
 	    }
 
-		private void WriteLastEtagResponse(WebsocketStream webSocketStream, DocumentsOperationContext context, Guid srcDbId)
-        {           			
-            using (var responseWriter = new BlittableJsonTextWriter(context, webSocketStream))
-            {
-                context.Write(responseWriter, new DynamicJsonValue
-                {
-                    [Constants.Replication.PropertyNames.LastSentEtag] = GetLastReceivedEtag(srcDbId, context),
-                    [Constants.MessageType] = Constants.Replication.MessageTypes.GetLastEtag
-                });
-            }
+		private async Task WriteLastEtagResponse(WebsocketStream webSocketStream, DocumentsOperationContext context, Guid srcDbId)
+		{
+			var responseWriter = new BlittableJsonTextWriter(context, webSocketStream);
+			try
+			{
+				context.Write(responseWriter, new DynamicJsonValue
+				{
+					[Constants.Replication.PropertyNames.LastSentEtag] = GetLastReceivedEtag(srcDbId, context),
+					[Constants.MessageType] = Constants.Replication.MessageTypes.GetLastEtag
+				});
+			}
+			finally
+			{
+				await responseWriter.DisposeAsync();
+			}
         }
     }
 }

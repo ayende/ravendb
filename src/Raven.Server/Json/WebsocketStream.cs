@@ -47,18 +47,7 @@ namespace Raven.Server.Json
 		//we should not support _any_ sync functionality at the server side
         public override void Write(byte[] buffer, int offset, int count)
         {
-            ThrowOnDisposed();
-			 var sendTask = _webSocket.SendAsync(new ArraySegment<byte>(buffer), 
-                                                WebSocketMessageType.Text, 
-                                                false,_token);
-            _activeWriteTasks.Add(sendTask);
-            try
-            {
-                sendTask.ContinueWith(t => _activeWriteTasks.TryRemove(t), _token);
-            }
-            catch (ObjectDisposedException)
-            {
-            }
+			throw new NotSupportedException();
         }
 
         /// <exception cref="ArgumentNullException"><paramref name="buffer"/> is <see langword="null" />.</exception>

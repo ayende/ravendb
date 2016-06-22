@@ -106,6 +106,8 @@ namespace Raven.Server.Documents.Replication
 																}
 																catch (Exception)
 																{
+																	// ignored, since we are retrying initialization
+																	// for cases of transient errors
 																}
 																if (hasSucceeded)
 																	break;

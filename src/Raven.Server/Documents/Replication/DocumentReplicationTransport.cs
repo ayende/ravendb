@@ -67,15 +67,18 @@ namespace Raven.Server.ReplicationUtil
 
         public async Task<long> GetLastEtag()
         {
-            using (var writer = new BlittableJsonTextWriter(_context, _websocketStream))
-            {
-                _context.Write(writer, new DynamicJsonValue
-                {
-                    [Constants.MessageType] = Constants.Replication.MessageTypes.GetLastEtag
-                });
-
-                writer.Flush();
-            }
+	        var writer = new BlittableJsonTextWriter(_context, _websocketStream);
+	        try
+	        {
+		        _context.Write(writer, new DynamicJsonValue
+		        {
+			        [Constants.MessageType] = Constants.Replication.MessageTypes.GetLastEtag
+		        });
+	        }
+	        finally
+	        {
+		        await writer.DisposeAsync();
+	        }
 
             var lastEtagMessage = await _context.ReadForMemoryAsync(_websocketStream, null);
 
@@ -139,9 +142,11 @@ namespace Raven.Server.ReplicationUtil
 
 	        try
 	        {
-		        using (var writer = new BlittableJsonTextWriter(_context, _websocketStream))
+		        var writer = new BlittableJsonTextWriter(_context, _websocketStream);
+		        try
 		        {
 			        writer.WriteStartObject();
+
 			        writer.WritePropertyName(_context.GetLazyStringForFieldWithCaching(Constants.MessageType));
 			        writer.WriteString(_context.GetLazyStringForFieldWithCaching(
 				        Constants.Replication.MessageTypes.ReplicationBatch));
@@ -152,7 +157,10 @@ namespace Raven.Server.ReplicationUtil
 			        lastEtag = writer.WriteDocuments(_context, docs, false);
 
 			        writer.WriteEndObject();
-			        writer.Flush();
+		        }
+		        finally
+		        {
+			        await writer.DisposeAsync();
 		        }
 
 		        try
