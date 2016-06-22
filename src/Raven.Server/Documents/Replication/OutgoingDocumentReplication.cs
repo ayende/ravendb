@@ -114,7 +114,7 @@ namespace Raven.Server.Documents.Replication
                 {
                     //if this returns false, this means either timeout or canceled token is activated                    
 	                while (await _waitForChanges.WaitAsync(_minimalHeartbeatInterval) == false)
-		                _transport.SendHeartbeat();
+		                await _transport.SendHeartbeatAsync();
                 }
                 catch (OperationCanceledException)
                 {
@@ -170,21 +170,19 @@ namespace Raven.Server.Documents.Replication
                     return ReplicationBatchResult.NothingToDo;
                 try
                 {
-					var currentLastSentEtag = await _transport.SendDocumentBatchAsync(replicationBatch)
+	                var currentLastSentEtag = await _transport.SendDocumentBatchAsync(replicationBatch)
 															  .WithCancellation(_cancellationTokenSource.Token);
-	                if (currentLastSentEtag != -1)
+	                if (currentLastSentEtag == -1)
 	                {
-		                //sent batch successfully, but something went wrong on the other side
-		                //do not advance last sent etag, so the batch would be resent next cycle
-		                //TODO : consider retry logic here, so after multiple tries, it will fail loudly
-		                _lastSentEtag = currentLastSentEtag;
-	                }
-	                else
-	                {
-		                _log.Warn(
+						//sent batch successfully, but something went wrong on the other side
+						//do not advance last sent etag, so the batch would be resent next cycle
+						_log.Warn(
 			                $"Sent the batch successfully, but something went wrong on the other side; thus, do not advance last sent etag. Current last sent etag -> {_lastSentEtag}");
-						return ReplicationBatchResult.RemoteFailure;
+		                return ReplicationBatchResult.RemoteFailure;
 	                }
+	                
+	                //TODO : consider retry logic here, so after multiple tries, it will fail loudly
+	                _lastSentEtag = currentLastSentEtag;
                 }
                 catch (WebSocketException e)
                 {

@@ -60,9 +60,17 @@ namespace Raven.Server.ReplicationUtil
             }
         }
 
-	    public void SendHeartbeat()
+	    public async Task SendHeartbeatAsync()
 	    {
-		   _context.Write(_websocketStream, _heartbeatMessage);
+		    var writer = new BlittableJsonTextWriter(_context, _websocketStream);
+		    try
+		    {
+			    writer.WriteObjectOrdered(_heartbeatMessage);
+		    }
+		    finally
+		    {
+			    await writer.DisposeAsync();
+		    }
 	    }
 
         public async Task<long> GetLastEtag()
