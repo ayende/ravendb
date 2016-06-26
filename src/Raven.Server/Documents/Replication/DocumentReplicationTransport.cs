@@ -13,6 +13,7 @@ using Raven.Server.Json;
 using Raven.Server.ServerWide.Context;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
+using Sparrow;
 
 namespace Raven.Server.ReplicationUtil
 {
@@ -48,7 +49,7 @@ namespace Raven.Server.ReplicationUtil
 			{
 				[Constants.MessageType] = Constants.Replication.MessageTypes.Heartbeat
 			}, null);
-			_disposed = false;
+            _disposed = false;
         }	   
 
         public async Task EnsureConnectionAsync()
@@ -77,12 +78,12 @@ namespace Raven.Server.ReplicationUtil
         {
 	        var writer = new BlittableJsonTextWriter(_context, _websocketStream);
 	        try
-	        {
-		        _context.Write(writer, new DynamicJsonValue
-		        {
-			        [Constants.MessageType] = Constants.Replication.MessageTypes.GetLastEtag
-		        });
-	        }
+            {
+                _context.Write(writer, new DynamicJsonValue
+                {
+                    [Constants.MessageType] = Constants.Replication.MessageTypes.GetLastEtag
+                });
+            }
 	        finally
 	        {
 		        await writer.DisposeAsync();
@@ -97,32 +98,32 @@ namespace Raven.Server.ReplicationUtil
             return etag;
         }
 
-		//TODO : add here logic so reconnection is attempted couple of times before giving up
-		private async Task<WebSocket> GetAndConnectWebSocketAsync()
-		{
+        //TODO : add here logic so reconnection is attempted couple of times before giving up
+        private async Task<WebSocket> GetAndConnectWebSocketAsync()
+        {
 			var uri = new Uri($"{_url?.Replace("http://", "ws://")?.Replace(".fiddler", "")}/databases/{_targetDbName?.Replace("/", string.Empty)}/documentReplication?srcDbId={_srcDbId}&srcDbName={EscapingHelper.EscapeLongDataString(_srcDbName)}");
-			try
-			{
-				if (Sparrow.Platform.Platform.RunningOnPosix)
-				{
+            try
+            {
+                if (Platform.RunningOnPosix)
+                {
 					var webSocketUnix = new RavenUnixClientWebSocket();					;
 					await ExecuteWithRetry(webSocketUnix,
 						async () => await webSocketUnix.ConnectAsync(uri, _cancellationToken));
 
-					return webSocketUnix;
-				}
+                    return webSocketUnix;
+                }
 
 				var webSocket = new ClientWebSocket();
 				await ExecuteWithRetry(webSocket, 
 					async () => await webSocket.ConnectAsync(uri, _cancellationToken));
 				
-				return webSocket;
-			}
-			catch (Exception e)
-			{
-				throw new InvalidOperationException("Failed to connect websocket for remote replication node.", e);
-			}
-		}
+                return webSocket;
+            }
+            catch (Exception e)
+            {
+                throw new InvalidOperationException("Failed to connect websocket for remote replication node.", e);
+            }
+        }
 
 	    private async Task ExecuteWithRetry(WebSocket webSocket,Func<Task> connectAction)
 	    {
@@ -143,29 +144,29 @@ namespace Raven.Server.ReplicationUtil
 		    }
 	    }	    
 
-		public async Task<long> SendDocumentBatchAsync(IEnumerable<Document> docs)
+        public async Task<long> SendDocumentBatchAsync(IEnumerable<Document> docs)
         {
             long lastEtag;
             await EnsureConnectionAsync();
 
 	        try
-	        {
+            {
 		        var writer = new BlittableJsonTextWriter(_context, _websocketStream);
 		        try
 		        {
-			        writer.WriteStartObject();
+                writer.WriteStartObject();
 
-			        writer.WritePropertyName(_context.GetLazyStringForFieldWithCaching(Constants.MessageType));
-			        writer.WriteString(_context.GetLazyStringForFieldWithCaching(
+                writer.WritePropertyName(_context.GetLazyStringForFieldWithCaching(Constants.MessageType));
+                writer.WriteString(_context.GetLazyStringForFieldWithCaching(
 				        Constants.Replication.MessageTypes.ReplicationBatch));
 
-			        writer.WritePropertyName(
-				        _context.GetLazyStringForFieldWithCaching(
-					        Constants.Replication.PropertyNames.ReplicationBatch));
+                writer.WritePropertyName(
+                    _context.GetLazyStringForFieldWithCaching(
+                        Constants.Replication.PropertyNames.ReplicationBatch));
 			        lastEtag = writer.WriteDocuments(_context, docs, false);
 
-			        writer.WriteEndObject();
-		        }
+                writer.WriteEndObject();
+            }
 		        finally
 		        {
 			        await writer.DisposeAsync();
@@ -201,7 +202,7 @@ namespace Raven.Server.ReplicationUtil
 		        _log.Error($"Failed to sent replication batch; reason : {e}");
 		        throw;
 	        }
-	        return lastEtag;
+            return lastEtag;
         }	    
 
         public void Dispose()
