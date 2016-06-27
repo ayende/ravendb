@@ -37,6 +37,7 @@ namespace Raven.Client.Document
         private readonly Task _writeToServerTask;
         private DateTime _lastHeartbeat;
         private long _sentAccumulator;
+        private bool _disposed;
 
         private readonly AsyncManualResetEvent _throttlingEvent = new AsyncManualResetEvent();
         private bool _isThrottling;
@@ -45,6 +46,8 @@ namespace Raven.Client.Document
 
         ~WebSocketBulkInsertOperation()
         {
+            if (_disposed) // might be disposing right now
+                return;
             try
             {
                 Log.Warn("Web socket bulk insert was not disposed, and is cleaned via finalizer");
@@ -356,6 +359,7 @@ namespace Raven.Client.Document
 
         public void Dispose()
         {
+            _disposed = true;
             DisposeAsync().ConfigureAwait(false).GetAwaiter().GetResult();
         }
 
@@ -388,7 +392,7 @@ namespace Raven.Client.Document
                     while (true)
                     {
                         var timeoutTask = Task.Delay(timeDelay);
-                        var res = await Task.WhenAny(timeoutTask, _getServerResponseTask);
+                        var res = await Task.WhenAny(timeoutTask, _getServerResponseTask).ConfigureAwait(false);
                         if (timeoutTask != res)
                             break;
                         if (SystemTime.UtcNow - _lastHeartbeat > timeDelay + TimeSpan.FromSeconds(60))
