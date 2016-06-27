@@ -1274,6 +1274,10 @@ interface bulkOperationStatusDto extends operationStatusDto {
     OperationProgress: bulkOperationProgress;
 }
 
+interface internalStorageBreakdownState extends operationStatusDto {
+    ReportResults: string[];
+}
+
 interface documentStateDto {
     Document: string;
     Deleted: boolean;

@@ -218,7 +218,9 @@ namespace Raven.Database.Actions
 
             RecoverCorruptedIndexOperation,
 
-            ResolveConflicts
+            ResolveConflicts,
+
+            StorageBreakdown
         }
     }
 }
