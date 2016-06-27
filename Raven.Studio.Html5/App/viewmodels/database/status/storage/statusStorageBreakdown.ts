@@ -28,7 +28,7 @@ class statusStorageOnDisk extends viewModelBase {
             var command = new getStatusStorageBreakdownCommand(db, msg => this.progress(msg));
             return command
                 .execute()
-                .done(scheduleTaskResult => {
+                .done((scheduleTaskResult: operationIdDto) => {
                     this.operationId(scheduleTaskResult.OperationId);
                     command.getBreakdownCompletedTask()
                         .done(result => {

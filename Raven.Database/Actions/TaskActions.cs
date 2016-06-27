@@ -220,7 +220,9 @@ namespace Raven.Database.Actions
 
             ResolveConflicts,
 
-            StorageBreakdown
+            StorageBreakdown,
+
+            SlowDocCounts
         }
     }
 }
