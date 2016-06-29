@@ -13,7 +13,6 @@ namespace Raven.Server
 
 	    public static Func<bool> ThrowExceptionForDocumentReplicationReceive;
 
-		[Conditional("UNIT_TEST_EXCEPTIONS")]
 	    internal static void ThrowExceptionForDocumentReplicationReceiveIfRelevant()
 	    {
 		    if (ThrowExceptionForDocumentReplicationReceive())

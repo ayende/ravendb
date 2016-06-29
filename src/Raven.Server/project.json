@@ -17,7 +17,8 @@
     },
     "embed": {
       "include": [ "Documents/Patch/*.js" ]
-    }
+    },
+    "defines": [ ]
   },
 
   "configurations": {

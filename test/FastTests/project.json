@@ -12,7 +12,7 @@
       "Voron/Bugs/Data/*.txt",
       "**/*.ravendump"
     ],
-    "defines": [ "INCLUDE_MIDDLEWARE" ]
+    "defines": [ "UNIT_TEST_EXCEPTIONS" ]
   },
 
   "configurations": {

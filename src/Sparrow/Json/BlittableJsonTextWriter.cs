@@ -36,12 +36,10 @@ namespace Sparrow.Json
             var props = obj.GetPropertiesByInsertionOrder();
             for (int i = 0; i < props.Length; i++)
             {
-                if (i != 0)
-                {
-                    WriteComma();
-                }
+	            if (i != 0)
+		            WriteComma();
 
-                var prop = obj.GetPropertyByIndex(props[i]);
+	            var prop = obj.GetPropertyByIndex(props[i]);
                 WritePropertyName(prop.Item1);
 
                 WriteValue(prop.Item3 & BlittableJsonReaderBase.TypesMask, prop.Item2, originalPropertyOrder: true);
@@ -366,9 +364,7 @@ namespace Sparrow.Json
         {
             var lazyStringValue = val.Inner;
             WriteRawString(lazyStringValue.Buffer,lazyStringValue.Size);
-        }
-
-	    public async Task DisposeAsync() => await FlushAsync();
+        }	    
 
 	    public void Dispose() => Flush();
 

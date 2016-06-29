@@ -16,8 +16,6 @@ namespace Raven.Server.Json
         public override bool CanSeek => false;
         public override bool CanWrite => true;
 
-        private readonly ConcurrentSet<Task> _activeWriteTasks = new ConcurrentSet<Task>();
-
         private volatile bool _isDisposed;
 
         /// <summary>
@@ -42,8 +40,8 @@ namespace Raven.Server.Json
         }
 
         public override long Position { get; set; }
+	    public WebSocket UnderlyingWebsocket => _webSocket;
 
-		//TODO: refactor so the sync Write() is not supported
 		//we should not support _any_ sync functionality at the server side
         public override void Write(byte[] buffer, int offset, int count)
         {
@@ -92,8 +90,10 @@ namespace Raven.Server.Json
         public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
         {
             if (buffer == null) throw new ArgumentNullException(nameof(buffer));
-            ThrowOnDisposed();
-            
+			if (count > buffer.Length) 
+				throw new ArgumentOutOfRangeException(nameof(count));
+            ThrowOnDisposed();            
+
             int read = 0;
             while (read < count)
             {
@@ -118,22 +118,11 @@ namespace Raven.Server.Json
         public override void Flush()
         {
             throw new NotSupportedException();
-        }
-
-        public override async Task FlushAsync(CancellationToken cancellationToken)
-        {
-            if (_activeWriteTasks.Count > 0)
-            {
-                await Task.WhenAll(_activeWriteTasks).ConfigureAwait(false);
-                _activeWriteTasks.Clear();
-            }
-        }
+        }       
 
         protected override void Dispose(bool disposing)
         {
             base.Dispose(disposing);
-
-            AsyncHelpers.RunSync(() => Task.WhenAll(_activeWriteTasks));
             _isDisposed = true;
         }
     }

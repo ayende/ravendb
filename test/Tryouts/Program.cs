@@ -6,6 +6,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 using Raven.Abstractions;
 using Raven.Abstractions.Json;
@@ -14,6 +15,8 @@ using Raven.Client.Extensions;
 using Raven.Imports.Newtonsoft.Json;
 using Raven.Json.Linq;
 using FastTests;
+using FastTests.Server.Documents.Replication;
+using Raven.Abstractions.Util;
 
 namespace Tryouts
 {
@@ -367,71 +370,20 @@ namespace Tryouts
         }
     }
 
-    public class Program
-    {
-        public static void Main(string[] args)
-        {
-            if (args.Length > 0 && args[0].Equals("--import"))
-            {
-                // inMem - import file to memory first and then to database storage
-                var inMem = args.Length > 1 && args[1].Equals("inmem", StringComparison.OrdinalIgnoreCase);
-                using (var store = new DocumentStore
-                {
-                    Url = "http://127.0.0.1:8080",
-                    DefaultDatabase = "test"
-                })
-                {
-                    store.Initialize();
-                    Util.CreateDb(store);
-                    var importTask = Importer.ImportData(store, inMem);
-                    importTask.Wait();
-                }
-                Console.WriteLine("End test");
-                Console.ReadKey();
-                return;
-            }
+	public class Program
+	{
+		public static void Main(string[] args)
+		{
 
-            if (args.Length > 0 && args[0].Equals("--import-pure-mem"))
-            {
-                var inMem = args.Length > 1 && args[1].Equals("inmem", StringComparison.OrdinalIgnoreCase);
-                var d = new Importer();
-                d.ImportTask(inMem).Wait();
-                Console.WriteLine("End test");
-                Console.ReadKey();
-                return;
-            }
+			for (int i = 0; i < 100; i++)
+			{
+				using (var test = new ReplicationBasicTests())
+				{
+					Console.WriteLine(i);
+					test.Master_master_replication_from_etag_zero_without_conflict_should_work().Wait();
+				}
 
-            using (var massiveObj = new MassiveTest("http://localhost:8080", 1805861237))
-            {
-                massiveObj.CreateDb();
-
-                var k = 1000;
-                var kb = 1024;
-
-                if (args.Length == 1)
-                    k = Convert.ToInt32(args[0]);
-
-                //Console.WriteLine("metoraf...");
-                //massiveObj.PerformBulkInsert("warmup", 1000 * k, 30 * kb * kb);
-
-                Console.WriteLine("warmup...");
-                massiveObj.PerformBulkInsert("warmup", 10 * k, 2 * kb);
-                Console.WriteLine("smallSize...");
-                massiveObj.PerformBulkInsert("smallSize", 2 * k * k, 2 * kb);
-                Console.WriteLine("bigSize...");
-                massiveObj.PerformBulkInsert("bigSize", 1 * k, 30 * kb * kb);
-                Console.WriteLine("forOverrite...");
-                massiveObj.PerformBulkInsert("forOverrite", 500 * k, 5 * kb, false);
-                Console.WriteLine("forOverrite2...");
-                massiveObj.PerformBulkInsert("forOverrite", 1000 * k, 5 * kb, false);
-                for (int i = 1; i <= 5; i++)
-                {
-                    Console.WriteLine($"random {i}...");
-                    massiveObj.PerformBulkInsert("random", i * k * k, null);
-                }
-
-                Console.WriteLine("Ending tests...");
-            }
-        }
-    }
+			}
+		}
+	}
 }

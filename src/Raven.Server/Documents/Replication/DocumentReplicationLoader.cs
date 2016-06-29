@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using Raven.Abstractions.Data;
+using Raven.Abstractions.Extensions;
 using Raven.Abstractions.Logging;
 using Raven.Abstractions.Replication;
 using Raven.Server.Json;
@@ -13,15 +14,18 @@ using Sparrow.Collections;
 
 namespace Raven.Server.Documents.Replication
 {
-    //TODO: add code to handle DocumentReplicationStatistics from each replication executer (also aggregation code?)
-    //TODO: add support to destinations changes, so they can be changed dynamically (added/removed)
-    public class DocumentReplicationLoader
+	//TODO: add code to handle DocumentReplicationStatistics from each replication executer (also aggregation code?)
+	//TODO: add support to destinations changes, so they can be changed dynamically (added/removed)
+	public class DocumentReplicationLoader
     {
         private readonly ILog _log;
         private readonly DocumentDatabase _database;
 
         private ReplicationDocument _replicationDocument;
         private readonly ConcurrentSet<OutgoingDocumentReplication> _outgoingReplications;
+
+		private readonly ConcurrentDictionary<string,DateTime> _lastConnectionDisconnect = new ConcurrentDictionary<string, DateTime>();
+		private readonly ConcurrentDictionary<string, int> _connectionTimeouts = new ConcurrentDictionary<string, int>();
 
         public DocumentReplicationLoader(DocumentDatabase database) 
         {
@@ -62,7 +66,8 @@ namespace Raven.Server.Documents.Replication
                 }
                 catch (Exception e)
                 {
-                    _log.Error("failed to deserialize replication configuration document. This is something that is not supposed to happen. Reason:" + e);
+					//Debugger.Launch();
+					_log.Error("failed to deserialize replication configuration document. This is something that is not supposed to happen. Reason:" + e);
                 }
 
                 Debug.Assert(_replicationDocument.Destinations != null);
@@ -77,6 +82,7 @@ namespace Raven.Server.Documents.Replication
         {
             lock (_outgoingReplications)
             {
+				//TODO : do disposals in parallel
                 foreach (var replication in _outgoingReplications)
                     replication.Dispose();
                 _outgoingReplications.Clear();
@@ -87,7 +93,7 @@ namespace Raven.Server.Documents.Replication
                     var outgoingDocumentReplication = new OutgoingDocumentReplication(_database, dest);
                     initializationTasks.Add(
 						outgoingDocumentReplication.InitializeAsync()
-												   .ContinueWith(t =>
+												   .ContinueWith(async t =>
 													{
 														var currentReplicationInstance = outgoingDocumentReplication;
 														var currentDestination = dest;
@@ -101,18 +107,19 @@ namespace Raven.Server.Documents.Replication
 																try
 																{
 																	currentReplicationInstance = new OutgoingDocumentReplication(_database, currentDestination);
-																	currentReplicationInstance.InitializeAsync().Wait();
+																	await currentReplicationInstance.InitializeAsync();
 																	hasSucceeded = true;
 																}
 																catch (Exception)
 																{
+																	//Debugger.Launch();
 																	// ignored, since we are retrying initialization
 																	// for cases of transient errors
 																}
 																if (hasSucceeded)
 																	break;
 
-																Thread.Sleep(i * 1000);//increasingly wait between retries
+																await Task.Delay(i * 1000);//increasingly wait between retries
 															}
 
 															if(hasSucceeded)
@@ -120,14 +127,32 @@ namespace Raven.Server.Documents.Replication
 														}
 														else
 														{
+															currentReplicationInstance.ClosedConnectionRemoteFailure += OnReplicationRemoteFault;
 															_outgoingReplications.Add(currentReplicationInstance);
 														}
-													},_database.DatabaseShutdown));
+													},_database.DatabaseShutdown).Unwrap());
                 }
 
-                Task.WhenAll(initializationTasks).Wait(_database.DatabaseShutdown);
+                Task.WaitAll(initializationTasks.ToArray(),_database.DatabaseShutdown);
             }
         }
+
+	    private void OnReplicationRemoteFault(OutgoingDocumentReplication instance)
+	    {
+		    _lastConnectionDisconnect.AddOrUpdate(instance.ReplicationUniqueName, 
+				key => DateTime.UtcNow, (key,existing) => DateTime.UtcNow);
+		    var timeout = _connectionTimeouts.AddOrUpdate(instance.ReplicationUniqueName, 
+								key => 500, (key, existing) => existing * 2 < 60000 ? existing * 2 : existing);
+			instance.Disconnect();
+#pragma warning disable 4014
+			//will resume outgoing replication eventually
+			Task.Delay(timeout)
+				.ContinueWith(t => instance.InitializeAsync()
+										   .WithCancellation(_database.DatabaseShutdown))
+				.Unwrap();
+#pragma warning restore 4014
+
+	    }
 
         public void Dispose()
         {

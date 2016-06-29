@@ -51,7 +51,7 @@ namespace Raven.Server.Documents
 
         public string Name { get; }
 
-        public Guid DbId => DocumentsStorage.Environment?.DbId ?? Guid.Empty;
+        public Guid DbId => DocumentsStorage?.Environment?.DbId ?? Guid.Empty;
 
         public string ResourceName => $"db/{Name}";
 

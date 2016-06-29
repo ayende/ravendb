@@ -1,9 +1,7 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Net;
+using System.Diagnostics;
 using System.Threading.Tasks;
-using Raven.Abstractions.Data;
-using Raven.Abstractions.Replication;
+using Raven.Server;
 using Raven.Server.ServerWide.Context;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
@@ -13,7 +11,9 @@ namespace FastTests.Server.Documents.Replication
 {
     public class ReplicationBasicTests : ReplicationTestsBase
     {
-        public readonly string DbName = "TestDB" + Guid.NewGuid();
+	    private readonly int _waitTimeout = Debugger.IsAttached ? 60000 : 5000;
+
+        public string DbName => "TestDB" + Guid.NewGuid();
 
         public class User
         {
@@ -25,8 +25,9 @@ namespace FastTests.Server.Documents.Replication
         public async Task Master_master_replication_from_etag_zero_without_conflict_should_work()
         {
             var dbName1 = DbName + "-1";
-            var dbName2 = DbName + "-2";
-            using (var store1 = await GetDocumentStore(modifyDatabaseDocument: document => document.Id = dbName1))
+            var dbName2 = DbName + "-2";		
+
+			using (var store1 = await GetDocumentStore(modifyDatabaseDocument: document => document.Id = dbName1))
             using (var store2 = await GetDocumentStore(modifyDatabaseDocument: document => document.Id = dbName2))
             {
                 store1.DefaultDatabase = dbName1;
@@ -55,8 +56,8 @@ namespace FastTests.Server.Documents.Replication
                     session.SaveChanges();
                 }
 
-				var replicated2 = WaitForDocumentToReplicate<User>(store1, "users/2", 10000);
-				var replicated3 = WaitForDocumentToReplicate<User>(store2, "users/1", 10000);
+				var replicated2 = WaitForDocumentToReplicate<User>(store1, "users/2", _waitTimeout);
+				var replicated3 = WaitForDocumentToReplicate<User>(store2, "users/1", _waitTimeout);
 			
                 Assert.NotNull(replicated2);
                 Assert.Equal("Jane Dow", replicated2.Name);
@@ -65,8 +66,7 @@ namespace FastTests.Server.Documents.Replication
                 Assert.NotNull(replicated3);
                 Assert.Equal("John Dow", replicated3.Name);
                 Assert.Equal(30, replicated3.Age);
-
-            }
+			}
         }		
 
         [Fact]
@@ -111,63 +111,7 @@ namespace FastTests.Server.Documents.Replication
                     }
 				}
 			}
-        }
-
-		//add endpoint to get replication statistics, so it can contain errors for the document replication,
-		//and possibly also other replications, such as sql replication, and maybe ravenfs one
-	 //   [Fact]
-	 //   public async Task Master_slave_replication_disconnected_destination_will_throw_proper_error()
-	 //   {
-		//    var dbName1 = DbName + "-1";
-		//    var dbName2 = DbName + "-2";
-		//    var store2 = await GetDocumentStore(modifyDatabaseDocument: document => document.Id = dbName2);
-
-		//	using (var store1 = await GetDocumentStore(modifyDatabaseDocument: document => document.Id = dbName1))		    
-		//    {
-		//	    store1.DefaultDatabase = dbName1;
-		//	    store2.DefaultDatabase = dbName2;
-		//		var store1Url = new Uri(store1.Url);
-		//		var store1IP = (await Dns.GetHostAddressesAsync(store1Url.Host))[1];
-		//		var store2Url = new Uri(store2.Url);
-		//		var store2IP = (await Dns.GetHostAddressesAsync(store2Url.Host))[1];
-
-		//		using (var session = store1.OpenSession())
-		//		using (var proxy = new DebugHttpProxy(store1IP.ToString(),store1Url.Port, store2IP.ToString(),store2Url.Port))
-		//		{
-		//			session.Store(new User
-		//			{
-		//				Name = "John Dow",
-		//				Age = 30
-		//			}, "users/1");
-
-		//			session.Store(new User
-		//			{
-		//				Name = "Jane Dow",
-		//				Age = 31
-		//			}, "users/2");
-
-		//			session.SaveChanges();
-		//		}
-
-		//		using (var session = store1.OpenSession())
-		//		{
-		//			session.Store(new ReplicationDocument
-		//			{
-		//				Destinations = new List<ReplicationDestination>
-		//			{
-		//				new ReplicationDestination
-		//				{
-		//					Database = dbName2,
-		//					Url = store2.Url
-		//				}
-		//			}
-		//			}, Constants.Replication.DocumentReplicationConfiguration);
-		//			session.SaveChanges();
-		//		}
-
-		//		var replicated1 = WaitForDocumentToReplicate<User>(store2, "users/1", 15000);
-		//	}
-		//}
+        }		
 
 	    [Fact]
         public async Task Master_slave_replication_from_etag_zero_should_work()
@@ -199,20 +143,88 @@ namespace FastTests.Server.Documents.Replication
                     session.SaveChanges();		
                 }
 
-	            var replicated1 = WaitForDocumentToReplicate<User>(store2, "users/1", 15000);
+	            var replicated1 = WaitForDocumentToReplicate<User>(store2, "users/1", _waitTimeout);
 
                 Assert.NotNull(replicated1);
                 Assert.Equal("John Dow", replicated1.Name);
                 Assert.Equal(30, replicated1.Age);
 
-                var replicated2 = WaitForDocumentToReplicate<User>(store2, "users/2", 5000);
+                var replicated2 = WaitForDocumentToReplicate<User>(store2, "users/2", _waitTimeout);
                 Assert.NotNull(replicated2);
                 Assert.Equal("Jane Dow", replicated2.Name);
                 Assert.Equal(31, replicated2.Age);
             }
         }
 
-        [Fact]
+		[Fact]
+		public async Task Master_slave_replication_from_etag_zero_with_single_error_during_document_receive_should_work()
+		{
+			bool hasThrown = false;
+			await Test_master_slave_replication_with_error_predicate(() => {
+				if (!hasThrown)
+				{
+					hasThrown = true;
+					return true;
+				}
+				return false;
+			});
+		}
+
+		[Fact]
+		public async Task Master_slave_replication_from_etag_zero_with_error_on_3rd_request()
+		{
+			int requests = 0;
+			await Test_master_slave_replication_with_error_predicate(() =>
+			{
+				requests++;
+				return requests == 2;
+			});
+		}
+
+		private async Task Test_master_slave_replication_with_error_predicate(Func<bool> errorPredicate)
+		{
+			var dbName1 = DbName + "-1";
+			var dbName2 = DbName + "-2";
+			using (var store1 = await GetDocumentStore(modifyDatabaseDocument: document => document.Id = dbName1))
+			using (var store2 = await GetDocumentStore(modifyDatabaseDocument: document => document.Id = dbName2))
+			{
+				store1.DefaultDatabase = dbName1;
+				store2.DefaultDatabase = dbName2;
+
+				DebugHelper.ThrowExceptionForDocumentReplicationReceive = errorPredicate;
+
+				SetupReplication(dbName2, store1, store2);
+				using (var session = store1.OpenSession())
+				{
+					session.Store(new User
+					{
+						Name = "John Dow",
+						Age = 30
+					}, "users/1");
+
+					session.Store(new User
+					{
+						Name = "Jane Dow",
+						Age = 31
+					}, "users/2");
+
+					session.SaveChanges();
+				}
+
+				var replicated1 = WaitForDocumentToReplicate<User>(store2, "users/1", _waitTimeout);
+
+				Assert.NotNull(replicated1);
+				Assert.Equal("John Dow", replicated1.Name);
+				Assert.Equal(30, replicated1.Age);
+
+				var replicated2 = WaitForDocumentToReplicate<User>(store2, "users/2", _waitTimeout);
+				Assert.NotNull(replicated2);
+				Assert.Equal("Jane Dow", replicated2.Name);
+				Assert.Equal(31, replicated2.Age);
+			}
+		}
+
+		[Fact]
         public async Task Master_slave_replication_with_multiple_PUTS_should_work()
         {
             var dbName1 = DbName + "-1";

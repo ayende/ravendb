@@ -187,7 +187,7 @@ namespace Raven.Server.Documents
 
             var tree = context.Transaction.InnerTransaction.CreateTree("ChangeVector");
             var changeVector = new ChangeVectorEntry[tree.State.NumberOfEntries];
-            using (var iter = tree.Iterate(true)) //should prefetch here? not sure
+            using (var iter = tree.Iterate(false))
             {
                 if (iter.Seek(Slices.BeforeAllKeys) == false)
                     return changeVector;

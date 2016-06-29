@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net.WebSockets;
 using System.Threading;
@@ -49,7 +50,7 @@ namespace Raven.Server.ReplicationUtil
 			{
 				[Constants.MessageType] = Constants.Replication.MessageTypes.Heartbeat
 			}, null);
-            _disposed = false;
+			_disposed = false;
         }	   
 
         public async Task EnsureConnectionAsync()
@@ -61,8 +62,25 @@ namespace Raven.Server.ReplicationUtil
             }
         }
 
-	    public async Task SendHeartbeatAsync()
+	    public async Task Disconnect(WebSocketCloseStatus closeStatus = WebSocketCloseStatus.Empty, string closeDescription = "")
 	    {
+		    try
+		    {
+			    await _webSocket.CloseAsync(closeStatus, closeDescription, _cancellationToken);
+		    }
+		    catch (Exception e)
+		    {
+				//Debugger.Launch();
+			}
+		    finally
+		    {
+			    _webSocket.Dispose();
+			    _webSocket = null;
+		    }
+	    }
+
+	    public async Task SendHeartbeatAsync()
+	    {			
 		    var writer = new BlittableJsonTextWriter(_context, _websocketStream);
 		    try
 		    {
@@ -70,79 +88,94 @@ namespace Raven.Server.ReplicationUtil
 		    }
 		    finally
 		    {
-			    await writer.DisposeAsync();
-		    }
-	    }
+			    try
+			    {
+				    await writer.FlushAsync();
+			    }
+				catch (Exception e)
+				{
+					//Debugger.Launch();
+					//TODO : add throttle down/tracking of connection errors, maybe even try to reconnect
+				}
+			}
+		}
 
         public async Task<long> GetLastEtag()
         {
-	        var writer = new BlittableJsonTextWriter(_context, _websocketStream);
+			var sendGetLastEtagFailed = false;
+			var writer = new BlittableJsonTextWriter(_context, _websocketStream);
 	        try
-            {
-                _context.Write(writer, new DynamicJsonValue
-                {
-                    [Constants.MessageType] = Constants.Replication.MessageTypes.GetLastEtag
-                });
-            }
+	        {
+		        _context.Write(writer, new DynamicJsonValue
+		        {
+			        [Constants.MessageType] = Constants.Replication.MessageTypes.GetLastEtag
+		        });
+	        }
 	        finally
 	        {
-		        await writer.DisposeAsync();
+		        try
+		        {
+			        await writer.FlushAsync();
+		        }
+		        catch (Exception e)
+		        {
+					//Debugger.Launch();
+					sendGetLastEtagFailed = true;
+					_log.Warn($"Tried to send GetLastEtag message to {_url} -> {_targetDbName}; Failed because of {e}");
+
+				}
 	        }
 
-            var lastEtagMessage = await _context.ReadForMemoryAsync(_websocketStream, null);
+			if (sendGetLastEtagFailed)
+				return -1;
 
-            long etag;
-            if (!lastEtagMessage.TryGet(Constants.Replication.PropertyNames.LastSentEtag, out etag))
-                throw new InvalidDataException(
-                    $"Received invalid last etag message. Failed to get {Constants.Replication.PropertyNames.LastSentEtag} property from received result");
-            return etag;
+	        try
+	        {
+		        var lastEtagMessage = await _context.ReadForMemoryAsync(_websocketStream, null);
+
+		        long etag;
+		        if (!lastEtagMessage.TryGet(Constants.Replication.PropertyNames.LastSentEtag, out etag))
+			        throw new InvalidDataException(
+				        $"Received invalid last etag message. Failed to get {Constants.Replication.PropertyNames.LastSentEtag} property from received result");
+		        return etag;
+	        }
+	        catch (EndOfStreamException)
+	        {
+				//Debugger.Launch();
+				_log.Warn(
+			        "Connection closed in the middle of data transmission. This might happen due to legimitate cause, such as remote server receiving shutdown command. Aborting GetLastEtag() operation...");
+		        return -1;
+	        }
+	        catch (Exception e)
+	        {
+				//Debugger.Launch();
+				return -1;
+	        }
         }
 
-        //TODO : add here logic so reconnection is attempted couple of times before giving up
-        private async Task<WebSocket> GetAndConnectWebSocketAsync()
-        {
+		private async Task<WebSocket> GetAndConnectWebSocketAsync()
+		{
 			var uri = new Uri($"{_url?.Replace("http://", "ws://")?.Replace(".fiddler", "")}/databases/{_targetDbName?.Replace("/", string.Empty)}/documentReplication?srcDbId={_srcDbId}&srcDbName={EscapingHelper.EscapeLongDataString(_srcDbName)}");
-            try
-            {
+			try
+			{
                 if (Platform.RunningOnPosix)
-                {
-					var webSocketUnix = new RavenUnixClientWebSocket();					;
-					await ExecuteWithRetry(webSocketUnix,
-						async () => await webSocketUnix.ConnectAsync(uri, _cancellationToken));
-
-                    return webSocketUnix;
-                }
+				{
+					var webSocketUnix = new RavenUnixClientWebSocket();					
+					await webSocketUnix.ConnectAsync(uri, _cancellationToken);
+					return webSocketUnix;
+				}
 
 				var webSocket = new ClientWebSocket();
-				await ExecuteWithRetry(webSocket, 
-					async () => await webSocket.ConnectAsync(uri, _cancellationToken));
-				
-                return webSocket;
-            }
-            catch (Exception e)
-            {
-                throw new InvalidOperationException("Failed to connect websocket for remote replication node.", e);
-            }
-        }
-
-	    private async Task ExecuteWithRetry(WebSocket webSocket,Func<Task> connectAction)
-	    {
-		    for (int i = 0; i < MaxRetries; i++)
-		    {
-			    try
-			    {
-				    await connectAction();
-					if(webSocket.State == WebSocketState.Open)
-						break;
-			    }
-			    catch (Exception e)
-			    {
-					if(i >= MaxRetries)
-						throw new InvalidOperationException("Failed to connect websocket for remote replication node.", e);
-					//otherwise try again
-				}
-		    }
-	    }	    
+				await webSocket.ConnectAsync(uri, _cancellationToken);
+				return webSocket;
+			}
+			catch (Exception e)
+			{
+				//Debugger.Launch();
+				//if we failed, then we failed...
+				throw new InvalidOperationException("Failed to connect websocket for remote replication node.", e);
+			}
+		}
 
         public async Task<long> SendDocumentBatchAsync(IEnumerable<Document> docs)
         {
@@ -150,26 +183,26 @@ namespace Raven.Server.ReplicationUtil
             await EnsureConnectionAsync();
 
 	        try
-            {
+	        {
 		        var writer = new BlittableJsonTextWriter(_context, _websocketStream);
 		        try
 		        {
-                writer.WriteStartObject();
+			        writer.WriteStartObject();
 
-                writer.WritePropertyName(_context.GetLazyStringForFieldWithCaching(Constants.MessageType));
-                writer.WriteString(_context.GetLazyStringForFieldWithCaching(
+			        writer.WritePropertyName(_context.GetLazyStringForFieldWithCaching(Constants.MessageType));
+			        writer.WriteString(_context.GetLazyStringForFieldWithCaching(
 				        Constants.Replication.MessageTypes.ReplicationBatch));
 
-                writer.WritePropertyName(
-                    _context.GetLazyStringForFieldWithCaching(
-                        Constants.Replication.PropertyNames.ReplicationBatch));
+			        writer.WritePropertyName(
+				        _context.GetLazyStringForFieldWithCaching(
+					        Constants.Replication.PropertyNames.ReplicationBatch));
 			        lastEtag = writer.WriteDocuments(_context, docs, false);
 
-                writer.WriteEndObject();
-            }
+			        writer.WriteEndObject();
+		        }
 		        finally
 		        {
-			        await writer.DisposeAsync();
+			        await writer.FlushAsync();
 		        }
 
 		        try
@@ -180,9 +213,10 @@ namespace Raven.Server.ReplicationUtil
 			        if (acknowledgeMessage == null ||
 			            (acknowledgeMessage.TryGet(Constants.MessageType, out val) &&
 			             !val.Equals(Constants.Replication.MessageTypes.ReplicationBatchAcknowledge)) ||
-						 !acknowledgeMessage.TryGet(Constants.HadSuccess, out hasSucceededWithBatch))
+			            !acknowledgeMessage.TryGet(Constants.HadSuccess, out hasSucceededWithBatch))
 			        {
-				        var errorMsg = $"Received replication batch acknowledgement message with the wrong type. Expected : {Constants.Replication.MessageTypes.ReplicationBatchAcknowledge}, Received : {val}";
+				        var errorMsg =
+					        $"Received replication batch acknowledgement message with the wrong type. Expected : {Constants.Replication.MessageTypes.ReplicationBatchAcknowledge}, Received : {val}";
 				        _log.Error(errorMsg);
 				        throw new InvalidOperationException(errorMsg);
 			        }
@@ -190,26 +224,33 @@ namespace Raven.Server.ReplicationUtil
 			        if (!hasSucceededWithBatch)
 				        return -1;
 		        }
+		        catch (EndOfStreamException)
+		        {
+					//Debugger.Launch();
+					_log.Warn("Remote server closed the connection in the middle of sending documents batch for replication. There may be a legitimate reason for this, such as remote server receiving shutdown command. Aborting sending replication batch documents...");
+			        return -1;
+		        }
 		        catch (Exception e)
 		        {
-			        var errorMsg = $"Failed to get acknowledgement for replication batch. Last sent etag was not updated. Exception received : {e}";
+					//Debugger.Launch();
+					var errorMsg = $"Failed to get acknowledgement for replication batch. Last sent etag was not updated. Exception received : {e}";
 			        _log.Error(errorMsg);
-			        throw;
+			        return -1;
 		        }
 	        }
 	        catch (Exception e)
 	        {
-		        _log.Error($"Failed to sent replication batch; reason : {e}");
+				//Debugger.Launch();
+				_log.Error($"Failed to sent replication batch; reason : {e}");
 		        throw;
 	        }
-            return lastEtag;
+	        return lastEtag;
         }	    
 
         public void Dispose()
-        {
+        {	        
             _disposed = true;
-            _context.Dispose();
-            _webSocket.Dispose();
-        }				   
+			Disconnect().Wait(_cancellationToken);
+		}				   
     }
 }
