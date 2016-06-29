@@ -123,16 +123,20 @@ namespace Raven.Tests.FileSystem.Synchronization
             }
 
             pages = await destination.Synchronization.GetConflictsAsync();
+            Assert.Equal(25, pages.Items.Count);
             Assert.Equal(25, pages.TotalCount);
 
-            pages = await destination.Synchronization.GetConflictsAsync(start: 1, pageSize: 10);
-            Assert.Equal(10, pages.TotalCount);
+            pages = await destination.Synchronization.GetConflictsAsync(start: 10, pageSize: 10);
+            Assert.Equal(10, pages.Items.Count);
+            Assert.Equal(25, pages.TotalCount);
 
-            pages = await destination.Synchronization.GetConflictsAsync(start: 2, pageSize: 10);
-            Assert.Equal(5, pages.TotalCount);
+            pages = await destination.Synchronization.GetConflictsAsync(start: 20, pageSize: 10);
+            Assert.Equal(5, pages.Items.Count);
+            Assert.Equal(25, pages.TotalCount);
 
-            pages = await destination.Synchronization.GetConflictsAsync(start: 10);
-            Assert.Equal(0, pages.TotalCount);
+            pages = await destination.Synchronization.GetConflictsAsync(start: 30);
+            Assert.Equal(0, pages.Items.Count);
+            Assert.Equal(25, pages.TotalCount);
         }
 
         [Fact]
@@ -523,6 +527,27 @@ namespace Raven.Tests.FileSystem.Synchronization
 
             pages = destination.Synchronization.GetConflictsAsync().Result;
             Assert.Equal(0, pages.TotalCount);
+        }
+
+        [Fact]
+        public async Task Resolve_with_local_should_create_marker_in_conflict_item()
+        {
+            var server1 = NewAsyncClient(0);
+            var server2 = NewAsyncClient(1);
+
+            await server1.UploadAsync("test", new MemoryStream(new byte[] { 1, 2, 3 }));
+            await server2.UploadAsync("test", new MemoryStream(new byte[] { 1, 2 }));
+
+            var shouldBeConflict = await server1.Synchronization.StartAsync("test", server2);
+
+            Assert.Equal(string.Format("File {0} is conflicted", FileHeader.Canonize("test")), shouldBeConflict.Exception.Message);
+
+            await server2.Synchronization.ResolveConflictAsync("test", ConflictResolutionStrategy.RemoteVersion);
+
+            var conflicts = await server2.Synchronization.GetConflictsAsync(0, 5);
+
+            Assert.Equal(1, conflicts.Items.Count);
+            Assert.True(conflicts.Items.First().ResolveUsingRemote);
         }
     }
 }

@@ -197,6 +197,7 @@
     <Compile Include="Data\IndexingPerformanceStats.cs" />
     <Compile Include="Data\IndexingStatus.cs" />
     <Compile Include="Data\OperationStateBase.cs" />
+    <Compile Include="Data\InternalStorageBreakdownState.cs" />
     <Compile Include="Data\ResourceBackupState.cs" />
     <Compile Include="Data\SimulateSqlReplicationResult.cs" />
     <Compile Include="Data\ListsInfo.cs" />
@@ -543,7 +544,6 @@
   <Import Project="..\Imports\Fody\Fody.targets" Condition="$(Configuration) == 'Release'" />
   <Import Project="..\Imports\Tasks.targets" Condition="'$(TasksTargetsImported)' == ''" />
   <ItemGroup>
-    <Analyzer Include="..\SharedLibs\ClrHeapAllocationAnalyzer.dll" />
     <Analyzer Include="..\SharedLibs\Raven.CodeAnalysis.dll" />
   </ItemGroup>
 </Project>
