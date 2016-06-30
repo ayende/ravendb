@@ -37,6 +37,7 @@ namespace Raven.Server.Documents
         {
             Name = name;
             Configuration = configuration;
+            LoggerSetup = loggerSetup;
 
             Notifications = new DocumentsNotifications();
             DocumentsStorage = new DocumentsStorage(this);
@@ -57,6 +58,7 @@ namespace Raven.Server.Documents
         public string ResourceName => $"db/{Name}";
 
         public RavenConfiguration Configuration { get; }
+        public LoggerSetup LoggerSetup { get; set; }
 
         public CancellationToken DatabaseShutdown => _databaseShutdown.Token;
 
