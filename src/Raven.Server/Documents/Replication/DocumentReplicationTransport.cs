@@ -30,8 +30,10 @@ namespace Raven.Server.ReplicationUtil
         private readonly DocumentsOperationContext _context;
         private readonly string _targetDbName;
 		private readonly BlittableJsonReaderObject _heartbeatMessage;
-	    private readonly ILog _log = LogManager.GetLogger(typeof(DocumentReplicationTransport));
+	    private readonly ILog _log = LogManager.CurrentLogManager.GetLogger(nameof(DocumentReplicationTransport));
 		private const int MaxRetries = 3;
+
+		private readonly SemaphoreSlim _disposalSemaphore = new SemaphoreSlim(1);
 
         public DocumentReplicationTransport(string url, 
             Guid srcDbId, 
@@ -56,100 +58,130 @@ namespace Raven.Server.ReplicationUtil
         public async Task EnsureConnectionAsync()
         {
             if (_webSocket == null || _webSocket.State != WebSocketState.Open)
-            {
+            {	         
+				_log.Debug($"Starting connecting websocket. ({_srcDbName})");
                 _webSocket = await GetAndConnectWebSocketAsync();
                 _websocketStream = new WebsocketStream(_webSocket, _cancellationToken);
-            }
-        }
-
-	    public async Task Disconnect(WebSocketCloseStatus closeStatus = WebSocketCloseStatus.Empty, string closeDescription = "")
-	    {
-		    try
-		    {
-			    await _webSocket.CloseAsync(closeStatus, closeDescription, _cancellationToken);
-		    }
-		    catch (Exception e)
-		    {
-				//Debugger.Launch();
-			}
-		    finally
-		    {
-			    _webSocket.Dispose();
-			    _webSocket = null;
-		    }
-	    }
-
-	    public async Task SendHeartbeatAsync()
-	    {			
-		    var writer = new BlittableJsonTextWriter(_context, _websocketStream);
-		    try
-		    {
-			    writer.WriteObjectOrdered(_heartbeatMessage);
-		    }
-		    finally
-		    {
-			    try
-			    {
-				    await writer.FlushAsync();
-			    }
-				catch (Exception e)
-				{
-					//Debugger.Launch();
-					//TODO : add throttle down/tracking of connection errors, maybe even try to reconnect
-				}
+				_log.Debug($"Finished connecting websocket.({_srcDbName})");
 			}
 		}
 
+	    public async Task Disconnect(WebSocketCloseStatus closeStatus = WebSocketCloseStatus.Empty, string closeDescription = "")
+	    {
+			_log.Debug($"Starting disconnecting websocket. ({_srcDbName})");
+			try
+		    {
+				if(_webSocket.State == WebSocketState.Open)
+					await _webSocket?.CloseAsync(closeStatus, closeDescription, _cancellationToken);
+		    }
+		    catch (Exception e)
+		    {
+				
+			}
+		    finally
+		    {
+			    _webSocket?.Dispose();
+			    _webSocket = null;
+				_log.Debug($"Ended disconnecting websocket. ({_srcDbName})");
+			}
+	    }
+
+	    public async Task SendHeartbeatAsync()
+	    {
+		    if (!await _disposalSemaphore.WaitAsync(TimeSpan.FromSeconds(0.5), _cancellationToken))
+			    return; //we are disposing, so abort doing this
+			try
+		    {
+			    var writer = new BlittableJsonTextWriter(_context, _websocketStream);
+			    {
+				    try
+				    {
+					    writer.WriteObjectOrdered(_heartbeatMessage);
+				    }
+				    finally
+				    {
+					    try
+					    {
+						    if (!_cancellationToken.IsCancellationRequested)
+						    {
+							    await writer.FlushAsync();
+							    _log.Debug($"Sending heartbeat. ({_srcDbName})");
+						    }
+					    }
+						catch (Exception e)
+					    {
+							_log.DebugException($"Sending heartbeat failed. ({_srcDbName})",e);
+							//TODO : add throttle down/tracking of connection errors, maybe even try to reconnect
+						}
+					}
+			    }
+		    }
+		    finally
+		    {
+			    _disposalSemaphore.Release();
+		    }
+	    }
+
         public async Task<long> GetLastEtag()
         {
-			var sendGetLastEtagFailed = false;
-			var writer = new BlittableJsonTextWriter(_context, _websocketStream);
-	        try
-	        {
-		        _context.Write(writer, new DynamicJsonValue
-		        {
-			        [Constants.MessageType] = Constants.Replication.MessageTypes.GetLastEtag
-		        });
-	        }
-	        finally
-	        {
+			if (!await _disposalSemaphore.WaitAsync(TimeSpan.FromSeconds(0.5), _cancellationToken))
+				return -1; //we are disposing, so abort doing this
+			_log.Debug($"Fetching last etag. ({_srcDbName})");
+
+			try
+			{
+		        var sendGetLastEtagFailed = false;
+		        var writer = new BlittableJsonTextWriter(_context, _websocketStream);
 		        try
 		        {
-			        await writer.FlushAsync();
+			        _context.Write(writer, new DynamicJsonValue
+			        {
+				        [Constants.MessageType] = Constants.Replication.MessageTypes.GetLastEtag
+			        });
+		        }
+		        finally
+		        {
+			        try
+			        {
+				        await writer.FlushAsync();
+						_log.Debug($"Fetchied last etag successfully. ({_srcDbName})");
+					}
+			        catch (Exception e)
+			        {
+
+				        sendGetLastEtagFailed = true;
+				        _log.Warn($"Tried to send GetLastEtag message to {_url} -> {_targetDbName}; Failed because of {e}");
+			        }
+		        }
+
+		        if (sendGetLastEtagFailed)
+			        return -1;
+
+		        try
+		        {
+			        var lastEtagMessage = await _context.ReadForMemoryAsync(_websocketStream, null);
+					_log.Debug($"Deserialized last etag. ({_srcDbName})");
+					long etag;
+			        if (!lastEtagMessage.TryGet(Constants.Replication.PropertyNames.LastSentEtag, out etag))
+				        throw new InvalidDataException(
+					        $"Received invalid last etag message. Failed to get {Constants.Replication.PropertyNames.LastSentEtag} property from received result");
+			        return etag;
+		        }
+		        catch (EndOfStreamException)
+		        {
+			        _log.Warn(
+				        "Connection closed in the middle of data transmission. This might happen due to legimitate cause, such as remote server receiving shutdown command. Aborting GetLastEtag() operation...");
+			        return -1;
 		        }
 		        catch (Exception e)
 		        {
-					//Debugger.Launch();
-					sendGetLastEtagFailed = true;
-					_log.Warn($"Tried to send GetLastEtag message to {_url} -> {_targetDbName}; Failed because of {e}");
-
-				}
+					
+					return -1;
+		        }
 	        }
-
-			if (sendGetLastEtagFailed)
-				return -1;
-
-	        try
+	        finally
 	        {
-		        var lastEtagMessage = await _context.ReadForMemoryAsync(_websocketStream, null);
-
-		        long etag;
-		        if (!lastEtagMessage.TryGet(Constants.Replication.PropertyNames.LastSentEtag, out etag))
-			        throw new InvalidDataException(
-				        $"Received invalid last etag message. Failed to get {Constants.Replication.PropertyNames.LastSentEtag} property from received result");
-		        return etag;
-	        }
-	        catch (EndOfStreamException)
-	        {
-				//Debugger.Launch();
-				_log.Warn(
-			        "Connection closed in the middle of data transmission. This might happen due to legimitate cause, such as remote server receiving shutdown command. Aborting GetLastEtag() operation...");
-		        return -1;
-	        }
-	        catch (Exception e)
-	        {
-				//Debugger.Launch();
-				return -1;
+		        _disposalSemaphore.Release();
 	        }
         }
 
@@ -171,7 +203,7 @@ namespace Raven.Server.ReplicationUtil
 			}
 			catch (Exception e)
 			{
-				//Debugger.Launch();
+				
 				//if we failed, then we failed...
 				throw new InvalidOperationException("Failed to connect websocket for remote replication node.", e);
 			}
@@ -181,7 +213,10 @@ namespace Raven.Server.ReplicationUtil
         {
             long lastEtag;
             await EnsureConnectionAsync();
+			if (!await _disposalSemaphore.WaitAsync(TimeSpan.FromSeconds(0.5), _cancellationToken))
+				return -1; //we are disposing, so abort doing this
 
+	        _log.Debug($"Starting sending replication batch ({_srcDbName})");
 	        try
 	        {
 		        var writer = new BlittableJsonTextWriter(_context, _websocketStream);
@@ -197,18 +232,20 @@ namespace Raven.Server.ReplicationUtil
 				        _context.GetLazyStringForFieldWithCaching(
 					        Constants.Replication.PropertyNames.ReplicationBatch));
 			        lastEtag = writer.WriteDocuments(_context, docs, false);
-
 			        writer.WriteEndObject();
 		        }
 		        finally
 		        {
 			        await writer.FlushAsync();
-		        }
+					_log.Debug($"Finished sending replication batch ({_srcDbName})");
+				}
 
 		        try
 		        {
-			        var acknowledgeMessage = await _context.ReadForMemoryAsync(_websocketStream, null);
-			        string val = null;
+					_log.Debug($"Starting receiving replication batch ack ({_srcDbName})");
+					var acknowledgeMessage = await _context.ReadForMemoryAsync(_websocketStream, null);
+					_log.Debug($"Finished receiving replication batch ack ({_srcDbName})");
+					string val = null;
 			        bool hasSucceededWithBatch;
 			        if (acknowledgeMessage == null ||
 			            (acknowledgeMessage.TryGet(Constants.MessageType, out val) &&
@@ -222,27 +259,36 @@ namespace Raven.Server.ReplicationUtil
 			        }
 
 			        if (!hasSucceededWithBatch)
-				        return -1;
+			        {
+						_log.Debug($"Replication batch ack returned false! Something happened on the other end... ({_srcDbName})");
+						return -1;
+			        }
 		        }
 		        catch (EndOfStreamException)
 		        {
-					//Debugger.Launch();
-					_log.Warn("Remote server closed the connection in the middle of sending documents batch for replication. There may be a legitimate reason for this, such as remote server receiving shutdown command. Aborting sending replication batch documents...");
+			        _log.Warn(
+				        "Remote server closed the connection in the middle of sending documents batch for replication. There may be a legitimate reason for this, such as remote server receiving shutdown command. Aborting sending replication batch documents...");
 			        return -1;
 		        }
 		        catch (Exception e)
 		        {
-					//Debugger.Launch();
-					var errorMsg = $"Failed to get acknowledgement for replication batch. Last sent etag was not updated. Exception received : {e}";
+
+			        var errorMsg =
+				        $"Failed to get acknowledgement for replication batch. Last sent etag was not updated. Exception received : {e}";
 			        _log.Error(errorMsg);
 			        return -1;
 		        }
 	        }
 	        catch (Exception e)
 	        {
-				//Debugger.Launch();
-				_log.Error($"Failed to sent replication batch; reason : {e}");
+
+		        _log.Error($"Failed to sent replication batch; reason : {e}");
 		        throw;
+	        }
+	        finally
+	        {
+		        _disposalSemaphore.Release();
+
 	        }
 	        return lastEtag;
         }	    

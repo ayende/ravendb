@@ -20,9 +20,9 @@ namespace Raven.Server.Documents.Replication
         private readonly DocumentDatabase _database;
 	    protected long _lastSentEtag;
         private DocumentReplicationTransport _transport;
-        private readonly ILog _log = LogManager.GetLogger(typeof (OutgoingDocumentReplication));
+        private readonly ILog _log = LogManager.GetLogger(nameof(OutgoingDocumentReplication));
         private readonly DocumentsOperationContext _context;
-        private bool _isInitialized;
+        private volatile bool _isInitialized;
 	    private DateTime _lastSentHeartbeat;
         private Thread _replicationThread;
         private readonly CancellationTokenSource _cancellationTokenSource;
@@ -45,7 +45,7 @@ namespace Raven.Server.Documents.Replication
 			_lastSentHeartbeat = DateTime.MinValue;
 	        _transport = transport;
 			_cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(_database.DatabaseShutdown);
-            _waitForChanges = new AsyncManualResetEvent(_cancellationTokenSource.Token);
+            _waitForChanges = new AsyncManualResetEvent();
 
             _replicationUniqueName = $"Outgoing Replication Thread <{destination.Url} -> {destination.Database}>";           
         }
@@ -57,9 +57,11 @@ namespace Raven.Server.Documents.Replication
             _waitForChanges.SetByAsyncCompletion();
         }
 
+	    private bool _taskHasEnded;
         private async Task ReplicateDocumentsAsync()
         {
-            while (_cancellationTokenSource.IsCancellationRequested == false)
+	        _taskHasEnded = false;
+			while (_cancellationTokenSource.IsCancellationRequested == false)
             {
                 if (_log.IsDebugEnabled)
                     _log.Debug($"Starting replication for '{_replicationUniqueName}'.");
@@ -68,11 +70,16 @@ namespace Raven.Server.Documents.Replication
 
 	            try
 				{
-                    _cancellationTokenSource.Token.ThrowIfCancellationRequested();
+                    if(_cancellationTokenSource.IsCancellationRequested)
+						break;
 	                var result = await ExecuteReplicationOnce();
 
 					if (_log.IsDebugEnabled)
 						LogReplicationBatchSent(result);
+
+					if(result == ReplicationBatchResult.Interrupted &&
+						_cancellationTokenSource.IsCancellationRequested)
+						break;
 
 					if (result == ReplicationBatchResult.RemoteFailure)
 					{
@@ -88,12 +95,12 @@ namespace Raven.Server.Documents.Replication
                 }
                 catch (OperationCanceledException)
                 {
-                    return;
+                    break;
                 }
                 catch (Exception e)
                 {
                     _log.ErrorException($"Exception occured for '{_replicationUniqueName}'.", e);
-	                return;
+	                break;
                 }
 
                 if (HasMoreDocumentsToSend)
@@ -106,11 +113,11 @@ namespace Raven.Server.Documents.Replication
 		                await _transport.SendHeartbeatAsync();
                 }
                 catch (OperationCanceledException)
-                {
-					//Debugger.Launch();
-					return;
+                {					
+					break;
                 }
             }
+	        _taskHasEnded = true;
         }
 
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -150,115 +157,149 @@ namespace Raven.Server.Documents.Replication
 	    {
 		    SuccessfullySent,
 			NothingToDo,
-			RemoteFailure
+			RemoteFailure,
+			Interrupted //cancelation token is activated, etc.
 	    }
 
+	    private readonly SemaphoreSlim _replicationSemaphore = new SemaphoreSlim(1);
         private async Task<ReplicationBatchResult> ExecuteReplicationOnce()
         {
-            Debug.Assert(_isInitialized);
+            if(!_isInitialized) //while not initialized, nothing to do
+				return ReplicationBatchResult.NothingToDo;
 
-            //just for shorter code
-            var documentStorage = _database.DocumentsStorage;
-            using (_context.OpenReadTransaction())
-            {
-                //TODO: make replication batch size configurable
-                //also, perhaps there should be timers/heuristics
-                //that would dynamically resize batch size
-                var replicationBatch =
-                    documentStorage
-                        .GetDocumentsAfter(_context, _lastSentEtag, 0, 1024)
-                        .Where(x => !x.Key.ToString().StartsWith("Raven/"))
-                        .ToList();
-                        //the filtering here will need to be reworked -> it is not efficient
-                        //TODO: do not forget to make version of GetDocumentsAfter with a prefix filter	
-                        //alternatively 1 -> create efficient StartsWith() for LazyString				
-                        //alternatively 2 -> create a "filter system" that would abstract the logic -> what documents 
-                        //should and should not be replicated
-                if (replicationBatch.Count == 0)
-                    return ReplicationBatchResult.NothingToDo;
-	            try
-	            {
-		            var currentLastSentEtag = await _transport.SendDocumentBatchAsync(replicationBatch)
-			            .WithCancellation(_cancellationTokenSource.Token);
-		            if (currentLastSentEtag == -1)
-		            {
-			            //sent batch successfully, but something went wrong on the other side
-			            //do not advance last sent etag, so the batch would be resent next cycle
-			            _log.Warn(
-				            $"Sent the batch successfully, but something went wrong on the other side; thus, do not advance last sent etag. Current last sent etag -> {_lastSentEtag}");
-			            return ReplicationBatchResult.RemoteFailure;
-		            }
+			if(!await _replicationSemaphore.WaitAsync(TimeSpan.FromMilliseconds(500)))
+				return ReplicationBatchResult.NothingToDo; //previous batch is not finished yet
 
-		            //TODO : consider retry logic here, so after multiple tries, it will fail loudly
-		            _lastSentEtag = currentLastSentEtag;
-	            }
-	            catch (WebSocketException e)
-	            {
-					//Debugger.Launch();
-					_log.Warn(
-			            "Sending document replication batch is interrupted. This is not necessarily an issue. Reason: " + e);
-		            return ReplicationBatchResult.RemoteFailure;
-	            }
-	            catch (OperationCanceledException e)
-	            {
-					//Debugger.Launch();
-					//TODO: handle this properly, log the error properly
-					return ReplicationBatchResult.NothingToDo;
-				}
-				catch (Exception e)
-				{
-					//Debugger.Launch();
-                    _log.Error("Sending document replication batch has failed. Apparently, remote server had an exception thrown. Reason: " + e);
-	                return ReplicationBatchResult.RemoteFailure;
-                }
-            }
-			return ReplicationBatchResult.SuccessfullySent;
+	        try
+	        {
+		        //just for shorter code
+		        var documentStorage = _database.DocumentsStorage;
+		        using (_context.OpenReadTransaction())
+		        {
+					if(_cancellationTokenSource.IsCancellationRequested)
+						return ReplicationBatchResult.Interrupted;
+					//TODO: make replication batch size configurable
+					//also, perhaps there should be timers/heuristics
+					//that would dynamically resize batch size
+					var replicationBatch =
+				        documentStorage
+					        .GetDocumentsAfter(_context, _lastSentEtag, 0, 1024)
+					        .Where(x => !x.Key.ToString().StartsWith("Raven/"))
+					        .ToList();
+			        //the filtering here will need to be reworked -> it is not efficient
+			        //TODO: do not forget to make version of GetDocumentsAfter with a prefix filter	
+			        //alternatively 1 -> create efficient StartsWith() for LazyString				
+			        //alternatively 2 -> create a "filter system" that would abstract the logic -> what documents 
+			        //should and should not be replicated
+			        if (replicationBatch.Count == 0)
+				        return ReplicationBatchResult.NothingToDo;
+					if (_cancellationTokenSource.IsCancellationRequested)
+						return ReplicationBatchResult.Interrupted;
+					try
+					{
+				        var currentLastSentEtag = await _transport.SendDocumentBatchAsync(replicationBatch)
+					        .WithCancellation(_cancellationTokenSource.Token);
+				        if (currentLastSentEtag == -1)
+				        {
+					        //sent batch successfully, but something went wrong on the other side
+					        //do not advance last sent etag, so the batch would be resent next cycle
+					        _log.Warn(
+						        $"Sent the batch successfully, but something went wrong on the other side; thus, do not advance last sent etag. Current last sent etag -> {_lastSentEtag}");
+					        return ReplicationBatchResult.RemoteFailure;
+				        }
+
+				        //TODO : consider retry logic here, so after multiple tries, it will fail loudly
+				        _lastSentEtag = currentLastSentEtag;
+			        }
+			        catch (WebSocketException e)
+			        {
+
+				        _log.Warn(
+					        "Sending document replication batch is interrupted. This is not necessarily an issue. Reason: " + e);
+				        return ReplicationBatchResult.RemoteFailure;
+			        }
+			        catch (OperationCanceledException e)
+			        {
+
+				        //TODO: handle this properly, log the error properly
+				        return ReplicationBatchResult.NothingToDo;
+			        }
+			        catch (Exception e)
+			        {
+
+				        _log.Error(
+					        "Sending document replication batch has failed. Apparently, remote server had an exception thrown. Reason: " +
+					        e);
+				        return ReplicationBatchResult.RemoteFailure;
+			        }
+		        }
+		        return ReplicationBatchResult.SuccessfullySent;
+	        }
+	        finally
+	        {
+		        _replicationSemaphore.Release();
+	        }
         }
 
         public async Task InitializeAsync()
         {
-	        if (_transport == null)
+	        try
 	        {
-		        _transport = new DocumentReplicationTransport(
-			        Destination.Url,
-			        _database.DbId,
-			        _database.Name,
-			        Destination.Database,
-			        _database.DatabaseShutdown,
-			        _context);
+		        if (_transport == null)
+		        {
+			        _transport = new DocumentReplicationTransport(
+				        Destination.Url,
+				        _database.DbId,
+				        _database.Name,
+				        Destination.Database,
+				        _database.DatabaseShutdown,
+				        _context);
+		        }
+
+		        await _transport.EnsureConnectionAsync();
+		        _lastSentEtag = await _transport.GetLastEtag();
+		        _replicationThread = new Thread(() => ReplicateDocumentsAsync().Wait())
+		        {
+			        IsBackground = true,
+			        Name = _replicationUniqueName
+		        };
+		        _replicationThread.Start();
+
+		        _isInitialized = true;
 	        }
-
-	        await _transport.EnsureConnectionAsync();
-            _lastSentEtag = await _transport.GetLastEtag();
-			_replicationThread = new Thread(() => ReplicateDocumentsAsync().Wait())
-			{
-				IsBackground = true,
-				Name = _replicationUniqueName
-			};
-			_replicationThread.Start();
-
-            _isInitialized = true;
+	        catch (Exception e)
+	        {
+		        
+		        _log.ErrorException("Failed to connect websocket.", e);
+		        throw;
+	        }
         }
 
 	    public void Disconnect()
-	    {			
+	    {
 			//note: transport dispose attempts to send 'close' message as well
-		    _transport.Dispose();
-			_cancellationTokenSource.Cancel();
-			try
-			{
-				_replicationThread.Join(1000);
-			}
-			catch (ThreadStateException)
-			{
-			}
-		}
+			if (!_replicationSemaphore.Wait(TimeSpan.FromSeconds(1)))
+				_cancellationTokenSource.Cancel();
+		    try
+		    {
+			    _replicationThread.Join(1000);
+			    //5 seconds are probably too much, but still...
+			    SpinWait.SpinUntil(() => _taskHasEnded, TimeSpan.FromSeconds(5));
+			    _transport.Dispose();
+			    _isInitialized = false;
+		    }
+		    finally
+		    {
+			    _replicationSemaphore.Release();
+		    }
+	    }
 
-        public void Dispose()
+		public void Dispose()
         {
 	        Disconnect();
 			_context.Dispose();
             _database.Notifications.OnDocumentChange -= HandleDocumentChange;
+			_replicationSemaphore.Dispose();
         }
 
 	    private void OnClosedConnectionRemoteFailure()

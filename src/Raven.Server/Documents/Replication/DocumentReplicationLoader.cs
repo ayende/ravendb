@@ -2,7 +2,6 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Threading;
 using System.Threading.Tasks;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
@@ -66,7 +65,7 @@ namespace Raven.Server.Documents.Replication
                 }
                 catch (Exception e)
                 {
-					//Debugger.Launch();
+					
 					_log.Error("failed to deserialize replication configuration document. This is something that is not supposed to happen. Reason:" + e);
                 }
 
@@ -112,7 +111,7 @@ namespace Raven.Server.Documents.Replication
 																}
 																catch (Exception)
 																{
-																	//Debugger.Launch();
+																	
 																	// ignored, since we are retrying initialization
 																	// for cases of transient errors
 																}

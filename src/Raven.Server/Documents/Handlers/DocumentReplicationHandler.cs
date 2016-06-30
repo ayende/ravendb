@@ -27,115 +27,136 @@ namespace Raven.Server.Documents.Handlers
 
 	    private CancellationTokenSource _cts;
 
-        //an endpoint to establish replication websocket
-        [RavenAction("/databases/*/documentReplication", "GET",
-			@"@/databases/{databaseName:string}/documentReplication?
+		[RavenAction("/replication/topology", "GET")]
+		[RavenAction("/databases/*/replication/topology", "GET")]
+		public Task GetReplicationTopology()
+		{
+			HttpContext.Response.StatusCode = 404;
+			return Task.CompletedTask;
+		}
+
+		//an endpoint to establish replication websocket
+	    [RavenAction("/databases/*/documentReplication", "GET",
+		     @"@/databases/{databaseName:string}/documentReplication?
                 srcDbId={databaseUniqueId:string}
                 &srcDbName={databaseName:string}")]
-        public async Task DocumentReplicationConnection()
-        {
-			_cts = CancellationTokenSource.CreateLinkedTokenSource(Database.DatabaseShutdown);
-	        _heartbeatTimer = new Timer(_ => _cts.Cancel(), null, HeartbeatTimeout, HeartbeatTimeout);
-			var srcDbId = Guid.Parse(GetQueryStringValueAndAssertIfSingleAndNotEmpty("srcDbId"));
-            var srcDbName = GetQueryStringValueAndAssertIfSingleAndNotEmpty("srcDbName");
-            var srcUrl = HttpContext.Request.GetHostnameUrl();
+	    public async Task DocumentReplicationConnection()
+	    {
+		    _cts = CancellationTokenSource.CreateLinkedTokenSource(Database.DatabaseShutdown);
+		    _heartbeatTimer = new Timer(_ => _cts.Cancel(), null, HeartbeatTimeout, HeartbeatTimeout);
+		    var srcDbId = Guid.Parse(GetQueryStringValueAndAssertIfSingleAndNotEmpty("srcDbId"));
+		    var srcDbName = GetQueryStringValueAndAssertIfSingleAndNotEmpty("srcDbName");
+		    var srcUrl = HttpContext.Request.GetHostnameUrl();
 
-            var ReplicationReceiveDebugTag = $"document-replication/receive <{Database.DocumentReplicationLoader.ReplicationUniqueName}>";
-            var incomingReplication = new IncomingDocumentReplication(Database);
-            using (var webSocket = await HttpContext.WebSockets.AcceptWebSocketAsync())
-            using (var webSocketStream = new WebsocketStream(webSocket, _cts.Token))
-            {            
-				DocumentsOperationContext context;
-                using (ContextPool.AllocateOperationContext(out context))
-                {
-                    var buffer = new ArraySegment<byte>(context.GetManagedBuffer());
-                    var jsonParserState = new JsonParserState();
-                    using (var parser = new UnmanagedJsonParser(context, jsonParserState, ReplicationReceiveDebugTag))
-                    {					
-						while (!_cts.IsCancellationRequested)
-                        {
-                            //this loop handles one replication batch
-	                        try
-	                        {
-		                        var result = await webSocket.ReceiveAsync(buffer, _cts.Token);
-		                        if (result.CloseStatus != null)
-		                        {
-									Log.Info($"Tried to receive data from websocket, but it was closed. The CloseStatus == {result.CloseStatus.Value}; Status Message is '{result.CloseStatusDescription}'");
-			                        break;
-		                        }
+		    var ReplicationReceiveDebugTag =
+			    $"document-replication/receive <{Database.DocumentReplicationLoader.ReplicationUniqueName}>";
+		    var incomingReplication = new IncomingDocumentReplication(Database);
+		    try
+		    {
+			    using (var webSocket = await HttpContext.WebSockets.AcceptWebSocketAsync())
+			    using (var webSocketStream = new WebsocketStream(webSocket, _cts.Token))
+			    {
+				    DocumentsOperationContext context;
+				    using (ContextPool.AllocateOperationContext(out context))
+				    {
+					    var buffer = new ArraySegment<byte>(context.GetManagedBuffer());
+					    var jsonParserState = new JsonParserState();
+					    using (var parser = new UnmanagedJsonParser(context, jsonParserState, ReplicationReceiveDebugTag))
+					    {
+						    while (!_cts.IsCancellationRequested)
+						    {
+							    //this loop handles one replication batch
+							    try
+							    {
+								    var result = await webSocket.ReceiveAsync(buffer, _cts.Token);
+								    if (result.CloseStatus != null)
+								    {
+									    Log.Info(
+										    $"Tried to receive data from websocket, but it was closed. The CloseStatus == {result.CloseStatus.Value}; Status Message is '{result.CloseStatusDescription}'");
+									    break;
+								    }
 
-		                        //open write transaction at beginning of the batch
-		                        using (var writer = new BlittableJsonDocumentBuilder(context,
-			                        BlittableJsonDocumentBuilder.UsageMode.None, ReplicationReceiveDebugTag,
-			                        parser, jsonParserState))
-		                        {
-			                        writer.ReadObject();
-			                        parser.SetBuffer(buffer.Array, result.Count);
-			                        while (writer.Read() == false)
-			                        {
-				                        result = await webSocket.ReceiveAsync(buffer, _cts.Token);
-				                        parser.SetBuffer(buffer.Array, result.Count);
-			                        }
-			                        writer.FinalizeDocument();
-			                        using (var message = writer.CreateReader())
-			                        {
-				                        string messageTypeAsString;
+								    //open write transaction at beginning of the batch
+								    using (var writer = new BlittableJsonDocumentBuilder(context,
+									    BlittableJsonDocumentBuilder.UsageMode.None, ReplicationReceiveDebugTag,
+									    parser, jsonParserState))
+								    {
+									    writer.ReadObject();
+									    parser.SetBuffer(buffer.Array, result.Count);
+									    while (writer.Read() == false)
+									    {
+										    result = await webSocket.ReceiveAsync(buffer, _cts.Token);
+										    parser.SetBuffer(buffer.Array, result.Count);
+									    }
+									    writer.FinalizeDocument();
+									    using (var message = writer.CreateReader())
+									    {
+										    string messageTypeAsString;
 
-				                        //TODO : refactor this to more efficient method,
-				                        //since we do not care about contents of the property at this stage,
-				                        //but only about it's existence
-				                        if (!message.TryGet(Constants.MessageType, out messageTypeAsString))
-					                        throw new InvalidDataException(
-						                        $"Got websocket message without a type. Expected property with name {Constants.MessageType}, but found none. ");
+										    //TODO : refactor this to more efficient method,
+										    //since we do not care about contents of the property at this stage,
+										    //but only about it's existence
+										    if (!message.TryGet(Constants.MessageType, out messageTypeAsString))
+											    throw new InvalidDataException(
+												    $"Got websocket message without a type. Expected property with name {Constants.MessageType}, but found none. ");
 #if DEBUG
-										DebugHelper.ThrowExceptionForDocumentReplicationReceiveIfRelevant();
+										    DebugHelper.ThrowExceptionForDocumentReplicationReceiveIfRelevant();
 #endif
-										await HandleMessage(
-					                        messageTypeAsString,
-					                        message,
-					                        webSocketStream,
-					                        context,
-					                        srcDbId,
-					                        incomingReplication);
+										    await HandleMessage(
+											    messageTypeAsString,
+											    message,
+											    webSocketStream,
+											    context,
+											    srcDbId,
+											    incomingReplication);
 
-										if (webSocket.State != WebSocketState.Open)
-				                        {
-											Log.Warn("Websocket closed after handling the message. Closing current listening thread; if this is a transient issue, other end will reconnect and replication will resume.");
-					                        return;
-				                        }
-			                        }
-		                        }
-	                        }
-	                        catch (EndOfStreamException e)
-	                        {
-								//connection closed in the middle of transmission of data,
-								//so log the error and exit
-								Log.ErrorException("Connection closed in the middle of transmission of data", e);
-								await AttemptWebsocketClose(webSocket);
-								return;
-	                        }
-	                        catch (Exception e)
-	                        {
-								var msg =
-									$@"Failed to receive replication document batch. Closing the connection with 'InternalServerError' status. (Origin -> Database Id = {srcDbId}, Database Name = {srcDbName}, Origin URL = {srcUrl})";
-								Log.ErrorException(msg, e);
-		                        await AttemptWebsocketClose(webSocket);
-		                        return;
-	                        }
-                        }
-                    }
-                }
-            }
-        }
+										    if (webSocket.State != WebSocketState.Open)
+										    {
+											    Log.Warn(
+												    "Websocket closed after handling the message. Closing current listening thread; if this is a transient issue, other end will reconnect and replication will resume.");
+											    break;
+										    }
+									    }
+								    }
+							    }
+							    catch (EndOfStreamException e)
+							    {
+								    //connection closed in the middle of transmission of data,
+								    //so log the error and exit
+								    Log.ErrorException("Connection closed in the middle of transmission of data", e);
+								    await AttemptWebsocketClose(webSocket);
+								    break;
+							    }
+							    catch (Exception e)
+							    {
+								    var msg =
+									    $@"Failed to receive replication document batch. Closing the connection with 'InternalServerError' status. (Origin -> Database Id = {srcDbId}, Database Name = {srcDbName}, Origin URL = {srcUrl})";
+								    Log.ErrorException(msg, e);
+								    await AttemptWebsocketClose(webSocket);
+									break;
+							    }
+						    }
+					    }
+				    }
+			    }
+		    }
+		    catch (Exception e)
+		    {
+			    Log.Debug($"Exception thrown on disposal of incoming replication thread. This is not necessarily an issue,but still needs to be investigated. The exception: {e}");
+		    }
+	    }
 
 	    private async Task AttemptWebsocketClose(WebSocket webSocket)
 	    {
 		    try
 		    {
-			    await webSocket.CloseAsync(WebSocketCloseStatus.InternalServerError, "Exception was thrown, cannot continue replication. Check logs for details",Database.DatabaseShutdown);
+				//closing from both sides is not handled correctly in the current version of .net core
+				//in the next RC it should be fixed,then this line should be uncomitted
+			    //await webSocket.CloseAsync(WebSocketCloseStatus.InternalServerError, "Exception was thrown, cannot continue replication. Check logs for details",Database.DatabaseShutdown);
 		    }
-		    catch
+		    catch(Exception e)
 		    {
+			    Log.Warn($"Failed to gracefully close the websocket; This might not be an issue, since the other end may have closed the connection first. Exception thrown {e}");
 			    //since we are already in error state, and just want to attempt to clean-up,
 			    //it doesn't really matter if we fail sending close message.
 		    }

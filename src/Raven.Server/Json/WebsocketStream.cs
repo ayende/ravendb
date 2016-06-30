@@ -56,7 +56,9 @@ namespace Raven.Server.Json
 
             await _webSocket.SendAsync(new ArraySegment<byte>(buffer),
                 WebSocketMessageType.Text,
-                false, cancellationToken).ConfigureAwait(false);
+				//CancellationToken.None -> in the current version of .Net core firing cancellation token
+				//closes the connection
+				false, CancellationToken.None).ConfigureAwait(false);
         }
 
 	    public override void SetLength(long value)
@@ -98,10 +100,12 @@ namespace Raven.Server.Json
             while (read < count)
             {
                 var bufferSegment = new ArraySegment<byte>(buffer, read, count - read);
-                var result = await _webSocket.ReceiveAsync(bufferSegment, cancellationToken).ConfigureAwait(false);
 				
+				//CancellationToken.None -> in the current version of .Net core firing cancellation token
+				//closes the connection
+				var result = await _webSocket.ReceiveAsync(bufferSegment, CancellationToken.None)
+											 .ConfigureAwait(false);				
                 read += result.Count;
-
                 if (result.EndOfMessage)
                     break;
             }
