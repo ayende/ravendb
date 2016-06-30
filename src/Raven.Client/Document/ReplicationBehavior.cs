@@ -9,8 +9,6 @@ using System.Linq;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
-
-using Raven.Abstractions.Data;
 using Raven.Abstractions.Logging;
 using Raven.Abstractions.Replication;
 using Raven.Abstractions.Util;
@@ -25,7 +23,7 @@ namespace Raven.Client.Document
     {
         private readonly DocumentStore documentStore;
 
-        private readonly static ILog log = LogManager.GetLogger(typeof(ReplicationBehavior));
+        private static readonly ILog log = LogManager.GetLogger(typeof(ReplicationBehavior));
 
         public ReplicationBehavior(DocumentStore documentStore)
         {

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net.WebSockets;
 using System.Text;
@@ -425,8 +426,11 @@ namespace Sparrow.Json
                     _disposables.Add(writer);
                     return writer.CreateReader();
                 }
-                catch (Exception)
+                catch (Exception e)
                 {
+	                
+					Debugger.Break();
+					Console.WriteLine(e);
                     writer.Dispose();
                     throw;
                 }

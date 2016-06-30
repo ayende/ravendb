@@ -278,18 +278,23 @@ namespace Raven.Abstractions.Data
 
         public const string MessageType = "MessageType";
 
-        public class Replication
+		public const string HadSuccess = "HadSuccessProperty";
+
+
+		public class Replication
         {
             public class MessageTypes
             {
                 public const string ReplicationBatch = "ReplicationBatch";
-                public const string GetLastEtag = "GetLastEtag";
+				public const string ReplicationBatchAcknowledge = "ReplicationBatchAcknowledge";
+				public const string GetLastEtag = "GetLastEtag";
+	            public const string Heartbeat = "Heartbeat";
             }
 
             public class PropertyNames
             {
-                public const string LastSentEtag = "LastSentEtag";
-                public const string ReplicationBatch = "ReplicationBatch";
+				public const string LastSentEtag = "LastSentEtag";
+				public const string ReplicationBatch = "ReplicationBatch";
             }
 
             public const string DocumentChangeVector = "Raven-Document-Change-Vector";
