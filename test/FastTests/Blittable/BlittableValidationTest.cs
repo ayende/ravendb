@@ -12,13 +12,6 @@ namespace FastTests.Blittable
 {
     public class BlittableValidationTest : RavenTestBase
     {
-        
-        public Employee simple = new Employee()
-        {
-            Id = "1",
-            FirstName = "Hibernating",
-            LastName = "Rhinos"
-        };
 
         private unsafe BlittableJsonReaderObject initSimpleBlittable(out int size)
         {
@@ -64,7 +57,7 @@ namespace FastTests.Blittable
         }
 
         [Fact]
-        public unsafe void Simple_ValidBlittable_Test()
+        public unsafe void Simple_Valid_Blittable_Test()
         {
             int size;
             var reader = initSimpleBlittable(out size);
