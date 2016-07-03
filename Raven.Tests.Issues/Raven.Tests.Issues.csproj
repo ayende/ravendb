@@ -645,8 +645,8 @@
       <Project>{381234CC-8AA7-41FF-8CAD-22330E15F993}</Project>
       <Name>Raven.Tests.Common</Name>
     </ProjectReference>
-    <ProjectReference Include="..\Raven.Tests.Core\Raven.Tests.Core.csproj">
-      <Project>{93287FBA-732A-4603-9BBE-9CFDC82FC8BE}</Project>
+    <ProjectReference Include="..\Raven.Tests.Core\Raven.Tests.Core.xproj">
+      <Project>{d0139cd0-2720-4b4e-a76c-a83eb1ba954b}</Project>
       <Name>Raven.Tests.Core</Name>
     </ProjectReference>
     <ProjectReference Include="..\Raven.Tests.Helpers\Raven.Tests.Helpers.csproj">
