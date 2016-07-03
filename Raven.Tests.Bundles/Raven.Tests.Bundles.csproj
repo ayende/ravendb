@@ -243,13 +243,12 @@
       <Project>{4C026F8A-FB36-4A30-82E9-324D207F6B48}</Project>
       <Name>Raven.Bundles.UniqueConstraints</Name>
     </ProjectReference>
-    <ProjectReference Include="..\Bundles\Raven.Client.Authorization\Raven.Client.Authorization.csproj">
-      <Project>{3A852FD2-E0F9-449C-8F66-0C6A180D030A}</Project>
+    <ProjectReference Include="..\Bundles\Raven.Client.Authorization\Raven.Client.Authorization.xproj">
+      <Project>{43ebd466-4a7b-4cf3-85cd-72fecee22986}</Project>
       <Name>Raven.Client.Authorization</Name>
-      <Aliases>client</Aliases>
     </ProjectReference>
-    <ProjectReference Include="..\Bundles\Raven.Client.UniqueConstraints\Raven.Client.UniqueConstraints.csproj">
-      <Project>{D185331D-2B7C-4251-8EBE-140EDE1FAB9F}</Project>
+    <ProjectReference Include="..\Bundles\Raven.Client.UniqueConstraints\Raven.Client.UniqueConstraints.xproj">
+      <Project>{674195ae-d3eb-47c2-a2d7-f0096414507d}</Project>
       <Name>Raven.Client.UniqueConstraints</Name>
     </ProjectReference>
     <ProjectReference Include="..\Raven.Abstractions\Raven.Abstractions.xproj">
