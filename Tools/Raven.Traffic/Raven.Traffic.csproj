@@ -91,8 +91,8 @@
       <Project>{b47725e6-abb2-411f-9487-004d05ff3581}</Project>
       <Name>Raven.Abstractions</Name>
     </ProjectReference>
-    <ProjectReference Include="..\..\Raven.Client.Lightweight\Raven.Client.Lightweight.csproj">
-      <Project>{4E087ECB-E7CA-4891-AC3C-3C76702715B6}</Project>
+    <ProjectReference Include="..\..\Raven.Client.Lightweight\Raven.Client.Lightweight.xproj">
+      <Project>{e4b2f12e-402a-424c-ab95-8cca10913337}</Project>
       <Name>Raven.Client.Lightweight</Name>
     </ProjectReference>
   </ItemGroup>
