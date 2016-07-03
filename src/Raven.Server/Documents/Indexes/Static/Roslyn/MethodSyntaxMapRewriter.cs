@@ -1,24 +1,26 @@
 using System;
-
-using Microsoft.CodeAnalysis;
+using System.Collections.Generic;
 using Microsoft.CodeAnalysis.CSharp;
+
 using Raven.Server.Documents.Indexes.Static.Roslyn.Rewriters;
 
 namespace Raven.Server.Documents.Indexes.Static.Roslyn
 {
-    internal class MethodSyntaxMapRewriter : MapRewriter
+    internal class MethodSyntaxMapRewriter : MapRewriterBase
     {
         private readonly MethodSyntaxCollectionRewriter _collectionRewriter = new MethodSyntaxCollectionRewriter();
 
-        private readonly CSharpSyntaxRewriter[] _rewriters;
+        private readonly ReferencedCollectionRewriter _referencedCollectionRewriter = new ReferencedCollectionRewriter();
 
         public MethodSyntaxMapRewriter()
         {
-            _rewriters = new CSharpSyntaxRewriter[]
+            Rewriters = new CSharpSyntaxRewriter[]
             {
                 _collectionRewriter,
-                new SelectManyRewriter(),
-                new DynamicExtensionMethodsRewriter()
+                _referencedCollectionRewriter,
+                SelectManyRewriter.Instance,
+                DynamicExtensionMethodsRewriter.Instance,
+                RecurseRewriter.Instance
             };
         }
 
@@ -35,12 +37,17 @@ namespace Raven.Server.Documents.Indexes.Static.Roslyn
             }
         }
 
-        public override SyntaxNode Visit(SyntaxNode node)
+        public override HashSet<string> ReferencedCollections
         {
-            foreach (var rewriter in _rewriters)
-                node = rewriter.Visit(node);
+            get
+            {
+                return _referencedCollectionRewriter.ReferencedCollections;
+            }
 
-            return node;
+            protected set
+            {
+                throw new NotSupportedException();
+            }
         }
     }
 }

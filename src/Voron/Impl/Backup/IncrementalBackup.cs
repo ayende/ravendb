@@ -11,10 +11,11 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using Sparrow.Logging;
 using Voron.Data.BTrees;
 using Voron.Impl.Journal;
 using Voron.Impl.Paging;
-using Voron.Platform.Win32;
+using Voron.Global;
 using Voron.Util;
 
 namespace Voron.Impl.Backup
@@ -203,11 +204,11 @@ namespace Voron.Impl.Backup
 
         }
 
-        public void Restore(StorageEnvironmentOptions options, IEnumerable<string> backupPaths)
+        public void Restore(StorageEnvironmentOptions options, IEnumerable<string> backupPaths, LoggerSetup loggerSetup)
         {
             var ownsPagers = options.OwnsPagers;
             options.OwnsPagers = false;
-            using (var env = new StorageEnvironment(options))
+            using (var env = new StorageEnvironment(options, loggerSetup))
             {
                 foreach (var backupPath in backupPaths)
                 {

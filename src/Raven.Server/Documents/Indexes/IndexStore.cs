@@ -14,10 +14,11 @@ using Raven.Client.Indexing;
 using Raven.Server.Documents.Indexes.Auto;
 using Raven.Server.Documents.Indexes.Errors;
 using Raven.Server.Documents.Indexes.MapReduce;
+using Raven.Server.Documents.Indexes.MapReduce.Auto;
 using Raven.Server.Documents.Indexes.Static;
 using Raven.Server.Utils;
 using Voron.Platform.Posix;
-using Sparrow.Platform;
+using Sparrow;
 
 namespace Raven.Server.Documents.Indexes
 {
@@ -297,9 +298,9 @@ namespace Raven.Server.Documents.Indexes
                 {
                     index.Dispose();
                 }
-                catch (Exception)
+                catch (Exception e)
                 {
-                    //TODO [ppekrol] log
+                    Log.ErrorException($"Could not dispose index '{index.Name}' ({id}).", e);
                 }
 
                 _documentDatabase.Notifications.RaiseNotifications(new IndexChangeNotification

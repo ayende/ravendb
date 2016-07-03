@@ -8,10 +8,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using Sparrow.Platform;
+using Sparrow;
 using Xunit;
 using Voron;
-using Voron.Data;
 using Voron.Impl;
 
 namespace FastTests.Voron.Bugs
@@ -149,7 +148,7 @@ namespace FastTests.Voron.Bugs
             using (var options = StorageEnvironmentOptions.CreateMemoryOnly())
             {
                 options.ManualFlushing = true;
-                using (var env = new StorageEnvironment(options))
+                using (var env = new StorageEnvironment(options, NullLoggerSetup))
                 {
                     var trees = CreateTrees(env, 1, "tree");
                     var transactions = new List<Transaction>();

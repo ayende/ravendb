@@ -18,7 +18,6 @@ namespace Sparrow.Json
         private readonly long _currentPropertyIdSize;
         private readonly byte* _objStart;
         private LazyStringValue[] _propertyNames;
-
         public DynamicJsonValue Modifications;
 
         private Dictionary<StringSegment, object> _objectsPathCache;
@@ -251,13 +250,26 @@ namespace Sparrow.Json
             {
                 try
                 {
+                    var nullableType = Nullable.GetUnderlyingType(typeof(T));
+                    if (nullableType != null)
+                    {
+                        if (nullableType.GetTypeInfo().IsEnum)
+                        {
+                            obj = (T)Enum.Parse(nullableType, result.ToString());
+                            return;
+                        }
+
+                        obj = (T)Convert.ChangeType(result, nullableType);
+                        return;
+                    }
+
                     if (typeof (T).GetTypeInfo().IsEnum)
                     {
                         obj = (T)Enum.Parse(typeof (T), result.ToString());
                         return;
                     }
 
-                    obj = result == null ? default(T) : (T)Convert.ChangeType(result, typeof(T));
+                    obj = (T)Convert.ChangeType(result, typeof(T));
                 }
                 catch (Exception e)
                 {
@@ -266,11 +278,35 @@ namespace Sparrow.Json
             }
         }
 
+        public bool TryGet(string name, out double dbl)
+        {
+            return TryGet(new StringSegment(name, 0, name.Length), out dbl);
+        }
+
+        public bool TryGet(StringSegment name, out double dbl)
+        {
+            object result;
+            if (TryGetMember(name, out result) == false)
+            {
+                dbl = 0;
+                return false;
+            }
+
+            var lazyDouble = result as LazyDoubleValue;
+            if (lazyDouble != null)
+            {
+                dbl = lazyDouble;
+                return true;
+            }
+
+            dbl = 0;
+            return false;
+        }
+
         public bool TryGet(string name, out string str)
         {
             return TryGet(new StringSegment(name,0,name.Length),out str);
         }
-
 
         public bool TryGet(StringSegment name, out string str)
         {
@@ -582,6 +618,7 @@ namespace Sparrow.Json
                         case 34:
                             throw new InvalidDataException("String not valid");
                     };
+                    };
                  }
             }
             return stringLength + escOffset + escCount + lenOffset;
@@ -649,8 +686,7 @@ namespace Sparrow.Json
                     case BlittableJsonToken.Float:
                         var floatLen = ReadNumber(_mem + objStartOffset - propOffset, 1);
                         var floatStringBuffer = new string(' ', floatLen);
-                        fixed (char* pChars = floatStringBuffer)
-                        {
+                        fixed (char* pChars = floatStringBuffer)                        {
                             for (int  j = 0; j < floatLen; j++)
                             {
                                 pChars[j] = (char)ReadNumber((_mem + objStartOffset - propOffset + 1 + j), sizeof(byte));

@@ -18,6 +18,7 @@ using Raven.Server.Utils;
 using Raven.Server.Utils.Metrics;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
+using Sparrow.Logging;
 using Voron;
 
 namespace Raven.Server.Documents
@@ -32,10 +33,11 @@ namespace Raven.Server.Documents
         private readonly object _idleLocker = new object();
         private Task _indexStoreTask;
 
-        public DocumentDatabase(string name, RavenConfiguration configuration, MetricsScheduler metricsScheduler)
+        public DocumentDatabase(string name, RavenConfiguration configuration, MetricsScheduler metricsScheduler, LoggerSetup loggerSetup)
         {
             Name = name;
             Configuration = configuration;
+            LoggerSetup = loggerSetup;
 
             Notifications = new DocumentsNotifications();
             DocumentsStorage = new DocumentsStorage(this);
@@ -57,6 +59,7 @@ namespace Raven.Server.Documents
         public string ResourceName => $"db/{Name}";
 
         public RavenConfiguration Configuration { get; }
+        public LoggerSetup LoggerSetup { get; set; }
 
         public CancellationToken DatabaseShutdown => _databaseShutdown.Token;
 

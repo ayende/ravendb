@@ -1,30 +1,52 @@
 using System;
+using System.Collections.Generic;
+using Microsoft.CodeAnalysis.CSharp;
 
-using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Raven.Server.Documents.Indexes.Static.Roslyn.Rewriters;
 
 namespace Raven.Server.Documents.Indexes.Static.Roslyn
 {
-    internal class QuerySyntaxMapRewriter : MapRewriter
+    internal class QuerySyntaxMapRewriter : MapRewriterBase
     {
-        public override string CollectionName { get; protected set; }
+        private readonly QuerySyntaxCollectionRewriter _collectionRewriter = new QuerySyntaxCollectionRewriter();
 
-        public override SyntaxNode VisitFromClause(FromClauseSyntax node)
+        private readonly ReferencedCollectionRewriter _referencedCollectionRewriter = new ReferencedCollectionRewriter();
+
+        public QuerySyntaxMapRewriter()
         {
-            if (CollectionName != null)
-                return node;
+            Rewriters = new CSharpSyntaxRewriter[]
+            {
+                _collectionRewriter,
+                _referencedCollectionRewriter,
+                DynamicExtensionMethodsRewriter.Instance,
+                RecurseRewriter.Instance
+            };
+        }
 
-            var docsExpression = node.Expression as MemberAccessExpressionSyntax;
-            if (docsExpression == null)
-                return node;
+        public override string CollectionName
+        {
+            get
+            {
+                return _collectionRewriter.CollectionName;
+            }
 
-            var docsIdentifier = docsExpression.Expression as IdentifierNameSyntax;
-            if (string.Equals(docsIdentifier?.Identifier.Text, "docs", StringComparison.OrdinalIgnoreCase) == false)
-                return node;
+            protected set
+            {
+                throw new NotSupportedException();
+            }
+        }
 
-            CollectionName = docsExpression.Name.Identifier.Text;
+        public override HashSet<string> ReferencedCollections
+        {
+            get
+            {
+                return _referencedCollectionRewriter.ReferencedCollections;
+            }
 
-            return node.WithExpression(docsExpression.Expression);
+            protected set
+            {
+                throw new NotSupportedException();
+            }
         }
     }
 }

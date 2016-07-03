@@ -2,14 +2,17 @@
 using System;
 
 
-namespace Sparrow.Platform
+namespace Sparrow
 {
     public static class Platform
     {
+        public static readonly bool Is64Bits = IntPtr.Size == 8;
+
+
         public static readonly bool RunningOnPosix = RuntimeInformation.IsOSPlatform(OSPlatform.Linux) ||
                                                      RuntimeInformation.IsOSPlatform(OSPlatform.OSX);
 
-        public static readonly bool CanPrefetch = IsWindows8OrNewer();
+        public static readonly bool CanPrefetch = IsWindows8OrNewer() || RunningOnPosix;
 
         private static bool IsWindows8OrNewer()
         {
@@ -32,7 +35,7 @@ namespace Sparrow.Platform
                 ver = string.Concat(ver.Substring(0, index), ver.Substring(index + 1));
 
                 decimal output;
-                if (decimal.TryParse(ver, out output) == true)
+                if (decimal.TryParse(ver, out output))
                 {
                     return output >= 6.19M; // 6.2 is win8, 6.1 win7..
                 }
