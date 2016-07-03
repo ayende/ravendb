@@ -90,8 +90,8 @@
       <Project>{F796F69F-D17B-4260-92D6-65CB94C0E05C}</Project>
       <Name>Rachis</Name>
     </ProjectReference>
-    <ProjectReference Include="..\Raven.Abstractions\Raven.Abstractions.csproj">
-      <Project>{41AC479E-1EB2-4D23-AAF2-E4C8DF1BC2BA}</Project>
+    <ProjectReference Include="..\Raven.Abstractions\Raven.Abstractions.xproj">
+      <Project>{b47725e6-abb2-411f-9487-004d05ff3581}</Project>
       <Name>Raven.Abstractions</Name>
     </ProjectReference>
     <ProjectReference Include="..\Raven.Client.Lightweight\Raven.Client.Lightweight.csproj">

@@ -69,8 +69,8 @@
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\Sparrow\Sparrow.csproj">
-      <Project>{104699c8-0fd3-4ab9-8542-e8fa89ed199b}</Project>
+    <ProjectReference Include="..\Sparrow\Sparrow.xproj">
+      <Project>{74281eb6-a5b8-4377-a20d-a845195328ed}</Project>
       <Name>Sparrow</Name>
     </ProjectReference>
   </ItemGroup>

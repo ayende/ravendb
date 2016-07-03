@@ -70,8 +70,8 @@
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\Sparrow\Sparrow.csproj">
-      <Project>{104699C8-0FD3-4AB9-8542-E8FA89ED199B}</Project>
+    <ProjectReference Include="..\Sparrow\Sparrow.xproj">
+      <Project>{74281eb6-a5b8-4377-a20d-a845195328ed}</Project>
       <Name>Sparrow</Name>
     </ProjectReference>
   </ItemGroup>
