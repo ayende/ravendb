@@ -618,8 +618,7 @@ namespace Sparrow.Json
                         case 34:
                             throw new InvalidDataException("String not valid");
                     };
-                    };
-                 }
+                }
             }
             return stringLength + escOffset + escCount + lenOffset;
         }

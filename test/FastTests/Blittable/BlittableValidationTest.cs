@@ -1,18 +1,4 @@
-﻿
-
-
-
-
-
-
-
-
-
-
-
-
-
-using System;
+﻿using System;
 using System.IO;
 using System.Text;
 using Raven.Imports.Newtonsoft.Json;
@@ -26,7 +12,7 @@ namespace FastTests.Blittable
 {
     public class BlittableValidationTest : RavenTestBase
     {
-
+        
         public Employee simple = new Employee()
         {
             Id = "1",
@@ -503,6 +489,8 @@ namespace FastTests.Blittable
                 Assert.Equal(message.Message, "Bad variable size int");
             }
         }
+
+        private int Size = 0xbc;
 
         private byte[] GetBlittableWithExtraSpace()
         {
