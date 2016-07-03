@@ -38,6 +38,7 @@
       "dependencies": {
         "Microsoft.CSharp": "4.0.1",
         "System.Console": "4.0.0",
+        "System.Linq.Queryable": "4.0.1",
         "System.Diagnostics.Process": "4.1.0",
         "System.IO.FileSystem.Primitives": "4.0.1",
         "System.IO.IsolatedStorage": "4.0.1",
