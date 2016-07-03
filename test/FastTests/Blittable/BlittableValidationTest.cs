@@ -12,7 +12,6 @@ namespace FastTests.Blittable
 {
     public class BlittableValidationTest : RavenTestBase
     {
-        public int Size = 0xbc;
 
         public Employee simple = new Employee()
         {
@@ -236,12 +235,6 @@ namespace FastTests.Blittable
                 basePointer[listStart + i] = (byte)listStart;
                 message = Assert.Throws<InvalidDataException>(() => test(size));
                 Assert.Equal(message.Message, "Properties names offset not valid");
-
-                basePointer[listStart + i] = ++temp;
-                message = Assert.Throws<InvalidDataException>(() => test(size));
-                Assert.Equal(message.Message, "String not valid");
-
-                basePointer[listStart + i] = --temp;
             }
 
             for (var i = 0; i < 1; i++)
@@ -335,7 +328,7 @@ namespace FastTests.Blittable
             byte[] blittable = new byte[26]
             {
                 0x08, 0x61, 0x62, 0x63, 0x64, 0x0a, 0x61, 0x62, 0x63, 0x01,
-                0x03, 0x01, 0x0b, 0x00, 0x05, 0x04, 0x74, 0x65, 0x6d, 0x70,
+                0x04, 0x01, 0x0b, 0x00, 0x05, 0x04, 0x74, 0x65, 0x6d, 0x70,
                 0x00, 0x10, 0x06, 0x0b, 0x15, 0x51
             };
             fixed (byte* ptr = &blittable[0])
@@ -402,7 +395,7 @@ namespace FastTests.Blittable
 
         public class Str
         {
-            public string temp { get; set; }
+            public string str { get; set; }
         }
 
         [Fact]
@@ -416,7 +409,7 @@ namespace FastTests.Blittable
                 {
                     var temp = new Str
                     {
-                        temp = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" +
+                        str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" +
                                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" +
                                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" +
                                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" +
@@ -445,6 +438,35 @@ namespace FastTests.Blittable
                     writer.FinalizeDocument();
                     var reader = writer.CreateReader();
 
+                    reader.BlittableValidation(reader.Size);
+                }
+            }
+        }
+
+        [Fact]
+        public unsafe void Valied_String_with_Esc_Char()
+        {
+            using (var pool = new UnmanagedBuffersPool("test"))
+            using (var ctx = new JsonOperationContext(pool))
+            {
+                var state = new JsonParserState();
+                using (var parser = new UnmanagedJsonParser(ctx, state, "test"))
+                {
+                    var temp = new Str
+                    {
+                        str = "aa\baaa\taaa\ra\naa\faaa\\aa/a''"
+                    };
+                    var obj = RavenJObject.FromObject(temp);
+                    var objString = obj.ToString(Formatting.None);
+                    var buffer = Encoding.UTF8.GetBytes(objString);
+                    parser.SetBuffer(buffer, buffer.Length);
+                    var writer = new BlittableJsonDocumentBuilder(ctx,
+                        BlittableJsonDocumentBuilder.UsageMode.CompressSmallStrings,
+                        "test", parser, state);
+                    writer.ReadObject();
+                    var x = writer.Read();
+                    writer.FinalizeDocument();
+                    var reader = writer.CreateReader();
                     reader.BlittableValidation(reader.Size);
                 }
             }
