@@ -17,10 +17,20 @@
   },
 
   "frameworks": {
+    "net45": {
+      "buildOptions": {
+        "define": [ "NET4_5" ]
+      }
+    },
+
     "netcoreapp1.0": {
       "buildOptions": {
         "define": [ "DNXCORE50", "PORTABLE", "DOTNET" ]
       }
     }
+  },
+
+  "runtimes": {
+    "win-x64": {} 
   }
 }

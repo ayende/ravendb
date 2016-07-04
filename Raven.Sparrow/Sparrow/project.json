@@ -24,7 +24,8 @@
         "define": [ "NET4_5" ]
       }
     },
-    "netcoreapp1.0": {
+    "netstandard1.6": {
+      "imports": "dnxcore50",
       "buildOptions": {
         "define": [ "DNXCORE50" ]
       },

@@ -47,7 +47,8 @@
       }
     },
 
-    "netcoreapp1.0": {
+    "netstandard1.6": {
+      "imports": "dnxcore50",
       "buildOptions": {
         "define": [ "DNXCORE50", "PORTABLE", "DOTNET" ]
       },
@@ -71,7 +72,5 @@
   },
 
   "runtimes": {
-    "win": {
-    }
   }
 }
