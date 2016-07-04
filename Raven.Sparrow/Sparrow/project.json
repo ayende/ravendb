@@ -2,7 +2,8 @@
   "version": "3.5.0",
 
   "buildOptions": {
-    "allowUnsafe": true
+    "allowUnsafe": true,
+    "compile": [ "**/*.cs", "../CommonAssemblyInfo.cs" ]
   },
 
   "configurations": {
@@ -20,18 +21,12 @@
   "frameworks": {
     "net45": {
       "buildOptions": {
-        "define": [ "NET4_5" ],
-        "compile": {
-          "include": [ "**/*.cs", "../CommonAssemblyInfo.cs" ]
-        }
+        "define": [ "NET4_5" ]
       }
     },
     "netcoreapp1.0": {
       "buildOptions": {
-        "define": [ "DNXCORE50" ],
-        "compile": {
-          "include": [ "**/*.cs", "../CommonAssemblyInfo.cs" ]
-        }
+        "define": [ "DNXCORE50" ]
       },
       "dependencies": {
         "Microsoft.CSharp": "4.0.1"
