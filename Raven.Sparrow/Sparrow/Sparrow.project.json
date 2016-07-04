@@ -1,0 +1,12 @@
+{
+  "frameworks": {
+    "net45": {
+      "dependencies": {
+      }
+    }
+  },
+  "runtimes": {
+    "win": {
+    }
+  }
+}

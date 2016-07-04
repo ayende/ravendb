@@ -78,6 +78,7 @@
   <ItemGroup>
     <None Include="RavenDB.snk" />
     <None Include="readme.md" />
+    <None Include="Sparrow.project.json" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" Condition="'$(TasksTargetsImported)' == ''" />
   <Import Project="..\..\Imports\Tasks.targets" Condition="'$(TasksTargetsImported)' == ''" />

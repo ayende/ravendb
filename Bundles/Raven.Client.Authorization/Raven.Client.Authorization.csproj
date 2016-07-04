@@ -106,6 +106,7 @@
     </None>
     <None Include="app.config" />
     <None Include="packages.config" />
+    <None Include="Raven.Client.Authorization.project.json" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="FodyWeavers.xml" />
