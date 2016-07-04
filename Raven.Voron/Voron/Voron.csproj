@@ -201,8 +201,8 @@
   </Target>
   -->
   <ItemGroup>
-    <ProjectReference Include="..\..\Raven.Sparrow\Sparrow\Sparrow.xproj">
-      <Project>{74281eb6-a5b8-4377-a20d-a845195328ed}</Project>
+    <ProjectReference Include="..\..\Raven.Sparrow\Sparrow\Sparrow.csproj">
+      <Project>{104699C8-0FD3-4AB9-8542-E8FA89ED199B}</Project>
       <Name>Sparrow</Name>
     </ProjectReference>
   </ItemGroup>

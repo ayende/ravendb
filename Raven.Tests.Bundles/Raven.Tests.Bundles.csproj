@@ -243,20 +243,20 @@
       <Project>{4C026F8A-FB36-4A30-82E9-324D207F6B48}</Project>
       <Name>Raven.Bundles.UniqueConstraints</Name>
     </ProjectReference>
-    <ProjectReference Include="..\Bundles\Raven.Client.Authorization\Raven.Client.Authorization.xproj">
-      <Project>{43ebd466-4a7b-4cf3-85cd-72fecee22986}</Project>
+    <ProjectReference Include="..\Bundles\Raven.Client.Authorization\Raven.Client.Authorization.csproj">
+      <Project>{3A852FD2-E0F9-449C-8F66-0C6A180D030A}</Project>
       <Name>Raven.Client.Authorization</Name>
     </ProjectReference>
-    <ProjectReference Include="..\Bundles\Raven.Client.UniqueConstraints\Raven.Client.UniqueConstraints.xproj">
-      <Project>{674195ae-d3eb-47c2-a2d7-f0096414507d}</Project>
+    <ProjectReference Include="..\Bundles\Raven.Client.UniqueConstraints\Raven.Client.UniqueConstraints.csproj">
+      <Project>{D185331D-2B7C-4251-8EBE-140EDE1FAB9F}</Project>
       <Name>Raven.Client.UniqueConstraints</Name>
     </ProjectReference>
-    <ProjectReference Include="..\Raven.Abstractions\Raven.Abstractions.xproj">
-      <Project>{b47725e6-abb2-411f-9487-004d05ff3581}</Project>
+    <ProjectReference Include="..\Raven.Abstractions\Raven.Abstractions.csproj">
+      <Project>{41AC479E-1EB2-4D23-AAF2-E4C8DF1BC2BA}</Project>
       <Name>Raven.Abstractions</Name>
     </ProjectReference>
-    <ProjectReference Include="..\Raven.Client.Lightweight\Raven.Client.Lightweight.xproj">
-      <Project>{e4b2f12e-402a-424c-ab95-8cca10913337}</Project>
+    <ProjectReference Include="..\Raven.Client.Lightweight\Raven.Client.Lightweight.csproj">
+      <Project>{4E087ECB-E7CA-4891-AC3C-3C76702715B6}</Project>
       <Name>Raven.Client.Lightweight</Name>
     </ProjectReference>
     <ProjectReference Include="..\Raven.Database\Raven.Database.csproj">
