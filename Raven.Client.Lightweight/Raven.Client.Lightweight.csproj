@@ -420,7 +420,6 @@
     <Compile Include="Counters\CounterStore.Advanced.cs" />
     <Compile Include="Counters\CounterStore.Admin.cs" />
     <Compile Include="Counters\CounterStore.Stream.cs" />
-    <None Include="Raven.Client.Lightweight.project.json" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Raven.Abstractions\Raven.Abstractions.xproj">

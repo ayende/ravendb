@@ -529,7 +529,6 @@
       <Link>RavenDB.snk</Link>
     </None>
     <None Include="app.config" />
-    <None Include="Raven.Abstractions.project.json" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Raven.Sparrow\Sparrow\Sparrow.csproj">

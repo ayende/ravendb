@@ -202,7 +202,6 @@
     <Compile Include="Indexing\CustomAnalyzers.cs" />
     <Compile Include="Indexing\ResultTransformers.cs" />
     <Compile Include="Querying\Filtering.cs" />
-    <None Include="Raven.Tests.Core.project.json" />
   </ItemGroup>
   <Choose>
     <When Condition="('$(VisualStudioVersion)' == '10.0' or '$(VisualStudioVersion)' == '') and '$(TargetFrameworkVersion)' == 'v3.5'">
