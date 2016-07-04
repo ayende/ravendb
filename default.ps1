@@ -107,16 +107,14 @@ task CompileHtml5 {
     Set-Location $base_dir
 }
 
-task CompileNetCore -depends Compile {
+task CompileDotNet {
 
-    &"$dotnet" restore
+    &"$dotnet" restore Raven.Client.Lightweight Bundles\Raven.Client.Authorization Bundles\Raven.Client.UniqueConstraints
     
-    &"$dotnet" build Raven.Sparrow\Sparrow Raven.Abstractions Raven.Client.Lightweight --configuration "$global:configuration" --output "$build_dir\Output\Client\netcore" 
-    
-    &"$dotnet" build Bundles\Raven.Client.Authorization Bundles\Raven.Client.UniqueConstraints --configuration "$global:configuration" --output "$build_dir\Output\Bundles\netcore"
+    &"$dotnet" build Raven.Client.Lightweight --configuration "$global:configuration" Bundles\Raven.Client.Authorization Bundles\Raven.Client.UniqueConstraints --build-base-path "$build_dir\Output"
 }
 
-task TestNetCore -depends CompileNetCore {
+task TestDotNet -depends CompileDotNet {
     Clear-Host
 
     Push-Location "$base_dir\Raven.Tests.Core"
@@ -130,7 +128,7 @@ task FullStorageTest {
     $global:full_storage_test = $true
 }
 
-task Test -depends TestNetCore {
+task Test -depends TestDotNet {
 
     $test_prjs = New-Object System.Collections.ArrayList
 
@@ -453,7 +451,7 @@ task ZipOutput {
 
 
 task DoReleasePart1 -depends Compile, `
-    CompileNetCore, `
+    CompileDotNet, `
     CleanOutputDirectory, `
     CreateOutpuDirectories, `
     CopySmuggler, `
@@ -652,7 +650,7 @@ task PushNugetPackages {
     }
 }
 
-task CreateNugetPackages -depends Compile, CompileNetCore, CompileHtml5, InitNuget {
+task CreateNugetPackages -depends Compile, CompileDotNet, CompileHtml5, InitNuget {
 
     Remove-Item $base_dir\RavenDB*.nupkg
     
