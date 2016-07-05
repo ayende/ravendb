@@ -714,14 +714,6 @@ namespace Raven.Client.FileSystem
                 {
                     await response.AssertNotFailingResponse().ConfigureAwait(false);
                 }
-                catch (ErrorResponseException e)
-                {
-                    if (request.ResponseStatusCode == HttpStatusCode.ExpectationFailed)
-                    {
-                        throw new BadRequestException(e.Message);
-                    }
-                    throw;
-                }
                 catch (Exception e)
                 {
                     var simplified = e.SimplifyException();

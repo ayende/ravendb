@@ -7805,6 +7805,13 @@ div.btn-group[data-toggle=buttons-radio] button.active {
 }
 #shellHeader #goToDocInput {
   width: 9em;
+  -webkit-transition: width 0.5s ease-in-out;
+  -moz-transition: width 0.5s ease-in-out;
+  -o-transition: width 0.5s ease-in-out;
+  transition: width 0.5s ease-in-out;
+}
+#shellHeader #goToDocInput:focus {
+  width: 20em;
 }
 @media (max-width: 1150px) {
   #shellHeader .nav li a {
@@ -9142,4 +9149,17 @@ a#uploadQueuePanelToggle {
 #synchronization-conflicts-page .conflicts-select .select-link {
   text-decoration: underline;
   cursor: pointer;
+}
+.center-progress-text {
+  font-size: 14px;
+  position: absolute;
+  width: 100%;
+}
+.center-progress-text > span {
+  background-color: rgba(255, 255, 255, 0.6);
+  border-radius: 3px;
+  padding: 0px 6px;
+  font-size: 11px;
+  position: relative;
+  top: -1px;
 }
