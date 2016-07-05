@@ -1,4 +1,8 @@
 using System;
+#if !DNXCORE50
+using System.Reactive.Linq;
+using System.Reactive.Threading.Tasks;
+#endif
 using System.Threading;
 using System.Threading.Tasks;
 using Raven.Abstractions.Data;
