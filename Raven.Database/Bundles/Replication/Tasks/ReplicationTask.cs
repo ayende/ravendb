@@ -1372,7 +1372,7 @@ namespace Raven.Bundles.Replication.Tasks
                         result.CountOfFilteredDocumentsWhichAreSystemDocuments +=
                             docsToReplicate.Count(doc => destination.IsSystemDocumentId(doc.Key));
                         result.CountOfFilteredDocumentsWhichOriginFromOtherDestinations +=
-                            docsToReplicate.Count(doc => destination.OriginsFromOtherDestination(_transactionalStorageId, doc.Metadata));
+                            docsToReplicate.Count(doc => destination.OriginsFromOtherDestination(_transactionalStorageId, doc.Metadata) && !destination.IsSystemDocumentId(doc.Key));
 
                         if (docsToReplicate.Count > 0)
                         {
