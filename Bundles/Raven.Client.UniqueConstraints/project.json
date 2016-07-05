@@ -3,10 +3,10 @@
 
   "buildOptions": {
     "compile": [
-    "**/*.cs",
-    "../Raven.Bundles.UniqueConstraints/Constants.cs",
-    "../../CommonAssemblyInfo.cs"
-  ],
+      "**/*.cs",
+      "../Raven.Bundles.UniqueConstraints/Constants.cs",
+      "../../CommonAssemblyInfo.cs"
+    ]
   },
 
   "configurations": {
