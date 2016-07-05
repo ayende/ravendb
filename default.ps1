@@ -246,57 +246,59 @@ task CreateOutpuDirectories -depends CleanOutputDirectory {
     New-Item $build_dir\Output\Client\netstandard1.6 -Type directory | Out-Null
     New-Item $build_dir\Output\Bundles -Type directory | Out-Null
     New-Item $build_dir\Output\Bundles\netstandard1.6 -Type directory | Out-Null
-    New-Item $build_dir\Output\Smuggler -Type directory | Out-Null
-    New-Item $build_dir\Output\Backup -Type directory | Out-Null
-    New-Item $build_dir\Output\Migration -Type directory | Out-Null
-    New-Item $build_dir\Output\Diag\Traffic -Type directory | Out-Null
-    New-Item $build_dir\Output\Diag\ApiToken -Type directory | Out-Null
-    New-Item $build_dir\Output\Diag\StorageExporter -Type directory | Out-Null
-    New-Item $build_dir\Output\Monitor -Type directory | Out-Null
+    
+    New-Item $build_dir\OutputTools -Type directory -ErrorAction SilentlyContinue | Out-Null
+    New-Item $build_dir\OutputTools\Smuggler -Type directory | Out-Null
+    New-Item $build_dir\OutputTools\Backup -Type directory | Out-Null
+    New-Item $build_dir\OutputTools\Migration -Type directory | Out-Null
+    New-Item $build_dir\OutputTools\Diag -Type directory | Out-Null
+    New-Item $build_dir\OutputTools\Monitor -Type directory | Out-Null
+    #TODO: index cleaner
 }
 
 task CleanOutputDirectory { 
     Remove-Item $build_dir\Output -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item $build_dir\OutputTools -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 task CopyMonitor {
-    Copy-Item $base_dir\Raven.Monitor\bin\$global:configuration\amd64 $build_dir\Output\Monitor\amd64 -recurse
-    Copy-Item $base_dir\Raven.Monitor\bin\$global:configuration\x86 $build_dir\Output\Monitor\x86 -recurse
-    Copy-Item $base_dir\Raven.Monitor\bin\$global:configuration\Raven.Monitor.exe $build_dir\Output\Monitor
-    Copy-Item $base_dir\Raven.Monitor\bin\$global:configuration\Microsoft.Diagnostics.Tracing.TraceEvent.dll  $build_dir\Output\Monitor
+    Copy-Item $base_dir\Raven.Monitor\bin\$global:configuration\amd64 $build_dir\OutputTools\Monitor\amd64 -recurse
+    Copy-Item $base_dir\Raven.Monitor\bin\$global:configuration\x86 $build_dir\OutputTools\Monitor\x86 -recurse
+    Copy-Item $base_dir\Raven.Monitor\bin\$global:configuration\Raven.Monitor.exe $build_dir\OutputTools\Monitor
+    Copy-Item $base_dir\Raven.Monitor\bin\$global:configuration\Microsoft.Diagnostics.Tracing.TraceEvent.dll  $build_dir\OutputTools\Monitor
 }
 
 task CopySmuggler {
-    Copy-Item $base_dir\Raven.Smuggler\bin\$global:configuration\Raven.Abstractions.??? $build_dir\Output\Smuggler
-    Copy-Item $base_dir\Raven.Smuggler\bin\$global:configuration\Raven.Database.??? $build_dir\Output\Smuggler
-    Copy-Item $base_dir\Raven.Smuggler\bin\$global:configuration\Raven.Smuggler.??? $build_dir\Output\Smuggler
+    Copy-Item $base_dir\Raven.Smuggler\bin\$global:configuration\Raven.Abstractions.??? $build_dir\OutputTools\Smuggler
+    Copy-Item $base_dir\Raven.Smuggler\bin\$global:configuration\Raven.Database.??? $build_dir\OutputTools\Smuggler
+    Copy-Item $base_dir\Raven.Smuggler\bin\$global:configuration\Raven.Smuggler.??? $build_dir\OutputTools\Smuggler
 }
 
 task CopyBackup {
-    Copy-Item $base_dir\Raven.Backup\bin\$global:configuration\Raven.Abstractions.??? $build_dir\Output\Backup
-    Copy-Item $base_dir\Raven.Backup\bin\$global:configuration\Raven.Backup.??? $build_dir\Output\Backup
+    Copy-Item $base_dir\Raven.Backup\bin\$global:configuration\Raven.Abstractions.??? $build_dir\OutputTools\Backup
+    Copy-Item $base_dir\Raven.Backup\bin\$global:configuration\Raven.Backup.??? $build_dir\OutputTools\Backup
 }
 
 task CopyMigration {
-    Copy-Item $base_dir\Raven.Migration\bin\$global:configuration\Raven.Abstractions.??? $build_dir\Output\Migration
-    Copy-Item $base_dir\Raven.Migration\bin\$global:configuration\Raven.Migration.??? $build_dir\Output\Migration
+    Copy-Item $base_dir\Raven.Migration\bin\$global:configuration\Raven.Abstractions.??? $build_dir\OutputTools\Migration
+    Copy-Item $base_dir\Raven.Migration\bin\$global:configuration\Raven.Migration.??? $build_dir\OutputTools\Migration
 }
 
 task CopyRavenTraffic {
-    Copy-Item $base_dir\Tools\Raven.Traffic\bin\$global:configuration\Raven.Abstractions.??? $build_dir\Output\Diag\Traffic
-    Copy-Item $base_dir\Tools\Raven.Traffic\bin\$global:configuration\Raven.Traffic.??? $build_dir\Output\Diag\Traffic
+    Copy-Item $base_dir\Tools\Raven.Traffic\bin\$global:configuration\Raven.Abstractions.??? $build_dir\OutputTools\Diag
+    Copy-Item $base_dir\Tools\Raven.Traffic\bin\$global:configuration\Raven.Traffic.??? $build_dir\OutputTools\Diag
 }
 
 task CopyRavenApiToken {
-    Copy-Item $base_dir\Tools\Raven.ApiToken\bin\$global:configuration\Raven.Abstractions.??? $build_dir\Output\Diag\ApiToken
-    Copy-Item $base_dir\Tools\Raven.ApiToken\bin\$global:configuration\Raven.ApiToken.??? $build_dir\Output\Diag\ApiToken
-    Copy-Item $base_dir\Tools\Raven.ApiToken\token_test.ps1 $build_dir\Output\Diag\ApiToken
+    Copy-Item $base_dir\Tools\Raven.ApiToken\bin\$global:configuration\Raven.Abstractions.??? $build_dir\OutputTools\Diag
+    Copy-Item $base_dir\Tools\Raven.ApiToken\bin\$global:configuration\Raven.ApiToken.??? $build_dir\OutputTools\Diag
+    Copy-Item $base_dir\Tools\Raven.ApiToken\token_test.ps1 $build_dir\OutputTools\Diag\ApiToken
 }
 
 task CopyStorageExporter {
-    Copy-Item $base_dir\Raven.StorageExporter\bin\$global:configuration\Raven.Abstractions.??? $build_dir\Output\Diag\StorageExporter
-    Copy-Item $base_dir\Raven.StorageExporter\bin\$global:configuration\Raven.Database.??? $build_dir\Output\Diag\StorageExporter
-    Copy-Item $base_dir\Raven.StorageExporter\bin\$global:configuration\Raven.StorageExporter.??? $build_dir\Output\Diag\StorageExporter
+    Copy-Item $base_dir\Raven.StorageExporter\bin\$global:configuration\Raven.Abstractions.??? $build_dir\OutputTools\Diag
+    Copy-Item $base_dir\Raven.StorageExporter\bin\$global:configuration\Raven.Database.??? $build_dir\OutputTools\Diag
+    Copy-Item $base_dir\Raven.StorageExporter\bin\$global:configuration\Raven.StorageExporter.??? $build_dir\OutputTools\Diag
 }
 
 task CopyClient {
@@ -418,12 +420,12 @@ task SignInstaller {
 
 task CopyRootFiles {
     cp $base_dir\license.txt $build_dir\Output\license.txt
+    cp $base_dir\license.txt $build_dir\OutputTools\license.txt
     cp $base_dir\Scripts\Start.cmd $build_dir\Output\Start.cmd
-    cp $base_dir\Scripts\Raven-UpdateBundles.ps1 $build_dir\Output\Raven-UpdateBundles.ps1
-    cp $base_dir\Scripts\Raven-GetBundles.ps1 $build_dir\Output\Raven-GetBundles.ps1
-    cp $base_dir\readme.md $build_dir\Output\readme.txt
+    cp $base_dir\Scripts\Raven-UpdateBundles.ps1 $build_dir\Output\Raven-UpdateBundles.ps1 # delete?
+    cp $base_dir\Scripts\Raven-GetBundles.ps1 $build_dir\Output\Raven-GetBundles.ps1 # delete?
     cp $base_dir\acknowledgments.txt $build_dir\Output\acknowledgments.txt
-    cp $base_dir\CommonAssemblyInfo.cs $build_dir\Output\CommonAssemblyInfo.cs
+    cp $base_dir\acknowledgments.txt $build_dir\OutputTools\acknowledgments.txt
     
     (Get-Content "$build_dir\Output\Start.cmd") | 
         Foreach-Object { $_ -replace "{build}", "$($env:buildlabel)" } |
@@ -432,10 +434,10 @@ task CopyRootFiles {
 
 task ZipOutput {
     
-    if($env:buildlabel -eq 13)
-    {
-        return 
-    }
+    #if($env:buildlabel -eq 13)
+    #{
+    #    return 
+    #}
 
     $old = pwd
     cd $build_dir\Output
@@ -446,13 +448,23 @@ task ZipOutput {
         & $tools_dir\zip.exe -9 -A -r `
             $file `
             Client\*.* `
-            Smuggler\*.* `
-            Backup\*.* `
-            Migration\*.* `
             Web\*.* `
             Bundles\*.* `
             Web\bin\*.* `
             Server\*.* `
+            *.*
+    }
+    
+    cd $build_dir\OutputTools
+    
+    $file = "$release_dir\$global:uploadCategory-Build-$env:buildlabel-Tools.zip"
+        
+    exec { 
+        & $tools_dir\zip.exe -9 -A -r `
+            $file `
+            Smuggler\*.* `
+            Backup\*.* `
+            Migration\*.* `
             Diag\*.* `
             *.*
     }
