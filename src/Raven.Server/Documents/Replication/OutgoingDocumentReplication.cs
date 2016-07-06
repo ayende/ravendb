@@ -1,12 +1,10 @@
 ﻿using System;
-using System.Diagnostics;
 using System.Linq;
 using System.Net.WebSockets;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Raven.Abstractions.Data;
-using Raven.Abstractions.Extensions;
 using Raven.Abstractions.Logging;
 using Raven.Abstractions.Replication;
 using Raven.Server.ReplicationUtil;
@@ -28,7 +26,7 @@ namespace Raven.Server.Documents.Replication
         private readonly CancellationTokenSource _cancellationTokenSource;
 	    private const int RetriesCount = 3;
 		private readonly TimeSpan _minimalHeartbeatInterval = TimeSpan.FromSeconds(15);
-        public readonly AsyncManualResetEvent _waitForChanges;
+        public readonly ManualResetEventSlim _waitForChanges;
         private readonly string _replicationUniqueName;
 
 	    public event Action<OutgoingDocumentReplication> ClosedConnectionRemoteFailure;
@@ -45,7 +43,7 @@ namespace Raven.Server.Documents.Replication
 			_lastSentHeartbeat = DateTime.MinValue;
 	        _transport = transport;
 			_cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(_database.DatabaseShutdown);
-            _waitForChanges = new AsyncManualResetEvent();
+            _waitForChanges = new ManualResetEventSlim();
 
             _replicationUniqueName = $"Outgoing Replication Thread <{destination.Url} -> {destination.Database}>";           
         }
@@ -54,11 +52,11 @@ namespace Raven.Server.Documents.Replication
         //was received from a replication propagation and not from a user
         private void HandleDocumentChange(DocumentChangeNotification notification)
         {
-            _waitForChanges.SetByAsyncCompletion();
+            _waitForChanges.Set();
         }
 
 	    private bool _taskHasEnded;
-        private async Task ReplicateDocumentsAsync()
+        private void ReplicateDocuments()
         {
 	        _taskHasEnded = false;
 			while (_cancellationTokenSource.IsCancellationRequested == false)
@@ -72,7 +70,7 @@ namespace Raven.Server.Documents.Replication
 				{
                     if(_cancellationTokenSource.IsCancellationRequested)
 						break;
-	                var result = await ExecuteReplicationOnce();
+	                var result = ExecuteReplicationOnce();
 
 					if (_log.IsDebugEnabled)
 						LogReplicationBatchSent(result);
@@ -95,6 +93,7 @@ namespace Raven.Server.Documents.Replication
                 }
                 catch (OperationCanceledException)
                 {
+					_log.Debug("Cancellation token fired. Cancelling replication thread.");
                     break;
                 }
                 catch (Exception e)
@@ -109,11 +108,12 @@ namespace Raven.Server.Documents.Replication
                 try
                 {
                     //if this returns false, this means either timeout or canceled token is activated                    
-	                while (await _waitForChanges.WaitAsync(_minimalHeartbeatInterval) == false)
-		                await _transport.SendHeartbeatAsync();
+	                while (_waitForChanges.Wait(_minimalHeartbeatInterval) == false)
+		                _transport.SendHeartbeat();
                 }
                 catch (OperationCanceledException)
-                {					
+                {
+					_log.Debug("Cancellation token fired. Cancelling replication thread.");
 					break;
                 }
             }
@@ -162,12 +162,12 @@ namespace Raven.Server.Documents.Replication
 	    }
 
 	    private readonly SemaphoreSlim _replicationSemaphore = new SemaphoreSlim(1);
-        private async Task<ReplicationBatchResult> ExecuteReplicationOnce()
+        private ReplicationBatchResult ExecuteReplicationOnce()
         {
             if(!_isInitialized) //while not initialized, nothing to do
 				return ReplicationBatchResult.NothingToDo;
 
-			if(!await _replicationSemaphore.WaitAsync(TimeSpan.FromMilliseconds(500)))
+			if(!_replicationSemaphore.Wait(TimeSpan.FromMilliseconds(500)))
 				return ReplicationBatchResult.NothingToDo; //previous batch is not finished yet
 
 	        try
@@ -197,8 +197,7 @@ namespace Raven.Server.Documents.Replication
 						return ReplicationBatchResult.Interrupted;
 					try
 					{
-				        var currentLastSentEtag = await _transport.SendDocumentBatchAsync(replicationBatch)
-					        .WithCancellation(_cancellationTokenSource.Token);
+						var currentLastSentEtag = _transport.SendDocumentBatch(replicationBatch);					        
 				        if (currentLastSentEtag == -1)
 				        {
 					        //sent batch successfully, but something went wrong on the other side
@@ -256,9 +255,9 @@ namespace Raven.Server.Documents.Replication
 				        _context);
 		        }
 
-		        await _transport.EnsureConnectionAsync();
-		        _lastSentEtag = await _transport.GetLastEtag();
-		        _replicationThread = new Thread(() => ReplicateDocumentsAsync().Wait())
+		        _transport.EnsureConnection();
+		        _lastSentEtag = _transport.GetLastEtag();
+		        _replicationThread = new Thread(ReplicateDocuments)
 		        {
 			        IsBackground = true,
 			        Name = _replicationUniqueName

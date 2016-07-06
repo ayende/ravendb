@@ -24,8 +24,8 @@ namespace FastTests.Server.Documents.Replication
             public int Age { get; set; }
         }
 
-        [Fact]
-        public async Task Master_master_replication_from_etag_zero_without_conflict_should_work()
+		[Fact(Skip = "WIP")]
+		public async Task Master_master_replication_from_etag_zero_without_conflict_should_work()
         {
             var dbName1 = DbName + "-1";
             var dbName2 = DbName + "-2";		
@@ -75,7 +75,7 @@ namespace FastTests.Server.Documents.Replication
 			}
         }		
 
-        [Fact]
+        [Fact(Skip = "WIP")]
         public async Task TryGetDetached_embedded_object_should_work_properly()
         {
             string dbName = $"TestDB{Guid.NewGuid()}";
@@ -162,7 +162,7 @@ namespace FastTests.Server.Documents.Replication
             }
         }
 
-		[Fact]
+		[Fact(Skip = "WIP")]
 		public async Task Master_slave_replication_from_etag_zero_with_single_error_during_document_receive_should_work()
 		{
 			bool hasThrown = false;
@@ -230,8 +230,8 @@ namespace FastTests.Server.Documents.Replication
 			}
 		}
 
-		[Fact]
-        public async Task Master_slave_replication_with_multiple_PUTS_should_work()
+		[Fact(Skip = "WIP")]
+		public async Task Master_slave_replication_with_multiple_PUTS_should_work()
         {
             var dbName1 = DbName + "-1";
             var dbName2 = DbName + "-2";
@@ -295,7 +295,6 @@ namespace FastTests.Server.Documents.Replication
                     Assert.Contains(docs, d => d.Name.Equals("Jack Dow"));
                     Assert.Contains(docs, d => d.Name.Equals("Jessy Dow"));
                 }
-
             }
         }
     }

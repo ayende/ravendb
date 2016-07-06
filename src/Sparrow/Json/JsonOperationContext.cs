@@ -135,7 +135,7 @@ namespace Sparrow.Json
             if (_disposed)
                 return;
             Reset();
-            Lz4.Dispose();
+  
             if (_tempBuffer != null)
                 Pool.Return(_tempBuffer);
             if (_fieldNames != null)
