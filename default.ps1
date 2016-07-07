@@ -24,7 +24,9 @@ properties {
     $nowarn = "1591 1573 1591 HeapAnalyzerBoxingRule HeapAnalyzerClosureCaptureRule HeapAnalyzerImplicitParamsRule HeapAnalyzerStringConcatRule HeapAnalyzerValueTypeNonOverridenCallRule HeapAnalyzerClosureSourceRule HeapAnalyzerLambdaInGenericMethodRule HeapAnalyzerEnumeratorAllocationRule HeapAnalyzerMethodGroupAllocationRule HeapAnalyzerLambdaInGenericMethodRule"
     
     $dotnet = "dotnet"
-
+    $dotnetLib = "netstandard1.6"
+    $dotnetApp = "netcoreapp1.0"
+    
     $nuget = "$base_dir\.nuget\NuGet.exe"
     
     $global:is_pull_request = $FALSE
@@ -109,17 +111,19 @@ task CompileHtml5 {
 
 task CompileDotNet {
 
-    &"$dotnet" restore Raven.Sparrow\Sparrow Raven.Abstractions Raven.Client.Lightweight Bundles\Raven.Client.Authorization Bundles\Raven.Client.UniqueConstraints
+    &"$dotnet" restore
     
-    &"$dotnet" build Raven.Client.Lightweight --configuration "$global:configuration" Bundles\Raven.Client.Authorization Bundles\Raven.Client.UniqueConstraints --build-base-path "$build_dir\DotNet"
+    &"$dotnet" build Raven.Client.Lightweight --configuration "$global:configuration" --output "$build_dir\DotNet" --framework "$dotnetLib" --no-incremental
+    &"$dotnet" build Bundles\Raven.Client.Authorization --configuration "$global:configuration" --output "$build_dir\DotNet\Bundles\Raven.Client.Authorization" --framework "$dotnetLib" --no-incremental
+    &"$dotnet" build Bundles\Raven.Client.UniqueConstraints --configuration "$global:configuration" --output "$build_dir\DotNet\Bundles\Raven.Client.UniqueConstraints" --framework "$dotnetLib" --no-incremental
 }
 
-task TestDotNet -depends CompileDotNet {
+task TestDotNet -depends Compile,CompileDotNet {
     Clear-Host
 
     Push-Location "$base_dir\Raven.Tests.Core"
     
-    Start-Process -FilePath "$dotnet" -ArgumentList "test --configuration $global:configuration" -NoNewWindow -Wait
+    Start-Process -FilePath "$dotnet" -ArgumentList "test --configuration $global:configuration --framework $dotnetApp" -NoNewWindow -Wait
 
     Pop-Location
 }
