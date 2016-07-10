@@ -6,8 +6,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
-
 using Raven.Abstractions.Cluster;
 
 namespace Raven.Abstractions.Replication
@@ -16,27 +14,17 @@ namespace Raven.Abstractions.Replication
     /// Data class for replication destination documents
     /// </summary>
     public class ReplicationDestination
-    {
+    {       
         /// <summary>
-        /// The name of the connection string specified in the 
-        /// server configuration file. 
-        /// Override all other properties of the destination
-        /// </summary>
-
-        private string url;
-
-        /// <summary>
-        /// Gets or sets the URL of the replication destination
+        /// Gets or sets the IP address of the replication destination
         /// </summary>
         /// <value>The URL.</value>
-        public string Url
-        {
-            get { return url; }
-            set 
-            {
-                url = value.EndsWith("/") ? value.Substring(0, value.Length - 1) : value;
-            }
-        }
+        public string IPAddress { get; set; }
+
+		/// <summary>
+		/// Gets or sets the port of the replication destination
+		/// </summary>
+		public int Port { get; set; }
 
         /// <summary>
         /// The replication server username to use
@@ -87,6 +75,7 @@ namespace Raven.Abstractions.Replication
 
         public string AuthenticationScheme { get; set; }
 
+		//TODO : remove this property
         /// <summary>
         /// Gets or sets the Client URL of the replication destination
         /// </summary>
@@ -95,19 +84,9 @@ namespace Raven.Abstractions.Replication
         /// <summary>
         /// If not null then only docs from specified collections are replicated and transformed / filtered according to an optional script.
         /// </summary>
-        public Dictionary<string, string> SpecifiedCollections { get; set; } 
+        public Dictionary<string, string> SpecifiedCollections { get; set; }
 
-        public string Humane
-        {
-            get
-            {
-                if (string.IsNullOrEmpty(url))
-                    return null;
-                return url + " " + Database;
-            }
-        }
-
-        public bool CanBeFailover()
+	    public bool CanBeFailover()
         {
             return IgnoredClient == false && Disabled == false && (SpecifiedCollections == null || SpecifiedCollections.Count == 0);
         }
@@ -124,7 +103,7 @@ namespace Raven.Abstractions.Replication
                    string.Equals(Database, other.Database, StringComparison.OrdinalIgnoreCase) &&
                    TransitiveReplicationBehavior == other.TransitiveReplicationBehavior &&				   
                    IgnoredClient.Equals(other.IgnoredClient) && Disabled.Equals(other.Disabled) &&
-                   ((string.Equals(Url, other.Url, StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(ClientVisibleUrl)) ||
+                   ((string.Equals(IPAddress, other.IPAddress, StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(ClientVisibleUrl)) ||
                    (!string.IsNullOrWhiteSpace(ClientVisibleUrl) && string.Equals(ClientVisibleUrl, other.ClientVisibleUrl, StringComparison.OrdinalIgnoreCase))) &&
                    Extensions.DictionaryExtensions.ContentEquals(SpecifiedCollections, other.SpecifiedCollections);
         }
@@ -179,7 +158,7 @@ namespace Raven.Abstractions.Replication
                            Password = source.Password,
                            SkipIndexReplication = source.SkipIndexReplication,
                            TransitiveReplicationBehavior = source.TransitiveReplicationBehavior,
-                           Url = source.Url,
+                           IPAddress = source.IPAddress,
                            Username = source.Username,
                            SpecifiedCollections = source.SpecifiedCollections
                        };

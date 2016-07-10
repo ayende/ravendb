@@ -27,47 +27,59 @@ namespace Raven.Server
         }
 
         public void Configure(IApplicationBuilder app, ILoggerFactory loggerfactory)
-        {
-            app.UseWebSockets(new WebSocketOptions
-            {
-                // TODO: KeepAlive causes "Unexpect reserved bit set" (we are sending our own hearbeats, so we do not need this)
-                //KeepAliveInterval = Debugger.IsAttached ? 
-                //    TimeSpan.FromHours(24) : TimeSpan.FromSeconds(30), 
-                KeepAliveInterval = TimeSpan.FromHours(24),
-                ReceiveBufferSize = 4096,
-            });
+		{
+			app.UseWebSockets(new WebSocketOptions
+			{
+				// TODO: KeepAlive causes "Unexpect reserved bit set" 
+				//(we are sending our own hearbeats, so we do not need this)
+				//KeepAliveInterval = Debugger.IsAttached ? 
+				//    TimeSpan.FromHours(24) : TimeSpan.FromSeconds(30), 
+				KeepAliveInterval = TimeSpan.FromHours(24),
+				ReceiveBufferSize = 4096,
+			});
 
-            var router = app.ApplicationServices.GetService<RequestRouter>();
-            app.Run(async context =>
-            {
-                try
-                {
-                    await router.HandlePath(context, context.Request.Method, context.Request.Path.Value);
-                }
-                catch (Exception e)
-                {
-                    if (context.RequestAborted.IsCancellationRequested)
-                        return;
+			//during debugging and unit tests
+			//it may be useful to inject all sorts of middleware into requests processing pipeline
+			IncludeTestingMiddleware(app);
 
-                    //TODO: special handling for argument exception (400 bad request)
-                    //TODO: database not found (503)
-                    //TODO: operaton cancelled (timeout)
-                    //TODO: Invalid data exception 422
+			var router = app.ApplicationServices.GetService<RequestRouter>();
+			app.Run(async context =>
+			{
+				try
+				{
+					await router.HandlePath(context, context.Request.Method, context.Request.Path.Value);
+				}
+				catch (Exception e)
+				{
+					if (context.RequestAborted.IsCancellationRequested)
+						return;
 
-                    var response = context.Response;
-                    response.StatusCode = 500;
-                    var sb = new StringBuilder();
-                    sb.Append(context.Request.Path).Append('?').Append(context.Request.QueryString)
-                        .AppendLine()
-                        .Append("- - - - - - - - - - - - - - - - - - - - -")
-                        .AppendLine();
-                    sb.Append(e);
-                    await response.WriteAsync(e.ToString());
-                }
-            });
-        }
+					//TODO: special handling for argument exception (400 bad request)
+					//TODO: database not found (503)
+					//TODO: operaton cancelled (timeout)
+					//TODO: Invalid data exception 422
 
-        private static void SetupLoggingIfNeeded()
+					var response = context.Response;
+					response.StatusCode = 500;
+					var sb = new StringBuilder();
+					sb.Append(context.Request.Path).Append('?').Append(context.Request.QueryString)
+						.AppendLine()
+						.Append("- - - - - - - - - - - - - - - - - - - - -")
+						.AppendLine();
+					sb.Append(e);
+					await response.WriteAsync(e.ToString());
+				}
+			});
+		}
+
+		[Conditional("INCLUDE_MIDDLEWARE")]
+		private static void IncludeTestingMiddleware(IApplicationBuilder app)
+		{
+			foreach (var middleware in ServerMiddleware.Instances)
+				app.Use(async (context, next) => await middleware.Invoke(context, next));
+		}
+
+		private static void SetupLoggingIfNeeded()
         {
             if (File.Exists("NLog.config"))
             {

@@ -9,8 +9,6 @@ using System.Linq;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
-
-using Raven.Abstractions.Data;
 using Raven.Abstractions.Logging;
 using Raven.Abstractions.Replication;
 using Raven.Abstractions.Util;
@@ -25,7 +23,7 @@ namespace Raven.Client.Document
     {
         private readonly DocumentStore documentStore;
 
-        private readonly static ILog log = LogManager.GetLogger(typeof(ReplicationBehavior));
+        private static readonly ILog log = LogManager.GetLogger(typeof(ReplicationBehavior));
 
         public ReplicationBehavior(DocumentStore documentStore)
         {
@@ -59,7 +57,7 @@ namespace Raven.Client.Document
 
             var destinationsToCheck = replicationDocument.Destinations
                                                          .Where(x => x.CanBeFailover())
-                                                         .Select(x => string.IsNullOrEmpty(x.ClientVisibleUrl) ? x.Url.ForDatabase(x.Database) : x.ClientVisibleUrl.ForDatabase(x.Database))
+                                                         .Select(x => string.IsNullOrEmpty(x.ClientVisibleUrl) ? x.IPAddress.ForDatabase(x.Database) : x.ClientVisibleUrl.ForDatabase(x.Database))
                                                          .ToList();
 
             if (destinationsToCheck.Count == 0)

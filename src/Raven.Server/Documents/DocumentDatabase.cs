@@ -1,5 +1,6 @@
 ﻿using System;
 using System.IO;
+using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using Raven.Abstractions.Data;
@@ -44,7 +45,6 @@ namespace Raven.Server.Documents
             DocumentsStorage = new DocumentsStorage(this);
             IndexStore = new IndexStore(this);
             SqlReplicationLoader = new SqlReplicationLoader(this, metricsScheduler);
-            DocumentReplicationLoader = new DocumentReplicationLoader(this);
             DocumentTombstoneCleaner = new DocumentTombstoneCleaner(this);
             SubscriptionStorage = new SubscriptionStorage(this);
             Metrics = new MetricsCountersManager(metricsScheduler);
@@ -55,11 +55,12 @@ namespace Raven.Server.Documents
 
         public string Name { get; }
 
-        public Guid DbId => DocumentsStorage.Environment?.DbId ?? Guid.Empty;
+        public Guid DbId => DocumentsStorage?.Environment?.DbId ?? Guid.Empty;
 
         public string ResourceName => $"db/{Name}";
 
         public RavenConfiguration Configuration { get; }
+
         public LoggerSetup LoggerSetup { get; set; }
 
         public CancellationToken DatabaseShutdown => _databaseShutdown.Token;
@@ -97,10 +98,12 @@ namespace Raven.Server.Documents
         {
             _indexStoreTask = IndexStore.InitializeAsync();
             SqlReplicationLoader.Initialize();
-            DocumentReplicationLoader.Initialize();
 
             DocumentTombstoneCleaner.Initialize();
-            BundleLoader = new BundleLoader(this);
+
+			//TODO : test that IPAddress.Loopback works when on two separate machines
+			DocumentReplicationLoader = new DocumentReplicationLoader(this,IPAddress.Loopback, Configuration.Replication.IncomingListeningPort);
+			BundleLoader = new BundleLoader(this);
 
             try
             {

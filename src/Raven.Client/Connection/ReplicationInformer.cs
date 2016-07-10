@@ -99,7 +99,7 @@ namespace Raven.Client.Connection
             var replicationDocument = document.DataAsJson.JsonDeserialization<ReplicationDocumentWithClusterInformation>();
             ReplicationDestinations = replicationDocument.Destinations.Select(x =>
             {
-                var url = string.IsNullOrEmpty(x.ClientVisibleUrl) ? x.Url : x.ClientVisibleUrl;
+                var url = string.IsNullOrEmpty(x.ClientVisibleUrl) ? x.IPAddress : x.ClientVisibleUrl;
                 if (string.IsNullOrEmpty(url))
                     return null;
                 if (x.CanBeFailover() == false) 

@@ -7,13 +7,13 @@
     "compile": {
       "include": [ "**/*.cs" ]
     },
+    "define": [ "DEBUG" ] ,
     "embed": [
       "**/*.json",
       "Voron/Bugs/Data/*.txt",
-      "**/*.ravendump"
-    ],
-    "define": [ "DEBUG" ]
-  },
+      "**/*.ravendump"]
+    },
+
 
   "configurations": {
     "Release": {
@@ -28,21 +28,28 @@
   "frameworks": {
     "netcoreapp1.0": {
       "dependencies": {
+        "xunit": "2.1.0",
+        "dotnet-test-xunit": "1.0.0-rc2-*",
+
+        "NETStandard.Library": "1.5.0-rc2-*",
+
         "Microsoft.NETCore.App": {
           "type": "platform",
-          "version": "1.0.0"
+          "version": "1.0.0-rc2-*"
         }
       },
-      "imports": "dnxcore50"
+      "imports": [
+        "dotnet5.4",
+        "portable-net451+win8",
+        "dnxcore50"
+      ]
     }
   },
-
   "dependencies": {
-    "dotnet-test-xunit": "2.2.0-preview2-build1029",
+    "Microsoft.CSharp": "4.0.0",
     "Raven.Client": "4.0.0-*",
     "Raven.Server": "4.0.0-*",
     "Sparrow": "4.0.0-*",
-    "Voron": "4.0.0-*",
-    "xunit": "2.2.0-beta2-build3300"
+    "Voron": "4.0.0-*"
   }
 }

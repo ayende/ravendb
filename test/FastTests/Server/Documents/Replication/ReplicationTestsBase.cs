@@ -9,14 +9,14 @@ namespace FastTests.Server.Documents.Replication
 {
     public class ReplicationTestsBase : RavenTestBase
     {
-        protected void WaitForReplicationBetween(DocumentStore storeFrom, DocumentStore storeTo, int timeout)
-        {
-            var sw = Stopwatch.StartNew();
-            while (sw.ElapsedMilliseconds <= timeout)
-            {
+        //protected void WaitForReplicationBetween(DocumentStore storeFrom, DocumentStore storeTo, int timeout)
+        //{
+        //    var sw = Stopwatch.StartNew();
+        //    while (sw.ElapsedMilliseconds <= timeout)
+        //    {
                 
-            }
-        }
+        //    }
+        //}
 
 
         protected T WaitForDocumentToReplicate<T>(DocumentStore store, string id, int timeout)
@@ -37,7 +37,7 @@ namespace FastTests.Server.Documents.Replication
             return default(T);
         }
 
-        protected static void SetupReplication(string targetDbName, DocumentStore fromStore, DocumentStore toStore)
+        protected static void SetupReplication(string targetDbName, DocumentStore fromStore, DocumentStore toStore, string toIpAddress, int toIpPort)
         {
             using (var session = fromStore.OpenSession())
             {
@@ -48,8 +48,9 @@ namespace FastTests.Server.Documents.Replication
                         new ReplicationDestination
                         {
                             Database = targetDbName,
-                            Url = toStore.Url
-                        }
+                            IPAddress = toIpAddress,
+							Port = toIpPort
+						}
                     }
                 }, Constants.Replication.DocumentReplicationConfiguration);
                 session.SaveChanges();

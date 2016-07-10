@@ -6,6 +6,11 @@ namespace Raven.Server.Config.Categories
 {
     public class ReplicationConfiguration : ConfigurationCategory
     {
+		[Description("Listening port for incoming document replication connections")]
+		[DefaultValue(8100)]		
+		[ConfigurationEntry("Raven/Replication/IncomingListeningPort")]
+		public int IncomingListeningPort { get; set; }
+
         [DefaultValue(600)]
         [TimeUnit(TimeUnit.Seconds)]
         [ConfigurationEntry("Raven/Replication/IndexAndTransformerReplicationLatencyInSec")]
