@@ -1,5 +1,6 @@
 ﻿using System;
 using System.IO;
+using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using Raven.Abstractions.Data;
@@ -59,6 +60,7 @@ namespace Raven.Server.Documents
         public string ResourceName => $"db/{Name}";
 
         public RavenConfiguration Configuration { get; }
+
         public LoggerSetup LoggerSetup { get; set; }
 
         public CancellationToken DatabaseShutdown => _databaseShutdown.Token;
@@ -98,7 +100,9 @@ namespace Raven.Server.Documents
             SqlReplicationLoader.Initialize();
 
             DocumentTombstoneCleaner.Initialize();
-			DocumentReplicationLoader = new DocumentReplicationLoader(this);
+
+			//TODO : test that IPAddress.Loopback works when on two separate machines
+			DocumentReplicationLoader = new DocumentReplicationLoader(this,IPAddress.Loopback, Configuration.Replication.IncomingListeningPort);
 			BundleLoader = new BundleLoader(this);
 
             try

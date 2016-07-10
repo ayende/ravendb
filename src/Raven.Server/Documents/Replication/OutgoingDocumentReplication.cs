@@ -17,7 +17,7 @@ namespace Raven.Server.Documents.Replication
     {
         private readonly DocumentDatabase _database;
 	    protected long _lastSentEtag;
-        private DocumentReplicationTransport _transport;
+        private OutgoingDocumentReplicationTransport _transport;
         private readonly ILog _log = LogManager.GetLogger(nameof(OutgoingDocumentReplication));
         private readonly DocumentsOperationContext _context;
         private volatile bool _isInitialized;
@@ -33,7 +33,7 @@ namespace Raven.Server.Documents.Replication
 
         public OutgoingDocumentReplication(DocumentDatabase database, 
             ReplicationDestination destination,
-            DocumentReplicationTransport transport = null)
+            OutgoingDocumentReplicationTransport transport = null)
         {
             _database = database;
 	        Destination = destination;
@@ -45,7 +45,7 @@ namespace Raven.Server.Documents.Replication
 			_cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(_database.DatabaseShutdown);
             _waitForChanges = new ManualResetEventSlim();
 
-            _replicationUniqueName = $"Outgoing Replication Thread <{destination.Url} -> {destination.Database}>";           
+            _replicationUniqueName = $"Outgoing Replication Thread <{destination.IPAddress} -> {destination.Database}>";           
         }
 
         //TODO : add parameter to notification that would indicate that the document
@@ -240,14 +240,15 @@ namespace Raven.Server.Documents.Replication
 	        }
         }
 
-        public async Task InitializeAsync()
+		//TODO : refactor this to be sync
+        public void Initialize()
         {
 	        try
 	        {
 		        if (_transport == null)
 		        {
-			        _transport = new DocumentReplicationTransport(
-				        Destination.Url,
+			        _transport = new OutgoingDocumentReplicationTransport(
+				        Destination.IPAddress,
 				        _database.DbId,
 				        _database.Name,
 				        Destination.Database,

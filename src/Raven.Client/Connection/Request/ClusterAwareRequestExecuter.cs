@@ -408,7 +408,7 @@ namespace Raven.Client.Connection.Request
 
         private static OperationMetadata ConvertReplicationDestinationToOperationMetadata(ReplicationDestination destination, ClusterInformation clusterInformation)
         {
-            var url = string.IsNullOrEmpty(destination.ClientVisibleUrl) ? destination.Url : destination.ClientVisibleUrl;
+            var url = string.IsNullOrEmpty(destination.ClientVisibleUrl) ? destination.IPAddress : destination.ClientVisibleUrl;
             if (string.IsNullOrEmpty(url) || destination.CanBeFailover() == false)
                 return null;
 

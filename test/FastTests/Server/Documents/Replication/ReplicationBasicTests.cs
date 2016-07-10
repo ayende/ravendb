@@ -5,6 +5,7 @@ using NLog;
 using NLog.Config;
 using NLog.Targets;
 using Raven.Server;
+using Raven.Server.Config;
 using Raven.Server.ServerWide.Context;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
@@ -16,7 +17,14 @@ namespace FastTests.Server.Documents.Replication
     {
 	    private readonly int _waitTimeout = Debugger.IsAttached ? 60000 : 5000;
 
-        public string DbName => "TestDB" + Guid.NewGuid();
+	    private Action<RavenConfiguration> ModifyConfigurationDelegate;
+
+	    protected override void ModifyConfiguration(RavenConfiguration configuration)
+	    {
+		    ModifyConfigurationDelegate?.Invoke(configuration);
+	    }
+
+	    public string DbName => "TestDB" + Guid.NewGuid();
 
         public class User
         {
@@ -124,9 +132,11 @@ namespace FastTests.Server.Documents.Replication
         {
             var dbName1 = DbName + "-1";
             var dbName2 = DbName + "-2";
-            using (var store1 = await GetDocumentStore(modifyDatabaseDocument: document => document.Id = dbName1))
+			DoNotReuseServer();
+			using (var store1 = await GetDocumentStore(modifyDatabaseDocument: document => document.Id = dbName1))
             using (var store2 = await GetDocumentStore(modifyDatabaseDocument: document => document.Id = dbName2))
             {
+				
                 store1.DefaultDatabase = dbName1;
                 store2.DefaultDatabase = dbName2;
 

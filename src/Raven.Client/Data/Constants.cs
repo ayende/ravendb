@@ -172,8 +172,12 @@ namespace Raven.Abstractions.Data
         public const string RavenReplicationIndexesTombstones = "Raven/Replication/Indexes/Tombstones";
         public const string RavenReplicationTransformerTombstones = "Raven/Replication/Transformers/Tombstones";
 
-        //Periodic export
-        public const string RavenPeriodicExportsDocsTombstones = "Raven/PeriodicExports/Docs/Tombstones";
+	    public const string RavenReplicationIncomingListeningPort = "Raven/Replication/IncomingListeningPort";
+
+	    public const string RavenReplicationIncomingListeningIPAddress = "Raven/Replication/IncomingListeningIPAddress";
+
+		//Periodic export
+		public const string RavenPeriodicExportsDocsTombstones = "Raven/PeriodicExports/Docs/Tombstones";
 
         public const int ChangeHistoryLength = 50;
 
@@ -289,6 +293,7 @@ namespace Raven.Abstractions.Data
 				public const string ReplicationBatchAcknowledge = "ReplicationBatchAcknowledge";
 				public const string GetLastEtag = "GetLastEtag";
 	            public const string Heartbeat = "Heartbeat";
+	            public const string InitialHandshake = "InitialHandshake";
             }
 
             public class PropertyNames
