@@ -100,10 +100,12 @@ namespace Raven.Server.Documents.Replication
 				        while (_cts.IsCancellationRequested == false)
 				        {
 					        if (!ExecuteReplicationOnce(writer, stream))
-						        continue;
-					        
-							//if this returns false, this means either timeout or canceled token is activated                    
-					        while (_waitForChanges.Wait(_minimalHeartbeatInterval, _cts.Token) == false)
+						        using (_context.OpenReadTransaction())
+							        if (DocumentsStorage.ReadLastEtag(_context.Transaction.InnerTransaction) < _lastSentEtag)
+								        continue;
+
+					        //if this returns false, this means either timeout or canceled token is activated                    
+							while (_waitForChanges.Wait(_minimalHeartbeatInterval, _cts.Token) == false)
 						        SendHeartbeat(stream);
 				        }
 			        }
@@ -161,6 +163,7 @@ namespace Raven.Server.Documents.Replication
 			    //should and should not be replicated
 			    if (replicationBatch.Count == 0)
 				    return false;
+
 			    _cts.Token.ThrowIfCancellationRequested();
 
 			    SendDocuments(writer, stream, replicationBatch);
