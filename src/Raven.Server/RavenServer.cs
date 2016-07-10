@@ -7,12 +7,13 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
-
+using Raven.Abstractions.Data;
 using Raven.Abstractions.Logging;
 using Raven.Client.Data;
 using Raven.Database.Util;
 using Raven.Server.Config;
 using Raven.Server.Documents.TcpHandlers;
+using Raven.Server.Json;
 using Raven.Server.Routing;
 using Raven.Server.ServerWide;
 using Raven.Server.Utils;
@@ -239,39 +240,33 @@ namespace Raven.Server
                     multiDocumentParser = context.ParseMultiFrom(stream);
                     try
                     {
-                        var reader = await multiDocumentParser.ParseToMemoryAsync();
-                        string db;
-                        if (reader.TryGet("Database", out db) == false)
-                        {
-                            throw new InvalidOperationException("Could not read Database property from the tcp command");
-                        }
-                        string operation;
-                        if (reader.TryGet("Operation", out operation) == false)
-                        {
-                            throw new InvalidOperationException("Could not read Operation property from the tcp command");
-                        }
-                        var databaseLoadingTask = ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(db);
+                        var header = JsonDeserialization.TcpConnectionHeaderMessage(await multiDocumentParser.ParseToMemoryAsync());
+                        
+                        var databaseLoadingTask = ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(header.Database);
                         if (databaseLoadingTask == null)
                         {
-                            throw new InvalidOperationException("There is no database named " + db);
+                            throw new InvalidOperationException("There is no database named " + header.Database);
                         }
                         if (await Task.WhenAny(databaseLoadingTask, Task.Delay(5000)) != databaseLoadingTask)
                         {
-                            throw new InvalidOperationException("Timeout when loading database + " + db +
+                            throw new InvalidOperationException("Timeout when loading database + " + header.Database +
                                                                 ", try again later");
                         }
                         
                         var documentDatabase = await databaseLoadingTask;
-                        switch (operation)
+                        switch (header.Operation)
                         {
-                            case "BulkInsert":
+                            case TcpConnectionHeaderMessage.OperationTypes.BulkInsert:
                                 BulkInsertConnection.Run(documentDatabase, context, stream, tcpClient, multiDocumentParser);
                                 break;
-                            case "Subscription":
+                            case TcpConnectionHeaderMessage.OperationTypes.Subscription:
                                 SubscriptionConnection.SendSubscriptionDocuments(documentDatabase, context, stream, tcpClient, multiDocumentParser);
                                 break;
+                            case TcpConnectionHeaderMessage.OperationTypes.Replication:
+                                // incoming replication
+                                break;
                             default:
-                                throw new InvalidOperationException("Unknown operation for tcp " + operation);
+                                throw new InvalidOperationException("Unknown operation for tcp " + header.Operation);
                         }
 
                         tcpClient = null; // the connection handler will dispose this, it is not its responsability
