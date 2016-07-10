@@ -16,15 +16,10 @@ namespace Raven.Abstractions.Replication
     public class ReplicationDestination
     {       
         /// <summary>
-        /// Gets or sets the IP address of the replication destination
+        /// Gets or sets the url address of the replication destination
         /// </summary>
         /// <value>The URL.</value>
-        public string IPAddress { get; set; }
-
-		/// <summary>
-		/// Gets or sets the port of the replication destination
-		/// </summary>
-		public int Port { get; set; }
+        public string Url{ get; set; }
 
         /// <summary>
         /// The replication server username to use
@@ -75,7 +70,6 @@ namespace Raven.Abstractions.Replication
 
         public string AuthenticationScheme { get; set; }
 
-		//TODO : remove this property
         /// <summary>
         /// Gets or sets the Client URL of the replication destination
         /// </summary>
@@ -103,7 +97,7 @@ namespace Raven.Abstractions.Replication
                    string.Equals(Database, other.Database, StringComparison.OrdinalIgnoreCase) &&
                    TransitiveReplicationBehavior == other.TransitiveReplicationBehavior &&				   
                    IgnoredClient.Equals(other.IgnoredClient) && Disabled.Equals(other.Disabled) &&
-                   ((string.Equals(IPAddress, other.IPAddress, StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(ClientVisibleUrl)) ||
+                   ((string.Equals(Url, other.Url, StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(ClientVisibleUrl)) ||
                    (!string.IsNullOrWhiteSpace(ClientVisibleUrl) && string.Equals(ClientVisibleUrl, other.ClientVisibleUrl, StringComparison.OrdinalIgnoreCase))) &&
                    Extensions.DictionaryExtensions.ContentEquals(SpecifiedCollections, other.SpecifiedCollections);
         }
@@ -147,21 +141,21 @@ namespace Raven.Abstractions.Replication
             public static ReplicationDestinationWithClusterInformation Create(ReplicationDestinationWithConfigurationOrigin source, bool isInCluster, bool isLeader)
             {
                 return new ReplicationDestinationWithClusterInformation
-                       {
-                           ApiKey = source.ApiKey,
-                           ClientVisibleUrl = source.ClientVisibleUrl,
-                           Database = source.Database,
-                           Disabled = source.Disabled,
-                           Domain = source.Domain,
-                           IgnoredClient = source.IgnoredClient,
-                           ClusterInformation = new ClusterInformation(isInCluster, isLeader),
-                           Password = source.Password,
-                           SkipIndexReplication = source.SkipIndexReplication,
-                           TransitiveReplicationBehavior = source.TransitiveReplicationBehavior,
-                           IPAddress = source.IPAddress,
-                           Username = source.Username,
-                           SpecifiedCollections = source.SpecifiedCollections
-                       };
+                {
+                    ApiKey = source.ApiKey,
+                    ClientVisibleUrl = source.ClientVisibleUrl,
+                    Database = source.Database,
+                    Disabled = source.Disabled,
+                    Domain = source.Domain,
+                    IgnoredClient = source.IgnoredClient,
+                    ClusterInformation = new ClusterInformation(isInCluster, isLeader),
+                    Password = source.Password,
+                    SkipIndexReplication = source.SkipIndexReplication,
+                    TransitiveReplicationBehavior = source.TransitiveReplicationBehavior,
+                    Url = source.Url,
+                    Username = source.Username,
+                    SpecifiedCollections = source.SpecifiedCollections
+                };
             }
         }
     }
