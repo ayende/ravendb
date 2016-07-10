@@ -8,6 +8,7 @@ using Raven.Abstractions;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Exceptions;
 using Raven.Abstractions.Logging;
+using Raven.Client.Connection;
 using Raven.Server.Config;
 using Raven.Server.Json;
 using Raven.Server.ServerWide;
@@ -22,7 +23,9 @@ namespace Raven.Server.Documents
     {
         public event Action<string> OnDatabaseLoaded = delegate { };
 
-        public override Task<DocumentDatabase> TryGetOrCreateResourceStore(StringSegment databaseName)
+		public readonly HttpJsonRequestFactory _httpRequestFactory = new HttpJsonRequestFactory(16);
+		
+		public override Task<DocumentDatabase> TryGetOrCreateResourceStore(StringSegment databaseName)
         {
             if (Locks.Contains(DisposingLock))
                 throw new ObjectDisposedException("DatabaseLandlord", "Server is shutting down, can't access any databases");
@@ -89,8 +92,11 @@ namespace Raven.Server.Documents
             try
             {
                 var sp = Stopwatch.StartNew();
-                var documentDatabase = new DocumentDatabase(config.DatabaseName, config,ServerStore.MetricsScheduler, LoggerSetup);
-                documentDatabase.Initialize();
+                var documentDatabase = new DocumentDatabase(config.DatabaseName,
+					config,
+					ServerStore.MetricsScheduler, 
+					LoggerSetup);
+                documentDatabase.Initialize(_httpRequestFactory);
 
                 if (Log.IsInfoEnabled)
                 {

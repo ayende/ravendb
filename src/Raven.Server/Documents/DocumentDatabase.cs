@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Logging;
+using Raven.Client.Connection;
 using Raven.Server.Config;
 using Raven.Server.Documents.Indexes;
 using Raven.Server.Documents.Patch;
@@ -31,7 +32,8 @@ namespace Raven.Server.Documents
 
         private readonly object _idleLocker = new object();
         private Task _indexStoreTask;
-        public bool LazyTransactionMode { get; set; }
+	    private HttpJsonRequestFactory _httpRequestFactory;
+	    public bool LazyTransactionMode { get; set; }
         public DateTime LazyTransactionExpiration { get; set; }
 
         public DocumentDatabase(string name, RavenConfiguration configuration, MetricsScheduler metricsScheduler,
@@ -81,10 +83,13 @@ namespace Raven.Server.Documents
 
         public DocumentReplicationLoader DocumentReplicationLoader { get; private set; }
 
+	    public HttpJsonRequestFactory HttpRequestFactory => _httpRequestFactory;
 
-        public void Initialize()
+
+	    public void Initialize(HttpJsonRequestFactory httpRequestFactory)
         {
-            DocumentsStorage.Initialize();
+	        _httpRequestFactory = httpRequestFactory;
+	        DocumentsStorage.Initialize();
             InitializeInternal();
         }
 

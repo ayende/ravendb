@@ -99,19 +99,19 @@ namespace Raven.Client.Connection
             var replicationDocument = document.DataAsJson.JsonDeserialization<ReplicationDocumentWithClusterInformation>();
             ReplicationDestinations = replicationDocument.Destinations.Select(x =>
             {
-                var url = string.IsNullOrEmpty(x.ClientVisibleUrl) ? x.IPAddress : x.ClientVisibleUrl;
+                var url = string.IsNullOrEmpty(x.ClientVisibleUrl) ? x.Url : x.ClientVisibleUrl;
                 if (string.IsNullOrEmpty(url))
                     return null;
                 if (x.CanBeFailover() == false) 
                     return null;
                 if (string.IsNullOrEmpty(x.Database))
-                    return new OperationMetadata(url, x.Username, x.Password, x.Domain, x.ApiKey, x.ClusterInformation);
+                    return new OperationMetadata(url, null, null, null, x.ApiKey, x.ClusterInformation);
 
                 return new OperationMetadata(
                     MultiDatabase.GetRootDatabaseUrl(url) + "/databases/" + x.Database + "/",
-                    x.Username,
-                    x.Password,
-                    x.Domain,
+					null,
+					null,
+					null,
                     x.ApiKey,
                     x.ClusterInformation);
             })

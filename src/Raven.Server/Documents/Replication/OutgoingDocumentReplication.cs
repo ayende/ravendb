@@ -45,7 +45,7 @@ namespace Raven.Server.Documents.Replication
 			_cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(_database.DatabaseShutdown);
             _waitForChanges = new ManualResetEventSlim();
 
-            _replicationUniqueName = $"Outgoing Replication Thread <{destination.IPAddress} -> {destination.Database}>";           
+            _replicationUniqueName = $"Outgoing Replication Thread <{destination.Url} -> {destination.Database}>";           
         }
 
         //TODO : add parameter to notification that would indicate that the document
@@ -240,15 +240,14 @@ namespace Raven.Server.Documents.Replication
 	        }
         }
 
-		//TODO : refactor this to be sync
-        public void Initialize()
+        public void InitializeAndConnect()
         {
 	        try
 	        {
 		        if (_transport == null)
 		        {
 			        _transport = new OutgoingDocumentReplicationTransport(
-				        Destination.IPAddress,
+				        Destination.Url,
 				        _database.DbId,
 				        _database.Name,
 				        Destination.Database,

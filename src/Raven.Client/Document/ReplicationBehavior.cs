@@ -57,7 +57,7 @@ namespace Raven.Client.Document
 
             var destinationsToCheck = replicationDocument.Destinations
                                                          .Where(x => x.CanBeFailover())
-                                                         .Select(x => string.IsNullOrEmpty(x.ClientVisibleUrl) ? x.IPAddress.ForDatabase(x.Database) : x.ClientVisibleUrl.ForDatabase(x.Database))
+                                                         .Select(x => string.IsNullOrEmpty(x.ClientVisibleUrl) ? x.Url.ForDatabase(x.Database) : x.ClientVisibleUrl.ForDatabase(x.Database))
                                                          .ToList();
 
             if (destinationsToCheck.Count == 0)

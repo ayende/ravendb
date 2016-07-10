@@ -17,13 +17,6 @@ namespace FastTests.Server.Documents.Replication
     {
 	    private readonly int _waitTimeout = Debugger.IsAttached ? 60000 : 5000;
 
-	    private Action<RavenConfiguration> ModifyConfigurationDelegate;
-
-	    protected override void ModifyConfiguration(RavenConfiguration configuration)
-	    {
-		    ModifyConfigurationDelegate?.Invoke(configuration);
-	    }
-
 	    public string DbName => "TestDB" + Guid.NewGuid();
 
         public class User

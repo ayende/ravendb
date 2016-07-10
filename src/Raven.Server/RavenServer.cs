@@ -40,6 +40,7 @@ namespace Raven.Server
         private Task<TcpListener> _tcpListenerTask;
         private readonly UnmanagedBuffersPool _unmanagedBuffersPool = new UnmanagedBuffersPool("TcpConnectionPool");
         private readonly Logger _tcpLogger;
+
         public LoggerSetup LoggerSetup { get; }
 
         public RavenServer(RavenConfiguration configuration)

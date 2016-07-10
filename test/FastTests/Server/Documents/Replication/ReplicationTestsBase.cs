@@ -37,7 +37,7 @@ namespace FastTests.Server.Documents.Replication
             return default(T);
         }
 
-        protected static void SetupReplication(string targetDbName, DocumentStore fromStore, DocumentStore toStore, string toIpAddress, int toIpPort)
+        protected static void SetupReplication(string targetDbName, DocumentStore fromStore, DocumentStore toStore)
         {
             using (var session = fromStore.OpenSession())
             {
@@ -48,9 +48,8 @@ namespace FastTests.Server.Documents.Replication
                         new ReplicationDestination
                         {
                             Database = targetDbName,
-                            IPAddress = toIpAddress,
-							Port = toIpPort
-						}
+							Url = toStore.Url
+        				}
                     }
                 }, Constants.Replication.DocumentReplicationConfiguration);
                 session.SaveChanges();

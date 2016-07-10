@@ -408,14 +408,14 @@ namespace Raven.Client.Connection.Request
 
         private static OperationMetadata ConvertReplicationDestinationToOperationMetadata(ReplicationDestination destination, ClusterInformation clusterInformation)
         {
-            var url = string.IsNullOrEmpty(destination.ClientVisibleUrl) ? destination.IPAddress : destination.ClientVisibleUrl;
+            var url = string.IsNullOrEmpty(destination.ClientVisibleUrl) ? destination.Url : destination.ClientVisibleUrl;
             if (string.IsNullOrEmpty(url) || destination.CanBeFailover() == false)
                 return null;
 
             if (string.IsNullOrEmpty(destination.Database))
-                return new OperationMetadata(url, destination.Username, destination.Password, destination.Domain, destination.ApiKey, clusterInformation);
+                return new OperationMetadata(url, null, null, null, destination.ApiKey, clusterInformation);
 
-            return new OperationMetadata(MultiDatabase.GetRootDatabaseUrl(url).ForDatabase(destination.Database), destination.Username, destination.Password, destination.Domain, destination.ApiKey, clusterInformation);
+            return new OperationMetadata(MultiDatabase.GetRootDatabaseUrl(url).ForDatabase(destination.Database), null, null, null, destination.ApiKey, clusterInformation);
         }
 
         public IDisposable ForceReadFromMaster()
