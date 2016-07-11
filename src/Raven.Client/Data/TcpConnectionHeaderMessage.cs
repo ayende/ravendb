@@ -11,6 +11,9 @@
         }
 
         public string Database { get; set; }
-        public OperationTypes Operation { get; set; }
+
+		public string DatabaseId { get; set; }
+
+		public OperationTypes Operation { get; set; }
     }
 }

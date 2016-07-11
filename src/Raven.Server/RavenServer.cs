@@ -252,9 +252,8 @@ namespace Raven.Server
                         {
                             throw new InvalidOperationException("Timeout when loading database + " + header.Database +
                                                                 ", try again later");
-                        }
-                        
-                        var documentDatabase = await databaseLoadingTask;
+                        }						
+						var documentDatabase = await databaseLoadingTask;
                         switch (header.Operation)
                         {
                             case TcpConnectionHeaderMessage.OperationTypes.BulkInsert:
@@ -264,7 +263,7 @@ namespace Raven.Server
                                 SubscriptionConnection.SendSubscriptionDocuments(documentDatabase, context, stream, tcpClient, multiDocumentParser);
                                 break;
                             case TcpConnectionHeaderMessage.OperationTypes.Replication:
-                                // incoming replication
+								documentDatabase.DocumentReplicationLoader.AcceptIncomingConnection(header, stream);
                                 break;
                             default:
                                 throw new InvalidOperationException("Unknown operation for tcp " + header.Operation);

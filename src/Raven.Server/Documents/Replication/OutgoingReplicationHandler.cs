@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
@@ -19,7 +18,6 @@ using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using Sparrow.Logging;
 using System.Linq;
-using System.Runtime.CompilerServices;
 
 namespace Raven.Server.Documents.Replication
 {
@@ -81,10 +79,10 @@ namespace Raven.Server.Documents.Replication
 				        _context.Write(writer, new DynamicJsonValue
 				        {
 					        ["Database"] = _database.Name,
-					        ["Operation"] = "Replication",
-					        ["SourceDatabaseId"] = _database.DbId.ToString(),
-					        ["SourceDatabaseName"] = _database.Name
+					        ["Operation"] = TcpConnectionHeaderMessage.OperationTypes.Replication.ToString(),
+					        ["DatabaseId"] = _database.DbId.ToString(),
 				        });
+
 				        _context.Write(writer, new DynamicJsonValue
 				        {
 					        [Constants.MessageType] = Constants.Replication.MessageTypes.GetLastEtag

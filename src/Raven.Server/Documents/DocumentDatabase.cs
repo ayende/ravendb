@@ -81,9 +81,9 @@ namespace Raven.Server.Documents
 
         public SqlReplicationLoader SqlReplicationLoader { get; private set; }
 
-        public DocumentReplicationLoader DocumentReplicationLoader { get; private set; }
+		public DocumentReplicationLoader DocumentReplicationLoader { get; private set; }
 
-	    public HttpJsonRequestFactory HttpRequestFactory => _httpRequestFactory;
+		public HttpJsonRequestFactory HttpRequestFactory => _httpRequestFactory;
 
 
 	    public void Initialize(HttpJsonRequestFactory httpRequestFactory)
@@ -106,8 +106,7 @@ namespace Raven.Server.Documents
 
             DocumentTombstoneCleaner.Initialize();
 
-			//TODO : test that IPAddress.Loopback works when on two separate machines
-			DocumentReplicationLoader = new DocumentReplicationLoader(this,IPAddress.Loopback, Configuration.Replication.IncomingListeningPort);
+			DocumentReplicationLoader = new DocumentReplicationLoader(this);
 			BundleLoader = new BundleLoader(this);
 
             try
@@ -119,16 +118,17 @@ namespace Raven.Server.Documents
                 _indexStoreTask = null;
             }
             SubscriptionStorage.Initialize();
-        }
+        }	    
 
-        public void Dispose()
+	    public void Dispose()
         {
             _databaseShutdown.Cancel();
             var exceptionAggregator = new ExceptionAggregator(Log, $"Could not dispose {nameof(DocumentDatabase)}");
             
             exceptionAggregator.Execute(() =>
             {
-                DocumentReplicationLoader.Dispose();
+                DocumentReplicationLoader?.Dispose();
+	            DocumentReplicationLoader = null;
             });
 
             if (_indexStoreTask != null)
