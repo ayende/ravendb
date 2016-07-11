@@ -180,7 +180,7 @@ namespace FastTests
             var name = caller ?? Guid.NewGuid().ToString("N");
 
             if (dbSuffixIdentifier != null)
-                name = string.Format("{0}_{1}", name, dbSuffixIdentifier);
+                name = $"{name}_{dbSuffixIdentifier}";
 
             var path = NewDataPath(name);
 
@@ -269,8 +269,10 @@ namespace FastTests
             } while (documentStore.DatabaseCommands.Head("Debug/Done") == null && (debug == false || Debugger.IsAttached));
         }
 
-        protected string NewDataPath([CallerMemberName]string prefix = null, bool forceCreateDir = false)
+        protected string NewDataPath([CallerMemberName]string prefix = null, string suffix = null, bool forceCreateDir = false)
         {
+            if (suffix != null)
+                prefix += suffix;
             var path = RavenTestHelper.NewDataPath(prefix, NonReusedServerPort, forceCreateDir);
 
             PathsToDelete.Add(path);

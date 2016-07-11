@@ -16,8 +16,11 @@
       "include": [ "**/*.cs", "../CommonAssemblyInfo.cs", "../../Imports/metrics.net/Src/Metrics/**/*.cs" ]
     },
     "embed": {
-      "include": [ "Documents/Patch/*.js" ]
-    },
+      "include": [
+        "Documents/Patch/*.js",
+        "Documents/PeriodicExport/Aws/Amazon.AWS.endpoints.xml"
+      ]
+  },
     "defines": [ ]
   },
 
