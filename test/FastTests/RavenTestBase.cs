@@ -138,7 +138,7 @@ namespace FastTests
             }
         }
 
-        private static RavenServer CreateServer(int port, int tcpPort)
+        private RavenServer CreateServer(int port, int tcpPort)
         {
             var configuration = new RavenConfiguration();
             configuration.Initialize();
@@ -152,9 +152,10 @@ namespace FastTests
             configuration.Server.MaxTimeForTaskToWaitForDatabaseToLoad = new TimeSetting(10, TimeUnit.Seconds);
             configuration.Storage.AllowOn32Bits = true;
 
-            IOExtensions.DeleteDirectory(configuration.Core.DataDirectory);
+			IOExtensions.DeleteDirectory(configuration.Core.DataDirectory);
+			ModifyConfiguration(configuration);
 
-            var server = new RavenServer(configuration);
+			var server = new RavenServer(configuration);
             server.Initialize();
 
             // TODO: Make sure to properly handle this when this is resolved:
@@ -163,6 +164,10 @@ namespace FastTests
 
             return server;
         }
+
+	    protected virtual void ModifyConfiguration(RavenConfiguration configuration)
+	    {		    
+	    }
 
         protected Task<DocumentDatabase> GetDocumentDatabaseInstanceFor(DocumentStore store)
         {

@@ -105,13 +105,13 @@ namespace Raven.Client.Connection
                 if (x.CanBeFailover() == false) 
                     return null;
                 if (string.IsNullOrEmpty(x.Database))
-                    return new OperationMetadata(url, x.Username, x.Password, x.Domain, x.ApiKey, x.ClusterInformation);
+                    return new OperationMetadata(url, null, null, null, x.ApiKey, x.ClusterInformation);
 
                 return new OperationMetadata(
                     MultiDatabase.GetRootDatabaseUrl(url) + "/databases/" + x.Database + "/",
-                    x.Username,
-                    x.Password,
-                    x.Domain,
+					null,
+					null,
+					null,
                     x.ApiKey,
                     x.ClusterInformation);
             })

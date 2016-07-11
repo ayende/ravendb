@@ -1,9 +1,11 @@
 ﻿using System;
 using System.IO;
+using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Logging;
+using Raven.Client.Connection;
 using Raven.Server.Config;
 using Raven.Server.Documents.Indexes;
 using Raven.Server.Documents.Patch;
@@ -31,7 +33,8 @@ namespace Raven.Server.Documents
 
         private readonly object _idleLocker = new object();
         private Task _indexStoreTask;
-        public bool LazyTransactionMode { get; set; }
+	    private HttpJsonRequestFactory _httpRequestFactory;
+	    public bool LazyTransactionMode { get; set; }
         public DateTime LazyTransactionExpiration { get; set; }
         public TransactionOperationsMerger TxMerger;
 
@@ -46,7 +49,6 @@ namespace Raven.Server.Documents
             DocumentsStorage = new DocumentsStorage(this);
             IndexStore = new IndexStore(this);
             SqlReplicationLoader = new SqlReplicationLoader(this, metricsScheduler);
-            DocumentReplicationLoader = new DocumentReplicationLoader(this);
             DocumentTombstoneCleaner = new DocumentTombstoneCleaner(this);
             SubscriptionStorage = new SubscriptionStorage(this);
             Metrics = new MetricsCountersManager(metricsScheduler);
@@ -59,11 +61,12 @@ namespace Raven.Server.Documents
 
         public string Name { get; }
 
-        public Guid DbId => DocumentsStorage.Environment?.DbId ?? Guid.Empty;
+        public Guid DbId => DocumentsStorage?.Environment?.DbId ?? Guid.Empty;
 
         public string ResourceName => $"db/{Name}";
 
         public RavenConfiguration Configuration { get; }
+
         public LoggerSetup LoggerSetup { get; set; }
 
         public CancellationToken DatabaseShutdown => _databaseShutdown.Token;
@@ -82,12 +85,15 @@ namespace Raven.Server.Documents
 
         public SqlReplicationLoader SqlReplicationLoader { get; private set; }
 
-        public DocumentReplicationLoader DocumentReplicationLoader { get; private set; }
+		public DocumentReplicationLoader DocumentReplicationLoader { get; private set; }
+
+		public HttpJsonRequestFactory HttpRequestFactory => _httpRequestFactory;
 
 
-        public void Initialize()
+	    public void Initialize(HttpJsonRequestFactory httpRequestFactory)
         {
-            DocumentsStorage.Initialize();
+	        _httpRequestFactory = httpRequestFactory;
+	        DocumentsStorage.Initialize();
             InitializeInternal();
         }
 
@@ -102,10 +108,11 @@ namespace Raven.Server.Documents
             TxMerger.Start();
             _indexStoreTask = IndexStore.InitializeAsync();
             SqlReplicationLoader.Initialize();
-            DocumentReplicationLoader.Initialize();
 
             DocumentTombstoneCleaner.Initialize();
-            BundleLoader = new BundleLoader(this);
+
+			DocumentReplicationLoader = new DocumentReplicationLoader(this);
+			BundleLoader = new BundleLoader(this);
 
             try
             {
@@ -116,9 +123,9 @@ namespace Raven.Server.Documents
                 _indexStoreTask = null;
             }
             SubscriptionStorage.Initialize();
-        }
+        }	    
 
-        public void Dispose()
+	    public void Dispose()
         {
             _databaseShutdown.Cancel();
             var exceptionAggregator = new ExceptionAggregator(Log, $"Could not dispose {nameof(DocumentDatabase)}");
@@ -130,7 +137,8 @@ namespace Raven.Server.Documents
 
             exceptionAggregator.Execute(() =>
             {
-                DocumentReplicationLoader.Dispose();
+                DocumentReplicationLoader?.Dispose();
+	            DocumentReplicationLoader = null;
             });
 
             if (_indexStoreTask != null)

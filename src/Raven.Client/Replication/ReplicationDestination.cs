@@ -6,8 +6,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
-
 using Raven.Abstractions.Cluster;
 
 namespace Raven.Abstractions.Replication
@@ -16,42 +14,12 @@ namespace Raven.Abstractions.Replication
     /// Data class for replication destination documents
     /// </summary>
     public class ReplicationDestination
-    {
+    {       
         /// <summary>
-        /// The name of the connection string specified in the 
-        /// server configuration file. 
-        /// Override all other properties of the destination
-        /// </summary>
-
-        private string url;
-
-        /// <summary>
-        /// Gets or sets the URL of the replication destination
+        /// Gets or sets the url address of the replication destination
         /// </summary>
         /// <value>The URL.</value>
-        public string Url
-        {
-            get { return url; }
-            set 
-            {
-                url = value.EndsWith("/") ? value.Substring(0, value.Length - 1) : value;
-            }
-        }
-
-        /// <summary>
-        /// The replication server username to use
-        /// </summary>
-        public string Username { get; set; }
-        
-        /// <summary>
-        /// The replication server password to use
-        /// </summary>
-        public string Password { get; set; }
-
-        /// <summary>
-        /// The replication server domain to use
-        /// </summary>
-        public string Domain { get; set; }
+        public string Url{ get; set; }
 
         /// <summary>
         /// The replication server api key to use
@@ -95,19 +63,9 @@ namespace Raven.Abstractions.Replication
         /// <summary>
         /// If not null then only docs from specified collections are replicated and transformed / filtered according to an optional script.
         /// </summary>
-        public Dictionary<string, string> SpecifiedCollections { get; set; } 
+        public Dictionary<string, string> SpecifiedCollections { get; set; }
 
-        public string Humane
-        {
-            get
-            {
-                if (string.IsNullOrEmpty(url))
-                    return null;
-                return url + " " + Database;
-            }
-        }
-
-        public bool CanBeFailover()
+	    public bool CanBeFailover()
         {
             return IgnoredClient == false && Disabled == false && (SpecifiedCollections == null || SpecifiedCollections.Count == 0);
         }
@@ -119,8 +77,7 @@ namespace Raven.Abstractions.Replication
 
         public bool IsEqualTo(ReplicationDestination other)
         {
-            return string.Equals(Username, other.Username) && string.Equals(Password, other.Password) &&
-                   string.Equals(Domain, other.Domain) && string.Equals(ApiKey, other.ApiKey) &&
+            return string.Equals(ApiKey, other.ApiKey) &&
                    string.Equals(Database, other.Database, StringComparison.OrdinalIgnoreCase) &&
                    TransitiveReplicationBehavior == other.TransitiveReplicationBehavior &&				   
                    IgnoredClient.Equals(other.IgnoredClient) && Disabled.Equals(other.Disabled) &&
@@ -141,10 +98,8 @@ namespace Raven.Abstractions.Replication
         {
             unchecked
             {
-                var hashCode = (Username != null ? Username.GetHashCode() : 0);
-                hashCode = (hashCode * 397) ^ (Password != null ? Password.GetHashCode() : 0);
-                hashCode = (hashCode * 397) ^ (Domain != null ? Domain.GetHashCode() : 0);
-                hashCode = (hashCode * 397) ^ (ApiKey != null ? ApiKey.GetHashCode() : 0);
+
+				var hashCode = ApiKey != null ? ApiKey.GetHashCode() : 0;
                 hashCode = (hashCode * 397) ^ (Database != null ? Database.GetHashCode() : 0);
                 hashCode = (hashCode * 397) ^ (int)TransitiveReplicationBehavior;
                 hashCode = (hashCode * 397) ^ IgnoredClient.GetHashCode();
@@ -168,21 +123,18 @@ namespace Raven.Abstractions.Replication
             public static ReplicationDestinationWithClusterInformation Create(ReplicationDestinationWithConfigurationOrigin source, bool isInCluster, bool isLeader)
             {
                 return new ReplicationDestinationWithClusterInformation
-                       {
-                           ApiKey = source.ApiKey,
-                           ClientVisibleUrl = source.ClientVisibleUrl,
-                           Database = source.Database,
-                           Disabled = source.Disabled,
-                           Domain = source.Domain,
-                           IgnoredClient = source.IgnoredClient,
-                           ClusterInformation = new ClusterInformation(isInCluster, isLeader),
-                           Password = source.Password,
-                           SkipIndexReplication = source.SkipIndexReplication,
-                           TransitiveReplicationBehavior = source.TransitiveReplicationBehavior,
-                           Url = source.Url,
-                           Username = source.Username,
-                           SpecifiedCollections = source.SpecifiedCollections
-                       };
+                {
+                    ApiKey = source.ApiKey,
+                    ClientVisibleUrl = source.ClientVisibleUrl,
+                    Database = source.Database,
+                    Disabled = source.Disabled,
+                    IgnoredClient = source.IgnoredClient,
+                    ClusterInformation = new ClusterInformation(isInCluster, isLeader),
+                    SkipIndexReplication = source.SkipIndexReplication,
+                    TransitiveReplicationBehavior = source.TransitiveReplicationBehavior,
+                    Url = source.Url,
+                    SpecifiedCollections = source.SpecifiedCollections
+                };
             }
         }
     }

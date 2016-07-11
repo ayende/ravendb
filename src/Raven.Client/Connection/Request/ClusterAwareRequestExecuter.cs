@@ -413,9 +413,9 @@ namespace Raven.Client.Connection.Request
                 return null;
 
             if (string.IsNullOrEmpty(destination.Database))
-                return new OperationMetadata(url, destination.Username, destination.Password, destination.Domain, destination.ApiKey, clusterInformation);
+                return new OperationMetadata(url, null, null, null, destination.ApiKey, clusterInformation);
 
-            return new OperationMetadata(MultiDatabase.GetRootDatabaseUrl(url).ForDatabase(destination.Database), destination.Username, destination.Password, destination.Domain, destination.ApiKey, clusterInformation);
+            return new OperationMetadata(MultiDatabase.GetRootDatabaseUrl(url).ForDatabase(destination.Database), null, null, null, destination.ApiKey, clusterInformation);
         }
 
         public IDisposable ForceReadFromMaster()

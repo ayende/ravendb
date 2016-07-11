@@ -225,7 +225,18 @@ namespace Sparrow.Json
             return TryGet(new StringSegment(name, 0, name.Length), out obj);
         }
 
-        public bool TryGet<T>(StringSegment name, out T obj)
+	    public bool TryGetDetached(StringSegment name, out BlittableJsonReaderObject obj)
+	    {
+		    obj = null;
+		    BlittableJsonReaderObject inner;
+		    if (!TryGet(name, out inner))
+			    return false;
+		    obj = _context.ReadObject(inner, null);
+
+		    return true;
+	    }		
+
+		public bool TryGet<T>(StringSegment name, out T obj)
         {
             object result;
             if (TryGetMember(name, out result) == false)
@@ -345,7 +356,6 @@ namespace Sparrow.Json
         {
             return TryGetMember(new StringSegment(name, 0, name.Length), out result);
         }
-
 
         public bool TryGetMember(StringSegment name, out object result)
         {

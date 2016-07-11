@@ -1,6 +1,7 @@
 ﻿using System;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Threading.Tasks;
 
 namespace Sparrow.Json
 {
@@ -35,12 +36,10 @@ namespace Sparrow.Json
             var props = obj.GetPropertiesByInsertionOrder();
             for (int i = 0; i < props.Length; i++)
             {
-                if (i != 0)
-                {
-                    WriteComma();
-                }
+	            if (i != 0)
+		            WriteComma();
 
-                var prop = obj.GetPropertyByIndex(props[i]);
+	            var prop = obj.GetPropertyByIndex(props[i]);
                 WritePropertyName(prop.Item1);
 
                 WriteValue(prop.Item3 & BlittableJsonReaderBase.TypesMask, prop.Item2, originalPropertyOrder: true);
@@ -265,8 +264,6 @@ namespace Sparrow.Json
             _buffer[_pos++] = EndObject;
         }
 
-
-
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void EnsureBuffer(int len)
         {
@@ -278,14 +275,22 @@ namespace Sparrow.Json
             Flush();
         }
 
+	    public async Task FlushAsync()
+	    {
+			if (_pos == 0)
+				return;
+			await _stream.WriteAsync(_buffer, 0, _pos);
+			_pos = 0;
+		}
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Flush()
         {
-            if (_pos == 0)
-                return;
-            _stream.Write(_buffer, 0, _pos);
-            _pos = 0;
-        }
+			if (_pos == 0)
+				return;
+			_stream.Write(_buffer, 0, _pos);
+			_pos = 0;
+		}
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void WriteNull()
@@ -359,12 +364,9 @@ namespace Sparrow.Json
         {
             var lazyStringValue = val.Inner;
             WriteRawString(lazyStringValue.Buffer,lazyStringValue.Size);
-        }
+        }	    
 
-        public void Dispose()
-        {
-            Flush();
-        }
+	    public void Dispose() => Flush();
 
         public void WriteNewLine()
         {

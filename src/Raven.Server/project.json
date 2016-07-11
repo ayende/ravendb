@@ -20,7 +20,8 @@
         "Documents/Patch/*.js",
         "Documents/PeriodicExport/Aws/Amazon.AWS.endpoints.xml"
       ]
-    }
+  },
+    "defines": [ ]
   },
 
   "configurations": {
