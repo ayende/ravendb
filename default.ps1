@@ -248,12 +248,6 @@ task CreateOutpuDirectories -depends CleanOutputDirectory {
     New-Item $build_dir\Output\Bundles\netstandard1.6 -Type directory | Out-Null
     
     New-Item $build_dir\OutputTools -Type directory -ErrorAction SilentlyContinue | Out-Null
-    New-Item $build_dir\OutputTools\Smuggler -Type directory | Out-Null
-    New-Item $build_dir\OutputTools\Backup -Type directory | Out-Null
-    New-Item $build_dir\OutputTools\Migration -Type directory | Out-Null
-    New-Item $build_dir\OutputTools\Diag -Type directory | Out-Null
-    New-Item $build_dir\OutputTools\Monitor -Type directory | Out-Null
-    #TODO: index cleaner
 }
 
 task CleanOutputDirectory { 
@@ -262,43 +256,43 @@ task CleanOutputDirectory {
 }
 
 task CopyMonitor {
-    Copy-Item $base_dir\Raven.Monitor\bin\$global:configuration\amd64 $build_dir\OutputTools\Monitor\amd64 -recurse
-    Copy-Item $base_dir\Raven.Monitor\bin\$global:configuration\x86 $build_dir\OutputTools\Monitor\x86 -recurse
-    Copy-Item $base_dir\Raven.Monitor\bin\$global:configuration\Raven.Monitor.exe $build_dir\OutputTools\Monitor
-    Copy-Item $base_dir\Raven.Monitor\bin\$global:configuration\Microsoft.Diagnostics.Tracing.TraceEvent.dll  $build_dir\OutputTools\Monitor
+    Copy-Item $base_dir\Raven.Monitor\bin\$global:configuration\amd64 $build_dir\OutputTools\amd64 -recurse
+    Copy-Item $base_dir\Raven.Monitor\bin\$global:configuration\x86 $build_dir\OutputTools\x86 -recurse
+    Copy-Item $base_dir\Raven.Monitor\bin\$global:configuration\Raven.Monitor.exe $build_dir\OutputTools
+    Copy-Item $base_dir\Raven.Monitor\bin\$global:configuration\Microsoft.Diagnostics.Tracing.TraceEvent.dll  $build_dir\OutputTools
 }
 
 task CopySmuggler {
-    Copy-Item $base_dir\Raven.Smuggler\bin\$global:configuration\Raven.Abstractions.??? $build_dir\OutputTools\Smuggler
-    Copy-Item $base_dir\Raven.Smuggler\bin\$global:configuration\Raven.Database.??? $build_dir\OutputTools\Smuggler
-    Copy-Item $base_dir\Raven.Smuggler\bin\$global:configuration\Raven.Smuggler.??? $build_dir\OutputTools\Smuggler
+    Copy-Item $base_dir\Raven.Smuggler\bin\$global:configuration\Raven.Abstractions.??? $build_dir\OutputTools
+    Copy-Item $base_dir\Raven.Smuggler\bin\$global:configuration\Raven.Database.??? $build_dir\OutputTools
+    Copy-Item $base_dir\Raven.Smuggler\bin\$global:configuration\Raven.Smuggler.??? $build_dir\OutputTools
 }
 
 task CopyBackup {
-    Copy-Item $base_dir\Raven.Backup\bin\$global:configuration\Raven.Abstractions.??? $build_dir\OutputTools\Backup
-    Copy-Item $base_dir\Raven.Backup\bin\$global:configuration\Raven.Backup.??? $build_dir\OutputTools\Backup
+    Copy-Item $base_dir\Raven.Backup\bin\$global:configuration\Raven.Abstractions.??? $build_dir\OutputTools
+    Copy-Item $base_dir\Raven.Backup\bin\$global:configuration\Raven.Backup.??? $build_dir\OutputTools
 }
 
 task CopyMigration {
-    Copy-Item $base_dir\Raven.Migration\bin\$global:configuration\Raven.Abstractions.??? $build_dir\OutputTools\Migration
-    Copy-Item $base_dir\Raven.Migration\bin\$global:configuration\Raven.Migration.??? $build_dir\OutputTools\Migration
+    Copy-Item $base_dir\Raven.Migration\bin\$global:configuration\Raven.Abstractions.??? $build_dir\OutputTools
+    Copy-Item $base_dir\Raven.Migration\bin\$global:configuration\Raven.Migration.??? $build_dir\OutputTools
 }
 
 task CopyRavenTraffic {
-    Copy-Item $base_dir\Tools\Raven.Traffic\bin\$global:configuration\Raven.Abstractions.??? $build_dir\OutputTools\Diag
-    Copy-Item $base_dir\Tools\Raven.Traffic\bin\$global:configuration\Raven.Traffic.??? $build_dir\OutputTools\Diag
+    Copy-Item $base_dir\Tools\Raven.Traffic\bin\$global:configuration\Raven.Abstractions.??? $build_dir\OutputTools
+    Copy-Item $base_dir\Tools\Raven.Traffic\bin\$global:configuration\Raven.Traffic.??? $build_dir\OutputTools
 }
 
 task CopyRavenApiToken {
-    Copy-Item $base_dir\Tools\Raven.ApiToken\bin\$global:configuration\Raven.Abstractions.??? $build_dir\OutputTools\Diag
-    Copy-Item $base_dir\Tools\Raven.ApiToken\bin\$global:configuration\Raven.ApiToken.??? $build_dir\OutputTools\Diag
-    Copy-Item $base_dir\Tools\Raven.ApiToken\token_test.ps1 $build_dir\OutputTools\Diag\ApiToken
+    Copy-Item $base_dir\Tools\Raven.ApiToken\bin\$global:configuration\Raven.Abstractions.??? $build_dir\OutputTools
+    Copy-Item $base_dir\Tools\Raven.ApiToken\bin\$global:configuration\Raven.ApiToken.??? $build_dir\OutputTools
+    Copy-Item $base_dir\Tools\Raven.ApiToken\token_test.ps1 $build_dir\OutputTools
 }
 
 task CopyStorageExporter {
-    Copy-Item $base_dir\Raven.StorageExporter\bin\$global:configuration\Raven.Abstractions.??? $build_dir\OutputTools\Diag
-    Copy-Item $base_dir\Raven.StorageExporter\bin\$global:configuration\Raven.Database.??? $build_dir\OutputTools\Diag
-    Copy-Item $base_dir\Raven.StorageExporter\bin\$global:configuration\Raven.StorageExporter.??? $build_dir\OutputTools\Diag
+    Copy-Item $base_dir\Raven.StorageExporter\bin\$global:configuration\Raven.Abstractions.??? $build_dir\OutputTools
+    Copy-Item $base_dir\Raven.StorageExporter\bin\$global:configuration\Raven.Database.??? $build_dir\OutputTools
+    Copy-Item $base_dir\Raven.StorageExporter\bin\$global:configuration\Raven.StorageExporter.??? $build_dir\OutputTools
 }
 
 task CopyClient {
@@ -406,7 +400,7 @@ task SignServer {
 task CopyInstaller {
     if($env:buildlabel -eq 13)
     {
-      return
+        return
     }
 
     Copy-Item $base_dir\Raven.Setup\bin\$global:configuration\RavenDB.Setup.exe "$release_dir\$global:uploadCategory-Build-$env:buildlabel.Setup.exe"
@@ -434,10 +428,10 @@ task CopyRootFiles {
 
 task ZipOutput {
     
-    #if($env:buildlabel -eq 13)
-    #{
-    #    return 
-    #}
+    if($env:buildlabel -eq 13)
+    {
+        return 
+    }
 
     $old = pwd
     cd $build_dir\Output
@@ -457,15 +451,11 @@ task ZipOutput {
     
     cd $build_dir\OutputTools
     
-    $file = "$release_dir\$global:uploadCategory-Build-$env:buildlabel-Tools.zip"
+    $file = "$release_dir\$global:uploadCategory-Build-$env:buildlabel.Tools.zip"
         
     exec { 
         & $tools_dir\zip.exe -9 -A -r `
             $file `
-            Smuggler\*.* `
-            Backup\*.* `
-            Migration\*.* `
-            Diag\*.* `
             *.*
     }
     
@@ -589,14 +579,19 @@ task Upload {
         if(($log -eq $null) -or ($log.Length -eq 0)) {
           $log = git log -n 1 --oneline     
         }
-        
+
         $log = $log.Replace('"','''') # avoid problems because of " escaping the output
-        
-        $zipFile = "$release_dir\$global:uploadCategory-Build-$env:buildlabel.zip"
+
+        $serverFile = "$release_dir\$global:uploadCategory-Build-$env:buildlabel.zip"
+        $toolsFile = "$release_dir\$global:uploadCategory-Build-$env:buildlabel.Tools.zip"
         $installerFile = "$release_dir\$global:uploadCategory-Build-$env:buildlabel.Setup.exe"
-        
-        $files = @(@($installerFile, $uploadCategory.Replace("RavenDB", "RavenDB Installer")) , @($zipFile, "$uploadCategory"))
-        
+
+        $files = @(
+            @($installerFile, $uploadCategory.Replace("RavenDB", "RavenDB Installer")),
+            @($toolsFile, $uploadCategory.Replace("RavenDB", "RavenDB Tools")),            
+            @($serverFile, "$uploadCategory")
+        )
+
         foreach ($obj in $files)
         {
             $file = $obj[0]
