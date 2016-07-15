@@ -576,7 +576,7 @@ namespace Raven.Database.Storage.Esent.StorageActions
             }
 
         }
-        public void DeleteMappedResultsForDocumentId(string documentId, int view, Dictionary<ReduceKeyAndBucket, int> removed)
+        public void DeleteMappedResultsForDocumentId(string documentId, int view, ConcurrentDictionary<ReduceKeyAndBucket, int> removed)
         {
             Api.JetSetCurrentIndex(session, MappedResults, "by_view_and_doc_key");
             Api.MakeKey(session, MappedResults, view, MakeKeyGrbit.NewKey);
@@ -598,12 +598,12 @@ namespace Raven.Database.Storage.Esent.StorageActions
                 var bucket = Api.RetrieveColumnAsInt32(session, MappedResults, tableColumnsCache.MappedResultsColumns["bucket"]).Value;
 
                 var key = new ReduceKeyAndBucket(bucket, reduceKey);
-                removed[key] = removed.GetOrDefault(key) + 1;
+                removed.AddOrUpdate(key, 1, (_, val) => val + 1);
                 Api.JetDelete(session, MappedResults);
             } while (Api.TryMoveNext(session, MappedResults));
         }
 
-        public void UpdateRemovedMapReduceStats(int indexId, Dictionary<ReduceKeyAndBucket, int> removed, CancellationToken token)
+        public void UpdateRemovedMapReduceStats(int indexId, ConcurrentDictionary<ReduceKeyAndBucket, int> removed, CancellationToken token)
         {
             foreach (var keyAndBucket in removed)
             {

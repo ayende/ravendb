@@ -3,6 +3,7 @@
 //      Copyright (c) Hibernating Rhinos LTD. All rights reserved.
 //  </copyright>
 // -----------------------------------------------------------------------
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net.Http;
 using System.Threading;
@@ -300,7 +301,7 @@ namespace Raven.Tests.Issues
 
                 storage.Batch(accessor =>
                 {
-                    var removed = new Dictionary<ReduceKeyAndBucket, int>();
+                    var removed = new ConcurrentDictionary<ReduceKeyAndBucket, int>();
                     accessor.MapReduce.DeleteMappedResultsForDocumentId("a/3", a, removed);
                     accessor.MapReduce.DeleteMappedResultsForDocumentId("a/4", a, removed);
                     accessor.MapReduce.UpdateRemovedMapReduceStats(a, removed, CancellationToken.None);
@@ -324,7 +325,7 @@ namespace Raven.Tests.Issues
 
                 storage.Batch(accessor =>
                 {
-                    var removed = new Dictionary<ReduceKeyAndBucket, int>();
+                    var removed = new ConcurrentDictionary<ReduceKeyAndBucket, int>();
                     accessor.MapReduce.DeleteMappedResultsForDocumentId("a/1", a, removed);
                     accessor.MapReduce.DeleteMappedResultsForDocumentId("a/2", a, removed);
                     accessor.MapReduce.UpdateRemovedMapReduceStats(a, removed, CancellationToken.None);

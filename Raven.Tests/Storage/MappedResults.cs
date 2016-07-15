@@ -3,6 +3,7 @@
 //     Copyright (c) Hibernating Rhinos LTD. All rights reserved.
 // </copyright>
 //-----------------------------------------------------------------------
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using Raven.Json.Linq;
 using Raven.Database.Storage;
@@ -34,7 +35,7 @@ namespace Raven.Tests.Storage
             using (var tx = NewTransactionalStorage())
             {
                 tx.Batch(mutator => mutator.MapReduce.PutMappedResult(test, "users/ayende", "ayende", RavenJObject.FromObject(new { Name = "Rahien" })));
-                var reduceKeyAndBuckets = new Dictionary<ReduceKeyAndBucket, int>();
+                var reduceKeyAndBuckets = new ConcurrentDictionary<ReduceKeyAndBucket, int>();
                 tx.Batch(mutator => mutator.MapReduce.DeleteMappedResultsForDocumentId("users/ayende",test, reduceKeyAndBuckets));
 
                 Assert.NotEmpty(reduceKeyAndBuckets);

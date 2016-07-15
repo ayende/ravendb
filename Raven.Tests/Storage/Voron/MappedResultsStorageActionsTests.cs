@@ -3,6 +3,7 @@
 //      Copyright (c) Hibernating Rhinos LTD. All rights reserved.
 //  </copyright>
 // -----------------------------------------------------------------------
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -391,7 +392,7 @@ namespace Raven.Tests.Storage.Voron
             {
                 storage.Batch(x =>
                 {
-                    var removed = new Dictionary<ReduceKeyAndBucket, int>();
+                    var removed = new ConcurrentDictionary<ReduceKeyAndBucket, int>();
                     x.MapReduce.DeleteMappedResultsForDocumentId("doc1", 303, removed);
 
                     Assert.Equal(0, removed.Count);
@@ -408,7 +409,7 @@ namespace Raven.Tests.Storage.Voron
 
                 storage.Batch(x =>
                 {
-                    var removed = new Dictionary<ReduceKeyAndBucket, int>();
+                    var removed = new ConcurrentDictionary<ReduceKeyAndBucket, int>();
                     x.MapReduce.DeleteMappedResultsForDocumentId("doc1", 303, removed);
 
                     Assert.Equal(1, removed.Count);
@@ -443,7 +444,7 @@ namespace Raven.Tests.Storage.Voron
 
                 storage.Batch(x =>
                 {
-                    var removed = new Dictionary<ReduceKeyAndBucket, int>();
+                    var removed = new ConcurrentDictionary<ReduceKeyAndBucket, int>();
                     x.MapReduce.DeleteMappedResultsForDocumentId("doc1", 303, removed);
 
                     Assert.Equal(1, removed.Count);
@@ -474,7 +475,7 @@ namespace Raven.Tests.Storage.Voron
 
                 storage.Batch(accessor =>
                 {
-                    var removed = new Dictionary<ReduceKeyAndBucket, int>();
+                    var removed = new ConcurrentDictionary<ReduceKeyAndBucket, int>();
                     accessor.MapReduce.UpdateRemovedMapReduceStats(303, removed, CancellationToken.None);
                 });
 
@@ -493,11 +494,8 @@ namespace Raven.Tests.Storage.Voron
 
                 storage.Batch(accessor =>
                 {
-                    var removed = new Dictionary<ReduceKeyAndBucket, int>
-                                  {
-                                      { new ReduceKeyAndBucket(123, "reduceKey1"), 3 }
-                                  };
-
+                    var removed = new ConcurrentDictionary<ReduceKeyAndBucket, int>();
+                    removed.GetOrAdd(new ReduceKeyAndBucket(123, "reduceKey1"), 3);
                     accessor.MapReduce.UpdateRemovedMapReduceStats(303, removed, CancellationToken.None);
                 });
 
@@ -516,11 +514,8 @@ namespace Raven.Tests.Storage.Voron
 
                 storage.Batch(accessor =>
                 {
-                    var removed = new Dictionary<ReduceKeyAndBucket, int>
-                                  {
-                                      { new ReduceKeyAndBucket(123, "reduceKey1"), 4 }
-                                  };
-
+                    var removed = new ConcurrentDictionary<ReduceKeyAndBucket, int>();
+                    removed.GetOrAdd(new ReduceKeyAndBucket(123, "reduceKey1"), 4);
                     accessor.MapReduce.UpdateRemovedMapReduceStats(303, removed, CancellationToken.None);
                     accessor.MapReduce.UpdateRemovedMapReduceStats(404, removed, CancellationToken.None);
                 });

@@ -176,7 +176,7 @@ namespace Raven.Database.Storage.Voron.StorageActions
             AddReduceKeyCount(keySlice, view, viewKeySlice, reduceKey, newValue, reduceKeyCountVersion);
         }
 
-        public void DeleteMappedResultsForDocumentId(string documentId, int view, Dictionary<ReduceKeyAndBucket, int> removed)
+        public void DeleteMappedResultsForDocumentId(string documentId, int view, ConcurrentDictionary<ReduceKeyAndBucket, int> removed)
         {
             var viewKey = CreateViewKey(view);
             var viewAndDocumentId = new Slice(AppendToKey(CreateKey(view), documentId));
@@ -216,13 +216,13 @@ namespace Raven.Database.Storage.Voron.StorageActions
                     mappedResultsData.Delete(writeBatch.Value, id);
 
                     var reduceKeyAndBucket = new ReduceKeyAndBucket(bucket, reduceKey);
-                    removed[reduceKeyAndBucket] = removed.GetOrDefault(reduceKeyAndBucket) + 1;
+                    removed.AddOrUpdate(reduceKeyAndBucket, 1, (_, val) => val + 1);
                 }
                 while (iterator.MoveNext());
             }
         }
 
-        public void UpdateRemovedMapReduceStats(int view, Dictionary<ReduceKeyAndBucket, int> removed, CancellationToken token)
+        public void UpdateRemovedMapReduceStats(int view, ConcurrentDictionary<ReduceKeyAndBucket, int> removed, CancellationToken token)
         {
             foreach (var keyAndBucket in removed)
             {

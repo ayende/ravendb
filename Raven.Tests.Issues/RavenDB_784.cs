@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Threading;
 using Raven.Abstractions.Data;
 using Raven.Tests.Common;
@@ -92,7 +93,7 @@ namespace Raven.Tests.Issues
 
                 storage.Batch(accessor =>
                 {
-                    var removed = new Dictionary<ReduceKeyAndBucket, int>();
+                    var removed = new ConcurrentDictionary<ReduceKeyAndBucket, int>();
                     accessor.MapReduce.DeleteMappedResultsForDocumentId("a/3", a, removed);
                     accessor.MapReduce.DeleteMappedResultsForDocumentId("a/4", a, removed);
 
@@ -233,7 +234,7 @@ namespace Raven.Tests.Issues
 
                 storage.Batch(accessor =>
                 {
-                    var removed = new Dictionary<ReduceKeyAndBucket, int>();
+                    var removed = new ConcurrentDictionary<ReduceKeyAndBucket, int>();
                     accessor.MapReduce.DeleteMappedResultsForDocumentId("a/3", a, removed);
                     accessor.MapReduce.DeleteMappedResultsForDocumentId("a/4", a, removed);
                     accessor.MapReduce.UpdateRemovedMapReduceStats(a, removed, CancellationToken.None);

@@ -4,6 +4,7 @@
 // </copyright>
 //-----------------------------------------------------------------------
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
 using Raven.Abstractions.Data;
@@ -20,8 +21,8 @@ namespace Raven.Database.Storage
 
         void PutMappedResult(int indexId, string docId, string reduceKey, RavenJObject data);
         void IncrementReduceKeyCounter(int indexId, string reduceKey, int val);
-        void DeleteMappedResultsForDocumentId(string documentId, int view, Dictionary<ReduceKeyAndBucket, int> removed);
-        void UpdateRemovedMapReduceStats(int indexId, Dictionary<ReduceKeyAndBucket, int> removed, CancellationToken token);
+        void DeleteMappedResultsForDocumentId(string documentId, int view, ConcurrentDictionary<ReduceKeyAndBucket, int> removed);
+        void UpdateRemovedMapReduceStats(int indexId, ConcurrentDictionary<ReduceKeyAndBucket, int> removed, CancellationToken token);
         void DeleteMappedResultsForView(int indexId, CancellationToken token);
 
         IEnumerable<string> GetKeysForIndexForDebug(int index, string startsWith, string sourceId, int start, int take);

@@ -3,6 +3,7 @@
 //     Copyright (c) Hibernating Rhinos LTD. All rights reserved.
 // </copyright>
 //-----------------------------------------------------------------------
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -106,7 +107,7 @@ namespace Raven.Tests.Views
 
             transactionalStorage.Batch(actions =>
             {
-                actions.MapReduce.DeleteMappedResultsForDocumentId("123",id, new Dictionary<ReduceKeyAndBucket, int>());
+                actions.MapReduce.DeleteMappedResultsForDocumentId("123", id, new ConcurrentDictionary<ReduceKeyAndBucket, int>());
                 actions.MapReduce.PutMappedResult(id, "123", "1", RavenJObject.Parse("{'a': 'def'}"));
             });
 
@@ -129,8 +130,8 @@ namespace Raven.Tests.Views
 
             transactionalStorage.Batch(actions =>
             {
-                actions.MapReduce.DeleteMappedResultsForDocumentId("123",two, new Dictionary<ReduceKeyAndBucket, int>());
-                actions.MapReduce.DeleteMappedResultsForDocumentId("123",one, new Dictionary<ReduceKeyAndBucket, int>());
+                actions.MapReduce.DeleteMappedResultsForDocumentId("123", two, new ConcurrentDictionary<ReduceKeyAndBucket, int>());
+                actions.MapReduce.DeleteMappedResultsForDocumentId("123", one, new ConcurrentDictionary<ReduceKeyAndBucket, int>());
             });
 
             transactionalStorage.Batch(actions =>

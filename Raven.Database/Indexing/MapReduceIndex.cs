@@ -91,8 +91,8 @@ namespace Raven.Database.Indexing
             token.ThrowIfCancellationRequested();
 
             var count = 0;
-            var sourceCount = 0;
-            var deleted = new Dictionary<ReduceKeyAndBucket, int>();
+            var sourceCount = batch.Docs.Count;
+            var deleted = new ConcurrentDictionary<ReduceKeyAndBucket, int>();
             var performance = RecordCurrentBatch("Current Map", "Map", batch.Docs.Count);
             var performanceStats = new List<BasePerformanceStats>();
 
@@ -113,22 +113,27 @@ namespace Raven.Database.Indexing
             }
 
             var deleteMappedResultsDuration = new Stopwatch();
-            var documentsWrapped = batch.Docs.Select(doc =>
-            {
-                token.ThrowIfCancellationRequested();
-
-                sourceCount++;
-                var documentId = doc.__document_id;
-
-                using (StopwatchScope.For(deleteMappedResultsDuration))
+            context.Database.MappingThreadPool.ExecuteBatch(batch.Docs, (IEnumerator<dynamic> enumerator) =>
+                context.TransactionalStorage.Batch(accessor =>
                 {
-                    actions.MapReduce.DeleteMappedResultsForDocumentId((string)documentId, indexId, deleted);
-                }
+                    while (enumerator.MoveNext())
+                    {
+                        token.ThrowIfCancellationRequested();
 
-                return doc;
-            })
-            .Where(x => x is FilteredDocument == false)
-            .ToList();
+                        var doc = enumerator.Current;
+                        var documentId = doc.__document_id;
+
+                        using (StopwatchScope.For(deleteMappedResultsDuration))
+                        {
+                            accessor.MapReduce.DeleteMappedResultsForDocumentId((string)documentId, indexId, deleted);
+                        }
+                    }
+                }),
+                description: $"Deleting mapped results, index: {PublicName}, {batch.Docs.Count} documents");
+
+            var documentsWrapped = batch.Docs
+                .Where(doc => doc is FilteredDocument == false)
+                .ToList();
 
             performanceStats.Add(new PerformanceStats
             {
@@ -536,7 +541,7 @@ namespace Raven.Database.Indexing
                         deletionBatchInfo.PerformanceStats.Add(PerformanceStats.From(IndexingOperation.StorageCommit, storageCommitDuration.ElapsedMilliseconds));
                     };
 
-                    var reduceKeyAndBuckets = new Dictionary<ReduceKeyAndBucket, int>();
+                    var reduceKeyAndBuckets = new ConcurrentDictionary<ReduceKeyAndBucket, int>();
 
                     var deleteMappedResultsDuration = new Stopwatch();
 
