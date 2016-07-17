@@ -31,7 +31,7 @@ namespace Voron.Platform.Win32
             _handle = Win32NativeFileMethods.CreateFile(filename,
                 Win32NativeFileAccess.GenericWrite, Win32NativeFileShare.Read, IntPtr.Zero,
                 Win32NativeFileCreationDisposition.OpenAlways,
-                Win32NativeFileAttributes.Write_Through | Win32NativeFileAttributes.NoBuffering, IntPtr.Zero);
+                options.WinOpenFlags, IntPtr.Zero);
 
             if (_handle.IsInvalid)
                 throw new Win32Exception();

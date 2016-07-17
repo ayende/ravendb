@@ -723,7 +723,7 @@ namespace Voron
                 if (FlushInProgressLock.IsWriteLockHeld == false)
                     flushInProgressReadLockTaken = FlushInProgressLock.TryEnterReadLock(wait);
 
-                if (flushInProgressReadLockTaken == false) // ADIADI :: FlushInProgressLock.IsWriteLockHeld == false ? recheck ?
+                if (flushInProgressReadLockTaken == false && FlushInProgressLock.IsWriteLockHeld == false)
                     return false;
 
                 Monitor.TryEnter(_txWriter, wait, ref txLockTaken);
