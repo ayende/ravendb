@@ -127,5 +127,21 @@ namespace Voron.Platform.Posix
             }
             return true;
         }
+
+        public void Truncate(long size)
+        {
+            var result = Syscall.ftruncate(_fd, size);
+            if (result == -1)
+            {
+                var err = Marshal.GetLastWin32Error();
+                PosixHelper.ThrowLastError(err);
+            }
+
+            if (PosixHelper.CheckSyncDirectoryAllowed(_filename) && PosixHelper.SyncDirectory(_filename) == -1)
+            {
+                var err = Marshal.GetLastWin32Error();
+                PosixHelper.ThrowLastError(err);
+            }
+        }
     }
 }

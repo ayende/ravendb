@@ -155,6 +155,11 @@ namespace Voron.Platform.Win32
             }
         }
 
+        public void Truncate(long size)
+        {
+            Win32NativeFileMethods.SetFileLength(_handle, size);
+        }
+
         public bool Disposed => _disposed;
 
 

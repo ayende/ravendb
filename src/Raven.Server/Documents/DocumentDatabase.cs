@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Collections;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Http;
@@ -309,5 +311,14 @@ namespace Raven.Server.Documents
             }
         }
 
+        public IEnumerable<StorageEnvironment> GetAllStoragesEnvironment()
+        {
+            yield return DocumentsStorage.Environment;
+            // yield return SubscriptionStorage.Environment; ADIADI :: ?
+            foreach (var index in IndexStore.GetIndexes())
+            {
+                // yield return storageEnvironments[i++] = index._indexStorage.Environment; ADIADI:: ?
+            }
+        }
     }
 }
