@@ -311,11 +311,12 @@ namespace Raven.Server.Documents
 
         public IEnumerable<StorageEnvironment> GetAllStoragesEnvironment()
         {
+            // TODO :: more storage environments ?
             yield return DocumentsStorage.Environment;
-            // yield return SubscriptionStorage.Environment; ADIADI :: ?
+            yield return SubscriptionStorage.Environment();
             foreach (var index in IndexStore.GetIndexes())
             {
-                // yield return storageEnvironments[i++] = index._indexStorage.Environment; ADIADI:: ?
+                yield return index._indexStorage.Environment();
             }
         }
     }
