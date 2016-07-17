@@ -756,7 +756,10 @@ namespace Voron
                 return TransactionsModeResult.ModeAlreadySet;
 
             Options.TransactionsMode = mode;
-            Options.NonSafeTransactionExpiration = DateTime.Now + duration;
+            if (duration == TimeSpan.FromMinutes(0)) // infinte
+                Options.NonSafeTransactionExpiration = null;
+            else
+                Options.NonSafeTransactionExpiration = DateTime.Now + duration;
 
             bool locksTaken = false;
             try

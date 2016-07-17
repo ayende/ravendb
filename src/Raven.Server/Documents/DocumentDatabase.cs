@@ -44,8 +44,6 @@ namespace Raven.Server.Documents
         private readonly object _idleLocker = new object();
         private Task _indexStoreTask;
         private Task _transformerStoreTask;
-        public bool LazyTransactionMode { get; set; }
-        public DateTime LazyTransactionExpiration { get; set; }
         public TransactionOperationsMerger TxMerger;
         private DocumentConvention _convention;
 

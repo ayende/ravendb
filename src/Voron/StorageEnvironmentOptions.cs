@@ -502,6 +502,6 @@ namespace Voron
         public TransactionsMode TransactionsMode { get; set; }
         public OpenFlags PosixOpenFlags = OpenFlags.O_DSYNC | OpenFlags.O_DIRECT;
         public Win32NativeFileAttributes WinOpenFlags = Win32NativeFileAttributes.Write_Through | Win32NativeFileAttributes.NoBuffering;
-        public DateTime NonSafeTransactionExpiration { get; set; }
+        public DateTime? NonSafeTransactionExpiration { get; set; }
     }
 }

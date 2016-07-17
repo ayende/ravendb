@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Net;
 using System.Threading.Tasks;
+using Raven.Abstractions.TimeSeries;
 using Raven.Server.Routing;
 using Raven.Server.ServerWide.Context;
 using Sparrow.Json;
@@ -19,9 +20,8 @@ namespace Raven.Server.Documents.Handlers.Admin
             if (Enum.TryParse(modeStr, out mode) == false)
                 throw new InvalidOperationException("Query string value 'mode' is not a valid mode: " + modeStr);
 
-            var duration = GetTimeSpanQueryString("duration", required: false) ?? TimeSpan.FromDays(1); // ADIADI :: nullable for infinit (settings)
-
-
+            var configDuration = TimeSpan.FromMinutes(Database.Configuration.Storage.TransactionsModeDuration);
+            var duration = GetTimeSpanQueryString("duration", required: false) ?? configDuration;
             var storageEnvironments = Database.GetAllStoragesEnvironment();
 
             var rc = 304;
