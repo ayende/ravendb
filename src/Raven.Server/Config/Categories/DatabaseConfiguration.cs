@@ -34,5 +34,10 @@ namespace Raven.Server.Config.Categories
         [ConfigurationEntry("Raven/Databases/FrequencyToCheckForIdleDatabasesInSec")]
         [ConfigurationEntry("Raven/Databases/FrequencyToCheckForIdleDatabases")]
         public TimeSetting FrequencyToCheckForIdle { get; set; }
+
+        [Description("The maximum number of documents to keep track of, in the huge documents list")]
+        [DefaultValue(100)]
+        [ConfigurationEntry("Raven/Databases/MaxWarnSizeHugeDocuments")]
+        public int MaxWarnSizeHugeDocuments { get; set; }
     }
 }

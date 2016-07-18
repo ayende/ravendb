@@ -1,9 +1,10 @@
+using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 
 namespace Raven.Database.Util
 {
-    public class SizeLimitedConcurrentDictionary<TKey, TValue>
+    public class SizeLimitedConcurrentDictionary<TKey, TValue> : IEnumerable<TKey>
     {
         private readonly ConcurrentDictionary<TKey, TValue> dic;
         private readonly ConcurrentQueue<TKey> queue = new ConcurrentQueue<TKey>();
@@ -46,6 +47,18 @@ namespace Raven.Database.Util
         {
             return dic.TryRemove(key, out value);
         }
-        
+
+        public IEnumerator<TKey> GetEnumerator()
+        {
+            foreach (var item in dic)
+            {
+                yield return item.Key;
+            }
+        }
+
+        IEnumerator IEnumerable.GetEnumerator()
+        {
+            return GetEnumerator();
+        }
     }
 }
