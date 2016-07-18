@@ -62,6 +62,7 @@ namespace Raven.Server.Documents
                                               .Replace("127.0.0.1", hostName);
 
             Notifications = new DocumentsNotifications();
+            HugeDocuments = new HugeDocuments(configuration.Databases.MaxWarnSizeHugeDocuments);
             DocumentsStorage = new DocumentsStorage(this);
             IndexStore = new IndexStore(this);
             TransformerStore = new TransformerStore(this);
@@ -94,6 +95,8 @@ namespace Raven.Server.Documents
         public DocumentTombstoneCleaner DocumentTombstoneCleaner { get; private set; }
 
         public DocumentsNotifications Notifications { get; }
+
+        public HugeDocuments HugeDocuments { get; }
 
         public MetricsCountersManager Metrics { get; }
 
