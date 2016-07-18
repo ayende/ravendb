@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
@@ -36,6 +37,15 @@ namespace Raven.Client.Smuggler
             ShowProgress("Starting to export file");
             var database = options.Database ?? _store.DefaultDatabase;
             var url = $"{_store.Url}/databases/{database}/smuggler/export";
+            var query = new Dictionary<string, string>();
+            if (options.Limit.HasValue)
+            {
+                query.Add("limit", options.Limit.Value.ToString());
+            }
+            if (query.Count > 0)
+            {
+                url += "?" + string.Join("&", query.Select(pair => pair.Key + "=" + pair.Value));
+            }
             // todo: send the options here
             var response = await httpClient.PostAsync(url, new StringContent(""), token).ConfigureAwait(false);
             var stream = await response.Content.ReadAsStreamAsync();
