@@ -10,7 +10,6 @@ using Raven.Abstractions.Connection;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Logging;
 using Raven.Client.Connection;
-using Raven.Client.Document;
 using Raven.Client.Extensions;
 using Raven.Json.Linq;
 using Raven.Server.Config;
@@ -39,15 +38,10 @@ namespace Raven.Server.Documents
         private readonly CancellationTokenSource _databaseShutdown = new CancellationTokenSource();
         public readonly PatchDocument Patch;
 
-        private HttpJsonRequestFactory _httpJsonRequestFactory;
-
         private readonly object _idleLocker = new object();
         private Task _indexStoreTask;
         private Task _transformerStoreTask;
         public TransactionOperationsMerger TxMerger;
-        private DocumentConvention _convention;
-
-        public string Url { get; private set; }
 
         public DocumentDatabase(string name, RavenConfiguration configuration, MetricsScheduler metricsScheduler,
             LoggerSetup loggerSetup)
@@ -55,11 +49,6 @@ namespace Raven.Server.Documents
             Name = name;
             Configuration = configuration;
             LoggerSetup = loggerSetup;
-
-            var hostName = Dns.GetHostName();
-            Url = Configuration.Core.ServerUrl.ToLower()
-                                              .Replace("localhost", hostName)
-                                              .Replace("127.0.0.1", hostName);
 
             Notifications = new DocumentsNotifications();
             DocumentsStorage = new DocumentsStorage(this);
@@ -71,7 +60,7 @@ namespace Raven.Server.Documents
             SubscriptionStorage = new SubscriptionStorage(this, metricsScheduler);
             Metrics = new MetricsCountersManager(metricsScheduler);
             Patch = new PatchDocument(this);
-            TxMerger = new TransactionOperationsMerger(this,DatabaseShutdown);
+            TxMerger = new TransactionOperationsMerger(this, DatabaseShutdown);
             HugeDocuments = new HugeDocuments(configuration.Databases.MaxCollectionSizeHugeDocuments, 
                 configuration.Databases.MaxWarnSizeHugeDocuments);
 
@@ -110,35 +99,18 @@ namespace Raven.Server.Documents
 
         public DocumentReplicationLoader DocumentReplicationLoader { get; private set; }
 
-        public HttpJsonRequestFactory HttpRequestFactory => _httpJsonRequestFactory;
-
-        public void Initialize(HttpJsonRequestFactory httpRequestFactory, DocumentConvention convention)
+        public void Initialize()
         {
-            _convention = convention;
-            _httpJsonRequestFactory = httpRequestFactory;
             DocumentsStorage.Initialize();
             InitializeInternal();
         }
 
-        public void Initialize(StorageEnvironmentOptions options, HttpJsonRequestFactory httpRequestFactory, DocumentConvention convention)
+        public void Initialize(StorageEnvironmentOptions options)
         {
-            _httpJsonRequestFactory = httpRequestFactory;
-            _convention = convention;
             DocumentsStorage.Initialize(options);
             InitializeInternal();
         }
 
-        public TcpConnectionInfo GetTcpInfo(string url, string apiKey)
-        {
-            using (var request = HttpRequestFactory.CreateHttpJsonRequest(new CreateHttpJsonRequestParams(null, string.Format("{0}/info/tcp",
-                MultiDatabase.GetRootDatabaseUrl(url)),
-                HttpMethod.Get,
-                new OperationCredentials(apiKey, CredentialCache.DefaultCredentials),_convention)))
-            {
-                var result = request.ReadResponseJson();
-                return _convention.CreateSerializer().Deserialize<TcpConnectionInfo>(new RavenJTokenReader(result));
-            }
-        }
 
         private void InitializeInternal()
         {
@@ -146,7 +118,7 @@ namespace Raven.Server.Documents
             _indexStoreTask = IndexStore.InitializeAsync();
             _transformerStoreTask = TransformerStore.InitializeAsync();
             SqlReplicationLoader.Initialize();
-
+            DocumentReplicationLoader.Initialize();
             DocumentTombstoneCleaner.Initialize();
             BundleLoader = new BundleLoader(this);
 
