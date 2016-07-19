@@ -8,22 +8,18 @@ namespace Raven.Server.Documents
     public class HugeDocuments
     {
         private readonly SizeLimitedConcurrentDictionary<Tuple<string, DateTime>, int> _hugeDocs;
+        private readonly int _maxWarnSize;
 
-        public HugeDocuments(int maxWarnSize)
+        public HugeDocuments(int maxCollectionSize, int maxWarnSize)
         {
-            _hugeDocs = new SizeLimitedConcurrentDictionary<Tuple<string, DateTime>, int>(maxWarnSize);
+            _maxWarnSize = maxWarnSize;
+            _hugeDocs = new SizeLimitedConcurrentDictionary<Tuple<string, DateTime>, int>(maxCollectionSize);
         }
 
-        public void Add(string id, int size)
+        public void AddIfDocIsHuge(string id, int size)
         {
-            _hugeDocs.Set(new Tuple<string, DateTime>(id, DateTime.Now), size);
-        }
-
-        public int GetSize(Tuple<string, DateTime> key)
-        {
-            int size;
-            _hugeDocs.TryGetValue(key, out size);
-            return size;
+            if (size > _maxWarnSize)
+                _hugeDocs.Set(new Tuple<string, DateTime>(id, DateTime.UtcNow), size);
         }
 
         public SizeLimitedConcurrentDictionary<Tuple<string, DateTime>, int> GetHugeDocuments()

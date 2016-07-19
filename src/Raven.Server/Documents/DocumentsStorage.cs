@@ -396,8 +396,7 @@ namespace Raven.Server.Documents
 
             var doc = TableValueToDocument(context, tvr);
 
-            if (doc.Data.Size > 5 * 1024 * 1024)
-                context.DocumentDatabase().HugeDocuments.Add(doc.Key, doc.Data.Size);
+            context.DocumentDatabase().HugeDocuments.AddIfDocIsHuge(doc.Key, doc.Data.Size);
 
             return doc;
         }

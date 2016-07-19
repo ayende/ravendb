@@ -8,7 +8,7 @@ namespace Raven.Server.Documents.Handlers
 {
     public class HugeDocumentsHandler : DatabaseRequestHandler
     {
-        [RavenAction("/databases/*/huge-documents", "GET")]
+        [RavenAction("/databases/*/debug/huge-documents", "GET")]
         public Task HugeDocuments()
         {
             DocumentsOperationContext context;
@@ -20,7 +20,7 @@ namespace Raven.Server.Documents.Handlers
 
                 var isFirst = true;
 
-                foreach (var key in context.DocumentDatabase().HugeDocuments.GetHugeDocuments())
+                foreach (var pair in context.DocumentDatabase().HugeDocuments.GetHugeDocuments())
                 {
                     if (isFirst == false)
                         writer.WriteComma();
@@ -30,17 +30,17 @@ namespace Raven.Server.Documents.Handlers
                     writer.WriteStartObject();
 
                     writer.WritePropertyName(context.GetLazyString("Id"));
-                    writer.WriteString(context.GetLazyString(key.Item1));
+                    writer.WriteString(context.GetLazyString(pair.Key.Item1));
 
                     writer.WriteComma();
 
                     writer.WritePropertyName(context.GetLazyString("Size"));
-                    writer.WriteInteger(context.DocumentDatabase().HugeDocuments.GetSize(key));
+                    writer.WriteInteger(pair.Value);
 
                     writer.WriteComma();
 
                     writer.WritePropertyName(context.GetLazyString("Last Access"));
-                    writer.WriteString(context.GetLazyString(key.Item2.ToString(CultureInfo.InvariantCulture)));
+                    writer.WriteString(context.GetLazyString(pair.Key.Item2.ToString(CultureInfo.InvariantCulture)));
 
                     writer.WriteEndObject();
 

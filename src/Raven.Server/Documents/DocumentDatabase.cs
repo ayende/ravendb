@@ -62,7 +62,6 @@ namespace Raven.Server.Documents
                                               .Replace("127.0.0.1", hostName);
 
             Notifications = new DocumentsNotifications();
-            HugeDocuments = new HugeDocuments(configuration.Databases.MaxWarnSizeHugeDocuments);
             DocumentsStorage = new DocumentsStorage(this);
             IndexStore = new IndexStore(this);
             TransformerStore = new TransformerStore(this);
@@ -73,6 +72,9 @@ namespace Raven.Server.Documents
             Metrics = new MetricsCountersManager(metricsScheduler);
             Patch = new PatchDocument(this);
             TxMerger = new TransactionOperationsMerger(this,DatabaseShutdown);
+            HugeDocuments = new HugeDocuments(configuration.Databases.MaxCollectionSizeHugeDocuments, 
+                configuration.Databases.MaxWarnSizeHugeDocuments);
+
         }
 
         public SubscriptionStorage SubscriptionStorage { get; set; }

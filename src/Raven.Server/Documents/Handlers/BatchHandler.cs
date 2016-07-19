@@ -129,8 +129,7 @@ namespace Raven.Server.Documents.Handlers
                             var putResult = Database.DocumentsStorage.Put(context, cmd.Key, cmd.Etag,
                                 cmd.Document);
 
-                            if (cmd.Document.Size > 5 * 1024 * 1024)
-                                context.DocumentDatabase().HugeDocuments.Add(cmd.Key, cmd.Document.Size);
+                            context.DocumentDatabase().HugeDocuments.AddIfDocIsHuge(cmd.Key, cmd.Document.Size);
 
                             BlittableJsonReaderObject metadata;
                             cmd.Document.TryGet(Constants.Metadata, out metadata);
@@ -154,8 +153,7 @@ namespace Raven.Server.Documents.Handlers
                                 ["Debug"] = patchResult.DebugInfo,
                             };
 
-                            if (cmd.Document.Size > 5 * 1024 * 1024)
-                                context.DocumentDatabase().HugeDocuments.Add(cmd.Key, cmd.Document.Size);
+                            context.DocumentDatabase().HugeDocuments.AddIfDocIsHuge(cmd.Key, cmd.Document.Size);
 
                             if (cmd.IsDebugMode)
                             {
