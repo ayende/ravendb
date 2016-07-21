@@ -1,17 +1,23 @@
+/// <reference path="../../../Scripts/typings/d3/nvd3.d.ts" />
+/// <reference path="../../../Scripts/typings/d3/d3.d.ts" />
+
 import viewModelBase = require("viewmodels/viewModelBase");
-/* TODO
-import d3 = require("d3");
-import nv = require("nvd3");*/
+import d3 = require("d3/d3");
+import nv = require("nvd3");
 import appUrl = require("common/appUrl");
 import listDiskPerformanceRunsCommand = require("commands/maintenance/listDiskPerformanceRunsCommand");
 import getDocumentWithMetadataCommand = require("commands/database/documents/getDocumentWithMetadataCommand");
 import deleteDocumentCommand = require("commands/database/documents/deleteDocumentCommand");
+import settingsAccessAuthorizer = require("common/settingsAccessAuthorizer");
 
 class diskIoViewer extends viewModelBase {
-/* TODO
+
     isoFormat = d3.time.format.iso;
 
-    showChart = ko.observable<boolean>(true);
+    settingsAccess = new settingsAccessAuthorizer();
+
+    showChart = ko.observable<boolean>(false);
+    emptyReport = ko.observable<boolean>(false);
 
     performanceRuns = ko.observableArray<performanceRunItemDto>([]);
     currentPerformanceRun = ko.observable<performanceRunItemDto>();
@@ -58,7 +64,6 @@ class diskIoViewer extends viewModelBase {
     constructor() {
         super();
         this.currentPerformanceRun.subscribe(v => {
-            this.showChart(!!v);
             if (!v) {
                 this.perDbReports([]);
                 this.currentDbReport(undefined);
@@ -67,6 +72,8 @@ class diskIoViewer extends viewModelBase {
             new getDocumentWithMetadataCommand(v.documentId, appUrl.getSystemDatabase())
                 .execute()
                 .done((doc: diskIoPerformanceRunDto) => {
+                    this.emptyReport(doc.Databases.length === 0);
+                    this.showChart(doc.Databases.length > 0);
                     this.data = doc;
                     if (doc.Databases) {
                         this.perDbReports(doc.Databases);
@@ -98,6 +105,12 @@ class diskIoViewer extends viewModelBase {
             .always(() => deffered.resolve({ can: true }));
 
         return deffered;
+    }
+
+    activate(args) {
+        super.activate(args);
+
+        this.updateHelpLink("K6J4EE");
     }
 
     detached() {
@@ -215,7 +228,7 @@ class diskIoViewer extends viewModelBase {
                 this.currentPerformanceRun(null);
                 this.showChart(false);
             });
-    }*/
+    }
 }
 
 export = diskIoViewer; 

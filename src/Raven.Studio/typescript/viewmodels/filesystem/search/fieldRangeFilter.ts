@@ -4,14 +4,14 @@ import moment = require("moment");
 import dialog = require("plugins/dialog");
 
 class fieldRangeFilter extends searchDialogViewModel {
-    filterOptions = ko.observableArray(["Numeric Double", "Numeric Int", "Alphabetical", "Datetime"]);
+    filterOptions = ko.observableArray(["Numeric Double", "Numeric Int","Numeric Long", "Alphabetical", "Datetime"]);
     selectedOption = ko.observable("Starts with");
     public applyFilterTask = $.Deferred();
     label = "";
     from = ko.observable();
     to = ko.observable();
-    fromDate = ko.observable<moment.Moment>();
-    toDate = ko.observable<moment.Moment>();
+    fromDate = ko.observable<Moment>();
+    toDate = ko.observable<Moment>();
     constructor(label: string) {
         super([ko.observable("")]);
         datePickerBindingHandler.install();

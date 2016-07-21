@@ -1,7 +1,6 @@
-/// <reference path="../../../typings/tsd.d.ts"/>
-
 class resource {
     isAdminCurrentTenant = ko.observable<boolean>(false);
+    isSystem = false;
     isSelected = ko.observable<boolean>(false);
     isChecked = ko.observable<boolean>(false);
     itemCountText: KnockoutComputed<string>;
@@ -10,9 +9,11 @@ class resource {
     isLoaded = ko.observable<boolean>(false);
     disabled = ko.observable<boolean>(false);
     isLicensed: KnockoutComputed<boolean>;
-    activeBundles = ko.observableArray<string>(); // TODO: This should be removed
+    activeBundles = ko.observableArray<string>();
     isImporting = ko.observable<boolean>(false);
     importStatus = ko.observable<string>("");
+    isExporting = ko.observable<boolean>(false);
+    exportStatus = ko.observable<string>("");
     statistics: KnockoutObservable<any>;
     fullTypeName: string;
 

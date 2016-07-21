@@ -1,5 +1,3 @@
-/// <reference path="../../../../typings/tsd.d.ts"/>
-
 class querySort {
     fieldName = ko.observable<string>();
     fieldNameOrDefault: KnockoutComputed<string>;
@@ -7,7 +5,6 @@ class querySort {
     descending: KnockoutComputed<boolean>;
     rangeAscending: KnockoutComputed<boolean>;
     rangeDescending: KnockoutComputed<boolean>;
-    sortDirection = ko.observable(0); // 0 = ascending, 1 = descending, 2 = range ascending, 3 = range descending
     isRange = ko.observable<boolean>(false);
     isAscending = ko.observable<boolean>(true);
 

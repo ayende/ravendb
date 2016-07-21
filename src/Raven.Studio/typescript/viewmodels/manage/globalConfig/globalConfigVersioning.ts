@@ -3,27 +3,32 @@ import versioningEntry = require("models/database/documents/versioningEntry");
 import appUrl = require("common/appUrl");
 import getVersioningsCommand = require("commands/database/documents/getVersioningsCommand");
 import saveVersioningCommand = require("commands/database/documents/saveVersioningCommand");
+import globalConfig = require("viewmodels/manage/globalConfig/globalConfig");
+import settingsAccessAuthorizer = require("common/settingsAccessAuthorizer");
 
 class globalConfigVersioning extends viewModelBase {
     activated = ko.observable<boolean>(false);
 
-    versionings = ko.observableArray<versioningEntry>().extend({ required: true });
+    developerLicense = globalConfig.developerLicense;
+    canUseGlobalConfigurations = globalConfig.canUseGlobalConfigurations;
+    versionings = ko.observableArray<versioningEntry>();
     toRemove: versioningEntry[];
     isSaveEnabled: KnockoutComputed<boolean>;
-
-    constructor() {
-        super();
-        this.versionings = ko.observableArray<versioningEntry>();
-    }
+    settingsAccess = new settingsAccessAuthorizer();
 
     canActivate(args: any): any {
         super.canActivate(args);
 
         var deferred = $.Deferred();
-        var db = appUrl.getDatabase();
-        this.fetchVersioningEntries(db)
-            .done(() => deferred.resolve({ can: true }))
-            .fail(() => deferred.resolve({ redirect: appUrl.forDatabaseSettings(db) }));
+        var db = appUrl.getSystemDatabase();
+        if (this.settingsAccess.isForbidden()) {
+            deferred.resolve({ can: true });
+        } else {
+            this.fetchVersioningEntries(db)
+                .done(() => deferred.resolve({ can: true }))
+                .fail(() => deferred.resolve({ redirect: appUrl.forDatabaseSettings(db) }));
+        }
+        
         return deferred;
     }
 
@@ -49,7 +54,7 @@ class globalConfigVersioning extends viewModelBase {
     }
 
     syncChanges(deleteConfig: boolean) {
-        var db = appUrl.getDatabase();
+        var db = appUrl.getSystemDatabase();
         if (deleteConfig) {
             var deleteTask = new saveVersioningCommand(
                 db,

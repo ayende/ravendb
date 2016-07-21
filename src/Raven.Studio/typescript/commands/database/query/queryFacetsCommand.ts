@@ -18,12 +18,12 @@ class queryFacetsCommand extends commandBase {
 
     public argsUrl: string;
 
-    execute(): JQueryPromise<pagedResultSet<any>> {
+    execute(): JQueryPromise<pagedResultSet> {
         var url = "/facets/" + this.indexName + this.argsUrl;
 
         // Querying facets returns a facetResultSetDto. We need to massage that
         // data into something that can be displayed in the grid: the pagedResultSet.
-        var finishedTask = $.Deferred<pagedResultSet<any>>(); 
+        var finishedTask = $.Deferred<pagedResultSet>(); 
         this.query(url, null, this.db)
             .fail((response: JQueryXHR) => {
                 this.reportError("Unable to run query.", response.responseText, response.statusText);
@@ -36,7 +36,7 @@ class queryFacetsCommand extends commandBase {
         return finishedTask;
     }
 
-    private parseResults(resultSet: facetResultSetDto): pagedResultSet<any> {
+    private parseResults(resultSet: facetResultSetDto): pagedResultSet {
         var items = [];
         var totalItemCount = 0;
 
@@ -48,11 +48,9 @@ class queryFacetsCommand extends commandBase {
         for (var prop in resultSet.Results) {
             var facetResult: facetResultDto = resultSet.Results[prop];
             var propNameParts = (<string>prop).split('-');
-            var facetName = propNameParts[0];
             var aggregateField = propNameParts[1];
-            var correspondingFacet = this.facets[propIndex];
-            var facetAggregationLabel = facet.getLabelForAggregation(correspondingFacet.Aggregation);
-            totalItemCount = facetResult.Values.length + facetResult.RemainingTermsCount + this.skip;
+            var remainingTerms = facetResult.RemainingTermsCount || 0;
+            totalItemCount = facetResult.Values.length + remainingTerms + this.skip;
 
             // Construct our result set, an array objects that take the following shape:
             // { 'Key': [facet range], 'Count of Foobar': 3, 'Min of Blah': 4, ... }
@@ -65,7 +63,6 @@ class queryFacetsCommand extends commandBase {
                 }
 
                 item['Key'] = facetValue.Range;
-                //item[facetAggregationLabel + " of " + aggregateField] = facetValue.Hits;
                 
                 for (var power = 0; power < 5; power++) {
                     var curFieldName = facet.getLabelForAggregation(Math.pow(2, power));
@@ -81,10 +78,6 @@ class queryFacetsCommand extends commandBase {
                         item[curFieldName  + " of " + aggregateField] = curFieldVal;
                     }
                 }
-                
-
-              //  item[facetAggregationLabel + " of " + aggregateField] = facetValue[facetAggregationLabel];
-                
             }
 
             propIndex++;

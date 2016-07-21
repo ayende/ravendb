@@ -1,5 +1,3 @@
-/// <reference path="../../../../typings/tsd.d.ts"/>
-
 import documentMetadata = require("models/database/documents/documentMetadata");
 
 class versioningEntry implements copyFromParentDto<versioningEntry> {
@@ -80,6 +78,8 @@ class versioningEntry implements copyFromParentDto<versioningEntry> {
         this.collection(parent.collection());
         this.maxRevisions(parent.maxRevisions());
         this.exclude(parent.exclude());
+        this.excludeUnlessExplicit(parent.excludeUnlessExplicit());
+        this.purgeOnDelete(parent.purgeOnDelete());
         this.fromDatabase(true);
         this.__metadata = parent.__metadata;
     }

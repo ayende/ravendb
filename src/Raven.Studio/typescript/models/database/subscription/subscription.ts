@@ -1,5 +1,3 @@
-/// <reference path="../../../../typings/tsd.d.ts"/>
-
 class Subscription {
 
     ackEtag = ko.observable<string>();
@@ -32,4 +30,4 @@ class Subscription {
     }
 }
 
-export = Subscription; 
+export = Subscription;

@@ -1,4 +1,4 @@
-/// <reference path="../../typings/tsd.d.ts" />
+/// <reference path="../models/dto.ts" />
 
 import alertType = require("common/alertType");
 import messagePublisher = require("common/messagePublisher");
@@ -6,14 +6,14 @@ import database = require("models/resources/database");
 import resource = require("models/resources/resource");
 import appUrl = require("common/appUrl");
 import oauthContext = require("common/oauthContext");
-import forge = require("forge");
+import forge = require("forge/forge_custom.min");
 import router = require("plugins/router");
 
 /// Commands encapsulate a read or write operation to the database and support progress notifications and common AJAX related functionality.
 class commandBase {
 
     // TODO: better place for this?
-    static ravenClientVersion = '3.0.0.0';
+    static ravenClientVersion = '3.5.0.0';
     static splashTimerHandle = 0;
     static alertTimeout = 0;
     static loadingCounter = 0;
@@ -24,19 +24,7 @@ class commandBase {
     }
 
     urlEncodeArgs(args: any): string {
-        var propNameAndValues = [];
-        for (var prop in args) {
-            var value = args[prop];
-            if (value instanceof Array) {
-                for (var i = 0; i < value.length; i++) {
-                    propNameAndValues.push(prop + "=" + encodeURIComponent(value[i]));
-                }
-            } else if (value !== undefined) {
-                propNameAndValues.push(prop + "=" + encodeURIComponent(value));
-            }
-        }
-
-        return "?" + propNameAndValues.join("&");
+        return appUrl.urlEncodeArgs(args);
     }
 
     getTimeToAlert(longWait: boolean) {

@@ -1,5 +1,3 @@
-/// <reference path="../../../typings/tsd.d.ts"/>
-
 class fileMetadata {
 
     standardProps = ["ravenfs-size", "raven-last-modified", "etag", "raven-creation-date"];

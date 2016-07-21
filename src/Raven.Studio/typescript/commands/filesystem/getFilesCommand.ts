@@ -1,10 +1,8 @@
-/// <reference path="../../../typings/tsd.d.ts"/>
-
 import commandBase = require("commands/commandBase");
 import file = require("models/filesystem/file");
 import filesystem = require("models/filesystem/filesystem");
 import pagedResultSet = require("common/pagedResultSet");
-import searchResults = require("models/filesystem/searchResults");
+import queryUtil = require("common/queryUtil");
 
 class getFilesystemFilesCommand extends commandBase {
 
@@ -12,7 +10,7 @@ class getFilesystemFilesCommand extends commandBase {
         super();
     }
 
-    execute(): JQueryPromise<pagedResultSet<any>> {
+    execute(): JQueryPromise<pagedResultSet> {
         var filesTask = this.fetchFiles();
         var doneTask = $.Deferred();
 
@@ -26,7 +24,7 @@ class getFilesystemFilesCommand extends commandBase {
         return doneTask;
     }
 
-    private fetchFiles(): JQueryPromise<searchResults> {
+    private fetchFiles(): JQueryPromise<file[]> {
         var level = 1;
         if (this.directory) {
             var slashMatches = this.directory.count("/");
@@ -37,7 +35,7 @@ class getFilesystemFilesCommand extends commandBase {
 
         var levelQuery = "__level:" + level;
         var args = {
-            query: this.directory ? "__directoryName:" + this.directory + " AND " + levelQuery : levelQuery,
+            query: this.directory ? "__directoryName:" + queryUtil.escapeTerm(this.directory) + " AND " + levelQuery : levelQuery,
             start: this.skip,
             pageSize: this.take
         };

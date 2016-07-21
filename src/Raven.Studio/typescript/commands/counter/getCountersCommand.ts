@@ -15,7 +15,7 @@ class getCountersCommand extends commandBase {
         super();
     }
 
-    execute(): JQueryPromise<pagedResultSet<any>> {
+    execute(): JQueryPromise<pagedResultSet> {
         var args = {
             skip: this.skip,
             take: this.take,

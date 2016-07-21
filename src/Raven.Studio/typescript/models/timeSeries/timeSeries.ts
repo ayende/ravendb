@@ -1,5 +1,3 @@
-/// <reference path="../../../typings/tsd.d.ts"/>
-
 import resource = require("models/resources/resource");
 import license = require("models/auth/license");
 import timeSeriesStatistics = require("models/timeSeries/timeSeriesStatistics");
@@ -7,15 +5,16 @@ import timeSeriesStatistics = require("models/timeSeries/timeSeriesStatistics");
 class timeSeries extends resource {
     statistics = ko.observable<timeSeriesStatistics>();
     static type = "timeSeries";
-    iconName = "fa fa-clock-o";
+    iconName = "fa fa-fw fa-clock-o";
 
-    constructor(name: string, isAdminCurrentTenant: boolean = true, isDisabled: boolean = false) {
+    constructor(name: string, isAdminCurrentTenant: boolean = true, isDisabled: boolean = false, bundles: string[] = []) {
         super(name, TenantType.TimeSeries, isAdminCurrentTenant);
         if (!name) {
             debugger;
         }
         this.fullTypeName = "Time Series";
         this.disabled(isDisabled);
+        this.activeBundles(bundles);
         this.itemCountText = ko.computed(() => !!this.statistics() ? this.statistics().keysCountText() : "");
         this.isLicensed = ko.computed(() => {
             if (!!license.licenseStatus() && license.licenseStatus().IsCommercial) {

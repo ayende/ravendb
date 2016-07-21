@@ -1,4 +1,3 @@
-/// <reference path="../../typings/tsd.d.ts" />
 
 class idGenerator {
     public static generateId(idLength = 5) {

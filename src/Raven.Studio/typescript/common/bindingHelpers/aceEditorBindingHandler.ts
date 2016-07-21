@@ -1,9 +1,8 @@
-/// <reference path="../../../typings/tsd.d.ts" />
 /// <amd-dependency path="ace/ext/language_tools" />
 /// <amd-dependency path="ace/mode/lucene" />
 /// <amd-dependency path="ace/theme/xcode" />
+/// <amd-dependency path="ace/mode/json_newline_friendly" />
 /// <amd-dependency path="ace/mode/json" />
-//TODO: <amd-dependency path="ace/mode/json_newline_friendly" />
 import composition = require("durandal/composition");
 import ace = require("ace/ace");
 
@@ -216,13 +215,14 @@ class aceEditorBindingHandler {
         if ($(element).height() < this.minHeight) {
             $(element).height(this.minHeight);
         }
-        $(element).resizable({
+        $(element).resizable(<any>{
             minHeight: this.minHeight,
             handles: "s, se",
-            grid: [10000000000000000, 1]
+            grid: [10000000000000000, 1],
+            resize: function (event, ui) {
+                aceEditor.resize();
+            }
         });
-
-        $(element).on('resize', () => aceEditor.resize());
 
         this.alterHeight(element, aceEditor);
         $(element).find('.ui-resizable-se').removeClass('ui-icon-gripsmall-diagonal-se');
@@ -253,7 +253,7 @@ class aceEditorBindingHandler {
 
 
     // Called by Knockout each time the dependent observable value changes.
-    update(element: HTMLElement, valueAccessor: () => { code: (KnockoutObservable<string> | string); theme?: string; fontSize?: string; lang?: string; readOnly?: boolean }, allBindings, viewModel, bindingContext: any) {
+    update(element: HTMLElement, valueAccessor: () => { code: () => string; theme?: string; fontSize?: string; lang?: string; readOnly?: boolean }, allBindings, viewModel, bindingContext: any) {
         var bindingValues = valueAccessor();
         var code = ko.unwrap(bindingValues.code);
         var aceEditor: AceAjax.Editor = ko.utils.domData.get(element, "aceEditor");
@@ -261,6 +261,7 @@ class aceEditorBindingHandler {
         if (code !== editorCode) {
             aceEditor.getSession().setValue(code||"");
         }
+        aceEditor.setReadOnly(bindingValues.readOnly);
         if (this.allowResize) {
             this.alterHeight(element, aceEditor);
         }

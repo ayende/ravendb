@@ -1,4 +1,4 @@
-/// <reference path="../../typings/tsd.d.ts" />
+/// <reference path="../../Scripts/typings/knockout/knockout.d.ts" />
 
 import database = require("models/resources/database");
 import indexMergeSuggestion = require("models/database/index/indexMergeSuggestion");

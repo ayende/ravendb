@@ -2,7 +2,6 @@ import documentMetadata = require("models/database/documents/documentMetadata");
 
 class document implements documentBase {
     __metadata: documentMetadata;
-
     constructor(dto: documentDto) {
         this.__metadata = new documentMetadata(dto["@metadata"]);
         for (var property in dto) {
@@ -46,14 +45,16 @@ class document implements documentBase {
         }
 
         if (includeMeta && this.__metadata) {
-            dto["@metadata"] = this.__metadata.toDto();
+            var newDocumentMetadata = new documentMetadata(this.__metadata);
+            var metadataDto: any = newDocumentMetadata.toDto();
+            dto["@metadata"] = metadataDto;
         }
 
-        return dto;
+        return <any>dto;
     }
 
     toBulkDoc(method: string): bulkDocumentDto {
-        var dto = this.toDto(true);
+        var dto = this.toDto();
         var bulkDoc: bulkDocumentDto = {
             Document: dto,
             Key: this.getId(),

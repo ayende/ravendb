@@ -1,15 +1,35 @@
-/// <reference path="../../typings/tsd.d.ts" />
-
 import getIndexTermsCommand = require("commands/database/index/getIndexTermsCommand");
 import getDocumentsMetadataByIDPrefixCommand = require("commands/database/documents/getDocumentsMetadataByIDPrefixCommand");
 import database = require("models/resources/database");
 
 class queryUtil {
 
+    /**
+     * Escapes lucene single term
+     * 
+     * Note: Do not use this method for escaping entire query unless you want to end up with: query\:value\ AND\ a\:b
+     * @param query query to escape
+     */
+    public static escapeTerm(term: string) {
+        var output = "";
+
+        for (var i = 0; i < term.length; i++) {
+            var c = term.charAt(i);
+            if (c === '\\' || c === '+' || c === '-' || c === '!' || c === '(' || c === ')'
+                || c === ':' || c === '^' || c === '[' || c === ']' || c === '\"'
+                || c === '{' || c === '}' || c === '~' || c === '*' || c === '?'
+                || c === '|' || c === '&' || c === ' ') {
+                output += "\\";
+            }
+            output += c;
+        }
+
+        return output;
+    }
+
     public static queryCompleter(indexFields: KnockoutObservableArray<string>, selectedIndex: KnockoutObservable<string>, dynamicPrefix: string, activeDatabase: KnockoutObservable<database>, editor: any, session: any, pos: AceAjax.Position, prefix: string, callback: (errors: any[], worldlist: { name: string; value: string; score: number; meta: string }[]) => void) {
         var currentToken: AceAjax.TokenInfo = session.getTokenAt(pos.row, pos.column);
 
-        /* TODO
         if (!currentToken || typeof currentToken.type === "string") {
             // if in beginning of text or in free text token
             if (!currentToken || currentToken.type === "text") {
@@ -66,7 +86,7 @@ class queryUtil {
                     }
                 }
             }
-        }*/
+        }
     }
     
 }

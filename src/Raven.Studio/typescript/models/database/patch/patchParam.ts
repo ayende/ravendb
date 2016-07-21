@@ -1,5 +1,3 @@
-/// <reference path="../../../../typings/tsd.d.ts"/>
-
 class patchParam {
 
     key = ko.observable<string>();

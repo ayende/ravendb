@@ -1,3 +1,5 @@
+/// <reference path="../../../models/dto.ts" />
+
 import viewModelBase = require("viewmodels/viewModelBase");
 import transformer = require("models/database/index/transformer");
 import saveTransformerCommand = require("commands/database/transformers/saveTransformerCommand");
@@ -106,6 +108,7 @@ class editTransformer extends viewModelBase {
             });
             dialog.show(saveTransformerWithNewNameViewModel);
         } else {
+            this.editedTransformer().name(this.editedTransformer().name().trim());
             new saveTransformerCommand(this.editedTransformer(), this.activeDatabase())
                 .execute()
                 .done(() => {

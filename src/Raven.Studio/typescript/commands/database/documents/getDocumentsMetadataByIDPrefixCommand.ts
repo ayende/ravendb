@@ -1,9 +1,11 @@
+/// <reference path="../../../models/dto.ts" />
+
 import commandBase = require("commands/commandBase");
 import database = require("models/resources/database");
 
 class getDocumentsMetadataByIDPrefixCommand extends commandBase {
 
-    constructor(private prefix:string, private resultsAmount: number, private db: database) {
+    constructor(private prefix:string,private resultsAmount: number, private db: database) {
         super();
     }
 

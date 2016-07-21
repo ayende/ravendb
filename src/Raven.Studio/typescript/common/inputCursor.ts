@@ -1,5 +1,3 @@
-/// <reference path="../../typings/tsd.d.ts"/>
-
 class inputCursor {
     static setPosition($input: JQuery, position: number) {
         var input = $input[0];

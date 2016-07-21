@@ -1,5 +1,3 @@
-/// <reference path="../../../typings/tsd.d.ts"/>
-
 class searchResults {
 
     Files: filesystemFileHeaderDto[];
@@ -8,5 +6,3 @@ class searchResults {
     PageSize: number;
 
 }
-
-export = searchResults;

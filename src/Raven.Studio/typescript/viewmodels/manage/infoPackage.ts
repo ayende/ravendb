@@ -1,13 +1,14 @@
+/// <reference path="../../../Scripts/typings/jszip/jszip.d.ts" />
+
 import app = require("durandal/app");
-/* TODO:
-import d3 = require("d3");
-import nv = require("nvd3");*/
-import jszip = require("jszip");
+import d3 = require('d3/d3');
+import nv = require('nvd3');
+import jszip = require('jszip/jszip');
 import messagePublisher = require("common/messagePublisher");
 import appUrl = require("common/appUrl");
 import svgDownloader = require("common/svgDownloader");
 import fileDownloader = require("common/fileDownloader");
-import getInfoPackage = require("commands/database/debug/getInfoPackage");
+import getInfoPackage = require('commands/database/debug/getInfoPackage');
 import viewModelBase = require("viewmodels/viewModelBase");
 import infoPackageImport = require("viewmodels/manage/infoPackageImport");
 import shell = require("viewmodels/shell");
@@ -56,7 +57,6 @@ class stackInfo {
 }
 
 class infoPackage extends viewModelBase {
-/*TODO:
     diagonal: any;
 
     node: D3.Selection = null; // nodes selection
@@ -132,7 +132,7 @@ class infoPackage extends viewModelBase {
     }
 
     private splitAndCollateStacks(stacks: stackInfo[]): stackInfo[]{
-        if (stacks.length == 1) {
+        if (stacks.length === 1) {
             return stacks;
         }
         var grouped = d3.nest().key((d: stackInfo) => d.StackTrace[0]).entries(stacks);
@@ -146,7 +146,7 @@ class infoPackage extends viewModelBase {
             for (var depth = 0; depth < minDepth; depth++) {
                 var currentStack = sharedStacks[0].StackTrace[depth];
                 for (var i = 1; i < sharedStacks.length; i++) {
-                    if (currentStack != sharedStacks[i].StackTrace[depth]) {
+                    if (currentStack !== sharedStacks[i].StackTrace[depth]) {
                         break outer;
                     }
                 }
@@ -443,7 +443,8 @@ class infoPackage extends viewModelBase {
     }
     
 
-    static stacksCss = "* { box-sizing: border-box; }\n" +
+    static stacksCss = "svg { background-color: white; }\n" +
+        " * { box-sizing: border-box; }\n" +
         " svg text { font-style: normal; font-variant: normal; font-weight: normal; font-size: 12px; line-height: normal; font-family: Arial; }\n" +
         " * { box-sizing: border - box; }\n" +
         " .link { fill: none; stroke: rgb(204, 204, 204); stroke-width: 1.5px; }\n" +
@@ -451,7 +452,7 @@ class infoPackage extends viewModelBase {
         " .box { fill: rgb(21, 140, 186); fill-opacity: 0.2; stroke: rgb(21, 140, 186); stroke-width: 1.5px; }\n" +
         " .notUserCode { fill-opacity: 0.4; }\n" +
         " .headerLine { stroke: rgb(21, 140, 186); stroke-width: 1.5px; }";
-*/
+
 }
 
 export = infoPackage;

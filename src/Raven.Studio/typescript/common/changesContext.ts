@@ -1,4 +1,4 @@
-/// <reference path="../../typings/tsd.d.ts" />
+/// <reference path="../../Scripts/typings/knockout/knockout.d.ts" />
 
 import changesApi = require("common/changesApi");
 

@@ -1,4 +1,5 @@
-/// <reference path="../../typings/tsd.d.ts" />
+/// <reference path="../../Scripts/typings/jquery/jquery.d.ts" />
+/// <reference path="../../Scripts/typings/knockout/knockout.d.ts" />
 import appUrl = require('common/appUrl');
 import changeSubscription = require('common/changeSubscription');
 import changesCallback = require('common/changesCallback');
@@ -27,14 +28,14 @@ class adminLogsClient {
 
     constructor(private token: string) {
         this.eventsId = idGenerator.generateId();
-        this.resourcePath = appUrl.baseUrl;
+        this.resourcePath = appUrl.forResourceQuery(appUrl.getSystemDatabase());
         this.connectionOpeningTask = $.Deferred();
         this.connectionClosingTask = $.Deferred();
     }
 
     public connect() {
         var connectionString = 'singleUseAuthToken=' + this.token + '&id=' + this.eventsId;
-        if ("WebSocket" in window) {
+        if ("WebSocket" in window && changesApi.isServerSupportingWebSockets) {
             this.connectWebSocket(connectionString);
         }
         else if ("EventSource" in window) {
@@ -105,7 +106,7 @@ class adminLogsClient {
             }
 
             //TODO: exception handling?
-            this.commandBase.query('/admin/logs/configure', args, null);
+            this.commandBase.query('/admin/logs/configure', args, appUrl.getSystemDatabase());
         });
     }
 
@@ -135,7 +136,7 @@ class adminLogsClient {
     }
 
     configureCategories(categoriesConfig: adminLogsConfigEntryDto[]) {
-        new adminLogsConfigureCommand(null, categoriesConfig, this.eventsId).execute();
+        new adminLogsConfigureCommand(appUrl.getSystemDatabase(), categoriesConfig, this.eventsId).execute();
     }
 
     dispose() {

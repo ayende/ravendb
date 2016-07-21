@@ -9,7 +9,7 @@ class getCustomColumnsCommand extends getDocumentWithMetadataCommand {
         super(docName, db, true);
     }
 
-    execute(): JQueryPromise<customColumnsDto> {
+    execute(): JQueryPromise<alertContainerDto> {
         return super.execute();
     }
 

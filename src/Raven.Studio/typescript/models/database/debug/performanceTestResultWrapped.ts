@@ -1,6 +1,4 @@
-/// <reference path="../../../../typings/tsd.d.ts"/>
-
-import d3 = require("d3");
+import d3 = require("d3/d3");
 
 class performanceTestResultWrapped {
 

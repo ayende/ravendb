@@ -1,5 +1,3 @@
-/// <reference path="../../../../typings/tsd.d.ts"/>
-
 class periodicExportSetup {
 
     static decryptFailedValue = "<data could not be decrypted>";

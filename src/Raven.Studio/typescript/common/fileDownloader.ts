@@ -1,12 +1,9 @@
-/// <reference path="../../typings/tsd.d.ts" />
-
 class fileDownloader {
 
     private static cleanup(domCacheElementName: string) {
         // clean previous elements (in any)
         $("#" + domCacheElementName).remove();
     }
-
 
     private static createLinkAndStartDownload(blob: Blob, filename: string, domCacheElementName: string) {
         if (navigator && navigator.msSaveBlob) {

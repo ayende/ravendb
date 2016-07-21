@@ -1,6 +1,7 @@
+/// <reference path="../../../Scripts/typings/jszip/jszip.d.ts" />
 import dialog = require("plugins/dialog");
 import dialogViewModelBase = require("viewmodels/dialogViewModelBase");
-import jszip = require('jszip');
+import jszip = require('jszip/jszip');
 
 class importPackageImport extends dialogViewModelBase {
 
@@ -8,10 +9,6 @@ class importPackageImport extends dialogViewModelBase {
     
     hasFileSelected = ko.observable(false);
     isImporting = ko.observable(false);
-
-    constructor() {
-        super();
-    }
 
     fileSelected(args: any) {
         this.hasFileSelected(true);
@@ -25,7 +22,7 @@ class importPackageImport extends dialogViewModelBase {
         reader.onload = function () {
             // try to detect type
             var firstChar = new Uint8Array(this.result.slice(0, 1))[0];
-            if (firstChar == 91) {
+            if (firstChar === 91) {
                 var rawJson = String.fromCharCode.apply(null, new Uint8Array(this.result));
                 var json = JSON.parse(rawJson);
                 self.dataImported(json); 

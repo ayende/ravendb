@@ -1,7 +1,5 @@
 import commandBase = require("commands/commandBase");
 import database = require("models/resources/database");
-import index = require("models/database/index/index");
-import indexPriority = require("models/database/index/indexPriority");
 
 class saveIndexDefinitionCommand extends commandBase {
 
@@ -24,11 +22,10 @@ class saveIndexDefinitionCommand extends commandBase {
 
     private saveDefinition(): JQueryPromise<any> {
         var urlArgs = {
-            definition: "yes",
-            name: this.index.Name
+            definition: "yes"
         };
         var putArgs = JSON.stringify(this.index);
-        var url = "/indexes" + this.urlEncodeArgs(urlArgs);
+        var url = "/indexes/" + this.index.Name + this.urlEncodeArgs(urlArgs);
         return this.put(url, putArgs, this.db);
     }
 }

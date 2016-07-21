@@ -1,5 +1,3 @@
-/// <reference path="../../../../typings/tsd.d.ts"/>
-
 class facet {
     mode: number; // Default = 0, Ranges = 1
     aggregation = ko.observable<number>(); // None = 0, Count = 1, Max = 2, Min = 4, Average = 8, Sum = 16

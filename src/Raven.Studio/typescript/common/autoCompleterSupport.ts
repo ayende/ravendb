@@ -1,5 +1,3 @@
-/// <reference path="../../typings/tsd.d.ts"/>
-
 import inputCursor = require('common/inputCursor');
 
 class autoCompleterSupport {

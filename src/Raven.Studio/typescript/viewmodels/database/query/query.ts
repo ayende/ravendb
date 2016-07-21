@@ -1,3 +1,4 @@
+/// <reference path="../../../../Scripts/typings/ace/ace.d.ts" />
 import InMethodFilter = require("viewmodels/filesystem/search/inMethodFilter");
 import fieldStringFilter = require("viewmodels/filesystem/search/fieldStringFilter");
 import fieldRangeFilter = require("viewmodels/filesystem/search/fieldRangeFilter");
@@ -6,11 +7,12 @@ import router = require("plugins/router");
 import appUrl = require("common/appUrl");
 import viewModelBase = require("viewmodels/viewModelBase");
 import getDatabaseStatsCommand = require("commands/resources/getDatabaseStatsCommand");
-import getCollectionsStatsCommand = require("commands/database/documents/getCollectionsStatsCommand");
+import getCollectionsCommand = require("commands/database/documents/getCollectionsCommand");
 import getIndexDefinitionCommand = require("commands/database/index/getIndexDefinitionCommand");
 import aceEditorBindingHandler = require("common/bindingHelpers/aceEditorBindingHandler");
 import pagedList = require("common/pagedList");
 import pagedResultSet = require("common/pagedResultSet");
+import messagePublisher = require("common/messagePublisher");
 
 import queryIndexCommand = require("commands/database/query/queryIndexCommand");
 import database = require("models/resources/database");
@@ -25,8 +27,6 @@ import customColumns = require("models/database/documents/customColumns");
 import selectColumns = require("viewmodels/common/selectColumns");
 import getCustomColumnsCommand = require("commands/database/documents/getCustomColumnsCommand");
 import getDocumentsByEntityNameCommand = require("commands/database/documents/getDocumentsByEntityNameCommand");
-import getDocumentsMetadataByIDPrefixCommand = require("commands/database/documents/getDocumentsMetadataByIDPrefixCommand");
-import getIndexTermsCommand = require("commands/database/index/getIndexTermsCommand");
 import queryStatsDialog = require("viewmodels/database/query/queryStatsDialog");
 import customFunctions = require("models/database/documents/customFunctions");
 import transformerType = require("models/database/index/transformer");
@@ -35,10 +35,6 @@ import getIndexSuggestionsCommand = require("commands/database/index/getIndexSug
 import recentQueriesStorage = require("common/recentQueriesStorage");
 import virtualTable = require("widgets/virtualTable/viewModel");
 import queryUtil = require("common/queryUtil");
-
-import collectionsStats = require("models/database/documents/collectionsStats");
-
-import getSingleAuthTokenCommand = require("commands/auth/getSingleAuthTokenCommand");
 
 class query extends viewModelBase {
     isTestIndex = ko.observable<boolean>(false);
@@ -67,7 +63,6 @@ class query extends viewModelBase {
     indexEntries = ko.observable(false);
     recentQueries = ko.observableArray<storedQueryDto>();
     rawJsonUrl = ko.observable<string>();
-    exportUrl: KnockoutComputed<string>;
     collections = ko.observableArray<collection>([]);
     collectionNames = ko.observableArray<string>();
     collectionNamesExceptCurrent: KnockoutComputed<string[]>;
@@ -78,7 +73,6 @@ class query extends viewModelBase {
     isLoading = ko.observable<boolean>(false);
     isCacheDisable = ko.observable<boolean>(false);
     enableDeleteButton: KnockoutComputed<boolean>;
-    token = ko.observable<singleAuthToken>();
     warningText = ko.observable<string>();
     isWarning = ko.observable<boolean>(false);
     containsAsterixQuery: KnockoutComputed<boolean>;
@@ -171,9 +165,6 @@ class query extends viewModelBase {
 
         this.isDynamicIndex = ko.computed(() => {
             var currentIndex = this.indexes.first(i=> i.name == this.selectedIndex());
-            if (currentIndex) {
-                console.log(currentIndex.name);
-            }
             return !!currentIndex && currentIndex.name.startsWith("Auto/");
         });
 
@@ -217,7 +208,6 @@ class query extends viewModelBase {
         super.activate(indexNameOrRecentQueryHash);
 
         this.updateHelpLink('KCIMJK');
-        this.updateAuthToken();
         this.selectedIndex.subscribe(index => this.onIndexChanged(index));
         var db = this.activeDatabase();
         return $.when(this.fetchAllCollections(db), this.fetchAllIndexes(db))
@@ -227,12 +217,6 @@ class query extends viewModelBase {
     detached() {
         super.detached();
         aceEditorBindingHandler.detached();
-    }
-
-    updateAuthToken() {
-        new getSingleAuthTokenCommand(this.activeDatabase())
-            .execute()
-            .done(token => this.token(token));
     }
 
     attached() {
@@ -246,7 +230,7 @@ class query extends viewModelBase {
             html: true,
             trigger: "hover",
             container: ".form-horizontal",
-            content: 'Queries use Lucene syntax. Examples:<pre><span class="code-keyword">Name</span>: Hi?berna*<br/><span class="code-keyword">Count</span>: [0 TO 10]<br/><span class="code-keyword">Title</span>: "RavenDb Queries 1010" AND <span class="code-keyword">Price</span>: [10.99 TO *]</pre>',
+            content: '<p>Queries use Lucene syntax. Examples:</p><pre><span class="code-keyword">Name</span>: Hi?berna*<br/><span class="code-keyword">Count</span>: [0 TO 10]<br/><span class="code-keyword">Title</span>: "RavenDb Queries 1010" AND <span class="code-keyword">Price</span>: [10.99 TO *]</pre>',
         });
         ko.postbox.publish("SetRawJSONUrl", appUrl.forIndexQueryRawData(this.activeDatabase(), this.selectedIndex()));
 
@@ -279,12 +263,7 @@ class query extends viewModelBase {
     }
     
     private fetchAllTransformers(db: database): JQueryPromise<any> {
-        this.allTransformers([]);
         var deferred = $.Deferred();
-        deferred.resolve();
-        return deferred;
-        /* TODO:
-        
 
         new getTransformersCommand(db)
             .execute()
@@ -294,17 +273,16 @@ class query extends viewModelBase {
             });
 
         return deferred;
-        */
     }
 
     private fetchAllCollections(db: database): JQueryPromise<any> {
         var deferred = $.Deferred();
 
-        new getCollectionsStatsCommand(db)
+        new getCollectionsCommand(db)
             .execute()
-            .done((results: collectionsStats) => {
-                this.collections(results.collections);
-                this.collectionNames(results.collections.map(c => c.name));
+            .done((results: collection[]) => {
+                this.collections(results);
+                this.collectionNames(results.map(c => c.name));
                 deferred.resolve();
             });
 
@@ -361,11 +339,10 @@ class query extends viewModelBase {
     }
 
     selectInitialQuery(indexNameOrRecentQueryHash: string) {
-        /* TODO
         if (!indexNameOrRecentQueryHash && this.indexes().length > 0) {
             var firstIndexName = this.indexes.first().name;
             this.setSelectedIndex(firstIndexName);
-        } else if (this.indexes.first(i => i.name == indexNameOrRecentQueryHash) || indexNameOrRecentQueryHash.indexOf(this.dynamicPrefix) === 0 || indexNameOrRecentQueryHash === "dynamic") {
+        } else if (this.indexes.first(i => i.name === indexNameOrRecentQueryHash) || indexNameOrRecentQueryHash.indexOf(this.dynamicPrefix) === 0 || indexNameOrRecentQueryHash === "dynamic") {
             this.setSelectedIndex(indexNameOrRecentQueryHash);
         } else if (indexNameOrRecentQueryHash.indexOf("recentquery-") === 0) {
             var hash = parseInt(indexNameOrRecentQueryHash.substr("recentquery-".length), 10);
@@ -375,7 +352,11 @@ class query extends viewModelBase {
             } else {
                 this.navigate(appUrl.forQuery(this.activeDatabase()));
             }
-        }*/
+        } else if (indexNameOrRecentQueryHash) {
+            // if indexName exists and we didn't fall into any case show error and redirect to documents page
+            messagePublisher.reportError("Could not find " + indexNameOrRecentQueryHash + " index");
+            router.navigate(appUrl.forDocuments(collection.allDocsCollectionName, this.activeDatabase()));
+        }
     }
 
     focusOnQuery() {
@@ -451,11 +432,6 @@ class query extends viewModelBase {
 
             this.rawJsonUrl(appUrl.forResourceQuery(database) + queryCommand.getUrl());
             this.csvUrl(queryCommand.getCsvUrl());
-            this.exportUrl = ko.computed(() => {
-                return (appUrl.forResourceQuery(database) +
-                    this.csvUrl() +
-                    (this.token() ? "&singleUseAuthToken=" + this.token().Token : ""));
-            });
 
             var resultsFetcher = (skip: number, take: number) => {
                 var command = new queryIndexCommand(selectedIndex, database, skip, take, queryText, sorts, transformer, showFields, indexEntries, useAndOperator, this.isCacheDisable());
@@ -464,7 +440,7 @@ class query extends viewModelBase {
                         this.isLoading(false);
                         this.focusOnQuery();
                     })
-                    .done((queryResults: pagedResultSet<any>) => {
+                    .done((queryResults: pagedResultSet) => {
                         this.queryStats(queryResults.additionalResultInfo);
                         this.indexSuggestions([]);
                         if (queryResults.totalResultCount == 0) {
@@ -585,7 +561,8 @@ class query extends viewModelBase {
     addSortBy() {
         var sort = new querySort();
         sort.fieldName.subscribe(() => this.runQuery());
-        sort.sortDirection.subscribe(() => this.runQuery());
+        sort.isAscending.subscribe(() => this.runQuery());
+        sort.isRange.subscribe(() => this.runQuery());
         this.sortBys.push(sort);
     }
 
@@ -639,7 +616,7 @@ class query extends viewModelBase {
         var queryResult = this.runQuery();
         queryResult
             .fetch(0, 1)
-            .done((results: pagedResultSet<any>) => {
+            .done((results: pagedResultSet) => {
                 if (results.totalResultCount === 0) {
                     app.showMessage("There are no documents matching your query.", "Nothing to do");
                 } else {
@@ -694,7 +671,7 @@ class query extends viewModelBase {
                 var collectionName = indexName.substring(8);
                 new getDocumentsByEntityNameCommand(new collection(collectionName, this.activeDatabase()), 0, 1)
                     .execute()
-                    .done((result: pagedResultSet<any>) => {
+                    .done((result: pagedResultSet) => {
                         if (!!result && result.totalResultCount > 0 && result.items.length > 0) {
                             var dynamicIndexPattern: document = new document(result.items[0]);
                             if (!!dynamicIndexPattern) {
@@ -706,8 +683,8 @@ class query extends viewModelBase {
                 new getIndexDefinitionCommand(indexName, this.activeDatabase())
                     .execute()
                     .done((result: indexDefinitionContainerDto) => {
-                        self.isTestIndex(false); //TODO: result.Index.IsTestIndex
-                        self.indexFields([]); //TODO: result.Index.Fields
+                    self.isTestIndex(result.Index.IsTestIndex);
+                    self.indexFields(result.Index.Fields);
                     });
             }
         }
@@ -789,9 +766,9 @@ class query extends viewModelBase {
     }
 
     exportCsv() {
-        // schedule token update (to properly handle subseqent downloads)
-        setTimeout(() => this.updateAuthToken(), 50);
-        return true;
+        var db = this.activeDatabase();
+        var url = appUrl.forResourceQuery(db) + this.csvUrl();
+        this.downloader.download(db, url);
     }
 
     fieldNameStartsWith() {
@@ -801,18 +778,18 @@ class query extends viewModelBase {
             .done((input: string, option: string) => {
             if (this.queryText().length !== 0) {
                 this.queryText(this.queryText() + " AND ");
-}
+                }
             if (option === "Starts with") {
-                this.queryText(this.queryText() + this.searchField() + ":" + this.escapeQueryString(input) + "*");
+                this.queryText(this.queryText() + this.searchField() + ":" + queryUtil.escapeTerm(input) + "*");
             }
             else if (option === "Ends with") {
-                this.queryText(this.queryText() + this.searchField() + ":" + "*" + this.escapeQueryString(input) );
+                this.queryText(this.queryText() + this.searchField() + ":" + "*" + queryUtil.escapeTerm(input) );
             }
             else if (option === "Contains") {
-                this.queryText(this.queryText() + this.searchField() + ":" + "*" + this.escapeQueryString(input) + "*");
+                this.queryText(this.queryText() + this.searchField() + ":" + "*" + queryUtil.escapeTerm(input) + "*");
             }
             else if (option === "Exact") {
-                this.queryText(this.queryText() + this.searchField() + ":" + this.escapeQueryString(input));
+                this.queryText(this.queryText() + this.searchField() + ":" + queryUtil.escapeTerm(input));
             }
         });
         app.showDialog(fieldStartsWithViewModel);
@@ -833,6 +810,11 @@ class query extends viewModelBase {
             if (option === "Numeric Double") {
                 if (from !== "*") fromPrefix = "Dx";
                 if (to !== "*") toPrefix = "Dx";
+                this.queryText(this.queryText() + this.searchField() + "_Range:[" + fromPrefix + from + " TO " + toPrefix + to + "]");
+            }
+            else if (option === "Numeric Long") {
+                if (from !== "*") fromPrefix = "Lx";
+                if (to !== "*") toPrefix = "Lx";
                 this.queryText(this.queryText() + this.searchField() + "_Range:[" + fromPrefix + from + " TO " + toPrefix + to + "]");
             }
             else if (option === "Numeric Int") {
@@ -859,15 +841,11 @@ class query extends viewModelBase {
                 if (this.queryText().length !== 0) {
                     this.queryText(this.queryText() + " AND ");
                 }
-                var escapedStrings = inputs.map((s: string) => this.escapeQueryString(s)).join();
+                var escapedStrings = inputs.map((s: string) => queryUtil.escapeTerm(s)).join();
                 this.queryText(this.queryText() + "@in<" + this.searchField() + ">:(" + escapedStrings + ")");
             });
         app.showDialog(inMethodFilterViewModel);        
     }
-
-    private escapeQueryString(query: string): string {
-        return query.replace(/([ \-\_\.])/g, '\\$1');
     }
-}
 
 export = query;

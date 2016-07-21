@@ -1,5 +1,3 @@
-/// <reference path="../../../typings/tsd.d.ts"/>
-
 class synchronizationConfig {
 
     fileConflictResolution = ko.observable<string>();

@@ -2,6 +2,7 @@ import database = require("models/resources/database");
 import collection = require("models/database/documents/collection");
 import document = require("models/database/documents/document");
 import indexDefinition = require("models/database/index/indexDefinition");
+import getCollectionsCommand = require("commands/database/documents/getCollectionsCommand");
 import getDocumentsByEntityNameCommand = require("commands/database/documents/getDocumentsByEntityNameCommand");
 import pagedResultSet = require("common/pagedResultSet");
 
@@ -55,7 +56,7 @@ class indexAceAutoCompleteProvider {
                 if (matchingAliasKeyValue.aliasValuePrefix.toLowerCase() === "docs") {
                     new getDocumentsByEntityNameCommand(new collection(matchingAliasKeyValue.aliasValueSuffix, this.activeDatabase), 0, 1)
                         .execute()
-                        .done((result: pagedResultSet<any>) => {
+                        .done((result: pagedResultSet) => {
                             if (!!result && result.totalResultCount > 0) {
                                 var documentPattern: document = new document(result.items[0]);
                                 deferred.resolve(documentPattern.getDocumentPropertyNames());
@@ -76,8 +77,7 @@ class indexAceAutoCompleteProvider {
         return deferred;
     }
 
-    getIndexMapCompleterValues(editor: any, session: any, pos: AceAjax.Position): JQueryPromise<any> { 
-    /* TODO
+    getIndexMapCompleterValues(editor: any, session: any, pos: AceAjax.Position): JQueryPromise<any> {
         var currentToken: AceAjax.TokenInfo = session.getTokenAt(pos.row, pos.column);
         var completedToken: AceAjax.TokenInfo;
         var TokenIterator = require("ace/token_iterator").TokenIterator;
@@ -146,8 +146,6 @@ class indexAceAutoCompleteProvider {
         }
 
         return returnedDeferred;
-        */
-        return null;
     }
 
     indexMapCompleter(editor: any, session: any, pos: AceAjax.Position, prefix: string, callback: (errors: any[], worldlist: { name: string; value: string; score: number; meta: string }[]) => void) {

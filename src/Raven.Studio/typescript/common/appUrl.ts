@@ -1,5 +1,3 @@
-/// <reference path="../../typings/tsd.d.ts"/>
-
 import database = require("models/resources/database");
 import filesystem = require("models/filesystem/filesystem");
 import counterStorage = require("models/counter/counterStorage");
@@ -22,7 +20,7 @@ class appUrl {
     }
 
     //private static baseUrl = "http://localhost:8080"; // For debugging purposes, uncomment this line to point Raven at an already-running Raven server. Requires the Raven server to have it's config set to <add key="Raven/AccessControlAllowOrigin" value="*" />
-    public static baseUrl = appUrl.detectAppUrl(); // This should be used when serving HTML5 Studio from the server app.
+    private static baseUrl = appUrl.detectAppUrl(); // This should be used when serving HTML5 Studio from the server app.
     private static currentDatabase = ko.observable<database>().subscribeTo("ActivateDatabase", true);
     private static currentFilesystem = ko.observable<filesystem>().subscribeTo("ActivateFilesystem", true);
     private static currentCounterStorage = ko.observable<counterStorage>().subscribeTo("ActivateCounterStorage", true);
@@ -74,10 +72,11 @@ class appUrl {
         quotas: ko.computed(() => appUrl.forQuotas(appUrl.currentDatabase())),
         periodicExport: ko.computed(() => appUrl.forPeriodicExport(appUrl.currentDatabase())),
         replications: ko.computed(() => appUrl.forReplications(appUrl.currentDatabase())),
+        etl: ko.computed(() => appUrl.forEtl(appUrl.currentDatabase())),
         hotSpare: ko.computed(() => appUrl.forHotSpare()),
         versioning: ko.computed(() => appUrl.forVersioning(appUrl.currentDatabase())),
         sqlReplications: ko.computed(() => appUrl.forSqlReplications(appUrl.currentDatabase())),
-        editSqlReplication: ko.computed(() => appUrl.forEditSqlReplication(undefined, appUrl.currentDatabase())),
+        editSqlReplication: ko.computed((sqlReplicationName: string) => appUrl.forEditSqlReplication(sqlReplicationName, appUrl.currentDatabase())),
         sqlReplicationsConnections: ko.computed(() => appUrl.forSqlReplicationConnections(appUrl.currentDatabase())),
         scriptedIndexes: ko.computed(() => appUrl.forScriptedIndexes(appUrl.currentDatabase())),
         customFunctionsEditor: ko.computed(() => appUrl.forCustomFunctionsEditor(appUrl.currentDatabase())),
@@ -105,8 +104,8 @@ class appUrl {
         statusStorageBreakdown: ko.computed(() => appUrl.forStatusStorageBreakdown(appUrl.currentDatabase())),
         statusStorageCollections: ko.computed(() => appUrl.forStatusStorageCollections(appUrl.currentDatabase())),
 
-        isAreaActive: (routeRoot: string) => ko.computed(() => appUrl.checkIsAreaActive(routeRoot)),
-        isActive: (routeTitle: string) => ko.computed(() => router.navigationModel().first(m => m.isActive() && m.title === routeTitle) != null),
+        isAreaActive: (routeRoot: string) => ko.pureComputed(() => appUrl.checkIsAreaActive(routeRoot)),
+        isActive: (routeTitle: string) => ko.pureComputed(() => router.navigationModel().first(m => m.isActive() && m.title === routeTitle) != null),
         resourcesManagement: ko.computed(() => appUrl.forResources()),
 
         filesystemFiles: ko.computed(() => appUrl.forFilesystemFiles(appUrl.currentFilesystem())),
@@ -137,7 +136,7 @@ class appUrl {
 
     static checkIsAreaActive(routeRoot: string): boolean {
         var items = router.routes.filter(m => m.isActive() && m.route != null && m.route != '');
-        var isThereAny = items.some(m => m.route.toString().substring(0, routeRoot.length) === routeRoot);
+        var isThereAny = items.some(m => m.route.substring(0, routeRoot.length) === routeRoot);
         return isThereAny;
     }
 
@@ -247,6 +246,10 @@ class appUrl {
 
     static forGlobalConfigPeriodicExport(): string {
         return '#admin/settings/globalConfig';
+    }
+
+    static forGlobalConfigDatabaseSettings(): string {
+        return '#admin/settings/globalConfigDatabaseSettings';
     }
 
     static forGlobalConfigReplication(): string {
@@ -557,6 +560,11 @@ class appUrl {
     static forReplications(db: database): string {
         return "#databases/settings/replication?" + appUrl.getEncodedDbPart(db);
     }
+
+    static forEtl(db: database): string {
+        return "#databases/settings/etl?" + appUrl.getEncodedDbPart(db);
+    }
+
     static forVersioning(db: database): string {
         return "#databases/settings/versioning?" + appUrl.getEncodedDbPart(db);
     }
@@ -596,9 +604,15 @@ class appUrl {
         return "#databases/conflicts?" + databasePart;
     }
 
-    static forPatch(db: database): string {
+    static forPatch(db: database, hashOfRecentPatch?: number): string {
         var databasePart = appUrl.getEncodedDbPart(db);
-        return "#databases/patch?" + databasePart;
+
+        if (hashOfRecentPatch) {
+            var patchPath = "recentpatch-" + hashOfRecentPatch;
+            return "#databases/patch/" + encodeURIComponent(patchPath) + "?" + databasePart;
+        } else {
+            return "#databases/patch?" + databasePart;    
+        }
     }
 
     static forIndexes(db: database): string {
@@ -659,7 +673,7 @@ class appUrl {
     }
 
     static forResourceQuery(res: resource): string {
-        if (res && res instanceof database) {
+        if (res && res instanceof database && !res.isSystem) {
             return appUrl.baseUrl + "/databases/" + res.name;
         } else if (res && res instanceof filesystem) {
             return appUrl.baseUrl + "/fs/" + res.name;
@@ -702,11 +716,18 @@ class appUrl {
         return "#filesystems/tasks/exportFilesystem?" + filesystemPart;
     }
 
-    static forExportCollectionCsv(collection: collection, db: database): string {
+    static forExportCollectionCsv(collection: collection, db: database, customColumns?: string[]): string {
         if (collection.isAllDocuments || collection.isSystemDocuments) {
             return null;
         }
-        return appUrl.forResourceQuery(db) + "/streams/query/Raven/DocumentsByEntityName?format=excel&download=true&query=Tag:" + encodeURIComponent(collection.name);
+        var args = {
+            format: "excel",
+            download: true,
+            query: "Tag:" + collection.name,
+            column: customColumns
+        }
+
+        return appUrl.forResourceQuery(db) + "/streams/query/Raven/DocumentsByEntityName" + appUrl.urlEncodeArgs(args);
     }
 
     static forToggleIndexing(db: database): string {
@@ -755,7 +776,7 @@ class appUrl {
     }
 
     static forDocumentRawData(db: database, docId:string): string {
-        return window.location.protocol + "//" + window.location.host + "/databases/" + db.name + "/docs?id=" + docId;
+        return window.location.protocol + "//" + window.location.host + "/databases/" + db.name + "/docs/" + docId;
     }
 
     static forFilesystemFiles(fs: filesystem): string {
@@ -861,11 +882,19 @@ class appUrl {
             var databaseName = hash.substring(dbIndex + dbIndicator.length, dbSegmentEnd);
             var unescapedDatabaseName = decodeURIComponent(databaseName);
             var db = new database(unescapedDatabaseName);
+            db.isSystem = unescapedDatabaseName === "<system>";
             return db;
         } else {
             // No database is specified in the URL. Assume it's the system database.
             return null;
         } 
+    }
+
+    static getSystemDatabase(): database {
+        var db = new database("<system>");
+        db.isSystem = true;
+        db.isVisible(false);
+        return db;
     }
 
     /**
@@ -964,40 +993,45 @@ class appUrl {
         if (routerInstruction) {
 
             var currentResourceName = null;
-            var currentResourceType = null;
+            var currentResourceType: string = null;
+            var currentResourceTypeEnum: TenantType;
             var dbInUrl = routerInstruction.queryParams[database.type];
             if (dbInUrl) {
                 currentResourceName = dbInUrl;
                 currentResourceType = database.type;
+                currentResourceTypeEnum = TenantType.Database;
             } else {
                 var fsInUrl = routerInstruction.queryParams[filesystem.type];
                 if (fsInUrl) {
                     currentResourceName = fsInUrl;
                     currentResourceType = filesystem.type;
+                    currentResourceTypeEnum = TenantType.FileSystem;
                 } else {
                     var csInUrl = routerInstruction.queryParams[counterStorage.type];
                     if (csInUrl) {
                         currentResourceName = csInUrl;
                         currentResourceType = counterStorage.type;
+                        currentResourceTypeEnum = TenantType.CounterStorage;
                     } else {
                         var tsInUrl = routerInstruction.queryParams[timeSeries.type];
                         if (tsInUrl) {
                             currentResourceName = tsInUrl;
                             currentResourceType = timeSeries.type;
+                            currentResourceTypeEnum = TenantType.TimeSeries;
                         }
                     }
                 }
             }
 
-            if (currentResourceType && currentResourceType != rs.type) {
+            if (currentResourceType && currentResourceTypeEnum !== rs.type) {
                 // user changed resource type - navigate to resources page and preselect resource
                 return appUrl.forResources() + "?" + rs.type + "=" + encodeURIComponent(rs.name);
             }
-            var isDifferentDbInAddress = !currentResourceName || currentResourceName !== rs.name.toLowerCase();
-            if (isDifferentDbInAddress) {
+            var isDifferentResourceInAddress = !currentResourceName || currentResourceName !== rs.name.toLowerCase();
+            if (isDifferentResourceInAddress) {
                 var existingAddress = window.location.hash;
-                var existingDbQueryString = currentResourceName ? rs.type + "=" + encodeURIComponent(currentResourceName) : null;
-                var newDbQueryString = rs.type + "=" + encodeURIComponent(rs.name);
+                var existingDbQueryString = currentResourceName ? currentResourceType + "=" + encodeURIComponent(currentResourceName) : null;
+                var newDbQueryString = currentResourceType + "=" + encodeURIComponent(rs.name);
                 var newUrlWithDatabase = existingDbQueryString ?
                     existingAddress.replace(existingDbQueryString, newDbQueryString) :
                     existingAddress + (window.location.hash.indexOf("?") >= 0 ? "&" : "?") + rs.type + "=" + encodeURIComponent(rs.name);
@@ -1056,11 +1090,15 @@ class appUrl {
         return cs ? "&counterstorage=" + encodeURIComponent(cs.name) : "";
     }
 
+    public static warnWhenUsingSystemDatabase: boolean = true;
+
     public static mapUnknownRoutes(router: DurandalRouter) {
         router.mapUnknownRoutes((instruction: DurandalRouteInstruction) => {
             var queryString = !!instruction.queryString ? ("?" + instruction.queryString) : "";
 
-            if (instruction.fragment == "has-api-key") {
+            if (instruction.fragment === "has-api-key" || instruction.fragment.indexOf("api-key") === 0) {
+
+                // reload page to reinitialize shell and properly consume/provide OAuth token
                 location.reload();
             } else {
                 messagePublisher.reportError("Unknown route", "The route " + instruction.fragment + queryString + " doesn't exist, redirecting...");
@@ -1078,9 +1116,20 @@ class appUrl {
         });
     }
 
-    static getSystemDatabase(): database {
-        /*TODO: Delete this*/
-        return null;
+    public static urlEncodeArgs(args: any): string {
+        var propNameAndValues = [];
+        for (var prop in args) {
+            var value = args[prop];
+            if (value instanceof Array) {
+                for (var i = 0; i < value.length; i++) {
+                    propNameAndValues.push(prop + "=" + encodeURIComponent(value[i]));
+                }
+            } else if (value !== undefined) {
+                propNameAndValues.push(prop + "=" + encodeURIComponent(value));
+            }
+        }
+
+        return "?" + propNameAndValues.join("&");
     }
 }
 

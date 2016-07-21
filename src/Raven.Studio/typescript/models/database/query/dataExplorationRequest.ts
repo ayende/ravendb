@@ -1,5 +1,3 @@
-/// <reference path="../../../../typings/tsd.d.ts"/>
-
 class dataExplorationRequest {
 
     linq = ko.observable<string>();

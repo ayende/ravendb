@@ -4,16 +4,24 @@ import getDocumentWithMetadataCommand = require("commands/database/documents/get
 import appUrl = require("common/appUrl");
 import documentClass = require("models/database/documents/document");
 import serverBuildReminder = require("common/serverBuildReminder");
+import eventSourceSettingStorage = require("common/eventSourceSettingStorage");
+import saveDocumentCommand = require("commands/database/documents/saveDocumentCommand");
 import environmentColor = require("models/resources/environmentColor");
 import shell = require("viewmodels/shell");
+import numberFormattingStorage = require("common/numberFormattingStorage");
 
 class studioConfig extends viewModelBase {
 
+    systemDatabase: database;
     configDocument = ko.observable<documentClass>();
+    warnWhenUsingSystemDatabase = ko.observable<boolean>(true);
+    disableEventSource = ko.observable<boolean>(false);
     timeUntilRemindToUpgrade = ko.observable<string>();
     mute: KnockoutComputed<boolean>;
     isForbidden = ko.observable<boolean>();
     isReadOnly: KnockoutComputed<boolean>;
+    browserFormatExample = 5050.99.toLocaleString();
+    rawFormat = ko.observable<boolean>();
 
     environmentColors: environmentColor[] = [
         new environmentColor("Default", "#f8f8f8"),
@@ -28,8 +36,10 @@ class studioConfig extends viewModelBase {
 
     constructor() {
         super();
+        this.systemDatabase = appUrl.getSystemDatabase();
 
         this.timeUntilRemindToUpgrade(serverBuildReminder.get());
+        this.disableEventSource(eventSourceSettingStorage.get());
         this.mute = ko.computed(() => {
             var lastBuildCheck = this.timeUntilRemindToUpgrade();
             var timestamp = Date.parse(lastBuildCheck);
@@ -54,21 +64,23 @@ class studioConfig extends viewModelBase {
 
         this.isForbidden((shell.isGlobalAdmin() || shell.canReadWriteSettings() || shell.canReadSettings()) === false);
         this.isReadOnly = ko.computed(() => shell.isGlobalAdmin() === false && shell.canReadWriteSettings() === false && shell.canReadSettings());
+
+        this.rawFormat(numberFormattingStorage.shouldUseRaw());
     }
 
     canActivate(args): any {
         var deferred = $.Deferred();
 
         if (this.isForbidden() === false) {
-         /*TODO: This need to be implemented
-            new getDocumentWithMetadataCommand(this.documentId, this.activeDatabase())
+            new getDocumentWithMetadataCommand(this.documentId, this.systemDatabase)
                 .execute()
                 .done((doc: documentClass) => {
                     this.configDocument(doc);
+                    this.warnWhenUsingSystemDatabase(doc["WarnWhenUsingSystemDatabase"]);
                 })
                 .fail(() => this.configDocument(documentClass.empty()))
                 .always(() => deferred.resolve({ can: true }));
-        */} else {
+        } else {
             deferred.resolve({ can: true });
         }
 
@@ -94,7 +106,6 @@ class studioConfig extends viewModelBase {
 
         $("#select-color li").each((index, element) => {
             var color = this.environmentColors[index];
-            //$(element).css("color", color.textColor);
             $(element).css("backgroundColor", color.backgroundColor);
         });
     }
@@ -109,30 +120,41 @@ class studioConfig extends viewModelBase {
         });
     }
 
+    setSystemDatabaseWarning(warnSetting: boolean) {
+        if (this.warnWhenUsingSystemDatabase() !== warnSetting) {
+            var newDocument = this.configDocument();
+            this.warnWhenUsingSystemDatabase(warnSetting);
+            newDocument["WarnWhenUsingSystemDatabase"] = warnSetting;
+            var saveTask = this.saveStudioConfig(newDocument);
+            saveTask.fail(() => this.warnWhenUsingSystemDatabase(!warnSetting));
+        }
+    }
+
     private pickColor() {
         $("#select-color button").css("backgroundColor", this.selectedColor().backgroundColor);
+    }
+
+    setEventSourceDisabled(setting: boolean) {
+        this.disableEventSource(setting);
+        eventSourceSettingStorage.setValue(setting);
     }
 
     setUpgradeReminder(upgradeSetting: boolean) {
         serverBuildReminder.mute(upgradeSetting);
     }
 
+    setNumberFormat(raw: boolean) {
+        this.rawFormat(raw);
+        numberFormattingStorage.save(raw);
+    }
+
     saveStudioConfig(newDocument: documentClass) {
-        var deferred = $.Deferred();
-
-        require(["commands/saveDocumentCommand"], saveDocumentCommand => {
-  // This need to be implemented
-            var saveTask = new saveDocumentCommand(this.documentId, newDocument, this.activeDatabase()).execute();
-            saveTask
-                .done((saveResult: bulkDocumentDto[]) => {
-                    this.configDocument(newDocument);
-                    this.configDocument().__metadata['etag'] = saveResult[0].Etag;
-                    deferred.resolve();
-                })
-                .fail(() => deferred.reject());
-        });
-
-        return deferred;
+        return new saveDocumentCommand(this.documentId, newDocument, this.systemDatabase)
+            .execute()
+            .done((saveResult: bulkDocumentDto[]) => {
+                this.configDocument(newDocument);
+                this.configDocument().__metadata['etag'] = saveResult[0].Etag;
+            });
     }
 }
 

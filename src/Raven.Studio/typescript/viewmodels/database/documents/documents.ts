@@ -1,42 +1,40 @@
 import app = require("durandal/app");
 import router = require("plugins/router");
 import virtualTable = require("widgets/virtualTable/viewModel");
-
 import pagedList = require("common/pagedList");
 import appUrl = require("common/appUrl");
 import dynamicHeightBindingHandler = require("common/bindingHelpers/dynamicHeightBindingHandler");
-import changesContext = require("common/changesContext");
 
+import changesContext = require("common/changesContext");
 import viewModelBase = require("viewmodels/viewModelBase");
 import deleteCollection = require("viewmodels/database/documents/deleteCollection");
 import selectColumns = require("viewmodels/common/selectColumns");
+import selectCsvColumnsDialog = require("viewmodels/common/selectCsvColumns");
 import showDataDialog = require("viewmodels/common/showDataDialog");
 
 import collection = require("models/database/documents/collection");
 import database = require("models/resources/database");
 import alert = require("models/database/debug/alert");
-import document = require("models/database/documents/document");
 import changeSubscription = require("common/changeSubscription");
 import customFunctions = require("models/database/documents/customFunctions");
 import customColumns = require("models/database/documents/customColumns");
 import customColumnParams = require("models/database/documents/customColumnParams");
-import collectionsStats = require("models/database/documents/collectionsStats");
 
-import getCollectionsStatsCommand = require("commands/database/documents/getCollectionsStatsCommand");
+import getCollectionsCommand = require("commands/database/documents/getCollectionsCommand");
 import getCustomColumnsCommand = require("commands/database/documents/getCustomColumnsCommand");
 import getEffectiveCustomFunctionsCommand = require("commands/database/globalConfig/getEffectiveCustomFunctionsCommand");
+import getOperationStatusCommand = require("commands/operations/getOperationStatusCommand");
 import getOperationAlertsCommand = require("commands/operations/getOperationAlertsCommand");
 import dismissAlertCommand = require("commands/operations/dismissAlertCommand");
-import getSingleAuthTokenCommand = require("commands/auth/getSingleAuthTokenCommand");
 import generateClassCommand = require("commands/database/documents/generateClassCommand");
 
 class documents extends viewModelBase {
 
     displayName = "documents";
     collections = ko.observableArray<collection>();
-    documentsCount = ko.observable<number>(0);
+    collectionsExceptAllDocs: KnockoutComputed<collection[]>;
     selectedCollection = ko.observable<collection>().subscribeTo("ActivateCollection").distinctUntilChanged();
-    allDocumentsCollection: collection;
+    allDocumentsCollection = ko.observable<collection>();
     collectionToSelectName: string;
     currentCollectionPagedItems = ko.observable<pagedList>();
     currentColumnsParams = ko.observable<customColumns>(customColumns.empty());
@@ -48,10 +46,10 @@ class documents extends viewModelBase {
     currentCollection = ko.observable<collection>();
     showLoadingIndicator = ko.observable<boolean>(false);
     showLoadingIndicatorThrottled = this.showLoadingIndicator.throttle(250);
-    currentExportUrl: KnockoutComputed<string>;
     isSystemDocumentsCollection: KnockoutComputed<boolean>;
     isRegularCollection: KnockoutComputed<boolean>;
 
+    documentsSelection: KnockoutComputed<checkbox>;
     hasAnyDocumentsSelected: KnockoutComputed<boolean>;
     hasAllDocumentsSelected: KnockoutComputed<boolean>;
     isAnyDocumentsAutoSelected = ko.observable<boolean>(false);
@@ -60,10 +58,10 @@ class documents extends viewModelBase {
 
     lastCollectionCountUpdate = ko.observable<string>();
     alerts = ko.observable<alert[]>([]);
-    token = ko.observable<singleAuthToken>();
     static gridSelector = "#documentsGrid";
     static isInitialized = ko.observable<boolean>(false);
     isInitialized = documents.isInitialized;
+    showCollectionChanged = ko.observable<boolean>(false);
 
     constructor() {
         super();
@@ -73,7 +71,8 @@ class documents extends viewModelBase {
             var selectedCollection: collection = this.selectedCollection();
             if (!!selectedCollection) {
                 if (selectedCollection.name === collection.allDocsCollectionName) {
-                    return this.documentsCount() > 0;
+                    var db: database = this.activeDatabase();
+                    return !!db.statistics() ? db.statistics().countOfDocuments() > 0 : false;
                 }
                 return this.selectedCollection().documentCount() > 0;
             }
@@ -87,13 +86,23 @@ class documents extends viewModelBase {
             }
             return false;
         });
+        this.documentsSelection = ko.computed(() => {
+            var selected = this.selectedDocumentIndices();
+            if (this.hasAllDocumentsSelected()) {
+                return checkbox.Checked;
+            }
+            if (selected.length > 0) {
+                return checkbox.SomeChecked;
+            }
+            return checkbox.UnChecked;
+        });
         this.canCopyAllSelected = ko.computed(() => {
             this.showLoadingIndicator(); //triggers computing the new cached selected items
             var numOfSelectedDocuments = this.selectedDocumentIndices().length;
             var docsGrid = this.getDocumentsGrid();
 
             if (!!docsGrid) {
-                const cachedItems = docsGrid.getNumberOfCachedItems();
+                var cachedItems = docsGrid.getNumberOfCachedItems();
                 return cachedItems >= numOfSelectedDocuments;
             }
 
@@ -109,15 +118,6 @@ class documents extends viewModelBase {
             return !!collection && !collection.isAllDocuments && !collection.isSystemDocuments;
         });
 
-        this.updateAuthToken();
-        this.currentExportUrl = ko.computed(() => {
-            var collection: collection = this.selectedCollection();
-            if (this.isRegularCollection()) {
-                return appUrl.forExportCollectionCsv(collection, collection.ownerDatabase) + (!!this.token() ? "&singleUseAuthToken=" + this.token().Token : "");
-            }
-            return null;
-        });
-
         this.selectedDocumentsText = ko.computed(() => {
             if (!!this.selectedDocumentIndices()) {
                 var documentsText = "document";
@@ -127,6 +127,15 @@ class documents extends viewModelBase {
                 return documentsText;
             }
             return "";
+        });
+        
+        this.collectionsExceptAllDocs = ko.computed(() => {
+            var allDocs = this.allDocumentsCollection();
+            if (!allDocs) {
+                return [];
+    }
+            var collections = this.collections();
+            return collections.filter(x => x !== allDocs);
         });
     }
 
@@ -143,7 +152,7 @@ class documents extends viewModelBase {
 
         var db = this.activeDatabase();
         this.fetchAlerts();
-        this.fetchCollectionsStats(db).done(results => {
+        this.fetchCollections(db).done(results => {
             this.collectionsLoaded(results, db);
             documents.isInitialized(true);
         });
@@ -159,7 +168,7 @@ class documents extends viewModelBase {
         this.createKeyboardShortcut("DELETE", () => this.getDocumentsGrid().deleteSelectedItems(), docsPageSelector);
         this.createKeyboardShortcut("Ctrl+C, D", () => this.copySelectedDocs(), docsPageSelector);
         this.createKeyboardShortcut("Ctrl+C, I",() => this.copySelectedDocIds(), docsPageSelector);
-        //TODO: this.registerCollectionsResize();
+        this.registerCollectionsResize();
     }
 
     deactivate() {
@@ -175,7 +184,7 @@ class documents extends viewModelBase {
         var startingRightWidth = 0;
         var totalStartingWidth = 0;
 
-        $(document).on("mousedown.collectionsResize", ".collection-resize", (e: JQueryMouseEventObject) => {
+        $(document).on("mousedown.collectionsResize", ".collection-resize",(e: any) => {
             startX = e.pageX;
             resizingColumn = true;
             startingLeftWidth = $("#documents-page-container").innerWidth();
@@ -183,11 +192,11 @@ class documents extends viewModelBase {
             totalStartingWidth = startingLeftWidth + startingRightWidth;
         });
 
-        $(document).on("mouseup.collectionsResize", "", () => {
+        $(document).on("mouseup.collectionsResize", "", (e: any) => {
             resizingColumn = false;
         });
 
-        $(document).on("mousemove.collectionsResize", "", (e: JQueryMouseEventObject) => {
+        $(document).on("mousemove.collectionsResize", "", (e: any) => {
             if (resizingColumn) {
 
                 // compute new percentage values
@@ -201,8 +210,9 @@ class documents extends viewModelBase {
                 if (e.preventDefault) e.preventDefault();
                 e.cancelBubble = true;
                 e.returnValue = false;
+
+                return false;
             }
-            return false;
         });
     }
 
@@ -228,16 +238,17 @@ class documents extends viewModelBase {
         ];
     }
 
-    private updateAuthToken() {
-        new getSingleAuthTokenCommand(this.activeDatabase())
-            .execute()
-            .done(token => this.token(token));
+    exportCsv() {
+        this.exportCsvInternal();
     }
 
-    exportCsv() {
-        // schedule token update (to properly handle subseqent downloads)
-        setTimeout(() => this.updateAuthToken(), 50);
-        return true;
+    exportCsvInternal(customColumns?: string[]) {
+        if (this.isRegularCollection()) {
+            var collection: collection = this.selectedCollection();
+            var db = this.activeDatabase();
+            var url = appUrl.forExportCollectionCsv(collection, collection.ownerDatabase, customColumns);
+            this.downloader.download(db, url);
+        }
     }
 
     private fetchAlerts() {
@@ -253,30 +264,27 @@ class documents extends viewModelBase {
         setTimeout(() => dynamicHeightBindingHandler.stickToTarget($(".ko-grid-viewport-container")[0], 'footer', 0), 25);
     }
 
-    private fetchCollectionsStats(db: database): JQueryPromise<collectionsStats> {
-        return new getCollectionsStatsCommand(db, this.collections()).execute();
+    private fetchCollections(db: database): JQueryPromise<Array<collection>> {
+        return new getCollectionsCommand(db, this.collections(), this.lastCollectionCountUpdate).execute();
     }
 
     private refreshCollections(): JQueryPromise<any> {
         var deferred = $.Deferred();
         var db = this.activeDatabase();
 
-        this.fetchCollectionsStats(db).done(results => {
-            this.documentsCount(results.numberOfDocuments());
-            this.updateCollections(results.collections);
+        this.fetchCollections(db).done(results => {
+            this.updateCollections(results);
             this.refreshCollectionsData();
-            //TODO: add a button to refresh the documents and than use this.refreshCollectionsData();
             deferred.resolve();
         });
 
         return deferred;
     }
 
-    collectionsLoaded(collectionsStats: collectionsStats, db: database) {
-        var collections = collectionsStats.collections;
+    collectionsLoaded(collections: Array<collection>, db: database) {
         // Create the "All Documents" pseudo collection.
-        this.allDocumentsCollection = collection.createAllDocsCollection(db);
-        this.allDocumentsCollection.documentCount = collectionsStats.numberOfDocuments;
+        this.allDocumentsCollection(collection.createAllDocsCollection(db));
+        this.allDocumentsCollection().documentCount = ko.computed(() => !!db.statistics() ? db.statistics().countOfDocuments() : 0);
 
         // Create the "System Documents" pseudo collection.
         var systemDocumentsCollection = collection.createSystemDocsCollection(db);
@@ -285,15 +293,15 @@ class documents extends viewModelBase {
             if (regularCollections.length === 0)
                 return 0;
             var sum = regularCollections.map((c: collection) => c.documentCount()).reduce((a, b) => a + b);
-            return this.allDocumentsCollection.documentCount() - sum;
+            return this.allDocumentsCollection().documentCount() - sum;
         });
 
         // All systems a-go. Load them into the UI and select the first one.
         var collectionsWithSysCollection = [systemDocumentsCollection].concat(collections);
-        var allCollections = [this.allDocumentsCollection].concat(collectionsWithSysCollection);
+        var allCollections = [this.allDocumentsCollection()].concat(collectionsWithSysCollection);
         this.collections(allCollections);
 
-        var collectionToSelect = allCollections.first(c => c.name === this.collectionToSelectName) || this.allDocumentsCollection;
+        var collectionToSelect = allCollections.first(c => c.name === this.collectionToSelectName) || this.allDocumentsCollection();
         collectionToSelect.activate();
     }
 
@@ -316,8 +324,10 @@ class documents extends viewModelBase {
                 if (dto) {
                     this.currentColumnsParams().columns($.map(dto.Columns, c => new customColumnParams(c)));
                     this.currentColumnsParams().customMode(true);
+                    selected.bindings(this.currentColumnsParams().getBindings());
                 } else {
                     // use default values!
+                    selected.bindings(undefined);
                     this.currentColumnsParams().columns.removeAll();
                     this.currentColumnsParams().customMode(false);
                 }
@@ -329,37 +339,45 @@ class documents extends viewModelBase {
         }
     }
 
-    private deleteCollection(collection: collection) {
+    deleteCollection(collection: collection) {
         if (collection) {
             var viewModel = new deleteCollection(collection);
-            viewModel.deletionTask.done(() => {
+            viewModel.deletionTask.done((result: operationIdDto) => {
                 if (!collection.isAllDocuments) {
                     this.collections.remove(collection);
 
                     var selectedCollection: collection = this.selectedCollection();
                     if (collection.name === selectedCollection.name) {
-                        this.selectCollection(this.allDocumentsCollection);
+                        this.selectCollection(this.allDocumentsCollection());
                     }
                 } else {
                     this.selectNone();
                 }
 
-                this.updateGrid();
+                this.updateGridAfterOperationComplete(collection, result.OperationId);
             });
             app.showDialog(viewModel);
         }
     }
 
-    private updateGrid() {
-        var selectedCollection: collection = this.selectedCollection();
+    private updateGridAfterOperationComplete(collection: collection, operationId: number) {
+        var getOperationStatusTask = new getOperationStatusCommand(collection.ownerDatabase, operationId);
+        getOperationStatusTask.execute()
+            .done((result: bulkOperationStatusDto) => {
+                if (result.Completed) {
+                    var selectedCollection: collection = this.selectedCollection();
 
-        if (selectedCollection.isAllDocuments) {
-            var docsGrid = this.getDocumentsGrid();
-            docsGrid.refreshCollectionData();
-        } else {
-            var allDocumentsPagedList = this.allDocumentsCollection.getDocuments();
-            allDocumentsPagedList.invalidateCache();
-        }
+                    if (selectedCollection.isAllDocuments) {
+                        var docsGrid = this.getDocumentsGrid();
+                        docsGrid.refreshCollectionData();
+                    } else {
+                        var allDocumentsPagedList = this.allDocumentsCollection().getDocuments();
+                        allDocumentsPagedList.invalidateCache();
+                    }
+                } else {
+                    setTimeout(() => this.updateGridAfterOperationComplete(collection, operationId), 500);
+                }
+            });
     }
 
     private updateCollections(receivedCollections: Array<collection>) {
@@ -373,11 +391,21 @@ class documents extends viewModelBase {
 
         this.collections.removeAll(deletedCollections);
 
+        //update collections, including collection count
         receivedCollections.forEach((receivedCol: collection) => {
             var foundCollection = this.collections().first((col: collection) => col.name === receivedCol.name);
             if (!foundCollection) {
                 this.collections.push(receivedCol);
             } else {
+                var oldCount = foundCollection.documentCount();
+                var newCount = receivedCol.documentCount();
+                var selectedCollection = this.selectedCollection();
+                if (oldCount !== newCount) {
+                    if (selectedCollection.name === receivedCol.name || selectedCollection.isAllDocuments) {
+                        this.showCollectionChanged(true);
+                    }
+                }
+
                 foundCollection.documentCount(receivedCol.documentCount());
             }
         });
@@ -385,23 +413,14 @@ class documents extends viewModelBase {
         //if the collection is deleted, go to the all documents collection
         var currentCollection: collection = this.collections().first(c => c.name === this.selectedCollection().name);
         if (!currentCollection || currentCollection.documentCount() === 0) {
-            this.selectCollection(this.allDocumentsCollection);
+            this.selectCollection(this.allDocumentsCollection());
         }
     }
 
     private refreshCollectionsData() {
-        var selectedCollection: collection = this.selectedCollection();
-
         this.collections().forEach((collection: collection) => {
-            if (collection.name === selectedCollection.name) {
-                var docsGrid = this.getDocumentsGrid();
-                if (!!docsGrid) {
-                    docsGrid.refreshCollectionData();
-                }
-            } else {
-                var pagedList = collection.getDocuments();
-                pagedList.invalidateCache();
-            }
+            var pagedList = collection.getDocuments();
+            pagedList.invalidateCache();
         });
     }
 
@@ -418,13 +437,23 @@ class documents extends viewModelBase {
             collection.activate();
             var documentsWithCollectionUrl = appUrl.forDocuments(collection.name, this.activeDatabase());
             router.navigate(documentsWithCollectionUrl, false);
+            this.showCollectionChanged(false);
         }
+    }
+
+    selectCsvColumns() {
+        var dialog = new selectCsvColumnsDialog(this.getDocumentsGrid().getColumnsNames());
+        app.showDialog(dialog);
+
+        dialog.onExit().done((cols: string[]) => {
+            this.exportCsvInternal(cols);
+        });
     }
 
     selectColumns() {
         // Fetch column widths from virtual table
         var virtualTable = this.getDocumentsGrid();
-            var columnsNames = virtualTable.getColumnsNames();
+        var columnsNames = virtualTable.getColumnsNames();
         var vtColumns = virtualTable.columns();
         this.currentColumnsParams().columns().forEach((column: customColumnParams) => {
             for (var i = 0; i < vtColumns.length; i++) {
@@ -439,7 +468,9 @@ class documents extends viewModelBase {
         app.showDialog(selectColumnsViewModel);
         selectColumnsViewModel.onExit().done((cols) => {
             this.currentColumnsParams(cols);
+            this.currentCollection().bindings(this.currentColumnsParams().getBindings());
             var pagedList = this.currentCollection().getDocuments();
+            pagedList.invalidateCache();
             this.currentCollectionPagedItems(pagedList);
         });
     }
@@ -453,6 +484,7 @@ class documents extends viewModelBase {
         var selectedCollection = this.selectedCollection();
         selectedCollection.invalidateCache();
         this.selectNone();
+        this.showCollectionChanged(false);
     }
 
     toggleSelectAll() {
@@ -464,7 +496,7 @@ class documents extends viewModelBase {
             } else {
                 docsGrid.selectSome();
 
-                this.isAnyDocumentsAutoSelected(!this.hasAllDocumentsSelected());
+                this.isAnyDocumentsAutoSelected(this.hasAllDocumentsSelected() == false);
             }
         }
     }
@@ -521,14 +553,15 @@ class documents extends viewModelBase {
     generateDocCode() {
         var grid = this.getDocumentsGrid();
         if (grid) {
-            var selectedItem = <document>grid.getSelectedItems(1).first();
+            var selectedItem = <Document>grid.getSelectedItems(1).first();
 
-            var id = selectedItem.getId();
-            new generateClassCommand(this.activeDatabase(), id, "csharp")
-                .execute()
-                .done((code: generatedCodeDto) => {
-                    app.showDialog(new showDataDialog("Generated Class", code.Code));
-                });
+            var metadata = selectedItem["__metadata"];
+            var id = metadata["id"]; 
+            var generate = new generateClassCommand(this.activeDatabase(), id, "csharp");
+            var deffered = generate.execute();
+            deffered.done((code: JSON) => {
+                app.showDialog(new showDataDialog("Generated Class", code["Code"]));
+            });
         }
     }
 

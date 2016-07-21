@@ -82,7 +82,7 @@ class quotas extends viewModelBase {
                 divideBy1024(this.warningLimitThreshold.globalValue);
             });
 
-        return $.when<any>(dbSettingsTask, configTask);
+        return $.when(dbSettingsTask, configTask);
     }
 
     initializeDirtyFlag() {

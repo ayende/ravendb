@@ -1,3 +1,5 @@
+/// <reference path="../../models/dto.ts" />
+
 import commandBase = require("commands/commandBase");
 import database = require("models/resources/database");
 import appUrl = require("common/appUrl");
@@ -23,12 +25,12 @@ class performSmugglingCommand extends commandBase {
     }
 
     private monitorOperation(parentPromise: JQueryDeferred<any>, operationId: number) {
-        new getOperationStatusCommand(appUrl.getDatabase(), operationId)
+        new getOperationStatusCommand(appUrl.getSystemDatabase(), operationId)
             .execute()
             .done((result: operationStatusDto) => {
             this.updateMigrationStatus(result);
             if (result.Completed) {
-                if (result.Faulted) {
+                if (result.Faulted || result.Canceled) {
                     this.reportError("Failed to perform server migration!", result.State.Error);
                     parentPromise.reject();
                 } else {

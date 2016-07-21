@@ -54,7 +54,7 @@ class adminLogsConfigureDialog extends dialogViewModelBase {
     }
 
     startServerLogging() {
-        var getTokenTask = new getSingleAuthTokenCommand(null, true).execute();
+        var getTokenTask = new getSingleAuthTokenCommand(appUrl.getSystemDatabase(), true).execute();
 
         getTokenTask
             .done((tokenObject: singleAuthToken) => {
@@ -88,15 +88,6 @@ class adminLogsConfigureDialog extends dialogViewModelBase {
         if (!this.isScrollNeeded()) {
              this.alignBoxVertically();
         }
-    }
-
-    private alignBoxVertically() {
-        var messageBoxHeight = parseInt($(".messageBox").css('height'), 10);
-        var windowHeight = $(window).height();
-        var messageBoxMarginTop = parseInt($(".messageBox").css('margin-top'), 10);
-        var newTopPercent = Math.floor(((windowHeight - messageBoxHeight) / 2 - messageBoxMarginTop) / windowHeight * 100);
-        var newTopPercentString = newTopPercent.toString() + '%';
-        $(".modalHost").css('top', newTopPercentString);
     }
 
     generateBindingInputId(index: number) {

@@ -1,4 +1,4 @@
-/// <reference path="../../../../typings/tsd.d.ts" />
+/// <reference path="../../../models/dto.ts" />
 
 import appUrl = require("common/appUrl");
 

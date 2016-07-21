@@ -7,11 +7,11 @@ class getSystemDocumentCommand extends commandBase {
         super();
     }
 
-    execute(): JQueryPromise<databaseDocumentDto> {
+    execute(): JQueryPromise<pagedResultSet> {
 
         var deferred = $.Deferred();
 
-        var url = "/docs?id=" + this.id;
+        var url = "/docs/" + this.id;
         var docQuery = this.query(url, null, null);
         docQuery.done((dto: databaseDocumentDto) => deferred.resolve(dto));
         docQuery.fail(response => deferred.reject(response));

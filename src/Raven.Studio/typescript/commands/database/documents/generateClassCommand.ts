@@ -8,7 +8,7 @@ class generateClassCommand extends commandBase {
     }
     isGeneratingCode = ko.observable(true);
 
-    execute(): JQueryPromise<generatedCodeDto> {
+    execute(): JQueryPromise<string> {
 
         var url = "/generate/code";
         var args = {
@@ -16,7 +16,7 @@ class generateClassCommand extends commandBase {
             lang: this.lang
         }
         return this.query(url, args, this.db)
-            .done((result: any) => {
+            .done((result) => {
                 return result.Code;
             })
             .fail((response: JQueryXHR) => this.reportError("Failed to create class code", response.responseText, response.statusText));

@@ -46,7 +46,7 @@ class timeSeriesType implements ICollectionBase {
         return list;
     }
 
-    private fetchKeys(skip: number, take: number): JQueryPromise<pagedResultSet<any>> {
+    private fetchKeys(skip: number, take: number): JQueryPromise<pagedResultSet> {
         return new getKeysCommand(this.ownerTimeSeries, skip, take, this.name, this.keysCount()).execute();
     }
 

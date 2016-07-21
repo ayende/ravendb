@@ -4,7 +4,7 @@ import appUrl = require("common/appUrl");
 import document = require("models/database/documents/document");
 
 class listDiskPerformanceRunsCommand extends commandBase {
-    private db: database = appUrl.getDatabase();
+    private db: database = appUrl.getSystemDatabase();
 
     constructor() {
         super();

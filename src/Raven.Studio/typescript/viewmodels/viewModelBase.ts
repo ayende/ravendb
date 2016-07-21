@@ -1,5 +1,3 @@
-/// <reference path="../../typings/tsd.d.ts"/>
-
 import appUrl = require("common/appUrl");
 import database = require("models/resources/database");
 import resource = require("models/resources/resource");
@@ -8,6 +6,7 @@ import counterStorage = require("models/counter/counterStorage");
 import timeSeries = require("models/timeSeries/timeSeries");
 import router = require("plugins/router");
 import app = require("durandal/app");
+import viewSystemDatabaseConfirm = require("viewmodels/common/viewSystemDatabaseConfirm");
 import changeSubscription = require("common/changeSubscription");
 import oauthContext = require("common/oauthContext");
 import changesContext = require("common/changesContext");
@@ -15,7 +14,6 @@ import messagePublisher = require("common/messagePublisher");
 import confirmationDialog = require("viewmodels/common/confirmationDialog");
 import saveDocumentCommand = require("commands/database/documents/saveDocumentCommand");
 import document = require("models/database/documents/document");
-
 import downloader = require("common/downloader");
 
 /*
@@ -39,6 +37,7 @@ class viewModelBase {
     notifications: Array<changeSubscription> = [];
     appUrls: computedAppUrls;
     private postboxSubscriptions: Array<KnockoutSubscription> = [];
+    static isConfirmedUsingSystemDatabase: boolean = false;
     static showSplash = ko.observable<boolean>(false);
     private isAttached = false;
     dirtyFlag = new ko.DirtyFlag([]);
@@ -91,10 +90,16 @@ class viewModelBase {
         } else { //it's a database
             var db = this.activeDatabase();
 
-            if (!!db && db.disabled()) {
+            // we only want to prompt warning to system db if we are in the databases section
+            if (!!db && db.isSystem) {
+                return this.promptNavSystemDb();
+            }
+            else if (!!db && db.disabled()) {
                 messagePublisher.reportError("Database '" + db.name + "' is disabled!", "You can't access any section of the database while it's disabled.");
                 return { redirect: appUrl.forResources() };
             }
+
+            viewModelBase.isConfirmedUsingSystemDatabase = false;
         }
 
         return true;
@@ -110,11 +115,14 @@ class viewModelBase {
             ko.postbox.publish("ActivateDatabaseWithName", db.name);
         }
 
+        // create this ko.computed once to avoid creation and subscribing every 50 ms - thus creating memory leak.
+        var adminArea = this.appUrls.isAreaActive("admin");
+
         oauthContext.enterApiKeyTask.done(() => {
             // we have to wait for changes api to connect as well
             // as obtaining changes api connection might take a while, we have to spin until connection is read
             var createNotifySpinFunction = () => {
-                if (isShell || this.appUrls.isAreaActive("admin")())
+                if (isShell || adminArea())
                     return;
                 if (changesContext.currentResourceChangesApi && changesContext.currentResourceChangesApi()) {
                     this.notifications = this.createNotifications();
@@ -128,13 +136,13 @@ class viewModelBase {
         this.postboxSubscriptions = this.createPostboxSubscriptions();
         this.modelPollingStart();
 
-        window.addEventListener("beforeunload", this.beforeUnloadListener, false);
 
         ko.postbox.publish("SetRawJSONUrl", "");
         this.updateHelpLink(null); // clean link
     }
 
     attached() {
+        window.addEventListener("beforeunload", this.beforeUnloadListener, false);
         this.isAttached = true;
         viewModelBase.showSplash(false);
     }
@@ -178,8 +186,14 @@ class viewModelBase {
         this.activeFilesystem.unsubscribeFrom("ActivateFilesystem");
         this.activeCounterStorage.unsubscribeFrom("ActivateCounterStorage");
         this.activeTimeSeries.unsubscribeFrom("ActivateTimeSeries");
+        this.lastActivatedResource.unsubscribeFrom("ActivateDatabase");
+        this.lastActivatedResource.unsubscribeFrom("ActivateFilesystem");
+        this.lastActivatedResource.unsubscribeFrom("ActivateCounterStorage");
+        this.lastActivatedResource.unsubscribeFrom("ActivateTimeSeries");
+        this.currentHelpLink.unsubscribeFrom("currentHelpLink");
         this.cleanupNotifications();
         this.cleanupPostboxSubscriptions();
+
         window.removeEventListener("beforeunload", this.beforeUnloadListener, false);
 
         this.isAttached = true;
@@ -315,10 +329,29 @@ class viewModelBase {
         return deferred;
     }
 
+    public promptNavSystemDb(forceRejectWithResolve: boolean = false): any {
+        var canNavTask = $.Deferred<any>();
+
+        if (!appUrl.warnWhenUsingSystemDatabase || viewModelBase.isConfirmedUsingSystemDatabase) {
+            canNavTask.resolve({ can: true });
+        } else { 
+            var systemDbConfirm = new viewSystemDatabaseConfirm("Meddling with the system database could cause irreversible damage");
+            systemDbConfirm.viewTask
+                .fail(() => forceRejectWithResolve == false ? canNavTask.resolve({ redirect: appUrl.forResources() }) : canNavTask.reject())
+                .done(() => {
+                    viewModelBase.isConfirmedUsingSystemDatabase = true;
+                    canNavTask.resolve({ can: true });
+                });
+            app.showDialog(systemDbConfirm);
+        }
+
+        return canNavTask;
+    }
+
     private beforeUnloadListener: EventListener = (e: any): any => {
         var isDirty = this.dirtyFlag().isDirty();
         if (isDirty) {
-            const message = "You have unsaved data.";
+            var message = "You have unsaved data.";
             e = e || window.event;
 
             // For IE and Firefox

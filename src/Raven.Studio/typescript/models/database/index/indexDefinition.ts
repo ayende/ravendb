@@ -1,5 +1,3 @@
-/// <reference path="../../../../typings/tsd.d.ts"/>
-
 import luceneField = require("models/database/index/luceneField");
 import spatialIndexField = require("models/database/index/spatialIndexField");
 
@@ -44,7 +42,7 @@ class indexDefinition {
         this.isTestIndex(dto.IsTestIndex);
         this.isSideBySideIndex(dto.IsSideBySideIndex);
         this.isCompiled = dto.IsCompiled;
-        this.isMapReduce = dto.IsMapReduce; 
+        this.isMapReduce = dto.IsMapReduce;
         this.lockMode = dto.LockMode;
         this.map(dto.Map);
         this.maps(dto.Maps.map(m => ko.observable(m)));
@@ -65,7 +63,7 @@ class indexDefinition {
     }
 
     isStoreAllFields(): boolean {
-        if (this.stores && this.stores.hasOwnProperty("__all_fields")) {
+        if (this.stores.hasOwnProperty("__all_fields")) {
             return this.stores["__all_fields"] === "Yes";
         }
 
@@ -91,7 +89,7 @@ class indexDefinition {
     toDto(): indexDefinitionDto {
         return {
             Analyzers: this.makeFieldObject(f => f.indexing() === "Analyzed", f => f.analyzer()),
-            Fields: null,//this.fields(),
+            Fields: this.fields(),
             Indexes: this.makeFieldObject(f => f.indexing() !== "Default", f => f.indexing()),
             InternalFieldsMapping: this.internalFieldsMapping,
             IsTestIndex: this.isTestIndex(),

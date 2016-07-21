@@ -16,7 +16,7 @@ class getConflictsCommand extends commandBase {
         }
     }
 
-    execute(): JQueryPromise<pagedResultSet<any>> {
+    execute(): JQueryPromise<pagedResultSet> {
         
         var args = {
             sort: "-ConflictDetectedAt",

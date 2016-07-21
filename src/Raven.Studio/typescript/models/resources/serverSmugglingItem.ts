@@ -1,5 +1,3 @@
-/// <reference path="../../../typings/tsd.d.ts"/>
-
 import database = require("models/resources/database");
 
 class serverSmugglingItem {
@@ -13,8 +11,8 @@ class serverSmugglingItem {
 
     constructor(database: database) {
         this.resource = database;
-        this.hasReplicationBundle = ko.computed(() => true);
-        this.hasVersioningBundle = ko.computed(() => true);
+        this.hasReplicationBundle = ko.computed(() => this.resource.isBundleActive("replication"));
+        this.hasVersioningBundle = ko.computed(() => this.resource.isBundleActive("versioning"));
     }
 
     toDto(): serverSmugglingItemDto {

@@ -1,17 +1,17 @@
 import pagedList = require("common/pagedList");
+import getDocumentsPreviewCommand = require("commands/database/documents/getDocumentsPreviewCommand");
 import getSystemDocumentsCommand = require("commands/database/documents/getSystemDocumentsCommand");
-import getDocumentsFromCollectionCommand = require("commands/database/documents/getDocumentsFromCollectionCommand");
-import getAllDocumentsCommand = require("commands/database/documents/getAllDocumentsCommand");
 import pagedResultSet = require("common/pagedResultSet");
 import database = require("models/resources/database");
 import cssGenerator = require("common/cssGenerator");
 
 class collection implements ICollectionBase {
     colorClass = ""; 
-    documentCount = ko.observable(0);
+    documentCount: any = ko.observable(0);
     documentsCountWithThousandsSeparator = ko.computed(() => this.documentCount().toLocaleString());
     isAllDocuments = false;
     isSystemDocuments = false;
+    bindings = ko.observable<string[]>();
 
     public collectionName : string;
     private documentsList: pagedList;
@@ -33,6 +33,10 @@ class collection implements ICollectionBase {
         ko.postbox.publish("ActivateCollection", this);
     }
 
+    prettyLabel(text: string) {
+        return text.replace(/__/g, '/');
+    }
+
     getDocuments(): pagedList {
         if (!this.documentsList) {
             this.documentsList = this.createPagedList();
@@ -52,14 +56,14 @@ class collection implements ICollectionBase {
         }
     }
 
-    fetchDocuments(skip: number, take: number): JQueryPromise<pagedResultSet<any>> {
+    fetchDocuments(skip: number, take: number): JQueryPromise<pagedResultSet> {
         if (this.isSystemDocuments) {
             // System documents don't follow the normal paging rules. See getSystemDocumentsCommand.execute() for more info.
             return new getSystemDocumentsCommand(this.ownerDatabase, skip, take, this.documentCount()).execute();
         } if (this.isAllDocuments) {
-            return new getAllDocumentsCommand(this.ownerDatabase, skip, take).execute();
+            return new getDocumentsPreviewCommand(this.ownerDatabase, skip, take, undefined, this.bindings()).execute();
         } else {
-            return new getDocumentsFromCollectionCommand(this, skip, take).execute();
+            return new getDocumentsPreviewCommand(this.ownerDatabase, skip, take, this.name, this.bindings()).execute();
         }
     }
 

@@ -1,5 +1,3 @@
-/// <reference path="../../typings/tsd.d.ts"/>
-
 class jsonUtil {
     static syntaxHighlight(json) {
         if (typeof json != 'string') {

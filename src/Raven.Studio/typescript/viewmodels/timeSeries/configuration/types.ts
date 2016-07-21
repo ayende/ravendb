@@ -59,7 +59,7 @@ class types extends viewModelBase {
         return list;
     }
 
-    private fetchTypes(skip: number, take: number): JQueryPromise<pagedResultSet<any>> {
+    private fetchTypes(skip: number, take: number): JQueryPromise<pagedResultSet> {
         var deffered = $.Deferred();
         new getTypesCommand(this.activeTimeSeries()).execute()
             .done((types: timeSeriesType[]) => {
