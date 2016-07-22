@@ -6,12 +6,12 @@ import performanceTestRequest = require("models/database/debug/performanceTestRe
 import performanceTestResultWrapped = require("models/database/debug/performanceTestResultWrapped");
 import ioTestCommand = require("commands/database/debug/ioTestCommand");
 import killRunningTaskCommand = require("commands/operations/killRunningTaskCommand");
-import d3 = require('d3/d3');
+import d3 = require('d3');
 import nv = require('nvd3');
 import shell = require("viewmodels/shell");
 
 class ioTest extends viewModelBase {
-
+    /*
     isBusy = ko.observable<boolean>(false);
     ioTestRequest: performanceTestRequest = performanceTestRequest.empty();
     testResult = ko.observable<performanceTestResultWrapped>();
@@ -58,7 +58,7 @@ class ioTest extends viewModelBase {
         var deferred = $.Deferred();
 
         if (this.isForbidden() === false) {
-            new getStatusDebugConfigCommand(appUrl.getSystemDatabase())
+            new getStatusDebugConfigCommand(null)
                 .execute()
                 .done((results: any) =>
                     this.ioTestRequest.threadCount(results.MaxNumberOfParallelProcessingTasks))
@@ -202,7 +202,7 @@ class ioTest extends viewModelBase {
     detached() {
         super.detached();
         window.onresize = null; // FIX nvd3 event attached globally
-    }
+    }*/
 }
 
 export = ioTest;  

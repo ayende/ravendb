@@ -1,5 +1,5 @@
-/// <reference path="../../Scripts/typings/jquery/jquery.d.ts" />
-/// <reference path="../../Scripts/typings/knockout/knockout.d.ts" />
+/// <reference path="../../typings/tsd.d.ts" />
+
 import appUrl = require('common/appUrl');
 import changeSubscription = require('common/changeSubscription');
 import changesCallback = require('common/changesCallback');
@@ -28,18 +28,15 @@ class adminLogsClient {
 
     constructor(private token: string) {
         this.eventsId = idGenerator.generateId();
-        this.resourcePath = appUrl.forResourceQuery(appUrl.getSystemDatabase());
+        this.resourcePath = appUrl.baseUrl;
         this.connectionOpeningTask = $.Deferred();
         this.connectionClosingTask = $.Deferred();
     }
 
     public connect() {
         var connectionString = 'singleUseAuthToken=' + this.token + '&id=' + this.eventsId;
-        if ("WebSocket" in window && changesApi.isServerSupportingWebSockets) {
+        if ("WebSocket" in window) {
             this.connectWebSocket(connectionString);
-        }
-        else if ("EventSource" in window) {
-            this.connectEventSource(connectionString);
         } else {
             //The browser doesn't support nor websocket nor eventsource
             //or we are in IE10 or IE11 and the server doesn't support WebSockets.
@@ -73,28 +70,6 @@ class adminLogsClient {
         }
     }
 
-    private connectEventSource(connectionString: string) {
-        var connectionOpened: boolean = false;
-
-        this.eventSource = new EventSource(this.resourcePath + '/admin/logs/events?' + connectionString);
-
-        this.eventSource.onmessage = (e) => this.onMessage(e);
-        this.eventSource.onerror = (e) => {
-            if (connectionOpened == false) {
-                this.connectionOpeningTask.reject();
-            } else {
-                this.eventSource.close();
-                this.connectionClosingTask.resolve(e);
-            }
-        };
-        this.eventSource.onopen = () => { 
-            console.log("Connected to WebSocket admin logs");
-            this.successfullyConnectedOnce = true;
-            connectionOpened = true;
-            this.connectionOpeningTask.resolve();
-        }
-    }
-
     private send(command: string, value?: string, needToSaveSentMessages: boolean = true) {
         this.connectionOpeningTask.done(() => {
             var args = {
@@ -106,7 +81,7 @@ class adminLogsClient {
             }
 
             //TODO: exception handling?
-            this.commandBase.query('/admin/logs/configure', args, appUrl.getSystemDatabase());
+            this.commandBase.query('/admin/logs/configure', args, null);
         });
     }
 
@@ -136,7 +111,7 @@ class adminLogsClient {
     }
 
     configureCategories(categoriesConfig: adminLogsConfigEntryDto[]) {
-        new adminLogsConfigureCommand(appUrl.getSystemDatabase(), categoriesConfig, this.eventsId).execute();
+        new adminLogsConfigureCommand(null, categoriesConfig, this.eventsId).execute();
     }
 
     dispose() {

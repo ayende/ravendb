@@ -1,8 +1,5 @@
-/// <reference path="../../../Scripts/typings/d3/nvd3.d.ts" />
-/// <reference path="../../../Scripts/typings/d3/d3.d.ts" />
-
 import viewModelBase = require("viewmodels/viewModelBase");
-import d3 = require("d3/d3");
+import d3 = require("d3");
 import nv = require("nvd3");
 import appUrl = require("common/appUrl");
 import listDiskPerformanceRunsCommand = require("commands/maintenance/listDiskPerformanceRunsCommand");
@@ -11,7 +8,7 @@ import deleteDocumentCommand = require("commands/database/documents/deleteDocume
 import settingsAccessAuthorizer = require("common/settingsAccessAuthorizer");
 
 class diskIoViewer extends viewModelBase {
-
+    /*
     isoFormat = d3.time.format.iso;
 
     settingsAccess = new settingsAccessAuthorizer();
@@ -69,7 +66,7 @@ class diskIoViewer extends viewModelBase {
                 this.currentDbReport(undefined);
                 return;
             }
-            new getDocumentWithMetadataCommand(v.documentId, appUrl.getSystemDatabase())
+            new getDocumentWithMetadataCommand(v.documentId, null)
                 .execute()
                 .done((doc: diskIoPerformanceRunDto) => {
                     this.emptyReport(doc.Databases.length === 0);
@@ -222,13 +219,13 @@ class diskIoViewer extends viewModelBase {
         this.confirmationMessage("Are you sure?", "You are removing Disk IO Report: " + this.currentPeformanceRunLabel())
             .done(() => {
                 var currentRun = this.currentPerformanceRun();
-                new deleteDocumentCommand(this.currentPerformanceRun().documentId, appUrl.getSystemDatabase())
+                new deleteDocumentCommand(this.currentPerformanceRun().documentId, null)
                     .execute();
                 this.performanceRuns.remove(currentRun);
                 this.currentPerformanceRun(null);
                 this.showChart(false);
             });
-    }
+    }*/
 }
 
 export = diskIoViewer; 

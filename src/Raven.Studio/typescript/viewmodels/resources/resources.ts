@@ -93,7 +93,6 @@ class resources extends viewModelBase {
         // uncheck all during page load
         this.resources().forEach(resource => resource.isChecked(false));
         
-        this.systemDb = appUrl.getSystemDatabase();
         this.appUrls = appUrl.forCurrentDatabase(); 
         this.searchText.extend({ throttle: 200 }).subscribe(() => this.filterResources());
 
@@ -210,7 +209,7 @@ class resources extends viewModelBase {
     }
 
     private fetchAlerts() {
-        new getOperationAlertsCommand(appUrl.getSystemDatabase())
+        new getOperationAlertsCommand(null)
             .execute()
             .then((result: alert[]) => this.alerts(result));
     }
@@ -354,7 +353,7 @@ class resources extends viewModelBase {
 
         for (var i = 0; i < this.resources().length; i++) {
             var rs: resource = this.resources()[i];
-            if (rs.isDatabase() && (<database>rs).isSystem) {
+            if (rs.isDatabase()) {
                 rs.isChecked(false);
                 continue;
             }
@@ -434,12 +433,12 @@ class resources extends viewModelBase {
     }
 
     dismissAlert(uniqueKey: string) {
-        new dismissAlertCommand(appUrl.getSystemDatabase(), uniqueKey).execute();
+        new dismissAlertCommand(null, uniqueKey).execute();
     }
 
     urlForAlert(alert: alert) {
         var index = this.alerts().indexOf(alert);
-        return appUrl.forAlerts(appUrl.getSystemDatabase()) + "&item=" + index;
+        return appUrl.forAlerts(null) + "&item=" + index;
     }
 
     newResource() {

@@ -41,7 +41,6 @@ class adminSettings extends viewModelBase {
     }
 
     init() {
-        this.docsForSystemUrl = appUrl.forDocuments(null, appUrl.getSystemDatabase());
         this.isSystemDatabaseForbidden((shell.isGlobalAdmin() || shell.canReadWriteSettings() || shell.canReadSettings()) === false);
 
         var canReadOrWrite = this.settingsAccess.canReadOrWrite();
@@ -101,15 +100,6 @@ class adminSettings extends viewModelBase {
             // Is there a better way to get the active route?
             var activeRoute = this.router.navigationModel().first(r => r.isActive());
             return activeRoute != null ? activeRoute.title : "";
-        });
-    }
-
-    navigateToSystemDatabase() {
-        this.promptNavSystemDb(true).done(() => {
-            var db: database = appUrl.getSystemDatabase();
-            db.activate();
-            var url = appUrl.forDocuments(null, db);
-            this.navigate(url);
         });
     }
 }

@@ -2,12 +2,13 @@ import viewModelBase = require("viewmodels/viewModelBase");
 import generalUtils = require("common/generalUtils");
 import changesContext = require("common/changesContext");
 import getSqlReplicationPerfStatsCommand = require("commands/database/debug/getSqlReplicationPerfStatsCommand");
-import d3 = require("d3/d3");
+import d3 = require("d3");
 import nv = require('nvd3');
 import database = require('models/resources/database');
 import changeSubscription = require('common/changeSubscription');
 
 class sqlReplicationPerfStats extends viewModelBase {
+    /*
     statsAvailable: KnockoutComputed<boolean>;
     hasReplicationEnabled = ko.observable(false);
 
@@ -405,7 +406,7 @@ class sqlReplicationPerfStats extends viewModelBase {
             .entries(statsInline);
         return byKey.map(d => d.key);
     }
-
+    */
 }
 
 export = sqlReplicationPerfStats;

@@ -19,7 +19,7 @@ class globalConfigReplications extends viewModelBase {
     developerLicense = globalConfig.developerLicense;
     canUseGlobalConfigurations = globalConfig.canUseGlobalConfigurations;
 
-    replicationConfig = ko.observable<replicationConfig>(new replicationConfig({ DocumentConflictResolution: "None", AttachmentConflictResolution: "None" }));
+    replicationConfig = ko.observable<replicationConfig>(new replicationConfig({ DocumentConflictResolution: "None" }));
     replicationsSetup = ko.observable<replicationsSetup>(new replicationsSetup({ MergedDocument: { Destinations: [], Source: null } }));
 
     replicationConfigDirtyFlag = new ko.DirtyFlag([]);
@@ -70,8 +70,9 @@ class globalConfigReplications extends viewModelBase {
 
     canActivate(args: any): JQueryPromise<any> {
         var deferred = $.Deferred();
-        var db = appUrl.getSystemDatabase();
+        var db = null;
         if (db) {
+            //TODO:
             if (this.settingsAccess.isForbidden()) {
                 deferred.resolve({ can: true });
             } else {
@@ -92,7 +93,7 @@ class globalConfigReplications extends viewModelBase {
     bindPopover() {
         $(".dbNameHint").popover({
             html: true,
-            container: $("body"),
+            container: "body",
             trigger: "hover",
             content: "Database name will be replaced with database name being replicated in local configuration."
         });
@@ -116,13 +117,14 @@ class globalConfigReplications extends viewModelBase {
 
     fetchAutomaticConflictResolution(db): JQueryPromise<any> {
         var deferred = $.Deferred();
+        /* TODO:
         new getAutomaticConflictResolutionDocumentCommand(db, true)
             .execute()
             .done(repConfig => {
                 this.replicationConfig(new replicationConfig(repConfig));
                 this.activated(true);
             })
-            .always(() => deferred.resolve({ can: true }));
+            .always(() => deferred.resolve({ can: true }));*/
         return deferred;
     }
 
@@ -162,9 +164,9 @@ class globalConfigReplications extends viewModelBase {
 
     syncChanges(deleteConfig: boolean) {
         if (deleteConfig) {
-            var task1 = new deleteDocumentCommand("Raven/Global/Replication/Config", appUrl.getSystemDatabase())
+            var task1 = new deleteDocumentCommand("Raven/Global/Replication/Config", null)
                 .execute();
-            var task2 = new deleteDocumentCommand("Raven/Global/Replication/Destinations", appUrl.getSystemDatabase())
+            var task2 = new deleteDocumentCommand("Raven/Global/Replication/Destinations", null)
                 .execute();
             var combinedTask = $.when(task1, task2);
             combinedTask.done(() => messagePublisher.reportSuccess("Global Settings were successfully saved!"));
@@ -179,14 +181,11 @@ class globalConfigReplications extends viewModelBase {
                 if (this.replicationsSetup().source()) {
                     this.saveReplicationSetup();
                 } else {
-                    var db = appUrl.getSystemDatabase();
-                    if (db) {
-                        new getDatabaseStatsCommand(db)
-                            .execute()
-                            .done(result=> {
-                                this.prepareAndSaveReplicationSetup(result.DatabaseId);
-                            });
-                    }
+                    new getDatabaseStatsCommand(null)
+                        .execute()
+                        .done(result=> {
+                            this.prepareAndSaveReplicationSetup(result.DatabaseId);
+                        });
                 }
             }
         }
@@ -204,7 +203,7 @@ class globalConfigReplications extends viewModelBase {
     }
 
     private saveReplicationSetup() {
-        var db = appUrl.getSystemDatabase();
+        var db = null;
         if (db) {
             new saveReplicationDocumentCommand(this.replicationsSetup().toDto(false), db, true)
                 .execute()
@@ -213,7 +212,7 @@ class globalConfigReplications extends viewModelBase {
     }
 
     saveAutomaticConflictResolutionSettings() {
-        var db = appUrl.getSystemDatabase();
+        var db = null;
         if (db) {
             new saveAutomaticConflictResolutionDocumentCommand(this.replicationConfig().toDto(), db, true)
                 .execute()

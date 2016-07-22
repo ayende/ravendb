@@ -8,8 +8,8 @@ class getDocumentsPreviewCommand extends commandBase {
     constructor(private database: database, private skip: number, private take: number, private collectionName?: string, private bindings?: string[]) {
         super();
     }
-
-    execute(): JQueryPromise<pagedResultSet> {
+    /*TODO: 
+    execute(): JQueryPromise<pagedResultSet<any>> {
         var args = {
             collection: this.collectionName,
             start: this.skip,
@@ -18,13 +18,13 @@ class getDocumentsPreviewCommand extends commandBase {
         };
 
         var resultsSelector = (dto: documentPreviewDto) => {
-            var collection = new collectionInfo(dto);
+            var collection = new collectionInfo(null);
             var items = collection.results;
             return new pagedResultSet(items, collection.totalResults);
         };
         var url = "/doc-preview";
         return this.query(url, args, this.database, resultsSelector);
-    }
+    }*/
 }
 
 export = getDocumentsPreviewCommand;

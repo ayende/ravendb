@@ -1,5 +1,3 @@
-/// <reference path="../../../../../Scripts/typings/bootstrap.multiselect/bootstrap.multiselect.d.ts" />
-
 import viewModelBase = require("viewmodels/viewModelBase");
 import changesContext = require("common/changesContext");
 import getIndexingBatchStatsCommand = require("commands/database/debug/getIndexingBatchStatsCommand");
@@ -7,7 +5,6 @@ import getReducingBatchStatsCommand = require("commands/database/debug/getReduci
 import getDeletionBatchStatsCommand = require("commands/database/debug/getDeletionBatchStatsCommand");
 import getDatabaseStatsCommand = require("commands/resources/getDatabaseStatsCommand");
 import getFilteredOutIndexStatsCommand = require("commands/database/debug/getFilteredOutIndexStatsCommand");
-import d3 = require('d3/d3');
 import nv = require('nvd3');
 import app = require("durandal/app");
 import changeSubscription = require('common/changeSubscription');
@@ -104,7 +101,7 @@ class gapFinder {
     }
 }
 class metrics extends viewModelBase { 
-
+    /*
     static reduce_bar_names = 
         ['linq_map_bar', 'linq_reduce_bar',
         'l_delete_bar', 'l_convert_bar', 'l_add_bar', 'l_flush_bar', 'l_recreate_bar',
@@ -1414,7 +1411,7 @@ class metrics extends viewModelBase {
         gaps.exit().remove();
 
         var patternWidth = 20;
-        var gapHeight = (self.selectedMapIndexNames().length + self.selectedReduceIndexes().length + self.selectedDeletionIndexes().length + 1 /* prefetch */) * (self.yBarHeight + self.yBarMargin * 2) + self.margin.between * 3;
+        var gapHeight = (self.selectedMapIndexNames().length + self.selectedReduceIndexes().length + self.selectedDeletionIndexes().length + 1 /* prefetch *) * (self.yBarHeight + self.yBarMargin * 2) + self.margin.between * 3;
 
         gaps.select('text')
             .transition()
@@ -1619,7 +1616,7 @@ class metrics extends viewModelBase {
         }
 
         $("#indexingPerformance").toggleFullScreen();
-    }
+    }*/
 }
 
 export = metrics; 

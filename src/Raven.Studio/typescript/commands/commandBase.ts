@@ -1,4 +1,4 @@
-/// <reference path="../models/dto.ts" />
+/// <reference path="../../typings/tsd.d.ts" />
 
 import alertType = require("common/alertType");
 import messagePublisher = require("common/messagePublisher");
@@ -6,14 +6,14 @@ import database = require("models/resources/database");
 import resource = require("models/resources/resource");
 import appUrl = require("common/appUrl");
 import oauthContext = require("common/oauthContext");
-import forge = require("forge/forge_custom.min");
+import forge = require("forge");
 import router = require("plugins/router");
 
 /// Commands encapsulate a read or write operation to the database and support progress notifications and common AJAX related functionality.
 class commandBase {
 
     // TODO: better place for this?
-    static ravenClientVersion = '3.5.0.0';
+    static ravenClientVersion = '4.0.0.0';
     static splashTimerHandle = 0;
     static alertTimeout = 0;
     static loadingCounter = 0;

@@ -71,11 +71,10 @@ class restore extends viewModelBase {
         this.isForbidden(shell.isGlobalAdmin() === false);
         if (this.isForbidden() === false) {
             this.isBusy(true);
-            var db = appUrl.getSystemDatabase();
             var self = this;
 
-            new getDocumentWithMetadataCommand("Raven/Restore/InProgress", db, true).execute()
-                .fail(() => deferred.resolve({ redirect: appUrl.forSettings(db) }))
+            new getDocumentWithMetadataCommand("Raven/Restore/InProgress", null, true).execute()
+                .fail(() => deferred.resolve({ redirect: appUrl.forSettings(null) }))
                 .done((result) => {
                     if (result) {
                         // looks like another restore is in progress

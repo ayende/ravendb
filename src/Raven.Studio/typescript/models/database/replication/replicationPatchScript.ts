@@ -1,3 +1,5 @@
+/// <reference path="../../../../typings/tsd.d.ts"/>
+
 import collection = require("models/database/documents/collection");
 
 class replicationPatchScript {

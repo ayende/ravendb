@@ -1,6 +1,5 @@
-/// <reference path="../../Scripts/typings/nprogress/nprogress.d.ts" />
-/// <reference path="../../Scripts/typings/bootstrap/bootstrap.d.ts" />
-/// <reference path="../../Scripts/typings/jquery.blockUI/jquery.blockUI.d.ts" />
+/// <reference path="../../typings/tsd.d.ts" />
+
 import router = require("plugins/router");
 import app = require("durandal/app");
 import sys = require("durandal/system");
@@ -86,8 +85,6 @@ class shell extends viewModelBase {
 
     static databases = ko.observableArray<database>();
     listedResources: KnockoutComputed<resource[]>;
-    systemDatabase: database;
-    isSystemConnected: KnockoutComputed<boolean>;
     isActiveDatabaseDisabled: KnockoutComputed<boolean>;
     canShowDatabaseNavbar = ko.computed(() =>
         !!this.lastActivatedResource()
@@ -139,10 +136,6 @@ class shell extends viewModelBase {
         var timeSeries: resource[] = shell.timeSeries();
         var result = databases.concat(counterStorages, timeSeries, fileSystems);
         return result.sort((a, b) => {
-            if (a.name === "<system>")
-                return 1;
-            if (b.name === "<system>")
-                return -1;
             return a.name.toLowerCase() > b.name.toLowerCase() ? 1 : -1;
         });
     });
@@ -153,7 +146,7 @@ class shell extends viewModelBase {
     static clusterMode = ko.observable<boolean>(false);
     isInCluster = ko.computed(() => shell.clusterMode());
     serverBuildVersion = ko.observable<serverBuildVersionDto>();
-    static serverMainVersion = ko.observable<number>(3);
+    static serverMainVersion = ko.observable<number>(4);
     clientBuildVersion = ko.observable<clientBuildVersionDto>();
    
     windowHeightObservable: KnockoutObservable<number>;
@@ -169,6 +162,7 @@ class shell extends viewModelBase {
     licenseStatus = license.licenseCssClass;
     supportStatus = license.supportCssClass;
 
+    //TODO: delete me!
     static has40Features = ko.computed(() => shell.serverMainVersion() >= 4);
 
     private globalChangesApi: changesApi;
@@ -187,8 +181,8 @@ class shell extends viewModelBase {
         });
         oauthContext.enterApiKeyTask = this.setupApiKey();
         oauthContext.enterApiKeyTask.done(() => {
-            this.globalChangesApi = new changesApi(appUrl.getSystemDatabase());
-            this.notifications = this.createNotifications();
+           /* TODO  this.globalChangesApi = new changesApi(appUrl.getSystemDatabase());
+            this.notifications = this.createNotifications();*/
         });
 
         ko.postbox.subscribe("Alert", (alert: alertArgs) => this.showAlert(alert));
@@ -203,20 +197,12 @@ class shell extends viewModelBase {
         ko.postbox.subscribe("UploadFileStatusChanged", (uploadStatus: uploadItem) => this.uploadStatusChanged(uploadStatus));
         ko.postbox.subscribe("ChangesApiReconnected", (rs: resource) => this.reloadDataAfterReconnection(rs));
 
-        this.currentConnectedResource = appUrl.getSystemDatabase();
-
         this.goToDocumentSearch = ko.observable<string>();
         this.goToDocumentSearch.throttle(250).subscribe(search => this.fetchGoToDocSearchResults(search));
         dynamicHeightBindingHandler.install();
         autoCompleteBindingHandler.install();
         enableResizeBindingHandler.install();
         helpBindingHandler.install();
-
-        this.isSystemConnected = ko.computed(() => {
-            var activeDb = this.activeDatabase();
-            var systemDb = this.systemDatabase;
-            return (!!activeDb && !!systemDb) ? systemDb.name != activeDb.name : false;
-        });
 
         this.isActiveDatabaseDisabled = ko.computed(() => this.isActiveResourceDisabled(this.activeDatabase()));
         this.isActiveFileSystemDisabled = ko.computed(() => this.isActiveResourceDisabled(this.activeFilesystem()));
@@ -226,12 +212,12 @@ class shell extends viewModelBase {
         this.listedResources = ko.computed(() => {
             var currentResource = this.lastActivatedResource();
             if (!!currentResource) {
-                return shell.resources().filter(rs => (rs.type !== currentResource.type || (rs.type === currentResource.type && rs.name !== currentResource.name)) && rs.name !== "<system>");
+                return shell.resources().filter(rs => (rs.type !== currentResource.type || (rs.type === currentResource.type && rs.name !== currentResource.name)));
             }
             return shell.resources();
         });
 
-        this.clientBuildVersion.subscribe(v => viewModelBase.clientVersion("3.5." + v.BuildVersion));
+        this.clientBuildVersion.subscribe(v => viewModelBase.clientVersion("4.0." + v.BuildVersion));
     }
 
     // Override canActivate: we can always load this page, regardless of any system db prompt.
@@ -295,7 +281,7 @@ class shell extends viewModelBase {
                     self.destroyChangesApi();
                 } else {
                     // enable changes api
-                    this.globalChangesApi = new changesApi(appUrl.getSystemDatabase());
+                    this.globalChangesApi = new changesApi(null);
                     this.notifications = this.createNotifications();
                 }
             } else if (e.originalEvent.key === apiKeyLocalStorage.localStorageName) {
@@ -330,7 +316,7 @@ class shell extends viewModelBase {
         });
 
         $(window).resize(() => self.lastActivatedResource.valueHasMutated());
-        return shell.fetchLicenseStatus();
+        //TODO: return shell.fetchLicenseStatus();
     }
 
     private isActiveResourceDisabled(rs: resource): boolean {
@@ -373,7 +359,7 @@ class shell extends viewModelBase {
         }, this, "#goToDocInput");
 
         router.activeInstruction.subscribe(val => {
-            if (!!val && val.config.route.split('/').length == 1) //if it's a root navigation item.
+            if (!!val && (<string>val.config.route).split('/').length == 1) //if it's a root navigation item.
                 this.activeArea(val.config.title);
         });
 
@@ -388,6 +374,7 @@ class shell extends viewModelBase {
         viewLocator.locateView("views/common/recentErrors");
     }
 
+    /*
     static fetchStudioConfig() {
         var hotSpareTask = new getHotSpareInformation().execute();
         var configTask = new getDocumentWithMetadataCommand(shell.studioConfigDocumentId, appUrl.getSystemDatabase(), true).execute();
@@ -409,13 +396,13 @@ class shell extends viewModelBase {
                 }
             }
         });
-    }
+    }*/
 
     private fecthStudioConfigForDatabase(db: database) {
         var hotSpareTask = new getHotSpareInformation().execute();
         var configTask = new getStudioConfig(db).execute();
 
-        $.when(hotSpareTask, configTask).done((hotSpareResult, docResult) => {
+        $.when<any>(hotSpareTask, configTask).done((hotSpareResult, docResult) => {
             var hotSpare = hotSpareResult[0];
             var doc = <documentClass>docResult[0];
             if (hotSpare.ActivationMode === "Activated") {
@@ -486,7 +473,7 @@ class shell extends viewModelBase {
     private disconnectFromCurrentResource() {
         shell.disconnectFromResourceChangesApi();
         this.lastActivatedResource(null);
-        this.currentConnectedResource = appUrl.getSystemDatabase();
+        this.currentConnectedResource = null; //TODO
     }
 
     private activateCounterStorage(cs: counterStorage) {
@@ -583,8 +570,8 @@ class shell extends viewModelBase {
     }
 
     private renewOAuthToken() {
-        oauthContext.authHeader(null);
-        new getDatabaseStatsCommand(this.systemDatabase).execute();
+       /* TODO: oauthContext.authHeader(null);
+        new getDatabaseStatsCommand(null).execute();*/
     }
 
     showNavigationProgress(isNavigating: boolean) {
@@ -615,11 +602,9 @@ class shell extends viewModelBase {
         var deletedResources = [];
 
         resourceObservableArray().forEach((rs: resource) => {
-            if (rs.name !== "<system>") {
-                var existingResource = recievedResourceArray.first((recievedResource: resource) => recievedResource.name === rs.name);
-                if (existingResource == null) {
-                    deletedResources.push(rs);
-                }
+            var existingResource = recievedResourceArray.first((recievedResource: resource) => recievedResource.name === rs.name);
+            if (existingResource == null) {
+                deletedResources.push(rs);
             }
         });
 
@@ -636,45 +621,43 @@ class shell extends viewModelBase {
     }
 
     private reloadDataAfterReconnection(rs: resource) {
-        if (rs.name === "<system>") {
-            shell.fetchStudioConfig();
-            this.fetchServerBuildVersion();
-            this.fetchClientBuildVersion();
-            shell.fetchLicenseStatus();
-            this.fetchSupportCoverage();
-            this.loadServerConfig();
+        //TODO: shell.fetchStudioConfig();
+        //this.fetchServerBuildVersion();
+        //this.fetchClientBuildVersion();
+        //TODO: shell.fetchLicenseStatus();
+        //this.fetchSupportCoverage();
+        this.loadServerConfig();
 
-            var databasesLoadTask = shell.reloadDatabases();
-            var fileSystemsLoadTask = shell.reloadFileSystems();
-            var counterStoragesLoadTask = shell.has40Features() ? shell.reloadCounterStorages() : null;
-            var timeSeriesLoadTask = shell.has40Features() ? shell.reloadTimeSeries() : null;
+        var databasesLoadTask = shell.reloadDatabases();
+        var fileSystemsLoadTask = shell.reloadFileSystems();
+        var counterStoragesLoadTask = shell.has40Features() ? shell.reloadCounterStorages() : null;
+        var timeSeriesLoadTask = shell.has40Features() ? shell.reloadTimeSeries() : null;
 
-            $.when(databasesLoadTask, fileSystemsLoadTask, counterStoragesLoadTask, timeSeriesLoadTask)
-                .done(() => {
-                    var connectedResource = this.currentConnectedResource;
-                    var resourceObservableArray: any = shell.databases;
-                    var activeResourceObservable: any = this.activeDatabase;
-                    var isNotDatabase = !(connectedResource instanceof database); 
-                    if (isNotDatabase && connectedResource instanceof fileSystem) {
-                        resourceObservableArray = shell.fileSystems;
-                        activeResourceObservable = this.activeFilesystem;
-                    }
-                    else if (isNotDatabase && connectedResource instanceof counterStorage) {
-                        resourceObservableArray = shell.counterStorages;
-                        activeResourceObservable = this.activeCounterStorage;
-                    }
-                    else if (isNotDatabase && connectedResource instanceof timeSeries) {
-                        resourceObservableArray = shell.timeSeries;
-                        activeResourceObservable = this.activeTimeSeries;
-                    }
-                    this.selectNewActiveResourceIfNeeded(resourceObservableArray, activeResourceObservable);
-                });
-        }
+        $.when(databasesLoadTask, fileSystemsLoadTask, counterStoragesLoadTask, timeSeriesLoadTask)
+            .done(() => {
+                var connectedResource = this.currentConnectedResource;
+                var resourceObservableArray: any = shell.databases;
+                var activeResourceObservable: any = this.activeDatabase;
+                var isNotDatabase = !(connectedResource instanceof database); 
+                if (isNotDatabase && connectedResource instanceof fileSystem) {
+                    resourceObservableArray = shell.fileSystems;
+                    activeResourceObservable = this.activeFilesystem;
+                }
+                else if (isNotDatabase && connectedResource instanceof counterStorage) {
+                    resourceObservableArray = shell.counterStorages;
+                    activeResourceObservable = this.activeCounterStorage;
+                }
+                else if (isNotDatabase && connectedResource instanceof timeSeries) {
+                    resourceObservableArray = shell.timeSeries;
+                    activeResourceObservable = this.activeTimeSeries;
+                }
+                this.selectNewActiveResourceIfNeeded(resourceObservableArray, activeResourceObservable);
+            });
     }
 
     private selectNewActiveResourceIfNeeded(resourceObservableArray: KnockoutObservableArray<any>, activeResourceObservable: any) {
         var activeResource = activeResourceObservable();
-        var actualResourceObservableArray = resourceObservableArray().filter(rs => rs.name !== "<system>");
+        var actualResourceObservableArray = resourceObservableArray();
 
         if (!!activeResource && actualResourceObservableArray.contains(activeResource) === false) {
             if (actualResourceObservableArray.length > 0) {
@@ -695,7 +678,7 @@ class shell extends viewModelBase {
             this.globalChangesApi.watchDocsStartingWith("Raven/FileSystems/", (e) => this.changesApiFiredForResource(e, shell.fileSystems, this.activeFilesystem, TenantType.FileSystem)),
             this.globalChangesApi.watchDocsStartingWith("Raven/Counters/", (e) => this.changesApiFiredForResource(e, shell.counterStorages, this.activeCounterStorage, TenantType.CounterStorage)),
             this.globalChangesApi.watchDocsStartingWith("Raven/TimeSeries/", (e) => this.changesApiFiredForResource(e, shell.timeSeries, this.activeTimeSeries, TenantType.TimeSeries)),
-            this.globalChangesApi.watchDocsStartingWith(shell.studioConfigDocumentId, () => shell.fetchStudioConfig()),
+            //TODO: this.globalChangesApi.watchDocsStartingWith(shell.studioConfigDocumentId, () => shell.fetchStudioConfig()),
             this.globalChangesApi.watchDocsStartingWith("Raven/Alerts", () => this.fetchSystemDatabaseAlerts())
         ];
     }
@@ -789,11 +772,7 @@ class shell extends viewModelBase {
     }
 
     private databasesLoaded(databases: database[]) {
-        // we can't use appUrl.getSystemDatabase() here as it isn't loaded yet!
-        this.systemDatabase = new database("<system>");
-        this.systemDatabase.isSystem = true;
-        this.systemDatabase.isVisible(false);
-        shell.databases(databases.concat([this.systemDatabase]));
+        shell.databases(databases);
     }
 
     launchDocEditor(docId?: string, docsList?: pagedList) {
@@ -809,13 +788,13 @@ class shell extends viewModelBase {
             .fail(result => this.handleRavenConnectionFailure(result))
             .done((results: database[]) => {
                 this.databasesLoaded(results);
-                shell.fetchStudioConfig();
-                this.fetchClusterTopology();
-                this.fetchServerBuildVersion();
-                this.fetchClientBuildVersion();
+                //TODO: shell.fetchStudioConfig();
+                //TODO: this.fetchClusterTopology();
+                //TODO: this.fetchServerBuildVersion();
+                //TODO: this.fetchClientBuildVersion();
                 shell.fetchLicenseStatus();
-                this.fetchSupportCoverage();
-                this.fetchSystemDatabaseAlerts();
+                //TODO: this.fetchSupportCoverage();
+                //TODO :this.fetchSystemDatabaseAlerts();
                 router.activate();
             })
             .always(() => deferred.resolve());
@@ -876,8 +855,8 @@ class shell extends viewModelBase {
         var serverConfigsLoadTask: JQueryPromise<any> = this.loadServerConfig();
         var databasesLoadTask: JQueryPromise<any> = this.loadDatabases();
         var fileSystemsLoadTask: JQueryPromise<any> = this.loadFileSystems();
-        var counterStoragesLoadTask: JQueryPromise<any> = shell.has40Features() ? this.loadCounterStorages() : null;
-        var timeSeriesLoadTask: JQueryPromise<any> = shell.has40Features() ? this.loadTimeSeries() : null;
+        var counterStoragesLoadTask: JQueryPromise<any> = this.loadCounterStorages();
+        var timeSeriesLoadTask: JQueryPromise<any> = this.loadTimeSeries();
         $.when(serverConfigsLoadTask, databasesLoadTask, fileSystemsLoadTask, counterStoragesLoadTask, timeSeriesLoadTask)
             .always(() => {
                 var locationHash = window.location.hash;
@@ -1032,9 +1011,6 @@ class shell extends viewModelBase {
             shell.changeSubscriptionArray.forEach((subscripbtion: changeSubscription) => subscripbtion.off());
             shell.changeSubscriptionArray = [];
             changesContext.currentResourceChangesApi().dispose();
-            if (changesContext.currentResourceChangesApi().getResourceName() !== "<system>") {
-                viewModelBase.isConfirmedUsingSystemDatabase = false;
-            }
             changesContext.currentResourceChangesApi(null);
         }
     }
@@ -1065,6 +1041,7 @@ class shell extends viewModelBase {
     }
 
     fetchServerBuildVersion() {
+        /* TODO:
         new getServerBuildVersionCommand()
             .execute()
             .done((serverBuildResult: serverBuildVersionDto) => {
@@ -1085,7 +1062,7 @@ class shell extends viewModelBase {
                             }
                         });
                 }
-            });
+            });*/
     }
 
     fetchClientBuildVersion() {
@@ -1095,7 +1072,7 @@ class shell extends viewModelBase {
     }
 
     fetchClusterTopology() {
-        new getClusterTopologyCommand(appUrl.getSystemDatabase())
+        new getClusterTopologyCommand(null)
             .execute()
             .done((topology: topology) => {
                 shell.clusterMode(topology && topology.allNodes().length > 0);
@@ -1157,11 +1134,12 @@ class shell extends viewModelBase {
     }
 
     fetchSystemDatabaseAlerts() {
+        /* TODO
         new getDocumentWithMetadataCommand("Raven/Alerts", this.systemDatabase)
             .execute()
             .done((doc: documentClass) => {
                 //
-            });
+            });*/
     }
 
     logOut() {

@@ -11,7 +11,7 @@ class replicateTransformersCommand extends commandBase {
     execute(): JQueryPromise<void> {
         var transformersUrl = '/databases/' + this.db.name + '/replication/replicate-transformers?op=replicate-all-to-destination';
         var destinationJson = JSON.stringify(this.destination.toDto());
-        return this.post(transformersUrl, destinationJson, appUrl.getSystemDatabase(), { dataType: undefined })
+        return this.post(transformersUrl, destinationJson, null, { dataType: undefined })
             .fail((response: JQueryXHR) => {
                 this.reportError("Failed to send replicate transformers command!", response.responseText, response.statusText);
             }).done(() => {

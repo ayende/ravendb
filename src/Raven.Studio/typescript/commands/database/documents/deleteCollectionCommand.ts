@@ -10,16 +10,14 @@ class deleteCollectionCommand extends commandBase {
         this.displayCollectionName = (collectionName === "*") ? "All Documents" : collectionName;
     }
 
-    execute(): JQueryPromise<any> {
+    execute(): JQueryPromise<operationIdDto> {
         this.reportInfo("Deleting " + this.displayCollectionName);
+        var args = {
+            name: this.collectionName
+        };
+        var url = "/collections/docs" + this.urlEncodeArgs(args);
 
-        var url = "/bulk_docs/Raven/DocumentsByEntityName";
-        var urlParams = "?query=Tag%3A" + encodeURIComponent(this.collectionName) + "&allowStale=true";
-        var deleteTask = this.del(url + urlParams, null, this.db);
-        // deletion is made asynchronically so we infom user about operation start - not about actual completion. 
-        deleteTask.done(() => this.reportSuccess("Scheduled deletion of " + this.displayCollectionName));
-        deleteTask.fail((response: JQueryXHR) => this.reportError("Failed to delete " + this.displayCollectionName, response.responseText, response.statusText));
-        return deleteTask;
+        return this.del(url, null, this.db, { dataType: undefined });
     }
 }
 

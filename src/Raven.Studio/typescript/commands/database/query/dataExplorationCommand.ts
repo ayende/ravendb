@@ -11,7 +11,7 @@ class dataExplorationCommand extends commandBase {
         super();
     }
 
-    execute(): JQueryPromise<pagedResultSet> {
+    execute(): JQueryPromise<indexQueryResultsDto> {
         var self = this;
         var options: JQueryAjaxSettings = {
             xhr: () => {

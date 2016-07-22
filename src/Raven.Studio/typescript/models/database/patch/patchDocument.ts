@@ -1,3 +1,5 @@
+/// <reference path="../../../../typings/tsd.d.ts"/>
+
 import patchParam = require("models/database/patch/patchParam");
 import document = require("models/database/documents/document");
 import documentMetadata = require("models/database/documents/documentMetadata");

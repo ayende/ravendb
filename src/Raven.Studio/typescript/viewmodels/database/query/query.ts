@@ -1,4 +1,3 @@
-/// <reference path="../../../../Scripts/typings/ace/ace.d.ts" />
 import InMethodFilter = require("viewmodels/filesystem/search/inMethodFilter");
 import fieldStringFilter = require("viewmodels/filesystem/search/fieldStringFilter");
 import fieldRangeFilter = require("viewmodels/filesystem/search/fieldRangeFilter");
@@ -265,12 +264,16 @@ class query extends viewModelBase {
     private fetchAllTransformers(db: database): JQueryPromise<any> {
         var deferred = $.Deferred();
 
+        this.allTransformers([]);
+        deferred.resolve();
+        /*TODO
+
         new getTransformersCommand(db)
             .execute()
             .done((results: transformerDto[]) => {
                 this.allTransformers(results);
                 deferred.resolve();
-            });
+            });*/
 
         return deferred;
     }
@@ -339,6 +342,7 @@ class query extends viewModelBase {
     }
 
     selectInitialQuery(indexNameOrRecentQueryHash: string) {
+        /*
         if (!indexNameOrRecentQueryHash && this.indexes().length > 0) {
             var firstIndexName = this.indexes.first().name;
             this.setSelectedIndex(firstIndexName);
@@ -356,7 +360,7 @@ class query extends viewModelBase {
             // if indexName exists and we didn't fall into any case show error and redirect to documents page
             messagePublisher.reportError("Could not find " + indexNameOrRecentQueryHash + " index");
             router.navigate(appUrl.forDocuments(collection.allDocsCollectionName, this.activeDatabase()));
-        }
+        }*/
     }
 
     focusOnQuery() {
@@ -440,7 +444,7 @@ class query extends viewModelBase {
                         this.isLoading(false);
                         this.focusOnQuery();
                     })
-                    .done((queryResults: pagedResultSet) => {
+                    .done((queryResults: pagedResultSet<any>) => {
                         this.queryStats(queryResults.additionalResultInfo);
                         this.indexSuggestions([]);
                         if (queryResults.totalResultCount == 0) {
@@ -616,7 +620,7 @@ class query extends viewModelBase {
         var queryResult = this.runQuery();
         queryResult
             .fetch(0, 1)
-            .done((results: pagedResultSet) => {
+            .done((results: pagedResultSet<any>) => {
                 if (results.totalResultCount === 0) {
                     app.showMessage("There are no documents matching your query.", "Nothing to do");
                 } else {
@@ -671,7 +675,7 @@ class query extends viewModelBase {
                 var collectionName = indexName.substring(8);
                 new getDocumentsByEntityNameCommand(new collection(collectionName, this.activeDatabase()), 0, 1)
                     .execute()
-                    .done((result: pagedResultSet) => {
+                    .done((result: pagedResultSet<any>) => {
                         if (!!result && result.totalResultCount > 0 && result.items.length > 0) {
                             var dynamicIndexPattern: document = new document(result.items[0]);
                             if (!!dynamicIndexPattern) {
@@ -683,8 +687,8 @@ class query extends viewModelBase {
                 new getIndexDefinitionCommand(indexName, this.activeDatabase())
                     .execute()
                     .done((result: indexDefinitionContainerDto) => {
-                    self.isTestIndex(result.Index.IsTestIndex);
-                    self.indexFields(result.Index.Fields);
+                        self.isTestIndex(false); //TODO: result.Index.IsTestIndex
+                        self.indexFields([]); //TODO: result.Index.Fields
                     });
             }
         }

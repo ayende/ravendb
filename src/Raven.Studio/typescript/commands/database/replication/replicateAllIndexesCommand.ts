@@ -11,7 +11,7 @@ class replicateAllIndexesCommand extends commandBase {
     execute(): JQueryPromise<void> {
         var indexesUrl = '/databases/' + this.db.name + '/replication/replicate-indexes?op=replicate-all';
 
-        return this.post(indexesUrl, null, appUrl.getSystemDatabase(), { dataType: undefined })
+        return this.post(indexesUrl, null, null, { dataType: undefined })
             .fail((response: JQueryXHR) => {
                 this.reportError("Failed to send replicate all indexes command!", response.responseText, response.statusText);
             }).done(() => {

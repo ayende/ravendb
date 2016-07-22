@@ -12,7 +12,7 @@ class verifyPrincipalCommand extends commandBase {
     }
 
     execute(): JQueryPromise<boolean> {
-        return this.query("/admin/verify-principal", { mode: this.mode, principal: this.principal }, appUrl.getSystemDatabase(), (r: verifyResultDto) => r.Valid, null, 25000);
+        return this.query("/admin/verify-principal", { mode: this.mode, principal: this.principal }, null, (r: verifyResultDto) => r.Valid, null, 25000);
     }
 }
 

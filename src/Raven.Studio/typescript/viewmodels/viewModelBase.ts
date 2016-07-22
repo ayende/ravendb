@@ -1,3 +1,5 @@
+/// <reference path="../../typings/tsd.d.ts"/>
+
 import appUrl = require("common/appUrl");
 import database = require("models/resources/database");
 import resource = require("models/resources/resource");
@@ -37,7 +39,6 @@ class viewModelBase {
     notifications: Array<changeSubscription> = [];
     appUrls: computedAppUrls;
     private postboxSubscriptions: Array<KnockoutSubscription> = [];
-    static isConfirmedUsingSystemDatabase: boolean = false;
     static showSplash = ko.observable<boolean>(false);
     private isAttached = false;
     dirtyFlag = new ko.DirtyFlag([]);
@@ -90,16 +91,10 @@ class viewModelBase {
         } else { //it's a database
             var db = this.activeDatabase();
 
-            // we only want to prompt warning to system db if we are in the databases section
-            if (!!db && db.isSystem) {
-                return this.promptNavSystemDb();
-            }
-            else if (!!db && db.disabled()) {
+            if (!!db && db.disabled()) {
                 messagePublisher.reportError("Database '" + db.name + "' is disabled!", "You can't access any section of the database while it's disabled.");
                 return { redirect: appUrl.forResources() };
             }
-
-            viewModelBase.isConfirmedUsingSystemDatabase = false;
         }
 
         return true;
@@ -327,25 +322,6 @@ class viewModelBase {
         }
 
         return deferred;
-    }
-
-    public promptNavSystemDb(forceRejectWithResolve: boolean = false): any {
-        var canNavTask = $.Deferred<any>();
-
-        if (!appUrl.warnWhenUsingSystemDatabase || viewModelBase.isConfirmedUsingSystemDatabase) {
-            canNavTask.resolve({ can: true });
-        } else { 
-            var systemDbConfirm = new viewSystemDatabaseConfirm("Meddling with the system database could cause irreversible damage");
-            systemDbConfirm.viewTask
-                .fail(() => forceRejectWithResolve == false ? canNavTask.resolve({ redirect: appUrl.forResources() }) : canNavTask.reject())
-                .done(() => {
-                    viewModelBase.isConfirmedUsingSystemDatabase = true;
-                    canNavTask.resolve({ can: true });
-                });
-            app.showDialog(systemDbConfirm);
-        }
-
-        return canNavTask;
     }
 
     private beforeUnloadListener: EventListener = (e: any): any => {

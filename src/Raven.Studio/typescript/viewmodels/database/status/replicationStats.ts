@@ -1,5 +1,3 @@
-/// <reference path="../../../../Scripts/typings/d3/dagre.d.ts" />
-
 import viewModelBase = require("viewmodels/viewModelBase");
 import getReplicationStatsCommand = require("commands/database/replication/getReplicationStatsCommand");
 import moment = require("moment");
@@ -10,12 +8,12 @@ import getDatabaseSettingsCommand = require("commands/resources/getDatabaseSetti
 import getReplicationTopology = require("commands/database/replication/getReplicationTopology");
 import getReplicationPerfStatsCommand = require("commands/database/debug/getReplicationPerfStatsCommand");
 import getDocumentsLeftToReplicate = require("commands/database/replication/getDocumentsLeftToReplicate");
-import d3 = require("d3/d3");
+import d3 = require("d3");
 import nv = require("nvd3");
 import dagre = require("dagre");
 
 class replicationStats extends viewModelBase {
-
+    /*
     static inlineCss = " svg { background-color: white; } " +
                            " path.link { fill: none; stroke: #38b44a; stroke-width: 5px; cursor: default; } " +
                            " path.link.error {  stroke: #df382c; } " +
@@ -41,7 +39,7 @@ class replicationStats extends viewModelBase {
     showLoadingIndicator = ko.observable(false); 
     replStatsDoc = ko.observable<replicationStatsDocumentDto>();
     hasNoReplStatsAvailable = ko.observable(false);
-    now = ko.observable<Moment>();
+    now = ko.observable<moment.Moment>();
     updateNowTimeoutHandle = 0;
 
     width: number;
@@ -844,6 +842,7 @@ class replicationStats extends viewModelBase {
     replicationStatToggle() {
         setTimeout(() => this.redrawGraph(), 1);
     }
+    */
 }
 
 export = replicationStats;

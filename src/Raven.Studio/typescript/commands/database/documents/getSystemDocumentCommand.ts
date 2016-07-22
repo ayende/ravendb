@@ -1,5 +1,4 @@
 import commandBase = require("commands/commandBase");
-import pagedResultSet = require("common/pagedResultSet");
 
 class getSystemDocumentCommand extends commandBase {
 
@@ -7,11 +6,11 @@ class getSystemDocumentCommand extends commandBase {
         super();
     }
 
-    execute(): JQueryPromise<pagedResultSet> {
+    execute(): JQueryPromise<databaseDocumentDto> {
 
         var deferred = $.Deferred();
 
-        var url = "/docs/" + this.id;
+        var url = "/docs?id=" + this.id;
         var docQuery = this.query(url, null, null);
         docQuery.done((dto: databaseDocumentDto) => deferred.resolve(dto));
         docQuery.fail(response => deferred.reject(response));

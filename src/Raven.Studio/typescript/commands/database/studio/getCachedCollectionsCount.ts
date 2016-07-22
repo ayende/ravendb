@@ -1,6 +1,7 @@
 import commandBase = require("commands/commandBase");
 import database = require("models/resources/database");
 
+//TODO: do we need it?
 class getCachedCollectionsCount extends commandBase {
 
     /**

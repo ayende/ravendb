@@ -1,6 +1,6 @@
 import composition = require("durandal/composition");
 import viewModelBase = require("viewmodels/viewModelBase");
-import d3 = require("d3/d3");
+import d3 = require("d3");
 
 interface autoRefreshConfigDto {
     duration: number;
@@ -9,9 +9,9 @@ interface autoRefreshConfigDto {
 }
 
 interface autoRefreshContext extends autoRefreshConfigDto {
-    svg: D3.Selection;
-    arc: D3.Svg.Arc;
-    path: D3.Selection;
+    svg: d3.Selection<any>;
+    arc: d3.svg.Arc<number>;
+    path: d3.Selection<any>;
     refreshing: KnockoutObservable<boolean>;
     autorefreshEnabled: KnockoutObservable<boolean>;
     disposed: boolean;
@@ -115,7 +115,7 @@ class autoRefreshBindingHandler {
                 'class': 'circleRefresh-circle'
             });
 
-        var arc = d3.svg.arc()
+        var arc = d3.svg.arc<number>()
             .innerRadius(30)
             .outerRadius(30)
             .startAngle(0)
@@ -142,7 +142,7 @@ class autoRefreshBindingHandler {
         context.path.transition()
             .duration(context.duration)
             .ease('linear')
-            .attrTween("d", () => (t) => context.arc(t))
+            .attrTween("d", () => (t: number) => context.arc(t))
             .each('end', () => {
                 context.refreshing(true);
 

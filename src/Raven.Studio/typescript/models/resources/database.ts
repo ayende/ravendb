@@ -1,3 +1,5 @@
+/// <reference path="../../../typings/tsd.d.ts"/>
+
 import resource = require("models/resources/resource");
 import license = require("models/auth/license");
 import databaseStatistics = require("models/resources/databaseStatistics");
@@ -25,6 +27,7 @@ class database extends resource {
         this.iconName = ko.computed(() => !this.clusterWide() ? "fa fa-fw fa-database" : "fa fa-fw fa-cubes");
         this.itemCountText = ko.computed(() => !!this.statistics() ? this.statistics().countOfDocumentsText() : "");
         this.isLicensed = ko.pureComputed(() => {
+            return true; /*
             if (!!license.licenseStatus() && license.licenseStatus().IsCommercial) {
                 var attributes = license.licenseStatus().Attributes;
                 var result = this.activeBundles()
@@ -32,7 +35,7 @@ class database extends resource {
                     .reduce((a, b) => /^true$/i.test(a) && /^true$/i.test(b), true);
                 return result;
             }
-            return true;
+            return true;*/
         });
         this.recentQueriesLocalStorageName = "ravenDB-recentQueries." + name;
         this.recentPatchesLocalStorageName = "ravenDB-recentPatches." + name;

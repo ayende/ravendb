@@ -22,7 +22,7 @@ class createDatabaseCommand extends commandBase {
 
         var url = "/admin/databases/" + this.databaseName;
         return this.put(url, JSON.stringify(databaseDoc), null, { dataType: undefined })
-            .then(() => this.query("/databases/" + this.databaseName + "/silverlight/ensureStartup", null, null)) // Forces creation of system indexes.
+            //TODO: delete? .then(() => this.query("/databases/" + this.databaseName + "/silverlight/ensureStartup", null, null)) // Forces creation of system indexes.
             .done(() => this.reportSuccess(this.databaseName + " created"))
             .fail((response: JQueryXHR) => this.reportError("Failed to create database", response.responseText, response.statusText));
     }

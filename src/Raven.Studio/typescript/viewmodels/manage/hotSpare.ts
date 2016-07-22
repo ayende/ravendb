@@ -46,7 +46,7 @@ class hotSpare extends viewModelBase {
                         this.fetchHotSpareInformation();
 
                         // refresh top navbar with 
-                        shell.fetchStudioConfig();
+                        //TODO:shell.fetchStudioConfig();
                     })
                     .fail((response: JQueryXHR) => {
                     if (response.status === 403) {

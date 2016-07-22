@@ -137,10 +137,10 @@ class timeSeriesPoints extends viewModelBase {
         return list;
     }
 
-    private fetchPoints(skip: number, take: number, start: string, end: string): JQueryPromise<pagedResultSet> {
-        var doneTask = $.Deferred();
+    private fetchPoints(skip: number, take: number, start: string, end: string): JQueryPromise<pagedResultSet<timeSeriesPoint>> {
+        var doneTask = $.Deferred<pagedResultSet<timeSeriesPoint>>();
         new getPointsCommand(this.activeTimeSeries(), skip, take, this.type(), this.fields(), this.key(), start, end).execute()
-            .done((points: pointDto[]) => doneTask.resolve(new pagedResultSet(points, this.isFiltered() ? this.pointsList().itemCount() + points.length : this.pointsCount())))
+            .done((points: timeSeriesPoint[]) => doneTask.resolve(new pagedResultSet(points, this.isFiltered() ? this.pointsList().itemCount() + points.length : this.pointsCount())))
             .fail(xhr => doneTask.reject(xhr));
         return doneTask;
     }
@@ -180,7 +180,7 @@ class timeSeriesPoints extends viewModelBase {
 
     private fetchKey(type: string, key: string): JQueryPromise<any> {
         var deferred = $.Deferred();
-        new getKeyCommand(this.activeTimeSeries(), type, key).execute().done((result: timeSeriesKeySummaryDto) => deferred.resolve(result));
+        //TODO: new getKeyCommand(this.activeTimeSeries(), type, key).execute().done((result: timeSeriesKeySummaryDto) => deferred.resolve(result));
         return deferred;
     }
 

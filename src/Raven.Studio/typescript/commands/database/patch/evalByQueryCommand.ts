@@ -8,7 +8,7 @@ class evalByQueryCommand extends commandBase {
         super();
     }
 
-    private operationId = $.Deferred();
+    private operationId = $.Deferred<number>();
     private patchCompleted = $.Deferred<operationStatusDto>();
 
     /*

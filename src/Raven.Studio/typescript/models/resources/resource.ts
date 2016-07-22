@@ -1,6 +1,7 @@
+/// <reference path="../../../typings/tsd.d.ts"/>
+
 class resource {
     isAdminCurrentTenant = ko.observable<boolean>(false);
-    isSystem = false;
     isSelected = ko.observable<boolean>(false);
     isChecked = ko.observable<boolean>(false);
     itemCountText: KnockoutComputed<string>;

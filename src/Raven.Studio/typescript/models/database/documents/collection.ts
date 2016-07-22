@@ -56,7 +56,7 @@ class collection implements ICollectionBase {
         }
     }
 
-    fetchDocuments(skip: number, take: number): JQueryPromise<pagedResultSet> {
+    fetchDocuments(skip: number, take: number): JQueryPromise<pagedResultSet<any>> {
         if (this.isSystemDocuments) {
             // System documents don't follow the normal paging rules. See getSystemDocumentsCommand.execute() for more info.
             return new getSystemDocumentsCommand(this.ownerDatabase, skip, take, this.documentCount()).execute();

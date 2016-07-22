@@ -51,7 +51,7 @@ class licenseInformation extends viewModelBase {
         this.forceInProgress(true);
         new forceLicenseUpdate().execute()
             .always(() => {
-                $.when(this.fetchLicenseStatus(), this.fetchSupportCoverage())
+                $.when<any>(this.fetchLicenseStatus(), this.fetchSupportCoverage())
                     .always(() => {
                         this.forceInProgress(false);
                         this.showLicenseDialog();

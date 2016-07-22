@@ -27,16 +27,13 @@ class globalConfigQuotas extends viewModelBase {
         super.canActivate(args);
 
         var deferred = $.Deferred();
-        var db = appUrl.getSystemDatabase();
-        if (db) {
-            if (this.settingsAccess.isForbidden()) {
-                deferred.resolve({ can: true });
-            } else {
-                // fetch current quotas from the database
-                this.fetchQuotas(db)
-                    .done(() => deferred.resolve({ can: true }))
-                    .fail(() => deferred.resolve({ redirect: appUrl.forDatabaseSettings(this.activeDatabase()) }));
-            }
+        if (this.settingsAccess.isForbidden()) {
+            deferred.resolve({ can: true });
+        } else {
+            // fetch current quotas from the database
+            this.fetchQuotas(null)
+                .done(() => deferred.resolve({ can: true }))
+                .fail(() => deferred.resolve({ redirect: appUrl.forDatabaseSettings(this.activeDatabase()) }));
         }
         return deferred;
     }
@@ -78,36 +75,33 @@ class globalConfigQuotas extends viewModelBase {
     }
 
     syncChanges(deleteConfig:boolean) {
-        var db = appUrl.getSystemDatabase();
-        if (db) {
-            var settingsDocument = this.settingsDocument();
-            settingsDocument["@metadata"] = this.settingsDocument().__metadata;
-            settingsDocument["@metadata"]["@etag"] = this.settingsDocument().__metadata["@etag"];
-            var doc = new document(settingsDocument.toDto(true));
+        var settingsDocument = this.settingsDocument();
+        settingsDocument["@metadata"] = this.settingsDocument().__metadata;
+        settingsDocument["@metadata"]["@etag"] = this.settingsDocument().__metadata["@etag"];
+        var doc = new document(settingsDocument.toDto(true));
 
-            if (deleteConfig) {
-                delete doc["Settings"]["Raven/Quotas/Size/HardLimitInKB"];
-                delete doc["Settings"]["Raven/Quotas/Size/SoftMarginInKB"];
-                delete doc["Settings"]["Raven/Quotas/Documents/HardLimit"];
-                delete doc["Settings"]["Raven/Quotas/Documents/SoftLimit"];
+        if (deleteConfig) {
+            delete doc["Settings"]["Raven/Quotas/Size/HardLimitInKB"];
+            delete doc["Settings"]["Raven/Quotas/Size/SoftMarginInKB"];
+            delete doc["Settings"]["Raven/Quotas/Documents/HardLimit"];
+            delete doc["Settings"]["Raven/Quotas/Documents/SoftLimit"];
 
-                this.maximumSize(null);
-                this.warningLimitThreshold(null);
-                this.maxNumberOfDocs(null);
-                this.warningThresholdForDocs(null);
-            } else {
-                doc["Settings"]["Raven/Quotas/Size/HardLimitInKB"] = this.maximumSize() * 1024;
-                doc["Settings"]["Raven/Quotas/Size/SoftMarginInKB"] = this.warningLimitThreshold() * 1024;
-                doc["Settings"]["Raven/Quotas/Documents/HardLimit"] = this.maxNumberOfDocs();
-                doc["Settings"]["Raven/Quotas/Documents/SoftLimit"] = this.warningThresholdForDocs();
-            }
-
-            var saveTask = new saveGlobalSettingsCommand(db, doc).execute();
-            saveTask.done((saveResult: databaseDocumentSaveDto) => {
-                this.settingsDocument().__metadata["@etag"] = saveResult.ETag;
-                this.dirtyFlag().reset(); //Resync Changes
-            });
+            this.maximumSize(null);
+            this.warningLimitThreshold(null);
+            this.maxNumberOfDocs(null);
+            this.warningThresholdForDocs(null);
+        } else {
+            doc["Settings"]["Raven/Quotas/Size/HardLimitInKB"] = this.maximumSize() * 1024;
+            doc["Settings"]["Raven/Quotas/Size/SoftMarginInKB"] = this.warningLimitThreshold() * 1024;
+            doc["Settings"]["Raven/Quotas/Documents/HardLimit"] = this.maxNumberOfDocs();
+            doc["Settings"]["Raven/Quotas/Documents/SoftLimit"] = this.warningThresholdForDocs();
         }
+
+        var saveTask = new saveGlobalSettingsCommand(null, doc).execute();
+        saveTask.done((saveResult: databaseDocumentSaveDto) => {
+            this.settingsDocument().__metadata["@etag"] = saveResult.ETag;
+            this.dirtyFlag().reset(); //Resync Changes
+        });
     }
 
     activateConfig() {

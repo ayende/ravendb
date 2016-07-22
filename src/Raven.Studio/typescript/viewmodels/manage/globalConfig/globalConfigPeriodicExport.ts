@@ -28,7 +28,7 @@ class globalConfigPeriodicExport extends viewModelBase {
         this.backupSetup(new periodicExportSetup());
 
         var deferred = $.Deferred();
-        var db = appUrl.getSystemDatabase();
+        var db = null;
 
         if (db) {
             if (this.settingsAccess.isForbidden()) {
@@ -66,14 +66,14 @@ class globalConfigPeriodicExport extends viewModelBase {
     bindPopover() {
         $("#onDiskHint").popover({
             html: true,
-            container: $("body"),
+            container: "body",
             trigger: "hover",
             content: "Database name will be appended to path in target configuration. <br /><br />" +
             "For value: <code>C:\\exports\\</code> target path will be: <code>C:\\exports\\{databaseName}</code>"
         });
         $(".folderHint").popover({
             html: true,
-            container: $("body"),
+            container: "body",
             trigger: "hover",
             content: "Folder name will be replaced with database name being exported in local configuration."
         });
@@ -108,10 +108,10 @@ class globalConfigPeriodicExport extends viewModelBase {
     }
 
     syncChanges(deleteConfig: boolean) {
-        var db = appUrl.getSystemDatabase();
+        var db = null;
         if (db) {
             if (deleteConfig) {
-                new deleteDocumentCommand("Raven/Global/Backup/Periodic/Setup", appUrl.getSystemDatabase())
+                new deleteDocumentCommand("Raven/Global/Backup/Periodic/Setup", null)
                     .execute();
                 this.deleteSettings(db);
             } else {

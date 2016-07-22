@@ -78,7 +78,6 @@ class watchTrafficConfigDialog extends dialogViewModelBase {
         if (this.watchedResourceMode() === "SingleResourceView")
             tracedResource = shell.resources().first((rs: resource) => rs.name === this.resourceName());
 
-        tracedResource = tracedResource || appUrl.getSystemDatabase();
         var resourcePath = appUrl.forResourceQuery(tracedResource);
         
         var getTokenTask = new getSingleAuthTokenCommand(tracedResource, this.watchedResourceMode() === "AdminView").execute();

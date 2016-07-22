@@ -22,13 +22,12 @@ class globalConfigDatabaseSettings extends viewModelBase {
         super.canActivate(args);
 
         var deferred = $.Deferred();
-        var db = appUrl.getSystemDatabase();
         if (this.settingsAccess.isForbidden()) {
             deferred.resolve({ can: true });
         } else {
-            this.fetchClusterConfiguration(db)
+            this.fetchClusterConfiguration(null)
                 .done(() => deferred.resolve({ can: true }))
-                .fail(() => deferred.resolve({ redirect: appUrl.forDatabaseSettings(db) }));
+                .fail(() => deferred.resolve({ redirect: appUrl.forDatabaseSettings(null) }));
         }
         
         return deferred;
@@ -44,8 +43,7 @@ class globalConfigDatabaseSettings extends viewModelBase {
         new saveClusterConfigurationCommand({
                     EnableReplication: this.loadedClusterConfigurationDto().EnableReplication,
                     DatabaseSettings: customSettings
-                },
-                appUrl.getSystemDatabase())
+                }, null)
             .execute()
             .done(() => this.dirtyFlag().reset());
     }
@@ -87,7 +85,7 @@ class globalConfigDatabaseSettings extends viewModelBase {
     private fetchClusterConfiguration(db): JQueryPromise<clusterConfigurationDto> {
 
         var currentConfiguration: JQueryPromise<clusterConfigurationDto> = new
-            getDocumentWithMetadataCommand("Raven/Cluster/Configuration", appUrl.getSystemDatabase(), true)
+            getDocumentWithMetadataCommand("Raven/Cluster/Configuration", null, true)
             .execute()
             .done((result: clusterConfigurationDto) => {
                 this.loadedClusterConfigurationDto(result);

@@ -1,18 +1,16 @@
-/// <reference path="../../../Scripts/typings/d3/dagre.d.ts" />
-
 import viewModelBase = require("viewmodels/viewModelBase");
 import svgDownloader = require("common/svgDownloader");
 import fileDownloader = require("common/fileDownloader");
 import getGlobalReplicationTopology = require("commands/resources/getGlobalReplicationTopology");
 import getDocumentsLeftToReplicate = require("commands/database/replication/getDocumentsLeftToReplicate");
-import d3 = require('d3/d3');
+import d3 = require('d3');
 import dagre = require('dagre');
 import settingsAccessAuthorizer = require("common/settingsAccessAuthorizer");
 import shell = require("viewmodels/shell");
 import database = require("models/resources/database");
 
 class topology extends viewModelBase {
-
+    /*
     static inlineCss = " svg { background-color: white; }" +
                         " path.link { fill: none; stroke: #38b44a; stroke-width: 5px; cursor: default; } " +
                         " path.link.error {  stroke: #df382c; } " +
@@ -433,7 +431,7 @@ class topology extends viewModelBase {
             - initially we compute scaleFactor with extra padding
             - multiply graphWidth by scaleFactor, it gives us width of graph
             - use: (containerWidth - graphWidth) / 2
-            */
+            *
             var scaledGraphWidth = graphWidth * scaleFactor;
             var leftOffset = (containerWidth - scaledGraphWidth) / 2;
             return {
@@ -591,7 +589,7 @@ class topology extends viewModelBase {
     * Since we are using FontAwesome icons and they won't be avaialable in downloaded
     * svg, remove them from DOM
     * Also this procedure should fix issue with converting utf-8 data with window.atob.
-    */
+    *
     removeIconsProcessor(svg: Element) {
         $("text.fa", svg).remove();
     }
@@ -631,7 +629,7 @@ class topology extends viewModelBase {
 
         this.syncGraph();
     }
-
+*/
 }
 
 export = topology;

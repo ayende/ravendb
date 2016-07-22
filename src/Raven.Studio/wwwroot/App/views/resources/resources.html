@@ -1,13 +1,12 @@
 <section id="resources-page">
-    <div class="text-center" data-bind="visible: resources().length == 1">
+    <div class="text-center" data-bind="visible: resources().length == 0">
         <div class="row">
             <div data-bind="css: { 'col-md-5' : showCreateCluster(), 'col-md-12': !showCreateCluster() }">
                 <h2 class="page-header text-info">
                     <i class="fa fa-database fa-5x"></i>
                     <br />
                     <br/>
-                    <span data-bind="visible: has40Features()">No databases, file systems, counter storages or time series are available.</span>
-                    <span data-bind="visible: !has40Features()">No databases or file systems are available.</span>
+                    <span>No databases, file systems, counter storages or time series are available.</span>
                      <br />
                     <small data-bind="visible: isGlobalAdmin() || canNavigateToAdminSettings()">
                         <span data-bind="visible: isGlobalAdmin">
@@ -44,15 +43,12 @@
             </div>
         </div>
     </div>
-    <ul class="breadcrumb" data-bind="visible: resources().length > 1">
+    <ul class="breadcrumb" data-bind="visible: resources().length > 0">
         <a target="_blank" data-bind="attr: { href: $root.currentHelpLink }, visible: $root.currentHelpLink" class="global_help_link"><i class="fa fa-question-circle fa-2x"></i></a>
         <li>
             <h3>
-                <a href="#resources" data-bind="visible: has40Features()">
+                <a href="#resources">
                     Databases, File Systems, Counter Storages and Time Series
-                </a>
-                <a href="#resources" data-bind="visible: !has40Features()">
-                    Databases and File Systems
                 </a>
             </h3>
         </li>
@@ -67,7 +63,7 @@
     <!-- /ko -->
     <!-- /ko -->
 
-    <div class="btn-toolbar" data-bind="visible: resources().length > 1">
+    <div class="btn-toolbar" data-bind="visible: resources().length > 0">
         <div class="btn-group">
             <div class="checkbox">
                 <input id="resources_all" class="styled" type="checkbox" data-bind="checkboxTriple: resourcesSelection, event: { change: toggleSelectAll }, visible: isCheckboxVisible" title="Select all or none">

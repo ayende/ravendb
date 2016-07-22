@@ -71,10 +71,7 @@ class settings extends viewModelBase {
         var isSqlSubBundle = this.sqlSubBundles.indexOf(bundelName) > -1;
         var isSqlBundleExists = this.userDatabasePages.indexOf("SQL Replication") > -1;
         
-        if (db.isSystem) {
-            return appUrl.forDocuments(null, db);
-        }
-        else if ((isLegalBundelName && isBundleExists == false) || (isSqlSubBundle && isSqlBundleExists == false)) {
+        if ((isLegalBundelName && isBundleExists == false) || (isSqlSubBundle && isSqlBundleExists == false)) {
             return appUrl.forCurrentDatabase().databaseSettings();
         }
 

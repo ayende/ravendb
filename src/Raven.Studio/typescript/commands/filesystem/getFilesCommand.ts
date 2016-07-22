@@ -10,7 +10,7 @@ class getFilesystemFilesCommand extends commandBase {
         super();
     }
 
-    execute(): JQueryPromise<pagedResultSet> {
+    execute(): JQueryPromise<pagedResultSet<any>> {
         var filesTask = this.fetchFiles();
         var doneTask = $.Deferred();
 
@@ -24,7 +24,7 @@ class getFilesystemFilesCommand extends commandBase {
         return doneTask;
     }
 
-    private fetchFiles(): JQueryPromise<file[]> {
+    private fetchFiles(): JQueryPromise<searchResults> {
         var level = 1;
         if (this.directory) {
             var slashMatches = this.directory.count("/");

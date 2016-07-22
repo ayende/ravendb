@@ -27,7 +27,7 @@ class ioTestCommand extends commandBase {
     }
 
     private monitorIoTest(parentPromise: JQueryDeferred<any>, operationId: number) {
-        new getOperationStatusCommand(appUrl.getSystemDatabase(), operationId)
+        new getOperationStatusCommand(null, operationId)
             .execute()
             .done((result: operationStatusDto) => {
                 if (result.Completed) {

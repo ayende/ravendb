@@ -20,13 +20,12 @@ class globalConfigVersioning extends viewModelBase {
         super.canActivate(args);
 
         var deferred = $.Deferred();
-        var db = appUrl.getSystemDatabase();
         if (this.settingsAccess.isForbidden()) {
             deferred.resolve({ can: true });
         } else {
-            this.fetchVersioningEntries(db)
+            this.fetchVersioningEntries(null)
                 .done(() => deferred.resolve({ can: true }))
-                .fail(() => deferred.resolve({ redirect: appUrl.forDatabaseSettings(db) }));
+                .fail(() => deferred.resolve({ redirect: appUrl.forDatabaseSettings(null) }));
         }
         
         return deferred;
@@ -54,10 +53,9 @@ class globalConfigVersioning extends viewModelBase {
     }
 
     syncChanges(deleteConfig: boolean) {
-        var db = appUrl.getSystemDatabase();
         if (deleteConfig) {
             var deleteTask = new saveVersioningCommand(
-                db,
+                null,
                 [],
                 this.versionings().map((v) => { return v.toDto(true); }).concat(this.toRemove.map((v) => { return v.toDto(true); })),
                 true).execute();
@@ -68,7 +66,7 @@ class globalConfigVersioning extends viewModelBase {
             });
         } else {
             var saveTask = new saveVersioningCommand(
-                db,
+                null,
                 this.versionings().map((v) => { return v.toDto(true); }),
                 this.toRemove.map((v) => { return v.toDto(true); }),
                 true).execute();

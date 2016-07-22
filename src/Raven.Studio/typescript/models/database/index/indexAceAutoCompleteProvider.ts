@@ -56,7 +56,7 @@ class indexAceAutoCompleteProvider {
                 if (matchingAliasKeyValue.aliasValuePrefix.toLowerCase() === "docs") {
                     new getDocumentsByEntityNameCommand(new collection(matchingAliasKeyValue.aliasValueSuffix, this.activeDatabase), 0, 1)
                         .execute()
-                        .done((result: pagedResultSet) => {
+                        .done((result: pagedResultSet<any>) => {
                             if (!!result && result.totalResultCount > 0) {
                                 var documentPattern: document = new document(result.items[0]);
                                 deferred.resolve(documentPattern.getDocumentPropertyNames());
@@ -78,6 +78,7 @@ class indexAceAutoCompleteProvider {
     }
 
     getIndexMapCompleterValues(editor: any, session: any, pos: AceAjax.Position): JQueryPromise<any> {
+        /*
         var currentToken: AceAjax.TokenInfo = session.getTokenAt(pos.row, pos.column);
         var completedToken: AceAjax.TokenInfo;
         var TokenIterator = require("ace/token_iterator").TokenIterator;
@@ -145,7 +146,8 @@ class indexAceAutoCompleteProvider {
             returnedDeferred.reject();
         }
 
-        return returnedDeferred;
+        return returnedDeferred;*/
+        return null;
     }
 
     indexMapCompleter(editor: any, session: any, pos: AceAjax.Position, prefix: string, callback: (errors: any[], worldlist: { name: string; value: string; score: number; meta: string }[]) => void) {

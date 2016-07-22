@@ -5,7 +5,7 @@ class licenseCheckConnectivityCommand extends commandBase {
 
     execute(): JQueryPromise<boolean> {
         var url = "/admin/license/connectivity";
-        return this.query(url, null, appUrl.getSystemDatabase(), r => r.Success);
+        return this.query(url, null, null, r => r.Success);
     }
 
 }

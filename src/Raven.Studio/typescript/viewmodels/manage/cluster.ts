@@ -47,12 +47,11 @@ class cluster extends viewModelBase {
         if (this.settingsAccess.isForbidden()) {
             deferred.resolve({ can: true });
         } else {
-            var db = appUrl.getSystemDatabase();
-            $.when(this.fetchClusterTopology(db), this.fetchDatabaseId(db), this.fetchServerUrl(db))
+            $.when(this.fetchClusterTopology(null), this.fetchDatabaseId(null), this.fetchServerUrl(null))
                 .done(() => {
                     deferred.resolve({ can: true });
                     if (this.clusterMode()) {
-                        this.fetchStatus(db);
+                        this.fetchStatus(null);
                     }
                 })
                 .fail(() => deferred.resolve({ redirect: appUrl.forAdminSettings() }));
@@ -68,8 +67,8 @@ class cluster extends viewModelBase {
     }
 
     refresh() {
-        return this.fetchClusterTopology(appUrl.getSystemDatabase())
-            .done(() => this.fetchStatus(appUrl.getSystemDatabase()));
+        return this.fetchClusterTopology(null)
+            .done(() => this.fetchStatus(null));
     }
 
     fetchClusterTopology(db: database): JQueryPromise<any> {
@@ -116,7 +115,7 @@ class cluster extends viewModelBase {
         dialog
             .onExit()
             .done(nci => {
-            new extendRaftClusterCommand(appUrl.getSystemDatabase(), nci.toDto(), false, forcedAdd)
+            new extendRaftClusterCommand(null, nci.toDto(), false, forcedAdd)
                     .execute()
                     .done(() => setTimeout(() => this.refresh(), 500));
         });
@@ -126,7 +125,7 @@ class cluster extends viewModelBase {
     removeClustering() {
         this.confirmationMessage("Are you sure?", "You are about to clear cluster information on this server.")
             .done(() => {
-                new removeClusteringCommand(appUrl.getSystemDatabase())
+                new removeClusteringCommand(null)
                     .execute()
                     .done(() => setTimeout(() => {
                         this.refresh();
@@ -143,12 +142,12 @@ class cluster extends viewModelBase {
         dialog
             .onExit()
             .done(nci => {
-            new extendRaftClusterCommand(appUrl.getSystemDatabase(), nci.toDto(), true, false)
+            new extendRaftClusterCommand(null, nci.toDto(), true, false)
                 .execute()
                 .done(() => {
                     shell.clusterMode(true);
                     setTimeout(() => this.refresh(), 500);
-                    new saveClusterConfigurationCommand({ EnableReplication: true }, appUrl.getSystemDatabase())
+                    new saveClusterConfigurationCommand({ EnableReplication: true }, null)
                         .execute();
                 });
 
@@ -159,7 +158,7 @@ class cluster extends viewModelBase {
     initializeNewCluster() {
         this.confirmationMessage("Are you sure?", "You are about to initialize new cluster on this server.")
             .done(() => {
-                new initializeNewClusterCommand(appUrl.getSystemDatabase())
+                new initializeNewClusterCommand(null)
                     .execute()
                     .done(() => setTimeout(() => this.refresh(), 500));
             });
@@ -169,7 +168,7 @@ class cluster extends viewModelBase {
         var dialog = new editNodeConnectionInfoDialog(node, true);
         dialog.onExit()
             .done((nci: nodeConnectionInfo) => {
-                new updateRaftClusterCommand(appUrl.getSystemDatabase(), nci.toDto())
+                new updateRaftClusterCommand(null, nci.toDto())
                     .execute()
                     .done(() => setTimeout(() => this.refresh(), 500));
             });
@@ -180,7 +179,7 @@ class cluster extends viewModelBase {
     leaveCluster(node: nodeConnectionInfo) {
         this.confirmationMessage("Are you sure?", "You are removing node " + node.uri() + " from cluster.")
             .done(() => {
-                new leaveRaftClusterCommand(appUrl.getSystemDatabase(), node.toDto())
+                new leaveRaftClusterCommand(null, node.toDto())
                     .execute()
                     .done(() => setTimeout(() => this.refresh(), 500));
         });
@@ -191,7 +190,7 @@ class cluster extends viewModelBase {
         nodeAsDto.IsNoneVoter = false;
         this.confirmationMessage("Are you sure?", "You are promoting node " + node.uri() + " to voter.")
             .done(() => {
-                new changeNodeVotingModeCommand(appUrl.getSystemDatabase(), nodeAsDto)
+                new changeNodeVotingModeCommand(null, nodeAsDto)
                     .execute()
                     .done(() => setTimeout(() => this.refresh(), 500));
         });

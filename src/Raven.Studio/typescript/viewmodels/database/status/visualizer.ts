@@ -1,5 +1,3 @@
-/// <reference path="../../../../Scripts/typings/jquery.fullscreen/jquery.fullscreen.d.ts"/>
-
 import app = require("durandal/app");
 
 import appUrl = require("common/appUrl");
@@ -24,11 +22,11 @@ import getDatabaseStatsCommand = require("commands/resources/getDatabaseStatsCom
 
 import dynamicHeightBindingHandler = require("common/bindingHelpers/dynamicHeightBindingHandler");
 
-import d3 = require('d3/d3');
+import d3 = require('d3');
 import nv = require('nvd3');
 
 class visualizer extends viewModelBase {
-
+    /*
     static chooseIndexText = "Select an index";
     indexes = ko.observableArray<indexDataDto>();
     indexName = ko.observable(visualizer.chooseIndexText);
@@ -824,7 +822,7 @@ class visualizer extends viewModelBase {
     '.link { fill: none; stroke: rgb(204, 204, 204); stroke-width: 1.5px; }\n' +
     'text { pointer-events: none; text-anchor: middle; }\n' +
     '.link.selected { fill: none; stroke: black; stroke-width: 2.5px; } \n';
-
+    */
 }
 
 export = visualizer;

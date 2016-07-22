@@ -1,3 +1,5 @@
+/// <reference path="../../../../typings/tsd.d.ts"/>
+
 import luceneField = require("models/database/index/luceneField");
 import spatialIndexField = require("models/database/index/spatialIndexField");
 
@@ -89,7 +91,7 @@ class indexDefinition {
     toDto(): indexDefinitionDto {
         return {
             Analyzers: this.makeFieldObject(f => f.indexing() === "Analyzed", f => f.analyzer()),
-            Fields: this.fields(),
+            Fields: null,//this.fields(),
             Indexes: this.makeFieldObject(f => f.indexing() !== "Default", f => f.indexing()),
             InternalFieldsMapping: this.internalFieldsMapping,
             IsTestIndex: this.isTestIndex(),

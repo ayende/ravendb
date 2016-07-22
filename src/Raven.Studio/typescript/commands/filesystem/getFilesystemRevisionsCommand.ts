@@ -9,7 +9,7 @@ class getFilesystemRevisionsCommand extends commandBase {
         super();
     }
 
-    execute(): JQueryPromise<pagedResultSet> {
+    execute(): JQueryPromise<pagedResultSet<filesystemFileHeaderDto>> {
         var filesTask = this.fetchFiles();
         var doneTask = $.Deferred();
 
@@ -30,7 +30,7 @@ class getFilesystemRevisionsCommand extends commandBase {
         return doneTask;
     }
 
-    private fetchFiles(): JQueryPromise<file[]> {
+    private fetchFiles(): JQueryPromise<filesystemFileHeaderDto[]> {
         var args = {
             startsWith: '/',
             matches: '*/revisions/*',

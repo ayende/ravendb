@@ -11,7 +11,7 @@ class queryIndexCommand extends commandBase {
         super();
     }
 
-    execute(): JQueryPromise<pagedResultSet> {
+    execute(): JQueryPromise<pagedResultSet<any>> {
         var selector = (results: indexQueryResultsDto) => new pagedResultSet(results.Results.map(d => new document(d)), results.TotalResults, results);
         var queryTask = this.query(this.getUrl(), null, this.db, selector);
         queryTask.fail((response: JQueryXHR) => this.reportError("Error querying index", response.responseText, response.statusText));
@@ -20,7 +20,7 @@ class queryIndexCommand extends commandBase {
     }
 
     getUrl() {
-        var url = "/indexes/" + this.indexName;
+        var url = "/queries/" + this.indexName;
         //var resultsTransformerUrlFragment = this.transformer && this.transformer.name() ? "&resultsTransformer=" + this.transformer.name() : ""; // This should not be urlEncoded, as it breaks the query.
         var resultsTransformerUrlFragment = (this.transformerQuery ? this.transformerQuery.toUrl() : "");
         var urlArgs = this.urlEncodeArgs({

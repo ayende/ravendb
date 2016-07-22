@@ -1,3 +1,5 @@
+/// <reference path="../../../typings/tsd.d.ts"/>
+
 class timeSeriesStatistics {
     typesCount = ko.observable<number>();
     keysCount = ko.observable<number>();

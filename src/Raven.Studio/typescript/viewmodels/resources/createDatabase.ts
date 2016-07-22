@@ -59,33 +59,25 @@ class createDatabase extends createResourceBase {
         });
 
         this.fetchCustomBundles();
-        this.fetchAllowVoron();
-
         this.fetchClusterWideConfig();
     }
 
     fetchClusterWideConfig() {
+        /*
         new getClusterTopologyCommand(appUrl.getSystemDatabase())
             .execute()
             .done((topology: topology) => {
                 this.isClusterWideVisible(topology && topology.allNodes().length > 0);
-            });
+            });*/
     }
 
     fetchCustomBundles() {
+        /*
         new getPluginsInfoCommand(appUrl.getSystemDatabase())
             .execute()
             .done((result: pluginsInfoDto) => {
             this.customBundles(result.CustomBundles);
-        });
-    }
-
-    fetchAllowVoron() {
-        $.when(new getDatabaseStatsCommand(appUrl.getSystemDatabase()).execute(),
-            new getStatusDebugConfigCommand(appUrl.getSystemDatabase()).execute()
-        ).done((stats: Array<databaseStatisticsDto>, config: any) => {
-            this.allowVoron(stats[0].Is64Bit || config[0].Storage.Voron.AllowOn32Bits);
-        });
+        });*/
     }
 
     nextOrCreate() {

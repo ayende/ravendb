@@ -226,7 +226,7 @@ class serverSmuggling extends viewModelBase {
         this.inProgress(true);
         this.resultsVisible(true);
 
-        new performSmugglingCommand(request, appUrl.getSystemDatabase(), (status) => this.updateProgress(status))
+        new performSmugglingCommand(request, null, (status) => this.updateProgress(status))
             .execute()
             .always(() => this.inProgress(false));
     }

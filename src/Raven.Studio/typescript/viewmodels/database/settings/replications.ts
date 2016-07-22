@@ -24,7 +24,7 @@ class replications extends viewModelBase {
     replicationEnabled = ko.observable<boolean>(false);
 
     prefixForHilo = ko.observable<string>("");
-    replicationConfig = ko.observable<replicationConfig>(new replicationConfig({ DocumentConflictResolution: "None", AttachmentConflictResolution: "None" }));
+    replicationConfig = ko.observable<replicationConfig>(new replicationConfig({ DocumentConflictResolution: "None" }));
     replicationsSetup = ko.observable<replicationsSetup>(new replicationsSetup({ MergedDocument: { Destinations: [], Source: null } }));
     globalClientFailoverBehaviour = ko.observable<string>(null);
     globalClientRequestTimeSlaThreshold = ko.observable<number>();
@@ -367,7 +367,6 @@ class replications extends viewModelBase {
     private proceedWithUseGlobal() {
         this.usingGlobal(true);
         if (this.globalReplicationConfig()) {
-            this.replicationConfig().attachmentConflictResolution(this.globalReplicationConfig().attachmentConflictResolution());
             this.replicationConfig().documentConflictResolution(this.globalReplicationConfig().documentConflictResolution());
         }
 

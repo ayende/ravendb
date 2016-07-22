@@ -9,7 +9,7 @@ class getFilesConflictsCommand extends commandBase {
         super();
     }
 
-    execute(): JQueryPromise<pagedResultSet> {
+    execute(): JQueryPromise<pagedResultSet<conflictItem>> {
         var args = {
             start: this.skip,
             pageSize: this.take

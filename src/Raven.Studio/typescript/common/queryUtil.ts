@@ -1,3 +1,5 @@
+/// <reference path="../../typings/tsd.d.ts" />
+
 import getIndexTermsCommand = require("commands/database/index/getIndexTermsCommand");
 import getDocumentsMetadataByIDPrefixCommand = require("commands/database/documents/getDocumentsMetadataByIDPrefixCommand");
 import database = require("models/resources/database");
@@ -29,7 +31,7 @@ class queryUtil {
 
     public static queryCompleter(indexFields: KnockoutObservableArray<string>, selectedIndex: KnockoutObservable<string>, dynamicPrefix: string, activeDatabase: KnockoutObservable<database>, editor: any, session: any, pos: AceAjax.Position, prefix: string, callback: (errors: any[], worldlist: { name: string; value: string; score: number; meta: string }[]) => void) {
         var currentToken: AceAjax.TokenInfo = session.getTokenAt(pos.row, pos.column);
-
+        /*
         if (!currentToken || typeof currentToken.type === "string") {
             // if in beginning of text or in free text token
             if (!currentToken || currentToken.type === "text") {
@@ -86,7 +88,7 @@ class queryUtil {
                     }
                 }
             }
-        }
+        }*/
     }
     
 }

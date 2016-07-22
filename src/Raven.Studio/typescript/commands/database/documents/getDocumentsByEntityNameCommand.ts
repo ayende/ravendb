@@ -11,7 +11,7 @@ class getDocumentsByEntityNameCommand extends commandBase {
         super();
     }
 
-    execute(): JQueryPromise<pagedResultSet> {
+    execute(): JQueryPromise<pagedResultSet<collectionInfo>> {
         var args = {
             query: "Tag:" + queryUtil.escapeTerm(this.collection.name),
             start: this.skip,

@@ -1,5 +1,3 @@
-/// <reference path="../../../Scripts/typings/jquery/jquery.d.ts" />
-
 import commandBase = require("commands/commandBase");
 import filesystem = require("models/filesystem/filesystem");
 

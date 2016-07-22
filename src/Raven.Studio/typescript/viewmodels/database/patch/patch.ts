@@ -318,7 +318,7 @@ class patch extends viewModelBase {
             loadDocTask.done(document => {
                 this.beforePatchDoc(JSON.stringify(document.toDto(), null, 4));
                 this.beforePatchMeta(JSON.stringify(documentMetadata.filterMetadata(document.__metadata.toDto()), null, 4));
-            }).fail(this.clearDocumentPreview());
+            }).fail(this.clearDocumentPreview);
         } else {
             this.clearDocumentPreview();
         }
@@ -761,7 +761,7 @@ class patch extends viewModelBase {
                 var collectionName = indexName.substring(8);
                 new getDocumentsByEntityNameCommand(new collection(collectionName, this.activeDatabase()), 0, 1)
                     .execute()
-                    .done((result: pagedResultSet) => {
+                    .done((result: pagedResultSet<any>) => {
                         if (!!result && result.totalResultCount > 0 && result.items.length > 0) {
                             var dynamicIndexPattern: document = new document(result.items[0]);
                             if (!!dynamicIndexPattern) {

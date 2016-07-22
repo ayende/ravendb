@@ -6,12 +6,12 @@ class logEntry {
     loggerName = ko.observable<string>();
     database = ko.observable<string>();
     stackTrace = ko.observable<string>();
-    dateMoment = ko.observable<Moment>();
+    dateMoment = ko.observable<moment.Moment>();
     dateRaw = ko.observable<number>();
     humanizedTimestamp: KnockoutComputed<string>;
     timeStampText: KnockoutComputed<string>;
 
-    constructor(dto: logDto, private nowProvider: KnockoutObservable<Moment>) {
+    constructor(dto: logDto, private nowProvider: KnockoutObservable<moment.Moment>) {
         this.level(dto.Level);
         this.timeStamp(dto.TimeStamp);
         this.message(dto.Message);

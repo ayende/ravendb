@@ -135,9 +135,6 @@ class importDatabase extends viewModelBase {
         if (this.includeIndexes()) {
             importItemTypes.push(ImportItemType.Indexes);
         }
-        if (this.includeAttachments()) {
-            importItemTypes.push(ImportItemType.Attachments);
-        }
         if (this.includeTransformers()) {
             importItemTypes.push(ImportItemType.Transformers);
         }

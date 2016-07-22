@@ -1,3 +1,5 @@
+/// <reference path="../../typings/tsd.d.ts"/>
+
 import moment = require("moment");
 
 class extensions {
@@ -391,7 +393,7 @@ class extensions {
                 var underlyingObservable = valueAccessor();
                 var interceptor = ko.computed({
                     read: underlyingObservable,
-                    write: value => {
+                    write: (value: any) => {
                         if (!isNaN(value)) {
                             underlyingObservable(parseFloat(value));
                         }

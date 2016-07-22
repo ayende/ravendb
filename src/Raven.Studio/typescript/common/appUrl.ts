@@ -1,3 +1,5 @@
+/// <reference path="../../typings/tsd.d.ts"/>
+
 import database = require("models/resources/database");
 import filesystem = require("models/filesystem/filesystem");
 import counterStorage = require("models/counter/counterStorage");
@@ -20,7 +22,7 @@ class appUrl {
     }
 
     //private static baseUrl = "http://localhost:8080"; // For debugging purposes, uncomment this line to point Raven at an already-running Raven server. Requires the Raven server to have it's config set to <add key="Raven/AccessControlAllowOrigin" value="*" />
-    private static baseUrl = appUrl.detectAppUrl(); // This should be used when serving HTML5 Studio from the server app.
+    public static baseUrl = appUrl.detectAppUrl(); // This should be used when serving HTML5 Studio from the server app.
     private static currentDatabase = ko.observable<database>().subscribeTo("ActivateDatabase", true);
     private static currentFilesystem = ko.observable<filesystem>().subscribeTo("ActivateFilesystem", true);
     private static currentCounterStorage = ko.observable<counterStorage>().subscribeTo("ActivateCounterStorage", true);
@@ -76,7 +78,7 @@ class appUrl {
         hotSpare: ko.computed(() => appUrl.forHotSpare()),
         versioning: ko.computed(() => appUrl.forVersioning(appUrl.currentDatabase())),
         sqlReplications: ko.computed(() => appUrl.forSqlReplications(appUrl.currentDatabase())),
-        editSqlReplication: ko.computed((sqlReplicationName: string) => appUrl.forEditSqlReplication(sqlReplicationName, appUrl.currentDatabase())),
+        editSqlReplication: ko.computed(() => appUrl.forEditSqlReplication(undefined, appUrl.currentDatabase())),
         sqlReplicationsConnections: ko.computed(() => appUrl.forSqlReplicationConnections(appUrl.currentDatabase())),
         scriptedIndexes: ko.computed(() => appUrl.forScriptedIndexes(appUrl.currentDatabase())),
         customFunctionsEditor: ko.computed(() => appUrl.forCustomFunctionsEditor(appUrl.currentDatabase())),
@@ -136,7 +138,7 @@ class appUrl {
 
     static checkIsAreaActive(routeRoot: string): boolean {
         var items = router.routes.filter(m => m.isActive() && m.route != null && m.route != '');
-        var isThereAny = items.some(m => m.route.substring(0, routeRoot.length) === routeRoot);
+        var isThereAny = items.some(m => (<string>m.route).substring(0, routeRoot.length) === routeRoot);
         return isThereAny;
     }
 
@@ -673,7 +675,7 @@ class appUrl {
     }
 
     static forResourceQuery(res: resource): string {
-        if (res && res instanceof database && !res.isSystem) {
+        if (res && res instanceof database) {
             return appUrl.baseUrl + "/databases/" + res.name;
         } else if (res && res instanceof filesystem) {
             return appUrl.baseUrl + "/fs/" + res.name;
@@ -776,7 +778,7 @@ class appUrl {
     }
 
     static forDocumentRawData(db: database, docId:string): string {
-        return window.location.protocol + "//" + window.location.host + "/databases/" + db.name + "/docs/" + docId;
+        return window.location.protocol + "//" + window.location.host + "/databases/" + db.name + "/docs?id=" + docId;
     }
 
     static forFilesystemFiles(fs: filesystem): string {
@@ -882,19 +884,11 @@ class appUrl {
             var databaseName = hash.substring(dbIndex + dbIndicator.length, dbSegmentEnd);
             var unescapedDatabaseName = decodeURIComponent(databaseName);
             var db = new database(unescapedDatabaseName);
-            db.isSystem = unescapedDatabaseName === "<system>";
             return db;
         } else {
             // No database is specified in the URL. Assume it's the system database.
             return null;
         } 
-    }
-
-    static getSystemDatabase(): database {
-        var db = new database("<system>");
-        db.isSystem = true;
-        db.isVisible(false);
-        return db;
     }
 
     /**

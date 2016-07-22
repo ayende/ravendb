@@ -1,5 +1,3 @@
-/// <reference path="../../../models/dto.ts" />
-
 import commandBase = require("commands/commandBase");
 import getSingleTransformerCommand = require("commands/database/transformers/getSingleTransformerCommand");
 import database = require("models/resources/database");
