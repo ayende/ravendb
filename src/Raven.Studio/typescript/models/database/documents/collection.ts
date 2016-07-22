@@ -1,6 +1,8 @@
 import pagedList = require("common/pagedList");
 import getDocumentsPreviewCommand = require("commands/database/documents/getDocumentsPreviewCommand");
 import getSystemDocumentsCommand = require("commands/database/documents/getSystemDocumentsCommand");
+import getDocumentsFromCollectionCommand = require("commands/database/documents/getDocumentsFromCollectionCommand");
+import getAllDocumentsCommand = require("commands/database/documents/getAllDocumentsCommand");
 import pagedResultSet = require("common/pagedResultSet");
 import database = require("models/resources/database");
 import cssGenerator = require("common/cssGenerator");
@@ -61,9 +63,9 @@ class collection implements ICollectionBase {
             // System documents don't follow the normal paging rules. See getSystemDocumentsCommand.execute() for more info.
             return new getSystemDocumentsCommand(this.ownerDatabase, skip, take, this.documentCount()).execute();
         } if (this.isAllDocuments) {
-            return new getDocumentsPreviewCommand(this.ownerDatabase, skip, take, undefined, this.bindings()).execute();
+            return new getAllDocumentsCommand(this.ownerDatabase, skip, take).execute();
         } else {
-            return new getDocumentsPreviewCommand(this.ownerDatabase, skip, take, this.name, this.bindings()).execute();
+            return new getDocumentsFromCollectionCommand(this, skip, take).execute();
         }
     }
 

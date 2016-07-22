@@ -65,7 +65,7 @@ class indexDefinition {
     }
 
     isStoreAllFields(): boolean {
-        if (this.stores.hasOwnProperty("__all_fields")) {
+        if (this.stores && this.stores.hasOwnProperty("__all_fields")) {
             return this.stores["__all_fields"] === "Yes";
         }
 
@@ -91,7 +91,7 @@ class indexDefinition {
     toDto(): indexDefinitionDto {
         return {
             Analyzers: this.makeFieldObject(f => f.indexing() === "Analyzed", f => f.analyzer()),
-            Fields: null,//this.fields(),
+            Fields: {},//this.fields(),
             Indexes: this.makeFieldObject(f => f.indexing() !== "Default", f => f.indexing()),
             InternalFieldsMapping: this.internalFieldsMapping,
             IsTestIndex: this.isTestIndex(),
@@ -109,7 +109,7 @@ class indexDefinition {
             SuggestionsOptions: this.luceneFields().filter(x => x.suggestionEnabled()).map(x => x.name()),
             TermVectors: this.makeFieldObject(f => f.termVector() !== "No", f => f.termVector()),
             Type: this.type,
-            MaxIndexOutputsPerDocument: this.maxIndexOutputsPerDocument() ? this.maxIndexOutputsPerDocument()> 0 ? this.maxIndexOutputsPerDocument() : null : null
+            MaxIndexOutputsPerDocument: this.maxIndexOutputsPerDocument() ? this.maxIndexOutputsPerDocument() > 0 ? this.maxIndexOutputsPerDocument() : null : null
         };
     }
 

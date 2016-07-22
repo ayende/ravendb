@@ -19,6 +19,8 @@ import changeSubscription = require("common/changeSubscription");
 import customFunctions = require("models/database/documents/customFunctions");
 import customColumns = require("models/database/documents/customColumns");
 import customColumnParams = require("models/database/documents/customColumnParams");
+import collectionsStats = require("models/database/documents/collectionsStats");
+import getCollectionsStatsCommand = require("commands/database/documents/getCollectionsStatsCommand");
 
 import getCollectionsCommand = require("commands/database/documents/getCollectionsCommand");
 import getCustomColumnsCommand = require("commands/database/documents/getCustomColumnsCommand");
@@ -63,6 +65,8 @@ class documents extends viewModelBase {
     isInitialized = documents.isInitialized;
     showCollectionChanged = ko.observable<boolean>(false);
 
+    documentsCount = ko.observable<number>(0);
+
     constructor() {
         super();
 
@@ -71,8 +75,7 @@ class documents extends viewModelBase {
             var selectedCollection: collection = this.selectedCollection();
             if (!!selectedCollection) {
                 if (selectedCollection.name === collection.allDocsCollectionName) {
-                    var db: database = this.activeDatabase();
-                    return !!db.statistics() ? db.statistics().countOfDocuments() > 0 : false;
+                    return this.documentsCount() > 0;
                 }
                 return this.selectedCollection().documentCount() > 0;
             }
@@ -152,7 +155,7 @@ class documents extends viewModelBase {
 
         var db = this.activeDatabase();
         this.fetchAlerts();
-        this.fetchCollections(db).done(results => {
+        this.fetchCollectionsStats(db).done(results => {
             this.collectionsLoaded(results, db);
             documents.isInitialized(true);
         });
@@ -168,7 +171,7 @@ class documents extends viewModelBase {
         this.createKeyboardShortcut("DELETE", () => this.getDocumentsGrid().deleteSelectedItems(), docsPageSelector);
         this.createKeyboardShortcut("Ctrl+C, D", () => this.copySelectedDocs(), docsPageSelector);
         this.createKeyboardShortcut("Ctrl+C, I",() => this.copySelectedDocIds(), docsPageSelector);
-        this.registerCollectionsResize();
+        //this.registerCollectionsResize();
     }
 
     deactivate() {
@@ -264,24 +267,27 @@ class documents extends viewModelBase {
         setTimeout(() => dynamicHeightBindingHandler.stickToTarget($(".ko-grid-viewport-container")[0], 'footer', 0), 25);
     }
 
-    private fetchCollections(db: database): JQueryPromise<Array<collection>> {
-        return new getCollectionsCommand(db, this.collections(), this.lastCollectionCountUpdate).execute();
+    private fetchCollectionsStats(db: database): JQueryPromise<collectionsStats> {
+        return new getCollectionsStatsCommand(db, this.collections()).execute();
     }
 
     private refreshCollections(): JQueryPromise<any> {
         var deferred = $.Deferred();
         var db = this.activeDatabase();
 
-        this.fetchCollections(db).done(results => {
-            this.updateCollections(results);
-            this.refreshCollectionsData();
-            deferred.resolve();
-        });
+        this.fetchCollectionsStats(db)
+            .done(results => {
+                this.documentsCount(results.numberOfDocuments());
+                this.updateCollections(results.collections);
+                this.refreshCollectionsData();
+                deferred.resolve();
+            });
 
         return deferred;
     }
 
-    collectionsLoaded(collections: Array<collection>, db: database) {
+    collectionsLoaded(collectionsStats: collectionsStats, db: database) {
+        var collections = collectionsStats.collections;
         // Create the "All Documents" pseudo collection.
         this.allDocumentsCollection(collection.createAllDocsCollection(db));
         this.allDocumentsCollection().documentCount = ko.computed(() => !!db.statistics() ? db.statistics().countOfDocuments() : 0);

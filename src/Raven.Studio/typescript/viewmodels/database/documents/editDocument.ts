@@ -189,7 +189,7 @@ class editDocument extends viewModelBase {
             this.databaseForEditedDoc = appUrl.getDatabase();
             this.loadDocument(args.id)
                 .done(() => {
-                    this.changeNotification = this.createDocumentChangeNotification(args.id);
+                    //TODO:this.changeNotification = this.createDocumentChangeNotification(args.id);
                     this.addNotification(this.changeNotification);
                     canActivateResult.resolve({ can: true });
                 })
@@ -618,7 +618,7 @@ class editDocument extends viewModelBase {
                         this.removeNotification(this.changeNotification);
                     }
 
-                    this.changeNotification = this.createDocumentChangeNotification(savedDocumentDto.Key);
+                    //TODO: this.changeNotification = this.createDocumentChangeNotification(savedDocumentDto.Key);
                     this.addNotification(this.changeNotification);
                 })
                 .always(() => {
@@ -835,7 +835,7 @@ class editDocument extends viewModelBase {
                                 this.changeNotification.off();
                                 this.removeNotification(this.changeNotification);
 
-                                this.changeNotification = this.createDocumentChangeNotification(docId);
+                                //TODO: this.changeNotification = this.createDocumentChangeNotification(docId);
                                 this.addNotification(this.changeNotification);
                             });
                             list.currentItemIndex(index);

@@ -4,7 +4,9 @@ class searchResults {
 
     Files: filesystemFileHeaderDto[];
     FileCount: number;
-    Start: number;
+    Start: number; 
     PageSize: number;
 
 }
+
+export = searchResults;

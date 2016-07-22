@@ -328,9 +328,9 @@ class shell extends viewModelBase {
     }
 
     private destroyChangesApi() {
+        /*TODO
         this.cleanupNotifications();
-        this.globalChangesApi.dispose();
-        shell.disconnectFromResourceChangesApi();
+        shell.disconnectFromResourceChangesApi();*/
     }
 
     // Called by Durandal when shell.html has been put into the DOM.
@@ -523,6 +523,7 @@ class shell extends viewModelBase {
             this.currentConnectedResource = rs;
         }
 
+        /*TODO:
         if ((!rs.disabled() && rs.isLicensed()) &&
             (isPreviousDifferentKind || changesContext.currentResourceChangesApi() == null)) {
             // connect to changes api, if it's not disabled and the changes api isn't already connected
@@ -532,7 +533,7 @@ class shell extends viewModelBase {
                 changesContext.currentResourceChangesApi(changes);
                 shell.changeSubscriptionArray = subscriptionsArray();
             });
-        }
+        }*/
     }
 
     setupApiKey() {
@@ -792,7 +793,7 @@ class shell extends viewModelBase {
                 //TODO: this.fetchClusterTopology();
                 //TODO: this.fetchServerBuildVersion();
                 //TODO: this.fetchClientBuildVersion();
-                shell.fetchLicenseStatus();
+                //TODO:shell.fetchLicenseStatus();
                 //TODO: this.fetchSupportCoverage();
                 //TODO :this.fetchSystemDatabaseAlerts();
                 router.activate();

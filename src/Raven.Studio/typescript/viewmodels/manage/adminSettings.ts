@@ -33,8 +33,9 @@ class adminSettings extends viewModelBase {
         super.activate(args);
         if (!license.licenseStatus()) {
             // we want to make sure license information is loaded before building route info
-            return shell.fetchLicenseStatus()
-                .done(() => this.init());
+            this.init(); //TODO: 
+            /*return shell.fetchLicenseStatus()
+                .done(() => this.init());*/
         } else {
             this.init();
         }
@@ -47,7 +48,6 @@ class adminSettings extends viewModelBase {
         var isGlobalAdmin = shell.isGlobalAdmin();
 
         var apiKeyRoute = { route: ['', 'apiKeys'], moduleId: 'viewmodels/manage/apiKeys', title: 'API Keys', nav: true, hash: appUrl.forApiKeys(), enabled: canReadOrWrite };
-        var windowsAuthRoute = { route: 'windowsAuth', moduleId: 'viewmodels/manage/windowsAuth', title: 'Windows Authentication', nav: true, hash: appUrl.forWindowsAuth(), enabled: canReadOrWrite };
         var clusterRoute = { route: 'cluster', moduleId: "viewmodels/manage/cluster", title: "Cluster", nav: true, hash: appUrl.forCluster(), enabled: canReadOrWrite };
         var globalConfigRoute = { route: 'globalConfig*details', moduleId: 'viewmodels/manage/globalConfig/globalConfig', title: 'Global Configuration', nav: true, hash: appUrl.forGlobalConfig(), enabled: canReadOrWrite };
         var serverSmuggling = { route: "serverSmuggling", moduleId: "viewmodels/manage/serverSmuggling", title: "Server Smuggling", nav: true, hash: appUrl.forServerSmugging(), enabled: isGlobalAdmin };
@@ -67,7 +67,6 @@ class adminSettings extends viewModelBase {
 
         var routes = [
             apiKeyRoute,
-            windowsAuthRoute,
             clusterRoute,
             globalConfigRoute,
             serverSmuggling,
@@ -85,9 +84,10 @@ class adminSettings extends viewModelBase {
             studioConfigRoute
         ];
 
+        /*
         if (license.licenseStatus().Attributes.hotSpare === "true")
             routes.push(hotSpareRoute);
-
+        */
         this.router = this.router
             .reset()
             .map(routes)

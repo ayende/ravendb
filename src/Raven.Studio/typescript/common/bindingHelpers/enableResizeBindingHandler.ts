@@ -1,4 +1,6 @@
-﻿import composition = require("durandal/composition");
+﻿/// <reference path="../../../typings/tsd.d.ts" />
+
+import composition = require("durandal/composition");
 
 /*
  * A custom Knockout binding handler that causes the collections labels window to become resizable
@@ -19,6 +21,7 @@ class enableResizeBindingHandler {
 
     // Called by Knockout a single time when the binding handler is setup.
     init(element: HTMLElement, valueAccessor: () => string, allBindings: () => any, viewModel, bindingContext: any) {
+        /* TODO:
         var options: any = {
             handles: 'e, w',
             helper: string => "resizable-helper",
@@ -29,7 +32,7 @@ class enableResizeBindingHandler {
         };
 
         // initialize the resizable control
-        $(element).find('.col-resizable-target').resizable(options);
+        $(element).find('.col-resizable-target').resizable(options);*/
     }
 }
 

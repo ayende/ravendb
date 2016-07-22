@@ -12,6 +12,8 @@ import aceEditorBindingHandler = require("common/bindingHelpers/aceEditorBinding
 import pagedList = require("common/pagedList");
 import pagedResultSet = require("common/pagedResultSet");
 import messagePublisher = require("common/messagePublisher");
+import getCollectionsStatsCommand = require("commands/database/documents/getCollectionsStatsCommand");
+import collectionsStats = require("models/database/documents/collectionsStats"); 
 
 import queryIndexCommand = require("commands/database/query/queryIndexCommand");
 import database = require("models/resources/database");
@@ -281,11 +283,11 @@ class query extends viewModelBase {
     private fetchAllCollections(db: database): JQueryPromise<any> {
         var deferred = $.Deferred();
 
-        new getCollectionsCommand(db)
+        new getCollectionsStatsCommand(db)
             .execute()
-            .done((results: collection[]) => {
-                this.collections(results);
-                this.collectionNames(results.map(c => c.name));
+            .done((results: collectionsStats) => {
+                this.collections(results.collections);
+                this.collectionNames(results.collections.map(c => c.name));
                 deferred.resolve();
             });
 

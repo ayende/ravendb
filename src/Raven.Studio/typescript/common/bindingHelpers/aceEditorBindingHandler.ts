@@ -2,8 +2,8 @@
 /// <amd-dependency path="ace/ext/language_tools" />
 /// <amd-dependency path="ace/mode/lucene" />
 /// <amd-dependency path="ace/theme/xcode" />
-/// <amd-dependency path="ace/mode/json_newline_friendly" />
 /// <amd-dependency path="ace/mode/json" />
+//TODO: <amd-dependency path="ace/mode/json_newline_friendly" />
 import composition = require("durandal/composition");
 import ace = require("ace/ace");
 
@@ -216,6 +216,7 @@ class aceEditorBindingHandler {
         if ($(element).height() < this.minHeight) {
             $(element).height(this.minHeight);
         }
+        /*
         $(element).resizable(<any>{
             minHeight: this.minHeight,
             handles: "s, se",
@@ -223,7 +224,7 @@ class aceEditorBindingHandler {
             resize: function (event, ui) {
                 aceEditor.resize();
             }
-        });
+        });*/
 
         this.alterHeight(element, aceEditor);
         $(element).find('.ui-resizable-se').removeClass('ui-icon-gripsmall-diagonal-se');
@@ -235,7 +236,7 @@ class aceEditorBindingHandler {
         ko.utils.domNodeDisposal.addDisposeCallback(element, () => {
             $(element).off('keyup', aceFocusElement);
             $(element).off('focus', aceFocusElement);
-            $(element).resizable("destroy");
+            //TODO: $(element).resizable("destroy");
             aceEditor.getSession().setUseWorker(false);
             aceEditor.destroy();
         });
