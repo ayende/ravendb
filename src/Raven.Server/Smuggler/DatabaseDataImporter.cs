@@ -4,7 +4,12 @@ using System.IO;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using Raven.Abstractions.Data;
+using Raven.Abstractions.Indexing;
+using Raven.Client.Indexing;
 using Raven.Server.Documents;
+using Raven.Server.Documents.Indexes.Auto;
+using Raven.Server.Documents.Indexes.Static;
+using Raven.Server.Documents.Versioning;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 using Sparrow.Json;
@@ -28,10 +33,13 @@ namespace Raven.Server.Smuggler
             var state = new JsonParserState();
             using (var parser = new UnmanagedJsonParser(context, state, "fileName"))
             {
-                var buffer = context.GetParsingBuffer();
                 string operateOnType = "__top_start_object";
                 var batchPutCommand = new MergedBatchPutCommand(_database);
+                var batchVerioningRevisionsPutCommand = new MergedBatchVerioningRevisionsPutCommand(_database);
                 var identities = new Dictionary<string, long>();
+                VersioningStorage versioningStorage = null;
+
+                var buffer = context.GetParsingBuffer();
                 while (true)
                 {
                     if (parser.Read() == false)
@@ -78,27 +86,76 @@ namespace Raven.Server.Smuggler
                                         batchPutCommand = new MergedBatchPutCommand(_database);
                                     }
                                     break;
+                                case "VersioningRevisions":
+                                    if (versioningStorage == null)
+                                        break;
+
+                                    result.VersioningRevisionDocumentsCount++;
+                                    var versioningRevisionsBuilder = new BlittableJsonDocumentBuilder(context, BlittableJsonDocumentBuilder.UsageMode.ToDisk, "VersioningRevisions", parser, state);
+                                    versioningRevisionsBuilder.ReadNestedObject();
+                                    while (versioningRevisionsBuilder.Read() == false)
+                                    {
+                                        var read = await stream.ReadAsync(buffer, 0, buffer.Length);
+                                        if (read == 0)
+                                            throw new EndOfStreamException("Stream ended without reaching end of json content");
+                                        parser.SetBuffer(buffer, read);
+                                    }
+                                    versioningRevisionsBuilder.FinalizeDocument();
+                                    batchVerioningRevisionsPutCommand.Add(versioningRevisionsBuilder);
+                                    if (batchVerioningRevisionsPutCommand.Count >= 16)
+                                    {
+                                        await _database.TxMerger.Enqueue(batchVerioningRevisionsPutCommand);
+                                        batchVerioningRevisionsPutCommand.Dispose();
+                                        batchVerioningRevisionsPutCommand = new MergedBatchVerioningRevisionsPutCommand(_database);
+                                    }
+                                    break;
                                 case "Attachments":
                                     result.Warnings.Add("Attachments are not supported anymore. Use RavenFS isntead. Skipping.");
                                     break;
                                 case "Indexes":
-                                case "Transformers":
-                                    /*result.IndexesCount++;
-                                    result.TransformersCount++;*/
-                                    using (var indexesBuilder = new BlittableJsonDocumentBuilder(context, BlittableJsonDocumentBuilder.UsageMode.None, "Indexes", parser, state))
+                                    result.IndexesCount++;
+                                    using (var indexBuilder = new BlittableJsonDocumentBuilder(context, BlittableJsonDocumentBuilder.UsageMode.None, "Indexes", parser, state))
                                     {
-                                        indexesBuilder.ReadNestedObject();
-                                        while (indexesBuilder.Read() == false)
+                                        indexBuilder.ReadNestedObject();
+                                        while (indexBuilder.Read() == false)
                                         {
                                             var read = await stream.ReadAsync(buffer, 0, buffer.Length);
                                             if (read == 0)
                                                 throw new EndOfStreamException("Stream ended without reaching end of json content");
                                             parser.SetBuffer(buffer, read);
                                         }
-                                        indexesBuilder.FinalizeDocument();
-                                        using (var reader = indexesBuilder.CreateReader())
+                                        indexBuilder.FinalizeDocument();
+                                        using (var reader = indexBuilder.CreateReader())
                                         {
-                                            /*TODO:Implement*/
+                                         /*   var index = new IndexDefinition();
+                                            string name;
+                                            if (reader.TryGet("Name", out name) == false)
+                                            {
+                                                result.Warnings.Add($"Cannot import the following index as it does not contain a name: '{reader}'. Skipping.");
+                                            }
+                                            index.Name = name;
+                                            _database.IndexStore.CreateIndex(index);*/
+                                        }
+                                    }
+                                    break;
+                                case "Transformers":
+                                    result.TransformersCount++;
+                                    using (var transformerBuilder = new BlittableJsonDocumentBuilder(context, BlittableJsonDocumentBuilder.UsageMode.None, "Indexes", parser, state))
+                                    {
+                                        transformerBuilder.ReadNestedObject();
+                                        while (transformerBuilder.Read() == false)
+                                        {
+                                            var read = await stream.ReadAsync(buffer, 0, buffer.Length);
+                                            if (read == 0)
+                                                throw new EndOfStreamException("Stream ended without reaching end of json content");
+                                            parser.SetBuffer(buffer, read);
+                                        }
+                                        transformerBuilder.FinalizeDocument();
+                                        using (var reader = transformerBuilder.CreateReader())
+                                        {
+                                           /* var transformerDefinition = new TransformerDefinition();
+                                            // TODO: Import
+                                            _database.TransformerStore.CreateTransformer(transformerDefinition);*/
                                         }
                                     }
                                     break;
@@ -144,7 +201,7 @@ namespace Raven.Server.Smuggler
                                     break;
                                 default:
                                     result.Warnings.Add($"The following type is not recognized: '{operateOnType}'. Skipping.");
-                                    using (var builder = new BlittableJsonDocumentBuilder(context, BlittableJsonDocumentBuilder.UsageMode.None, "Identities", parser, state))
+                                    using (var builder = new BlittableJsonDocumentBuilder(context, BlittableJsonDocumentBuilder.UsageMode.None, "NotRecognizedType", parser, state))
                                     {
                                         builder.ReadNestedObject();
                                         while (builder.Read() == false)
@@ -164,8 +221,24 @@ namespace Raven.Server.Smuggler
                             {
                                 case "Docs":
                                     if (batchPutCommand.Count > 0)
+                                    {
                                         await _database.TxMerger.Enqueue(batchPutCommand);
-                                    batchPutCommand = null;
+                                        batchPutCommand.Dispose();
+                                        batchPutCommand = null;
+                                    }
+
+                                    // We are taking a reference here since the documents import can activate or disable the versioning.
+                                    // We holad a local copy because the user can disable the bundle during the import process, exteranly.
+                                    // In this case we want to continue to import the revisions documents.
+                                    versioningStorage = _database.BundleLoader.VersioningStorage;
+                                    break;
+                                case "VersioningRevisions":
+                                    if (batchVerioningRevisionsPutCommand.Count > 0)
+                                    {
+                                        await _database.TxMerger.Enqueue(batchVerioningRevisionsPutCommand);
+                                        batchVerioningRevisionsPutCommand.Dispose();
+                                        batchVerioningRevisionsPutCommand = null;
+                                    }
                                     break;
                                 case "Identities":
                                     using (var tx = context.OpenWriteTransaction())
@@ -212,6 +285,12 @@ namespace Raven.Server.Smuggler
                     string key;
                     if (metadata.TryGet(Constants.MetadataDocId, out key) == false)
                         throw new InvalidOperationException("Document's metadata must include the document's key.");
+
+                    DynamicJsonValue mutatedMetadata;
+                    metadata.Modifications = mutatedMetadata = new DynamicJsonValue(metadata);
+                    mutatedMetadata.Remove(Constants.MetadataDocId);
+                    mutatedMetadata.Remove(Constants.MetadataEtagId);
+
                     _database.DocumentsStorage.Put(context, key, null, document);
                 }
             }
@@ -236,5 +315,65 @@ namespace Raven.Server.Smuggler
             }
         }
 
+        private class MergedBatchVerioningRevisionsPutCommand : TransactionOperationsMerger.MergedTransactionCommand, IDisposable
+        {
+            private readonly DocumentDatabase _database;
+            private readonly List<IDisposable> _buildersToDispose = new List<IDisposable>();
+            private readonly List<BlittableJsonReaderObject> _documents = new List<BlittableJsonReaderObject>();
+
+            public MergedBatchVerioningRevisionsPutCommand(DocumentDatabase database)
+            {
+                _database = database;
+            }
+
+            public int Count
+            {
+                [MethodImpl(MethodImplOptions.AggressiveInlining)]
+                get { return _documents.Count; }
+            }
+
+            public override void Execute(DocumentsOperationContext context, RavenTransaction tx)
+            {
+                foreach (var document in _documents)
+                {
+                    BlittableJsonReaderObject metadata;
+                    if (document.TryGet(Constants.Metadata, out metadata) == false)
+                        throw new InvalidOperationException("A document must have a metadata");
+                    // We are using the id term here and not key in order to be backward compatiable with old export files.
+                    string key;
+                    if (metadata.TryGet(Constants.MetadataDocId, out key) == false)
+                        throw new InvalidOperationException("Document's metadata must include the document's key.");
+                    long etag;
+                    if (metadata.TryGet(Constants.MetadataEtagId, out etag) == false)
+                        throw new InvalidOperationException("Document's metadata must include the document's key.");
+
+                    DynamicJsonValue mutatedMetadata;
+                    metadata.Modifications = mutatedMetadata = new DynamicJsonValue(metadata);
+                    mutatedMetadata.Remove(Constants.MetadataDocId);
+                    mutatedMetadata.Remove(Constants.MetadataEtagId);
+
+                    _database.BundleLoader.VersioningStorage.Put(context, key, etag, document);
+                }
+            }
+
+            public void Dispose()
+            {
+                foreach (var documentBuilder in _buildersToDispose)
+                {
+                    documentBuilder.Dispose();
+                }
+                foreach (var documentBuilder in _documents)
+                {
+                    documentBuilder.Dispose();
+                }
+            }
+
+            public void Add(BlittableJsonDocumentBuilder documentBuilder)
+            {
+                _buildersToDispose.Add(documentBuilder);
+                var reader = documentBuilder.CreateReader();
+                _documents.Add(reader);
+            }
+        }
     }
 }

@@ -10,14 +10,16 @@ namespace Raven.Server.Documents.Transformers
 {
     public class CurrentTransformationScope
     {
+        private readonly BlittableJsonReaderObject _parameters;
         private readonly DocumentsStorage _documentsStorage;
         private readonly DocumentsOperationContext _documentsContext;
 
         [ThreadStatic]
         public static CurrentTransformationScope Current;
 
-        public CurrentTransformationScope(DocumentsStorage documentsStorage, DocumentsOperationContext documentsContext)
+        public CurrentTransformationScope(BlittableJsonReaderObject parameters, DocumentsStorage documentsStorage, DocumentsOperationContext documentsContext)
         {
+            _parameters = parameters;
             _documentsStorage = documentsStorage;
             _documentsContext = documentsContext;
         }
@@ -51,9 +53,13 @@ namespace Raven.Server.Documents.Transformers
             if (keyLazy != null)
                 keySlice = Slice.External(_documentsContext.Allocator, keyLazy.Buffer, keyLazy.Size);
             else
-                keySlice = Slice.From(_documentsContext.Allocator, keyString, ByteStringType.Immutable);
+                keySlice = Slice.From(_documentsContext.Allocator, keyString);
 
-            var document = _documentsStorage.Get(_documentsContext, keyString ?? keySlice.ToString()); // TODO [ppekrol] fix me
+            // making sure that we normalize the case of the key so we'll be able to find
+            // it in case insensitive manner
+            _documentsContext.Allocator.ToLowerCase(ref keySlice.Content);
+
+            var document = _documentsStorage.Get(_documentsContext, keySlice); 
             if (document == null)
                 return Null();
 
@@ -63,6 +69,43 @@ namespace Raven.Server.Documents.Transformers
             _document.Set(document);
 
             return _document;
+        }
+
+        public TransformerParameter Parameter(string key)
+        {
+            TransformerParameter parameter;
+            if (TryGetParameter(key, out parameter) == false)
+                throw new InvalidOperationException("Transformer parameter " + key + " was accessed, but it wasn't provided.");
+
+            return parameter;
+        }
+
+        public TransformerParameter ParameterOrDefault(string key, object val)
+        {
+            TransformerParameter parameter;
+            if (TryGetParameter(key, out parameter) == false)
+                return new TransformerParameter(val);
+
+            return parameter;
+        }
+
+        private bool TryGetParameter(string key, out TransformerParameter parameter)
+        {
+            if (_parameters == null)
+            {
+                parameter = null;
+                return false;
+            }
+
+            object value;
+            if (_parameters.TryGetMember(key, out value) == false)
+            {
+                parameter = null;
+                return false;
+            }
+
+            parameter = new TransformerParameter(value);
+            return true;
         }
 
         private DynamicNullObject Null()

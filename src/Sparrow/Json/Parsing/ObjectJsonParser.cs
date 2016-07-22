@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Text;
 using Raven.Abstractions.Extensions;
+using Sparrow.Utils;
 
 namespace Sparrow.Json.Parsing
 {
@@ -110,6 +111,8 @@ namespace Sparrow.Json.Parsing
             _ctx = ctx;
             _elements.Push(root);
         }
+
+        public IReadOnlyCollection<object> Elements => _elements;
 
         public void Dispose()
         {
@@ -325,6 +328,16 @@ namespace Sparrow.Json.Parsing
                     SetStringBuffer(s);
                     _state.CurrentTokenType = JsonParserToken.String;
                     return;
+                }
+                if (current is decimal)
+                {
+                    var d = (decimal)current;
+                    if (DecimalHelper.Instance.IsDouble(ref d))
+                        current = (double)d;
+                    else
+                        current = (long)d;
+
+                    continue;
                 }
                 if (current == null)
                 {
