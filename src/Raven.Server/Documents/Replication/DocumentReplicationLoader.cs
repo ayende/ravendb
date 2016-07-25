@@ -37,8 +37,8 @@ namespace Raven.Server.Documents.Replication
 
         private readonly Logger _log;
 
-        public IEnumerable<IncomingConnectionInfo> IncomingConnections => _incoming.Select(x => x.Value.ConnectionInfo);
-        public IEnumerable<ReplicationDestination> OutgoingConnections => _outgoing.Keys;
+        public IEnumerable<IncomingReplicationHandler> IncomingConnections => _incoming.Select(x => x.Value);
+        public IEnumerable<OutgoingReplicationHandler> OutgoingConnections => _outgoing.Values;
 
         public DocumentReplicationLoader(DocumentDatabase database)
         {
@@ -152,6 +152,16 @@ namespace Raven.Server.Documents.Replication
 
             InitializeOutgoingReplications();
         }
+
+        public long GetLastReceivedEtagBySrcDbId(Guid srcDbId)
+        {
+            return _incoming.FirstOrDefault(ic =>
+                    ic.Value.ConnectionInfo.SourceDatabaseId.Equals(
+                        srcDbId.ToString(), StringComparison.OrdinalIgnoreCase))
+                ?.Value
+                ?.LastReceivedEtag ?? 0;
+        }
+
 
         private void InitializeOutgoingReplications()
         {

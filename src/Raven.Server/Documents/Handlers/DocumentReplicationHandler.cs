@@ -1,4 +1,5 @@
-﻿using System.Net;
+﻿using System;
+using System.Net;
 using System.Threading.Tasks;
 using Raven.Server.Routing;
 using Raven.Server.ServerWide.Context;
@@ -30,10 +31,13 @@ namespace Raven.Server.Documents.Handlers
                 {
                     incoming.Add(new DynamicJsonValue
                     {
-                        ["SourceDatabaseId"] = item.SourceDatabaseId,
-                        ["SourceDatabaseName"] = item.SourceDatabaseName,
-                        ["SourceMachineName"] = item.SourceMachineName,
-                        ["SourceUrl"] = item.SourceUrl
+                        ["SourceDatabaseId"] = item.ConnectionInfo.SourceDatabaseId,
+                        ["SourceDatabaseName"] = item.ConnectionInfo.SourceDatabaseName,
+                        ["SourceMachineName"] = item.ConnectionInfo.SourceMachineName,
+                        ["SourceUrl"] = item.ConnectionInfo.SourceUrl,
+                        ["WhenConnected"] = item.ConnectionInfo.WhenConnected,
+                        ["LastBatchAverageDocumentSize"] = item.LastBatchAverageDocumentSize,
+                        ["LastBatchMaxDocumentSize"] = item.LastBatchMaxDocumentSize
                     });
                 }
 
@@ -42,12 +46,13 @@ namespace Raven.Server.Documents.Handlers
                 {
                     outgoing.Add(new DynamicJsonValue
                     {
-                        ["Url"] = item.Url,
-                        ["Database"] = item.Database,
-                        ["Disabled"] = item.Disabled,
-                        ["IgnoredClient"] = item.IgnoredClient,
-                        ["SkipIndexReplication"] = item.SkipIndexReplication,
-                        ["SpecifiedCollections"] = item.SpecifiedCollections
+                        ["Url"] = item.Destination.Url,
+                        ["Database"] = item.Destination.Database,
+                        ["Disabled"] = item.Destination.Disabled,
+                        ["IgnoredClient"] = item.Destination.IgnoredClient,
+                        ["SkipIndexReplication"] = item.Destination.SkipIndexReplication,
+                        ["SpecifiedCollections"] = item.Destination.SpecifiedCollections,
+                        ["WhenConnected"] = item.WhenConnected						
                     });
                 }
 
@@ -57,6 +62,32 @@ namespace Raven.Server.Documents.Handlers
                     ["OutgoingConnections"] = outgoing
                 });
             }
+            return Task.CompletedTask;
+        }
+
+        [RavenAction("/databases/*/replication/debug/last-received-etag", "GET",
+            "/databases/{databaseName:string}/replication/debug/last-received-etag?srcDbId={SourceDBId:Guid}")]
+        public Task GetLastReceivedEtag()
+        {
+            var srcDbIdAsString = GetQueryStringValueAndAssertIfSingleAndNotEmpty("srcDbId");
+
+            Guid srcDbId;
+            if (!Guid.TryParse(srcDbIdAsString, out srcDbId))
+                throw new ArgumentException("Failed to parse 'srcDbId' parameter, it should be a Guid");
+
+            HttpContext.Response.StatusCode = (int)HttpStatusCode.OK;
+            DocumentsOperationContext context;
+            using (ContextPool.AllocateOperationContext(out context))
+            using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
+            {
+                context.Write(writer, new DynamicJsonValue
+                {
+                    ["LastReceivedEtag"] = Database.DocumentReplicationLoader
+                                                   .GetLastReceivedEtagBySrcDbId(srcDbId),
+                    ["SrcDbId"] = srcDbId
+                });
+            }
+
             return Task.CompletedTask;
         }
 

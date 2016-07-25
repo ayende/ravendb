@@ -30,8 +30,7 @@ namespace Raven.Server.Documents.Replication
         private readonly Logger _log;
         private readonly ManualResetEventSlim _waitForChanges = new ManualResetEventSlim(false);
         private readonly CancellationTokenSource _cts;
-        private readonly TimeSpan _minimalHeartbeatInterval = TimeSpan.FromSeconds(15);
-        private BlittableJsonReaderObject _heartbeatMessage;
+        
         private Thread _sendingThread;
 
         private long _lastSentEtag;
@@ -40,6 +39,13 @@ namespace Raven.Server.Documents.Replication
         public event Action<OutgoingReplicationHandler, Exception> Failed;
 
         public event Action<OutgoingReplicationHandler> DocumentsSent;
+
+        public DateTime WhenConnected { get; } = DateTime.UtcNow;
+
+        //this probably will become one of the metrics counters, when it will become available 
+
+        private long _sentDocumentsCount;
+        public long SentDocumentsCount => _sentDocumentsCount;
 
         public OutgoingReplicationHandler(
             DocumentDatabase database,
@@ -50,14 +56,13 @@ namespace Raven.Server.Documents.Replication
             _log = _database.LoggerSetup.GetLogger<OutgoingReplicationHandler>(_database.Name);
             _database.Notifications.OnDocumentChange += OnDocumentChange;
             _cts = CancellationTokenSource.CreateLinkedTokenSource(_database.DatabaseShutdown);
-
         }
 
         public void Start()
         {
             _sendingThread = new Thread(ReplicateDocuments)
             {
-                Name = $"Outgoing replication {FromToString}",
+                Name = $"Outgoing replication { FromToString }",
                 IsBackground = true
             };
             _sendingThread.Start();
@@ -91,13 +96,7 @@ namespace Raven.Server.Documents.Replication
                     using (_database.DocumentsStorage.ContextPool.AllocateOperationContext(out context))
                     using (var writer = new BlittableJsonTextWriter(context, stream))
                     using (var parser = context.ParseMultiFrom(stream))
-                    {
-                        //cache heartbeat msg
-                        _heartbeatMessage = context.ReadObject(new DynamicJsonValue
-                        {
-                            ["Heartbeat"] = true
-                        }, $"heartbeat msg {FromToString}");
-
+                    {					
                         //send initial connection information
                         context.Write(writer, new DynamicJsonValue
                         {
@@ -134,7 +133,7 @@ namespace Raven.Server.Documents.Replication
                             }
 
                             //if this returns false, this means either timeout or canceled token is activated                    
-                            while (_waitForChanges.Wait(_minimalHeartbeatInterval, _cts.Token) == false)
+                            while (_waitForChanges.Wait(_database.Configuration.Replication.HeartbeatLatency.AsTimeSpan, _cts.Token) == false)
                             {
                                 SendHeartbeat(writer);
                             }
@@ -160,12 +159,30 @@ namespace Raven.Server.Documents.Replication
 
         public ReplicationDestination Destination => _destination;
 
+        public long LastSentEtag => _lastSentEtag;
+
         private void SendHeartbeat(BlittableJsonTextWriter writer)
         {
             try
             {
-                writer.WriteObjectOrdered(_heartbeatMessage);
-                writer.Flush();
+                DocumentsOperationContext context;
+                using (_database.DocumentsStorage.ContextPool.AllocateOperationContext(out context))
+                {
+                    ChangeVectorEntry[] changeVector;
+                    using (context.OpenReadTransaction())
+                        changeVector = _database.DocumentsStorage.GetChangeVector(context);
+
+                    using (var blittableJsonArray = changeVector.ToBlittableJsonArray(context))
+                    using (var heartbeatMessage = context.ReadObject(new DynamicJsonValue
+                    {
+                        ["Heartbeat"] = true,
+                        ["ChangeVector"] = blittableJsonArray
+                    }, $"heartbeat msg {FromToString}"))
+                    {
+                        writer.WriteObjectOrdered(heartbeatMessage);
+                        writer.Flush();
+                    }
+                }
             }
             catch (Exception e)
             {
@@ -245,7 +262,12 @@ namespace Raven.Server.Documents.Replication
                 var replicationBatchReply = JsonDeserialization.ReplicationBatchReply(replicationBatchReplyMessage);
 
                 if (replicationBatchReply.Type == ReplicationBatchReply.ReplyType.Ok)
+                {
+                    //interlocked not required here -> precaution
+                    Interlocked.Add(ref _sentDocumentsCount, docsArray.Length);
+
                     OnDocumentsSent();
+                }
 
                 if (_log.IsInfoEnabled)
                 {

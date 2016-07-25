@@ -6,6 +6,13 @@ namespace Raven.Server.Config.Categories
 {
     public class ReplicationConfiguration : ConfigurationCategory
     {
+        [Description("Latency of replication heartbeat messages sent to remote nodes.")]
+        [DefaultValue(15)]
+        [TimeUnit(TimeUnit.Seconds)]
+        [ConfigurationEntry("Raven/Replication/HeartbeatLatency")]
+        public TimeSetting HeartbeatLatency { get; set; }
+
+
         [Description("Threshold under which an incoming replication connection is considered active. If an incoming connection receives messages within this time-span, new connection coming from the same source would be rejected (as the existing connection is considered active)")]
         [DefaultValue(30)]
         [TimeUnit(TimeUnit.Seconds)]

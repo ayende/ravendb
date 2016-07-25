@@ -668,14 +668,17 @@ namespace Raven.Server.Documents
             }
             table.Delete(doc.StorageId);
 
-            context.Transaction.AddAfterCommitNotification(new DocumentChangeNotification
+            if (!IncomingReplicationScope.IsActive)
             {
-                Type = DocumentChangeTypes.Delete,
-                Etag = expectedEtag,
-                Key = key,
-                CollectionName = originalCollectionName,
-                IsSystemDocument = isSystemDocument,
-            });
+                context.Transaction.AddAfterCommitNotification(new DocumentChangeNotification
+                {
+                    Type = DocumentChangeTypes.Delete,
+                    Etag = expectedEtag,
+                    Key = key,
+                    CollectionName = originalCollectionName,
+                    IsSystemDocument = isSystemDocument,
+                });
+            }
 
             return true;
         }
@@ -784,14 +787,17 @@ namespace Raven.Server.Documents
                 _documentDatabase.BundleLoader.ExpiredDocumentsCleaner?.Put(context, Slice.External(context.Allocator, lowerKey, (ushort)lowerSize), document);
             }
 
-            context.Transaction.AddAfterCommitNotification(new DocumentChangeNotification
+            if (!IncomingReplicationScope.IsActive)
             {
-                Etag = newEtag,
-                CollectionName = originalCollectionName,
-                Key = key,
-                Type = DocumentChangeTypes.Put,
-                IsSystemDocument = isSystemDocument,
-            });
+                context.Transaction.AddAfterCommitNotification(new DocumentChangeNotification
+                {
+                    Etag = newEtag,
+                    CollectionName = originalCollectionName,
+                    Key = key,
+                    Type = DocumentChangeTypes.Put,
+                    IsSystemDocument = isSystemDocument,
+                });
+            }
 
             return new PutResult
             {

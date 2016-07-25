@@ -300,11 +300,42 @@ namespace Sparrow.Json
             return ReadObjectInternal(builder, documentId, mode);
         }
 
+        public BlittableJsonReaderArray ReadArray(DynamicJsonArray builder, string documentId,
+    BlittableJsonDocumentBuilder.UsageMode mode = BlittableJsonDocumentBuilder.UsageMode.None)
+        {
+            return ReadArrayInternal(builder, documentId, mode);
+        }
+
         public BlittableJsonReaderObject ReadObject(BlittableJsonReaderObject obj, string documentId,
          BlittableJsonDocumentBuilder.UsageMode mode = BlittableJsonDocumentBuilder.UsageMode.None)
         {
             return ReadObjectInternal(obj, documentId, mode);
         }
+
+        private BlittableJsonReaderArray ReadArrayInternal(object builder, string documentId, BlittableJsonDocumentBuilder.UsageMode mode)
+        {
+            var state = new JsonParserState();
+            using (var parser = new ObjectJsonParser(state, builder, this))
+            {
+                var writer = new BlittableJsonDocumentBuilder(this, mode, documentId, parser, state);
+                try
+                {
+                    CachedProperties.NewDocument();
+                    writer.ReadArray();
+                    if (writer.Read() == false)
+                        throw new InvalidOperationException("Partial content in object json parser shouldn't happen");
+                    writer.FinalizeDocument();
+                    _disposables.Add(writer);
+                    return writer.CreateArrayReader();
+                }
+                catch (Exception)
+                {
+                    writer.Dispose();
+                    throw;
+                }
+            }
+        }
+
 
         private BlittableJsonReaderObject ReadObjectInternal(object builder, string documentId, BlittableJsonDocumentBuilder.UsageMode mode)
         {

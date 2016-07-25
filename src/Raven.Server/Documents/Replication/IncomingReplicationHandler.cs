@@ -12,6 +12,7 @@ using Sparrow.Logging;
 using System.Linq;
 using Raven.Abstractions.Replication;
 using Raven.Client.Replication.Messages;
+using Raven.Server.Utils.Metrics;
 using Sparrow.Json.Parsing;
 
 namespace Raven.Server.Documents.Replication
@@ -28,8 +29,19 @@ namespace Raven.Server.Documents.Replication
         private readonly Logger _log;
         private readonly IDisposable _contextDisposable;
 
+        private long _lastReceivedEtag;
+
+        public long LastReceivedEtag => _lastReceivedEtag;
+
         public event Action<IncomingReplicationHandler, Exception> Failed;
         public event Action<IncomingReplicationHandler> DocumentsReceived;
+
+        private readonly MetricsScheduler _metricsScheduler = new MetricsScheduler();
+
+        //this probably will become one of the metrics counters, when it will become available 
+        public MeterMetric ReceivedDocumentsCount { get; private set; }
+        public MeterMetric DocumentSizeInBatch { get; private set; }
+        public MeterMetric LargestDocumentSizeInBatch { get; private set; }
 
         public IncomingReplicationHandler(JsonOperationContext.MultiDocumentParser multiDocumentParser, DocumentDatabase database, TcpClient tcpClient, NetworkStream stream, ReplicationLatestEtagRequest replicatedLastEtag)
         {
@@ -44,6 +56,9 @@ namespace Raven.Server.Documents.Replication
 
             _log = _database.LoggerSetup.GetLogger<IncomingReplicationHandler>(_database.Name);
             _cts = CancellationTokenSource.CreateLinkedTokenSource(_database.DatabaseShutdown);
+            ReceivedDocumentsCount = new MeterMetric(_metricsScheduler);
+            DocumentSizeInBatch = new MeterMetric(_metricsScheduler);
+            LargestDocumentSizeInBatch = new MeterMetric(_metricsScheduler);
         }
 
         public void Start()
@@ -56,7 +71,6 @@ namespace Raven.Server.Documents.Replication
             _incomingThread.Start();
             if (_log.IsInfoEnabled)
                 _log.Info($"Incoming replication thread started ({FromToString})");
-
         }
 
         //TODO : do not forget to add logging and code to record stats
@@ -78,6 +92,11 @@ namespace Raven.Server.Documents.Replication
                             bool _;
                             if (message.TryGet("Heartbeat", out _))
                             {
+                                BlittableJsonReaderArray changeVector;
+                                if (!message.TryGet("ChangeVector", out changeVector))
+                                    throw new InvalidDataException("Failed to get 'ChangeVector' from heartbeat message. This is not supposed to happen and it is likely a bug.");
+
+
                                 if (_log.IsInfoEnabled)
                                     _log.Info($"Incoming replication thread ({FromToString}) received heartbeat.");
                                 continue;
@@ -93,26 +112,29 @@ namespace Raven.Server.Documents.Replication
                             try
                             {
                                 //TODO : consider replacing this with pooled stopwatch objects -> reduce allocations								
+                                //note: because of the logic in OutgoingReplicationHandler, 
+                                // it is not possible to receive empty batch at this point								
                                 var sw = Stopwatch.StartNew();
                                 long lastReceivedEtag;
                                 using (_context.OpenWriteTransaction())
                                 {
                                     lastReceivedEtag = ReceiveDocuments(_context, replicatedDocs);
                                     _context.Transaction.Commit();
+
                                 }
                                 sw.Stop();
 
                                 if (_log.IsInfoEnabled)
                                     _log.Info($"Replication connection {FromToString}: received and written {replicatedDocs.Length} documents to database in {sw.ElapsedMilliseconds} ms, with last etag = {lastReceivedEtag}.");
 
+                                _lastReceivedEtag = lastReceivedEtag;
                                 //return positive ack
                                 _context.Write(writer, new DynamicJsonValue
                                 {
                                     ["Type"] = ReplicationBatchReply.ReplyType.Ok.ToString(),
                                     ["LastEtagAccepted"] = lastReceivedEtag,
                                     ["Error"] = null
-                                });
-
+                                });								
                                 OnDocumentsReceived(this);
                             }
                             catch (Exception e)
@@ -188,23 +210,37 @@ namespace Raven.Server.Documents.Replication
         {
             var dbChangeVector = _database.DocumentsStorage.GetDatabaseChangeVector(context);
             var maxReceivedChangeVectorByDatabase = new Dictionary<Guid, long>();
-            foreach (BlittableJsonReaderObject doc in docs)
-            {
-                var changeVector = doc.EnumerateChangeVector();
-                foreach (var currentEntry in changeVector)
-                {
-                    if (currentEntry.DbId != Guid.Empty) //should never happen, but..
-                        throw new InvalidOperationException("change vector database Id is Guid.Empty. This is not supposed to happen and it is likely a bug.");
 
-                    //note: documents in a replication batch are ordered in incremental etag order
-                    maxReceivedChangeVectorByDatabase[currentEntry.DbId] = currentEntry.Etag;
+            using (new IncomingReplicationScope())
+            {
+                double sum = 0;
+                foreach (BlittableJsonReaderObject doc in docs)
+                {
+                    var changeVector = doc.EnumerateChangeVector();
+                    foreach (var currentEntry in changeVector)
+                    {
+                        if (currentEntry.DbId != Guid.Empty) //should never happen, but..
+                            throw new InvalidOperationException(
+                                "change vector database Id is Guid.Empty. This is not supposed to happen and it is likely a bug.");
+
+                        //note: documents in a replication batch are ordered in incremental etag order
+                        maxReceivedChangeVectorByDatabase[currentEntry.DbId] = currentEntry.Etag;
+                    }
+
+                    //since blittable deals with offsets, if we want to deserialize embedded object properly,
+                    //we need to create a new document with proper offsets (that would actually point to embedded object data)
+                    using (
+                        var detachedDoc = context.ReadObject(doc, "IncomingDocumentReplication -> Detach object from parent array"))
+                        WriteReceivedDocument(context, detachedDoc);
+
+                    sum += doc.Size;
+                    if(doc.Size > LargestDocumentSizeInBatch.MeanRate)
+                        LargestDocumentSizeInBatch.Mark(doc.Size);
                 }
 
-                //since blittable deals with offsets, if we want to deserialize embedded object properly,
-                //we need to create a new document with proper offsets (that would actually point to embedded object data)
-                using (var detachedDoc = context.ReadObject(doc, "IncomingDocumentReplication -> Detach object from parent array"))
-                    WriteReceivedDocument(context, detachedDoc);
             }
+
+            ReceivedDocumentsCount.Mark(docs.Length);
 
             //if any of [dbId -> etag] is larger than server pair, update it
             var changeVectorUpdated = dbChangeVector.UpdateLargerEtagIfRelevant(maxReceivedChangeVectorByDatabase);
@@ -227,7 +263,7 @@ namespace Raven.Server.Documents.Replication
 
             // we need to split this document to an independent blittable document
             // and this time, we'll prepare it for disk.
-            doc.PrepareForStorage();
+            doc.PrepareForStorage();			
             _database.DocumentsStorage.Put(context, id, null, doc);
         }
 

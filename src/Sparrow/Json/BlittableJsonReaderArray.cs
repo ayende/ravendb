@@ -6,7 +6,7 @@ using Sparrow.Json.Parsing;
 
 namespace Sparrow.Json
 {
-    public unsafe class BlittableJsonReaderArray : BlittableJsonReaderBase, IEnumerable<object>
+    public unsafe class BlittableJsonReaderArray : BlittableJsonReaderBase, IEnumerable<object>, IDisposable
     {
         private readonly int _count;
         private readonly byte* _metadataPtr;
@@ -110,6 +110,12 @@ namespace Sparrow.Json
         IEnumerator IEnumerable.GetEnumerator()
         {
             return GetEnumerator();
+        }
+
+        public void Dispose()
+        {
+            foreach(BlittableJsonReaderObject obj in this)
+                obj.Dispose();
         }
     }
 }

@@ -126,7 +126,8 @@ namespace Raven.Server.Config
         {
             Encryption.UseSsl = serverConfiguration.Encryption.UseSsl;
             Encryption.UseFips = serverConfiguration.Encryption.UseFips;
-
+            Replication.ActiveConnectionTimeout = serverConfiguration.Replication.ActiveConnectionTimeout;
+            Replication.HeartbeatLatency = serverConfiguration.Replication.HeartbeatLatency;
             Storage.AllowOn32Bits = serverConfiguration.Storage.AllowOn32Bits;
         }
 
