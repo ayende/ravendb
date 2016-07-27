@@ -144,7 +144,6 @@ namespace Raven.Client.Connection.Request
             {
 #pragma warning disable 4014
                 // If withClusterFailover set to true we will need to force the update and choose another leader.
-                Console.WriteLine(serverClient.convention.FailoverBehavior);
                 UpdateReplicationInformationIfNeededAsync(serverClient, force:withClusterFailoverHeader); // maybe start refresh task
 #pragma warning restore 4014
                 switch (serverClient.convention.FailoverBehavior)
@@ -171,7 +170,6 @@ namespace Raven.Client.Connection.Request
                 case FailoverBehavior.ReadFromAllWriteToLeaderWithFailovers:
                     if (node == null)
                     {
-                        Console.WriteLine($"{serverClient.convention.FailoverBehavior} readfrom all");
                         return await HandleWithFailovers(operation, token,withClusterFailoverHeader).ConfigureAwait(false);
                         
                     }
