@@ -83,24 +83,33 @@ namespace Raven.Database.Indexing
             }
 
             var onlyIterateOverEnumableOnce = new List<object>();
-            try
-            {
-                while (input.MoveNext())
-                {
-                    onlyIterateOverEnumableOnce.Add(input.Current);
-                }
-            }
-            catch (Exception e)
-            {
-                OnError(e, null);
-                yield break;
-            }
+            var isEndOfStream = false;
 
-            foreach (var func in funcs)
+            while (isEndOfStream == false)
             {
-                foreach (var item in RobustEnumeration(onlyIterateOverEnumableOnce.GetEnumerator(), func))
+                onlyIterateOverEnumableOnce.Clear();
+                try
                 {
-                    yield return item;
+                    isEndOfStream = true;
+                    while (input.MoveNext())
+                    {
+                        onlyIterateOverEnumableOnce.Add(input.Current);
+                        isEndOfStream = false;
+                    }
+                }
+                catch (Exception e)
+                {
+                    OnError(e, null);
+                    yield break;
+                }
+                if (isEndOfStream)
+                    yield break;
+                foreach (var func in funcs)
+                {
+                    foreach (var item in RobustEnumeration(onlyIterateOverEnumableOnce.GetEnumerator(), func))
+                    {
+                        yield return item;
+                    }
                 }
             }
         }
