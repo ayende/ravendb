@@ -248,7 +248,6 @@ namespace Raven.Database.Config
 
             Voron.AllowIncrementalBackups = new BooleanSetting(settings[Constants.Voron.AllowIncrementalBackups], false);
             Voron.AllowOn32Bits = new BooleanSetting(settings[Constants.Voron.AllowOn32Bits], false);
-            Voron.SkipConsistencyChecks = new BooleanSetting(settings[Constants.Voron.SkipConsistencyChecks], false);
             Voron.TempPath = new StringSetting(settings[Constants.Voron.TempPath], (string)null);
 
             var txJournalPath = settings[Constants.RavenTxJournalPath];
@@ -307,6 +306,7 @@ namespace Raven.Database.Config
             Cluster.MaxLogLengthBeforeCompaction = new IntegerSetting(settings["Raven/Cluster/MaxLogLengthBeforeCompaction"], RaftEngineOptions.DefaultMaxLogLengthBeforeCompaction);
             Cluster.MaxEntriesPerRequest = new IntegerSetting(settings["Raven/Cluster/MaxEntriesPerRequest"], RaftEngineOptions.DefaultMaxEntiresPerRequest);
             Cluster.MaxStepDownDrainTime = new TimeSpanSetting(settings["Raven/Cluster/MaxStepDownDrainTime"], RaftEngineOptions.DefaultMaxStepDownDrainTime, TimeSpanArgumentType.FromParse);
+            Cluster.MaxReplicationLatency = new TimeSpanSetting(settings["Raven/Cluster/MaxReplicationLatency"],TimeSpan.FromMinutes(2), TimeSpanArgumentType.FromParse);
 
             DefaultStorageTypeName = new StringSetting(settings["Raven/StorageTypeName"] ?? settings["Raven/StorageEngine"], string.Empty);
 
@@ -533,8 +533,6 @@ namespace Raven.Database.Config
 
             public BooleanSetting AllowOn32Bits { get; set; }
 
-            public BooleanSetting SkipConsistencyChecks { get; set; }
-
         }
 
         public class EsentConfiguration
@@ -576,6 +574,7 @@ namespace Raven.Database.Config
             public IntegerSetting MaxLogLengthBeforeCompaction { get; set; }
             public TimeSpanSetting MaxStepDownDrainTime { get; set; }
             public IntegerSetting MaxEntriesPerRequest { get; set; }
+            public TimeSpanSetting MaxReplicationLatency { get; set; }
         }
 
         public class PrefetcherConfiguration

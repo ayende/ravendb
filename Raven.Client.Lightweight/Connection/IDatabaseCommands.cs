@@ -62,7 +62,8 @@ namespace Raven.Client.Connection
         ///     to share same transaction
         /// </summary>
         /// <param name="commandDatas">Commands to process</param>
-        BatchResult[] Batch(IEnumerable<ICommandData> commandDatas);
+        /// <param name="writeAssurance">Configuration string for server side write assurance</param>
+        BatchResult[] Batch(IEnumerable<ICommandData> commandDatas, string writeAssurance = null);
 
 #if !DNXCORE50
         /// <summary>
@@ -123,7 +124,7 @@ namespace Raven.Client.Connection
         ///     Create a new instance of <see cref="IDatabaseCommands" /> that will interact
         ///     with the specified database
         /// </summary>
-        IDatabaseCommands ForDatabase(string database, ClusterBehavior? clusterBehavior = null);
+        IDatabaseCommands ForDatabase(string database);
 
         /// <summary>
         ///     Create a new instance of <see cref="IDatabaseCommands" /> that will interact
@@ -510,14 +511,6 @@ namespace Raven.Client.Connection
         /// <param name="indexDef">definition of an index</param>
         /// <param name="overwrite">if set to <c>true</c> [overwrite].</param>
         string PutIndex(string name, IndexDefinition indexDef, bool overwrite);
-
-        /// <summary>
-        ///     Creates an index with the specified name, based on an index definition
-        /// </summary>
-        /// <param name="name">name of an index</param>
-        /// <param name="indexDef">definition of an index</param>
-        /// <param name="precomputeBatchOperation">Operation of first time index population.</param>
-        string PutIndex(string name, IndexDefinition indexDef, out Operation precomputeBatchOperation);
 
         /// <summary>
         ///     Creates an index with the specified name, based on an index definition that is created by the supplied
