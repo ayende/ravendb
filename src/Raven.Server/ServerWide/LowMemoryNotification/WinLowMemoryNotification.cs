@@ -3,12 +3,13 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Raven.Abstractions.Logging;
+using Sparrow.Logging;
 
 namespace Raven.Server.ServerWide.LowMemoryNotification
 {
     public class WinLowMemoryNotification : AbstractLowMemoryNotification
     {
-        private static readonly ILog Log = LogManager.GetLogger(typeof(WinLowMemoryNotification));
+        private static readonly Logger _logger = _loggerSetup.GetLogger<WinLowMemoryNotification>("WinLowMemoryNotification");
 
         private const int LowMemoryResourceNotification = 0;
 
@@ -49,7 +50,8 @@ namespace Raven.Server.ServerWide.LowMemoryNotification
 
             if (lowMemoryNotificationHandle == null)
             {
-                Log.Error("lowMemoryNotificationHandle is null. might be because of permissions issue.");
+                if (_logger.IsOperationsEnabled)
+                    _logger.Operations("lowMemoryNotificationHandle is null. might be because of permissions issue.");
                 throw new Win32Exception();
             }
 
@@ -64,25 +66,29 @@ namespace Raven.Server.ServerWide.LowMemoryNotification
                     switch (waitForResult)
                     {
                         case 0: // lowMemoryNotificationHandle
-                            Log.Warn("Low memory detected, will try to reduce memory usage...");
+                            if (_logger.IsInfoEnabled)
+                                _logger.Info("Low memory detected, will try to reduce memory usage...");
                             RunLowMemoryHandlers();
                             break;
                         case 1:
                             // app domain unload
                             return;
                         case 2: // LowMemorySimulationEvent
-                            Log.Warn("Low memory simulation, will try to reduce memory usage...");
+                            if (_logger.IsInfoEnabled)
+                                _logger.Info("Low memory simulation, will try to reduce memory usage...");
                             RunLowMemoryHandlers();
                             break;
                         case 3: // SoftMemoryReleaseEvent
-                            Log.Warn("Releasing memory before Garbage Collection operation");
+                            if (_logger.IsInfoEnabled)
+                                _logger.Info("Releasing memory before Garbage Collection operation");
                             RunLowMemoryHandlers();
                             break;
                         case WAIT_TIMEOUT:
                             ClearInactiveHandlers();
                             break;
                         case WAIT_FAILED:
-                            Log.Warn("Failure when trying to wait for low memory notification. No low memory notifications will be raised.");
+                            if (_logger.IsInfoEnabled)
+                                _logger.Info("Failure when trying to wait for low memory notification. No low memory notifications will be raised.");
                             break;
                     }
 
