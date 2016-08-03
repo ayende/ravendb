@@ -3,13 +3,14 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Raven.Abstractions.Logging;
+using Raven.Server.Config;
 using Sparrow.Logging;
 
 namespace Raven.Server.ServerWide.LowMemoryNotification
 {
     public class WinLowMemoryNotification : AbstractLowMemoryNotification
     {
-        private static readonly Logger _logger = _loggerSetup.GetLogger<WinLowMemoryNotification>("WinLowMemoryNotification");
+        private static Logger _logger;
 
         private const int LowMemoryResourceNotification = 0;
 
@@ -38,8 +39,9 @@ namespace Raven.Server.ServerWide.LowMemoryNotification
         private readonly IntPtr lowMemoryNotificationHandle;
         private readonly IntPtr softMemoryReleaseEvent;
 
-        public WinLowMemoryNotification(CancellationToken shutdownNotification)
+        public WinLowMemoryNotification(CancellationToken shutdownNotification, RavenConfiguration configuration)
         {
+            _logger = configuration.LoggerSetup.GetLogger<WinLowMemoryNotification>(configuration.DatabaseName);
             lowMemorySimulationEvent = CreateEvent(IntPtr.Zero, false, false, null);
             lowMemoryNotificationHandle = CreateMemoryResourceNotification(LowMemoryResourceNotification); // the handle will be closed by the system if the process terminates
 

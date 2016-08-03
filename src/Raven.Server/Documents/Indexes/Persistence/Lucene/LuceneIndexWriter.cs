@@ -20,7 +20,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
     {
         private static Logger _logger;
 
-        private static LoggerSetup _loggerSetup;
+        private static DocumentDatabase _documentDatabase;
 
         private IndexWriter indexWriter;
 
@@ -39,15 +39,15 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
         public Analyzer Analyzer => indexWriter?.Analyzer;
 
         public LuceneIndexWriter(Directory d, Analyzer a, IndexDeletionPolicy deletionPolicy, 
-            IndexWriter.MaxFieldLength mfl, IndexWriter.IndexReaderWarmer indexReaderWarmer, LoggerSetup loggerSetup)
+            IndexWriter.MaxFieldLength mfl, IndexWriter.IndexReaderWarmer indexReaderWarmer, DocumentDatabase documentDatabase)
         {
             directory = d;
             analyzer = a;
             indexDeletionPolicy = deletionPolicy;
             maxFieldLength = mfl;
             _indexReaderWarmer = indexReaderWarmer;
-            _loggerSetup = loggerSetup;
-            _logger = loggerSetup.GetLogger<LuceneIndexWriter>(typeof(Field.Index).FullName + ".Indexing");
+            _documentDatabase = documentDatabase;
+            _logger = _documentDatabase.LoggerSetup.GetLogger<LuceneIndexWriter>(documentDatabase.Name);
             RecreateIndexWriter();
         }
 
@@ -164,7 +164,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
             {
                 indexWriter.MergedSegmentWarmer = _indexReaderWarmer;
             }
-            return new LuceneIndexWriter(ramDirectory, analyzer, indexDeletionPolicy, maxFieldLength, _indexReaderWarmer, _loggerSetup);
+            return new LuceneIndexWriter(ramDirectory, analyzer, indexDeletionPolicy, maxFieldLength, _indexReaderWarmer, _documentDatabase);
         }
 
         public void AddIndexesNoOptimize(Directory[] directories, int count)

@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Runtime.InteropServices;
 using Raven.Abstractions.Logging;
+using Raven.Server.Config;
 using Raven.Server.Config.Settings;
 using Voron;
 using Voron.Platform.Posix;
@@ -53,8 +54,9 @@ namespace Raven.Server.ServerWide.LowMemoryNotification
             }
         }
 
-        public static unsafe MemoryInfoResult GetMemoryInfo(LoggerSetup loggerSetup)
+        public static unsafe MemoryInfoResult GetMemoryInfo(RavenConfiguration configuration)
         {
+            _logger = configuration.LoggerSetup.GetLogger<MemoryInfoResult>(configuration.DatabaseName);
             if (failedToGetAvailablePhysicalMemory)
             {
                 if (_logger.IsInfoEnabled)

@@ -16,12 +16,13 @@ namespace Raven.Server.ServerWide.LowMemoryNotification
     {
         private readonly CancellationToken _shutdownNotification;
         private readonly RavenConfiguration _configuration;
-        private static readonly Logger _logger = _loggerSetup.GetLogger<PosixLowMemoryNotification>("PosixLowMemoryNotification");
+        private static Logger _logger;
 
         public PosixLowMemoryNotification(CancellationToken shutdownNotification, RavenConfiguration configuration)
         {
             _shutdownNotification = shutdownNotification;
             _configuration = configuration;
+            _logger = configuration.LoggerSetup.GetLogger<PosixLowMemoryNotification>(configuration.DatabaseName);
             new Thread(Poll)
             {
                 IsBackground = true,
@@ -46,7 +47,7 @@ namespace Raven.Server.ServerWide.LowMemoryNotification
                     continue;
                 }
 
-                var availableMem = MemoryInformation.GetMemoryInfo(_loggerSetup).AvailableMemory;
+                var availableMem = MemoryInformation.GetMemoryInfo(_configuration).AvailableMemory;
                 if (availableMem < _configuration.Memory.LowMemoryForLinuxDetection)
                 {
                     clearInactiveHandlersCounter = 0;

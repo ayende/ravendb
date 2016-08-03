@@ -81,7 +81,7 @@ namespace Raven.Server.Config
             LoggerSetup = new LoggerSetup(DebugLog.Path, DebugLog.LogMode, DebugLog.RetentionTime.AsTimeSpan);
             BulkInsert = new BulkInsertConfiguration();
             Server = new ServerConfiguration();
-            Memory = new MemoryConfiguration(LoggerSetup);
+            Memory = new MemoryConfiguration(this);
             Expiration = new ExpirationBundleConfiguration();
             Studio = new StudioConfiguration();
             Databases = new DatabaseConfiguration();

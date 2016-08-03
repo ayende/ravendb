@@ -52,7 +52,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
         public IndexReadOperation(string indexName, IndexType indexType,
             int maxIndexOutputsPerDocument, int? actualMaxIndexOutputsPerDocument,
             Dictionary<string, IndexField> fields, LuceneVoronDirectory directory,
-            IndexSearcherHolder searcherHolder, Transaction readTransaction, LoggerSetup loggerSetup)
+            IndexSearcherHolder searcherHolder, Transaction readTransaction, DocumentDatabase documentDatabase)
         {
             _analyzer = CreateAnalyzer(() => new LowerCaseKeywordAnalyzer(), fields, forQuerying: true);
             _indexName = indexName;
@@ -60,8 +60,8 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
             _actualMaxIndexOutputsPerDocument = actualMaxIndexOutputsPerDocument;
             _maxIndexOutputsPerDocument = maxIndexOutputsPerDocument;
             _releaseReadTransaction = directory.SetTransaction(readTransaction);
-            _releaseSearcher = searcherHolder.GetSearcher(out _searcher, loggerSetup);
-            _logger = loggerSetup.GetLogger<IndexReadOperation>("IndexReadOperation");
+            _releaseSearcher = searcherHolder.GetSearcher(out _searcher, documentDatabase);
+            _logger = documentDatabase.LoggerSetup.GetLogger<IndexReadOperation>(documentDatabase.Name);
         }
 
         public int EntriesCount()

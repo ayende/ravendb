@@ -8,9 +8,9 @@ namespace Raven.Server.Config.Categories
 {
     public class MemoryConfiguration : ConfigurationCategory
     {
-        public MemoryConfiguration(LoggerSetup loggerSetup)
+        public MemoryConfiguration(RavenConfiguration configuration)
         {
-            var memoryInfo = MemoryInformation.GetMemoryInfo(loggerSetup);
+            var memoryInfo = MemoryInformation.GetMemoryInfo(configuration);
 
             // we allow 1 GB by default, or up to 75% of available memory on startup, if less than that is available
             LimitForProcessing = Size.Min(new Size(1024, SizeUnit.Megabytes), memoryInfo.AvailableMemory * 0.75);

@@ -35,11 +35,11 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
 
         public IndexWriteOperation(string name, Dictionary<string, IndexField> fields, 
             LuceneVoronDirectory directory, LuceneDocumentConverterBase converter, 
-            Transaction writeTransaction, LuceneIndexPersistence persistence, LoggerSetup loggerSetup)
+            Transaction writeTransaction, LuceneIndexPersistence persistence, DocumentDatabase documentDatabase)
         {
             _name = name;
             _converter = converter;
-            _logger = loggerSetup.GetLogger<IndexWriteOperation>("IndexWriteOperation");
+            _logger = documentDatabase.LoggerSetup.GetLogger<IndexWriteOperation>(documentDatabase.Name);
             try
             {
                 _analyzer = CreateAnalyzer(() => new LowerCaseKeywordAnalyzer(), fields);
