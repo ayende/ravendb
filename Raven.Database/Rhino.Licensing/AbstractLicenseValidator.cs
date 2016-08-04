@@ -52,7 +52,7 @@ namespace Rhino.Licensing
         private bool disableFutureChecks;
         private bool currentlyValidatingLicense;
         private readonly DiscoveryHost discoveryHost;
-        private DiscoveryClient discoveryClient;
+        private volatile DiscoveryClient discoveryClient;
         private readonly Guid senderId = Guid.NewGuid();
         private readonly SntpClient sntpClient;
 
