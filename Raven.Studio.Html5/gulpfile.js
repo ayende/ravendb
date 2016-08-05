@@ -6,14 +6,48 @@ var gulp = require("gulp"),
     concatCss = require('gulp-concat-css'),
     htmlmin = require("gulp-htmlmin"),
     uglify = require("gulp-uglify"),
-    merge = require("merge-stream"),
     processhtml = require('gulp-processhtml'),
-    del = require("del"),
-    bundleconfig = require("./bundleconfig.json");
+    del = require("del");
 
 
 var PATHS = {
-    outputDir: "../artifacts"
+    outputDir: "../artifacts",
+    cssSource: ["Content/bootstrap.css",
+      "Content/bootstrap-datetimepicker.css",
+      "Content/bootstrap-select.css",
+      "Content/bootstrap-multiselect.css",
+      "Content/font-awesome.css",
+      "Content/durandal.css",
+      "Content/nprogress.css",
+      "Content/jquery-ui-1.10.4.custom.min.css",
+      "Content/jquery.dynatree/skin/ui.dynatree.css",
+      "Content/jquery.dynatree/custom-skin/custom.css",
+      "Content/nv.d3.css",
+      "Content/app.css",
+      "Content/awesome-bootstrap-checkbox.css",
+      "Content/animate.min.css"],
+    jsSource: [
+       "Scripts/jquery-2.1.3.js",
+      "Scripts/jquery.blockUI.js",
+      "Scripts/nprogress.js",
+      "Scripts/knockout-3.2.0.js",
+      "Scripts/knockout.dirtyFlag.js",
+      "Scripts/knockout.mapping-2.4.1.js",
+      "Scripts/knockout-delegatedEvents.min.js",
+      "Scripts/knockout-postbox.min.js",
+      "Scripts/moment.min.js",
+      "Scripts/bootstrap.min.js",
+      "Scripts/bootstrap-datetimepicker.min.js",
+      "Scripts/bootstrap-contextmenu-2.1.js",
+      "Scripts/bootstrap-multiselect.js",
+      "Scripts/bootstrap-select.min.js",
+      "Scripts/jquery-ui-1.10.4.custom.min.js",
+      "Scripts/jquery.dynatree.js",
+      "Scripts/jwerty-0.3.js",
+      "Scripts/jquery.fullscreen.js",
+      "Scripts/spin.min.js",
+      "App/models/dto.js"
+    ]
 }
 
 gulp.task("build-Debug", [/* Do nothing */]);
@@ -47,8 +81,8 @@ gulp.task('release-copy-optimized-build', function () {
 });
 
 gulp.task('release-copy-images', function () {
-    return gulp.src('Content/images/*')
-       .pipe(gulp.dest(PATHS.outputDir + "/Html5/Content/images/"));
+    return gulp.src(['Content/**/*.gif', 'Content/**/*.jpg', 'Content/**/*.png'])
+       .pipe(gulp.dest(PATHS.outputDir + "/Html5/Content/"));
 });
 
 gulp.task('release-copy-fonts', function () {
@@ -70,31 +104,19 @@ gulp.task("min:app-js", function () {
 });
 
 gulp.task("min:ext-js", function () {
-    var tasks = getBundles(".js").map(function (bundle) {
-        return gulp.src(bundle.inputFiles, { base: "." })
-            .pipe(concat(bundle.outputFileName))
-            .pipe(uglify())
-            .pipe(gulp.dest("."));
-    });
-    return merge(tasks);
+    return gulp.src(PATHS.jsSource, { base: "." })
+           .pipe(concat('../artifacts/Html5/App/libs.min.js'))
+           .pipe(uglify())
+           .pipe(gulp.dest("."));
 });
 
 gulp.task("min:css", function () {
-    var tasks = getBundles(".css").map(function (bundle) {
-        return gulp.src(bundle.inputFiles, { base: "." })
-            .pipe(concatCss(bundle.outputFileName, { rebaseUrls: false }))
-            .pipe(cssnano())
-            .pipe(gulp.dest("."));
-    });
-    return merge(tasks);
+    return gulp.src(PATHS.cssSource, { base: "Content" })
+           .pipe(concatCss("styles.min.css", { rebaseUrls: true }))
+           .pipe(cssnano())
+           .pipe(gulp.dest("../artifacts/Html5/Content/"));
 });
 
 gulp.task("clean", function () {
     del.sync([PATHS.outputDir + "/Html5/", PATHS.outputDir + "/Raven.Studio.Html5.zip"], { force: true });
 });
-
-function getBundles(extension) {
-    return bundleconfig.filter(function (bundle) {
-        return new RegExp(extension).test(bundle.outputFileName);
-    });
-}
