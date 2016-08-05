@@ -6,7 +6,6 @@ var gulp = require("gulp"),
     concatCss = require('gulp-concat-css'),
     htmlmin = require("gulp-htmlmin"),
     uglify = require("gulp-uglify"),
-    runSequence = require('run-sequence'),
     merge = require("merge-stream"),
     processhtml = require('gulp-processhtml'),
     del = require("del"),
@@ -21,12 +20,7 @@ gulp.task("build-Debug", [/* Do nothing */]);
 gulp.task("build-Release", ["release"]);
 gulp.task("build-Profiling", [/* Do nothing */]);
 
-gulp.task('release', function (cb) {
-    return runSequence(
-        'clean',
-        ['min', 'release-process-index', 'release-copy-favicon', 'release-copy-optimized-build', 'release-copy-images', 'release-copy-fonts', 'release-copy-ext-libs'],
-        cb)
-});
+gulp.task('release', ['min', 'release-process-index', 'release-copy-favicon', 'release-copy-optimized-build', 'release-copy-images', 'release-copy-fonts', 'release-copy-ext-libs']);
 
 gulp.task("min", ["min:ext-js", "min:app-js", "min:css"]);
 
@@ -38,6 +32,7 @@ gulp.task('release-copy-ext-libs', function () {
         "Scripts/text.js",
         "Scripts/require.js",
         "Scripts/jszip/**/*.*"], { base: 'Scripts/' })
+        .pipe(uglify())
         .pipe(gulp.dest(PATHS.outputDir + "/Html5/Scripts/"))
 });
 
