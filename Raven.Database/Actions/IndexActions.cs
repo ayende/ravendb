@@ -769,7 +769,7 @@ namespace Raven.Database.Actions
                 }
             });
 
-            if (result != null && result.Documents != null && result.Documents.Count >= 0)
+            if (result != null && result.Documents != null)
             {
                 using (var linked = CancellationTokenSource.CreateLinkedTokenSource(cts.Token, WorkContext.CancellationToken))
                 {
