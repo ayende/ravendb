@@ -1,6 +1,6 @@
 [
   {
-    "outputFileName": "Content/styles.min.css",
+    "outputFileName": "../artifacts/Html5/Content/styles.min.css",
     "inputFiles": [
       "Content/bootstrap.css",
       "Content/bootstrap-datetimepicker.css",
@@ -19,7 +19,7 @@
     ]
   },
   {
-    "outputFileName": "Scripts/libs.min.js",
+    "outputFileName": "../artifacts/Html5/App/libs.min.js",
     "inputFiles": [
       "Scripts/jquery-2.1.3.js",
       "Scripts/jquery.blockUI.js",
