@@ -1,5 +1,6 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="12.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\packages\MSBuild.Npm.0.5.1\build\MSBuild.Npm.props" Condition="Exists('..\packages\MSBuild.Npm.0.5.1\build\MSBuild.Npm.props')" />
   <Import Project="..\packages\MSBuild.Gulp.0.5.1\build\MSBuild.Gulp.props" Condition="Exists('..\packages\MSBuild.Gulp.0.5.1\build\MSBuild.Gulp.props')" />
   <Import Project="..\packages\MSBuild.Node.0.5.1\build\MSBuild.Node.props" Condition="Exists('..\packages\MSBuild.Node.0.5.1\build\MSBuild.Node.props')" />
   <PropertyGroup>
@@ -488,9 +489,6 @@
     <Content Include="fonts\fontawesome-webfont.woff" />
     <Content Include="fonts\FontAwesome.otf" />
     <Content Include="fonts\glyphicons-halflings-regular.svg" />
-    <Content Include="bundleconfig.json.bindings">
-      <DependentUpon>bundleconfig.json</DependentUpon>
-    </Content>
     <Content Include="gulpfile.js" />
     <Content Include="Scripts\ace\ace.js" />
     <Content Include="Scripts\ace\ext-language_tools.js" />
@@ -529,7 +527,6 @@
     <Content Include="Scripts\durandal\viewLocator.js" />
     <Content Include="Content\less\bootstrap-datetimepicker-build.less" />
     <Content Include="Content\less\_bootstrap-datetimepicker.less" />
-    <None Include="bundleconfig.json" />
     <None Include="compilerconfig.json" />
     <None Include="compilerconfig.json.defaults">
       <DependentUpon>compilerconfig.json</DependentUpon>
@@ -1207,7 +1204,10 @@
     <Error Condition="!Exists('..\packages\MSBuild.Node.0.5.1\build\MSBuild.Node.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\MSBuild.Node.0.5.1\build\MSBuild.Node.targets'))" />
     <Error Condition="!Exists('..\packages\MSBuild.Gulp.0.5.1\build\MSBuild.Gulp.props')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\MSBuild.Gulp.0.5.1\build\MSBuild.Gulp.props'))" />
     <Error Condition="!Exists('..\packages\MSBuild.Gulp.0.5.1\build\MSBuild.Gulp.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\MSBuild.Gulp.0.5.1\build\MSBuild.Gulp.targets'))" />
+    <Error Condition="!Exists('..\packages\MSBuild.Npm.0.5.1\build\MSBuild.Npm.props')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\MSBuild.Npm.0.5.1\build\MSBuild.Npm.props'))" />
+    <Error Condition="!Exists('..\packages\MSBuild.Npm.0.5.1\build\MSBuild.Npm.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\MSBuild.Npm.0.5.1\build\MSBuild.Npm.targets'))" />
   </Target>
   <Import Project="..\packages\MSBuild.Node.0.5.1\build\MSBuild.Node.targets" Condition="Exists('..\packages\MSBuild.Node.0.5.1\build\MSBuild.Node.targets')" />
   <Import Project="..\packages\MSBuild.Gulp.0.5.1\build\MSBuild.Gulp.targets" Condition="Exists('..\packages\MSBuild.Gulp.0.5.1\build\MSBuild.Gulp.targets')" />
+  <Import Project="..\packages\MSBuild.Npm.0.5.1\build\MSBuild.Npm.targets" Condition="Exists('..\packages\MSBuild.Npm.0.5.1\build\MSBuild.Npm.targets')" />
 </Project>
