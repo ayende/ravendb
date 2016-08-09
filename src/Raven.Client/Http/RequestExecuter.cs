@@ -53,8 +53,9 @@ namespace Raven.Client.Http
                 {
                     Database = _store.DefaultDatabase,
                     ApiKey = _store.ApiKey,
-                    Url = _store.Url
-                }
+                    Url = _store.Url,
+                },
+                Etag = int.MinValue
             };
 
             var handler = new HttpClientHandler();
