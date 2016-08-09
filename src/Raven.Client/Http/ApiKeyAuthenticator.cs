@@ -28,7 +28,8 @@ namespace Raven.Client.Http
             {
                 try
                 {
-                    Logger.Info($"Trying to connect using WebSocket to {uri} for authentication");
+                    if (Logger.IsInfoEnabled)
+                        Logger.Info($"Trying to connect using WebSocket to {uri} for authentication");
                     try
                     {
                         await webSocket.ConnectAsync(uri, _disposedToken.Token);
@@ -75,14 +76,16 @@ namespace Raven.Client.Http
                     }
                     catch (Exception ex)
                     {
-                        Logger.Info($"Failed to close the client", ex);
+                    if (Logger.IsInfoEnabled)
+                        Logger.Info("Failed to close the client", ex);
                     }
 
                     return currentToken;
                 }
                 catch (Exception ex)
                 {
-                    Logger.Operations($"Failed to DoOAuthRequest to {url} with {apiKey}", ex);
+                    if (Logger.IsInfoEnabled)
+                        Logger.Info($"Failed to DoOAuthRequest to {url} with {apiKey}", ex);
                     throw;
                 }
             }
@@ -90,7 +93,8 @@ namespace Raven.Client.Http
 
         private async Task Send(RavenClientWebSocket webSocket, JsonOperationContext context, string command, string commandParameter)
         {
-            Logger.Info($"Sending WebSocket Authentication Command {command} - {commandParameter}");
+            if (Logger.IsInfoEnabled)
+                Logger.Info($"Sending WebSocket Authentication Command {command} - {commandParameter}");
 
             var json = new DynamicJsonValue
             {
@@ -198,7 +202,8 @@ namespace Raven.Client.Http
             catch (WebSocketException ex)
             {
                 builder?.Dispose();
-                Logger.Info("Failed to receive a message, client was probably disconnected", ex);
+                if (Logger.IsInfoEnabled)
+                    Logger.Info("Failed to receive a message, client was probably disconnected", ex);
                 throw;
             }
         }
