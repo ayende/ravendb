@@ -106,6 +106,9 @@ namespace Raven.Client.Http
             url = $"{node.Url}/databases/{node.Database}/{url}";
             request.RequestUri = new Uri(url);
 
+            if (node.CurrentToken != null)
+                request.Headers.Add("Raven-Authorization", node.CurrentToken);
+
             long cachedEtag;
             BlittableJsonReaderObject cachedValue;
             HttpCache.ReleaseCacheItem cachedItem;
@@ -183,7 +186,7 @@ namespace Raven.Client.Http
                     if (++command.AuthenticationRetries > 1)
                         throw new UnauthorizedAccessException(
                             $"Got unauthorized response exception for {url} after trying to authenticate using ApiKey.");
-                    await HandleUnauthorized(response, node.Url, node.ApiKey, context).ConfigureAwait(false);
+                    await HandleUnauthorized(response, node, context).ConfigureAwait(false);
                     await ExecuteAsync(node, context, command).ConfigureAwait(false);
                     return true;
                 case HttpStatusCode.Forbidden:
@@ -311,7 +314,7 @@ namespace Raven.Client.Http
             return null;
         }
 
-        private async Task HandleUnauthorized(HttpResponseMessage response, string serverUrl, string apiKey, JsonOperationContext context)
+        private async Task HandleUnauthorized(HttpResponseMessage response, ServerNode node, JsonOperationContext context)
         {
             var oauthSource = response.Headers.GetFirstValue("OAuth-Source");
 
@@ -322,10 +325,10 @@ namespace Raven.Client.Http
 #endif
 
             if (string.IsNullOrEmpty(oauthSource))
-                oauthSource = serverUrl + "/OAuth/API-Key";
+                oauthSource = node.Url + "/OAuth/API-Key";
 
-            var currentToken = await _authenticator.AuthenticateAsync(oauthSource, apiKey, context).ConfigureAwait(false);
-            _httpClient.DefaultRequestHeaders.Add("Raven-Authorization", currentToken);
+            var currentToken = await _authenticator.AuthenticateAsync(oauthSource, node.ApiKey, context).ConfigureAwait(false);
+            node.CurrentToken = currentToken;
         }
 
         public void Dispose()
