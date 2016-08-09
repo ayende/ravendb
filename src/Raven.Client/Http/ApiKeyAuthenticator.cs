@@ -6,18 +6,18 @@ using System.Net.WebSockets;
 using System.Threading;
 using System.Threading.Tasks;
 using Raven.Abstractions.Connection;
-using Raven.Abstractions.Logging;
 using Raven.Client.Json;
 using Raven.Client.OAuth;
 using Raven.Client.Platform;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
+using Sparrow.Logging;
 
 namespace Raven.Client.Http
 {
     public class ApiKeyAuthenticator : IDisposable
     {
-        private static readonly ILog Logger = LogManager.GetLogger(typeof(ApiKeyAuthenticator));
+        private static readonly Logger Logger = LoggerSetup.Instance.GetLogger<ApiKeyAuthenticator>("Client");
         private readonly CancellationTokenSource _disposedToken = new CancellationTokenSource();
 
         public async Task<string> AuthenticateAsync(string url, string apiKey, JsonOperationContext context)
@@ -28,7 +28,7 @@ namespace Raven.Client.Http
             {
                 try
                 {
-                    Logger.Info("Trying to connect using WebSocket to {0} for authentication", uri);
+                    Logger.Info($"Trying to connect using WebSocket to {uri} for authentication");
                     try
                     {
                         await webSocket.ConnectAsync(uri, _disposedToken.Token);
@@ -75,15 +75,14 @@ namespace Raven.Client.Http
                     }
                     catch (Exception ex)
                     {
-                        //TODO: Log me!
-                        
+                        Logger.Info($"Failed to close the client", ex);
                     }
 
                     return currentToken;
                 }
                 catch (Exception ex)
                 {
-                    Logger.DebugException($"Failed to DoOAuthRequest to {url} with {apiKey}", ex);
+                    Logger.Operations($"Failed to DoOAuthRequest to {url} with {apiKey}", ex);
                     throw;
                 }
             }
@@ -176,8 +175,8 @@ namespace Raven.Client.Http
 
                         if (result.MessageType == WebSocketMessageType.Close)
                         {
-                            if (Logger.IsDebugEnabled)
-                                Logger.Debug("Client got close message from server and is closing connection");
+                            if (Logger.IsInfoEnabled)
+                                Logger.Info("Client got close message from server and is closing connection");
 
                             builder.Dispose();
                             // actual socket close from dispose
@@ -199,7 +198,7 @@ namespace Raven.Client.Http
             catch (WebSocketException ex)
             {
                 builder?.Dispose();
-                Logger.DebugException("Failed to receive a message, client was probably disconnected", ex);
+                Logger.Info("Failed to receive a message, client was probably disconnected", ex);
                 throw;
             }
         }
