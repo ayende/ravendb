@@ -17,6 +17,10 @@ using Raven.Imports.Newtonsoft.Json.Bson;
 using Raven.Imports.Newtonsoft.Json.Serialization;
 using Raven.Json.Linq;
 using System.Collections.Generic;
+using metrics;
+using metrics.Core;
+using Raven.Abstractions.Connection;
+using Raven.Database.Util;
 
 namespace Raven.Abstractions.Extensions
 {
@@ -25,6 +29,7 @@ namespace Raven.Abstractions.Extensions
     /// </summary>
     public static class JsonExtensions
     {
+        static JsonExtensions(){}
         public static RavenJObject ToJObject(object result)
         {
             var dynamicJsonObject = result as Linq.IDynamicJsonObject;
@@ -50,6 +55,62 @@ namespace Raven.Abstractions.Extensions
             using (var stream = new MemoryStream(self))
                 return ToJObject(stream);
         }
+        private static Metrics _dbMetrics;
+
+        public static MeterMetric JsonStreamDeserializationsPerSecond;
+        public static MeterMetric JsonStreamDeserializedBytesPerSecond;
+
+        public static MeterMetric JsonStreamSerializationsPerSecond;
+        public static MeterMetric JsonStreamSerializedBytesPerSecond;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void RegisterJsonStreamDeserializationMetrics(int size)
+        {
+            if (MetricsTicker.HasValue == false)
+                return;
+
+            if (_dbMetrics == null)
+            {
+                _dbMetrics = new Metrics();
+            }
+            if (JsonExtensions.JsonStreamDeserializationsPerSecond == null)
+            {
+                JsonExtensions.JsonStreamDeserializationsPerSecond = _dbMetrics.Meter("metrics", "deser/sec", "JsonStreamDeserializationsPerSecond Meter", TimeUnit.Seconds);
+                MetricsTicker.Instance.AddMeterMetric(JsonExtensions.JsonStreamDeserializationsPerSecond);
+            }
+            if (JsonStreamDeserializedBytesPerSecond == null)
+            {
+                JsonExtensions.JsonStreamDeserializedBytesPerSecond = _dbMetrics.Meter("metrics", "deserbytes/sec", "JsonStreamDeserializedBytesPerSecond Meter", TimeUnit.Seconds);
+                MetricsTicker.Instance.AddMeterMetric(JsonStreamDeserializedBytesPerSecond);
+            }
+            JsonExtensions.JsonStreamDeserializationsPerSecond.Mark();
+            JsonExtensions.JsonStreamDeserializedBytesPerSecond.Mark(size);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void RegisterJsonStreamSerializationMetrics(int size)
+        {
+            if (MetricsTicker.HasValue == false)
+                return;
+
+            if (_dbMetrics == null)
+            {
+                _dbMetrics = new Metrics();
+            }
+            if (JsonExtensions.JsonStreamSerializationsPerSecond == null)
+            {
+                JsonExtensions.JsonStreamSerializationsPerSecond = _dbMetrics.Meter("metrics", "ser/sec", "JsonStreamSerializationsPerSecond Meter", TimeUnit.Seconds);
+                MetricsTicker.Instance.AddMeterMetric(JsonExtensions.JsonStreamSerializationsPerSecond);
+            }
+            if (JsonExtensions.JsonStreamSerializedBytesPerSecond == null)
+            {
+                JsonExtensions.JsonStreamSerializedBytesPerSecond = _dbMetrics.Meter("metrics", "serbytes/sec", "JsonStreamSerializedBytesPerSecond Meter", TimeUnit.Seconds);
+                MetricsTicker.Instance.AddMeterMetric(JsonExtensions.JsonStreamSerializedBytesPerSecond);
+            }
+            JsonExtensions.JsonStreamSerializationsPerSecond.Mark();
+            JsonExtensions.JsonStreamSerializedBytesPerSecond.Mark(size);
+        }
+
 
         /// <summary>
         /// Convert a byte array to a RavenJObject
@@ -57,17 +118,25 @@ namespace Raven.Abstractions.Extensions
         public static RavenJObject ToJObject(this Stream self)
         {
             var streamWithCachedHeader = new StreamWithCachedHeader(self, 5);
-            if (IsJson(streamWithCachedHeader))
+            using (var counting = new CountingStream(streamWithCachedHeader))
             {
-                // note that we intentionally don't close it here
-                var jsonReader = new JsonTextReader(new StreamReader(streamWithCachedHeader));
-                return RavenJObject.Load(jsonReader);
-            }
+                
+                if (IsJson(streamWithCachedHeader))
+                {
+                    // note that we intentionally don't close it here
+                    var jsonReader = new JsonTextReader(new StreamReader(counting));
+                    var ravenJObject = RavenJObject.Load(jsonReader);
+                    RegisterJsonStreamDeserializationMetrics((int)counting.NumberOfReadBytes);
+                    return ravenJObject;
+                }
 
-            return RavenJObject.Load(new BsonReader(streamWithCachedHeader)
-            {
-                DateTimeKindHandling = DateTimeKind.Utc,
-            });
+                var deserializedObject = RavenJObject.Load(new BsonReader(counting)
+                {
+                    DateTimeKindHandling = DateTimeKind.Utc,
+                });
+                RegisterJsonStreamDeserializationMetrics((int)counting.NumberOfReadBytes);
+                return deserializedObject;
+            }
         }
 
         /// <summary>
@@ -75,14 +144,19 @@ namespace Raven.Abstractions.Extensions
         /// </summary>
         public static void WriteTo(this RavenJToken self, Stream stream)
         {
-            using (var streamWriter = new StreamWriter(stream, Encoding.UTF8, 1024, true))
-            using (var jsonWriter = new JsonTextWriter(streamWriter))
+            using (var counting = new CountingStream(stream))
             {
-                jsonWriter.Formatting = Formatting.None;
-                jsonWriter.DateFormatHandling = DateFormatHandling.IsoDateFormat;
-                jsonWriter.DateTimeZoneHandling = DateTimeZoneHandling.Utc;
-                jsonWriter.DateFormatString = Default.DateTimeFormatsToWrite;
-                self.WriteTo(jsonWriter, Default.Converters);
+                using (var streamWriter = new StreamWriter(counting, Encoding.UTF8, 1024, true))
+                using (var jsonWriter = new JsonTextWriter(streamWriter))
+                {
+                    jsonWriter.Formatting = Formatting.None;
+                    jsonWriter.DateFormatHandling = DateFormatHandling.IsoDateFormat;
+                    jsonWriter.DateTimeZoneHandling = DateTimeZoneHandling.Utc;
+                    jsonWriter.DateFormatString = Default.DateTimeFormatsToWrite;
+                    self.WriteTo(jsonWriter, Default.Converters);
+             
+                }
+                RegisterJsonStreamSerializationMetrics((int)counting.NumberOfWrittenBytes);
             }
         }
 

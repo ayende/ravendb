@@ -9,7 +9,27 @@ namespace Raven.Database.Util
 {
     public sealed class MetricsTicker: IDisposable
     {
-        public static readonly MetricsTicker Instance = new MetricsTicker();
+        private static MetricsTicker _instance;
+        private static int hasValue = 0;
+        public static bool HasValue
+        {
+            get { return hasValue != 0; }
+        }
+        public static MetricsTicker Instance
+        {
+            get
+            {
+                if (Interlocked.CompareExchange(ref hasValue, 1, 0) == 0)
+                {
+                    _instance = new MetricsTicker();
+                }
+                while (_instance == null)
+                {
+                }
+
+                return _instance;
+            }
+        }
 
         static MetricsTicker() {}
 
