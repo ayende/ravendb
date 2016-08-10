@@ -9,7 +9,7 @@ namespace Raven.Database.Util
 {
     public sealed class MetricsTicker: IDisposable
     {
-        public static readonly MetricsTicker Instance = new MetricsTicker();
+        public static MetricsTicker Instance = new MetricsTicker();
 
         static MetricsTicker() {}
 
