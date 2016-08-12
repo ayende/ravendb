@@ -1134,6 +1134,20 @@ namespace Raven.Client.Document
             return AsyncDatabaseCommands.GetFacetsAsync(indexName, q, facets, facetStart, facetPageSize, token);
         }
 
+        public virtual Lazy<Task<FacetResults>> GetFacetsLazyAsync(string facetSetupDoc, int facetStart, int? facetPageSize, CancellationToken token = default(CancellationToken))
+        {
+            var q = GetIndexQuery(true);
+            var lazyFacetsOperation = new LazyFacetsOperation(AsyncIndexQueried, facetSetupDoc, q, start, pageSize);
+            return ((AsyncDocumentSession)theSession).AddLazyOperation(lazyFacetsOperation, (Action<FacetResults>)null);
+        }
+
+        public virtual Lazy<Task<FacetResults>> GetFacetsLazyAsync(List<Facet> facets, int facetStart, int? facetPageSize, CancellationToken token = default(CancellationToken))
+        {
+            var q = GetIndexQuery(true);
+            var lazyFacetsOperation = new LazyFacetsOperation(AsyncIndexQueried, facets, q, start, pageSize);
+            return ((AsyncDocumentSession)theSession).AddLazyOperation(lazyFacetsOperation, (Action<FacetResults>)null);
+        }
+
         /// <summary>
         /// Returns a list of results for a query asynchronously. 
         /// </summary>
@@ -1143,7 +1157,6 @@ namespace Raven.Client.Document
             var tuple = await ProcessEnumerator(currentQueryOperation).WithCancellation(token).ConfigureAwait(false);
             return tuple.Item2;
         }
-
         
         public async Task<T> FirstAsync()
         {

@@ -32,7 +32,17 @@ namespace Raven.Client
         ///     Get the facets as per the specified facets with the given start and pageSize
         /// </summary>
         Task<FacetResults> GetFacetsAsync(List<Facet> facets, int facetStart, int? facetPageSize, CancellationToken token = default (CancellationToken));
+        
+        /// <summary>
+        ///     Get the facets lazily as per the specified doc with the given start and pageSize
+        /// </summary>
+        Lazy<Task<FacetResults>> GetFacetsLazyAsync(string facetSetupDoc, int facetStart, int? facetPageSize, CancellationToken token = default(CancellationToken));
 
+        /// <summary>
+        ///     Get the facets lazily as per the specified doc with the given start and pageSize
+        /// </summary>
+        Lazy<Task<FacetResults>> GetFacetsLazyAsync(List<Facet> facets, int facetStart, int? facetPageSize, CancellationToken token = default(CancellationToken));
+        
         /// <summary>
         ///     Create the index query object for this query
         /// </summary>

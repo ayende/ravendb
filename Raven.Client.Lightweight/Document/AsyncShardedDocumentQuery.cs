@@ -190,6 +190,16 @@ namespace Raven.Client.Document
             throw new NotSupportedException("Async lazy requests are not supported for sharded store");
         }
 
+        public override Lazy<Task<FacetResults>> GetFacetsLazyAsync(List<Facet> facets, int facetStart, int? facetPageSize, CancellationToken token = new CancellationToken())
+        {
+            throw new NotSupportedException("Async lazy requests are not supported for sharded store");
+        }
+
+        public override Lazy<Task<FacetResults>> GetFacetsLazyAsync(string facetSetupDoc, int facetStart, int? facetPageSize, CancellationToken token = new CancellationToken())
+        {
+            throw new NotSupportedException("Async lazy requests are not supported for sharded store");
+        }
+
         public override IDatabaseCommands DatabaseCommands
         {
             get { throw new NotSupportedException("Sharded has more than one DatabaseCommands to operate on."); }
