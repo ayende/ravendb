@@ -53,7 +53,7 @@ namespace Raven.Client
         ///     instance that will evaluate the query only when needed.
         /// Also provide a function to execute when the value is evaluated
         /// </summary>
-        Lazy<Task<IEnumerable<T>>> LazilyAsync(Action<IEnumerable<T>> onEval);
+        Lazy<Task<IEnumerable<T>>> LazilyAsync(Action<IEnumerable<T>> onEval = null);
 
         /// <summary>
         ///     Gets the query result. Executing this method for the first time will execute the query.

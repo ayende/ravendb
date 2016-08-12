@@ -180,7 +180,7 @@ namespace Raven.Client.Document
         }
 
         
-        public override Lazy<Task<IEnumerable<T>>> LazilyAsync(Action<IEnumerable<T>> onEval)
+        public override Lazy<Task<IEnumerable<T>>> LazilyAsync(Action<IEnumerable<T>> onEval = null)
         {
             throw new NotSupportedException("Async lazy requests are not supported for sharded store");
         }
