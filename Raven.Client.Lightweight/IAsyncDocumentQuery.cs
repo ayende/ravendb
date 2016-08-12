@@ -94,7 +94,7 @@ namespace Raven.Client
         /// <summary>
         ///     Transformer parameters that will be passed to transformer if one is specified.
         /// </summary>
-        void SetTransformerParameters(Dictionary<string, RavenJToken> transformerParameters);
+        IAsyncDocumentQuery<T> SetTransformerParameters(Dictionary<string, RavenJToken> transformerParameters);
 
         /// <summary>
         ///     Ability to use one factory to determine spatial shape that will be used in query.

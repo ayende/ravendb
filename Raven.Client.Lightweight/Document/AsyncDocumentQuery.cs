@@ -839,11 +839,11 @@ namespace Raven.Client.Document
             SetTransformerParameters(queryInputs);
         }
 
-        public void SetTransformerParameters(Dictionary<string, RavenJToken> parameters)
+        public IAsyncDocumentQuery<T> SetTransformerParameters(Dictionary<string, RavenJToken> parameters)
         {
             transformerParameters = parameters;
+            return this;
         }
-
 
         /// <summary>
         /// Register the query as a lazy-count query in the session and return a lazy
