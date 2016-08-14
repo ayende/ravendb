@@ -1,10 +1,7 @@
 ﻿using System;
-using System.Linq;
 using System.Threading.Tasks;
-using Raven.Abstractions.Data;
-using Raven.Server.ServerWide.Context;
-using Sparrow.Json;
-using Sparrow.Json.Parsing;
+using Raven.Server.Config;
+using Raven.Server.Config.Settings;
 using Xunit;
 
 namespace FastTests.Server.Documents.Replication
@@ -116,6 +113,102 @@ namespace FastTests.Server.Documents.Replication
                 Assert.NotNull(replicated2);
                 Assert.Equal("Jane Dow", replicated2.Name);
                 Assert.Equal(31, replicated2.Age);
+            }
+        }
+
+        protected override void ModifyConfiguration(RavenConfiguration configuration)
+        {
+            configuration.Replication.HeartbeatLatency = new TimeSetting(100, TimeUnit.Milliseconds);
+        }
+
+        [Fact]
+        public async Task Master_slave_replication_from_etag_zero_and_with_heartbeat_sent_should_work()
+        {
+            var dbName1 = DbName + "-1";
+            var dbName2 = DbName + "-2";
+            var dbName3 = DbName + "-3";
+
+            using (var store1 = await GetDocumentStore(modifyDatabaseDocument: document => document.Id = dbName1))
+            using (var store2 = await GetDocumentStore(modifyDatabaseDocument: document => document.Id = dbName2))
+            using (var store3 = await GetDocumentStore(modifyDatabaseDocument: document => document.Id = dbName3))
+            {
+                store1.DefaultDatabase = dbName1;
+                store2.DefaultDatabase = dbName2;
+                store3.DefaultDatabase = dbName3;
+
+                //circular replication...
+                SetupReplication(dbName2, store1, store2);
+                SetupReplication(dbName3, store2, store3);
+                SetupReplication(dbName1, store3, store1);
+
+                using (var session = store1.OpenSession())
+                {
+                    session.Store(new User
+                    {
+                        Name = "John Dow",
+                        Age = 30
+                    }, "users/1");
+
+                    session.Store(new User
+                    {
+                        Name = "Jane Dow",
+                        Age = 31
+                    }, "users/2");
+
+                    session.SaveChanges();
+                }
+
+                var replicated1 = WaitForDocumentToReplicate<User>(store2, "users/1", 15000);
+
+                Assert.NotNull(replicated1);
+                Assert.Equal("John Dow", replicated1.Name);
+                Assert.Equal(30, replicated1.Age);
+
+                var replicated2 = WaitForDocumentToReplicate<User>(store2, "users/2", 5000);
+                Assert.NotNull(replicated2);
+                Assert.Equal("Jane Dow", replicated2.Name);
+                Assert.Equal(31, replicated2.Age);
+
+                replicated1 = WaitForDocumentToReplicate<User>(store3, "users/1", 15000);
+
+                Assert.NotNull(replicated1);
+                Assert.Equal("John Dow", replicated1.Name);
+                Assert.Equal(30, replicated1.Age);
+
+                replicated2 = WaitForDocumentToReplicate<User>(store3, "users/2", 5000);
+                Assert.NotNull(replicated2);
+                Assert.Equal("Jane Dow", replicated2.Name);
+                Assert.Equal(31, replicated2.Age);
+
+
+                using (var session = store1.OpenSession())
+                {
+                    session.Store(new User
+                    {
+                        Name = "Jessy Dow",
+                        Age = 30
+                    }, "users/4");
+
+                    session.Store(new User
+                    {
+                        Name = "Jake Dow",
+                        Age = 31
+                    }, "users/5");
+
+                    session.SaveChanges();
+                }
+
+                replicated1 = WaitForDocumentToReplicate<User>(store3, "users/4", 15000);
+
+                Assert.NotNull(replicated1);
+                Assert.Equal("Jessy Dow", replicated1.Name);
+                Assert.Equal(30, replicated1.Age);
+
+                replicated2 = WaitForDocumentToReplicate<User>(store3, "users/5", 5000);
+                Assert.NotNull(replicated2);
+                Assert.Equal("Jake Dow", replicated2.Name);
+                Assert.Equal(31, replicated2.Age);
+
             }
         }
 

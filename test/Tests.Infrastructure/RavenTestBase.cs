@@ -127,7 +127,11 @@ namespace FastTests
             }
         }
 
-        private static RavenServer CreateServer(int port, int tcpPort)
+        protected virtual void ModifyConfiguration(RavenConfiguration configuration)
+        {		    
+        }
+
+        private RavenServer CreateServer(int port, int tcpPort)
         {
             var configuration = new RavenConfiguration();
             configuration.Initialize();
@@ -141,7 +145,10 @@ namespace FastTests
             configuration.Server.MaxTimeForTaskToWaitForDatabaseToLoad = new TimeSetting(10, TimeUnit.Seconds);
             configuration.Storage.AllowOn32Bits = true;
 
+
             IOExtensions.DeleteDirectory(configuration.Core.DataDirectory);
+
+            ModifyConfiguration(configuration);
 
             var server = new RavenServer(configuration);
             server.Initialize();
@@ -182,7 +189,7 @@ namespace FastTests
                 if (Server.ServerStore.Read(context, Constants.Database.Prefix + name) != null)
                     throw new InvalidOperationException($"Database '{name}' already exists");
             }
-
+            
             var store = new DocumentStore
             {
                 Url = UseFiddler(Server.Configuration.Core.ServerUrl),

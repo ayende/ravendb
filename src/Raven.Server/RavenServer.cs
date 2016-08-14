@@ -278,7 +278,7 @@ namespace Raven.Server
                                 BulkInsertConnection.Run(tcp);
                                 break;
                             case TcpConnectionHeaderMessage.OperationTypes.Subscription:
-								SubscriptionConnection.SendSubscriptionDocuments(tcp);
+                                SubscriptionConnection.SendSubscriptionDocuments(tcp);
                                 break;
                             case TcpConnectionHeaderMessage.OperationTypes.Replication:
                                 var documentReplicationLoader = tcp.DocumentDatabase.DocumentReplicationLoader;

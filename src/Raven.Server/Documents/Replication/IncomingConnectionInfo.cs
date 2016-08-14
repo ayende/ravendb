@@ -13,6 +13,8 @@ namespace Raven.Server.Documents.Replication
 
         public string SourceMachineName { get; set; }
 
+        public DateTime WhenConnected { get; } = DateTime.UtcNow;
+
         public static IncomingConnectionInfo FromGetLatestEtag(ReplicationLatestEtagRequest message)
         {
             return new IncomingConnectionInfo
