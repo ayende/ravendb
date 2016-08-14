@@ -76,7 +76,7 @@ namespace Raven.Database.Smuggler
             if (Options.Incremental)
             {
                 ShowProgress("Starting incremental export..");
-                exportFolder = CalculateExportFile(exportOptions, exportFolder);
+                exportFolder = CalculateExportFile(exportOptions);
             }
             else
             {
@@ -149,7 +149,7 @@ namespace Raven.Database.Smuggler
             }
         }
 
-        private static string CalculateExportFile(SmugglerExportOptions<CounterConnectionStringOptions> exportOptions, string exportFolder)
+        private static string CalculateExportFile(SmugglerExportOptions<CounterConnectionStringOptions> exportOptions)
         {
             if (Directory.Exists(exportOptions.ToFile) == false)
             {
@@ -158,7 +158,7 @@ namespace Raven.Database.Smuggler
                 else
                     Directory.CreateDirectory(exportOptions.ToFile);
             }
-            exportFolder = exportOptions.ToFile;
+            var exportFolder = exportOptions.ToFile;
 
             exportOptions.ToFile = Path.Combine(exportOptions.ToFile, SystemTime.UtcNow.ToString("yyyy-MM-dd-HH-mm-0", CultureInfo.InvariantCulture) + CounterIncrementalDump);
             if (File.Exists(exportOptions.ToFile))
