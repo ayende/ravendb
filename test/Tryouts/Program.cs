@@ -25,9 +25,9 @@ namespace Tryouts
     {
         static void Main(string[] args)
         {
-            using (var x = new CriteriaScript())
+            using (var x = new ReplicationBasicTests())
             {
-                x.BasicCriteriaTest().Wait();
+                x.Master_master_replication_with_multiple_PUTS_should_work().Wait();
             }
         }
     }
