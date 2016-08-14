@@ -2,6 +2,7 @@ import database = require("models/resources/database");
 import collection = require("models/database/documents/collection");
 import document = require("models/database/documents/document");
 import indexDefinition = require("models/database/index/indexDefinition");
+import getCollectionsCommand = require("commands/database/documents/getCollectionsCommand");
 import getDocumentsByEntityNameCommand = require("commands/database/documents/getDocumentsByEntityNameCommand");
 import pagedResultSet = require("common/pagedResultSet");
 
@@ -12,9 +13,9 @@ class indexAceAutoCompleteProvider {
     getCollectionAliasesInsideIndexText(session: any): { aliasKey: string; aliasValuePrefix: string; aliasValueSuffix: string }[] {
         var aliases: { aliasKey: string; aliasValuePrefix: string; aliasValueSuffix: string }[] = [];
 
-        var curAliasKey = null;
-        var curAliasValuePrefix = null;
-        var curAliasValueSuffix = null;
+        var curAliasKey: string = null;
+        var curAliasValuePrefix: string = null;
+        var curAliasValueSuffix: string = null;
 
         for (var curRow = 0; curRow < session.getLength(); curRow++) {
             var curRowTokens = session.getTokens(curRow);
@@ -76,8 +77,8 @@ class indexAceAutoCompleteProvider {
         return deferred;
     }
 
-    getIndexMapCompleterValues(editor: any, session: any, pos: AceAjax.Position): JQueryPromise<any> { 
-    /* TODO
+    getIndexMapCompleterValues(editor: any, session: any, pos: AceAjax.Position): JQueryPromise<any> {
+        /*
         var currentToken: AceAjax.TokenInfo = session.getTokenAt(pos.row, pos.column);
         var completedToken: AceAjax.TokenInfo;
         var TokenIterator = require("ace/token_iterator").TokenIterator;
@@ -145,8 +146,7 @@ class indexAceAutoCompleteProvider {
             returnedDeferred.reject();
         }
 
-        return returnedDeferred;
-        */
+        return returnedDeferred;*/
         return null;
     }
 
@@ -169,7 +169,7 @@ class indexAceAutoCompleteProvider {
         var dotPrefixes = firstMapSrting.match(/[.]\w*/g);
         var equalPrefixes = firstMapSrting.match(/\w*\s*=\s*/g);
 
-        var autoCompletes = [];
+        var autoCompletes: string[] = [];
 
         if (!!dotPrefixes) {
             dotPrefixes.forEach(curPrefix => {

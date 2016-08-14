@@ -22,7 +22,6 @@ using Raven.Server.Documents.Transformers;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.Utils;
-using Raven.Server.Utils.Metrics;
 using Sparrow;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
@@ -33,7 +32,7 @@ namespace Raven.Server.Documents
 {
     public class DocumentDatabase : IResourceStore
     {
-        private static readonly ILog Log = LogManager.GetLogger(typeof(DocumentDatabase));
+        private Logger _logger;
 
         private readonly CancellationTokenSource _databaseShutdown = new CancellationTokenSource();
         public readonly PatchDocument Patch;
@@ -43,22 +42,21 @@ namespace Raven.Server.Documents
         private Task _transformerStoreTask;
         public TransactionOperationsMerger TxMerger;
 
-        public DocumentDatabase(string name, RavenConfiguration configuration, MetricsScheduler metricsScheduler,
-            LoggerSetup loggerSetup)
+        public DocumentDatabase(string name, RavenConfiguration configuration, IoMetrics ioMetrics)
         {
             Name = name;
             Configuration = configuration;
-            LoggerSetup = loggerSetup;
-
+            _logger = LoggerSetup.Instance.GetLogger<DocumentDatabase>(Name);
             Notifications = new DocumentsNotifications();
             DocumentsStorage = new DocumentsStorage(this);
             IndexStore = new IndexStore(this);
             TransformerStore = new TransformerStore(this);
-            SqlReplicationLoader = new SqlReplicationLoader(this, metricsScheduler);
+            SqlReplicationLoader = new SqlReplicationLoader(this);
             DocumentReplicationLoader = new DocumentReplicationLoader(this);
             DocumentTombstoneCleaner = new DocumentTombstoneCleaner(this);
-            SubscriptionStorage = new SubscriptionStorage(this, metricsScheduler);
-            Metrics = new MetricsCountersManager(metricsScheduler);
+            SubscriptionStorage = new SubscriptionStorage(this);
+            Metrics = new MetricsCountersManager();
+            IoMetrics = ioMetrics;
             Patch = new PatchDocument(this);
             TxMerger = new TransactionOperationsMerger(this, DatabaseShutdown);
             HugeDocuments = new HugeDocuments(configuration.Databases.MaxCollectionSizeHugeDocuments, 
@@ -75,7 +73,6 @@ namespace Raven.Server.Documents
         public string ResourceName => $"db/{Name}";
 
         public RavenConfiguration Configuration { get; }
-        public LoggerSetup LoggerSetup { get; set; }
 
         public CancellationToken DatabaseShutdown => _databaseShutdown.Token;
 
@@ -90,6 +87,8 @@ namespace Raven.Server.Documents
         public HugeDocuments HugeDocuments { get; }
 
         public MetricsCountersManager Metrics { get; }
+
+        public IoMetrics IoMetrics { get;  }
 
         public IndexStore IndexStore { get; private set; }
 
@@ -146,7 +145,7 @@ namespace Raven.Server.Documents
         public void Dispose()
         {
             _databaseShutdown.Cancel();
-            var exceptionAggregator = new ExceptionAggregator(Log, $"Could not dispose {nameof(DocumentDatabase)}");
+            var exceptionAggregator = new ExceptionAggregator(_logger, $"Could not dispose {nameof(DocumentDatabase)}");
 
             exceptionAggregator.Execute(() =>
             {
@@ -293,7 +292,9 @@ namespace Raven.Server.Documents
             yield return SubscriptionStorage.Environment();
             foreach (var index in IndexStore.GetIndexes())
             {
-                yield return index._indexStorage.Environment();
+                var env = index._indexStorage.Environment();
+                if (env != null)
+                    yield return env;
             }
         }
     }

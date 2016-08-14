@@ -1,14 +1,10 @@
 import viewModelBase = require("viewmodels/viewModelBase");
-import database = require("models/resources/database");
-import getDocumentWithMetadataCommand = require("commands/database/documents/getDocumentWithMetadataCommand");
-import appUrl = require("common/appUrl");
 import documentClass = require("models/database/documents/document");
-import serverBuildReminder = require("common/serverBuildReminder");
 import environmentColor = require("models/resources/environmentColor");
+import saveDocumentCommand = require("commands/database/documents/saveDocumentCommand");
 import shell = require("viewmodels/shell");
 
 class studioConfig extends viewModelBase {
-
  
     configDocument = ko.observable<documentClass>();
 
@@ -24,17 +20,6 @@ class studioConfig extends viewModelBase {
 
     constructor() {
         super();
-        //this.systemDatabase = appUrl.getSystemDatabase();
-        //this.timeUntilRemindToUpgrade(serverBuildReminder.get());
-        /*var systemColor = shell.selectedEnvironmentColorStatic();
-
-        debugger;
-
-        //var color = this.environmentColors.filter((color) => color.name === shell.selectedEnvironmentColorStatic().name);
-        var selectedColor = !!systemColor ? systemColor : this.environmentColors[0];;
-        this.selectedColor(selectedColor);*/
-
-        /**/
         var color = this.environmentColors.filter((color) => color.name === shell.selectedEnvironmentColorStatic().name);
         var selectedColor = !!color[0] ? color[0] : this.environmentColors[0];
         this.selectedColor(selectedColor);
@@ -43,25 +28,13 @@ class studioConfig extends viewModelBase {
         this.selectedColor.subscribe((newValue) => self.setEnvironmentColor(newValue));
     }
 
-    canActivate(args): any {
+    canActivate(args: any): any {
         var deffered = $.Deferred();
 
         deffered.resolve({ can: true });
         this.configDocument(documentClass.empty());
-        /*new getDocumentWithMetadataCommand(studioConfig.documentId, this.activeDatabase())
-            .execute()
-            .done((doc: documentClass) => {
-            this.configDocument(doc);
-        })
-            .fail(() => this.configDocument(documentClass.empty()))
-            .always(() => deffered.resolve({ can: true }));*/
 
         return deffered;
-    }
-
-    activate(args) {
-        super.activate(args);
-        //this.updateHelpLink("4J5OUB");
     }
 
     attached() {
@@ -78,7 +51,7 @@ class studioConfig extends viewModelBase {
 
     setEnvironmentColor(envColor: environmentColor) {
         var newDocument = this.configDocument();
-        newDocument["EnvironmentColor"] = envColor.toDto();
+        (<any>newDocument)["EnvironmentColor"] = envColor.toDto();
         var saveTask = this.saveStudioConfig(newDocument);
         saveTask.done(() => {
             this.pickColor();
@@ -91,21 +64,12 @@ class studioConfig extends viewModelBase {
     }
 
     saveStudioConfig(newDocument: documentClass) {
-        var deferred = $.Deferred();
-
-        require(["commands/saveDocumentCommand"], saveDocumentCommand => {
-            var saveTask = new saveDocumentCommand(studioConfig.documentId, newDocument, this.activeDatabase()).execute();
-
-            saveTask
-                .done((saveResult: bulkDocumentDto[]) => {
-                    this.configDocument(newDocument);
-                    this.configDocument().__metadata['@etag'] = saveResult[0].Etag;
-                    deferred.resolve();
-                })
-                .fail(() => deferred.reject());
-        });
-
-        return deferred;
+        return new saveDocumentCommand(studioConfig.documentId, newDocument, this.activeDatabase())
+            .execute()
+            .done((saveResult: bulkDocumentDto[]) => {
+                this.configDocument(newDocument);
+                (<any>this.configDocument()).__metadata['@etag'] = saveResult[0].Etag;
+            });
     }
 }
 

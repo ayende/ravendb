@@ -2,9 +2,8 @@
 using System.Collections.Generic;
 
 using Raven.Abstractions.Indexing;
-using Raven.Client.Data;
 using Raven.Server.Documents.Indexes;
-
+using Raven.Server.Documents.Transformers;
 using Sparrow;
 
 namespace Raven.Server.Documents.Queries
@@ -13,24 +12,34 @@ namespace Raven.Server.Documents.Queries
     {
         public readonly Dictionary<string, FieldToFetch> Fields;
 
+        public readonly bool ExtractAllFromIndexAndDocument;
+
         public readonly bool AnyExtractableFromIndex;
 
         public readonly bool IsProjection;
 
         public readonly bool IsDistinct;
 
-        public FieldsToFetch(IndexQuery query, IndexDefinitionBase indexDefinition)
+        public readonly bool IsTransformation;
+
+        public FieldsToFetch(IndexQueryServerSide query, IndexDefinitionBase indexDefinition, Transformer transformer)
+            : this(query.FieldsToFetch, indexDefinition, transformer)
         {
-            Fields = GetFieldsToFetch(query.FieldsToFetch, indexDefinition, out AnyExtractableFromIndex);
-            IsProjection = Fields != null && Fields.Count > 0;
             IsDistinct = query.IsDistinct && IsProjection;
         }
 
-        public FieldsToFetch(string[] fieldsToFetch, IndexDefinitionBase indexDefinition)
+        public FieldsToFetch(string[] fieldsToFetch, IndexDefinitionBase indexDefinition, Transformer transformer)
         {
             Fields = GetFieldsToFetch(fieldsToFetch, indexDefinition, out AnyExtractableFromIndex);
             IsProjection = Fields != null && Fields.Count > 0;
             IsDistinct = false;
+
+            if (transformer == null)
+                return;
+
+            AnyExtractableFromIndex = true;
+            ExtractAllFromIndexAndDocument = Fields == null || Fields.Count == 0; // extracting all from index only if fields are not specified
+            IsTransformation = true;
         }
 
         private static Dictionary<string, FieldToFetch> GetFieldsToFetch(string[] fieldsToFetch, IndexDefinitionBase indexDefinition, out bool anyExtractableFromIndex)
@@ -46,7 +55,7 @@ namespace Raven.Server.Documents.Queries
                 var fieldToFetch = fieldsToFetch[i];
 
                 IndexField value;
-                var extract = indexDefinition.TryGetField(fieldToFetch, out value) && value.Storage == FieldStorage.Yes;
+                var extract = indexDefinition != null && indexDefinition.TryGetField(fieldToFetch, out value) && value.Storage == FieldStorage.Yes;
                 if (extract)
                     anyExtractableFromIndex = true;
 

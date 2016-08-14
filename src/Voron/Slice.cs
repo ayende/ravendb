@@ -25,20 +25,6 @@ namespace Voron
             this.Content = content;
         }
 
-
-        private static readonly uint[] _lookup32 = CreateLookup32();
-
-        private static uint[] CreateLookup32()
-        {
-            var result = new uint[256];
-            for (int i = 0; i < 256; i++)
-            {
-                string s = i.ToString("X2");
-                result[i] = ((uint)s[0]) + ((uint)s[1] << 16);
-            }
-            return result;
-        }
-
         public bool HasValue
         {
             get { return Content.HasValue; }
@@ -114,7 +100,13 @@ namespace Voron
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static Slice From(ByteStringContext context, byte[] value, ByteStringType type = ByteStringType.Mutable)
         {
-            return new Slice(context.From(value, type));
+            return new Slice(context.From(value, 0, value.Length, type));
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static Slice From(ByteStringContext context, byte[] value, int offset, int count, ByteStringType type = ByteStringType.Mutable)
+        {
+            return new Slice(context.From(value, offset, count, type));
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

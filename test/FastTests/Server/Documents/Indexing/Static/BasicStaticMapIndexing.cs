@@ -5,13 +5,13 @@ using System.Threading.Tasks;
 using FastTests.Blittable;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Indexing;
-using Raven.Client.Data;
 using Raven.Client.Data.Indexes;
 using Raven.Client.Indexing;
+using Raven.Server.Json;
 using Raven.Server.Documents.Indexes;
 using Raven.Server.Documents.Indexes.Static;
+using Raven.Server.Documents.Queries;
 using Raven.Server.Extensions;
-using Raven.Server.Json;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 using Sparrow.Json;
@@ -34,7 +34,7 @@ namespace FastTests.Server.Documents.Indexing.Static
                     Type = IndexType.Map
                 }, database))
                 {
-                    using (var context = new DocumentsOperationContext(new UnmanagedBuffersPool(string.Empty), database))
+                    using (var context = DocumentsOperationContext.ShortTermSingleUse(database))
                     {
                         using (var tx = context.OpenWriteTransaction())
                         {
@@ -73,13 +73,13 @@ namespace FastTests.Server.Documents.Indexing.Static
                         Assert.Equal(2, batchStats.MapSuccesses);
                         Assert.Equal(0, batchStats.MapErrors);
 
-                        var queryResult = await index.Query(new IndexQuery(), context, OperationCancelToken.None);
+                        var queryResult = await index.Query(new IndexQueryServerSide(), context, OperationCancelToken.None);
 
                         Assert.Equal(2, queryResult.Results.Count);
 
                         context.Reset();
 
-                        queryResult = await index.Query(new IndexQuery() { Query = "Name:John" }, context, OperationCancelToken.None);
+                        queryResult = await index.Query(new IndexQueryServerSide() { Query = "Name:John" }, context, OperationCancelToken.None);
 
                         Assert.Equal(1, queryResult.Results.Count);
                         Assert.Equal("users/1", queryResult.Results[0].Key);
@@ -209,12 +209,12 @@ namespace FastTests.Server.Documents.Indexing.Static
                 }
             };
 
-            using (var context = new JsonOperationContext(new UnmanagedBuffersPool(string.Empty)))
+            using (var context = JsonOperationContext.ShortTermSingleUse())
             {
                 var builder = indexDefinition.ToJson();
                 using (var json = context.ReadObject(builder, nameof(IndexDefinition)))
                 {
-                    var newIndexDefinition = JsonDeserialization.IndexDefinition(json);
+                    var newIndexDefinition = JsonDeserializationServer.IndexDefinition(json);
 
                     Assert.True(indexDefinition.Equals(newIndexDefinition, compareIndexIds: true, ignoreFormatting: false, ignoreMaxIndexOutput: false));
                 }

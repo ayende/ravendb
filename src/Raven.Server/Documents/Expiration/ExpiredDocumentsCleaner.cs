@@ -10,13 +10,12 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Threading;
-using Raven.Abstractions;
 using Raven.Abstractions.Data;
-using Raven.Abstractions.Logging;
 using Raven.Server.Json;
 using Raven.Server.ServerWide.Context;
 using Sparrow.Json;
 using Voron;
+using Sparrow.Logging;
 
 namespace Raven.Server.Documents.Expiration
 {
@@ -26,8 +25,7 @@ namespace Raven.Server.Documents.Expiration
 
         public Func<DateTime> UtcNow = () => DateTime.UtcNow;
 
-        private static readonly ILog Log = LogManager.GetLogger(typeof(ExpiredDocumentsCleaner));
-
+        private static Logger _logger;
         private const string DocumentsByExpiration = "DocumentsByExpiration";
 
         private readonly Timer _timer;
@@ -36,9 +34,11 @@ namespace Raven.Server.Documents.Expiration
         private ExpiredDocumentsCleaner(DocumentDatabase database, ExpirationConfiguration configuration)
         {
             _database = database;
-
+            _logger = LoggerSetup.Instance.GetLogger<ExpiredDocumentsCleaner>(database.Name);
             var deleteFrequencyInSeconds = configuration.DeleteFrequencySeconds ?? 60;
-            Log.Info($"Initialized expired document cleaner, will check for expired documents every {deleteFrequencyInSeconds} seconds");
+            if (_logger.IsInfoEnabled)
+                _logger.Info($"Initialized expired document cleaner, will check for expired documents every {deleteFrequencyInSeconds} seconds");
+
             var period = TimeSpan.FromSeconds(deleteFrequencyInSeconds);
             _timer = new Timer(TimerCallback, null, period, period);
         }
@@ -56,7 +56,7 @@ namespace Raven.Server.Documents.Expiration
 
                 try
                 {
-                    var expirationConfiguration = JsonDeserialization.ExpirationConfiguration(configuration.Data);
+                    var expirationConfiguration = JsonDeserializationServer.ExpirationConfiguration(configuration.Data);
                     if (expirationConfiguration.Active == false)
                         return null;
 
@@ -66,8 +66,8 @@ namespace Raven.Server.Documents.Expiration
                 {
                     //TODO: Raise alert, or maybe handle this via a db load error that can be turned off with 
                     //TODO: a config
-                    if (Log.IsWarnEnabled)
-                        Log.WarnException($"Cannot enable expired documents cleaner as the configuration document {Constants.Expiration.ConfigurationDocumentKey} is not valid: {configuration.Data}", e);
+                    if (_logger.IsOperationsEnabled)
+                        _logger.Operations($"Cannot enable expired documents cleaner as the configuration document {Constants.Expiration.ConfigurationDocumentKey} is not valid: {configuration.Data}", e);
                     return null;
                 }
             }
@@ -87,7 +87,8 @@ namespace Raven.Server.Documents.Expiration
             }
             catch (Exception e)
             {
-                Log.ErrorException("Error when trying to find expired documents", e);
+                if (_logger.IsInfoEnabled)
+                    _logger.Info("Error when trying to find expired documents", e);
             }
             finally
             {
@@ -97,8 +98,8 @@ namespace Raven.Server.Documents.Expiration
 
         public void CleanupExpiredDocs()
         {
-            if (Log.IsDebugEnabled)
-                Log.Debug("Trying to find expired documents to delete");
+            if (_logger.IsInfoEnabled)
+                _logger.Info("Trying to find expired documents to delete");
 
             bool exitWriteTransactionAndContinueAgain = true;
             DocumentsOperationContext context;
@@ -148,10 +149,10 @@ namespace Raven.Server.Documents.Expiration
                                         break;
                                     }
 
-                                    keysToDelete.Add(multiIt.CurrentKey.Clone(tx.InnerTransaction.Allocator));
+                                    var clonedKey = multiIt.CurrentKey.Clone(tx.InnerTransaction.Allocator);
+                                    keysToDelete.Add(clonedKey);
 
-                                    var key = multiIt.CurrentKey.ToString();
-                                    var document = _database.DocumentsStorage.Get(context, key);
+                                    var document = _database.DocumentsStorage.Get(context, clonedKey);
                                     if (document == null)
                                         continue;
 
@@ -169,11 +170,10 @@ namespace Raven.Server.Documents.Expiration
                                     if (currentTime < date)
                                         continue;
 
-                                    var deleted = _database.DocumentsStorage.Delete(context, key, null);
+                                    var deleted = _database.DocumentsStorage.Delete(context, clonedKey, null);
                                     count++;
-                                    if (Log.IsDebugEnabled && deleted == false)
-                                        Log.Debug(
-                                            $"Tried to delete expired document '{key}' but document was not found.");
+                                    if (_logger.IsInfoEnabled && deleted == false)
+                                        _logger.Info($"Tried to delete expired document '{clonedKey}' but document was not found.");
                                 } while (multiIt.MoveNext());
                             }
                         }
@@ -189,8 +189,8 @@ namespace Raven.Server.Documents.Expiration
 
                 tx.Commit();
             }
-            if (Log.IsDebugEnabled)
-                Log.Debug($"Successfully deleted {count:#,#;;0} documents in {sp.ElapsedMilliseconds:#,#;;0} ms. Found more stuff to delete? {earlyExit}");
+            if (_logger.IsInfoEnabled)
+                _logger.Info($"Successfully deleted {count:#,#;;0} documents in {sp.ElapsedMilliseconds:#,#;;0} ms. Found more stuff to delete? {earlyExit}");
             return earlyExit;
         }
 

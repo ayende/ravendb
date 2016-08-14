@@ -14,16 +14,19 @@ using Sparrow.Json;
 using Voron;
 using Voron.Data.Tables;
 using Sparrow;
+using Sparrow.Binary;
+using Sparrow.Logging;
 
 namespace Raven.Server.Documents.Indexes
 {
     public class IndexStorage
     {
-        protected readonly ILog Log = LogManager.GetLogger(typeof(IndexStorage));
+        protected readonly Logger _logger;
 
         private readonly Index _index;
 
         private readonly TransactionContextPool _contextPool;
+        public DocumentDatabase DocumentDatabase { get; }
 
         private readonly TableSchema _errorsSchema = new TableSchema();
 
@@ -31,10 +34,12 @@ namespace Raven.Server.Documents.Indexes
 
         public const int MaxNumberOfKeptErrors = 500;
 
-        public IndexStorage(Index index, TransactionContextPool contextPool)
+        public IndexStorage(Index index, TransactionContextPool contextPool, DocumentDatabase database)
         {
             _index = index;
             _contextPool = contextPool;
+            DocumentDatabase = database;
+            _logger = LoggerSetup.Instance.GetLogger<IndexStorage>(DocumentDatabase.Name);
         }
 
         public void Initialize(StorageEnvironment environment)
@@ -256,8 +261,8 @@ namespace Raven.Server.Documents.Indexes
 
         private unsafe void WriteLastEtag(RavenTransaction tx, string tree, Slice collection, long etag)
         {
-            if (Log.IsDebugEnabled)
-                Log.Debug($"Writing last etag for '{_index.Name} ({_index.IndexId})'. Tree: {tree}. Collection: {collection}. Etag: {etag}.");
+           if (_logger.IsInfoEnabled)
+                _logger.Info($"Writing last etag for '{_index.Name} ({_index.IndexId})'. Tree: {tree}. Collection: {collection}. Etag: {etag}.");
 
             var statsTree = tx.InnerTransaction.CreateTree(tree);
             statsTree.Add(collection, Slice.External(tx.InnerTransaction.Allocator, (byte*)&etag, sizeof(long)));
@@ -276,8 +281,8 @@ namespace Raven.Server.Documents.Indexes
 
         public unsafe void UpdateStats(DateTime indexingTime, IndexingRunStats stats)
         {
-            if (Log.IsDebugEnabled)
-                Log.Debug($"Updating statistics for '{_index.Name} ({_index.IndexId})'. Stats: {stats}.");
+            if (_logger.IsInfoEnabled)
+                _logger.Info($"Updating statistics for '{_index.Name} ({_index.IndexId})'. Stats: {stats}.");
 
             TransactionOperationContext context;
             using (_contextPool.AllocateOperationContext(out context))
@@ -305,20 +310,20 @@ namespace Raven.Server.Documents.Indexes
                 {
                     foreach (var error in stats.Errors)
                     {
-                        var ticksBigEndian = IPAddress.HostToNetworkOrder(error.Timestamp.Ticks);
-                        var document = context.GetLazyString(error.Document);
-                        var action = context.GetLazyString(error.Action);
-                        var e = context.GetLazyString(error.Error);
-
-                        var tvb = new TableValueBuilder
+                        var ticksBigEndian = Bits.SwapBytes(error.Timestamp.Ticks);
+                        using (var document = context.GetLazyString(error.Document))
+                        using (var action = context.GetLazyString(error.Action))
+                        using (var e = context.GetLazyString(error.Error))
                         {
-                            {(byte*)&ticksBigEndian, sizeof(long)},
-                            {document.Buffer, document.Size},
-                            {action.Buffer, action.Size},
-                            {e.Buffer, e.Size}
-                        };
-
-                        table.Insert(tvb);
+                            var tvb = new TableValueBuilder
+                            {
+                                {(byte*) &ticksBigEndian, sizeof (long)},
+                                {document.Buffer, document.Size},
+                                {action.Buffer, action.Size},
+                                {e.Buffer, e.Size}
+                            };
+                            table.Insert(tvb);
+                        }
                     }
 
                     CleanupErrors(table);
@@ -353,7 +358,7 @@ namespace Raven.Server.Documents.Indexes
             }
         }
 
-        public IEnumerable<string> GetDocumentKeysFromCollectionThatReference(string collection, LazyStringValue referenceKey, RavenTransaction tx)
+        public IEnumerable<Slice> GetDocumentKeysFromCollectionThatReference(string collection, LazyStringValue referenceKey, RavenTransaction tx)
         {
             var collectionTree = tx.InnerTransaction.ReadTree("#" + collection);
             if (collectionTree == null)
@@ -367,7 +372,7 @@ namespace Raven.Server.Documents.Indexes
 
                 do
                 {
-                    yield return it.CurrentKey.ToString(); // TODO [ppekrol] ?
+                    yield return it.CurrentKey;
                 } while (it.MoveNext());
             }
         }

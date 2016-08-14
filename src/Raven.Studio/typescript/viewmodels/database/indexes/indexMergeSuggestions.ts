@@ -6,7 +6,6 @@ import mergedIndexesStorage = require("common/mergedIndexesStorage");
 import indexMergeSuggestion = require("models/database/index/indexMergeSuggestion");
 import getDatabaseStatsCommand = require("commands/resources/getDatabaseStatsCommand");
 import changeSubscription = require('common/changeSubscription');
-import shell = require("viewmodels/shell");
 import moment = require("moment");
 import dialog = require("plugins/dialog");
 import changesContext = require("common/changesContext");
@@ -72,7 +71,7 @@ class indexMergeSuggestions extends viewModelBase {
                 if (lastQueryDate.isValid()) {
                     var agoInMs = now.diff(lastQueryDate);
                     if (agoInMs > miliSecondsInWeek) {
-                        indexDto["LastQueryTimestampText"] = optional.val(indexDto.LastQueryTimestamp).bind(v => v.toHumanizedDate());
+                        (<any>indexDto)["LastQueryTimestampText"] = optional.val(indexDto.LastQueryTimestamp).bind(v => v.toHumanizedDate());
                         this.notUsedForLastWeek.push(indexDto);
                     }
                 }

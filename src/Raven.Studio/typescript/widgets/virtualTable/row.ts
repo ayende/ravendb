@@ -9,11 +9,13 @@ class row {
     top = ko.observable(0);
     rowIndex = ko.observable(0);
     isInUse = ko.observable(false);
-    cellMap: { Id: any } = { Id: null };
+    cellMap: dictionary<cell> = { Id: <cell>null };
     collectionClass = ko.observable("");
     editUrl = ko.observable("");
     isChecked = ko.observable(false);
-    compiledCustomFunctions = {};
+    compiledCustomFunctions:dictionary<any> = {};
+
+    templateNameCache:{ [key:string]:KnockoutObservable<string> } = {};
 
     calculateExternalIdCellColor(cellValue: string) {
         var cellCollectionName = cellValue.slice(0, cellValue.lastIndexOf("/")).toLocaleLowerCase();
@@ -48,7 +50,7 @@ class row {
     }
 
     resetCells() {
-        for (var prop in this.cellMap) {
+        for (let prop in this.cellMap) {
             var cellVal: cell = this.cellMap[prop];
             if (cellVal) {
                 cellVal.reset();
@@ -65,7 +67,6 @@ class row {
     }
 
     fillCells(rowData: documentBase) {
-        var customFunctions = this.viewModel.settings.customFunctions();
         var customColumns = this.viewModel.settings.customColumns();
         this.isInUse(true);
         var rowProperties = rowData.getDocumentPropertyNames();
@@ -73,26 +74,18 @@ class row {
         if (customColumns.customMode()) {
             customColumns.columns().forEach((column, index) => {
                 var binding = column.binding();
-                var context = {};
-                var stringify = typeof rowData === "object" && this.getCellTemplateName(binding, rowData) !== cell.customTemplate;
+                var context:dictionary<any> = {};
 
                 $.each(rowData, (name: string, value: any) => {
-                    if (stringify) {
-                        context[name] = JSON.stringify(value, null, 4);
-                        if (context[name] && context[name].length > 250) {
-                            context[name] = context[name].substring(0, 250);
-                        }
-                    } else {
-                        context[name] = value;
-                    }
+                    context[name] = value;
                 });
 
                 for (var p in this.compiledCustomFunctions) {
                     context[p] = this.compiledCustomFunctions[p];
                 }
-
-                var cellValueGenerator = execJs.createSimpleCallableCode("return " + binding + ";", context);
-                this.addOrUpdateCellMap(binding, cellValueGenerator());
+                var cellValue = execJs.createSimpleCallableCode("return " + binding + ";", context)();
+                var callValueAsString = (typeof cellValue === "object" && this.getCellTemplateName(binding, rowData) !== cell.customTemplate) ? JSON.stringify(cellValue, null, 4) : cellValue;
+                this.addOrUpdateCellMap(binding, callValueAsString);
             });
 
         } else {
@@ -104,8 +97,8 @@ class row {
                     cellValue = JSON.stringify(cellValue, null, 4) || "";
                 }
 
-                if (cellValue && cellValue.length > 250) {
-                    cellValue = cellValue.substring(0, 250);
+                if (cellValue && cellValue.length > 300) {
+                    cellValue = cellValue.substring(0, 300);
                 }
                 this.addOrUpdateCellMap(prop, cellValue);
             }
@@ -123,6 +116,9 @@ class row {
             var cellVal: cell = this.cellMap[propertyName];
             cellVal.update(data);
         }
+
+        var cacheKey = this.getOrAddTemplateNameCache(propertyName);
+        cacheKey(this.getCellTemplate(propertyName));
     }
 
     getCellData(cellName: string): any {
@@ -132,6 +128,14 @@ class row {
         }
 
         return "";
+    }
+
+    getOrAddTemplateNameCache(cellName: string) {
+        var cacheKey = this.templateNameCache[cellName];
+        if (!cacheKey) {
+            cacheKey = this.templateNameCache[cellName] = ko.observable<string>("nullTemplate");
+        }
+        return cacheKey;
     }
 
     getCellTemplate(cellName: string): string {
@@ -150,7 +154,7 @@ class row {
         // Bug fix: http://issues.hibernatingrhinos.com/issue/RavenDB-2002
         // Calling .data() registers it as a Knockout dependency; updating this 
         // observable later will cause the cell to redraw, thus fixing the bug.
-        if (this.cellMap && this.cellMap.Id) {
+        if (this.cellMap && this.cellMap["Id"]) {
             this.cellMap["Id"].data();
         }
 

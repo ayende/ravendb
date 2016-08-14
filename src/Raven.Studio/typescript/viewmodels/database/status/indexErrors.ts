@@ -3,7 +3,7 @@ import getDatabaseStatsCommand = require("commands/resources/getDatabaseStatsCom
 import changesContext = require("common/changesContext");
 import moment = require("moment");
 import changeSubscription = require("common/changeSubscription");
-import shell = require("viewmodels/shell");
+import tableNavigationTrait = require("common/tableNavigationTrait");
 
 class indexErrors extends viewModelBase {
 
@@ -13,20 +13,23 @@ class indexErrors extends viewModelBase {
     now = ko.observable<moment.Moment>();
     updateNowTimeoutHandle = 0;
 
+    tableNavigation: tableNavigationTrait<serverErrorDto>;
+
     constructor() {
         super();
 
         this.updateCurrentNowTime();
-        
+
+        this.tableNavigation = new tableNavigationTrait<serverErrorDto>("#indexErrorsTableContainer", this.selectedIndexError, this.allIndexErrors, i => "#indexErrorsTableContainer table tbody tr:nth-child(" + (i + 1) + ")");
     }
 
     createNotifications(): Array<changeSubscription> {
         return [
-            changesContext.currentResourceChangesApi().watchAllIndexes((e) => this.fetchIndexErrors()),
+            changesContext.currentResourceChangesApi().watchAllIndexes(() => this.fetchIndexErrors())
         ];
     }
 
-    activate(args) {
+    activate(args: any) {
         super.activate(args);
         this.updateHelpLink('ABUXGF');
         this.fetchIndexErrors();
@@ -43,16 +46,13 @@ class indexErrors extends viewModelBase {
             return new getDatabaseStatsCommand(db)
                 .execute()
                 .done((stats: databaseStatisticsDto) => {
-                    stats.Errors.forEach(e => e['TimestampHumanized'] = this.createHumanReadableTime(e.Timestamp));
+                    stats.Errors.forEach((e: any) => e['TimestampHumanized'] = this.createHumanReadableTime(e.Timestamp));
                     this.allIndexErrors(stats.Errors);
                     this.hasFetchedErrors(true);
                 });
         }
 
         return null;
-    }
-
-    tableKeyDown() {
     }
 
     selectIndexError(indexError: serverErrorDto) {

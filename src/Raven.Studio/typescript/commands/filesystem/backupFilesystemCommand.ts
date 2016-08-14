@@ -4,7 +4,7 @@ import getConfigurationByKeyCommand = require("commands/filesystem/getConfigurat
 
 class backupFilesystemCommand extends commandBase {
 
-    constructor(private fs: filesystem, private backupLocation: string, private updateBackupStatus: (backupStatusDto) => void, private incremental: boolean) {
+    constructor(private fs: filesystem, private backupLocation: string, private updateBackupStatus: (status: backupStatusDto) => void, private incremental: boolean) {
         super();
     }
 
@@ -38,7 +38,13 @@ class backupFilesystemCommand extends commandBase {
                 if (backupStatus.IsRunning) {
                     setTimeout(() => this.getBackupStatus(result), 1000);
                 } else {
-                    this.reportSuccess("Filesystem backup was successfully created!");
+                    if (backupStatus.Success) {
+                        this.reportSuccess("Filesystem backup was successfully created!");
+                    } else {
+                        var cause = backupStatus.Messages.last(x => x.Severity === 'Error');
+                        this.reportError("Failed to backup filesystem: " + cause.Message);
+                    }
+                    
                     result.resolve();
                 }
             });

@@ -3,31 +3,37 @@ import versioningEntry = require("models/database/documents/versioningEntry");
 import appUrl = require("common/appUrl");
 import getVersioningsCommand = require("commands/database/documents/getVersioningsCommand");
 import saveVersioningCommand = require("commands/database/documents/saveVersioningCommand");
+import globalConfig = require("viewmodels/manage/globalConfig/globalConfig");
+import settingsAccessAuthorizer = require("common/settingsAccessAuthorizer");
+import database = require("models/resources/database");
+
 
 class globalConfigVersioning extends viewModelBase {
     activated = ko.observable<boolean>(false);
 
-    versionings = ko.observableArray<versioningEntry>().extend({ required: true });
+    developerLicense = globalConfig.developerLicense;
+    canUseGlobalConfigurations = globalConfig.canUseGlobalConfigurations;
+    versionings = ko.observableArray<versioningEntry>();
     toRemove: versioningEntry[];
     isSaveEnabled: KnockoutComputed<boolean>;
-
-    constructor() {
-        super();
-        this.versionings = ko.observableArray<versioningEntry>();
-    }
+    settingsAccess = new settingsAccessAuthorizer();
 
     canActivate(args: any): any {
         super.canActivate(args);
 
         var deferred = $.Deferred();
-        var db = appUrl.getDatabase();
-        this.fetchVersioningEntries(db)
-            .done(() => deferred.resolve({ can: true }))
-            .fail(() => deferred.resolve({ redirect: appUrl.forDatabaseSettings(db) }));
+        if (this.settingsAccess.isForbidden()) {
+            deferred.resolve({ can: true });
+        } else {
+            this.fetchVersioningEntries(null)
+                .done(() => deferred.resolve({ can: true }))
+                .fail(() => deferred.resolve({ redirect: appUrl.forDatabaseSettings(null) }));
+        }
+        
         return deferred;
     }
 
-    activate(args) {
+    activate(args: any) {
         super.activate(args);
         this.updateHelpLink("1UZ5WL");
         this.toRemove = [];
@@ -36,7 +42,7 @@ class globalConfigVersioning extends viewModelBase {
         this.isSaveEnabled = ko.computed<boolean>(() => this.dirtyFlag().isDirty());
     }
 
-    private fetchVersioningEntries(db): JQueryPromise<any> {
+    private fetchVersioningEntries(db: database): JQueryPromise<any> {
         var task: JQueryPromise<versioningEntry[]> = new getVersioningsCommand(db, true).execute();
 
         task.done((versionings: versioningEntry[]) => this.versioningsLoaded(versionings));
@@ -49,10 +55,9 @@ class globalConfigVersioning extends viewModelBase {
     }
 
     syncChanges(deleteConfig: boolean) {
-        var db = appUrl.getDatabase();
         if (deleteConfig) {
             var deleteTask = new saveVersioningCommand(
-                db,
+                null,
                 [],
                 this.versionings().map((v) => { return v.toDto(true); }).concat(this.toRemove.map((v) => { return v.toDto(true); })),
                 true).execute();
@@ -63,7 +68,7 @@ class globalConfigVersioning extends viewModelBase {
             });
         } else {
             var saveTask = new saveVersioningCommand(
-                db,
+                null,
                 this.versionings().map((v) => { return v.toDto(true); }),
                 this.toRemove.map((v) => { return v.toDto(true); }),
                 true).execute();

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -15,6 +16,7 @@ using Voron;
 using Voron.Data;
 using Sparrow;
 using Sparrow.Logging;
+using Voron.Data.Tables;
 
 namespace Raven.Server.ServerWide
 {
@@ -27,29 +29,37 @@ namespace Raven.Server.ServerWide
 
         public CancellationToken ServerShutdown => shutdownNotification.Token;
 
-        private static readonly ILog Log = LogManager.GetLogger(typeof(ServerStore));
+        private static Logger _logger;
 
         private StorageEnvironment _env;
 
         private UnmanagedBuffersPool _pool;
+        private TableSchema _itemsSchema;
 
         public readonly DatabasesLandlord DatabasesLandlord;
 
         private readonly IList<IDisposable> toDispose = new List<IDisposable>();
         public readonly RavenConfiguration Configuration;
-        private readonly LoggerSetup _loggerSetup;
-        public readonly MetricsScheduler MetricsScheduler;
+        public readonly IoMetrics IoMetrics;
 
         private readonly TimeSpan _frequencyToCheckForIdleDatabases = TimeSpan.FromMinutes(1);
 
-        public ServerStore(RavenConfiguration configuration, LoggerSetup loggerSetup)
+        public ServerStore(RavenConfiguration configuration)
         {
             if (configuration == null) throw new ArgumentNullException(nameof(configuration));
-            MetricsScheduler = new MetricsScheduler();
+            IoMetrics = new IoMetrics(8,8); // TODO:: increase this to 256,256 ?
             Configuration = configuration;
-            _loggerSetup = loggerSetup;
+            _logger = LoggerSetup.Instance.GetLogger<ServerStore>("ServerStore");
+            DatabasesLandlord = new DatabasesLandlord(this);
 
-            DatabasesLandlord = new DatabasesLandlord(this, _loggerSetup);
+            // We use the follow format for the items data
+            // { lowered key, key, data }
+            _itemsSchema = new TableSchema();
+            _itemsSchema.DefineKey(new TableSchema.SchemaIndexDef
+            {
+                StartIndex = 0,
+                Count = 0
+            });
         }
 
         public TransactionContextPool ContextPool;
@@ -62,10 +72,9 @@ namespace Raven.Server.ServerWide
 
             AbstractLowMemoryNotification.Initialize(ServerShutdown, Configuration);
 
-            if (Log.IsDebugEnabled)
-            {
-                Log.Debug("Starting to open server store for {0}", Configuration.Core.RunInMemory ? "<memory>" : Configuration.Core.DataDirectory);
-            }
+            if (_logger.IsInfoEnabled)
+                _logger.Info("Starting to open server store for " + (Configuration.Core.RunInMemory ? "<memory>" : Configuration.Core.DataDirectory));
+
             var options = Configuration.Core.RunInMemory
                 ? StorageEnvironmentOptions.CreateMemoryOnly()
                 : StorageEnvironmentOptions.ForPath(Configuration.Core.DataDirectory);
@@ -74,42 +83,42 @@ namespace Raven.Server.ServerWide
 
             try
             {
-                _env = new StorageEnvironment(options, _loggerSetup);
+                _env = new StorageEnvironment(options);
                 using (var tx = _env.WriteTransaction())
                 {
-                    tx.CreateTree("items");
+                    tx.DeleteTree("items");// note the different casing, we remove the old items tree 
+                    _itemsSchema.Create(tx, "Items");
                     tx.Commit();
                 }
             }
             catch (Exception e)
             {
-                if (Log.IsWarnEnabled)
-                {
-                    Log.FatalException(
+                if (_logger.IsOperationsEnabled)
+                    _logger.Operations(
                         "Could not open server store for " + (Configuration.Core.RunInMemory ? "<memory>" : Configuration.Core.DataDirectory), e);
-                }
                 options.Dispose();
                 throw;
             }
 
-            _pool = new UnmanagedBuffersPool("ServerStore");// 128MB should be more than big enough for the server store
-            ContextPool = new TransactionContextPool(_pool, _env);
+            ContextPool = new TransactionContextPool(_env);
             _timer = new Timer(IdleOperations, null, _frequencyToCheckForIdleDatabases, TimeSpan.FromDays(7));
         }
 
         public BlittableJsonReaderObject Read(TransactionOperationContext ctx, string id)
         {
-            var dbs = ctx.Transaction.InnerTransaction.ReadTree("items");
-            var result = dbs.Read(id);
-            if (result == null)
+            var items = new Table(_itemsSchema, "Items", ctx.Transaction.InnerTransaction);
+            var reader = items.ReadByKey(Slice.From(ctx.Allocator, id.ToLowerInvariant()));
+            if (reader == null)
                 return null;
-            return new BlittableJsonReaderObject(result.Reader.Base, result.Reader.Length, ctx);
+            int size;
+            var ptr = reader.Read(2, out size);
+            return new BlittableJsonReaderObject(ptr, size, ctx);
         }
 
         public void Delete(TransactionOperationContext ctx, string id)
         {
-            var dbs = ctx.Transaction.InnerTransaction.ReadTree("items");
-            dbs.Delete(id);
+            var items = new Table(_itemsSchema, "Items", ctx.Transaction.InnerTransaction);
+            items.DeleteByKey(Slice.From(ctx.Allocator, id.ToLowerInvariant()));
         }
 
         public class Item
@@ -120,45 +129,45 @@ namespace Raven.Server.ServerWide
 
         public IEnumerable<Item> StartingWith(TransactionOperationContext ctx, string prefix, int start, int take)
         {
-            var dbs = ctx.Transaction.InnerTransaction.ReadTree("items");
-            using (var it = dbs.Iterate(true))
+            var items = new Table(_itemsSchema, "Items", ctx.Transaction.InnerTransaction);
+            var loweredPrefix = Slice.From(ctx.Allocator, prefix.ToLowerInvariant());
+            foreach (var result in items.SeekByPrimaryKey(loweredPrefix, startsWith: true))
             {
-                it.RequiredPrefix = Slice.From(ctx.Allocator, prefix, ByteStringType.Immutable);
-                if (it.Seek(it.RequiredPrefix) == false)
-                    yield break;
-
-                do
+                if (start > 0)
                 {
-                    if (start > 0)
-                    {
-                        start--;
-                        continue;
-                    }
-                    if (take-- <= 0)
-                        yield break;
-
-                    yield return GetCurrentItem(ctx, it);
-                } while (it.MoveNext());
+                    start--;
+                    continue;
+                }
+                if (take-- <= 0)
+                    yield break;
+                yield return GetCurrentItem(ctx, result);
             }
         }
 
-        private static Item GetCurrentItem(JsonOperationContext ctx, IIterator it)
+        private static Item GetCurrentItem(JsonOperationContext ctx, TableValueReader reader)
         {
-            var readerForCurrent = it.CreateReaderForCurrent();
+            int size;
             return new Item
             {
-                Data = new BlittableJsonReaderObject(readerForCurrent.Base, readerForCurrent.Length, ctx),
-                Key = it.CurrentKey.ToString()
+                Data = new BlittableJsonReaderObject(reader.Read(2, out size), size, ctx),
+                Key = Encoding.UTF8.GetString(reader.Read(1, out size), size)
             };
         }
 
 
         public void Write(TransactionOperationContext ctx, string id, BlittableJsonReaderObject doc)
         {
-            var dbs = ctx.Transaction.InnerTransaction.ReadTree("items");
+            var idAsSlice = Slice.From(ctx.Allocator, id);
+            var loweredId = Slice.From(ctx.Allocator, id.ToLowerInvariant());
+            var items = new Table(_itemsSchema, "Items", ctx.Transaction.InnerTransaction);
 
-            var ptr = dbs.DirectAdd(id, doc.Size);
-            doc.CopyTo(ptr);
+
+            items.Set(new TableValueBuilder
+            {
+                loweredId,
+                idAsSlice,
+                {doc.BasePointer, doc.Size}
+            });
         }
 
         public void Dispose()
@@ -168,10 +177,8 @@ namespace Raven.Server.ServerWide
 
             ContextPool?.Dispose();
 
-            toDispose.Add(_pool);
             toDispose.Add(_env);
             toDispose.Add(DatabasesLandlord);
-            toDispose.Add(MetricsScheduler);
 
             var errors = new List<Exception>();
             foreach (var disposable in toDispose)
@@ -207,7 +214,8 @@ namespace Raven.Server.ServerWide
                     }
                     catch (Exception e)
                     {
-                        Log.WarnException("Error during idle operation run for " + db.Key, e);
+                        if (_logger.IsInfoEnabled)
+                            _logger.Info("Error during idle operation run for " + db.Key, e);
                     }
                 }
 
@@ -229,7 +237,8 @@ namespace Raven.Server.ServerWide
                 }
                 catch (Exception e)
                 {
-                    Log.WarnException("Error during idle operations for the server", e);
+                    if (_logger.IsInfoEnabled)
+                        _logger.Info("Error during idle operations for the server", e);
                 }
             }
             finally

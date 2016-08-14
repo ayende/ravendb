@@ -41,6 +41,6 @@
       "type": "platform",
       "version": "1.0.0"
     },
-    "Regression.Benchmark": "4.0.0-*"
+    "AsyncFriendlyStackTrace": "1.4.0"
   }
 }

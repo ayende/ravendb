@@ -22,8 +22,9 @@ class versioning extends viewModelBase {
         return deferred;
     }
 
-    activate(args) {
+    activate(args: any) {
         super.activate(args);
+        this.updateHelpLink("RCLD9I");
 
         this.dirtyFlag = new ko.DirtyFlag([this.versioning]);
         this.isSaveEnabled = ko.computed<boolean>(() => this.dirtyFlag().isDirty());

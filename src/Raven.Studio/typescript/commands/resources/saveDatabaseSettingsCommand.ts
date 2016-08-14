@@ -12,13 +12,13 @@ class saveDatabaseSettingsCommand extends commandBase {
         }
     }
 
-    execute(): JQueryPromise<any> {
+    execute(): JQueryPromise<databaseDocumentSaveDto> {
         this.reportInfo("Saving Database Settings for '" + this.db.name + "'...");
 
         var jQueryOptions: JQueryAjaxSettings = {
             headers: {
                 'If-None-Match': this.document.__metadata.etag,
-                'Raven-Temp-Allow-Bundles-Change': this.document.__metadata['Raven-Temp-Allow-Bundles-Change']
+                'Raven-Temp-Allow-Bundles-Change': (<any>this.document.__metadata)['Raven-Temp-Allow-Bundles-Change']
             }
         };
 
@@ -30,6 +30,7 @@ class saveDatabaseSettingsCommand extends commandBase {
         saveTask.fail((response: JQueryXHR) => this.reportError("Failed to save Database Settings!", response.responseText, response.statusText));
         return saveTask;
     }
+
 }
 
 export = saveDatabaseSettingsCommand;

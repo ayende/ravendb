@@ -3,7 +3,7 @@ import database = require("models/resources/database");
 
 class getDocumentsMetadataByIDPrefixCommand extends commandBase {
 
-    constructor(private prefix:string, private resultsAmount: number, private db: database) {
+    constructor(private prefix:string,private resultsAmount: number, private db: database) {
         super();
     }
 
@@ -11,7 +11,7 @@ class getDocumentsMetadataByIDPrefixCommand extends commandBase {
         var url = '/docs';
         var args = {
             'startsWith': this.prefix,
-            'exclude': null,
+            'exclude': <string> null,
             'start': 0,
             'pageSize': this.resultsAmount,
             'metadata-only': true

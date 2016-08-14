@@ -22,6 +22,7 @@ using Raven.Client.Extensions;
 using Raven.Client.Connection.Async;
 using System.Threading.Tasks;
 using Raven.Client.Document.Async;
+using Raven.Client.Http;
 using Raven.Client.Metrics;
 using Raven.Client.Smuggler;
 using Raven.Client.Util;
@@ -130,6 +131,8 @@ namespace Raven.Client.Document
             SharedOperationsHeaders = new System.Collections.Specialized.NameValueCollection();
             Conventions = new DocumentConvention();
         }
+
+        public RequestExecuter RequestExecuter { get; private set; }
 
         private string identifier;
 
@@ -328,6 +331,7 @@ namespace Raven.Client.Document
             AssertValidConfiguration();
 
             jsonRequestFactory = new HttpJsonRequestFactory(MaxNumberOfCachedRequests, HttpMessageHandlerFactory, Conventions.AcceptGzipContent, Conventions.AuthenticationScheme);
+            RequestExecuter = new RequestExecuter(this);
 
             try
             {

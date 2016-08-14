@@ -70,12 +70,14 @@ namespace Raven.Server.Web.System
 #if DEBUG
             ravenPath = Path.GetFullPath(ravenPath).Replace($"{Path.DirectorySeparatorChar}test{Path.DirectorySeparatorChar}", $"{Path.DirectorySeparatorChar}src{Path.DirectorySeparatorChar}");
 #endif
-
             if (File.Exists(ravenPath))
             {
+
                 await WriteFile(ravenPath);
                 return;
             }
+
+
             HttpContext.Response.StatusCode = 404;
             return;
 

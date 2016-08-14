@@ -4,7 +4,7 @@ interface collectionInfoDto extends indexResultsDto<documentDto> {
 }
 
 interface documentDto extends metadataAwareDto {
-
+    [key:string]: any;
 }
 
 interface conflictsInfoDto extends indexResultsDto<conflictDto> {
@@ -174,6 +174,16 @@ interface reducingBatchInfoDto {
     PerfStats: indexNameAndReducingPerformanceStats[];
 }
 
+interface deletionBatchInfoDto {
+    Id: number;
+    IndexName: string;
+    TotalDocumentCount: number;
+    StartedAt: string; // ISO date string.
+    StartedAtDate?: Date;
+    TotalDurationMs: number;
+    PerformanceStats: deletionPerformanceStatsDto[];
+}
+
 interface indexNameAndReducingPerformanceStats {
     indexName: string;
     stats: reducePerformanceStatsDto;
@@ -183,6 +193,10 @@ interface indexNameAndReducingPerformanceStats {
 interface reducePerformanceStatsDto {
     ReduceType?: string;
     LevelStats: reduceLevelPeformanceStatsDto[];
+}
+
+interface deletionPerformanceStatsDto extends basePerformanceStatsDto {
+    Name: string;
 }
 
 interface reduceLevelPeformanceStatsDto {
@@ -250,6 +264,7 @@ interface licenseStatusDto {
     Error: boolean;
     Details?:string;
     IsCommercial: boolean;
+    LicensePath: string;
     ValidCommercialLicenseSeen: boolean;
     Attributes: {
         periodicBackup: string;
@@ -257,6 +272,10 @@ interface licenseStatusDto {
         compression: string;
         quotas: string;
         authorization: string;
+        fips: string;
+        counters: string;
+        timeSeries: string;
+        globalConfigurations: string;
         documentExpiration: string;
         replication: string;
         versioning: string;
@@ -269,9 +288,16 @@ interface licenseStatusDto {
         maxParallelism: string;
         ravenfs: string;
         counterStorage: string;
-        timeSeries: string;
+        monitoring: string;
+        clustering: string;
         hotSpare: string;
+        updatesExpiration: string;
     }
+}
+
+interface supportCoverageDto {
+    Status: string;
+    EndsAt: string;
 }
 
 interface HotSpareDto {
@@ -358,9 +384,15 @@ interface replicationStatsDto {
     LastError: string;
 }
 
+interface documentCountDto {
+    Count: number;
+    Type: string;
+    IsEtl: boolean;
+}
+
 interface indexMergeSuggestionsDto {
     Suggestions: suggestionDto[];
-    Unmergables: Object;
+    Unmergables: any;
 }
 
 interface suggestionDto {
@@ -389,13 +421,13 @@ interface indexDefinitionDto {
     Indexes: any;
     SortOptions: any;
     Analyzers: any;
-    Fields: string[];
+    Fields: any; //TODO: type
     SuggestionsOptions: any;
     TermVectors: any;
     SpatialIndexes: any; // This will be an object with zero or more properties, each property being the name of one of the .Fields, its value being of type spatialIndexDto.
     InternalFieldsMapping: any;
     Type: string;
-    MaxIndexOutputsPerDocument;
+    MaxIndexOutputsPerDocument: number;
 }
 
 /*
@@ -443,6 +475,11 @@ interface indexResultsDto<T extends metadataAwareDto> {
     ResultEtag: string;
     Results: T[];
     SkippedResults: number;
+    TotalResults: number;
+}
+
+interface documentPreviewDto {
+    Results: documentDto[];
     TotalResults: number;
 }
 
@@ -508,6 +545,7 @@ interface replicationsDto {
 
 interface replicationClientConfigurationDto {
     FailoverBehavior?: string;
+    RequestTimeSlaThresholdInMilliseconds: number;
 }
 
 interface environmentColorDto {
@@ -597,6 +635,10 @@ interface storedQueryDto {
     Hash: number;
 }
 
+interface storedPatchDto extends patchDto {
+    Hash: number;
+}
+
 interface indexDataDto {
     name: string;
     hasReduce: boolean;
@@ -633,6 +675,7 @@ interface backupRequestDto {
 interface backupStatusDto {
     Started: string;
     Completed?: string;
+    Success?: string;
     IsRunning: boolean;
     Messages: backupMessageDto[];
 }
@@ -786,7 +829,7 @@ interface conflictVersionsDto {
     SourceId: string;
 }
 
-interface documentBase {
+interface documentBase extends dictionary<any> {
     getId(): string;
     getUrl(): string;
     getDocumentPropertyNames(): Array<string>;
@@ -878,8 +921,8 @@ interface subscriptionDto {
 interface subscriptionCriteriaDto {
     KeyStartsWith: string;
     BelongsToAnyCollection: Array<string>;
-    PropertiesMatch: Array<{ Key: string; Value; string}>;
-    PropertiesNotMatch: Array<{ Key: string; Value; string }>;
+    PropertiesMatch: Array<{ Key: string; Value: string}>;
+    PropertiesNotMatch: Array<{ Key: string; Value: string }>;
 }
 
 interface subscriptionConnectionOptionsDto {
@@ -1003,6 +1046,15 @@ interface taskMetadataDto {
     Type: string;
 }
 
+interface taskMetadataSummaryDto {
+    Type: string;
+    IndexId: number;
+    IndexName: string;
+    Count: number;
+    MinDate: string;
+    MaxDate: string;
+}
+
 interface requestTracingDto {
     Uri: string;
     Method: string;
@@ -1064,6 +1116,7 @@ interface filterSettingDto {
     Path: string;
     Values: string[];
     ShouldMatch: boolean;
+    ShouldMatchObservable?: KnockoutObservable<boolean>;
 }
 
 interface resourceStyleMap {
@@ -1092,6 +1145,7 @@ interface tenantDto {
     IsLoaded: boolean;
     Name: string;
     Disabled: boolean;
+    Bundles: Array<string>;
     IsAdminCurrentTenant: boolean;
 }
 
@@ -1190,12 +1244,25 @@ interface operationIdDto {
 interface operationStatusDto {
     Completed: boolean;
     Faulted: boolean;
-    State: any;
+    Canceled: boolean;
+    State: operationStateDto;
 }
 
-interface bulkOperationStatusDto extends operationStatusDto{
-    State: documentStateDto[];
+interface operationStateDto {
+    Error?: string;
+    Progress?: string;
+}
+
+interface bulkOperationStatusDto extends operationStatusDto {
     OperationProgress: bulkOperationProgress;
+}
+
+interface internalStorageBreakdownState extends operationStatusDto {
+    ReportResults: string[];
+}
+
+interface debugDocumentStatsStateDto extends operationStatusDto {
+    Stats: debugDocumentStatsDto;
 }
 
 interface documentStateDto {
@@ -1206,6 +1273,11 @@ interface documentStateDto {
 interface bulkOperationProgress {
     TotalEntries: number;
     ProcessedEntries: number;
+}
+
+
+interface dataDumperOperationStatusDto extends operationStatusDto {
+    ExceptionDetails: string;
 }
 
 interface importOperationStatusDto extends operationStatusDto{
@@ -1276,10 +1348,13 @@ interface countersReplicationTopologyConnectionDto {
 
 interface runningTaskDto {
     Id: number;
-    TaskStatus: string;
+    Status: operationStateDto;
     Exception: string;
-    ExceptionText: string;
-    Payload: string;
+    Killable: boolean;
+    Completed: boolean;
+    Faulted: boolean;
+    Canceled: boolean;
+    Description: string;
     TaskType: string;
     StartTime: string;
 }
@@ -1385,7 +1460,7 @@ interface triggerInfoDto {
 }
 
 interface copyFromParentDto<T> {
-    copyFromParent(parent: T);
+    copyFromParent(parent: T): void;
 }
 interface topologyDto {
     CurrentLeader: string;
@@ -1405,10 +1480,12 @@ interface nodeConnectionInfoDto {
     Password?: string;
     Domain?: string;
     ApiKey?: string;
+    IsNoneVoter?: boolean;
 }
 
 interface clusterConfigurationDto {
     EnableReplication: boolean;
+    DatabaseSettings?: dictionary<string>;
 }
 
 interface clusterNodeStatusDto {
@@ -1506,3 +1583,13 @@ interface collectionsStatsDto {
     Collections: dictionary<number>;
 }
 
+
+interface fetcherDto<T> {
+    (skip: number, take: number): JQueryPromise<PagedResultSet<T>>;
+}
+
+interface PagedResultSet<T> {
+    items: Array<T>;
+    totalResultCount: number;
+    additionalResultInfo?: any;
+}

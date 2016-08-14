@@ -1,24 +1,35 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+using System.IO.Compression;
+using System.Linq;
+using System.Runtime.InteropServices;
+using System.Threading.Tasks;
+using Raven.Abstractions;
+using Raven.Abstractions.Json;
 using Raven.Client.Document;
-using Raven.Client.Smuggler;
+using Raven.Client.Extensions;
+using Raven.Imports.Newtonsoft.Json;
+using Raven.Json.Linq;
+using FastTests;
+using FastTests.Client.Subscriptions;
+using FastTests.Server.Documents.Indexing.Auto;
+using FastTests.Server.Documents.Replication;
 
 namespace Tryouts
 {
-    internal class Program
+  
+    public class Program
     {
-        private static void Main(string[] args)
+        static void Main(string[] args)
         {
-            using (var store = new DocumentStore { Url = "http://localhost:8080", DefaultDatabase = "FreeDB" })
+            using (var x = new CriteriaScript())
             {
-                store.Initialize();
-                var sw = new Stopwatch();
-                sw.Start();
-                var task = store.Smuggler.ImportAsync(new DatabaseSmugglerOptions(), @"c:\dumps\freedb.raven.dump");
-                task.Wait();
-                sw.Stop();
-                Console.WriteLine(sw.ElapsedMilliseconds);
+                x.BasicCriteriaTest().Wait();
             }
         }
     }
 }
+

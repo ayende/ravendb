@@ -5,7 +5,7 @@ import getOperationStatusCommand = require("commands/operations/getOperationStat
  
 class performSmugglingCommand extends commandBase {
 
-    constructor(private migration: serverSmugglingDto, private db: database, private updateMigrationStatus: (serverSmugglingOperationStateDto) => void) { 
+    constructor(private migration: serverSmugglingDto, private db: database, private updateMigrationStatus: (status: serverSmugglingOperationStateDto) => void) { 
         super();
     }
 
@@ -25,10 +25,10 @@ class performSmugglingCommand extends commandBase {
     private monitorOperation(parentPromise: JQueryDeferred<any>, operationId: number) {
         new getOperationStatusCommand(appUrl.getDatabase(), operationId)
             .execute()
-            .done((result: operationStatusDto) => {
+            .done((result: serverSmugglingOperationStateDto) => {
             this.updateMigrationStatus(result);
             if (result.Completed) {
-                if (result.Faulted) {
+                if (result.Faulted || result.Canceled) {
                     this.reportError("Failed to perform server migration!", result.State.Error);
                     parentPromise.reject();
                 } else {

@@ -1,9 +1,11 @@
 using System;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Microsoft.Win32.SafeHandles;
+using Sparrow;
 using Voron.Exceptions;
 using Voron.Impl.Journal;
 using Voron.Impl.Paging;
@@ -58,19 +60,25 @@ namespace Voron.Platform.Win32
                     "Cannot write " + numberOfPages + " pages in a single write, the size is too large",
                     nameof(numberOfPages));
 
-            _nativeOverlapped->OffsetLow = (int) (position & 0xffffffff);
-            _nativeOverlapped->OffsetHigh = (int) (position >> 32);
+            _nativeOverlapped->OffsetLow = (int)(position & 0xffffffff);
+            _nativeOverlapped->OffsetHigh = (int)(position >> 32);
             _nativeOverlapped->EventHandle = IntPtr.Zero;
 
-            int written;
-            var writeSuccess = Win32NativeFileMethods.WriteFile(_handle, p, numberOfPages * _options.PageSize, out written, _nativeOverlapped);
+            Debug.Assert(_options.IoMetrics != null);
+
+            bool writeSuccess;
+            var nNumberOfBytesToWrite = numberOfPages * _options.PageSize;
+            using (_options.IoMetrics.MeterIoRate(_filename, IoMetrics.MeterType.Write, nNumberOfBytesToWrite))
+            {
+                int written;
+                writeSuccess = Win32NativeFileMethods.WriteFile(_handle, p, nNumberOfBytesToWrite,
+                    out written,
+                    _nativeOverlapped);
+            }
 
             if (writeSuccess == false)
                 throw new VoronUnrecoverableErrorException("Could not write to journal " + _filename,
                     new Win32Exception(Marshal.GetLastWin32Error()));
-
-            // TODO : Measure IO times (RavenDB-4659) - Wrote  {sizeToWrite/1024:#,#} kb in {sp.ElapsedMilliseconds:#,#} ms
-           
         }
 
         public int NumberOfAllocatedPages { get; }
@@ -78,7 +86,7 @@ namespace Voron.Platform.Win32
 
         public AbstractPager CreatePager()
         {
-            return new Win32MemoryMapPager(_options.PageSize,_filename);
+            return new Win32MemoryMapPager(_options,_filename);
         }
 
         public bool Read(long pageNumber, byte* buffer, int count)
@@ -131,7 +139,9 @@ namespace Voron.Platform.Win32
                 return;
 
             _disposed = true;
+
             GC.SuppressFinalize(this);
+            _options.IoMetrics.FileClosed(_filename);
             _readHandle?.Dispose();
             _readHandle = null;
             _handle?.Dispose();
@@ -157,6 +167,8 @@ namespace Voron.Platform.Win32
 
         public void Truncate(long size)
         {
+            if (Win32NativeFileMethods.FlushFileBuffers(_handle) == false)
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Failed to sync for " + _filename);
             Win32NativeFileMethods.SetFileLength(_handle, size);
         }
 

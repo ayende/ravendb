@@ -12,7 +12,7 @@ using Raven.Abstractions.Extensions;
 using Raven.Abstractions.Logging;
 using Raven.Server.Routing;
 using Raven.Server.ServerWide;
-
+using Sparrow.Logging;
 namespace Raven.Server.Web
 {
     public abstract class RequestHandler
@@ -20,8 +20,6 @@ namespace Raven.Server.Web
         public const string StartParameter = "start";
 
         public const string PageSizeParameter = "pageSize";
-
-        protected static readonly ILog Log = LogManager.GetLogger(typeof(RequestHandler).FullName);
 
         private RequestHandlerContext _context;
 

@@ -29,7 +29,7 @@ namespace Raven.Server.Documents.Handlers
             using (ContextPool.AllocateOperationContext(out context))
             {
                 var json = await context.ReadForDiskAsync(RequestBodyStream(), name);
-                var indexDefinition = JsonDeserialization.IndexDefinition(json);
+                var indexDefinition = JsonDeserializationServer.IndexDefinition(json);
                 indexDefinition.Name = name;
 
                 var indexId = Database.IndexStore.CreateIndex(indexDefinition);
@@ -38,11 +38,11 @@ namespace Raven.Server.Documents.Handlers
                 {
                     writer.WriteStartObject();
 
-                    writer.WritePropertyName(context.GetLazyString("Index"));
-                    writer.WriteString(context.GetLazyString(name));
+                    writer.WritePropertyName(("Index"));
+                    writer.WriteString((name));
                     writer.WriteComma();
 
-                    writer.WritePropertyName(context.GetLazyString("IndexId"));
+                    writer.WritePropertyName(("IndexId"));
                     writer.WriteInteger(indexId);
 
                     writer.WriteEndObject();
@@ -126,7 +126,7 @@ namespace Raven.Server.Documents.Handlers
 
                     if (namesOnly)
                     {
-                        writer.WriteString(context.GetLazyString(indexDefinition.Name));
+                        writer.WriteString((indexDefinition.Name));
                         continue;
                     }
 
@@ -172,7 +172,7 @@ namespace Raven.Server.Documents.Handlers
             using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
             {
                 writer.WriteStartObject();
-                writer.WritePropertyName(context.GetLazyString("IndexId"));
+                writer.WritePropertyName(("IndexId"));
                 writer.WriteInteger(newIndexId);
                 writer.WriteEndObject();
             }
@@ -185,9 +185,10 @@ namespace Raven.Server.Documents.Handlers
         {
             var name = GetQueryStringValueAndAssertIfSingleAndNotEmpty("name");
 
-            Database.IndexStore.DeleteIndex(name);
+            HttpContext.Response.StatusCode = Database.IndexStore.TryDeleteIndexIfExists(name)
+                ? (int) HttpStatusCode.NoContent
+                : (int) HttpStatusCode.NotFound;
 
-            HttpContext.Response.StatusCode = (int)HttpStatusCode.NoContent;
             return Task.CompletedTask;
         }
 
@@ -303,19 +304,19 @@ namespace Raven.Server.Documents.Handlers
 
                     writer.WriteStartObject();
 
-                    writer.WritePropertyName(context.GetLazyString("Name"));
-                    writer.WriteString(context.GetLazyString(index.Name));
+                    writer.WritePropertyName(("Name"));
+                    writer.WriteString((index.Name));
 
                     writer.WriteComma();
 
-                    writer.WritePropertyName(context.GetLazyString("Status"));
+                    writer.WritePropertyName(("Status"));
                     string status;
                     if (Database.Configuration.Indexing.Disabled)
                         status = "Disabled";
                     else
                         status = index.IsRunning ? "Running" : "Paused";
 
-                    writer.WriteString(context.GetLazyString(status));
+                    writer.WriteString((status));
 
                     writer.WriteEndObject();
                 }
@@ -403,11 +404,11 @@ namespace Raven.Server.Documents.Handlers
 
                     writer.WriteStartObject();
 
-                    writer.WritePropertyName(context.GetLazyString("Name"));
-                    writer.WriteString(context.GetLazyString(index.Name));
+                    writer.WritePropertyName(("Name"));
+                    writer.WriteString((index.Name));
                     writer.WriteComma();
 
-                    writer.WritePropertyName(context.GetLazyString("Errors"));
+                    writer.WritePropertyName(("Errors"));
                     writer.WriteStartArray();
                     var firstError = true;
                     foreach (var error in index.GetErrors())
@@ -421,27 +422,27 @@ namespace Raven.Server.Documents.Handlers
 
                         writer.WriteStartObject();
 
-                        writer.WritePropertyName(context.GetLazyString(nameof(error.Timestamp)));
-                        writer.WriteString(context.GetLazyString(error.Timestamp.GetDefaultRavenFormat()));
+                        writer.WritePropertyName((nameof(error.Timestamp)));
+                        writer.WriteString((error.Timestamp.GetDefaultRavenFormat()));
                         writer.WriteComma();
 
-                        writer.WritePropertyName(context.GetLazyString(nameof(error.Document)));
+                        writer.WritePropertyName((nameof(error.Document)));
                         if (string.IsNullOrWhiteSpace(error.Document) == false)
-                            writer.WriteString(context.GetLazyString(error.Document));
+                            writer.WriteString((error.Document));
                         else
                             writer.WriteNull();
                         writer.WriteComma();
 
-                        writer.WritePropertyName(context.GetLazyString(nameof(error.Action)));
+                        writer.WritePropertyName((nameof(error.Action)));
                         if (string.IsNullOrWhiteSpace(error.Action) == false)
-                            writer.WriteString(context.GetLazyString(error.Action));
+                            writer.WriteString((error.Action));
                         else
                             writer.WriteNull();
                         writer.WriteComma();
 
-                        writer.WritePropertyName(context.GetLazyString(nameof(error.Error)));
+                        writer.WritePropertyName((nameof(error.Error)));
                         if (string.IsNullOrWhiteSpace(error.Error) == false)
-                            writer.WriteString(context.GetLazyString(error.Error));
+                            writer.WriteString((error.Error));
                         else
                             writer.WriteNull();
 
@@ -496,7 +497,7 @@ namespace Raven.Server.Documents.Handlers
 
                         isFirst = false;
 
-                        writer.WriteString(context.GetLazyString(term));
+                        writer.WriteString((term));
                     }
 
                     writer.WriteEndArray();
@@ -555,15 +556,15 @@ namespace Raven.Server.Documents.Handlers
 
                     writer.WriteStartObject();
 
-                    writer.WritePropertyName(context.GetLazyString(nameof(stat.IndexName)));
-                    writer.WriteString(context.GetLazyString(stat.IndexName));
+                    writer.WritePropertyName((nameof(stat.IndexName)));
+                    writer.WriteString((stat.IndexName));
                     writer.WriteComma();
 
-                    writer.WritePropertyName(context.GetLazyString(nameof(stat.IndexId)));
+                    writer.WritePropertyName((nameof(stat.IndexId)));
                     writer.WriteInteger(stat.IndexId);
                     writer.WriteComma();
 
-                    writer.WritePropertyName(context.GetLazyString(nameof(stat.Performance)));
+                    writer.WritePropertyName((nameof(stat.Performance)));
                     writer.WriteStartArray();
                     var isFirstInternal = true;
                     foreach (var performance in stat.Performance)

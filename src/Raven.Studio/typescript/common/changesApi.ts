@@ -8,6 +8,7 @@ import commandBase = require("commands/commandBase");
 import folder = require("models/filesystem/folder");
 import getSingleAuthTokenCommand = require("commands/auth/getSingleAuthTokenCommand");
 import idGenerator = require("common/idGenerator");
+import eventSourceSettingStorage = require("common/eventSourceSettingStorage");
 import changesApiWarnStorage = require("common/changesApiWarnStorage");
 import messagePublisher = require("common/messagePublisher");
 
@@ -22,34 +23,36 @@ class changesApi {
     private readyStateOpen = 1;
     private isDisposing = false;
 
+    private disposed: boolean = false;
     private isCleanClose: boolean = false;
     private normalClosureCode = 1000;
     private normalClosureMessage = "CLOSE_NORMAL";
     static messageWasShownOnce: boolean = false;
     private successfullyConnectedOnce: boolean = false;
-    private sentMessages = [];
+    private sentMessages: any[] = [];
     private commandBase = new commandBase();
 
     private allReplicationConflicts = ko.observableArray<changesCallback<replicationConflictNotificationDto>>();
     private allDocsHandlers = ko.observableArray<changesCallback<documentChangeNotificationDto>>();
     private allIndexesHandlers = ko.observableArray<changesCallback<indexChangeNotificationDto>>();
     private allTransformersHandlers = ko.observableArray<changesCallback<transformerChangeNotificationDto>>();
-    private watchedPrefixes = {};
+    private watchedDocuments: dictionary<KnockoutObservableArray<changesCallback<documentChangeNotificationDto>>> = {};
+    private watchedPrefixes: dictionary<KnockoutObservableArray<changesCallback<documentChangeNotificationDto>>> = {};
     private allBulkInsertsHandlers = ko.observableArray<changesCallback<bulkInsertChangeNotificationDto>>();
 
     private allFsSyncHandlers = ko.observableArray<changesCallback<synchronizationUpdateNotification>>();
     private allFsConflictsHandlers = ko.observableArray<changesCallback<synchronizationConflictNotification>>();
     private allFsConfigHandlers = ko.observableArray<changesCallback<filesystemConfigNotification>>();
     private allFsDestinationsHandlers = ko.observableArray<changesCallback<filesystemConfigNotification>>();
-    private watchedFolders = {};
+    private watchedFolders: dictionary<KnockoutObservableArray<changesCallback<fileChangeNotification>>> = {};
 
     private allCountersHandlers = ko.observableArray<changesCallback<counterChangeNotification>>();
-    private watchedCounter = {};
-    private watchedCountersInGroup = {};
+    private watchedCounter: dictionary<KnockoutObservableArray<changesCallback<counterChangeNotification>>> = {};
+    private watchedCountersInGroup: dictionary<KnockoutObservableArray<changesCallback<countersInGroupNotification>>> = {};
     private allCounterBulkOperationsHandlers = ko.observableArray<changesCallback<counterBulkOperationNotificationDto>>();
 
     private allTimeSeriesHandlers = ko.observableArray<changesCallback<timeSeriesKeyChangeNotification>>();
-    private watchedTimeSeries = {};
+    private watchedTimeSeries: dictionary<KnockoutObservableArray<changesCallback<timeSeriesKeyChangeNotification>>> = {};
     private allTimeSeriesBulkOperationsHandlers = ko.observableArray<changesCallback<timeSeriesBulkOperationNotificationDto>>();
     
     constructor(private rs: resource, coolDownWithDataLoss: number = 0, isMultyTenantTransport:boolean = false) {
@@ -71,6 +74,11 @@ class changesApi {
     }
 
     private connect(action: Function, recoveringFromWebsocketFailure: boolean = false) {
+        if (this.disposed) {
+            if (!!this.connectToChangesApiTask)
+                this.connectToChangesApiTask.resolve();
+            return;
+        }
         if (!recoveringFromWebsocketFailure) {
             this.connectToChangesApiTask = $.Deferred();
         }
@@ -109,11 +117,11 @@ class changesApi {
             });
     }
 
-    private connectWebSocket() {
+    private connectWebSocket(connectionString: string) {
         var connectionOpened: boolean = false;
 
         var wsProtocol = window.location.protocol === "https:" ? "wss://" : "ws://";
-        var url = wsProtocol + window.location.host + this.resourcePath + "/changes";
+        var url = wsProtocol + window.location.host + this.resourcePath + "/changes/websocket?" + connectionString;
         this.webSocket = new WebSocket(url);
 
         this.webSocket.onmessage = (e) => this.onMessage(e);
@@ -159,7 +167,7 @@ class changesApi {
     }
 
     private send(command: string, value?: string, needToSaveSentMessages: boolean = true) {
-        /*TODO: Implement
+        /* TODO:
         this.connectToChangesApiTask.done(() => {
             var args = {
                 id: this.eventsId,
@@ -175,7 +183,7 @@ class changesApi {
         });*/
     }
 
-    private saveSentMessages(needToSaveSentMessages: boolean, command: string, args) {
+    private saveSentMessages(needToSaveSentMessages: boolean, command: string, args: any) {
         if (needToSaveSentMessages) {
             if (command.slice(0, 2) === "un") {
                 var commandName = command.slice(2, command.length);
@@ -186,7 +194,7 @@ class changesApi {
         }
     }
 
-    private fireEvents<T>(events: Array<any>, param: T, filter: (T) => boolean) {
+    private fireEvents<T>(events: Array<any>, param: T, filter: (element: T) => boolean) {
         for (var i = 0; i < events.length; i++) {
             if (filter(param)) {
                 events[i].fire(param);
@@ -202,26 +210,32 @@ class changesApi {
 
         var value = eventDto.Value;
         if (eventType === "DocumentChangeNotification") {
-            this.fireEvents(this.allDocsHandlers(), value, (event) => true);
+            this.fireEvents(this.allDocsHandlers(), value, () => true);
+
+            for (var key in this.watchedDocuments) {
+                var docCallbacks = this.watchedDocuments[key];
+                this.fireEvents(docCallbacks(), value, (event) => event.Id != null && event.Id === key);
+            }
+
             for (var key in this.watchedPrefixes) {
-                var docCallbacks = <KnockoutObservableArray<documentChangeNotificationDto>> this.watchedPrefixes[key];
+                var docCallbacks = this.watchedPrefixes[key];
                 this.fireEvents(docCallbacks(), value, (event) => event.Id != null && event.Id.match("^" + key));
             }
         } else if (eventType === "IndexChangeNotification") {
-            this.fireEvents(this.allIndexesHandlers(), value, (event) => true);
+            this.fireEvents(this.allIndexesHandlers(), value, () => true);
         } else if (eventType === "TransformerChangeNotification") {
-            this.fireEvents(this.allTransformersHandlers(), value, (event) => true);
+            this.fireEvents(this.allTransformersHandlers(), value, () => true);
         } else if (eventType === "BulkInsertChangeNotification") {
-            this.fireEvents(this.allBulkInsertsHandlers(), value, (event) => true);
+            this.fireEvents(this.allBulkInsertsHandlers(), value, () => true);
         } else if (eventType === "SynchronizationUpdateNotification") {
-            this.fireEvents(this.allFsSyncHandlers(), value, (event) => true);
+            this.fireEvents(this.allFsSyncHandlers(), value, () => true);
         } else if (eventType === "ReplicationConflictNotification") {
-            this.fireEvents(this.allReplicationConflicts(), value, (event) => true);
+            this.fireEvents(this.allReplicationConflicts(), value, () => true);
         } else if (eventType === "ConflictNotification") {
-            this.fireEvents(this.allFsConflictsHandlers(), value, (event) => true);
+            this.fireEvents(this.allFsConflictsHandlers(), value, () => true);
         } else if (eventType === "FileChangeNotification") {
             for (var key in this.watchedFolders) {
-                var folderCallbacks = <KnockoutObservableArray<fileChangeNotification>> this.watchedFolders[key];
+                var folderCallbacks = this.watchedFolders[key];
                 this.fireEvents(folderCallbacks(), value, (event) => {
                     var notifiedFolder = folder.getFolderFromFilePath(event.File);
                     var match: string[] = null;
@@ -233,14 +247,14 @@ class changesApi {
             }
         } else if (eventType === "ConfigurationChangeNotification") {
             if (value.Name.indexOf("Raven/Synchronization/Destinations") >= 0) {
-                this.fireEvents(this.allFsDestinationsHandlers(), value, (e) => true);
+                this.fireEvents(this.allFsDestinationsHandlers(), value, () => true);
             }
-            this.fireEvents(this.allFsConfigHandlers(), value, (e) => true);
+            this.fireEvents(this.allFsConfigHandlers(), value, () => true);
         } else if (eventType === "ChangeNotification") {
-            this.fireEvents(this.allCountersHandlers(), value, (event) => true);
+            this.fireEvents(this.allCountersHandlers(), value, () => true);
             //TODO: send events to other subscriptions
         } else if (eventType === "KeyChangeNotification") {
-            this.fireEvents(this.allTimeSeriesHandlers(), value, (event) => true);
+            this.fireEvents(this.allTimeSeriesHandlers(), value, () => true);
             //TODO: send events to other subscriptions
         } else {
             console.log("Unhandled Changes API notification type: " + eventType);
@@ -303,11 +317,27 @@ class changesApi {
         });
     }
 
+    watchDocument(docId: string, onChange: (e: documentChangeNotificationDto) => void): changeSubscription {
+        var callback = new changesCallback<documentChangeNotificationDto>(onChange);
+        if (typeof (this.watchedDocuments[docId]) === "undefined") {
+            this.send("watch-doc", docId);
+            this.watchedDocuments[docId] = ko.observableArray<changesCallback<documentChangeNotificationDto>>();
+        }
+        this.watchedDocuments[docId].push(callback);
+        return new changeSubscription(() => {
+            this.watchedDocuments[docId].remove(callback);
+            if (this.watchedDocuments[docId]().length === 0) {
+                delete this.watchedDocuments[docId];
+                this.send("unwatch-doc", docId);
+            }
+        });
+    }
+
     watchDocsStartingWith(docIdPrefix: string, onChange: (e: documentChangeNotificationDto) => void): changeSubscription {
         var callback = new changesCallback<documentChangeNotificationDto>(onChange);
         if (typeof (this.watchedPrefixes[docIdPrefix]) === "undefined") {
             this.send("watch-prefix", docIdPrefix);
-            this.watchedPrefixes[docIdPrefix] = ko.observableArray();
+            this.watchedPrefixes[docIdPrefix] = ko.observableArray<changesCallback<documentChangeNotificationDto>>();
         }
         this.watchedPrefixes[docIdPrefix].push(callback);
         return new changeSubscription(() => {
@@ -365,7 +395,7 @@ class changesApi {
         var callback = new changesCallback<fileChangeNotification>(onChange);
         if (typeof (this.watchedFolders[folder]) === "undefined") {
             this.send("watch-folder", folder);
-            this.watchedFolders[folder] = ko.observableArray();
+            this.watchedFolders[folder] = ko.observableArray<changesCallback<fileChangeNotification>>();
         }
         this.watchedFolders[folder].push(callback);
         return new changeSubscription(() => {
@@ -424,7 +454,7 @@ class changesApi {
         var callback = new changesCallback<counterChangeNotification>(onChange);
         if (typeof (this.watchedCounter[counterId]) === "undefined") {
             this.send("watch-counter-change", counterId);
-            this.watchedCounter[counterId] = ko.observableArray();
+            this.watchedCounter[counterId] = ko.observableArray<changesCallback<counterChangeNotification>>();
         }
         this.watchedCounter[counterId].push(callback);
         return new changeSubscription(() => {
@@ -440,7 +470,7 @@ class changesApi {
         var callback = new changesCallback<countersInGroupNotification>(onChange);
         if (typeof (this.watchedCountersInGroup[group]) === "undefined") {
             this.send("watch-counters-in-group", group);
-            this.watchedCountersInGroup[group] = ko.observableArray();
+            this.watchedCountersInGroup[group] = ko.observableArray<changesCallback<countersInGroupNotification>>();
         }
         this.watchedCountersInGroup[group].push(callback);
         return new changeSubscription(() => {
@@ -471,7 +501,7 @@ class changesApi {
         var callback = new changesCallback<timeSeriesKeyChangeNotification>(onChange);
         if (typeof (this.watchedTimeSeries[fullId]) === "undefined") {
             this.send("watch-time-series-key-change", fullId);
-            this.watchedTimeSeries[fullId] = ko.observableArray();
+            this.watchedTimeSeries[fullId] = ko.observableArray<changesCallback<timeSeriesKeyChangeNotification>>();
         }
         this.watchedTimeSeries[fullId].push(callback);
         return new changeSubscription(() => {
@@ -513,8 +543,8 @@ class changesApi {
     
     dispose() {
         this.isDisposing = true;
-
-        this.connectToChangesApiTask.always(() => {
+        this.disposed = true;
+        this.connectToChangesApiTask.done(() => {
             var isCloseNeeded: boolean;
 
             if (this.webSocket && this.webSocket.readyState === this.readyStateOpen){
@@ -522,7 +552,7 @@ class changesApi {
                 this.webSocket.close(this.normalClosureCode, this.normalClosureMessage);
                 isCloseNeeded = true;
             }
-
+                
             if (isCloseNeeded) {
                 this.send("disconnect", undefined, false);
                 this.isCleanClose = true;

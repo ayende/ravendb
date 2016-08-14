@@ -20,13 +20,20 @@ class periodicExport extends viewModelBase {
     hasGlobalValues = ko.observable<boolean>(false);
     isForbidden = ko.observable<boolean>(false);
     
+    showOnDiskExportRow: KnockoutComputed<boolean>;
 
     constructor() {
         super();
         this.activeDatabase.subscribe((db: database) => this.isForbidden(!db.isAdminCurrentTenant()));
+        this.showOnDiskExportRow = ko.computed(() => {
+            var localSetting = this.backupSetup() && this.backupSetup().onDiskExportEnabled();
+            var globalSetting = this.hasGlobalValues() && this.globalBackupSetup().onDiskExportEnabled();
+            return localSetting || globalSetting;
+        });
     }
 
     attached() {
+        super.attached();
         var content = "Could not decrypt the access settings, if you are running on IIS, make sure that load user profile is set to true. " +
             "Alternatively this can happen when the server was started using different account than when the settings were created.<br />" +
             "Reenter your settings and click save.";
@@ -69,7 +76,7 @@ class periodicExport extends viewModelBase {
         return deferred;
     }
 
-    activate(args) {
+    activate(args: any) {
         super.activate(args);
         this.updateHelpLink("OU78CB");
         
@@ -85,7 +92,7 @@ class periodicExport extends viewModelBase {
         });
     }
 
-    fetchPeriodicExportSetup(db): JQueryPromise<any> {
+    fetchPeriodicExportSetup(db: database): JQueryPromise<any> {
         var deferred = $.Deferred();
         new getEffectivePeriodicExportCommand(db)
             .execute()
@@ -101,7 +108,7 @@ class periodicExport extends viewModelBase {
         return deferred;
     }
 
-    fetchPeriodicExportAccountsSettings(db): JQueryPromise<any> {
+    fetchPeriodicExportAccountsSettings(db: database): JQueryPromise<any> {
         var task = $.Deferred();
         var dbSettingsTask = new getDatabaseSettingsCommand(db)
             .execute()

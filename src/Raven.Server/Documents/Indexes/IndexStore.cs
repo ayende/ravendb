@@ -20,13 +20,14 @@ using Raven.Server.Documents.Indexes.Static;
 using Raven.Server.Utils;
 using Voron.Platform.Posix;
 using Sparrow;
+using Sparrow.Logging;
 
 namespace Raven.Server.Documents.Indexes
 {
     public class IndexStore : IDisposable
     {
-        private static readonly ILog Log = LogManager.GetLogger(typeof(IndexStore));
 
+        private static Logger _logger;
         private readonly DocumentDatabase _documentDatabase;
 
         private readonly CollectionOfIndexes _indexes = new CollectionOfIndexes();
@@ -43,6 +44,7 @@ namespace Raven.Server.Documents.Indexes
         public IndexStore(DocumentDatabase documentDatabase)
         {
             _documentDatabase = documentDatabase;
+            _logger = LoggerSetup.Instance.GetLogger<IndexStore>(_documentDatabase.Name);
         }
 
         public Task InitializeAsync()
@@ -160,17 +162,25 @@ namespace Raven.Server.Documents.Indexes
 
                 Index index;
 
-                var indexDefinition = definition as AutoMapIndexDefinition;
-                if (indexDefinition != null)
-                    index = AutoMapIndex.CreateNew(indexId, indexDefinition, _documentDatabase);
-                else
+                if (definition is AutoMapIndexDefinition)
+                    index = AutoMapIndex.CreateNew(indexId, (AutoMapIndexDefinition)definition, _documentDatabase);
+                else if (definition is AutoMapReduceIndexDefinition)
+                    index = AutoMapReduceIndex.CreateNew(indexId, (AutoMapReduceIndexDefinition)definition, _documentDatabase);
+                else if (definition is StaticMapIndexDefinition)
                 {
-                    var reduceIndexDefinition = definition as AutoMapReduceIndexDefinition;
-                    if (reduceIndexDefinition != null)
-                        index = AutoMapReduceIndex.CreateNew(indexId, reduceIndexDefinition, _documentDatabase);
+                    var mapReduceIndexDef = definition as MapReduceIndexDefinition;
+
+                    if (mapReduceIndexDef != null)
+                    {
+                        index = MapReduceIndex.CreateNew(indexId, ((MapReduceIndexDefinition)definition).IndexDefinition, _documentDatabase);
+                    }
                     else
-                        throw new NotImplementedException("Unknown index definition type: ");
+                    {
+                        index = StaticMapIndex.CreateNew(indexId, ((StaticMapIndexDefinition)definition).IndexDefinition, _documentDatabase);
+                    }
                 }
+                else
+                    throw new NotImplementedException($"Unknown index definition type: {definition.GetType().FullName}");
 
                 return CreateIndexInternal(index, indexId);
             }
@@ -286,13 +296,14 @@ namespace Raven.Server.Documents.Indexes
             return ResetIndexInternal(index);
         }
 
-        public void DeleteIndex(string name)
+        public bool TryDeleteIndexIfExists(string name)
         {
             var index = GetIndex(name);
             if (index == null)
-                throw new InvalidOperationException("There is no index with name: " + name);
+                return false;
 
             DeleteIndexInternal(index.IndexId);
+            return true;
         }
 
         public void DeleteIndex(int id)
@@ -314,7 +325,8 @@ namespace Raven.Server.Documents.Indexes
                 }
                 catch (Exception e)
                 {
-                    Log.ErrorException($"Could not dispose index '{index.Name}' ({id}).", e);
+                    if (_logger.IsInfoEnabled)
+                        _logger.Info($"Could not dispose index '{index.Name}' ({id}).", e);
                 }
 
                 _documentDatabase.Notifications.RaiseNotifications(new IndexChangeNotification
@@ -404,7 +416,7 @@ namespace Raven.Server.Documents.Indexes
             //FlushMapIndexes();
             //FlushReduceIndexes();
 
-            var exceptionAggregator = new ExceptionAggregator(Log, $"Could not dispose {nameof(IndexStore)}");
+            var exceptionAggregator = new ExceptionAggregator(_logger, $"Could not dispose {nameof(IndexStore)}");
 
             foreach (var index in _indexes)
             {
@@ -425,20 +437,7 @@ namespace Raven.Server.Documents.Indexes
             lock (_locker)
             {
                 DeleteIndex(index.IndexId);
-
-                switch (index.Type)
-                {
-                    case IndexType.AutoMap:
-                        var autoMapIndex = (AutoMapIndex)index;
-                        var autoMapIndexDefinition = autoMapIndex.Definition;
-                        return CreateIndex(autoMapIndexDefinition);
-                    case IndexType.Map:
-                        var staticMapIndex = (StaticMapIndex)index;
-                        var staticMapIndexDefinition = staticMapIndex.Definition.IndexDefinition;
-                        return CreateIndex(staticMapIndexDefinition);
-                    default:
-                        throw new NotSupportedException(index.Type.ToString());
-                }
+                return CreateIndex(index.Definition);
             }
         }
 
@@ -474,7 +473,8 @@ namespace Raven.Server.Documents.Indexes
                         // TODO arek: I think we can ignore auto indexes here, however for static ones try to retrieve names
                         var fakeIndex = new FaultyInMemoryIndex(indexId, IndexDefinitionBase.TryReadNameFromMetadataFile(indexDirectory));
 
-                        Log.ErrorException($"Could not open index with id {indexId}. Created in-memory, fake instance: {fakeIndex.Name}", e);
+                        if (_logger.IsInfoEnabled)
+                            _logger.Info($"Could not open index with id {indexId}. Created in-memory, fake instance: {fakeIndex.Name}", e);
                         // TODO arek: add alert
 
                         _indexes.Add(fakeIndex);
@@ -556,7 +556,8 @@ namespace Raven.Server.Documents.Indexes
                         if (lastQuery >= timeToWaitBeforeMarkingAutoIndexAsIdle.AsTimeSpan)
                         {
                             item.Index.SetPriority(IndexingPriority.Idle);
-                            Log.Warn($"Changed index '{item.Index.Name} ({item.Index.IndexId})' priority to idle. Age: {age}. Last query: {lastQuery}. Query difference: {differenceBetweenNewestAndCurrentQueryingTime}.");
+                            if (_logger.IsInfoEnabled)
+                                _logger.Info($"Changed index '{item.Index.Name} ({item.Index.IndexId})' priority to idle. Age: {age}. Last query: {lastQuery}. Query difference: {differenceBetweenNewestAndCurrentQueryingTime}.");
                         }
                     }
 
@@ -568,7 +569,8 @@ namespace Raven.Server.Documents.Indexes
                     if (age <= ageThreshold || lastQuery >= timeToWaitBeforeDeletingAutoIndexMarkedAsIdle.AsTimeSpan)
                     {
                         DeleteIndex(item.Index.IndexId);
-                        Log.Warn($"Deleted index '{item.Index.Name} ({item.Index.IndexId})' due to idleness. Age: {age}. Last query: {lastQuery}.");
+                        if (_logger.IsInfoEnabled)
+                            _logger.Info($"Deleted index '{item.Index.Name} ({item.Index.IndexId})' due to idleness. Age: {age}. Last query: {lastQuery}.");
                     }
                 }
             }

@@ -5,16 +5,14 @@ import monitorRestoreCommand = require("commands/maintenance/monitorRestoreComma
 import appUrl = require("common/appUrl");
 
 class startRestoreCommand extends commandBase {
-    private db: database = appUrl.getSystemDatabase();
-
-    constructor(private defrag: boolean, private restoreRequest: databaseRestoreRequestDto, private updateRestoreStatus: (restoreStatusDto) => void) {
+    constructor(private defrag: boolean, private restoreRequest: databaseRestoreRequestDto, private updateRestoreStatus: (status: restoreStatusDto) => void) {
         super();
     }
 
     execute(): JQueryPromise<any> {
         var result = $.Deferred();
 
-        new deleteDocumentCommand('Raven/Restore/Status', this.db)
+        new deleteDocumentCommand('Raven/Restore/Status', null)
             .execute()
             .fail((response: JQueryXHR) => {
                 this.reportError("Failed to delete restore status document!", response.responseText, response.statusText);

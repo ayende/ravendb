@@ -9,6 +9,7 @@ using Raven.Server.Json;
 using Raven.Server.ServerWide.Context;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
+using Sparrow.Logging;
 using Voron;
 using Voron.Data.Tables;
 
@@ -16,14 +17,14 @@ namespace Raven.Server.Documents.Versioning
 {
     public unsafe class VersioningStorage
     {
-        private static readonly ILog Log = LogManager.GetLogger(typeof(DocumentDatabase));
+        private static Logger _logger;
 
         private readonly TableSchema _docsSchema = new TableSchema();
 
         private readonly VersioningConfiguration _versioningConfiguration;
 
-        private const string VersioningRevisions = "VersioningRevisions";
-        private const string VersioningRevisionsCount = "VersioningRevisionsCount";
+        private const string RevisionDocuments = "RevisionDocuments";
+        private const string RevisionsCount = "RevisionsCount";
 
         private readonly VersioningConfigurationCollection _emptyConfiguration = new VersioningConfigurationCollection();
 
@@ -31,6 +32,7 @@ namespace Raven.Server.Documents.Versioning
         {
             _versioningConfiguration = versioningConfiguration;
 
+            _logger = LoggerSetup.Instance.GetLogger<VersioningStorage>(database.Name);
             // The documents schema is as follows
             // 5 fields (lowered key, recored separator, etag, lazy string key, document)
             // We are you using the record separator in order to avoid loading another documents that has the same key prefix, 
@@ -41,13 +43,17 @@ namespace Raven.Server.Documents.Versioning
                 StartIndex = 0,
                 Count = 3,
             });
+            _docsSchema.DefineFixedSizeIndex("Etag", new TableSchema.FixedSizeSchemaIndexDef
+            {
+                StartIndex = 2,
+            });
 
             using (var tx = database.DocumentsStorage.Environment.WriteTransaction())
             {
-                tx.CreateTree(VersioningRevisions);
-                _docsSchema.Create(tx, VersioningRevisions);
+                tx.CreateTree(RevisionDocuments);
+                _docsSchema.Create(tx, RevisionDocuments);
 
-                tx.CreateTree(VersioningRevisionsCount);
+                tx.CreateTree(RevisionsCount);
 
                 tx.Commit();
             }
@@ -66,15 +72,15 @@ namespace Raven.Server.Documents.Versioning
 
                 try
                 {
-                    var versioningConfiguration = JsonDeserialization.VersioningConfiguration(configuration.Data);
+                    var versioningConfiguration = JsonDeserializationServer.VersioningConfiguration(configuration.Data);
                     return new VersioningStorage(database, versioningConfiguration);
                 }
                 catch (Exception e)
                 {
                     //TODO: This should generate an alert, so admin will know that something is very bad
                     //TODO: Or this should throw and we should have a config flag to ignore the error
-                    if (Log.IsWarnEnabled)
-                        Log.WarnException($"Cannot enable versioning for documents as the versioning configuration document {Constants.Versioning.RavenVersioningConfiguration} is not valid: {configuration.Data}", e);
+                    if (_logger.IsOperationsEnabled)
+                        _logger.Operations($"Cannot enable versioning for documents as the versioning configuration document {Constants.Versioning.RavenVersioningConfiguration} is not valid: {configuration.Data}", e);
                     return null;
                 }
             }
@@ -96,7 +102,7 @@ namespace Raven.Server.Documents.Versioning
             return _emptyConfiguration;
         }
 
-        public void PutVersion(DocumentsOperationContext context, string collectionName, string key, long newEtagBigEndian, BlittableJsonReaderObject document)
+        public void PutFromDocument(DocumentsOperationContext context, string collectionName, string key, long newEtagBigEndian, BlittableJsonReaderObject document)
         {
             var enableVersioning = false;
             BlittableJsonReaderObject metadata;
@@ -127,11 +133,24 @@ namespace Raven.Server.Documents.Versioning
             if (enableVersioning == false && configuration.Active == false)
                 return;
 
-            var table = new Table(_docsSchema, VersioningRevisions, context.Transaction.InnerTransaction);
+            var table = new Table(_docsSchema, RevisionDocuments, context.Transaction.InnerTransaction);
             var prefixSlice = GetSliceFromKey(context, key);
             var revisionsCount = IncrementCountOfRevisions(context, prefixSlice, 1);
             DeleteOldRevisions(context, table, prefixSlice, configuration.MaxRevisions, revisionsCount);
 
+            PutInternal(context, key, newEtagBigEndian, document, table);
+        }
+
+        public void PutDirect(DocumentsOperationContext context, string key, long etag, BlittableJsonReaderObject document)
+        {
+            var newEtagBigEndian = IPAddress.HostToNetworkOrder(etag);
+
+            var table = new Table(_docsSchema, RevisionDocuments, context.Transaction.InnerTransaction);
+            PutInternal(context, key, newEtagBigEndian, document, table);
+        }
+
+        private void PutInternal(DocumentsOperationContext context, string key, long newEtagBigEndian, BlittableJsonReaderObject document, Table table)
+        {
             byte* lowerKey;
             int lowerSize;
             byte* keyPtr;
@@ -168,17 +187,17 @@ namespace Raven.Server.Documents.Versioning
 
         private long IncrementCountOfRevisions(DocumentsOperationContext context, Slice prefixedLoweredKey, long delta)
         {
-            var numbers = context.Transaction.InnerTransaction.ReadTree(VersioningRevisionsCount);
+            var numbers = context.Transaction.InnerTransaction.ReadTree(RevisionsCount);
             return numbers.Increment(prefixedLoweredKey, delta);
         }
 
         private void DeleteCountOfRevisions(DocumentsOperationContext context, Slice prefixedLoweredKey)
         {
-            var numbers = context.Transaction.InnerTransaction.ReadTree(VersioningRevisionsCount);
+            var numbers = context.Transaction.InnerTransaction.ReadTree(RevisionsCount);
             numbers.Delete(prefixedLoweredKey);
         }
 
-        public void Delete(DocumentsOperationContext context, string collectionName, string key)
+        public void Delete(DocumentsOperationContext context, string collectionName, Slice loweredKey)
         {
             Debug.Assert(collectionName[0] != '@');
             
@@ -189,15 +208,18 @@ namespace Raven.Server.Documents.Versioning
             if (configuration.PurgeOnDelete == false)
                 return;
 
-            var table = new Table(_docsSchema, VersioningRevisions, context.Transaction.InnerTransaction);
-            var prefixSlice = GetSliceFromKey(context, key);
+            var table = new Table(_docsSchema, RevisionDocuments, context.Transaction.InnerTransaction);
+            var prefixKeyMem = context.Allocator.Allocate(loweredKey.Size +1);
+            loweredKey.CopyTo(0, prefixKeyMem.Ptr, 0, loweredKey.Size);
+            prefixKeyMem.Ptr[loweredKey.Size] = (byte)30; // the record separator
+            var prefixSlice = new Slice(SliceOptions.Key, prefixKeyMem);
             table.DeleteForwardFrom(_docsSchema.Indexes["KeyAndEtag"], prefixSlice, long.MaxValue);
             DeleteCountOfRevisions(context, prefixSlice);
         }
 
         public IEnumerable<Document> GetRevisions(DocumentsOperationContext context, string key, int start, int take)
         {
-            var table = new Table(_docsSchema, VersioningRevisions, context.Transaction.InnerTransaction);
+            var table = new Table(_docsSchema, RevisionDocuments, context.Transaction.InnerTransaction);
 
             var prefixSlice = GetSliceFromKey(context, key);
             // ReSharper disable once LoopCanBeConvertedToQuery
@@ -221,9 +243,34 @@ namespace Raven.Server.Documents.Versioning
             }
         }
 
+        public IEnumerable<Document> GetRevisionsAfter(DocumentsOperationContext context, long etag)
+        {
+            var table = new Table(_docsSchema, RevisionDocuments, context.Transaction.InnerTransaction);
+
+            foreach (var tvr in table.SeekForwardFrom(_docsSchema.FixedSizeIndexes["Etag"], etag))
+            {
+                var document = TableValueToDocument(context, tvr);
+                yield return document;
+            }
+        }
+
+        public IEnumerable<Document> GetRevisionsAfter(DocumentsOperationContext context, long etag, int take)
+        {
+            var table = new Table(_docsSchema, RevisionDocuments, context.Transaction.InnerTransaction);
+
+            foreach (var tvr in table.SeekForwardFrom(_docsSchema.FixedSizeIndexes["Etag"], etag))
+            {
+                var document = TableValueToDocument(context, tvr);
+                yield return document;
+
+                if (take-- <= 0)
+                    yield break;
+            }
+        }
+
         public static Slice GetSliceFromKey(DocumentsOperationContext context, string key)
         {
-            // REVIEW: Is this needed? Could we just use the ByteString?
+            // TODO: Is this needed? Could we just use the ByteString?
 
             var byteCount = Encoding.UTF8.GetMaxByteCount(key.Length);
             if (byteCount > 255)
@@ -231,13 +278,11 @@ namespace Raven.Server.Documents.Versioning
                     $"Key cannot exceed 255 bytes, but the key was {byteCount} bytes. The invalid key is '{key}'.",
                     nameof(key));
 
-            int size;
             var buffer = context.GetNativeTempBuffer(
                 byteCount
                 + sizeof(char) * key.Length // for the lower calls
-                + sizeof(char) * 2 // for the record separator
-                , out size);
-
+                + sizeof(char) * 2); // for the record separator
+            
             fixed (char* pChars = key)
             {
                 var destChars = (char*)buffer;
@@ -249,7 +294,7 @@ namespace Raven.Server.Documents.Versioning
 
                 var keyBytes = buffer + sizeof(char) + key.Length * sizeof(char);
 
-                size = Encoding.UTF8.GetBytes(destChars, key.Length + 1, keyBytes, byteCount + 1);
+                var size = Encoding.UTF8.GetBytes(destChars, key.Length + 1, keyBytes, byteCount + 1);
                 return Slice.External(context.Allocator, keyBytes, (ushort)size);
             }
         }
@@ -271,6 +316,12 @@ namespace Raven.Server.Documents.Versioning
             result.Data = new BlittableJsonReaderObject(tvr.Read(4, out size), size, context);
 
             return result;
+        }
+
+        public long GetNumberOfRevisionDocuments(DocumentsOperationContext context)
+        {
+            var table = new Table(_docsSchema, RevisionDocuments, context.Transaction.InnerTransaction);
+            return table.GetNumberEntriesFor(_docsSchema.FixedSizeIndexes["Etag"]);
         }
     }
 }

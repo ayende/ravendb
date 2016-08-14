@@ -20,12 +20,13 @@ using Raven.Server.Smuggler;
 using Raven.Server.Utils;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
+using Sparrow.Logging;
 
 namespace Raven.Server.Documents.PeriodicExport
 {
     public class PeriodicExportRunner : IDisposable
     {
-        private static readonly ILog Log = LogManager.GetLogger(typeof(BundleLoader));
+        private static Logger _logger;
 
         private readonly DocumentDatabase _database;
         private readonly PeriodicExportConfiguration _configuration;
@@ -59,13 +60,14 @@ namespace Raven.Server.Documents.PeriodicExport
             _database = database;
             _configuration = configuration;
             _status = status;
-
+            _logger = LoggerSetup.Instance.GetLogger<PeriodicExportRunner>(_database.Name);
             _cancellationToken = new CancellationTokenSource();
 
             if (configuration.IntervalMilliseconds.HasValue && configuration.IntervalMilliseconds.Value > 0)
             {
                 _incrementalIntermediateInterval = IncrementalInterval = TimeSpan.FromMilliseconds(configuration.IntervalMilliseconds.Value);
-                Log.Info($"Incremental periodic export started, will export every {IncrementalInterval.TotalMinutes} minutes");
+                if (_logger.IsInfoEnabled)
+                    _logger.Info($"Incremental periodic export started, will export every {IncrementalInterval.TotalMinutes} minutes");
 
                 if (IsValidTimespanForTimer(IncrementalInterval))
                 {
@@ -81,13 +83,15 @@ namespace Raven.Server.Documents.PeriodicExport
             }
             else
             {
-                Log.Warn("Incremental periodic export interval is set to zero or less, incremental periodic export is now disabled");
+                if (_logger.IsInfoEnabled)
+                    _logger.Info("Incremental periodic export interval is set to zero or less, incremental periodic export is now disabled");
             }
 
             if (configuration.FullExportIntervalMilliseconds.HasValue && configuration.FullExportIntervalMilliseconds.Value > 0)
             {
                 _fullExportIntermediateInterval = FullExportInterval = TimeSpan.FromMilliseconds(configuration.FullExportIntervalMilliseconds.Value);
-                Log.Info("Full periodic export started, will export every" + FullExportInterval.TotalMinutes + "minutes");
+                if (_logger.IsInfoEnabled)
+                    _logger.Info("Full periodic export started, will export every" + FullExportInterval.TotalMinutes + "minutes");
 
                 if (IsValidTimespanForTimer(FullExportInterval))
                 {
@@ -103,7 +107,8 @@ namespace Raven.Server.Documents.PeriodicExport
             }
             else
             {
-                Log.Warn("Full periodic export interval is set to zero or less, full periodic export is now disabled");
+                if (_logger.IsInfoEnabled)
+                    _logger.Info("Full periodic export interval is set to zero or less, full periodic export is now disabled");
             }
         }
 
@@ -183,8 +188,8 @@ namespace Raven.Server.Documents.PeriodicExport
             if (_cancellationToken.IsCancellationRequested)
                 return;
 
-            if (Log.IsDebugEnabled)
-                Log.Debug($"Exporting a {(fullExport ? "full" : "incremental")} export");
+            if (_logger.IsInfoEnabled)
+                _logger.Info($"Exporting a {(fullExport ? "full" : "incremental")} export");
 
             try
             {
@@ -208,7 +213,8 @@ namespace Raven.Server.Documents.PeriodicExport
 
                         var dataExporter = new DatabaseDataExporter(_database)
                         {
-                            Limit = _exportLimit,
+                            DocumentsLimit = _exportLimit,
+                            RevisionDocumentsLimit = _exportLimit,
                         };
 
                         string exportFilePath;
@@ -266,7 +272,8 @@ namespace Raven.Server.Documents.PeriodicExport
                             // No-op if nothing has changed
                             if (exportResult.LastDocsEtag == _status.LastDocsEtag)
                             {
-                                Log.Info("Periodic export returned prematurely, nothing has changed since last export");
+                                if (_logger.IsInfoEnabled)
+                                    _logger.Info("Periodic export returned prematurely, nothing has changed since last export");
                                 return;
                             }
                         }
@@ -292,8 +299,8 @@ namespace Raven.Server.Documents.PeriodicExport
 
                         WriteStatus();
                     }
-                    if (Log.IsDebugEnabled)
-                        Log.Debug($"Successfully exported {(fullExport ? "full" : "incremental")} export in {sp.ElapsedMilliseconds:#,#;;0} ms.");
+                    if (_logger.IsInfoEnabled)
+                        _logger.Info($"Successfully exported {(fullExport ? "full" : "incremental")} export in {sp.ElapsedMilliseconds:#,#;;0} ms.");
 
                     _exportLimit = null;
                 }
@@ -309,7 +316,8 @@ namespace Raven.Server.Documents.PeriodicExport
             catch (Exception e)
             {
                 _exportLimit = 100;
-                Log.ErrorException("Error when performing periodic export", e);
+                if (_logger.IsOperationsEnabled)
+                    _logger.Operations("Error when performing periodic export", e);
                 _database.AddAlert(new Alert
                 {
                     IsError = true,
@@ -379,7 +387,8 @@ namespace Raven.Server.Documents.PeriodicExport
                     {"Description", GetArchiveDescription(isFullExport)}
                 }, 60*60);
 
-                Log.Info(string.Format("Successfully uploaded export {0} to S3 bucket {1}, with key {2}", fileName, _configuration.S3BucketName, key));
+                if (_logger.IsInfoEnabled)
+                    _logger.Info(string.Format("Successfully uploaded export {0} to S3 bucket {1}, with key {2}", fileName, _configuration.S3BucketName, key));
             }
         }
 
@@ -395,7 +404,8 @@ namespace Raven.Server.Documents.PeriodicExport
             using (var fileStream = File.OpenRead(exportPath))
             {
                 var archiveId = await client.UploadArchive(_configuration.GlacierVaultName, fileStream, fileName, 60*60);
-                Log.Info($"Successfully uploaded export {fileName} to Glacier, archive ID: {archiveId}");
+                if (_logger.IsInfoEnabled)
+                    _logger.Info($"Successfully uploaded export {fileName} to Glacier, archive ID: {archiveId}");
             }
         }
 
@@ -418,7 +428,8 @@ namespace Raven.Server.Documents.PeriodicExport
                         {"Description", GetArchiveDescription(isFullExport)}
                     });
 
-                    Log.Info($"Successfully uploaded export {fileName} to Azure container {_configuration.AzureStorageContainer}, with key {key}");
+                    if (_logger.IsInfoEnabled)
+                        _logger.Info($"Successfully uploaded export {fileName} to Azure container {_configuration.AzureStorageContainer}, with key {key}");
                 }
             }
         }
@@ -454,7 +465,8 @@ namespace Raven.Server.Documents.PeriodicExport
             }
             catch (Exception e)
             {
-                 Log.ErrorException("Error when disposing periodic export runner task", e);
+                if (_logger.IsInfoEnabled)
+                    _logger.Info("Error when disposing periodic export runner task", e);
             }
         }
 
@@ -471,10 +483,11 @@ namespace Raven.Server.Documents.PeriodicExport
 
                 try
                 {
-                    var periodicExportConfiguration = JsonDeserialization.PeriodicExportConfiguration(configuration.Data);
+                    var periodicExportConfiguration = JsonDeserializationServer.PeriodicExportConfiguration(configuration.Data);
                     if (periodicExportConfiguration.Active == false)
                     {
-                        Log.Info("Periodic export is disabled.");
+                        if (_logger.IsInfoEnabled)
+                            _logger.Info("Periodic export is disabled.");
                         return null;
                     }
 
@@ -484,12 +497,12 @@ namespace Raven.Server.Documents.PeriodicExport
                     {
                         try
                         {
-                            periodicExportStatus = JsonDeserialization.PeriodicExportStatus(status.Data);
+                            periodicExportStatus = JsonDeserializationServer.PeriodicExportStatus(status.Data);
                         }
                         catch (Exception e)
                         {
-                            if (Log.IsWarnEnabled)
-                                Log.WarnException($"Unable to read the periodic export status as the status document {Constants.PeriodicExport.StatusDocumentKey} is not valid. We will start to export from scratch. Data: {configuration.Data}", e);
+                            if (_logger.IsInfoEnabled)
+                                _logger.Info($"Unable to read the periodic export status as the status document {Constants.PeriodicExport.StatusDocumentKey} is not valid. We will start to export from scratch. Data: {configuration.Data}", e);
                         }
                     }
 
@@ -499,8 +512,8 @@ namespace Raven.Server.Documents.PeriodicExport
                 {
                     //TODO: Raise alert, or maybe handle this via a db load error that can be turned off with 
                     //TODO: a config
-                    if (Log.IsWarnEnabled)
-                        Log.WarnException($"Cannot enable periodic export as the configuration document {Constants.PeriodicExport.ConfigurationDocumentKey} is not valid: {configuration.Data}", e);
+                    if (_logger.IsInfoEnabled)
+                        _logger.Info($"Cannot enable periodic export as the configuration document {Constants.PeriodicExport.ConfigurationDocumentKey} is not valid: {configuration.Data}", e);
                     /*
                      Database.AddAlert(new Alert
                                     {

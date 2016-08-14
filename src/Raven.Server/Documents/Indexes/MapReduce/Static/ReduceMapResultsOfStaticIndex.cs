@@ -1,12 +1,14 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Threading;
 using Raven.Server.Documents.Indexes.Persistence.Lucene.Documents;
 using Raven.Server.Documents.Indexes.Static;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.Utils;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
+using DynamicBlittableJson = Raven.Server.Documents.Indexes.Static.DynamicBlittableJson;
 
 namespace Raven.Server.Documents.Indexes.MapReduce.Static
 {
@@ -22,7 +24,7 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Static
             _reducingFunc = reducingFunc;
         }
         
-        protected override AggregationResult AggregateOn(List<BlittableJsonReaderObject> aggregationBatch, TransactionOperationContext indexContext)
+        protected override AggregationResult AggregateOn(List<BlittableJsonReaderObject> aggregationBatch, TransactionOperationContext indexContext, CancellationToken token)
         {
             _blittableToDynamicWrapper.InitializeForEnumeration(aggregationBatch);
             
@@ -30,6 +32,8 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Static
 
             foreach (var output in _reducingFunc(_blittableToDynamicWrapper))
             {
+                token.ThrowIfCancellationRequested();
+
                 if (_propertyAccessor == null)
                     _propertyAccessor = PropertyAccessor.Create(output.GetType());
 

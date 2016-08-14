@@ -14,6 +14,8 @@ namespace Voron.Impl.Paging
 {
     public abstract unsafe class AbstractPager : IDisposable
     {
+        private readonly StorageEnvironmentOptions _options;
+
         protected int MinIncreaseSize
         {
             get { return 16*_pageSize; }
@@ -53,13 +55,17 @@ namespace Voron.Impl.Paging
             get { return _debugInfo; }
         }
 
-        protected AbstractPager(int pageSize)
+        public string FileName;
+
+        protected AbstractPager(StorageEnvironmentOptions options)
         {
-            Debug.Assert((pageSize - Constants.TreePageHeaderSize)/Constants.MinKeysInPage >= 1024);
+            _options = options;
+            _pageSize = _options.PageSize;
 
-            _pageSize = pageSize;
+            Debug.Assert((_pageSize - Constants.TreePageHeaderSize)/Constants.MinKeysInPage >= 1024);
 
-            PageMaxSpace = pageSize - Constants.TreePageHeaderSize;
+
+            PageMaxSpace = _pageSize - Constants.TreePageHeaderSize;
             NodeMaxSize = PageMaxSpace/2 - 1;
 
             // MaxNodeSize is usually persisted as an unsigned short. Therefore, we must ensure it is not possible to have an overflow.
@@ -72,6 +78,8 @@ namespace Voron.Impl.Paging
 
             PagerState.AddRef();
         }
+
+        public StorageEnvironmentOptions Options => _options;
 
         public int PageSize
         {
@@ -145,6 +153,8 @@ namespace Voron.Impl.Paging
         {
             if (Disposed)
                 return;
+
+            _options.IoMetrics.FileClosed(FileName);
 
             if (PagerState != null)
             {

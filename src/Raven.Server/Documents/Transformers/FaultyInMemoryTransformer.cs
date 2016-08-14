@@ -1,6 +1,8 @@
 ﻿using System;
 using Raven.Abstractions.Indexing;
+using Raven.Server.Documents.Includes;
 using Raven.Server.ServerWide.Context;
+using Sparrow.Json;
 
 namespace Raven.Server.Documents.Transformers
 {
@@ -22,7 +24,7 @@ namespace Raven.Server.Documents.Transformers
             throw new NotSupportedException($"Transformer with id {TransformerId} is in-memory implementation of a faulty transformer");
         }
 
-        public override TransformationScope OpenTransformationScope(DocumentsStorage documentsStorage, DocumentsOperationContext context)
+        public override TransformationScope OpenTransformationScope(BlittableJsonReaderObject parameters, IncludeDocumentsCommand include, DocumentsStorage documentsStorage, TransformerStore transformerStore, DocumentsOperationContext context, bool nested)
         {
             throw new NotSupportedException($"Transformer with id {TransformerId} is in-memory implementation of a faulty transformer");
         }

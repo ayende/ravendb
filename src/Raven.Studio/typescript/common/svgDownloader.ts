@@ -1,5 +1,4 @@
 /// <reference path="../../typings/tsd.d.ts" />
-
 import d3 = require('d3');
 
 class svgDownloader {
@@ -7,11 +6,12 @@ class svgDownloader {
     static svgHeader = '<?xml version="1.0" standalone="no"?>\n' + 
     '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">';
 
-    private static convertToData(svgElement: Node, cssInliner: (svg: Element) => string) {
+    private static convertToData(svgElement: Element, cssInliner: (svg: Element) => string) {
 
         var svgClone = <Element>svgElement.cloneNode(true);
 
         svgDownloader.fixAttributes(svgClone); 
+
         var svgContainer = document.createElement('div');
         svgContainer.appendChild(svgClone);
 
@@ -36,12 +36,12 @@ class svgDownloader {
         $("#downloadSvg").remove();
     }
 
-    static b64toBlob(b64Data, contentType, sliceSize?): Blob {
+    static b64toBlob(b64Data: string, contentType:string, sliceSize?:number): Blob {
         contentType = contentType || '';
         sliceSize = sliceSize || 512;
 
         var byteCharacters = atob(b64Data);
-        var byteArrays = [];
+        var byteArrays: Uint8Array[] = [];
 
         for (var offset = 0; offset < byteCharacters.length; offset += sliceSize) {
             var slice = byteCharacters.slice(offset, offset + sliceSize);
@@ -74,7 +74,7 @@ class svgDownloader {
         }
     }
 
-    static downloadSvg(svgElement: Node, filename: string, cssInliner:(svg: Element) => string) {
+    static downloadSvg(svgElement: Element, filename: string, cssInliner: (svg: Element) => string) {
         svgDownloader.cleanup();
         var textSvgData = svgDownloader.convertToData(svgElement, cssInliner);
         var encodedImage = window.btoa(textSvgData);
@@ -82,7 +82,7 @@ class svgDownloader {
         svgDownloader.createLinkAndStartDownload(blob, filename);
     }
 
-    static downloadPng(svgElement: Node, filename: string, cssInliner: (svg: Element) => string) {
+    static downloadPng(svgElement: Element, filename: string, cssInliner: (svg: Element) => string) {
         svgDownloader.cleanup();
 
         var textSvgData = svgDownloader.convertToData(svgElement, cssInliner);

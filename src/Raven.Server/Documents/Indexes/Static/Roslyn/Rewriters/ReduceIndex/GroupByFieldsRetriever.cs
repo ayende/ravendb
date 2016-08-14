@@ -8,14 +8,7 @@ namespace Raven.Server.Documents.Indexes.Static.Roslyn.Rewriters.ReduceIndex
 {
     public abstract class GroupByFieldsRetriever : CSharpSyntaxRewriter
     {
-        protected string _resultsVariableName;
-
         public string[] GroupByFields { get; protected set; }
-
-        public void Initialize(string resultsVariableName)
-        {
-            _resultsVariableName = resultsVariableName;
-        }
 
         public static GroupByFieldsRetriever QuerySyntax => new QuerySyntaxRetriever();
 
@@ -52,25 +45,26 @@ namespace Raven.Server.Documents.Indexes.Static.Roslyn.Rewriters.ReduceIndex
             public override SyntaxNode VisitInvocationExpression(InvocationExpressionSyntax node)
             {
                 var expression = node.Expression.ToString();
-                if (expression.StartsWith($"{_resultsVariableName}.GroupBy") == false)
+                if (expression.StartsWith("results.GroupBy") == false)
                     return base.VisitInvocationExpression(node);
 
-                var resultsGroupByAndSelect = node.Expression as MemberAccessExpressionSyntax; // results.GroupBy(result => result.Type).Select
+                var groupByLambda = node.Expression.DescendantNodes(x => true)
+                    .FirstOrDefault(x => x.IsKind(SyntaxKind.SimpleLambdaExpression)) as SimpleLambdaExpressionSyntax;
 
-                if (resultsGroupByAndSelect == null)
-                    return base.VisitInvocationExpression(node);
+                if (groupByLambda == null)
+                    throw new InvalidOperationException("Could not extract arguments from group by expression");
 
-                var resultsGroupBy = resultsGroupByAndSelect.Expression as InvocationExpressionSyntax; // results.GroupBy(result => result.Type)
+                var argument = groupByLambda.Parent as ArgumentSyntax;
+                if (argument == null)
+                    throw new InvalidOperationException("Could not extract arguments from group by expression");
 
-                if (resultsGroupBy == null)
-                    return base.VisitInvocationExpression(node); 
-                
-                var arguments = resultsGroupBy.ArgumentList.Arguments; // result => result.Type
+                var arguments = argument.Parent as ArgumentListSyntax;
 
-                if (arguments.Count != 1)
+                if (arguments == null)
+                    throw new InvalidOperationException("Could not extract arguments from group by expression");
+
+                if (arguments.Arguments.Count != 1)
                     throw new InvalidOperationException("Incorrect number of arguments in group by expression");
-                
-                var groupByLambda = (SimpleLambdaExpressionSyntax)arguments[0].Expression;
 
                 var singleGroupByField = groupByLambda.Body as MemberAccessExpressionSyntax;
                 var multipleGroupByFields = groupByLambda.Body as AnonymousObjectCreationExpressionSyntax;
@@ -88,7 +82,7 @@ namespace Raven.Server.Documents.Indexes.Static.Roslyn.Rewriters.ReduceIndex
                     throw new InvalidOperationException("Could not extract group by fields");
                 }
 
-                return base.VisitInvocationExpression(node);
+                return node;
             }
         }
     }

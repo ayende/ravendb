@@ -17,7 +17,7 @@ class statusDebugExplainReplication extends viewModelBase {
         this.documentId.throttle(250).subscribe(search => this.fetchDocSearchResults(search));
     }
 
-    canActivate(args) {
+    canActivate(args: any) {
         super.canActivate(args);
 
         var deferred = $.Deferred();
@@ -28,7 +28,7 @@ class statusDebugExplainReplication extends viewModelBase {
         return deferred;
     }
 
-    activate(args) {
+    activate(args: any) {
         super.activate(args);
         this.updateHelpLink('JHZ574');
     }
@@ -36,7 +36,9 @@ class statusDebugExplainReplication extends viewModelBase {
     private fetchReplicationDestinations() {
         return new getReplicationsCommand(this.activeDatabase())
             .execute()
-            .done((destinations: configurationDocumentDto<replicationsDto>) => this.destinations(null/* TODO: destinations.Destinations */));
+            .done((destinations: configurationDocumentDto<replicationsDto>) => {
+                this.destinations(destinations.MergedDocument.Destinations);
+            });
     }
 
     buttonEnabled = ko.computed(() => {
@@ -50,7 +52,7 @@ class statusDebugExplainReplication extends viewModelBase {
     }
 
     selectDocument(data: documentMetadataDto) {
-        this.documentId(data['@metadata']['@id']);
+        this.documentId((<any>data)['@metadata']['@id']);
     }
 
     fetchDocSearchResults(query: string) {

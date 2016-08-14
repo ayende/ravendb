@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
@@ -10,12 +11,15 @@ using Microsoft.Extensions.DependencyInjection;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Logging;
 using Raven.Client.Data;
+using Raven.Client.Json;
 using Raven.Database.Util;
 using Raven.Server.Config;
+using Raven.Server.Config.Categories;
 using Raven.Server.Documents.TcpHandlers;
 using Raven.Server.Json;
 using Raven.Server.Routing;
 using Raven.Server.ServerWide;
+using Raven.Server.ServerWide.Context;
 using Raven.Server.Utils;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
@@ -25,7 +29,7 @@ namespace Raven.Server
 {
     public class RavenServer : IDisposable
     {
-        private static readonly ILog Log = LogManager.GetLogger(typeof(RavenServer));
+        private static Logger _logger;
 
         public readonly RavenConfiguration Configuration;
 
@@ -37,10 +41,8 @@ namespace Raven.Server
         public readonly ServerStore ServerStore;
 
         private IWebHost _webHost;
-        private Task<TcpListener> _tcpListenerTask;
-        private readonly UnmanagedBuffersPool _unmanagedBuffersPool = new UnmanagedBuffersPool("TcpConnectionPool");
+        private Task<List<TcpListener>> _tcpListenerTask;
         private readonly Logger _tcpLogger;
-        public LoggerSetup LoggerSetup { get; }
 
         public RavenServer(RavenConfiguration configuration)
         {
@@ -50,18 +52,17 @@ namespace Raven.Server
             if (Configuration.Initialized == false)
                 throw new InvalidOperationException("Configuration must be initialized");
 
-            LoggerSetup = new LoggerSetup(Configuration.DebugLog.Path, Configuration.DebugLog.LogMode, Configuration.DebugLog.RetentionTime.AsTimeSpan);
-            ServerStore = new ServerStore(Configuration, LoggerSetup);
-            Metrics = new MetricsCountersManager(ServerStore.MetricsScheduler);
+            ServerStore = new ServerStore(Configuration);
+            Metrics = new MetricsCountersManager();
             Timer = new Timer(ServerMaintenanceTimerByMinute, null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
-
-            _tcpLogger = LoggerSetup.GetLogger<RavenServer>("<TcpServer>");
+            _logger = LoggerSetup.Instance.GetLogger<RavenServer>("Raven/Server");
+            _tcpLogger = LoggerSetup.Instance.GetLogger<RavenServer>("<TcpServer>");
         }
 
-        public async Task<IPEndPoint> GetTcpServerPortAsync()
+        public async Task<int> GetTcpServerPortAsync()
         {
-            var tcpListener = await _tcpListenerTask;
-            return ((IPEndPoint)tcpListener.LocalEndpoint);
+            var tcpListeners = await _tcpListenerTask;
+            return ((IPEndPoint)tcpListeners[0].LocalEndpoint).Port;
         }
 
 
@@ -89,14 +90,14 @@ namespace Raven.Server
             }
             catch (Exception e)
             {
-                Log.FatalException("Could not open the server store", e);
+                if (_logger.IsOperationsEnabled)
+                    _logger.Operations("Could not open the server store", e);
                 throw;
             }
 
-            if (Log.IsDebugEnabled)
-            {
-                Log.Debug("Server store started took {0:#,#;;0} ms", sp.ElapsedMilliseconds);
-            }
+            if (_logger.IsInfoEnabled)
+                _logger.Info(string.Format("Server store started took {0:#,#;;0} ms", sp.ElapsedMilliseconds));
+
             sp.Restart();
 
             Router = new RequestRouter(RouteScanner.Scan(), this);
@@ -111,19 +112,18 @@ namespace Raven.Server
                     .ConfigureServices(services => services.AddSingleton(Router))
                     // ReSharper disable once AccessToDisposedClosure
                     .Build();
-
-                Log.Info("Initialized Server...");
+                if (_logger.IsInfoEnabled)
+                    _logger.Info("Initialized Server...");
             }
             catch (Exception e)
             {
-                Log.FatalException("Could not configure server", e);
+                if (_logger.IsInfoEnabled)
+                    _logger.Info("Could not configure server", e);
                 throw;
             }
 
-            if (Log.IsDebugEnabled)
-            {
-                Log.Debug("Configuring HTTP server took {0:#,#;;0} ms", sp.ElapsedMilliseconds);
-            }
+            if (_logger.IsInfoEnabled)
+                _logger.Info(string.Format("Configuring HTTP server took {0:#,#;;0} ms", sp.ElapsedMilliseconds));
 
             try
             {
@@ -132,39 +132,41 @@ namespace Raven.Server
             }
             catch (Exception e)
             {
-                Log.FatalException("Could not start server", e);
+                if (_logger.IsOperationsEnabled)
+                    _logger.Operations("Could not start server", e);
                 throw;
             }
         }
 
-        private async Task<TcpListener> StartTcpListener()
+        private JsonContextPool _tcpContextPool = new JsonContextPool();
+        private async Task<List<TcpListener>> StartTcpListener()
         {
-            if (_tcpLogger.IsInfoEnabled)
-            {
-                Log.Info($"Tcp Server will listen on {Configuration.Core.TcpServerUrl}");
-            }
-
-            var uri = new Uri(Configuration.Core.TcpServerUrl);
-
-            var ipAddress = await GetTcpListenAddress(uri);
-
-            var port = uri.IsDefaultPort ? 9090 : uri.Port;
-            if (Log.IsDebugEnabled)
-            {
-                Log.Info($"Tcp Server will bind to {ipAddress} at {port}");
-            }
+            var listeners = new List<TcpListener>();
             try
             {
-                var listener = new TcpListener(ipAddress, port);
-                listener.Start();
-                for (int i = 0; i < 4; i++)
+                var uri = new Uri(Configuration.Core.TcpServerUrl);
+                var port = uri.IsDefaultPort ? 9090 : uri.Port;
+                foreach (var ipAddress in await GetTcpListenAddresses(uri))
                 {
-                    ListenToNewTcpConnection();
+                    if (_logger.IsInfoEnabled)
+                        _logger.Info($"RavenDB TCP is configured to use {Configuration.Core.TcpServerUrl} and bind to {ipAddress} at {port}");
+
+                    var listener = new TcpListener(ipAddress, port);
+                    listeners.Add(listener);
+                    listener.Start();
+                    for (int i = 0; i < 4; i++)
+                    {
+                        ListenToNewTcpConnection(listener);
+                    }
                 }
-                return listener;
+                return listeners;
             }
             catch (Exception e)
             {
+                foreach (var tcpListener in listeners)
+                {
+                    tcpListener.Stop();
+                }
                 if (_tcpLogger.IsOperationsEnabled)
                 {
                     _tcpLogger.Operations(
@@ -174,20 +176,21 @@ namespace Raven.Server
             }
         }
 
-        private async Task<IPAddress> GetTcpListenAddress(Uri uri)
+
+        private async Task<IPAddress[]> GetTcpListenAddresses(Uri uri)
         {
             IPAddress ipAddress;
 
             if (IPAddress.TryParse(uri.DnsSafeHost, out ipAddress))
-                return ipAddress;
+                return new[] { ipAddress };
 
             switch (uri.DnsSafeHost)
             {
                 case "*":
                 case "+":
-                    return IPAddress.Any;
+                    return new[] { IPAddress.Any };
                 case "localhost":
-                    return IPAddress.Loopback;
+                    return new[] { IPAddress.Loopback };
                 default:
                     try
                     {
@@ -196,7 +199,7 @@ namespace Raven.Server
                         if (ipHostEntry.AddressList.Length == 0)
                             throw new InvalidOperationException("The specified tcp server hostname has no entries: " +
                                                                 uri.DnsSafeHost);
-                        return ipHostEntry.AddressList[0]; // TODO: bind to all of the entries
+                        return ipHostEntry.AddressList;
                     }
                     catch (Exception e)
                     {
@@ -211,15 +214,14 @@ namespace Raven.Server
             }
         }
 
-        private void ListenToNewTcpConnection()
+        private void ListenToNewTcpConnection(TcpListener listener)
         {
             Task.Run(async () =>
             {
                 TcpClient tcpClient;
                 try
                 {
-                    var tcpListener = await _tcpListenerTask;
-                    tcpClient = await tcpListener.AcceptTcpClientAsync();
+                    tcpClient = await listener.AcceptTcpClientAsync();
                 }
                 catch (ObjectDisposedException)
                 {
@@ -234,21 +236,32 @@ namespace Raven.Server
                     }
                     return;
                 }
-                ListenToNewTcpConnection();
-                NetworkStream stream = null;
-                JsonOperationContext context = null;
-                JsonOperationContext.MultiDocumentParser multiDocumentParser = null;
+                ListenToNewTcpConnection(listener);
+                TcpConnectionParams tcp = null;
                 try
                 {
                     tcpClient.NoDelay = true;
                     tcpClient.ReceiveBufferSize = 32 * 1024;
                     tcpClient.SendBufferSize = 4096;
-                    stream = tcpClient.GetStream();
-                    context = new JsonOperationContext(_unmanagedBuffersPool);
-                    multiDocumentParser = context.ParseMultiFrom(stream);
+                    var stream = tcpClient.GetStream();
+                    tcp = new TcpConnectionParams
+                    {
+                        Stream = stream,
+                        TcpClient = tcpClient,
+                        DisposeOnConnectionClose =
+                        {
+                            stream,
+                            tcpClient
+                        }
+                    };
+                    tcp.DisposeOnConnectionClose.Add(
+                        _tcpContextPool.AllocateOperationContext(out tcp.Context)
+                        );
+                    tcp.MultiDocumentParser = tcp.Context.ParseMultiFrom(stream);
+
                     try
                     {
-                        var header = JsonDeserialization.TcpConnectionHeaderMessage(await multiDocumentParser.ParseToMemoryAsync());
+                        var header = JsonDeserializationClient.TcpConnectionHeaderMessage(await tcp.MultiDocumentParser.ParseToMemoryAsync());
 
                         var databaseLoadingTask = ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(header.DatabaseName);
                         if (databaseLoadingTask == null)
@@ -258,26 +271,24 @@ namespace Raven.Server
                             throw new InvalidOperationException(
                                 $"Timeout when loading database {header.DatabaseName}, try again later");
 
-                        var documentDatabase = await databaseLoadingTask;
+                        tcp.DocumentDatabase = await databaseLoadingTask;
                         switch (header.Operation)
                         {
                             case TcpConnectionHeaderMessage.OperationTypes.BulkInsert:
-                                BulkInsertConnection.Run(documentDatabase, context, stream, tcpClient, multiDocumentParser);
+                                BulkInsertConnection.Run(tcp);
                                 break;
                             case TcpConnectionHeaderMessage.OperationTypes.Subscription:
-                                SubscriptionConnection.SendSubscriptionDocuments(documentDatabase, context, stream, tcpClient, multiDocumentParser);
+                                SubscriptionConnection.SendSubscriptionDocuments(tcp);
                                 break;
                             case TcpConnectionHeaderMessage.OperationTypes.Replication:
-                                documentDatabase.DocumentReplicationLoader.AcceptIncomingConnection(context, stream, tcpClient, multiDocumentParser);
+                                var documentReplicationLoader = tcp.DocumentDatabase.DocumentReplicationLoader;
+                                documentReplicationLoader.AcceptIncomingConnection(tcp);
                                 break;
                             default:
                                 throw new InvalidOperationException("Unknown operation for tcp " + header.Operation);
                         }
 
-                        tcpClient = null; // the connection handler will dispose this, it is not its responsability
-                        stream = null;
-                        context = null;
-                        multiDocumentParser = null;
+                        tcp = null;
                     }
                     catch (Exception e)
                     {
@@ -285,11 +296,11 @@ namespace Raven.Server
                         {
                             _tcpLogger.Info("Failed to process TCP connection run", e);
                         }
-                        if (context != null)
+                        if (tcp != null)
                         {
-                            using (var errorWriter = new BlittableJsonTextWriter(context, stream))
+                            using (var errorWriter = new BlittableJsonTextWriter(tcp.Context, tcp.Stream))
                             {
-                                context.Write(errorWriter, new DynamicJsonValue
+                                tcp.Context.Write(errorWriter, new DynamicJsonValue
                                 {
                                     ["Type"] = "Error",
                                     ["Exception"] = e.ToString()
@@ -307,35 +318,7 @@ namespace Raven.Server
                 }
                 finally
                 {
-                    try
-                    {
-                        multiDocumentParser?.Dispose();
-                    }
-                    catch (Exception)
-                    {
-
-                    }
-                    try
-                    {
-                        stream?.Dispose();
-                    }
-                    catch (Exception)
-                    {
-                    }
-                    try
-                    {
-                        tcpClient?.Dispose();
-                    }
-                    catch (Exception)
-                    {
-                    }
-                    try
-                    {
-                        context?.Dispose();
-                    }
-                    catch (Exception)
-                    {
-                    }
+                    tcp?.Dispose();
                 }
 
             });
@@ -347,26 +330,48 @@ namespace Raven.Server
         public void Dispose()
         {
             Metrics?.Dispose();
-            LoggerSetup?.Dispose();
             _webHost?.Dispose();
             if (_tcpListenerTask != null)
             {
                 if (_tcpListenerTask.IsCompleted)
                 {
-                    _tcpListenerTask.Result.Stop();
+                    CloseTcpListeners(_tcpListenerTask.Result);
                 }
                 else
                 {
-                    var exception = _tcpListenerTask.Exception;
-                    if (exception != null && _tcpLogger.IsInfoEnabled)
+                    if (_tcpListenerTask.Exception != null)
                     {
-                        _tcpLogger.Info("Cannot dispose of tcp server because it has errored", exception);
+                        if(_tcpLogger.IsInfoEnabled)
+                            _tcpLogger.Info("Cannot dispose of tcp server because it has errored", _tcpListenerTask.Exception);
+                    }
+                    else
+                    {
+                        _tcpListenerTask.ContinueWith(t =>
+                        {
+                            CloseTcpListeners(t.Result);
+                        }, TaskContinuationOptions.OnlyOnRanToCompletion);
                     }
                 }
             }
             ServerStore?.Dispose();
             Timer?.Dispose();
-            _unmanagedBuffersPool?.Dispose();
+        }
+
+        private void CloseTcpListeners(List<TcpListener> listeners)
+        {
+            foreach (var tcpListener in listeners)
+            {
+                try
+                {
+                    tcpListener.Stop();
+                }
+                catch (Exception e)
+                {
+                    if (_tcpLogger.IsInfoEnabled)
+                        _tcpLogger.Info("Failed to properly dispose the tcp listener", e);
+                }
+            }
+            
         }
     }
 }

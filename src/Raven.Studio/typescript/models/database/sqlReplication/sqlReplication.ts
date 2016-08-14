@@ -34,9 +34,10 @@ class sqlReplication extends document {
     connectionStringName = ko.observable<string>(null);
     connectionStringSettingName = ko.observable<string>(null);
     connectionStringSourceFieldName: KnockoutComputed<string>;
-
+    
     collections = ko.observableArray<string>();
     searchResults: KnockoutComputed<string[]>;
+    isVisible = ko.observable<boolean>(true);
     
     showReplicationConfiguration = ko.observable<boolean>(false);
 
@@ -129,7 +130,7 @@ class sqlReplication extends document {
         }
     }
 
-    setConnectionStringType(strType) {
+    setConnectionStringType(strType: string) {
         this.connectionStringType(strType);
     }
 
@@ -204,7 +205,7 @@ class sqlReplication extends document {
         this.__metadata.id = "Raven/SqlReplication/Configuration/" + this.name();
     }
 
-    saveNewRavenEntityName(newRavenEntityName) {
+    saveNewRavenEntityName(newRavenEntityName: string) {
         this.ravenEntityName(newRavenEntityName);
     }
 

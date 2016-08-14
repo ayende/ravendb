@@ -27,7 +27,9 @@ namespace Raven.Server.Documents.Indexes.Static
             IndexFieldOptions allFields;
             definition.Fields.TryGetValue(Constants.AllFields, out allFields);
 
-            var result = definition.Fields.Select(x => IndexField.Create(x.Key, x.Value, allFields)).ToList();
+            var result = definition.Fields
+                .Where(x => x.Key != Constants.AllFields)
+                .Select(x => IndexField.Create(x.Key, x.Value, allFields)).ToList();
 
             if (definition.Fields.Count < outputFields.Length)
             {
@@ -39,7 +41,7 @@ namespace Raven.Server.Documents.Indexes.Static
                     result.Add(IndexField.Create(outputField, new IndexFieldOptions(), allFields));
                 }
             }
-            
+
             return result.ToArray();
         }
 
@@ -48,7 +50,7 @@ namespace Raven.Server.Documents.Indexes.Static
             var builder = IndexDefinition.ToJson();
             using (var json = context.ReadObject(builder, nameof(IndexDefinition), BlittableJsonDocumentBuilder.UsageMode.ToDisk))
             {
-                writer.WritePropertyName(context.GetLazyString(nameof(IndexDefinition)));
+                writer.WritePropertyName(nameof(IndexDefinition));
                 writer.WriteObject(json);
             }
         }
@@ -70,8 +72,7 @@ namespace Raven.Server.Documents.Indexes.Static
 
         public static IndexDefinition Load(StorageEnvironment environment)
         {
-            using (var pool = new UnmanagedBuffersPool(nameof(StaticMapIndexDefinition)))
-            using (var context = new JsonOperationContext(pool))
+            using (var context = JsonOperationContext.ShortTermSingleUse())
             using (var tx = environment.ReadTransaction())
             {
                 var tree = tx.CreateTree("Definition");
@@ -96,7 +97,7 @@ namespace Raven.Server.Documents.Indexes.Static
             if (reader.TryGet(nameof(IndexDefinition), out jsonObject) == false || jsonObject == null)
                 throw new InvalidOperationException("No persisted definition");
 
-            return JsonDeserialization.IndexDefinition(jsonObject);
+            return JsonDeserializationServer.IndexDefinition(jsonObject);
         }
     }
 }

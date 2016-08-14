@@ -7,7 +7,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Net;
 using System.Runtime.ExceptionServices;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Primitives;
@@ -31,7 +30,7 @@ namespace Raven.Server.Documents.Handlers
         public Task Head()
         {
             var id = GetQueryStringValueAndAssertIfSingleAndNotEmpty("id");
-
+            //TODO: If-None-Match handling
             DocumentsOperationContext context;
             using (ContextPool.AllocateOperationContext(out context))
             using (context.OpenReadTransaction())
@@ -131,7 +130,9 @@ namespace Raven.Server.Documents.Handlers
             {
                 if (transformer != null)
                 {
-                    using (var scope = transformer.OpenTransformationScope(Database.DocumentsStorage, context))
+                    var transformerParameters = GetTransformerParameters(context);
+
+                    using (var scope = transformer.OpenTransformationScope(transformerParameters, null, Database.DocumentsStorage, Database.TransformerStore, context))
                     {
                         writer.WriteDocuments(context, scope.Transform(documents), metadataOnly);
                         return;
@@ -163,8 +164,6 @@ namespace Raven.Server.Documents.Handlers
                 includeDocs.Gather(document);
             }
 
-            includeDocs.Fill(includes);
-
             long actualEtag = ComputeEtagsFor(documents);
             if (GetLongFromHeaders("If-None-Match") == actualEtag)
             {
@@ -177,11 +176,13 @@ namespace Raven.Server.Documents.Handlers
             using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
             {
                 writer.WriteStartObject();
-                writer.WritePropertyName(context.GetLazyStringForFieldWithCaching("Results"));
+                writer.WritePropertyName(("Results"));
 
                 if (transformer != null)
                 {
-                    using (var scope = transformer.OpenTransformationScope(Database.DocumentsStorage, context))
+                    var transformerParameters = GetTransformerParameters(context);
+
+                    using (var scope = transformer.OpenTransformationScope(transformerParameters, includeDocs, Database.DocumentsStorage, Database.TransformerStore, context))
                     {
                         writer.WriteDocuments(context, scope.Transform(documents), metadataOnly);
                     }
@@ -191,8 +192,10 @@ namespace Raven.Server.Documents.Handlers
                     writer.WriteDocuments(context, documents, metadataOnly);
                 }
 
+                includeDocs.Fill(includes);
+
                 writer.WriteComma();
-                writer.WritePropertyName(context.GetLazyStringForFieldWithCaching("Includes"));
+                writer.WritePropertyName(("Includes"));
 
                 if (includePaths.Count > 0)
                 {
@@ -344,11 +347,11 @@ namespace Raven.Server.Documents.Handlers
                 {
                     writer.WriteStartObject();
 
-                    writer.WritePropertyName(context.GetLazyString("Key"));
-                    writer.WriteString(context.GetLazyString(cmd.PutResult.Key));
+                    writer.WritePropertyName(("Key"));
+                    writer.WriteString(cmd.PutResult.Key);
                     writer.WriteComma();
 
-                    writer.WritePropertyName(context.GetLazyString("Etag"));
+                    writer.WritePropertyName(("Etag"));
                     writer.WriteInteger(cmd.PutResult.ETag ?? -1);
 
                     writer.WriteEndObject();
@@ -398,17 +401,17 @@ namespace Raven.Server.Documents.Handlers
                 {
                     writer.WriteStartObject();
 
-                    writer.WritePropertyName(context.GetLazyString("Patched"));
+                    writer.WritePropertyName(("Patched"));
                     writer.WriteBool(isTestOnly == false);
                     writer.WriteComma();
 
-                    writer.WritePropertyName(context.GetLazyString("Debug"));
+                    writer.WritePropertyName(("Debug"));
                     writer.WriteObject(patchResult.ModifiedDocument);
 
                     if (isTestOnly)
                     {
                         writer.WriteComma();
-                        writer.WritePropertyName(context.GetLazyString("Document"));
+                        writer.WritePropertyName(("Document"));
                         writer.WriteObject(patchResult.OriginalDocument);
                     }
 

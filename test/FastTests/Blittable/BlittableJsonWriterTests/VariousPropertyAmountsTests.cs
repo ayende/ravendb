@@ -1,6 +1,7 @@
 ﻿using System.IO;
 using System.Text;
 using System.Threading.Tasks;
+using Raven.Server.Documents.Indexes.Static;
 using Raven.Server.Json;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
@@ -37,8 +38,7 @@ namespace FastTests.Blittable.BlittableJsonWriterTests
             //var maxValue = short.MaxValue + 1000;
             var str = GetJsonString(maxValue);
 
-            using (var unmanagedPool = new UnmanagedBuffersPool(string.Empty))
-            using (var blittableContext = new JsonOperationContext(unmanagedPool))
+            using (var blittableContext = JsonOperationContext.ShortTermSingleUse())
             using (var employee = blittableContext.Read(new MemoryStream(Encoding.UTF8.GetBytes(str)), "doc1"))
             {
 
@@ -62,9 +62,7 @@ namespace FastTests.Blittable.BlittableJsonWriterTests
 
             var str = GetJsonString(maxValue);
 
-            var unmanagedPool = new UnmanagedBuffersPool(string.Empty);
-
-            using (var blittableContext = new JsonOperationContext(unmanagedPool))
+            using (var blittableContext = JsonOperationContext.ShortTermSingleUse())
             using (var employee = blittableContext.Read(new MemoryStream(Encoding.UTF8.GetBytes(str)), "doc1"))
             {
                 var ms = new MemoryStream();

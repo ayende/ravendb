@@ -1,0 +1,28 @@
+{
+  "name": "Raven.Studio",
+  "globalDependencies": {
+    "ace": "registry:dt/ace#0.0.0+20160630235124",
+    "bootstrap": "registry:dt/bootstrap#3.3.5+20160619023404",
+    "bootstrap.v3.datetimepicker": "registry:dt/bootstrap.v3.datetimepicker#3.0.0+20160317120654",
+    "chai": "registry:dt/chai#3.4.0+20160601211834",
+    "d3": "registry:dt/d3#0.0.0+20160727131401",
+    "dagre": "registry:dt/dagre#0.7.0+20160505164908",
+    "dagre-d3": "registry:dt/dagre-d3#0.0.0+20160620231311",
+    "durandal": "registry:dt/durandal#0.0.0+20160705071247",
+    "es6-promise": "registry:dt/es6-promise#0.0.0+20160614011821",
+    "jquery": "registry:dt/jquery#1.10.0+20160704162008",
+    "jquery.blockui": "registry:dt/jquery.blockui#0.0.0+20160316155526",
+    "jquery.dynatree": "registry:dt/jquery.dynatree#1.2.5+20160317120654",
+    "jqueryui": "registry:dt/jqueryui#1.11.0+20160727153854",
+    "jszip": "github:DefinitelyTyped/DefinitelyTyped/jszip/jszip.d.ts#56295f5058cac7ae458540423c50ac2dcf9fc711",
+    "knockout": "registry:dt/knockout#0.0.0+20160512130947",
+    "knockout-postbox": "registry:dt/knockout-postbox#0.0.0+20160316155526",
+    "mocha": "registry:dt/mocha#2.2.5+20160720003353",
+    "moment": "registry:dt/moment#2.8.0+20160316155526",
+    "moment-node": "registry:dt/moment-node#2.11.1+20160511043338",
+    "nprogress": "registry:dt/nprogress#0.0.0+20160316155526",
+    "q": "registry:dt/q#0.0.0+20160613154756",
+    "require": "registry:dt/require#2.1.20+20160316155526",
+    "typeahead": "registry:dt/typeahead#0.11.1+20160317120654"
+  }
+}

@@ -32,8 +32,6 @@ namespace Voron
 {
     public class StorageEnvironment : IDisposable
     {
-        private readonly LoggerSetup _loggerSetup;
-
         private static readonly Lazy<GlobalFlushingBehavior> GlobalFlusher = new Lazy<GlobalFlushingBehavior>(() =>
         {
             var flusher = new GlobalFlushingBehavior();
@@ -64,7 +62,14 @@ namespace Voron
         /// to actually capture the lock, do its work, and then reset it.
         /// </summary>
         private int _otherThreadsShouldWaitBeforeGettingWriteTxLock = -1;
-        
+
+        /// <summary>
+        /// Accessing the Thread.CurrentThread.ManagedThreadId can be expensive,
+        /// so we cache it.
+        /// </summary>
+        [ThreadStatic]
+        private static int _localThreadIdCopy;
+
         private readonly StorageEnvironmentOptions _options;
 
         private readonly ConcurrentSet<LowLevelTransaction> _activeTransactions = new ConcurrentSet<LowLevelTransaction>();
@@ -88,17 +93,18 @@ namespace Voron
 
         private readonly Queue<TemporaryPage> _tempPagesPool = new Queue<TemporaryPage>();
         public bool Disposed;
+        private Logger _log;
 
         public Guid DbId { get; set; }
 
         public StorageEnvironmentState State { get; private set; }
 
-     
-        public StorageEnvironment(StorageEnvironmentOptions options, LoggerSetup loggerSetup)
+
+        public StorageEnvironment(StorageEnvironmentOptions options)
         {
             try
             {
-                _loggerSetup = loggerSetup;
+                _log = LoggerSetup.Instance.GetLogger<StorageEnvironment>(options.BasePath);
                 _options = options;
                 _dataPager = options.DataPager;
                 _freeSpaceHandling = new FreeSpaceHandling();
@@ -368,12 +374,7 @@ namespace Voron
                 {
                     var wait = timeout ?? (Debugger.IsAttached ? TimeSpan.FromMinutes(30) : TimeSpan.FromSeconds(30));
 
-                    // See comment on the variable for the details
-                    var localCopy = Volatile.Read(ref _otherThreadsShouldWaitBeforeGettingWriteTxLock);
-                    if (localCopy != -1 && localCopy != Thread.CurrentThread.ManagedThreadId)
-                    {
-                        Thread.Sleep(1);
-                    }
+                    GiveFlusherChanceToRunIfNeeded();
 
                     if (FlushInProgressLock.IsWriteLockHeld == false)
                         flushInProgressReadLockTaken = FlushInProgressLock.TryEnterReadLock(wait);
@@ -428,6 +429,20 @@ namespace Voron
                 }
                 throw;
             }
+        }
+
+        private void GiveFlusherChanceToRunIfNeeded()
+        {
+            // See comment on the _otherThreadsShouldWaitBeforeGettingWriteTxLock variable for the details
+            var localCopy = Volatile.Read(ref _otherThreadsShouldWaitBeforeGettingWriteTxLock);
+            if (localCopy == -1)
+                return;
+            if (_localThreadIdCopy == 0)
+            {
+                _localThreadIdCopy = Thread.CurrentThread.ManagedThreadId;
+            }
+            if (_localThreadIdCopy != localCopy)
+                Thread.Sleep(1);
         }
 
 
@@ -583,7 +598,7 @@ namespace Voron
                             // we haven't reached the point where we have to flush, but we might want to, if we have enough 
                             // resources available, if we have more than half the flushing capacity, we can do it now, otherwise, we'll wait
                             // until it is actually required.
-                            if (_concurrentFlushes.CurrentCount > MaxConcurrentFlushes/2)
+                            if (_concurrentFlushes.CurrentCount > MaxConcurrentFlushes / 2)
                                 continue;
                         }
 
@@ -614,8 +629,9 @@ namespace Voron
                             MaybeFlushEnvironment(envToFlush);// re-register if the thread pool is full
                             Thread.Sleep(0); // but let it give up the execution slice so we'll let the TP time to run
                         }
-                    }}
-                
+                    }
+                }
+
             }
 
 
@@ -626,7 +642,7 @@ namespace Voron
             }
         }
 
-        
+
 
 
         private void BackgroundFlushWritesToDataFile()
@@ -664,8 +680,8 @@ namespace Voron
 
         public void ForceLogFlushToDataFile(LowLevelTransaction tx, bool allowToFlushOverwrittenPages)
         {
-            _journal.Applicator.ApplyLogsToDataFile(OldestTransaction, _cancellationTokenSource.Token, 
-                Debugger.IsAttached ? TimeSpan.FromMinutes(30) : TimeSpan.FromSeconds(30), 
+            _journal.Applicator.ApplyLogsToDataFile(OldestTransaction, _cancellationTokenSource.Token,
+                Debugger.IsAttached ? TimeSpan.FromMinutes(30) : TimeSpan.FromSeconds(30),
                 tx, allowToFlushOverwrittenPages);
         }
 
@@ -730,67 +746,32 @@ namespace Voron
             }
         }
 
-        public bool TryEnterTxLock()
+        public TransactionsModeResult SetTransactionMode(TransactionsMode mode, TimeSpan duration)
         {
-            bool txLockTaken = false;
-            bool flushInProgressReadLockTaken = false;
-
-            try
+            using (var tx = NewLowLevelTransaction(TransactionFlags.ReadWrite))
             {
-                var wait = Debugger.IsAttached ? TimeSpan.FromMinutes(30) : TimeSpan.FromSeconds(30);
-                if (FlushInProgressLock.IsWriteLockHeld == false)
-                    flushInProgressReadLockTaken = FlushInProgressLock.TryEnterReadLock(wait);
+                var oldMode = Options.TransactionsMode;
 
-                if (flushInProgressReadLockTaken == false && FlushInProgressLock.IsWriteLockHeld == false)
-                    return false;
+                if (_log.IsOperationsEnabled)
+                    _log.Operations($"Setting transaction mode to {mode}. Old mode is {oldMode}");
 
-                Monitor.TryEnter(_txWriter, wait, ref txLockTaken);
-                if (txLockTaken == false)
-                {
-                    FlushInProgressLock.ExitReadLock();
-                    return false;
-                }
-            }
-            catch (Exception)
-            {
-                if (txLockTaken)
-                {
-                    Monitor.Exit(_txWriter);
-                }
-                if (flushInProgressReadLockTaken)
-                {
-                    FlushInProgressLock.ExitReadLock();
-                }
-                throw;
-            }
-            return true;
-        }
+                if (oldMode == mode)
+                    return TransactionsModeResult.ModeAlreadySet;
 
-        public TransactionsModeResult SetTransactionMode(TransactionsMode mode, TimeSpan duration, LowLevelTransaction tx)
-        {
-            var oldMode = Options.TransactionsMode;
-
-            if (oldMode == mode)
-                return TransactionsModeResult.ModeAlreadySet;
-
-            Options.TransactionsMode = mode;
-            if (duration == TimeSpan.FromMinutes(0)) // infinte
-                Options.NonSafeTransactionExpiration = null;
-            else
-                Options.NonSafeTransactionExpiration = DateTime.Now + duration;
-
-            bool locksTaken = false;
-            try
-            {
-                locksTaken = TryEnterTxLock();
-
-                if (locksTaken == false)
-                {
-                    return TransactionsModeResult.CannotSetMode;
-                }
+                Options.TransactionsMode = mode;
+                if (duration == TimeSpan.FromMinutes(0)) // infinte
+                    Options.NonSafeTransactionExpiration = null;
+                else
+                    Options.NonSafeTransactionExpiration = DateTime.Now + duration;
 
                 if (oldMode == TransactionsMode.Lazy)
-                    CommitNonLazy(tx);
+                {
+
+                    tx.IsLazyTransaction = false;
+                    // we only commit here, the rest of the of the options are without 
+                    // commit and we use the tx lock
+                    tx.Commit(); 
+                }
 
                 if (oldMode == TransactionsMode.Danger)
                     Journal.TruncateJournal(Options.PageSize);
@@ -800,9 +781,8 @@ namespace Voron
                     case TransactionsMode.Safe:
                     case TransactionsMode.Lazy:
                         {
-                            Options.PosixOpenFlags = OpenFlags.O_DSYNC | OpenFlags.O_DIRECT;
-                            Options.WinOpenFlags = Win32NativeFileAttributes.Write_Through |
-                                                   Win32NativeFileAttributes.NoBuffering;
+                            Options.PosixOpenFlags = StorageEnvironmentOptions.SafePosixOpenFlags;
+                            Options.WinOpenFlags = StorageEnvironmentOptions.SafeWin32OpenFlags;
                         }
                         break;
 
@@ -818,33 +798,17 @@ namespace Voron
                             throw new InvalidOperationException("Query string value 'mode' is not a valid mode: " + mode);
                         }
                 }
-            }
-            finally
-            {
-                if (locksTaken)
-                {
-                    Monitor.Exit(_txWriter);
-                    FlushInProgressLock.ExitReadLock();
-                }
-            }
 
-            return TransactionsModeResult.SetModeSuccessfully;
+                return TransactionsModeResult.SetModeSuccessfully;
+            }
         }
 
-        public void CommitNonLazy(LowLevelTransaction tx) // TODO :: is it ok to use directly LowLevelTx and call Commit ?
-        {
-            // this non lazy transaction forces the journal to actually
-            // flush everything
-            tx.IsLazyTransaction = false;
-            tx.Commit();
-        }
-
-        internal void EnsureTransactionLockFairnessForFlush()
+        internal void IncreaseTheChanceForGettingTheTransactionLock()
         {
             Volatile.Write(ref _otherThreadsShouldWaitBeforeGettingWriteTxLock, Thread.CurrentThread.ManagedThreadId);
         }
 
-        internal void DisableTransactionLockFairnessForFlush()
+        internal void ResetTheChanceForGettingTheTransactionLock()
         {
             Volatile.Write(ref _otherThreadsShouldWaitBeforeGettingWriteTxLock, -1);
         }

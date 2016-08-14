@@ -6,9 +6,9 @@ import viewModelBase = require("viewmodels/viewModelBase");
 class statusDebugDataSubscriptions extends viewModelBase {
     data = ko.observable<Array<statusDebugDataSubscriptionsDto>>();
 
-    activate(args) {
+    activate(args: any) {
         super.activate(args);
-
+        this.updateHelpLink('JHZ574');
         this.activeDatabase.subscribe(() => this.fetchStatusDebugDataSubscriptions());
 
         return this.fetchStatusDebugDataSubscriptions();

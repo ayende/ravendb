@@ -11,7 +11,7 @@ class databaseSettingsDialog extends dialogViewModelBase {
     content: DurandalActivator<any>;
     currentModel: viewModelBase;
 
-    constructor() {
+    constructor(bundles: Array<string>) {
         super();
 
         this.content = activator.create();
@@ -22,16 +22,22 @@ class databaseSettingsDialog extends dialogViewModelBase {
 
         // when the activeScreen name changes - load the viewmodel
         this.activeScreen.subscribe((newValue) =>
-            require([newValue], (model) => {
+            require([newValue], (model: new () => viewModelBase) => { //TODO: avoid using require here, as it isn't type safe
                 this.currentModel = new model();
                 this.content.activateItem(this.currentModel);
             })
         );
 
         this.routes = [];
-        this.routes.push(quotasRoute);
-        this.routes.push(versioningRoute);
-        this.routes.push(sqlReplicationConnectionRoute);
+        if (bundles.contains("Quotas")) {
+            this.routes.push(quotasRoute);
+        }
+        if (bundles.contains("Versioning")) {
+            this.routes.push(versioningRoute);
+        }
+        if (bundles.contains("SqlReplication")) {
+            this.routes.push(sqlReplicationConnectionRoute);
+        }
     }
 
     attached() {
@@ -52,7 +58,7 @@ class databaseSettingsDialog extends dialogViewModelBase {
         var canDeactivate = this.canDeactivate();
 
         if (canDeactivate.done) {
-            canDeactivate.done((answer) => {
+            canDeactivate.done((answer: { can: boolean }) => {
                 if (answer.can) {
                     this.onSuccessfulDeactivation(moduleId);
                 }

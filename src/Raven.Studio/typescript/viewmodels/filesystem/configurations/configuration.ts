@@ -4,14 +4,12 @@ import appUrl = require("common/appUrl");
 import changesContext = require("common/changesContext");
 import ace = require("ace/ace");
 import viewModelBase = require("viewmodels/viewModelBase");
-import shell = require("viewmodels/shell");
 import getConfigurationCommand = require("commands/filesystem/getConfigurationCommand");
 import filesystem = require("models/filesystem/filesystem");
 import configurationKey = require("models/filesystem/configurationKey");
 import changeSubscription = require('common/changeSubscription');
 import aceEditorBindingHandler = require("common/bindingHelpers/aceEditorBindingHandler");
 import messagePublisher = require("common/messagePublisher");
-import Pair = require("common/pair");
 import saveConfigurationCommand = require("commands/filesystem/saveConfigurationCommand");
 import deleteConfigurationKeys = require("viewmodels/filesystem/configurations/deleteConfigurationKeys");
 import createConfigurationKey = require("viewmodels/filesystem/configurations/createConfigurationKey");
@@ -25,7 +23,7 @@ class configuration extends viewModelBase {
 
     keys = ko.observableArray<configurationKey>();
     text: KnockoutComputed<string>;
-    selectedKeyValue = ko.observable<Pair<string, string>>();
+    selectedKeyValue = ko.observable<[string, string]>();
     selectedKey = ko.observable<configurationKey>().subscribeTo("ActivateConfigurationKey").distinctUntilChanged();
     currentKey = ko.observable<configurationKey>();
     configurationEditor: AceAjax.Editor;
@@ -53,8 +51,10 @@ class configuration extends viewModelBase {
         });
     }
 
-    activate(navigationArgs) {
+    activate(navigationArgs: any) {
         super.activate(navigationArgs);
+
+        this.updateHelpLink("J3KIEN");
 
         this.appUrls = appUrl.forCurrentFilesystem();
 
@@ -121,7 +121,7 @@ class configuration extends viewModelBase {
         }
     }
 
-    selectKeyValue(selection: Pair<string, string>) {
+    selectKeyValue(selection: [string, string]) {
         this.selectedKeyValue(selection);
     }
 
@@ -206,7 +206,7 @@ class configuration extends viewModelBase {
             }
             this.focusOnEditor();
         }
-        if (message != "") {
+        if (message) {
             messagePublisher.reportError(message, undefined, undefined, false);
             return;
         }
@@ -231,18 +231,18 @@ class configuration extends viewModelBase {
     }
 
     removeKey(key: string) {
-        var foundKey = this.keys().filter((configKey: configurationKey) => configKey.key == key );
+        var foundKey = this.keys().filter((configKey: configurationKey) => configKey.key === key );
 
         if (foundKey.length > 0) {
             var currentIndex = this.keys.indexOf(this.currentKey());
             var foundIndex = this.keys.indexOf(foundKey[0]);
             var newIndex = currentIndex;
-            if (currentIndex + 1 == this.keys().length) {
+            if (currentIndex + 1 === this.keys().length) {
                 newIndex = currentIndex - 1;
             }
 
             this.keys.remove(foundKey[0]);
-            if (this.keys()[newIndex] && currentIndex == foundIndex) {
+            if (this.keys()[newIndex] && currentIndex === foundIndex) {
                 this.selectKey(this.keys()[newIndex]);
             }
             else {
@@ -252,7 +252,7 @@ class configuration extends viewModelBase {
     }
 
     addKey(key: string) {
-        var foundKey = this.keys.first((configKey: configurationKey) => configKey.key == key);
+        var foundKey = this.keys.first((configKey: configurationKey) => configKey.key === key);
 
         if (!foundKey) {
             var newKey = new configurationKey(this.activeFilesystem(), key);

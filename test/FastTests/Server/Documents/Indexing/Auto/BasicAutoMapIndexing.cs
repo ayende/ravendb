@@ -12,6 +12,7 @@ using Raven.Server.Documents;
 using Raven.Server.Documents.Indexes;
 using Raven.Server.Documents.Indexes.Auto;
 using Raven.Server.Documents.Indexes.Errors;
+using Raven.Server.Documents.Queries;
 using Raven.Server.Exceptions;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
@@ -42,7 +43,7 @@ namespace FastTests.Server.Documents.Indexing.Auto
 
                 Assert.Throws<ObjectDisposedException>(() => index.Start());
 
-                var ex = await Record.ExceptionAsync(() => index.Query(new IndexQuery(), null, OperationCancelToken.None));
+                var ex = await Record.ExceptionAsync(() => index.Query(new IndexQueryServerSide(), null, OperationCancelToken.None));
                 Assert.IsType<ObjectDisposedException>(ex);
 
                 index = AutoMapIndex.CreateNew(1, new AutoMapIndexDefinition("Users", new[] { new IndexField
@@ -270,7 +271,7 @@ namespace FastTests.Server.Documents.Indexing.Auto
                     Storage = FieldStorage.No
                 } }), database))
                 {
-                    using (var context = new DocumentsOperationContext(new UnmanagedBuffersPool(string.Empty), database))
+                    using (var context = DocumentsOperationContext.ShortTermSingleUse(database))
                     {
                         using (var tx = context.OpenWriteTransaction())
                         {
@@ -960,11 +961,11 @@ namespace FastTests.Server.Documents.Indexing.Auto
 
                 var index1 = database.IndexStore.GetIndex(index1Id);
                 var index2 = database.IndexStore.GetIndex(index2Id);
-                using (var context = new DocumentsOperationContext(new UnmanagedBuffersPool(string.Empty), database))
+                using (var context = DocumentsOperationContext.ShortTermSingleUse(database))
                 {
-                    await index1.Query(new IndexQuery(), context, OperationCancelToken.None); // last querying time
+                    await index1.Query(new IndexQueryServerSide(), context, OperationCancelToken.None); // last querying time
                     context.Reset();
-                    await index2.Query(new IndexQuery(), context, OperationCancelToken.None); // last querying time
+                    await index2.Query(new IndexQueryServerSide(), context, OperationCancelToken.None); // last querying time
                 }
 
                 Assert.Equal(IndexingPriority.Normal, index1.Priority);
@@ -980,9 +981,9 @@ namespace FastTests.Server.Documents.Indexing.Auto
 
                 SystemTime.UtcDateTime = () => DateTime.UtcNow.Add(database.Configuration.Indexing.TimeToWaitBeforeMarkingAutoIndexAsIdle.AsTimeSpan);
 
-                using (var context = new DocumentsOperationContext(new UnmanagedBuffersPool(string.Empty), database))
+                using (var context = DocumentsOperationContext.ShortTermSingleUse(database))
                 {
-                    await index1.Query(new IndexQuery(), context, OperationCancelToken.None); // last querying time
+                    await index1.Query(new IndexQueryServerSide(), context, OperationCancelToken.None); // last querying time
                 }
 
                 database.IndexStore.RunIdleOperations(); // this will mark index2 as idle, because the difference between two indexes and index last querying time is more than TimeToWaitBeforeMarkingAutoIndexAsIdle

@@ -36,6 +36,7 @@ class reporting extends viewModelBase {
     exportCsv() {
         if (this.isExportEnabled() === false)
             return false;
+
         var objArray = JSON.stringify(this.reportResults().getAllCachedItems());
         var array = typeof objArray != 'object' ? JSON.parse(objArray) : objArray;
 
@@ -45,12 +46,12 @@ class reporting extends viewModelBase {
         var str = '';
 
         var line = '';
-        for (var index in array[0]) {
-            if (index === "__metadata")
+        for (var header in array[0]) {
+            if (header === "__metadata")
                 continue;
-            if (line != '') line += ','
+            if (line) line += ',';
 
-            line += index;
+            line += header;
         }
 
         str += line + '\r\n';
@@ -60,7 +61,7 @@ class reporting extends viewModelBase {
             for (var index in array[i]) {
                 if (index === "__metadata")
                     continue;
-                if (line != '') line += ','
+                if (line) line += ',';
 
                 line += array[i][index];
             }
@@ -70,7 +71,7 @@ class reporting extends viewModelBase {
 
         var uriContent = encodeURIComponent(str);
         var link = document.createElement('a');
-        link["download"] = this.selectedIndexName() ? "Reporting_" + this.selectedIndexName() + ".csv" : "reporting.csv";
+        (<any>link)["download"] = this.selectedIndexName() ? "Reporting_" + this.selectedIndexName() + ".csv" : "reporting.csv";
         link.href = 'data:,' + uriContent;
         link.click();
         return true;
@@ -82,7 +83,7 @@ class reporting extends viewModelBase {
             html: true,
             trigger: "hover",
             container: ".form-horizontal",
-            content: 'Queries use Lucene syntax. Examples:<pre><span class="code-keyword">Name</span>: Hi?berna*<br/><span class="code-keyword">Count</span>: [0 TO 10]<br/><span class="code-keyword">Title</span>: "RavenDb Queries 1010" AND <span class="code-keyword">Price</span>: [10.99 TO *]</pre>',
+            content: '<p>Queries use Lucene syntax. Examples:</p><pre><span class="code-keyword">Name</span>: Hi?berna*<br/><span class="code-keyword">Count</span>: [0 TO 10]<br/><span class="code-keyword">Title</span>: "RavenDb Queries 1010" AND <span class="code-keyword">Price</span>: [10.99 TO *]</pre>',
         });
     }
 
@@ -163,7 +164,7 @@ class reporting extends viewModelBase {
 
     addValue(fieldName: string) {
         var sortOps = this.sortOptions();
-        var sortOption = (fieldName in sortOps) ? sortOps[fieldName] : "String";
+        var sortOption = (fieldName in sortOps) ? (<any>sortOps)[fieldName] : "String";
         var val = facet.fromNameAndAggregation(this.selectedField(), fieldName, this.mapSortToType(sortOption));
         this.addedValues.push(val);
     }

@@ -5,7 +5,7 @@ import sqlReplication = require("models/database/sqlReplication/sqlReplication")
 
 class simulateSqlReplicationCommand extends  commandBase{
     
-    constructor(private db: database, private simulatedSqlReplication: sqlReplication, private documentId: string, private performRolledbackTransaction) {
+    constructor(private db: database, private simulatedSqlReplication: sqlReplication, private documentId: string, private performRolledbackTransaction: boolean) {
         super();
     }
 
@@ -15,7 +15,8 @@ class simulateSqlReplicationCommand extends  commandBase{
             performRolledBackTransaction: this.performRolledbackTransaction,
             sqlReplication: JSON.stringify(this.simulatedSqlReplication.toDto())
         };
-        return this.post("/sql-replication/simulate", JSON.stringify(args), this.db, { dataType: undefined }, 60000);
+
+        return this.post("/studio-tasks/simulate-sql-replication", JSON.stringify(args), this.db, { dataType: undefined }, 60000);
     }
 }
 

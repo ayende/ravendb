@@ -2,11 +2,13 @@
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Raven.Abstractions.Util;
-using Raven.Client.Data;
 using Raven.Server.Documents.Includes;
 using Raven.Server.Documents.Indexes;
+using Raven.Server.Documents.Queries.Results;
+using Raven.Server.Documents.Transformers;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
+using Sparrow.Json;
 
 namespace Raven.Server.Documents.Queries.Dynamic
 {
@@ -15,19 +17,21 @@ namespace Raven.Server.Documents.Queries.Dynamic
         private const string DynamicIndexPrefix = "dynamic/";
 
         private readonly IndexStore _indexStore;
+        private readonly TransformerStore _transformerStore;
         private readonly DocumentsOperationContext _context;
         private readonly DocumentsStorage _documents;
         private readonly OperationCancelToken _token;
 
-        public DynamicQueryRunner(IndexStore indexStore, DocumentsStorage documents, DocumentsOperationContext context, OperationCancelToken token)
+        public DynamicQueryRunner(IndexStore indexStore, TransformerStore transformerStore, DocumentsStorage documents, DocumentsOperationContext context, OperationCancelToken token)
         {
             _indexStore = indexStore;
+            _transformerStore = transformerStore;
             _context = context;
             _token = token;
             _documents = documents;
         }
 
-        public Task<DocumentQueryResult> Execute(string dynamicIndexName, IndexQuery query, long? existingResultEtag)
+        public Task<DocumentQueryResult> Execute(string dynamicIndexName, IndexQueryServerSide query, long? existingResultEtag)
         {
             var collection = dynamicIndexName.Substring(DynamicIndexPrefix.Length);
 
@@ -52,12 +56,32 @@ namespace Raven.Server.Documents.Queries.Dynamic
                 result.TotalResults = (int)collectionStats.Count;
 
                 var includeDocumentsCommand = new IncludeDocumentsCommand(_documents, _context, query.Includes);
-                foreach (var document in _documents.GetDocumentsAfter(_context, collection, 0, query.Start, query.PageSize))
-                {
-                    _token.Token.ThrowIfCancellationRequested();
 
-                    result.Results.Add(document);
-                    includeDocumentsCommand.Gather(document);
+                Transformer transformer = null;
+                if (string.IsNullOrEmpty(query.Transformer) == false)
+                {
+                    transformer = _transformerStore.GetTransformer(query.Transformer);
+                    if (transformer == null)
+                        throw new InvalidOperationException($"The transformer '{query.Transformer}' was not found.");
+                }
+
+                using (var scope = transformer?.OpenTransformationScope(query.TransformerParameters, includeDocumentsCommand, _documents, _transformerStore, _context))
+                {
+                    var fieldsToFetch = new FieldsToFetch(query, null, transformer);
+                    var documents = _documents.GetDocumentsAfter(_context, collection, 0, query.Start, query.PageSize);
+                    var results = scope != null ? scope.Transform(documents) : documents;
+
+                    foreach (var document in results)
+                    {
+                        _token.Token.ThrowIfCancellationRequested();
+
+                        var doc = fieldsToFetch.IsProjection
+                            ? MapQueryResultRetriever.GetProjectionFromDocument(document, fieldsToFetch, _context)
+                            : document;
+
+                        result.Results.Add(doc);
+                        includeDocumentsCommand.Gather(doc);
+                    }
                 }
 
                 includeDocumentsCommand.Fill(result.Includes);
@@ -94,7 +118,7 @@ namespace Raven.Server.Documents.Queries.Dynamic
             return index.Query(query, _context, _token);
         }
 
-        public List<DynamicQueryToIndexMatcher.Explanation> ExplainIndexSelection(string dynamicIndexName, IndexQuery query)
+        public List<DynamicQueryToIndexMatcher.Explanation> ExplainIndexSelection(string dynamicIndexName, IndexQueryServerSide query)
         {
             var collection = dynamicIndexName.Substring(DynamicIndexPrefix.Length);
             var map = DynamicQueryMapping.Create(collection, query);
@@ -134,7 +158,7 @@ namespace Raven.Server.Documents.Queries.Dynamic
             return false;
         }
 
-        private static IndexQuery EnsureValidQuery(IndexQuery query, DynamicQueryMapping map)
+        private static IndexQueryServerSide EnsureValidQuery(IndexQueryServerSide query, DynamicQueryMapping map)
         {
             foreach (var field in map.MapFields)
             {

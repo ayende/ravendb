@@ -15,6 +15,7 @@ using Raven.Server.Routing;
 using Raven.Server.ServerWide.Context;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
+using Sparrow.Logging;
 
 namespace Raven.Server.Documents.Handlers
 {
@@ -35,7 +36,8 @@ namespace Raven.Server.Documents.Handlers
                     }
                     catch (Exception ex)
                     {
-                        Log.ErrorException("Error encountered in changes handler", ex);
+                        if (Logger.IsInfoEnabled)
+                            Logger.Info("Error encountered in changes handler", ex);
 
                         try
                         {
@@ -56,7 +58,8 @@ namespace Raven.Server.Documents.Handlers
                         }
                         catch (Exception)
                         {
-                            Log.ErrorException("Failed to send the error in changes handler to the client", ex);
+                            if (Logger.IsInfoEnabled)
+                                Logger.Info("Failed to send the error in changes handler to the client", ex);
                         }
                     }
                 }
@@ -148,7 +151,8 @@ namespace Raven.Server.Documents.Handlers
             catch (IOException ex)
             {
                 /* Client was disconnected, write to log */
-                Log.DebugException("Client was disconnected", ex);
+                if (Logger.IsInfoEnabled)
+                    Logger.Info("Client was disconnected", ex);
             }
             finally
             {

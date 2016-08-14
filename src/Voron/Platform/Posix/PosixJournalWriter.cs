@@ -10,6 +10,7 @@ using Voron.Impl;
 using Voron.Impl.Journal;
 using Voron.Impl.Paging;
 using System.Collections.Generic;
+using Sparrow;
 
 namespace Voron.Platform.Posix
 {
@@ -54,6 +55,7 @@ namespace Voron.Platform.Posix
         {
             Disposed = true;
             GC.SuppressFinalize(this);
+            _options.IoMetrics.FileClosed(_filename);
             if (_fdReads != -1)
             {
                 Syscall.close(_fdReads);
@@ -84,7 +86,12 @@ namespace Voron.Platform.Posix
             if (numberOfPages == 0)
                 return; // nothing to do
 
-            var result = Syscall.pwrite(_fd, p, (ulong)numberOfPages * (ulong)_options.PageSize, position);
+            var nNumberOfBytesToWrite = (ulong)numberOfPages*(ulong)_options.PageSize;
+            long result;
+            using (_options.IoMetrics.MeterIoRate(_filename, IoMetrics.MeterType.Write, (long)nNumberOfBytesToWrite))
+            {
+                result = Syscall.pwrite(_fd, p, nNumberOfBytesToWrite, position);
+            }
             if (result == -1)
             {
                 var err = Marshal.GetLastWin32Error();
@@ -100,7 +107,7 @@ namespace Voron.Platform.Posix
 
         public AbstractPager CreatePager()
         {
-            return new PosixMemoryMapPager(_options.PageSize, _filename);
+            return new PosixMemoryMapPager(_options, _filename);
         }
 
         public unsafe bool Read(long pageNumber, byte* buffer, int count)
@@ -131,6 +138,12 @@ namespace Voron.Platform.Posix
         public void Truncate(long size)
         {
             var result = Syscall.ftruncate(_fd, size);
+            if (result == -1)
+            {
+                var err = Marshal.GetLastWin32Error();
+                PosixHelper.ThrowLastError(err);
+            }
+            result = Syscall.fsync(_fd);
             if (result == -1)
             {
                 var err = Marshal.GetLastWin32Error();

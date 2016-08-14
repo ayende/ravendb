@@ -10,14 +10,14 @@ class sqlReplicationStats {
 
      
     constructor(replicationStats: sqlReplicationStatsDto) {
-        if (!!replicationStats.Statistics.LastErrorTime && replicationStats.Statistics.LastErrorTime == "0001-01-01T00:00:00.0000000") {
+        if (replicationStats.Statistics && replicationStats.Statistics.LastErrorTime && replicationStats.Statistics.LastErrorTime === "0001-01-01T00:00:00.0000000") {
             replicationStats.Statistics.LastErrorTime = "No Errors";
         }
         this.statistics(replicationStats.Statistics);
         this.name(replicationStats.Name);
         this.metrics(replicationStats.Metrics);
-         this.rateMetrics = ko.computed(() => {
-             var computedRateMetrics = [];
+        this.rateMetrics = ko.computed(() => {
+             var computedRateMetrics: metricsDataDto[] = [];
              var generalMetrics = this.metrics().GeneralMetrics;
              var tablesMetrics = this.metrics().TablesMetrics;
 
@@ -25,10 +25,10 @@ class sqlReplicationStats {
                  $.map(generalMetrics, (value: metricsDataDto, key: string) => {
                      if (value.Type == "Meter") {
                          value["Name"] = key;
-                         value["Table"] = "";
+                         (<any>value)["Table"] = "";
                          $.map(value, (propertyValue, propertyName) => {
                              if (!isNaN(propertyValue)) {
-                                 value[propertyName] = genUtils.formatAsCommaSeperatedString(propertyValue, 2);
+                                 (<any>value)[propertyName] = genUtils.formatAsCommaSeperatedString(propertyValue, 2);
                              }
                          });
                          computedRateMetrics.push(value);
@@ -39,7 +39,7 @@ class sqlReplicationStats {
              if (!!tablesMetrics) {
                  $.map(tablesMetrics, (tablesMetricsData: dictionary<metricsDataDto>, tableMetricsKey: string) => {
                     $.map(tablesMetricsData, (value, key) => {
-                        if (value.Type == "Meter") {
+                        if (value.Type === "Meter") {
                             var newMetric = value;
                             newMetric["Name"] = key;
                             value["Table"] = tableMetricsKey;
@@ -58,16 +58,16 @@ class sqlReplicationStats {
          });
 
          this.histogramMetrics = ko.computed(() => {
-             var computedHistogramMetrics = [];
+             var computedHistogramMetrics: any[] = [];
              var generalMetrics = this.metrics().GeneralMetrics;
              var tablesMetrics = this.metrics().TablesMetrics;
 
              if (!!generalMetrics) {
                  $.map(generalMetrics, (value: metricsDataDto, key: string) => {
-                     if (value.Type == "Histogram") {
-                         value["Name"] = key;
-                         value["Table"] = "";
-                         value["Percentiles"] = $.map(value["Percentiles"], (percentileValue, percentile) => {
+                     if (value.Type === "Histogram") {
+                         value.Name = key;
+                         (<any>value)["Table"] = "";
+                         (<any>value)["Percentiles"] = $.map((<any>value)["Percentiles"], (percentileValue, percentile) => {
                              return {
                                  percentileValue: genUtils.formatAsCommaSeperatedString(percentileValue, 2),
                                  percentile: percentile
@@ -75,7 +75,7 @@ class sqlReplicationStats {
                          });
                          $.map(value, (propertyValue, propertyName) => {
                              if (!isNaN(propertyValue)) {
-                                 value[propertyName] = genUtils.formatAsCommaSeperatedString(propertyValue, 2);
+                                 (<any>value)[propertyName] = genUtils.formatAsCommaSeperatedString(propertyValue, 2);
                              }
                          });
                          computedHistogramMetrics.push(value);

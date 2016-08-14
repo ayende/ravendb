@@ -3,15 +3,17 @@ using Microsoft.Extensions.Configuration;
 using Raven.Abstractions.Logging;
 using Raven.Server.Config;
 using Raven.Server.Utils;
-
+using Sparrow.Logging;
 namespace Raven.Server
 {
     public class Program
     {
-        private static readonly ILog Log = LogManager.GetLogger(typeof(Program));
+        private static Logger _logger;
 
         public static int Main(string[] args)
         {
+            LoggerSetup.Instance.SetupLogMode(LogMode.Operations, "Logs");
+
             WelcomeMessage.Print();
 
             var configuration = new RavenConfiguration();
@@ -26,7 +28,7 @@ namespace Raven.Server
                 try
                 {
                     server.Initialize();
-
+                    _logger = LoggerSetup.Instance.GetLogger<Program>("Raven/Server");
                     Console.WriteLine($"Listening to: {string.Join(", ", configuration.Core.ServerUrl)}");
                     Console.WriteLine("Server started, listening to requests...");
 
@@ -38,12 +40,14 @@ namespace Raven.Server
 
                         // Console.ForegroundColor++;
                     }
-                    Log.Info("Server is shutting down");
+                    if (_logger.IsInfoEnabled)
+                        _logger.Info("Server is shutting down");
                     return 0;
                 }
                 catch (Exception e)
                 {
-                    Log.FatalException("Failed to initialize the server", e);
+                    if (_logger.IsOperationsEnabled)
+                        _logger.Operations("Failed to initialize the server", e);
                     Console.WriteLine(e);
                     return -1;
                 }

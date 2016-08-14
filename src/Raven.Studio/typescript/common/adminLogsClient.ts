@@ -1,9 +1,9 @@
 /// <reference path="../../typings/tsd.d.ts" />
+
 import appUrl = require('common/appUrl');
 import changeSubscription = require('common/changeSubscription');
 import changesCallback = require('common/changesCallback');
 import commandBase = require('commands/commandBase');
-import changesApi = require("common/changesApi");
 import idGenerator = require("common/idGenerator");
 import adminLogsConfigureCommand = require("commands/database/debug/adminLogsConfigureCommand");
 
@@ -36,9 +36,6 @@ class adminLogsClient {
         var connectionString = 'singleUseAuthToken=' + this.token + '&id=' + this.eventsId;
         if ("WebSocket" in window) {
             this.connectWebSocket(connectionString);
-        }
-        else if ("EventSource" in window) {
-            this.connectEventSource(connectionString);
         } else {
             //The browser doesn't support nor websocket nor eventsource
             //or we are in IE10 or IE11 and the server doesn't support WebSockets.
@@ -72,31 +69,9 @@ class adminLogsClient {
         }
     }
 
-    private connectEventSource(connectionString: string) {
-        var connectionOpened: boolean = false;
-
-        this.eventSource = new EventSource(this.resourcePath + '/admin/logs/events?' + connectionString);
-
-        this.eventSource.onmessage = (e) => this.onMessage(e);
-        this.eventSource.onerror = (e) => {
-            if (connectionOpened == false) {
-                this.connectionOpeningTask.reject();
-            } else {
-                this.eventSource.close();
-                this.connectionClosingTask.resolve(e);
-            }
-        };
-        this.eventSource.onopen = () => { 
-            console.log("Connected to WebSocket admin logs");
-            this.successfullyConnectedOnce = true;
-            connectionOpened = true;
-            this.connectionOpeningTask.resolve();
-        }
-    }
-
     private send(command: string, value?: string, needToSaveSentMessages: boolean = true) {
         this.connectionOpeningTask.done(() => {
-            var args = {
+            var args: any = {
                 id: this.eventsId,
                 command: command
             };
@@ -109,7 +84,7 @@ class adminLogsClient {
         });
     }
 
-    private fireEvents<T>(events: Array<any>, param: T, filter: (T) => boolean) {
+    private fireEvents<T>(events: Array<any>, param: T, filter: (obj: T) => boolean) {
         for (var i = 0; i < events.length; i++) {
             if (filter(param)) {
                 events[i].fire(param);
@@ -122,7 +97,7 @@ class adminLogsClient {
         if (!!eventDto.Type && eventDto.Type == 'Heartbeat') {
             return;
         }
-        this.fireEvents(this.adminLogsHandlers(), eventDto, (e) => true);
+        this.fireEvents(this.adminLogsHandlers(), eventDto, () => true);
     }
 
 

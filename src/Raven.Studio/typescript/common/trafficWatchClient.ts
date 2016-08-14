@@ -1,8 +1,7 @@
- /// <reference path="../../typings/tsd.d.ts" />
+/// <reference path="../../typings/tsd.d.ts" />
 import changeSubscription = require('common/changeSubscription');
 import changesCallback = require('common/changesCallback');
 import commandBase = require('commands/commandBase');
-import changesApi = require("common/changesApi");
 import idGenerator = require("common/idGenerator");
 
 class trafficWatchClient {
@@ -19,7 +18,7 @@ class trafficWatchClient {
     private normalClosureMessage = "CLOSE_NORMAL";
     static messageWasShownOnce: boolean = false;
     private successfullyConnectedOnce: boolean = false;
-    private sentMessages = [];
+    private sentMessages: string[] = [];
     private commandBase = new commandBase();
     private adminLogsHandlers = ko.observableArray<changesCallback<logNotificationDto>>();
 
@@ -66,7 +65,7 @@ class trafficWatchClient {
         }
     }
 
-    private fireEvents<T>(events: Array<any>, param: T, filter: (T) => boolean) {
+    private fireEvents<T>(events: Array<any>, param: T, filter: (input: T) => boolean) {
         for (var i = 0; i < events.length; i++) {
             if (filter(param)) {
                 events[i].fire(param);
@@ -81,7 +80,7 @@ class trafficWatchClient {
 
         if (type !== "Heartbeat") { // ignore heartbeat
             if (type === "LogNotification") {
-                this.fireEvents(this.adminLogsHandlers(), value, (e) => true);
+                this.fireEvents(this.adminLogsHandlers(), value, () => true);
             }
             else {
                 console.log("Unhandled Changes API notification type: " + type);

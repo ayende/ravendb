@@ -1,4 +1,5 @@
-﻿using Voron.Global;
+﻿using Sparrow;
+using Voron.Global;
 using Voron.Data.BTrees;
 
 namespace Voron.Impl.Paging
@@ -37,7 +38,10 @@ namespace Voron.Impl.Paging
 
             var toWrite = page.IsOverflow ? pager.GetNumberOfOverflowPages(page.OverflowSize) : 1;
 
-            return pager.WriteDirect(page.Pointer, startPage, toWrite);
+            using (pager.Options.IoMetrics.MeterIoRate(pager.FileName , IoMetrics.MeterType.Write, toWrite * pager.PageSize))
+            {
+                return pager.WriteDirect(page.Pointer, startPage, toWrite);
+            }
         }
         public static int GetNumberOfOverflowPages(this AbstractPager pager, int overflowSize)
         {

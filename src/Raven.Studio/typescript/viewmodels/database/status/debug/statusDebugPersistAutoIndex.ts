@@ -20,7 +20,7 @@ class statusDebugPersistAutoIndex extends viewModelBase {
             .execute()
             .done(() => {
                 this.indexName(statusDebugPersistAutoIndex.selectIndexText);
-                var index = this.onRamIndexes.first(i => i.name == indexName);
+                var index = this.onRamIndexes.first(i => i.name === indexName);
                 if (index) {
                     this.onRamIndexes.remove(index);
                 }
@@ -31,12 +31,12 @@ class statusDebugPersistAutoIndex extends viewModelBase {
         this.indexName(indexName);
     }
 
-    activate(args) {
+    activate(args: any) {
         super.activate(args);
         this.updateHelpLink('JHZ574');
     }
 
-    canActivate(args) {
+    canActivate(args: any) {
         super.canActivate(args);
 
         var deferred = $.Deferred();

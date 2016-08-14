@@ -22,7 +22,7 @@ using Raven.Server.Documents.Queries.Results;
 using Raven.Server.Documents.Queries.Sorting;
 using Raven.Server.Documents.Queries.Sorting.AlphaNumeric;
 using Raven.Server.Indexing;
-
+using Sparrow.Logging;
 using Voron.Impl;
 
 using Constants = Raven.Abstractions.Data.Constants;
@@ -35,7 +35,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
 
         private const string _Range = "_Range";
 
-        private static readonly ILog Log = LogManager.GetLogger(typeof(IndexReadOperation).FullName);
+        private static Logger _logger;
         private static readonly CompareInfo InvariantCompare = CultureInfo.InvariantCulture.CompareInfo;
 
         private readonly string _indexName;
@@ -49,7 +49,10 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
         private readonly IDisposable _releaseSearcher;
         private readonly IDisposable _releaseReadTransaction;
 
-        public IndexReadOperation(string indexName, IndexType indexType, int maxIndexOutputsPerDocument, int? actualMaxIndexOutputsPerDocument, Dictionary<string, IndexField> fields, LuceneVoronDirectory directory, IndexSearcherHolder searcherHolder, Transaction readTransaction)
+        public IndexReadOperation(string indexName, IndexType indexType,
+            int maxIndexOutputsPerDocument, int? actualMaxIndexOutputsPerDocument,
+            Dictionary<string, IndexField> fields, LuceneVoronDirectory directory,
+            IndexSearcherHolder searcherHolder, Transaction readTransaction, DocumentDatabase documentDatabase)
         {
             _analyzer = CreateAnalyzer(() => new LowerCaseKeywordAnalyzer(), fields, forQuerying: true);
             _indexName = indexName;
@@ -57,7 +60,8 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
             _actualMaxIndexOutputsPerDocument = actualMaxIndexOutputsPerDocument;
             _maxIndexOutputsPerDocument = maxIndexOutputsPerDocument;
             _releaseReadTransaction = directory.SetTransaction(readTransaction);
-            _releaseSearcher = searcherHolder.GetSearcher(out _searcher);
+            _releaseSearcher = searcherHolder.GetSearcher(out _searcher, documentDatabase);
+            _logger = LoggerSetup.Instance.GetLogger<IndexReadOperation>(documentDatabase.Name);
         }
 
         public int EntriesCount()
@@ -65,7 +69,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
             return _searcher.IndexReader.NumDocs();
         }
 
-        public IEnumerable<Document> Query(IndexQuery query, FieldsToFetch fieldsToFetch, Reference<int> totalResults, Reference<int> skippedResults, IQueryResultRetriever retriever, CancellationToken token)
+        public IEnumerable<Document> Query(IndexQueryServerSide query, FieldsToFetch fieldsToFetch, Reference<int> totalResults, Reference<int> skippedResults, IQueryResultRetriever retriever, CancellationToken token)
         {
             var docsToGet = query.PageSize;
             var position = query.Start;
@@ -93,8 +97,15 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
                         var scoreDoc = search.ScoreDocs[position];
                         var document = _searcher.Doc(scoreDoc.Doc);
 
+                        string key;
+                        if (retriever.TryGetKey(document, out key) && scope.WillProbablyIncludeInResults(key) == false)
+                        {
+                            skippedResults.Value++;
+                            continue;
+                        }
+
                         var result = retriever.Get(document);
-                        if (scope.ShouldIncludeInResults(result) == false)
+                        if (scope.TryIncludeInResults(result) == false)
                         {
                             skippedResults.Value++;
                             continue;
@@ -121,7 +132,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
             }
         }
 
-        public IEnumerable<Document> IntersectQuery(IndexQuery query, FieldsToFetch fieldsToFetch, Reference<int> totalResults, Reference<int> skippedResults, IQueryResultRetriever retriever, CancellationToken token)
+        public IEnumerable<Document> IntersectQuery(IndexQueryServerSide query, FieldsToFetch fieldsToFetch, Reference<int> totalResults, Reference<int> skippedResults, IQueryResultRetriever retriever, CancellationToken token)
         {
             var subQueries = query.Query.Split(IntersectSeparators, StringSplitOptions.RemoveEmptyEntries);
             if (subQueries.Length <= 1)
@@ -181,9 +192,18 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
                 int returnedResults = 0;
                 for (int i = query.Start; i < intersectResults.Count && (i - query.Start) < pageSizeBestGuess; i++)
                 {
-                    var document = retriever.Get(_searcher.Doc(intersectResults[i].LuceneId));
+                    var document = _searcher.Doc(intersectResults[i].LuceneId);
 
-                    if (scope.ShouldIncludeInResults(document) == false)
+                    string key;
+                    if (retriever.TryGetKey(document, out key) && scope.WillProbablyIncludeInResults(key) == false)
+                    {
+                        skippedResults.Value++;
+                        skippedResultsInCurrentLoop++;
+                        continue;
+                    }
+
+                    var result = retriever.Get(document);
+                    if (scope.TryIncludeInResults(result) == false)
                     {
                         skippedResults.Value++;
                         skippedResultsInCurrentLoop++;
@@ -191,7 +211,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
                     }
 
                     returnedResults++;
-                    yield return document;
+                    yield return result;
                     if (returnedResults == query.PageSize)
                         yield break;
                 }
@@ -227,21 +247,21 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
             return _searcher.Search(documentQuery, null, minPageSize);
         }
 
-        private Query GetLuceneQuery(string q, IndexQuery query)
+        private Query GetLuceneQuery(string q, IndexQueryServerSide query)
         {
             Query documentQuery;
 
             if (string.IsNullOrEmpty(q))
             {
-                if (Log.IsDebugEnabled)
-                    Log.Debug($"Issuing query on index {_indexName} for all documents");
+                if (_logger.IsInfoEnabled)
+                    _logger.Info($"Issuing query on index {_indexName} for all documents");
 
                 documentQuery = new MatchAllDocsQuery();
             }
             else
             {
-                if (Log.IsDebugEnabled)
-                    Log.Debug($"Issuing query on index {_indexName} for: {q}");
+                if (_logger.IsInfoEnabled)
+                    _logger.Info($"Issuing query on index {_indexName} for: {q}");
 
                 // RavenPerFieldAnalyzerWrapper searchAnalyzer = null;
                 try

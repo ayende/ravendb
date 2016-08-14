@@ -20,7 +20,7 @@ class extensions {
     private static installDateExtensions() {
         var datePrototype: any = Date.prototype;
 
-        var formatNumber = (num) => {
+        var formatNumber = (num: number) => {
             return num < 10 ? "0" + num : num;
         }
 
@@ -55,7 +55,7 @@ class extensions {
         var observableArrayFn: any = ko.observableArray.fn;
 
         // observable.where
-        subscribableFn.where = function (predicate: (item) => boolean) {
+        subscribableFn.where = function (predicate: (item: any) => boolean) {
             var observable: KnockoutSubscribable<any> = this;
             var matches = ko.observable();
             observable.subscribe(val => {
@@ -87,10 +87,10 @@ class extensions {
         };
 
         // observable.select
-        subscribableFn.select = function (selector: (any) => any) {
+        subscribableFn.select = function (selector: (any: any) => any) {
             var observable = this;
             var selectedResults = ko.observable();
-            observable.subscribe(val => selectedResults(selector(val)));
+            observable.subscribe((val:any) => selectedResults(selector(val)));
             return selectedResults;
         };
 
@@ -112,12 +112,12 @@ class extensions {
         };
 
         // observableArray.first
-        observableArrayFn.first = function (filter?: (item) => boolean) {
+        observableArrayFn.first = function (filter?: (item: any) => boolean) {
             return this().first(filter);
         };
 
         // observableArray.last
-        observableArrayFn.last = function (filter?: (item) => boolean) {
+        observableArrayFn.last = function (filter?: (item: any) => boolean) {
             return this().last(filter);
         };
     }
@@ -126,7 +126,7 @@ class extensions {
         var arrayPrototype: any = Array.prototype;
 
         // Array.remove
-        arrayPrototype.remove = function (item) {
+        arrayPrototype.remove = function (item: any) {
             var self: any[] = this;
             var index = self.indexOf(item);
             if (index >= 0) {
@@ -149,7 +149,7 @@ class extensions {
         };
 
         // Array.first
-        arrayPrototype.first = function (filter?: (item) => boolean) {
+        arrayPrototype.first = function (filter?: (item: any) => boolean) {
             var self: any[] = this;
             if (self.length > 0) {
                 if (filter) {
@@ -164,7 +164,7 @@ class extensions {
         };
 
         // Array.last
-        arrayPrototype.last = function (filter?: (item) => boolean) {
+        arrayPrototype.last = function (filter?: (item: any) => boolean) {
             var self: any[] = this;
             if (filter) {
                 for (var i = self.length - 1; i > 0; i--) {
@@ -192,7 +192,7 @@ class extensions {
         };
 
         // Array.count
-        arrayPrototype.count = function (filter?: (item) => boolean) {
+        arrayPrototype.count = function (filter?: (item: any) => boolean) {
             var self: any[] = this;
             if (filter) {
                 var matches = 0;
@@ -210,7 +210,7 @@ class extensions {
 
         // Array.distinct
         arrayPrototype.distinct = function () {
-            var distinctElements = [];
+            var distinctElements: Array<any> = [];
             for (var i = 0; i < this.length; i++) {
                 var element = this[i];
                 if (!distinctElements.contains(element)) {
@@ -222,7 +222,7 @@ class extensions {
         };
 
         // Array.distinct
-        arrayPrototype.concatUnique = function (values) {
+        arrayPrototype.concatUnique = function (values: Array<any>) {
             for (var i = 0; i < values.length; i++)
                 if (this.indexOf(values[i]) === -1)
                     this.push(values[i]);
@@ -231,10 +231,10 @@ class extensions {
 
     private static installStringExtension() {
 
-        String.prototype.fixedCharCodeAt = function (idx) {
+        String.prototype.fixedCharCodeAt = function (idx: number) {
             idx = idx || 0;
             var code = this.charCodeAt(idx);
-            var hi, low;
+            var hi: number, low: number;
             if (0xD800 <= code && code <= 0xDBFF) { // High surrogate (could change last hex to 0xDB7F to treat high private surrogates as single characters)
                 hi = code;
                 low = this.charCodeAt(idx + 1);
@@ -245,7 +245,7 @@ class extensions {
             }
             if (0xDC00 <= code && code <= 0xDFFF) { // Low surrogate
                 // We return false to allow loops to skip this iteration since should have already handled high surrogate above in the previous iteration
-                return false;
+                return 0;
             }
             return code;
         };
@@ -302,7 +302,7 @@ class extensions {
             return hash;
         };
 
-        String.prototype.replaceAll = function (find, replace) {
+        String.prototype.replaceAll = function (find: string, replace: string) {
             return this.replace(new RegExp(find, 'g'), replace);
         };
 
@@ -321,11 +321,11 @@ class extensions {
             return results ? results.length : 0;
         }
 
-        String.prototype.startsWith = String.prototype.startsWith || function (str) {
+        String.prototype.startsWith = String.prototype.startsWith || function (str:string) {
             return this.indexOf(str) == 0;
         };
 
-        String.prototype.contains = String.prototype.contains || function (str) {
+        String.prototype.contains = String.prototype.contains || function (str: string) {
             return this.indexOf(str) > -1;
         }
 
@@ -354,6 +354,10 @@ class extensions {
 
             return this;
         }
+
+        String.prototype.capitalizeFirstLetter = function() {
+            return this.charAt(0).toUpperCase() + this.slice(1);
+        }
     }
 
     private static installStorageExtension() {
@@ -370,10 +374,10 @@ class extensions {
     private static installFunctionExtensions() {
         // Function.memoize
         var functionPrototype: any = Function.prototype;
-        functionPrototype.memoize = function (thisVal) {
+        functionPrototype.memoize = function (thisVal: any) {
             var self = this;
-            var cache = {};
-            return (arg1, arg2) => {
+            var cache: any = {};
+            return (arg1: any, arg2: any) => {
                 if (arg2 in cache) {
                     return cache[arg2];
                 } else {
@@ -443,38 +447,26 @@ class extensions {
             }
         };
 
-        ko.bindingHandlers["checkbox"] = {
-            update(element, valueAccessor, allBindings, viewModel, bindingContext) {
-                var checked: boolean = ko.unwrap(valueAccessor());
-                
-                var src = checked ? "content/images/checked.png" : "content/images/unchecked.png";
-                $(element).attr("src", src);
-                var needOpacity = ko.utils.unwrapObservable(allBindings().needOpacity);
-                var opactity = !!needOpacity ? 0.25 : 1;
-                $(element).css("opacity", opactity);
-            }
-        };
-
         ko.bindingHandlers["checkboxTriple"] = {
             update(element, valueAccessor, allBindings, viewModel, bindingContext) {
                 var checkboxValue: checkbox = ko.unwrap(valueAccessor());
-                var src;
                 switch (checkboxValue) {
-                    case checkbox.Checked:
-                        src = "content/images/checked.png";
-                        break;
-                    case checkbox.SomeChecked:
-                        src = "content/images/some-checked.png";
-                        break;
-                    case checkbox.UnChecked:
-                    default:
-                        src = "content/images/unchecked.png";
+                case checkbox.Checked:
+                    element.checked = true;
+                    element.readOnly = false;
+                    element.indeterminate = false;
+                    break;
+                case checkbox.SomeChecked:
+                    element.readOnly = true;
+                    element.indeterminate = true;
+                    element.checked = false;
+                    break;
+                case checkbox.UnChecked:
+                    element.checked = false;
+                    element.readOnly = false;
+                    element.indeterminate = false;
+                    break;
                 }
-
-                $(element).attr("src", src);
-                var needOpacity = ko.utils.unwrapObservable(allBindings().needOpacity);
-                var opactity = !!needOpacity ? 0.25 : 1;
-                $(element).css("opacity", opactity);
             }
         };
     }

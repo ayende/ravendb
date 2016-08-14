@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Text;
 using Raven.Abstractions.Extensions;
+using Sparrow.Utils;
 
 namespace Sparrow.Json.Parsing
 {
@@ -246,6 +247,22 @@ namespace Sparrow.Json.Parsing
 
                 }
 
+                var dbj = current as IBlittableJsonContainer;
+
+                if (dbj != null)
+                {
+                    current = dbj.BlittableJson;
+                    continue;
+                }
+
+                var enumerable = current as IEnumerable<object>;
+
+                if (enumerable != null)
+                {
+                    current = new DynamicJsonArray(enumerable);
+                    continue;
+                }
+
                 var lsv = current as LazyStringValue;
                 if (lsv != null)
                 {
@@ -328,6 +345,17 @@ namespace Sparrow.Json.Parsing
                     _state.CurrentTokenType = JsonParserToken.String;
                     return;
                 }
+                if (current is decimal)
+                {
+                    var d = (decimal)current;
+                    if (DecimalHelper.Instance.IsDouble(ref d))
+                        current = (double)d;
+                    else
+                        current = (long)d;
+
+                    continue;
+                }
+
                 if (current == null)
                 {
                     _state.CurrentTokenType = JsonParserToken.Null;
@@ -357,7 +385,7 @@ namespace Sparrow.Json.Parsing
             int size = Encoding.UTF8.GetMaxByteCount(str.Length);
             _state.FindEscapePositionsIn(str);
             size += _state.GetEscapePositionsSize();
-            _state.StringBuffer = _ctx.GetNativeTempBuffer(size, out size);
+            _state.StringBuffer = _ctx.GetNativeTempBuffer(size);
             fixed (char* pChars = str)
             {
                 _state.StringSize = Utf8Encoding.GetBytes(pChars, str.Length, _state.StringBuffer, size);

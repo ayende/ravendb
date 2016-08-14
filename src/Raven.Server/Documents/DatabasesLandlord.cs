@@ -10,6 +10,7 @@ using Raven.Abstractions.Exceptions;
 using Raven.Abstractions.Logging;
 using Raven.Client.Connection;
 using Raven.Client.Document;
+using Raven.Client.Json;
 using Raven.Server.Config;
 using Raven.Server.Json;
 using Raven.Server.ServerWide;
@@ -23,8 +24,8 @@ namespace Raven.Server.Documents
     public class DatabasesLandlord : AbstractLandlord<DocumentDatabase>
     {
         public event Action<string> OnDatabaseLoaded = delegate { };
-		private readonly HttpJsonRequestFactory _httpJsonRequestFactory = new HttpJsonRequestFactory(64);
-		private readonly DocumentConvention _convention = new DocumentConvention();
+        private readonly HttpJsonRequestFactory _httpJsonRequestFactory = new HttpJsonRequestFactory(64);
+        private readonly DocumentConvention _convention = new DocumentConvention();
 
         public override Task<DocumentDatabase> TryGetOrCreateResourceStore(StringSegment databaseName)
         {
@@ -93,13 +94,11 @@ namespace Raven.Server.Documents
             try
             {
                 var sp = Stopwatch.StartNew();
-                var documentDatabase = new DocumentDatabase(config.DatabaseName, config,ServerStore.MetricsScheduler, LoggerSetup);
+                var documentDatabase = new DocumentDatabase(config.DatabaseName, config, ServerStore.IoMetrics);
                 documentDatabase.Initialize();
 
-                if (Log.IsInfoEnabled)
-                {
-                    Log.Info($"Started database {config.DatabaseName} in {sp.ElapsedMilliseconds:#,#;;0}ms");
-                }
+                if (_logger.IsInfoEnabled)
+                    _logger.Info($"Started database {config.DatabaseName} in {sp.ElapsedMilliseconds:#,#;;0}ms");
 
                 OnDatabaseLoaded(config.DatabaseName);
 
@@ -109,8 +108,8 @@ namespace Raven.Server.Documents
             }
             catch(Exception e)
             {
-                if (Log.IsWarnEnabled)
-                    Log.WarnException($"Failed to start database {config.DatabaseName}", e);
+                if (_logger.IsInfoEnabled)
+                    _logger.Info($"Failed to start database {config.DatabaseName}", e);
                 throw;
             }
         }
@@ -175,7 +174,8 @@ namespace Raven.Server.Documents
                 }
                 catch (Exception e)
                 {
-                    Log.WarnException("Could not unprotect secured db data " + prop.Key + " setting the value to '<data could not be decrypted>'", e);
+                    if (_logger.IsInfoEnabled)
+                        _logger.Info("Could not unprotect secured db data " + prop.Key + " setting the value to '<data could not be decrypted>'", e);
                     databaseDocument.SecuredSettings[prop.Key] = Constants.DataCouldNotBeDecrypted;
                 }
             }
@@ -194,7 +194,7 @@ namespace Raven.Server.Documents
                 if (jsonReaderObject == null)
                     return null;
 
-                var document = JsonDeserialization.DatabaseDocument(jsonReaderObject);
+                var document = JsonDeserializationClient.DatabaseDocument(jsonReaderObject);
 
                 var dataDirectoryKey = RavenConfiguration.GetKey(x => x.Core.DataDirectory);
                 string dataDirectory;
@@ -208,7 +208,7 @@ namespace Raven.Server.Documents
             }
         }
 
-        public DatabasesLandlord(ServerStore serverStore, LoggerSetup loggerSetup) : base(serverStore, loggerSetup)
+        public DatabasesLandlord(ServerStore serverStore) : base(serverStore)
         {
 
         }

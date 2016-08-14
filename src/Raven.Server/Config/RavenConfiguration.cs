@@ -8,6 +8,7 @@ using Raven.Server.Config.Attributes;
 using Raven.Server.Config.Categories;
 using ExpressionExtensions = Raven.Server.Extensions.ExpressionExtensions;
 using Sparrow;
+using Sparrow.Logging;
 
 namespace Raven.Server.Config
 {
@@ -77,7 +78,7 @@ namespace Raven.Server.Config
             DebugLog = new DebugLoggingConfiguration();
             BulkInsert = new BulkInsertConfiguration();
             Server = new ServerConfiguration();
-            Memory = new MemoryConfiguration();
+            Memory = new MemoryConfiguration(this);
             Expiration = new ExpirationBundleConfiguration();
             Studio = new StudioConfiguration();
             Databases = new DatabaseConfiguration();

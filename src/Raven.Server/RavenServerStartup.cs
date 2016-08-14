@@ -3,7 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Xml;
-
+using AsyncFriendlyStackTrace;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
@@ -17,14 +17,6 @@ namespace Raven.Server
 {
     public class RavenServerStartup
     {
-        static RavenServerStartup()
-        {
-            SetupLoggingIfNeeded();
-        }
-
-        public void ConfigureServices(IServiceCollection services)
-        {
-        }
 
         public void Configure(IApplicationBuilder app, ILoggerFactory loggerfactory)
         {
@@ -62,19 +54,19 @@ namespace Raven.Server
                         .Append("- - - - - - - - - - - - - - - - - - - - -")
                         .AppendLine();
                     sb.Append(e);
-                    await response.WriteAsync(e.ToString());
+                    string errorString;
+
+                    try
+                    {
+                        errorString = e.ToAsyncString();
+                    }
+                    catch (Exception)
+                    {
+                        errorString = e.ToString();
+                    }
+                    await response.WriteAsync(errorString);
                 }
             });
-        }
-
-        private static void SetupLoggingIfNeeded()
-        {
-            if (File.Exists("NLog.config"))
-            {
-                var reader = XmlReader.Create("NLog.config");
-                var config = new XmlLoggingConfiguration(reader, null); 
-                LogManager.Configuration = config;
-            }
         }
     }
 }

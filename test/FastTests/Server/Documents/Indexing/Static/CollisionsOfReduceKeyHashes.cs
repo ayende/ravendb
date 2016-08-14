@@ -14,10 +14,10 @@ using Raven.Server.Documents.Indexes.MapReduce.Static;
 using Raven.Server.Documents.Indexes.Persistence.Lucene;
 using Raven.Server.Documents.Indexes.Static;
 using Raven.Server.Documents.Indexes.Workers;
+using Raven.Server.Documents.Queries;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.Utils;
-using Raven.Server.Utils.Metrics;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using Xunit;
@@ -33,7 +33,7 @@ namespace FastTests.Server.Documents.Indexing.Static
         {
             using (var database = CreateDocumentDatabase())
             {
-                var index = AutoMapReduceIndex.CreateNew(1, new AutoMapReduceIndexDefinition(new[] { "Users" }, new[]
+                var index = AutoMapReduceIndex.CreateNew(1, new AutoMapReduceIndexDefinition(new[] {"Users"}, new[]
                 {
                     new IndexField
                     {
@@ -51,10 +51,15 @@ namespace FastTests.Server.Documents.Indexing.Static
                 }), database);
 
                 var mapReduceContext = new MapReduceIndexingContext();
+                using (var contextPool = new TransactionContextPool(database.DocumentsStorage.Environment))
+                {
+                    var indexStorage = new IndexStorage(index, contextPool, database);
 
-                var reducer = new ReduceMapResultsOfAutoIndex(index.Definition, null, new MetricsCountersManager(new MetricsScheduler()), mapReduceContext);
+                    var reducer = new ReduceMapResultsOfAutoIndex(index.Definition, indexStorage, 
+                        new MetricsCountersManager(), mapReduceContext);
 
-                await ActualTest(numberOfUsers, locations, index, mapReduceContext, reducer, database);
+                    await ActualTest(numberOfUsers, locations, index, mapReduceContext, reducer, database);
+                }
             }
         }
 
@@ -70,7 +75,7 @@ namespace FastTests.Server.Documents.Indexing.Static
                     Name = "Users_ByCount_GroupByLocation",
                     Maps = { "from user in docs.Users select new { user.Location, Count = 1 }" },
                     Reduce =
-                        "from result in results group result by result.Location into g select new { Location = g.Key, Count = g.Sum(x => (int) x.Count) }",
+                        "from result in results group result by result.Location into g select new { Location = g.Key, Count = g.Sum(x => x.Count) }",
                     Type = IndexType.MapReduce,
                     Fields =
                     {
@@ -80,10 +85,13 @@ namespace FastTests.Server.Documents.Indexing.Static
                 }, database);
 
                 var mapReduceContext = new MapReduceIndexingContext();
+                using (var contextPool = new TransactionContextPool(database.DocumentsStorage.Environment))
+                {
+                    var indexStorage = new IndexStorage(index, contextPool, database);
+                    var reducer = new ReduceMapResultsOfStaticIndex(index._compiled.Reduce, index.Definition, indexStorage, new MetricsCountersManager(), mapReduceContext);
 
-                var reducer = new ReduceMapResultsOfStaticIndex(index._compiled.Reduce, index.Definition, null, new MetricsCountersManager(new MetricsScheduler()), mapReduceContext);
-
-                await ActualTest(numberOfUsers, locations, index, mapReduceContext, reducer, database);
+                    await ActualTest(numberOfUsers, locations, index, mapReduceContext, reducer, database);
+                }
             }
         }
 
@@ -100,26 +108,21 @@ namespace FastTests.Server.Documents.Indexing.Static
                 {
                     mapReduceContext.MapEntries = tx.InnerTransaction.CreateTree(MapReduceIndexBase<StaticMapIndexDefinition>.MapEntriesTreeName);
 
-                    var tree = tx.InnerTransaction.CreateTree(hashOfReduceKey.ToString());
+                    var store = new MapReduceResultsStore(hashOfReduceKey, MapResultsStorageType.Tree, indexContext, mapReduceContext, true);
 
-                    var state = new ReduceKeyState(tree);
-
-                    unsafe
+                    for (int i = 0; i < numberOfUsers; i++)
                     {
-                        for (int i = 0; i < numberOfUsers; i++)
+                        using (var mappedResult = indexContext.ReadObject(new DynamicJsonValue
                         {
-                            using (var mappedResult = indexContext.ReadObject(new DynamicJsonValue
-                            {
-                                ["Count"] = 1,
-                                ["Location"] = locations[i%locations.Length]
-                            }, $"users/{i}"))
-                            {
-                                mappedResult.CopyTo(tree.DirectAdd(i.ToString(), mappedResult.Size));
-                            }
+                            ["Count"] = 1,
+                            ["Location"] = locations[i%locations.Length]
+                        }, $"users/{i}"))
+                        {
+                            store.Add(i, mappedResult, false);
                         }
                     }
 
-                    mapReduceContext.StateByReduceKeyHash.Add(hashOfReduceKey, state);
+                    mapReduceContext.StoreByReduceKeyHash.Add(hashOfReduceKey, store);
 
                     var writeOperation =
                         new Lazy<IndexWriteOperation>(() => index.IndexPersistence.OpenIndexWriter(tx.InnerTransaction));
@@ -139,8 +142,8 @@ namespace FastTests.Server.Documents.Indexing.Static
 
                 var queryResult =
                     await
-                        index.Query(new IndexQuery(),
-                            new DocumentsOperationContext(new UnmanagedBuffersPool(string.Empty), database),
+                        index.Query(new IndexQueryServerSide(),
+                            DocumentsOperationContext.ShortTermSingleUse(database),
                             OperationCancelToken.None);
 
                 var results = queryResult.Results;
@@ -161,26 +164,21 @@ namespace FastTests.Server.Documents.Indexing.Static
                 {
                     mapReduceContext.MapEntries = tx.InnerTransaction.CreateTree(MapReduceIndexBase<StaticMapIndexDefinition>.MapEntriesTreeName);
 
-                    var tree = tx.InnerTransaction.CreateTree(hashOfReduceKey.ToString());
+                    var store = new MapReduceResultsStore(hashOfReduceKey, MapResultsStorageType.Tree, indexContext, mapReduceContext, true);
 
-                    var state = new ReduceKeyState(tree);
-
-                    unsafe
+                    for (int i = 0; i < locations.Length; i++)
                     {
-                        for (int i = 0; i < locations.Length; i++)
+                        using (var mappedResult = indexContext.ReadObject(new DynamicJsonValue
                         {
-                            using (var mappedResult = indexContext.ReadObject(new DynamicJsonValue
-                            {
-                                ["Count"] = 2, // increased by 1
-                                ["Location"] = locations[i % locations.Length]
-                            }, $"users/{i}"))
-                            {
-                                mappedResult.CopyTo(tree.DirectAdd(i.ToString(), mappedResult.Size));
-                            }
+                            ["Count"] = 2, // increased by 1
+                            ["Location"] = locations[i % locations.Length]
+                        }, $"users/{i}"))
+                        {
+                            store.Add(i, mappedResult, true);
                         }
                     }
 
-                    mapReduceContext.StateByReduceKeyHash.Add(hashOfReduceKey, state);
+                    mapReduceContext.StoreByReduceKeyHash.Add(hashOfReduceKey, store);
 
                     var writeOperation =
                         new Lazy<IndexWriteOperation>(() => index.IndexPersistence.OpenIndexWriter(tx.InnerTransaction));
@@ -198,8 +196,8 @@ namespace FastTests.Server.Documents.Indexing.Static
                     tx.Commit();
                 }
 
-                queryResult = await index.Query(new IndexQuery(),
-                            new DocumentsOperationContext(new UnmanagedBuffersPool(string.Empty), database),
+                queryResult = await index.Query(new IndexQueryServerSide(),
+                            DocumentsOperationContext.ShortTermSingleUse(database),
                             OperationCancelToken.None);
 
                 results = queryResult.Results;
@@ -220,16 +218,14 @@ namespace FastTests.Server.Documents.Indexing.Static
                 {
                     mapReduceContext.MapEntries = tx.InnerTransaction.CreateTree(MapReduceIndexBase<StaticMapIndexDefinition>.MapEntriesTreeName);
 
-                    var tree = tx.InnerTransaction.CreateTree(hashOfReduceKey.ToString());
-
-                    var state = new ReduceKeyState(tree);
+                    var store = new MapReduceResultsStore(hashOfReduceKey, MapResultsStorageType.Tree, indexContext, mapReduceContext, true);
 
                     for (int i = 0; i < locations.Length; i++)
                     {
-                        tree.Delete(i.ToString());
+                        store.Delete(i);
                     }
 
-                    mapReduceContext.StateByReduceKeyHash.Add(hashOfReduceKey, state);
+                    mapReduceContext.StoreByReduceKeyHash.Add(hashOfReduceKey, store);
 
                     var writeOperation =
                         new Lazy<IndexWriteOperation>(() => index.IndexPersistence.OpenIndexWriter(tx.InnerTransaction));
@@ -245,14 +241,14 @@ namespace FastTests.Server.Documents.Indexing.Static
                     tx.Commit();
                 }
 
-                queryResult = await index.Query(new IndexQuery()
+                queryResult = await index.Query(new IndexQueryServerSide
                     {
                         SortedFields = new[]
                         {
                             new SortedField("Location"),
                         }
                     },
-                    new DocumentsOperationContext(new UnmanagedBuffersPool(string.Empty), database),
+                    DocumentsOperationContext.ShortTermSingleUse(database),
                     OperationCancelToken.None);
 
                 results = queryResult.Results;

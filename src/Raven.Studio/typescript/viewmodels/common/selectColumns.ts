@@ -17,6 +17,7 @@ class selectColumns extends dialogViewModelBase {
     nextTaskStarted = false;
     private form: JQuery;
     private activeInput: JQuery;
+    private lastActiveInput: JQuery;
     private autoCompleteBase = ko.observableArray<KnockoutObservable<string>>([]);
     private autoCompleteResults = ko.observableArray<KnockoutObservable<string>>([]);
     private completionSearchSubscriptions: Array<KnockoutSubscription> = [];
@@ -26,7 +27,7 @@ class selectColumns extends dialogViewModelBase {
     lineHeight: number = 51;
     isScrollNeeded: KnockoutComputed<boolean>;
 
-    constructor(private customColumns: customColumns, private customFunctions: customFunctions, private context, private database: database, names: string[]) {
+    constructor(private customColumns: customColumns, private customFunctions: customFunctions, private context: any, private database: database, names: string[]) {
         super();
         this.columnsNames(names);
         this.generateCompletionBase();
@@ -178,15 +179,6 @@ class selectColumns extends dialogViewModelBase {
         }
     }
 
-    private alignBoxVertically() {
-        var messageBoxHeight = parseInt($(".messageBox").css('height'), 10);
-        var windowHeight = $(window).height();
-        var messageBoxMarginTop = parseInt($(".messageBox").css('margin-top'), 10);
-        var newTopPercent = Math.floor(((windowHeight - messageBoxHeight) / 2 - messageBoxMarginTop) / windowHeight * 100);
-        var newTopPercentString = newTopPercent.toString() + '%';
-        $(".modalHost").css('top', newTopPercentString);
-    }
-
     saveAsDefault() {
         if ((<any>this.form[0]).checkValidity() === true) {
             if (this.customColumns.customMode()) {
@@ -224,14 +216,14 @@ class selectColumns extends dialogViewModelBase {
         return super.enterKeyPressed();
     }
 
-    consumeUpDownArrowKeys(columnParams, event: KeyboardEvent): boolean {
+    consumeUpDownArrowKeys(columnParams: any, event: KeyboardEvent): boolean {
         if (event.keyCode === 38 || event.keyCode === 40) {
             event.preventDefault();
             return false;
         }
         return true;
     }
-    consumeClick(columnParams, event: KeyboardEvent): boolean {
+    consumeClick(columnParams: any, event: KeyboardEvent): boolean {
         if (columnParams.binding().length === 0) {
             columnParams.binding.valueHasMutated();
             event.preventDefault();
@@ -243,6 +235,10 @@ class selectColumns extends dialogViewModelBase {
         this.activeInput = $("[id ^= 'binding-']:focus");
         if (this.activeInput.length > 0) {
             this.autoCompleterSupport.searchForCompletions(this.activeInput);
+            this.lastActiveInput = this.activeInput;
+        }
+        else if (!!this.lastActiveInput) {
+            this.autoCompleterSupport.searchForCompletions(this.lastActiveInput);
         }
     }
 

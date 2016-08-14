@@ -4,35 +4,23 @@ import viewModelBase = require("viewmodels/viewModelBase");
 import aceEditorBindingHandler = require("common/bindingHelpers/aceEditorBindingHandler");
 import statusDebugQueriesGroup = require("models/database/debug/statusDebugQueriesGroup");
 import statusDebugQueriesQuery = require("models/database/debug/statusDebugQueriesQuery");
+import autoRefreshBindingHandler = require("common/bindingHelpers/autoRefreshBindingHandler");
 
 
 class statusDebugQueries extends viewModelBase {
     data = ko.observableArray<statusDebugQueriesGroup>();
-    autoRefresh = ko.observable<boolean>(true);
 
     constructor() {
         super();
-
+        autoRefreshBindingHandler.install();
         aceEditorBindingHandler.install();
     }
 
-    activate(args) {
+    activate(args: any) {
         super.activate(args);
         this.updateHelpLink('JHZ574');
         this.activeDatabase.subscribe(() => this.fetchCurrentQueries());
         return this.fetchCurrentQueries();
-    }
-
-    modelPolling() {
-        if (this.autoRefresh()) {
-            return this.fetchCurrentQueries();
-        }
-        return $.Deferred().resolve();
-    }
-
-    toggleAutoRefresh() {
-        this.autoRefresh(!this.autoRefresh());
-        $("#refresh-btn").blur();
     }
 
     fetchCurrentQueries(): JQueryPromise<statusDebugQueriesGroupDto[]> {

@@ -1,12 +1,13 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
 using Sparrow.Json.Parsing;
 
 namespace Sparrow.Json
 {
-    public unsafe class BlittableJsonReaderArray : BlittableJsonReaderBase, IEnumerable<object>, IDisposable
+    public unsafe class BlittableJsonReaderArray : BlittableJsonReaderBase, IEnumerable<object>
     {
         private readonly int _count;
         private readonly byte* _metadataPtr;
@@ -112,10 +113,45 @@ namespace Sparrow.Json
             return GetEnumerator();
         }
 
-        public void Dispose()
+        public override bool Equals(object obj)
         {
-            foreach(BlittableJsonReaderObject obj in this)
-                obj.Dispose();
+            if (ReferenceEquals(null, obj))
+                return false;
+
+            if (ReferenceEquals(this, obj))
+                return true;
+
+            var array = obj as BlittableJsonReaderArray;
+
+            if (array != null)
+                return Equals(array);
+
+            return false;
+        }
+
+        protected bool Equals(BlittableJsonReaderArray other)
+        {
+            if (_count != other._count)
+                return false;
+
+            for (int i = 0; i < _count; i++)
+            {
+                var x = this[i];
+                var y = other[i];
+
+                if (x == null && y == null)
+                    continue;
+
+                if ((x?.Equals(y) ?? false) == false)
+                    return false;
+            }
+            
+            return true;
+        }
+
+        public override int GetHashCode()
+        {
+            return _count;
         }
     }
 }

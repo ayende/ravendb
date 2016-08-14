@@ -482,7 +482,6 @@ namespace Voron.Data.Tables
 
          public void DeleteByKey(Slice key)
         {
-            var pk = _schema.Key;
             var pkTree = GetTree(_schema.Key);
 
             var readResult = pkTree.Read(key);
@@ -533,6 +532,12 @@ namespace Voron.Data.Tables
             return SeekForwardFrom(index, Slice.From(_tx.Allocator, value, ByteStringType.Immutable), startsWith);
         }
 
+        public long GetNumberEntriesFor(TableSchema.FixedSizeSchemaIndexDef index)
+        {
+            var fst = GetFixedSizeTree(index);
+            return fst.NumberOfEntries;
+        }
+
         public IEnumerable<SeekResult> SeekForwardFrom(TableSchema.SchemaIndexDef index, Slice value, bool startsWith = false)
         {
             var tree = GetTree(index);
@@ -555,12 +560,15 @@ namespace Voron.Data.Tables
             }
         }
 
-        public IEnumerable<TableValueReader> SeekByPrimaryKey(Slice value)
+        public IEnumerable<TableValueReader> SeekByPrimaryKey(Slice value, bool startsWith = false)
         {
             var pk = _schema.Key;
             var tree = GetTree(pk);
             using (var it = tree.Iterate(false))
             {
+                if (startsWith)
+                    it.RequiredPrefix = value.Clone(_tx.Allocator);
+
                 if (it.Seek(value) == false)
                     yield break;
 

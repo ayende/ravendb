@@ -3,7 +3,6 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -33,7 +32,7 @@ namespace Raven.Server.Documents.TcpHandlers
 
         private class BulkInsertDoc
         {
-            public UnmanagedBuffersPool.AllocatedMemoryData Memory;
+            public AllocatedMemoryData Memory;
             public byte* Pointer;
             public int Used;
         }
@@ -70,7 +69,7 @@ namespace Raven.Server.Documents.TcpHandlers
                 }
                 catch (Exception)
                 {
-                    _docsToRelease.Dispose(); // will abort the reading thread
+                    _docsToRelease.CompleteAdding(); // will abort the reading thread
                     throw;
                 }
             });
@@ -85,28 +84,36 @@ namespace Raven.Server.Documents.TcpHandlers
             }
             catch (AggregateException e)
             {
+                if (_logger.IsInfoEnabled)
+                    _logger.Info("Error occured while read bulk insert operation", e.InnerException);
                 _docsToWrite.CompleteAdding();
                 _messagesToClient.CompleteAdding();
                 try
                 {
                     _insertDocuments.Wait();
                 }
-                catch (Exception)
+                catch (Exception insertDocumentsException)
                 {
+                    if (_logger.IsInfoEnabled)
+                        _logger.Info("Error in server while inserting bulk documents", insertDocumentsException);
                     // forcing observation of any potential errors
                 }
                 try
                 {
                     _replyToCustomer.Wait();
                 }
-                catch (Exception)
+                catch (Exception replyToClientException)
                 {
+                    if (_logger.IsInfoEnabled)
+                        _logger.Info("Couldn't reply to client with server's error in bulk insert (maybe client was disconnected)", replyToClientException);
                     // forcing observation of any potential errors
                 }
                 SendErrorToClient(e.InnerException);
             }
             catch (Exception e)
             {
+                if (_logger.IsInfoEnabled)
+                    _logger.Info("Server internal error while in bulk insert process", e);
                 SendErrorToClient(e);
             }
         }
@@ -302,7 +309,6 @@ namespace Raven.Server.Documents.TcpHandlers
                                 context.Environment.ForceLogFlushToDataFile(null, true);
                             }
                         }
-                        // TODO : Measure IO times (RavenDB-4659) - ForceFlush on a retry
                     }
                     catch (TimeoutException)
                     {
@@ -336,10 +342,18 @@ namespace Raven.Server.Documents.TcpHandlers
                         try
                         {
                             hasFreeBuffer = _docsToRelease.TryTake(out buffer);
+                            if (_docsToRelease.IsAddingCompleted)
+                            {
+                                if (_logger.IsInfoEnabled)
+                                    _logger.Info("Stopping read bulk insert due to an error in insert documents task");
+                                // error during the insert, just quit and use the error handling to report to the user
+                                return;
+                            }
                         }
-                        catch (ObjectDisposedException)
+                        catch (Exception ex)
                         {
-                            // error during the insert, just quit and use the error handling to report to the user
+                            if (_logger.IsInfoEnabled)
+                                _logger.Info("Server internal error while in read documents in bulk insert", ex);
                             return;
                         }
                         if (hasFreeBuffer == false)
@@ -355,7 +369,6 @@ namespace Raven.Server.Documents.TcpHandlers
                         buffer.Used = 0;
                         if (buffer.Memory.SizeInBytes >= len)
                             break;
-                        _context.ReturnMemory(buffer.Memory);
                     }
                     while (len > 0)
                     {
@@ -406,14 +419,14 @@ namespace Raven.Server.Documents.TcpHandlers
             _messagesToClient.Dispose();
         }
 
-        public static void Run(DocumentDatabase documentDatabase, JsonOperationContext context, NetworkStream stream, TcpClient tcpClient, JsonOperationContext.MultiDocumentParser multiDocumentParser)
+        public static void Run(TcpConnectionParams tcpConnectionParams)
         {
             var bulkInsertThread = new Thread(() =>
             {
-                var logger = documentDatabase.LoggerSetup.GetLogger<BulkInsertConnection>(documentDatabase.Name);
+                var logger = LoggerSetup.Instance.GetLogger<BulkInsertConnection>(tcpConnectionParams.DocumentDatabase.Name);
                 try
                 {
-                    using (var bulkInsert = new BulkInsertConnection(documentDatabase, context, stream, logger, multiDocumentParser))
+                    using (var bulkInsert = new BulkInsertConnection(tcpConnectionParams.DocumentDatabase, tcpConnectionParams.Context, tcpConnectionParams.Stream, logger, tcpConnectionParams.MultiDocumentParser))
                     {
                         bulkInsert.Execute();
                     }
@@ -426,9 +439,9 @@ namespace Raven.Server.Documents.TcpHandlers
                     }
                     try
                     {
-                        using (var writer = new BlittableJsonTextWriter(context, stream))
+                        using (var writer = new BlittableJsonTextWriter(tcpConnectionParams.Context, tcpConnectionParams.Stream))
                         {
-                            context.Write(writer, new DynamicJsonValue
+                            tcpConnectionParams.Context.Write(writer, new DynamicJsonValue
                             {
                                 ["Type"] = "Error",
                                 ["Exception"] = e.ToString()
@@ -441,27 +454,7 @@ namespace Raven.Server.Documents.TcpHandlers
                 }
                 finally
                 {
-                    try
-                    {
-                        stream.Dispose();
-                    }
-                    catch (Exception)
-                    {
-                    }
-                    try
-                    {
-                        tcpClient.Dispose();
-                    }
-                    catch (Exception)
-                    {
-                    }
-                    try
-                    {
-                        context.Dispose();
-                    }
-                    catch (Exception)
-                    {
-                    }
+                    tcpConnectionParams.Dispose();
                 }
             })
             {

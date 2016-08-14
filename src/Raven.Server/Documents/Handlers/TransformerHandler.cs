@@ -20,7 +20,7 @@ namespace Raven.Server.Documents.Handlers
             using (ContextPool.AllocateOperationContext(out context))
             {
                 var json = await context.ReadForMemoryAsync(RequestBodyStream(), name);
-                var transformerDefinition = JsonDeserialization.TransformerDefinition(json);
+                var transformerDefinition = JsonDeserializationServer.TransformerDefinition(json);
                 transformerDefinition.Name = name;
 
                 var transformerId = Database.TransformerStore.CreateTransformer(transformerDefinition);
@@ -29,11 +29,11 @@ namespace Raven.Server.Documents.Handlers
                 {
                     writer.WriteStartObject();
 
-                    writer.WritePropertyName(context.GetLazyString("Transformer"));
-                    writer.WriteString(context.GetLazyString(name));
+                    writer.WritePropertyName(("Transformer"));
+                    writer.WriteString(name);
                     writer.WriteComma();
 
-                    writer.WritePropertyName(context.GetLazyString("TransformerId"));
+                    writer.WritePropertyName(("TransformerId"));
                     writer.WriteInteger(transformerId);
 
                     writer.WriteEndObject();

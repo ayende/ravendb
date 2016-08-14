@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using Lucene.Net.Documents;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Indexing;
+using Raven.Client.Linq;
 using Raven.Server.Documents.Indexes;
 using Raven.Server.Documents.Indexes.Auto;
 using Raven.Server.Documents.Indexes.Persistence.Lucene.Documents;
@@ -15,18 +16,16 @@ using Document = Raven.Server.Documents.Document;
 
 namespace FastTests.Server.Documents.Indexing.Lucene
 {
-    public class LuceneDocumentConverterTests : IDisposable
+    public class LuceneDocumentConverterTests : RavenLowLevelTestBase
     {
         private LuceneDocumentConverter _sut;
 
-        private readonly UnmanagedBuffersPool _pool;
         private readonly JsonOperationContext _ctx;
         private readonly List<BlittableJsonReaderObject> _docs = new List<BlittableJsonReaderObject>();
 
         public LuceneDocumentConverterTests()
         {
-            _pool = new UnmanagedBuffersPool("foo");
-            _ctx = new JsonOperationContext(_pool);
+            _ctx = JsonOperationContext.ShortTermSingleUse();
         }
 
         [Fact]
@@ -362,6 +361,137 @@ namespace FastTests.Server.Documents.Indexing.Lucene
             Assert.Equal("companies/1", result.GetField(Constants.DocumentIdFieldName).StringValue);
         }
 
+        [Fact]
+        public void Conversion_of_complex_value()
+        {
+            _sut = new LuceneDocumentConverter(new IndexField[]
+            {
+                new IndexField
+                {
+                    Name = "Address",
+                    Highlighted = false,
+                    Storage = FieldStorage.No
+                },
+                new IndexField
+                {
+                    Name = "ResidenceAddress",
+                    Highlighted = false,
+                    Storage = FieldStorage.No
+                },
+            });
+
+            var doc = create_doc(new DynamicJsonValue
+            {
+                ["Address"] = new DynamicJsonValue
+                {
+                    ["City"] = "New York City"
+                },
+                ["ResidenceAddress"] = new DynamicJsonValue
+                {
+                    ["City"] = "San Francisco"
+                }
+            }, "users/1");
+
+            var result = _sut.ConvertToCachedDocument(doc.Key, doc);
+
+            Assert.Equal(5, result.GetFields().Count);
+            Assert.Equal(@"{""City"":""New York City""}", result.GetField("Address").ReaderValue.ReadToEnd());
+            Assert.Equal("true", result.GetField("Address" + LuceneDocumentConverterBase.ConvertToJsonSuffix).StringValue);
+            Assert.Equal(@"{""City"":""San Francisco""}", result.GetField("ResidenceAddress").ReaderValue.ReadToEnd());
+            Assert.Equal("true", result.GetField("ResidenceAddress" + LuceneDocumentConverterBase.ConvertToJsonSuffix).StringValue);
+            Assert.Equal("users/1", result.GetField(Constants.DocumentIdFieldName).StringValue);
+
+            doc = create_doc(new DynamicJsonValue
+            {
+                ["Address"] = new DynamicJsonValue
+                {
+                    ["City"] = "NYC"
+                },
+                ["ResidenceAddress"] = new DynamicJsonValue
+                {
+                    ["City"] = "Washington"
+                }
+            }, "users/2");
+
+            result = _sut.ConvertToCachedDocument(doc.Key, doc);
+
+            Assert.Equal(5, result.GetFields().Count);
+            Assert.Equal(@"{""City"":""NYC""}", result.GetField("Address").ReaderValue.ReadToEnd());
+            Assert.Equal("true", result.GetField("Address" + LuceneDocumentConverterBase.ConvertToJsonSuffix).StringValue);
+            Assert.Equal(@"{""City"":""Washington""}", result.GetField("ResidenceAddress").ReaderValue.ReadToEnd());
+            Assert.Equal("true", result.GetField("ResidenceAddress" + LuceneDocumentConverterBase.ConvertToJsonSuffix).StringValue);
+            Assert.Equal("users/2", result.GetField(Constants.DocumentIdFieldName).StringValue);
+        }
+
+
+        [Fact]
+        public void Conversion_of_array_value()
+        {
+            _sut = new LuceneDocumentConverter(new IndexField[]
+            {
+                new IndexField
+                {
+                    Name = "Friends",
+                    Highlighted = false,
+                    Storage = FieldStorage.No
+                },
+            });
+
+            var doc = create_doc(new DynamicJsonValue
+            {
+                ["Friends"] = new DynamicJsonArray()
+                {
+                    "Dave", "James"
+                }
+            }, "users/1");
+
+            var result = _sut.ConvertToCachedDocument(doc.Key, doc);
+
+            Assert.Equal(4, result.GetFields().Count);
+            Assert.Equal("Dave", result.GetFields("Friends")[0].ReaderValue.ReadToEnd());
+            Assert.Equal("James", result.GetFields("Friends")[1].ReaderValue.ReadToEnd());
+            Assert.Equal("true", result.GetField("Friends" + LuceneDocumentConverterBase.IsArrayFieldSuffix).StringValue);
+            Assert.Equal("users/1", result.GetField(Constants.DocumentIdFieldName).StringValue);
+        }
+
+        [Fact]
+        public void Conversion_of_array_having_complex_values()
+        {
+            _sut = new LuceneDocumentConverter(new IndexField[]
+            {
+                new IndexField
+                {
+                    Name = "Addresses",
+                    Highlighted = false,
+                    Storage = FieldStorage.No
+                },
+            });
+
+            var doc = create_doc(new DynamicJsonValue
+            {
+                ["Addresses"] = new DynamicJsonArray()
+                {
+                    new DynamicJsonValue
+                    {
+                        ["City"] = "New York City"
+                    },
+                    new DynamicJsonValue
+                    {
+                        ["City"] = "NYC"
+                    }
+                }
+            }, "users/1");
+
+            var result = _sut.ConvertToCachedDocument(doc.Key, doc);
+
+            Assert.Equal(5, result.GetFields().Count);
+            Assert.Equal(@"{""City"":""New York City""}", result.GetFields("Addresses")[0].ReaderValue.ReadToEnd());
+            Assert.Equal(@"{""City"":""NYC""}", result.GetFields("Addresses")[1].ReaderValue.ReadToEnd());
+            Assert.Equal("true", result.GetField("Addresses" + LuceneDocumentConverterBase.ConvertToJsonSuffix).StringValue);
+            Assert.Equal("true", result.GetField("Addresses" + LuceneDocumentConverterBase.IsArrayFieldSuffix).StringValue);
+            Assert.Equal("users/1", result.GetField(Constants.DocumentIdFieldName).StringValue);
+        }
+
         public Document create_doc(DynamicJsonValue document, string id)
         {
             var data = _ctx.ReadObject(document, id);
@@ -375,7 +505,7 @@ namespace FastTests.Server.Documents.Indexing.Lucene
             };
         }
 
-        public void Dispose()
+        public override void Dispose()
         {
             foreach (var docReader in _docs)
             {
@@ -383,7 +513,8 @@ namespace FastTests.Server.Documents.Indexing.Lucene
             }
 
             _ctx.Dispose();
-            _pool.Dispose();
+
+            base.Dispose();
         }
     }
 }

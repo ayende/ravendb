@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Diagnostics;
-using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -12,19 +11,16 @@ using Raven.Server.Documents;
 using Raven.Server.Documents.Indexes;
 using Raven.Server.Utils;
 using Raven.Server.Utils.Metrics;
-
+using Sparrow;
 using Sparrow.Collections;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
-using Sparrow.Logging;
 using Xunit;
 
 namespace FastTests
 {
     public abstract class RavenLowLevelTestBase : IDisposable
     {
-        private MetricsScheduler _metricsScheduler = new MetricsScheduler();
-
         private readonly ConcurrentSet<string> _pathsToDelete = new ConcurrentSet<string>(StringComparer.OrdinalIgnoreCase);
 
         protected static void WaitForIndexMap(Index index, long etag)
@@ -50,7 +46,7 @@ namespace FastTests
 
             modifyConfiguration?.Invoke(configuration);
 
-            var documentDatabase = new DocumentDatabase(name, configuration, _metricsScheduler, new LoggerSetup(Path.GetTempFileName(), LogMode.None));
+            var documentDatabase = new DocumentDatabase(name, configuration, new IoMetrics(256, 256));
             documentDatabase.Initialize();
 
             return documentDatabase;
@@ -77,12 +73,6 @@ namespace FastTests
             var alreadyHasException = Marshal.GetExceptionCode() == 0;
 #pragma warning restore 618
             var exceptionAggregator = new ExceptionAggregator("Could not dispose test");
-
-            exceptionAggregator.Execute(() =>
-            {
-                _metricsScheduler?.Dispose();
-                _metricsScheduler = null;
-            });
 
             RavenTestHelper.DeletePaths(_pathsToDelete, exceptionAggregator);
             if (alreadyHasException == false)

@@ -32,7 +32,7 @@ class dialogViewModelBase {
         $(".messageBox").width(width + 2);
     }
 
-    deactivate(args) {
+    deactivate(args: any) {
         $(this.dialogSelectorName === "" ? dialogViewModelBase.dialogSelector : this.dialogSelectorName).unbind("keydown.jwerty");
     }
 
@@ -112,6 +112,14 @@ class dialogViewModelBase {
                 return false;
             }
         });
+    }
+
+    protected alignBoxVertically() {
+        var messageBoxHeight = parseInt($(".messageBox").css('height'), 10);
+        
+        // find element to alter margin-top - it should be outer html element in dialog view
+        // we can find this by looking for element with data-view inside modalHost container. 
+        $(".modalHost [data-view]").css('margin-top', Math.floor(-1 * messageBoxHeight / 2) + 'px');
     }
 }
 

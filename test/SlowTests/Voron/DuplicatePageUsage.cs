@@ -1,5 +1,6 @@
 ﻿using System.IO;
 using System.Reflection;
+using FastTests;
 using Sparrow.Logging;
 using Voron;
 using Voron.Data.Tables;
@@ -7,9 +8,8 @@ using Xunit;
 
 namespace SlowTests.Voron
 {
-    public class DuplicatePageUsage
+    public class DuplicatePageUsage : NoDisposalNeeded
     {
-        private static readonly LoggerSetup NullLoggerSetup = new LoggerSetup(System.IO.Path.GetTempPath(), LogMode.None);
 
         private readonly TableSchema _entriesSchema = new TableSchema()
            .DefineKey(new TableSchema.SchemaIndexDef
@@ -21,7 +21,7 @@ namespace SlowTests.Voron
         [Fact]
         public unsafe void ShouldNotHappen()
         {
-            using (var env = new StorageEnvironment(StorageEnvironmentOptions.CreateMemoryOnly(), NullLoggerSetup))
+            using (var env = new StorageEnvironment(StorageEnvironmentOptions.CreateMemoryOnly()))
             {
                 using (var tx = env.WriteTransaction())
                 {

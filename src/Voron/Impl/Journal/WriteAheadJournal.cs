@@ -568,7 +568,7 @@ namespace Voron.Impl.Journal
                         tryEnterReadLock = _waj._env.FlushInProgressLock.TryEnterWriteLock(timeout);
                     try
                     {
-                        _waj._env.EnsureTransactionLockFairnessForFlush();
+                        _waj._env.IncreaseTheChanceForGettingTheTransactionLock();
                         using (var txw = alreadyInWriteTx ? null : _waj._env.NewLowLevelTransaction(TransactionFlags.ReadWrite).JournalApplicatorTransaction())
                         {
                             _lastSyncedJournal = lastProcessedJournal;
@@ -601,7 +601,7 @@ namespace Voron.Impl.Journal
                     }
                     finally
                     {
-                        _waj._env.DisableTransactionLockFairnessForFlush();
+                        _waj._env.ResetTheChanceForGettingTheTransactionLock();
                         if(tryEnterReadLock)
                             _waj._env.FlushInProgressLock.ExitWriteLock();
                     }
@@ -950,10 +950,6 @@ namespace Voron.Impl.Journal
             txHeader->Compressed = true;
             txHeader->CompressedSize = len;
             txHeader->UncompressedSize = sizeInBytes;
-            if (new DateTime(txHeader->TimeStampTicksUtc).Year != 2016)
-            {
-                Console.WriteLine(new DateTime(txHeader->TimeStampTicksUtc));
-            }
             txHeader->Hash = Hashing.XXHash64.Calculate(compressionBuffer, len);
 
             // Copy the transaction header to the output buffer. 
@@ -982,7 +978,9 @@ namespace Voron.Impl.Journal
         {
             // switching transactions modes requires to close jounal, 
             // truncate it (in case of recovery) and create next journal file
+            _lazyTransactionBuffer?.WriteBufferToFile(CurrentFile, null);
             CurrentFile?.JournalWriter.Truncate(pageSize * CurrentFile.WritePagePosition);
+            CurrentFile = null;
         }
     }
 

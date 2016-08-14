@@ -1,5 +1,6 @@
 import viewModelBase = require("viewmodels/viewModelBase");
 import getDatabaseStatsCommand = require("commands/resources/getDatabaseStatsCommand");
+import database = require("models/resources/database");
 import aceEditorBindingHandler = require("common/bindingHelpers/aceEditorBindingHandler");
 import scriptedIndex = require("models/database/index/scriptedIndex");
 import getScriptedIndexesCommand = require("commands/database/index/getScriptedIndexesCommand");
@@ -45,7 +46,7 @@ class scriptedIndexes extends viewModelBase {
         return deferred;
     }
 
-    activate(args) {
+    activate(args: any) {
         super.activate(args);
 
         this.dirtyFlag = new ko.DirtyFlag([this.activeScriptedIndexes]);
@@ -106,7 +107,7 @@ class scriptedIndexes extends viewModelBase {
             });
     }
 
-    private fetchAllIndexes(db): JQueryPromise<any> {
+    private fetchAllIndexes(db: database): JQueryPromise<any> {
         return new getDatabaseStatsCommand(db)
             .execute()
             .done((results: databaseStatisticsDto) => this.performAllIndexesResult(results));
@@ -116,7 +117,7 @@ class scriptedIndexes extends viewModelBase {
         this.indexNames(results.Indexes.map(i => i.Name));
     }
 
-    private fetchAllScriptedIndexes(db): JQueryPromise<any> {
+    private fetchAllScriptedIndexes(db: database): JQueryPromise<any> {
         return new getScriptedIndexesCommand(db)
             .execute()
             .done((indexes: scriptedIndex[]) => {
@@ -129,15 +130,15 @@ class scriptedIndexes extends viewModelBase {
         var indexScriptpopOverSettings = {
             html: true,
             trigger: 'hover',
-            content: 'Index Scripts are written in JScript.<br/><br/>Example:</br><pre><span class="code-keyword">var</span> company = LoadDocument(<span class="code-keyword">this</span>.Company);<br/><span class="code-keyword">if</span>(company == null) <span class="code-keyword">return</span>;<br/>company.Orders = { Count: <span class="code-keyword">this</span>.Count, Total: <span class="code-keyword">this</span>.Total };<br/>PutDocument(<span class="code-keyword">this</span>.Company, company);</pre>',
-            selector: '.index-script-label',
+            content: 'Index Scripts are written in JavaScript.<br/><br/>Example:</br><pre><span class="code-keyword">var</span> company = LoadDocument(<span class="code-keyword">this</span>.Company);<br/><span class="code-keyword">if</span>(company == null) <span class="code-keyword">return</span>;<br/>company.Orders = { Count: <span class="code-keyword">this</span>.Count, Total: <span class="code-keyword">this</span>.Total };<br/>PutDocument(<span class="code-keyword">this</span>.Company, company);</pre>',
+            selector: '.index-script-label'
         };
         $('#accordion').popover(indexScriptpopOverSettings);
         var deleteScriptPopOverSettings = {
             html: true,
             trigger: 'hover',
-            content: 'Index Scripts are written in JScript.<br/><br/>Example:</br><pre><span class="code-keyword">var</span> company = LoadDocument(<span class="code-keyword">this</span>.Company);<br/><span class="code-keyword">if</span> (company == null) <span class="code-keyword">return</span>;<br/><span class="code-keyword">delete</span> company.Orders;<br/>PutDocument(<span class="code-keyword">this</span>.Company, company);</pre>',
-            selector: '.delete-script-label',
+            content: 'Index Scripts are written in JavaScript.<br/><br/>Example:</br><pre><span class="code-keyword">var</span> company = LoadDocument(<span class="code-keyword">this</span>.Company);<br/><span class="code-keyword">if</span> (company == null) <span class="code-keyword">return</span>;<br/><span class="code-keyword">delete</span> company.Orders;<br/>PutDocument(<span class="code-keyword">this</span>.Company, company);</pre>',
+            selector: '.delete-script-label'
         };
         $('#scriptedIndexesForm').popover(deleteScriptPopOverSettings);
     }

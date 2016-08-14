@@ -4,14 +4,10 @@ import jszip = require('jszip');
 
 class importPackageImport extends dialogViewModelBase {
 
-    private importTask = $.Deferred();
+    private importTask = $.Deferred<any>();
     
     hasFileSelected = ko.observable(false);
     isImporting = ko.observable(false);
-
-    constructor() {
-        super();
-    }
 
     fileSelected(args: any) {
         this.hasFileSelected(true);
@@ -25,7 +21,7 @@ class importPackageImport extends dialogViewModelBase {
         reader.onload = function () {
             // try to detect type
             var firstChar = new Uint8Array(this.result.slice(0, 1))[0];
-            if (firstChar == 91) {
+            if (firstChar === 91) {
                 var rawJson = String.fromCharCode.apply(null, new Uint8Array(this.result));
                 var json = JSON.parse(rawJson);
                 self.dataImported(json); 
@@ -45,7 +41,7 @@ class importPackageImport extends dialogViewModelBase {
         reader.readAsArrayBuffer(file);
     }
 
-    dataImported(result) {
+    dataImported(result: any) {
         this.importTask.resolve(result);
         dialog.close(this);
     }

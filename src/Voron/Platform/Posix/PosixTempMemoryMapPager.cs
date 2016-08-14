@@ -19,18 +19,17 @@ namespace Voron.Platform.Posix
     /// </summary>
     public unsafe class PosixTempMemoryMapPager : PosixAbstractPager
     {
-        private readonly string _file;
         private int _fd;
         public readonly long SysPageSize;
         private long _totalAllocationSize;
         
-        public PosixTempMemoryMapPager(int pageSize, string file, long? initialFileSize = null)
-            : base(pageSize)
+        public PosixTempMemoryMapPager(StorageEnvironmentOptions options, string file, long? initialFileSize = null)
+            : base(options)
         {
-            _file = file;
+            FileName = file;
             PosixHelper.EnsurePathExists(file);
 
-            _fd = Syscall.open(_file, OpenFlags.O_RDWR | OpenFlags.O_CREAT | OpenFlags.O_EXCL,
+            _fd = Syscall.open(FileName, OpenFlags.O_RDWR | OpenFlags.O_CREAT | OpenFlags.O_EXCL,
                 FilePermissions.S_IWUSR | FilePermissions.S_IRUSR);
                 
             if (_fd == -1)
@@ -65,7 +64,7 @@ namespace Voron.Platform.Posix
 
         protected override string GetSourceName()
         {
-            return "shm_open mmap: " + _fd + " " + _file;
+            return "shm_open mmap: " + _fd + " " + FileName;
         }
 
         protected override PagerState AllocateMorePages(long newLength)
@@ -142,7 +141,7 @@ namespace Voron.Platform.Posix
 
         public override string ToString()
         {
-            return _file;
+            return FileName;
         }
 
         public override void ReleaseAllocationInfo(byte* baseAddress, long size)
@@ -166,7 +165,7 @@ namespace Voron.Platform.Posix
                 // to disk just to discard it
                 if (DeleteOnClose)
                 {
-                    Syscall.unlink(_file);
+                    Syscall.unlink(FileName);
                     // explicitly ignoring the result here, there isn't
                     // much we can do to recover from being unable to delete it
                 }

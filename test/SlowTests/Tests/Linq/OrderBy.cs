@@ -1,0 +1,78 @@
+using System.Linq;
+using System.Threading.Tasks;
+using FastTests;
+using Xunit;
+
+namespace SlowTests.Tests.Linq
+{
+    public class OrderBy : RavenTestBase
+    {
+        private class Section
+        {
+            public string Id { get; set; }
+            public int Position { get; set; }
+            public string Name { get; set; }
+
+            public Section(int position)
+            {
+                Position = position;
+                Name = string.Format("Position: {0}", position);
+            }
+        }
+
+        [Fact]
+        public async Task CanDescOrderBy_AProjection()
+        {
+            using (var store = await GetDocumentStore())
+            {
+                using (var session = store.OpenSession())
+                {
+                    for (int i = 0; i < 10; i++)
+                        session.Store(new Section(i));
+                    session.SaveChanges();
+                }
+
+                using (var session = store.OpenSession())
+                {
+                    var lastPosition = session.Query<Section>()
+                        .OrderByDescending(x => x.Position)
+                        .Select(x => x.Position)
+                        .FirstOrDefault();
+
+                    Assert.Equal(9, lastPosition);
+                }
+            }
+        }
+
+        [Fact]
+        public async Task CanAscOrderBy_AProjection()
+        {
+            using (var store = await GetDocumentStore())
+            {
+                using (var session = store.OpenSession())
+                {
+                    for (int i = 5; i < 10; i++)
+                        session.Store(new Section(i));
+                    session.SaveChanges();
+                }
+
+                using (var session = store.OpenSession())
+                {
+                    for (int i = 4; i >= 0; i--)
+                        session.Store(new Section(i));
+                    session.SaveChanges();
+                }
+
+                using (var session = store.OpenSession())
+                {
+                    var lastPosition = session.Query<Section>()
+                        .OrderBy(x => x.Position)
+                        .Select(x => x.Position)
+                        .FirstOrDefault();
+
+                    Assert.Equal(0, lastPosition);
+                }
+            }
+        }
+    }
+}

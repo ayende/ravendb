@@ -63,8 +63,8 @@ class editTransformer extends viewModelBase {
     attached() {
         super.attached();
         this.addTransformerHelpPopover();
-        this.createKeyboardShortcut("alt+c", () => this.focusOnEditor(), editTransformer.containerSelector);
-        this.createKeyboardShortcut("alt+shift+del", () => this.deleteTransformer(), editTransformer.containerSelector);
+        this.createKeyboardShortcut("alt+c", this.focusOnEditor, editTransformer.containerSelector);
+        this.createKeyboardShortcut("alt+shift+del", this.deleteTransformer, editTransformer.containerSelector);
     }
 
     addTransformerHelpPopover() {
@@ -75,7 +75,7 @@ class editTransformer extends viewModelBase {
         });
     }
 
-    focusOnEditor(elements = null, data = null) {
+    focusOnEditor() {
         var editorElement = $("#transformerAceEditor").length == 1 ? $("#transformerAceEditor")[0] : null;
         if (editorElement) {
             var docEditor = ko.utils.domData.get($("#transformerAceEditor")[0], "aceEditor");
@@ -106,6 +106,7 @@ class editTransformer extends viewModelBase {
             });
             dialog.show(saveTransformerWithNewNameViewModel);
         } else {
+            this.editedTransformer().name(this.editedTransformer().name().trim());
             new saveTransformerCommand(this.editedTransformer(), this.activeDatabase())
                 .execute()
                 .done(() => {

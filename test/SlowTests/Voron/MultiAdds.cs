@@ -1,16 +1,15 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Text;
+using FastTests;
 using Sparrow.Logging;
 using Voron;
 using Xunit;
 
 namespace SlowTests.Voron
 {
-    public class MultiAdds
+    public class MultiAdds : NoDisposalNeeded
     {
-        private static readonly LoggerSetup NullLoggerSetup = new LoggerSetup(System.IO.Path.GetTempPath(), LogMode.None);
-
         readonly Random _random = new Random(1234);
 
         private string RandomString(int size)
@@ -33,7 +32,7 @@ namespace SlowTests.Voron
         [InlineData(5000)]
         public void MultiAdds_And_MultiDeletes_After_Causing_PageSplit_DoNot_Fail(int size)
         {
-            using (var Env = new StorageEnvironment(StorageEnvironmentOptions.CreateMemoryOnly(), NullLoggerSetup))
+            using (var Env = new StorageEnvironment(StorageEnvironmentOptions.CreateMemoryOnly()))
             {
                 var inputData = new List<byte[]>();
                 for (int i = 0; i < size; i++)

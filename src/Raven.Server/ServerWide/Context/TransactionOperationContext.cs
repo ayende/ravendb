@@ -13,8 +13,8 @@ namespace Raven.Server.ServerWide.Context
     {
         private readonly StorageEnvironment _environment;
 
-        public TransactionOperationContext(UnmanagedBuffersPool pool, StorageEnvironment environment)
-            : base(pool)
+        public TransactionOperationContext(StorageEnvironment environment, int initialSize, int longLivedSize) :
+            base(initialSize, longLivedSize)
         {
             _environment = environment;
         }
@@ -38,8 +38,8 @@ namespace Raven.Server.ServerWide.Context
         public readonly ByteStringContext Allocator;
         public TTransaction Transaction;
 
-        protected TransactionOperationContext(UnmanagedBuffersPool pool)
-            : base(pool)
+        protected TransactionOperationContext(int initialSize, int longLivedSize): 
+            base(initialSize, longLivedSize)
         {
             Allocator = new ByteStringContext();
         }

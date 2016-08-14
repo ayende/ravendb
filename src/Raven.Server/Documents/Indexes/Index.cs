@@ -26,6 +26,7 @@ using Raven.Server.Documents.Indexes.Workers;
 using Raven.Server.Documents.Queries;
 using Raven.Server.Documents.Queries.MoreLikeThis;
 using Raven.Server.Documents.Queries.Results;
+using Raven.Server.Documents.Transformers;
 using Raven.Server.Exceptions;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
@@ -35,6 +36,7 @@ using Sparrow;
 using Sparrow.Collections;
 using Sparrow.Json;
 using Voron;
+using Sparrow.Logging;
 
 namespace Raven.Server.Documents.Indexes
 {
@@ -55,7 +57,7 @@ namespace Raven.Server.Documents.Indexes
 
         private const long WriteErrorsLimit = 10;
 
-        protected readonly ILog Log = LogManager.GetLogger(typeof(Index));
+        protected Logger _logger;
 
         internal readonly LuceneIndexPersistence IndexPersistence;
 
@@ -71,7 +73,7 @@ namespace Raven.Server.Documents.Indexes
 
         private bool _initialized;
 
-        private UnmanagedBuffersPool _unmanagedBuffersPool;
+        protected UnmanagedBuffersPool _unmanagedBuffersPool;
 
         private StorageEnvironment _environment;
 
@@ -105,7 +107,7 @@ namespace Raven.Server.Documents.Indexes
             Definition = definition;
             IndexPersistence = new LuceneIndexPersistence(this);
             Collections = new HashSet<string>(Definition.Collections, StringComparer.OrdinalIgnoreCase);
-        }
+       }
 
         public static Index Open(int indexId, DocumentDatabase documentDatabase)
         {
@@ -116,7 +118,7 @@ namespace Raven.Server.Documents.Indexes
             {
                 options.SchemaVersion = 1;
 
-                environment = new StorageEnvironment(options, documentDatabase.LoggerSetup);
+                environment = new StorageEnvironment(options);
                 var type = IndexStorage.ReadIndexType(indexId, environment);
 
                 switch (type)
@@ -158,6 +160,7 @@ namespace Raven.Server.Documents.Indexes
 
         protected void Initialize(DocumentDatabase documentDatabase)
         {
+            _logger = LoggerSetup.Instance.GetLogger<Index>(documentDatabase.Name);
             lock (_locker)
             {
                 if (_initialized)
@@ -170,7 +173,7 @@ namespace Raven.Server.Documents.Indexes
                 options.SchemaVersion = 1;
                 try
                 {
-                    Initialize(new StorageEnvironment(options, documentDatabase.LoggerSetup), documentDatabase);
+                    Initialize(new StorageEnvironment(options), documentDatabase);
                 }
                 catch (Exception)
                 {
@@ -197,9 +200,9 @@ namespace Raven.Server.Documents.Indexes
                     DocumentDatabase = documentDatabase;
                     _environment = environment;
                     _unmanagedBuffersPool = new UnmanagedBuffersPool($"Indexes//{IndexId}");
-                    _contextPool = new TransactionContextPool(_unmanagedBuffersPool, _environment);
-                    _indexStorage = new IndexStorage(this, _contextPool);
-
+                    _contextPool = new TransactionContextPool(_environment);
+                    _indexStorage = new IndexStorage(this, _contextPool, documentDatabase);
+                    _logger = LoggerSetup.Instance.GetLogger<Index>(documentDatabase.Name);
                     _indexStorage.Initialize(_environment);
                     IndexPersistence.Initialize(_environment, DocumentDatabase.Configuration.Indexing);
 
@@ -302,7 +305,7 @@ namespace Raven.Server.Documents.Indexes
 
                 DocumentDatabase.Notifications.OnIndexChange -= HandleIndexChange;
 
-                var exceptionAggregator = new ExceptionAggregator(Log, $"Could not dispose {nameof(Index)} '{Name}'");
+                var exceptionAggregator = new ExceptionAggregator(_logger, $"Could not dispose {nameof(Index)} '{Name}'");
 
                 exceptionAggregator.Execute(() =>
                 {
@@ -421,8 +424,8 @@ namespace Raven.Server.Documents.Indexes
 
                     while (true)
                     {
-                        if (Log.IsDebugEnabled)
-                            Log.Debug($"Starting indexing for '{Name} ({IndexId})'.");
+                        if (_logger.IsInfoEnabled)
+                           _logger.Info($"Starting indexing for '{Name} ({IndexId})'.");
 
                         _mre.Reset();
 
@@ -443,11 +446,13 @@ namespace Raven.Server.Documents.Indexes
                                 if (didWork)
                                     ResetWriteErrors();
 
-                                if (Log.IsDebugEnabled) Log.Debug($"Finished indexing for '{Name} ({IndexId})'.'");
+                                if (_logger.IsInfoEnabled)
+                                    _logger.Info($"Finished indexing for '{Name} ({IndexId})'.'");
                             }
                             catch (OutOfMemoryException oome)
                             {
-                                Log.WarnException($"Out of memory occurred for '{Name} ({IndexId})'.", oome);
+                                if (_logger.IsInfoEnabled)
+                                    _logger.Info($"Out of memory occurred for '{Name} ({IndexId})'.", oome);
                                 // TODO [ppekrol] GC?
                             }
                             catch (IndexWriteException iwe)
@@ -464,7 +469,8 @@ namespace Raven.Server.Documents.Indexes
                             }
                             catch (Exception e)
                             {
-                                Log.WarnException($"Exception occurred for '{Name} ({IndexId})'.", e);
+                                if (_logger.IsInfoEnabled)
+                                    _logger.Info($"Exception occurred for '{Name} ({IndexId})'.", e);
                             }
 
                             try
@@ -473,7 +479,8 @@ namespace Raven.Server.Documents.Indexes
                             }
                             catch (Exception e)
                             {
-                                Log.ErrorException($"Could not update stats for '{Name} ({IndexId})'.", e);
+                                if (_logger.IsInfoEnabled)
+                                    _logger.Info($"Could not update stats for '{Name} ({IndexId})'.", e);
                             }
                         }
 
@@ -621,8 +628,8 @@ namespace Raven.Server.Documents.Indexes
                 if (Priority == priority)
                     return;
 
-                if (Log.IsDebugEnabled)
-                    Log.Debug($"Changing priority for '{Name} ({IndexId})' from '{Priority}' to '{priority}'.");
+                if (_logger.IsInfoEnabled)
+                    _logger.Info($"Changing priority for '{Name} ({IndexId})' from '{Priority}' to '{priority}'.");
 
                 _indexStorage.WritePriority(priority);
 
@@ -661,8 +668,8 @@ namespace Raven.Server.Documents.Indexes
                 if (Definition.LockMode == mode)
                     return;
 
-                if (Log.IsDebugEnabled)
-                    Log.Debug($"Changing lock mode for '{Name} ({IndexId})' from '{Definition.LockMode}' to '{mode}'.");
+                if (_logger.IsInfoEnabled)
+                    _logger.Info($"Changing lock mode for '{Name} ({IndexId})' from '{Definition.LockMode}' to '{mode}'.");
 
                 _indexStorage.WriteLock(mode);
             }
@@ -712,7 +719,7 @@ namespace Raven.Server.Documents.Indexes
             return Definition.ConvertToIndexDefinition(this);
         }
 
-        public async Task<DocumentQueryResult> Query(IndexQuery query, DocumentsOperationContext documentsContext, OperationCancelToken token)
+        public async Task<DocumentQueryResult> Query(IndexQueryServerSide query, DocumentsOperationContext documentsContext, OperationCancelToken token)
         {
             if (_disposed)
                 throw new ObjectDisposedException($"Index '{Name} ({IndexId})' was already disposed.");
@@ -721,6 +728,14 @@ namespace Raven.Server.Documents.Indexes
                 SetPriority(IndexingPriority.Normal);
 
             MarkQueried(SystemTime.UtcNow);
+
+            Transformer transformer = null;
+            if (string.IsNullOrEmpty(query.Transformer) == false)
+            {
+                transformer = DocumentDatabase.TransformerStore.GetTransformer(query.Transformer);
+                if (transformer == null)
+                    throw new InvalidOperationException($"The transformer '{query.Transformer}' was not found.");
+            }
 
             TransactionOperationContext indexContext;
 
@@ -759,15 +774,15 @@ namespace Raven.Server.Documents.Indexes
 
                         FillQueryResult(result, isStale, documentsContext, indexContext);
 
-                        if (Type.IsMapReduce())
-                            documentsContext.Reset(); // map reduce don't need to access mapResults storage
+                        if (Type.IsMapReduce() && transformer == null)
+                            documentsContext.Reset(); // map reduce don't need to access mapResults storage unless we have a transformer. Possible optimization: if we will know if transformer needs transaction then we may reset this here or not
 
                         using (var reader = IndexPersistence.OpenIndexReader(indexTx.InnerTransaction))
                         {
                             var totalResults = new Reference<int>();
                             var skippedResults = new Reference<int>();
 
-                            var fieldsToFetch = new FieldsToFetch(query, Definition);
+                            var fieldsToFetch = new FieldsToFetch(query, Definition, transformer);
                             IEnumerable<Document> documents;
 
                             if (string.IsNullOrWhiteSpace(query.Query) || query.Query.Contains(Constants.IntersectSeparator) == false)
@@ -780,10 +795,16 @@ namespace Raven.Server.Documents.Indexes
                             }
 
                             var includeDocumentsCommand = new IncludeDocumentsCommand(DocumentDatabase.DocumentsStorage, documentsContext, query.Includes);
-                            foreach (var document in documents)
+
+                            using (var scope = transformer?.OpenTransformationScope(query.TransformerParameters, includeDocumentsCommand, DocumentDatabase.DocumentsStorage, DocumentDatabase.TransformerStore, documentsContext))
                             {
-                                result.Results.Add(document);
-                                includeDocumentsCommand.Gather(document);
+                                var results = scope != null ? scope.Transform(documents) : documents;
+
+                                foreach (var document in results)
+                                {
+                                    result.Results.Add(document);
+                                    includeDocumentsCommand.Gather(document);
+                                }
                             }
 
                             includeDocumentsCommand.Fill(result.Includes);
@@ -849,7 +870,7 @@ namespace Raven.Server.Documents.Indexes
                 using (var reader = IndexPersistence.OpenIndexReader(tx.InnerTransaction))
                 {
                     var includeDocumentsCommand = new IncludeDocumentsCommand(DocumentDatabase.DocumentsStorage, documentsContext, query.Includes);
-                    foreach (var document in reader.MoreLikeThis(query, stopWords, fieldsToFetch => GetQueryResultRetriever(documentsContext, indexContext, new FieldsToFetch(fieldsToFetch, Definition)), token.Token))
+                    foreach (var document in reader.MoreLikeThis(query, stopWords, fieldsToFetch => GetQueryResultRetriever(documentsContext, indexContext, new FieldsToFetch(fieldsToFetch, Definition, null)), token.Token))
                     {
                         result.Results.Add(document);
                         includeDocumentsCommand.Gather(document);
@@ -873,7 +894,7 @@ namespace Raven.Server.Documents.Indexes
             result.ResultEtag = CalculateIndexEtag(result.IsStale, documentsContext, indexContext);
         }
 
-        private DisposableAction MarkQueryAsRunning(IndexQuery query, OperationCancelToken token)
+        private DisposableAction MarkQueryAsRunning(IndexQueryServerSide query, OperationCancelToken token)
         {
             var queryStartTime = DateTime.UtcNow;
             var queryId = Interlocked.Increment(ref _numberOfQueries);
@@ -887,7 +908,7 @@ namespace Raven.Server.Documents.Indexes
             });
         }
 
-        private static bool WillResultBeAcceptable(bool isStale, IndexQuery query, AsyncWaitForIndexing wait)
+        private static bool WillResultBeAcceptable(bool isStale, IndexQueryServerSide query, AsyncWaitForIndexing wait)
         {
             if (isStale == false)
                 return true;

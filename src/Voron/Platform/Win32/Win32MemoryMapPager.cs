@@ -8,6 +8,7 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
+using Sparrow;
 using Voron.Data.BTrees;
 using Voron.Impl;
 using Voron.Impl.Paging;
@@ -38,16 +39,16 @@ namespace Voron.Platform.Win32
             public uint High;
         }
 
-        public Win32MemoryMapPager(int pageSize,string file,
+        public Win32MemoryMapPager(StorageEnvironmentOptions options,string file,
             long? initialFileSize = null,
-                                   Win32NativeFileAttributes options = Win32NativeFileAttributes.Normal,
+                                   Win32NativeFileAttributes fileAttributes = Win32NativeFileAttributes.Normal,
                                    Win32NativeFileAccess access = Win32NativeFileAccess.GenericRead | Win32NativeFileAccess.GenericWrite)
-            :base(pageSize)
+            :base(options)
         {
            
             Win32NativeMethods.SYSTEM_INFO systemInfo;
             Win32NativeMethods.GetSystemInfo(out systemInfo);
-
+            FileName = file;
             AllocationGranularity = systemInfo.allocationGranularity;
 
             _access = access;
@@ -57,7 +58,7 @@ namespace Voron.Platform.Win32
 
             _handle = Win32NativeFileMethods.CreateFile(file, access,
                                                         Win32NativeFileShare.Read | Win32NativeFileShare.Write | Win32NativeFileShare.Delete, IntPtr.Zero,
-                                                        Win32NativeFileCreationDisposition.OpenAlways, options, IntPtr.Zero);
+                                                        Win32NativeFileCreationDisposition.OpenAlways, fileAttributes, IntPtr.Zero);
             if (_handle.IsInvalid)
             {
                 int lastWin32ErrorCode = Marshal.GetLastWin32Error();
@@ -251,15 +252,24 @@ namespace Voron.Platform.Win32
             if (Disposed)
                 ThrowAlreadyDisposedException();
 
+            long totalSize = 0;
             foreach (var allocationInfo in PagerState.AllocationInfos)
             {
-                if (Win32MemoryMapNativeMethods.FlushViewOfFile(allocationInfo.BaseAddress, new IntPtr(allocationInfo.Size)) == false)
+                totalSize += allocationInfo.Size;
+            }
+            using (Options.IoMetrics.MeterIoRate(FileName,IoMetrics.MeterType.Sync, totalSize))
+            {
+                foreach (var allocationInfo in PagerState.AllocationInfos)
+                {
+                    if (
+                        Win32MemoryMapNativeMethods.FlushViewOfFile(allocationInfo.BaseAddress,
+                            new IntPtr(allocationInfo.Size)) == false)
+                        throw new Win32Exception();
+                }
+
+                if (Win32MemoryMapNativeMethods.FlushFileBuffers(_handle) == false)
                     throw new Win32Exception();
             }
-
-            if (Win32MemoryMapNativeMethods.FlushFileBuffers(_handle) == false)
-                throw new Win32Exception();
-            // TODO : Measure IO times (RavenDB-4659) - Flushed & sync {sizeToWrite/1024:#,#} kb in {sp.ElapsedMilliseconds:#,#} ms
         }
 
 

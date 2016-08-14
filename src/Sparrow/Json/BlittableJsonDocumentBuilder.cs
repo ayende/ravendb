@@ -15,8 +15,8 @@ namespace Sparrow.Json
         private readonly UsageMode _mode;
         private readonly IJsonParser _reader;
         private readonly JsonParserState _state;
-        private readonly UnmanagedWriteBuffer _stream;
-        private UnmanagedBuffersPool.AllocatedMemoryData _compressionBuffer;
+        private readonly UnmanagedWriteBuffer _unmanagedWriteBuffer;
+        private AllocatedMemoryData _compressionBuffer;
         private int _position;
         private WriteToken _writeToken;
         private readonly string _debugTag;
@@ -27,7 +27,7 @@ namespace Sparrow.Json
         {
             _reader = reader;
             _debugTag = debugTag;
-            _stream = context.GetStream();
+            _unmanagedWriteBuffer = context.GetStream();
             _context = context;
             _mode = mode;
             _state = state;
@@ -57,17 +57,11 @@ namespace Sparrow.Json
             });
         }
 
-        public int SizeInBytes => _stream.SizeInBytes;
+        public int SizeInBytes => _unmanagedWriteBuffer.SizeInBytes;
 
         public void Dispose()
         {
-            if (_compressionBuffer != null)
-            {
-                _context.ReturnMemory(_compressionBuffer);
-                _compressionBuffer = null;
-            }
-
-            _stream.Dispose();
+            _unmanagedWriteBuffer.Dispose();
         }
 
         public bool Read()
@@ -183,7 +177,7 @@ namespace Sparrow.Json
                                 WriteNumber(arrayInfoStart - currentState.Positions[i], distanceTypeSize);
                                 _position += distanceTypeSize;
 
-                                _stream.WriteByte((byte)currentState.Types[i]);
+                                _unmanagedWriteBuffer.WriteByte((byte)currentState.Types[i]);
                                 _position++;
                             }
 
@@ -304,7 +298,7 @@ namespace Sparrow.Json
                     return;
                 case JsonParserToken.True:
                 case JsonParserToken.False:
-                    _stream.WriteByte(_state.CurrentTokenType == JsonParserToken.True ? (byte)1 : (byte)0);
+                    _unmanagedWriteBuffer.WriteByte(_state.CurrentTokenType == JsonParserToken.True ? (byte)1 : (byte)0);
                     _position++;
                     _writeToken = new WriteToken
                     {
@@ -313,7 +307,7 @@ namespace Sparrow.Json
                     };
                     return;
                 case JsonParserToken.Null:
-                    _stream.WriteByte(0);
+                    _unmanagedWriteBuffer.WriteByte(0);
                     _position++;
                     _writeToken = new WriteToken // nothing to do here, we handle that with the token
                     {
@@ -368,7 +362,7 @@ namespace Sparrow.Json
             ValidateDouble = 1,
             CompressStrings = 2,
             CompressSmallStrings = 4,
-            ToDisk = ValidateDouble | CompressStrings | CompressSmallStrings
+            ToDisk = ValidateDouble | CompressStrings
         }
 
         public struct WriteToken
@@ -461,17 +455,17 @@ namespace Sparrow.Json
             switch (sizeOfValue)
             {
                 case sizeof(int):
-                    _stream.WriteByte((byte)value);
-                    _stream.WriteByte((byte)(value >> 8));
-                    _stream.WriteByte((byte)(value >> 16));
-                    _stream.WriteByte((byte)(value >> 24));
+                    _unmanagedWriteBuffer.WriteByte((byte)value);
+                    _unmanagedWriteBuffer.WriteByte((byte)(value >> 8));
+                    _unmanagedWriteBuffer.WriteByte((byte)(value >> 16));
+                    _unmanagedWriteBuffer.WriteByte((byte)(value >> 24));
                     break;
                 case sizeof(short):
-                    _stream.WriteByte((byte)value);
-                    _stream.WriteByte((byte)(value >> 8));
+                    _unmanagedWriteBuffer.WriteByte((byte)value);
+                    _unmanagedWriteBuffer.WriteByte((byte)(value >> 8));
                     break;
                 case sizeof(byte):
-                    _stream.WriteByte((byte)value);
+                    _unmanagedWriteBuffer.WriteByte((byte)value);
                     break;
                 default:
                     throw new ArgumentException($"Unsupported size {sizeOfValue}");
@@ -493,7 +487,7 @@ namespace Sparrow.Json
                 v >>= 7;
             }
             buffer[count++] = (byte)(v);
-            _stream.Write(buffer, count);
+            _unmanagedWriteBuffer.Write(buffer, count);
             return count;
         }
 
@@ -509,7 +503,7 @@ namespace Sparrow.Json
                 v >>= 7;
             }
             buffer[count++] = (byte)(v);
-            _stream.Write(buffer, count);
+            _unmanagedWriteBuffer.Write(buffer, count);
             return count;
         }
 
@@ -531,7 +525,7 @@ namespace Sparrow.Json
                 buffer[i] = buffer[count - 1 - i];
                 buffer[count - 1 - i] = tmp;
             }
-            _stream.Write(buffer, count);
+            _unmanagedWriteBuffer.Write(buffer, count);
             return count;
         }
 
@@ -608,7 +602,7 @@ namespace Sparrow.Json
                 }
             }
 
-            _stream.Write(buffer, size);
+            _unmanagedWriteBuffer.Write(buffer, size);
             _position += size;
             return startPos;
         }
@@ -646,9 +640,6 @@ namespace Sparrow.Json
             if (_compressionBuffer == null ||
                 minSize > _compressionBuffer.SizeInBytes)
             {
-                if (_compressionBuffer != null)
-                    _context.ReturnMemory(_compressionBuffer);
-
                 _compressionBuffer = _context.GetMemory(minSize);
             }
             return (byte*)_compressionBuffer.Address;
@@ -686,7 +677,7 @@ namespace Sparrow.Json
             {
                 WriteNumber(objectMetadataStart - sortedProperty.Position, positionSize);
                 WriteNumber(sortedProperty.PropertyId, propertyIdSize);
-                _stream.WriteByte(sortedProperty.Type);
+                _unmanagedWriteBuffer.WriteByte(sortedProperty.Type);
                 _position += positionSize + propertyIdSize + sizeof(byte);
             }
 
@@ -727,7 +718,7 @@ namespace Sparrow.Json
         {
             byte* ptr;
             int size;
-            _stream.EnsureSingleChunk(out ptr, out size);
+            _unmanagedWriteBuffer.EnsureSingleChunk(out ptr, out size);
             return new BlittableJsonReaderObject(ptr, size, _context, this, cachedProperties);
         }
 
@@ -748,7 +739,7 @@ namespace Sparrow.Json
 
         public unsafe void CopyTo(IntPtr ptr)
         {
-            _stream.CopyTo((byte*)ptr);
+            _unmanagedWriteBuffer.CopyTo((byte*)ptr);
         }
 
 
@@ -759,7 +750,7 @@ namespace Sparrow.Json
             stream.TryGetBuffer(out bytes);
             fixed (byte* ptr = bytes.Array)
             {
-                _stream.CopyTo(ptr + stream.Position);
+                _unmanagedWriteBuffer.CopyTo(ptr + stream.Position);
                 stream.Position += SizeInBytes;
             }
         }

@@ -5,15 +5,17 @@ using System.IO;
 using System.Net.Sockets;
 using System.Threading;
 using Raven.Abstractions.Data;
-using Raven.Server.Json;
+using Raven.Server.Extensions;
 using Raven.Server.ServerWide.Context;
 using Sparrow.Json;
 using Sparrow.Logging;
 using System.Linq;
+using System.Text;
 using Raven.Abstractions.Replication;
 using Raven.Client.Replication.Messages;
-using Raven.Server.Utils.Metrics;
+using Raven.Server.Extensions;
 using Sparrow.Json.Parsing;
+using Voron;
 
 namespace Raven.Server.Documents.Replication
 {
@@ -29,19 +31,8 @@ namespace Raven.Server.Documents.Replication
         private readonly Logger _log;
         private readonly IDisposable _contextDisposable;
 
-        private long _lastReceivedEtag;
-
-        public long LastReceivedEtag => _lastReceivedEtag;
-
         public event Action<IncomingReplicationHandler, Exception> Failed;
         public event Action<IncomingReplicationHandler> DocumentsReceived;
-
-        private readonly MetricsScheduler _metricsScheduler = new MetricsScheduler();
-
-        //this probably will become one of the metrics counters, when it will become available 
-        public MeterMetric ReceivedDocumentsCount { get; private set; }
-        public MeterMetric DocumentSizeInBatch { get; private set; }
-        public MeterMetric LargestDocumentSizeInBatch { get; private set; }
 
         public IncomingReplicationHandler(JsonOperationContext.MultiDocumentParser multiDocumentParser, DocumentDatabase database, TcpClient tcpClient, NetworkStream stream, ReplicationLatestEtagRequest replicatedLastEtag)
         {
@@ -54,11 +45,10 @@ namespace Raven.Server.Documents.Replication
                                           .ContextPool
                                           .AllocateOperationContext(out _context);
 
-            _log = _database.LoggerSetup.GetLogger<IncomingReplicationHandler>(_database.Name);
+            _unmanagedWriteBuffer = _context.GetStream();
+
+            _log = LoggerSetup.Instance.GetLogger<IncomingReplicationHandler>(_database.Name);
             _cts = CancellationTokenSource.CreateLinkedTokenSource(_database.DatabaseShutdown);
-            ReceivedDocumentsCount = new MeterMetric(_metricsScheduler);
-            DocumentSizeInBatch = new MeterMetric(_metricsScheduler);
-            LargestDocumentSizeInBatch = new MeterMetric(_metricsScheduler);
         }
 
         public void Start()
@@ -71,9 +61,9 @@ namespace Raven.Server.Documents.Replication
             _incomingThread.Start();
             if (_log.IsInfoEnabled)
                 _log.Info($"Incoming replication thread started ({FromToString})");
+
         }
 
-        //TODO : do not forget to add logging and code to record stats
         private void ReceiveReplicatedDocuments()
         {
             try
@@ -83,58 +73,62 @@ namespace Raven.Server.Documents.Replication
                 using (var writer = new BlittableJsonTextWriter(_context, _stream))
                 using (_multiDocumentParser)
                 {
+                    long prevRecievedEtag = -1;
                     while (!_cts.IsCancellationRequested)
                     {
                         using (var message = _multiDocumentParser.ParseToMemory("IncomingReplication/read-message"))
                         {
                             //note: at this point, the valid messages are heartbeat and replication batch.
                             _cts.Token.ThrowIfCancellationRequested();
+
+                            long lastReceivedEtag;
+                            if (message.TryGet("LastEtag", out lastReceivedEtag) == false)
+                                throw new InvalidDataException("The property 'LastEtag' wasn't found in replication batch, invalid data");
+
                             bool _;
                             if (message.TryGet("Heartbeat", out _))
                             {
-                                BlittableJsonReaderArray changeVector;
-                                if (!message.TryGet("ChangeVector", out changeVector))
-                                    throw new InvalidDataException("Failed to get 'ChangeVector' from heartbeat message. This is not supposed to happen and it is likely a bug.");
-
-
                                 if (_log.IsInfoEnabled)
-                                    _log.Info($"Incoming replication thread ({FromToString}) received heartbeat.");
+                                    _log.Info($"Got heartbeat from ({FromToString}) with etag {lastReceivedEtag}.");
+                                if (prevRecievedEtag != lastReceivedEtag)
+                                {
+                                    using (_context.OpenWriteTransaction())
+                                    {
+                                        _database.DocumentsStorage.SetLastReplicateEtagFrom(_context,
+                                            ConnectionInfo.SourceDatabaseId, lastReceivedEtag);
+                                        prevRecievedEtag = lastReceivedEtag;
+                                        _context.Transaction.Commit();
+                                    }
+                                }
+                                SendStatusToSource(writer, -1);
                                 continue;
                             }
 
-                            ThrowIfNotReplicationBatch(message);
-
-                            BlittableJsonReaderArray replicatedDocs;
-                            if (!message.TryGet("ReplicationBatch", out replicatedDocs))
-                                throw new InvalidDataException(
-                                    "Expected the message to have a field with replicated document array, named ReplicationBatch. The property wasn\'t found");
+                            int replicatedDocs = ValidateReplicationBatchAndGetDocsCount(message);
 
                             try
                             {
-                                //TODO : consider replacing this with pooled stopwatch objects -> reduce allocations								
-                                //note: because of the logic in OutgoingReplicationHandler, 
-                                // it is not possible to receive empty batch at this point								
                                 var sw = Stopwatch.StartNew();
-                                long lastReceivedEtag;
+                                //TODO: Here we are reading from the network while
+                                //TODO: holding the write tx open, this is bad, we need
+                                //TODO: to read to memory, and only then open the tx
                                 using (_context.OpenWriteTransaction())
                                 {
-                                    lastReceivedEtag = ReceiveDocuments(_context, replicatedDocs);
-                                    _context.Transaction.Commit();
+                                    AcceptDocumentsFromSource(replicatedDocs);
 
+                                    _database.DocumentsStorage.SetLastReplicateEtagFrom(_context, ConnectionInfo.SourceDatabaseId, lastReceivedEtag);
+                                    prevRecievedEtag = lastReceivedEtag;
+                                    _context.Transaction.Commit();
                                 }
                                 sw.Stop();
 
                                 if (_log.IsInfoEnabled)
-                                    _log.Info($"Replication connection {FromToString}: received and written {replicatedDocs.Length} documents to database in {sw.ElapsedMilliseconds} ms, with last etag = {lastReceivedEtag}.");
+                                    _log.Info($"Replication connection {FromToString}: received and written {replicatedDocs:#,#;;0} documents to database in {sw.ElapsedMilliseconds:#,#;;0} ms, with last etag = {lastReceivedEtag}.");
 
-                                _lastReceivedEtag = lastReceivedEtag;
                                 //return positive ack
-                                _context.Write(writer, new DynamicJsonValue
-                                {
-                                    ["Type"] = ReplicationBatchReply.ReplyType.Ok.ToString(),
-                                    ["LastEtagAccepted"] = lastReceivedEtag,
-                                    ["Error"] = null
-                                });								
+
+                                SendStatusToSource(writer, lastReceivedEtag);
+
                                 OnDocumentsReceived(this);
                             }
                             catch (Exception e)
@@ -145,7 +139,7 @@ namespace Raven.Server.Documents.Replication
                                     //return negative ack
                                     _context.Write(writer, new DynamicJsonValue
                                     {
-                                        ["Type"] = ReplicationBatchReply.ReplyType.Error.ToString(),
+                                        ["Type"] = ReplicationMessageReply.ReplyType.Error.ToString(),
                                         ["LastEtagAccepted"] = -1,
                                         ["Error"] = e.ToString()
                                     });
@@ -153,7 +147,7 @@ namespace Raven.Server.Documents.Replication
                                     e.Data.Add("FailedToWrite", true);
 
                                     if (_log.IsInfoEnabled)
-                                        _log.Info($"Replication connection {FromToString}: failed writing documents to database - unhandled exception was thrown.{Environment.NewLine} {e}");
+                                        _log.Info($"Failed replicating documents from {FromToString}.",e);
                                     throw;
                                 }
                             }
@@ -181,7 +175,7 @@ namespace Raven.Server.Documents.Replication
                 {
                     //if FailedToWrite is in e.Data, we logged the exception already
                     if (_log.IsInfoEnabled && !e.Data.Contains("FailedToWrite"))
-                        _log.Info($"Replication connection {FromToString}: an exception was thrown during receiving incoming document replication batch. {e}");
+                        _log.Info($"Connection error {FromToString}: an exception was thrown during receiving incoming document replication batch.",e );
 
                     OnFailed(e, this);
                 }
@@ -193,7 +187,41 @@ namespace Raven.Server.Documents.Replication
             }
         }
 
-        private static void ThrowIfNotReplicationBatch(BlittableJsonReaderObject message)
+        private void SendStatusToSource(BlittableJsonTextWriter writer, long lastReceivedEtag)
+        {
+            var changeVector = new DynamicJsonArray();
+            ChangeVectorEntry[] databaseChangeVector;
+
+            using (_context.OpenReadTransaction())
+            {
+                databaseChangeVector = _database.DocumentsStorage.GetDatabaseChangeVector(_context);
+            }
+
+            foreach (var changeVectorEntry in databaseChangeVector)
+            {
+                changeVector.Add(new DynamicJsonValue
+                {
+                    ["DbId"] = changeVectorEntry.DbId,
+                    ["Etag"] = changeVectorEntry.Etag
+                });
+            }
+            if (_log.IsInfoEnabled)
+            {
+                _log.Info(
+                    $"Sending ok to {FromToString} with last etag {lastReceivedEtag} and change vector: {databaseChangeVector.Format()}");
+            }
+            _context.Write(writer, new DynamicJsonValue
+            {
+                ["Type"] = "Ok",
+                ["LastEtagAccepted"] = lastReceivedEtag,
+                ["Error"] = null,
+                ["CurrentChangeVector"] = changeVector
+            });
+
+            writer.Flush();
+        }
+
+        private static int ValidateReplicationBatchAndGetDocsCount(BlittableJsonReaderObject message)
         {
             string messageType;
             if (!message.TryGet("Type", out messageType))
@@ -201,70 +229,73 @@ namespace Raven.Server.Documents.Replication
 
             if (!messageType.Equals("ReplicationBatch", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException($"Expected the message 'Type = ReplicationBatch' field, but has 'Type={messageType}'. This is likely a bug.");
+
+            int docs;
+            if(!message.TryGet("Documents", out docs))
+                throw new InvalidDataException($"Expected the 'Documents' field, but had no numeric field of this value, this is likely a bug");
+
+            return docs;
         }
 
         public string FromToString => $"from {ConnectionInfo.SourceDatabaseName} at {ConnectionInfo.SourceUrl} (into database {_database.Name})";
         public IncomingConnectionInfo ConnectionInfo { get; }
 
-        private long ReceiveDocuments(DocumentsOperationContext context, BlittableJsonReaderArray docs)
+        private readonly byte[] _tempBuffer = new byte[32*1024];
+        private ChangeVectorEntry[] _tempReplicatedChangeVector = new ChangeVectorEntry[0];
+        private readonly UnmanagedWriteBuffer _unmanagedWriteBuffer;
+        private unsafe void AcceptDocumentsFromSource(int replicatedDocs)
         {
-            var dbChangeVector = _database.DocumentsStorage.GetDatabaseChangeVector(context);
             var maxReceivedChangeVectorByDatabase = new Dictionary<Guid, long>();
-
-            using (new IncomingReplicationScope())
+            foreach (var changeVectorEntry in _database.DocumentsStorage.GetDatabaseChangeVector(_context))
             {
-                double sum = 0;
-                foreach (BlittableJsonReaderObject doc in docs)
-                {
-                    var changeVector = doc.EnumerateChangeVector();
-                    foreach (var currentEntry in changeVector)
-                    {
-                        if (currentEntry.DbId != Guid.Empty) //should never happen, but..
-                            throw new InvalidOperationException(
-                                "change vector database Id is Guid.Empty. This is not supposed to happen and it is likely a bug.");
-
-                        //note: documents in a replication batch are ordered in incremental etag order
-                        maxReceivedChangeVectorByDatabase[currentEntry.DbId] = currentEntry.Etag;
-                    }
-
-                    //since blittable deals with offsets, if we want to deserialize embedded object properly,
-                    //we need to create a new document with proper offsets (that would actually point to embedded object data)
-                    using (
-                        var detachedDoc = context.ReadObject(doc, "IncomingDocumentReplication -> Detach object from parent array"))
-                        WriteReceivedDocument(context, detachedDoc);
-
-                    sum += doc.Size;
-                    if(doc.Size > LargestDocumentSizeInBatch.MeanRate)
-                        LargestDocumentSizeInBatch.Mark(doc.Size);
-                }
-
+                maxReceivedChangeVectorByDatabase[changeVectorEntry.DbId] = changeVectorEntry.Etag;
             }
 
-            ReceivedDocumentsCount.Mark(docs.Length);
+            fixed (byte* pTemp = _tempBuffer)
+            {
+                for (int x = 0; x < replicatedDocs; x++)
+                {
+                    _multiDocumentParser.ReadExactly(_tempBuffer, 0, sizeof(int));
+                    var changeVectorEntriesCount = *(int*) pTemp;
+                    if (_tempReplicatedChangeVector.Length != changeVectorEntriesCount)
+                    {
+                        _tempReplicatedChangeVector = new ChangeVectorEntry[changeVectorEntriesCount];
+                    }
+                    _multiDocumentParser.ReadExactly(_tempBuffer, 0, sizeof(ChangeVectorEntry) * changeVectorEntriesCount);
+                    for (int i = 0; i < changeVectorEntriesCount; i++)
+                    {
+                        _tempReplicatedChangeVector[i] = ((ChangeVectorEntry*)pTemp)[i];
+                        long etag;
+                        if (maxReceivedChangeVectorByDatabase.TryGetValue(_tempReplicatedChangeVector[i].DbId, out etag) == false ||
+                            etag > _tempReplicatedChangeVector[i].Etag)
+                        {
+                                maxReceivedChangeVectorByDatabase[_tempReplicatedChangeVector[i].DbId] = etag;
+                        }
+                    }
+                    _multiDocumentParser.ReadExactly(_tempBuffer, 0, sizeof(int));
+                    var keySize = *(int*)pTemp;
+                    _multiDocumentParser.ReadExactly(_tempBuffer, 0, keySize);
+                    var id = Encoding.UTF8.GetString(_tempBuffer, 0, keySize);
+                    _multiDocumentParser.ReadExactly(_tempBuffer, 0, sizeof(int));
+                    var documentSize = *(int*)pTemp;
+                    _unmanagedWriteBuffer.Clear();
+                    while (documentSize>0)
+                    {
+                        var read = _multiDocumentParser.Read(_tempBuffer, 0, Math.Min(_tempBuffer.Length, documentSize));
+                        if(read == 0)
+                            throw new EndOfStreamException();
+                        _unmanagedWriteBuffer.Write(pTemp, read);
+                        documentSize -= read;
+                    }
+                    byte* ptr;
+                    _unmanagedWriteBuffer.EnsureSingleChunk(out ptr, out documentSize);
+                    var doc = new BlittableJsonReaderObject(ptr, documentSize, _context);
+                    //TODO: conflict handling
+                    _database.DocumentsStorage.Put(_context, id, null, doc, _tempReplicatedChangeVector);
+                }
+            }
 
-            //if any of [dbId -> etag] is larger than server pair, update it
-            var changeVectorUpdated = dbChangeVector.UpdateLargerEtagIfRelevant(maxReceivedChangeVectorByDatabase);
-            bool changeVectorResized;
-            dbChangeVector = dbChangeVector.InsertNewEtagsIfRelevant(
-                maxReceivedChangeVectorByDatabase, out changeVectorResized);
-
-            if (changeVectorUpdated || changeVectorResized)
-                _database.DocumentsStorage.SetChangeVector(context, dbChangeVector);
-
-            return dbChangeVector.FirstOrDefault(x => x.DbId == Guid.Parse(ConnectionInfo.SourceDatabaseId)).Etag;
-        }
-
-        private void WriteReceivedDocument(DocumentsOperationContext context, BlittableJsonReaderObject doc)
-        {
-
-            var id = doc.GetIdFromMetadata();
-            if (id == null)
-                throw new InvalidDataException($"Missing {Constants.DocumentIdFieldName} field from a document; this is not something that should happen...");
-
-            // we need to split this document to an independent blittable document
-            // and this time, we'll prepare it for disk.
-            doc.PrepareForStorage();			
-            _database.DocumentsStorage.Put(context, id, null, doc);
+            _database.DocumentsStorage.SetDatabaseChangeVector(_context, _database.DocumentsStorage.GetDatabaseChangeVector(_context));
         }
 
         public void Dispose()

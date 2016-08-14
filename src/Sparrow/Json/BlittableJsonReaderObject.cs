@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
-using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using Sparrow.Json.Parsing;
@@ -14,6 +13,7 @@ namespace Sparrow.Json
         private readonly BlittableJsonDocumentBuilder _builder;
         private readonly CachedProperties _cachedProperties;
         private readonly byte* _metadataPtr;
+        private readonly int _size;
         private readonly int _propCount;
         private readonly long _currentOffsetSize;
         private readonly long _currentPropertyIdSize;
@@ -28,9 +28,17 @@ namespace Sparrow.Json
         public override string ToString()
         {
             var memoryStream = new MemoryStream();
-            _context.Write(memoryStream, this);
+
+            WriteJsonTo(memoryStream);
+
             memoryStream.Position = 0;
+
             return new StreamReader(memoryStream).ReadToEnd();
+        }
+
+        public void WriteJsonTo(Stream stream)
+        {
+            _context.Write(stream, this);
         }
 
         public BlittableJsonReaderObject(byte* mem, int size, JsonOperationContext context,
@@ -574,6 +582,7 @@ namespace Sparrow.Json
         private int PropertiesNamesValidation(int numberOfProps, int propsOffsetList, int propsNamesOffsetSize,
             int currentSize)
         {
+            var blittableSize = currentSize;
             var offsetCounter = 0;
             for (var i = numberOfProps - 1; i >= 0; i--)
             {
@@ -581,7 +590,7 @@ namespace Sparrow.Json
                 var nameOffset = 0;
                 nameOffset = ReadNumber((_mem + propsOffsetList + 1 + i * propsNamesOffsetSize),
                     propsNamesOffsetSize);
-                if ((nameOffset > currentSize) || (nameOffset < 0))
+                if ((blittableSize < nameOffset ) || (nameOffset < 0))
                     throw new InvalidDataException("Properties names offset not valid");
                 stringLength = StringValidation(propsOffsetList - nameOffset);
                 if (offsetCounter + stringLength != nameOffset)
@@ -604,24 +613,27 @@ namespace Sparrow.Json
             var escCount = ReadVariableSizeInt(stringOffset + lenOffset + stringLength, out escOffset);
             if (escCount != 0)
             {
+                var prevEscChar = 0;
                 for (var i = 0; i < escCount; i++)
                 {
                     var escCharOffset = ReadNumber(_mem + str + stringLength + escOffset + i, 1);
-                    var escChar = (char)ReadNumber(_mem + str + stringLength + escOffset - 1 - escCharOffset, 1);
+                    escCharOffset += prevEscChar ;
+                    var escChar = (char)ReadNumber(_mem + str + escCharOffset, 1);
                     switch (escChar)
                     {
                         case '\\':
                         case '/':
                         case '"':
-                        case 'b':
-                        case 'f':
-                        case 'n':
-                        case 'r':
-                        case 't':
+                        case '\b':
+                        case '\f':
+                        case '\n':
+                        case '\r':
+                        case '\t':
                             break;
                         default:
                             throw new InvalidDataException("String not valid, invalid escape character: " + escChar);
                     }
+                    prevEscChar = escCharOffset + 1;
                 }
             }
             return stringLength + escOffset + escCount + lenOffset;
@@ -726,6 +738,53 @@ namespace Sparrow.Json
                 }
             }
             return current;
+        }
+
+        public override bool Equals(object obj)
+        {
+            if (ReferenceEquals(null, obj))
+                return false;
+
+            if (ReferenceEquals(this, obj))
+                return true;
+
+            var blittableJson = obj as BlittableJsonReaderObject;
+
+            if (blittableJson != null)
+                return Equals(blittableJson);
+
+            return false;
+        }
+
+        protected bool Equals(BlittableJsonReaderObject other)
+        {
+            if (_size != other.Size)
+                return false;
+
+            if (_propCount != other._propCount)
+                return false;
+
+            foreach (var propertyName in GetPropertyNames())
+            {
+                object result;
+                if (other.TryGetMember(propertyName, out result) == false)
+                    return false;
+
+                var current = this[propertyName];
+
+                if (current == null && result == null)
+                    continue;
+
+                if ((current?.Equals(result) ?? false) == false)
+                    return false;
+            }
+
+            return true;
+        }
+
+        public override int GetHashCode()
+        {
+            return _size ^ _propCount;
         }
     }
 }

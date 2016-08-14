@@ -8,7 +8,6 @@ namespace Raven.Server.Utils.Metrics
         public static readonly TimeSpan TickInterval = TimeSpan.FromSeconds(1);
 
         private long _count;
-        
         private int _currentTickCount= 0;
 
         private readonly Ewma _m15Rate = Ewma.FifteenMinuteEwma();
@@ -16,20 +15,14 @@ namespace Raven.Server.Utils.Metrics
         private readonly Ewma _m5Rate = Ewma.FiveMinuteEwma();
         private readonly Ewma _s1Rate = Ewma.OneSecondEwma();
 
-        private readonly MetricsScheduler _tickScheduler;
-        private long _startTime;
-        private long _minTick;
-        private long _maxTick;
+        private readonly long _startTime;
 
-        public MeterMetric(MetricsScheduler scheduler)
+
+        public MeterMetric()
         {
-            _tickScheduler = scheduler;
-            _tickScheduler.StartTickingMetric(TickInterval, this);
+            MetricsScheduler.Instance.StartTickingMetric(TickInterval, this);
             _startTime = Clock.Nanoseconds;
         }
-
-        public long Min => _minTick;
-        public long Max => _maxTick;
 
         public double OneSecondRate => _s1Rate.GetRate();
         public double FifteenMinuteRate => _m15Rate.GetRate();
@@ -41,7 +34,7 @@ namespace Raven.Server.Utils.Metrics
 
         public void Dispose()
         {
-            _tickScheduler.StopTickingMetric(this);
+            MetricsScheduler.Instance.StopTickingMetric(this);
         }
 
         public void Tick()

@@ -8,7 +8,6 @@ using Raven.Server.Documents.Indexes.Persistence.Lucene.Documents;
 using Raven.Server.Documents.Indexes.Static;
 using Raven.Server.Documents.Indexes.Workers;
 using Raven.Server.ServerWide.Context;
-using Sparrow;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using Voron;
@@ -123,10 +122,16 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Static
             private IEnumerable _items;
             private TransactionOperationContext _indexContext;
             private PropertyAccessor _propertyAccessor;
+            private readonly ReduceKeyProcessor _reduceKeyProcessor;
+            private readonly HashSet<string> _fields;
+            private readonly HashSet<string> _groupByFields;
 
             public AnonymusObjectToBlittableMapResultsEnumerableWrapper(MapReduceIndex index)
             {
                 _index = index;
+                _fields = new HashSet<string>(_index.Definition.MapFields.Keys);
+                _groupByFields = _index.Definition.GroupByFields;
+                _reduceKeyProcessor = new ReduceKeyProcessor(_index.Definition.GroupByFields.Count, _index._unmanagedBuffersPool);
             }
 
             public void InitializeForEnumeration(IEnumerable items, TransactionOperationContext indexContext)
@@ -146,15 +151,21 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Static
             }
 
 
-            private unsafe class Enumerator : IEnumerator<MapResult>
+            private class Enumerator : IEnumerator<MapResult>
             {
                 private readonly IEnumerator _enumerator;
                 private readonly AnonymusObjectToBlittableMapResultsEnumerableWrapper _parent;
+                private readonly HashSet<string> _fields;
+                private readonly HashSet<string> _groupByFields;
+                private readonly ReduceKeyProcessor _reduceKeyProcessor;
 
                 public Enumerator(IEnumerator enumerator, AnonymusObjectToBlittableMapResultsEnumerableWrapper parent)
                 {
                     _enumerator = enumerator;
                     _parent = parent;
+                    _groupByFields = _parent._groupByFields;
+                    _fields = _parent._fields;
+                    _reduceKeyProcessor = _parent._reduceKeyProcessor;
                 }
 
                 public bool MoveNext()
@@ -169,27 +180,24 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Static
                     var accessor = _parent._propertyAccessor ?? (_parent._propertyAccessor = PropertyAccessor.Create(document.GetType()));
 
                     var mapResult = new DynamicJsonValue();
-                    var reduceKey = new DynamicJsonValue();
 
-                    foreach (var property in accessor.Properties)
+                    _reduceKeyProcessor.Reset();
+
+                    foreach (var field in _fields)
                     {
-                        var value = property.Value(document);
+                        var value = accessor.Properties[field](document);
+                        mapResult[field] = value;
 
-                        mapResult[property.Key] = value;
-
-                        if (_parent._index.Definition.GroupByFields.Contains(property.Key))
-                            reduceKey[property.Key] = value;
+                        if (_groupByFields.Contains(field))
+                        {
+                            _reduceKeyProcessor.Process(value);
+                        }
                     }
 
-                    ulong reduceHashKey;
-                    using (var reduceKeyObject = _parent._indexContext.ReadObject(reduceKey, "reduce-key"))
-                    {
-                        reduceHashKey = Hashing.XXHash64.Calculate(reduceKeyObject.BasePointer, reduceKeyObject.Size);
-                    }
+                    var reduceHashKey = _reduceKeyProcessor.Hash;
 
                     Current.Data = _parent._indexContext.ReadObject(mapResult, "map-result");
                     Current.ReduceKeyHash = reduceHashKey;
-                    Current.State = _parent._index.GetReduceKeyState(reduceHashKey, _parent._indexContext, create: true);
 
                     return true;
                 }

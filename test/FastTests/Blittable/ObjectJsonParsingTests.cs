@@ -12,12 +12,37 @@ namespace FastTests.Blittable
     public class ObjectJsonParsingTests
     {
         [Fact]
+        public void Zzz()
+        {
+            using (var ctx = JsonOperationContext.ShortTermSingleUse())
+            {
+                var array = new DynamicJsonArray
+                {
+                    new DynamicJsonValue
+                    {
+                        ["LastName"] = "John"
+                    }
+                };
+
+                var input = new DynamicJsonValue
+                {
+                    ["$values"] = array
+                };
+
+                using (var inputJson = ctx.ReadObject(input, "input", BlittableJsonDocumentBuilder.UsageMode.CompressSmallStrings))
+                {
+
+                }
+            }
+        }
+
+
+        [Fact]
         public void CanCompressSmallStrings()
         {
             var traverser = new BlittableJsonTraverser();
 
-            using (var pool = new UnmanagedBuffersPool("foo"))
-            using (var ctx = new JsonOperationContext(pool))
+            using (var ctx = JsonOperationContext.ShortTermSingleUse())
             {
                 var input = new DynamicJsonValue
                 {
@@ -123,8 +148,7 @@ namespace FastTests.Blittable
 
         private static void AssertEqualAfterRoundTrip(DynamicJsonValue doc, string expected)
         {
-            using (var pool = new UnmanagedBuffersPool("foo"))
-            using (var ctx = new JsonOperationContext(pool))
+            using (var ctx = JsonOperationContext.ShortTermSingleUse())
             {
                 using (var writer = ctx.ReadObject(doc, "foo"))
                 {

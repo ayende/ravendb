@@ -464,7 +464,7 @@ namespace Sparrow.Json.Parsing
                             _currentStrStart++;
                             _escapeMode = false;
                             _charPos++;
-                            if (b != (byte)'u')
+                            if (b != (byte)'u' && b != (byte)'/')
                             {
                                 _state.EscapePositions.Add(_stringBuffer.SizeInBytes - _prevEscapePosition);
                                 _prevEscapePosition = _stringBuffer.SizeInBytes + 1;
@@ -629,7 +629,7 @@ namespace Sparrow.Json.Parsing
         {
             var toRead = Math.Min(_bufSize - _pos, count);
             Buffer.BlockCopy(_inputBuffer, _pos, buffer, offset, toRead);
-            _initialPos += toRead;
+            _pos += toRead;
             return toRead;
         }
 
