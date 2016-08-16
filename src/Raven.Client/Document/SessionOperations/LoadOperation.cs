@@ -4,12 +4,130 @@ using System.Linq;
 using Raven.Abstractions.Logging;
 using Raven.Client.Connection;
 using Raven.Client.Data;
+using Raven.Client.Documents.Commands;
+using Sparrow.Logging;
 
 namespace Raven.Client.Document.SessionOperations
 {
+    public class LoadOperation1
+    {
+        private readonly InMemoryDocumentSessionOperations _session;
+        private static readonly Logger _logger = LoggerSetup.Instance.GetLogger<LoadOperation1>("Raven.Client");
+        private GetDocumentResult _result;
+
+        public LoadOperation1(InMemoryDocumentSessionOperations session)
+        {
+            _session = session;
+        }
+
+        public RavenCommand<GetDocumentResult> ById<T>(string id)
+        {
+            if (id == null)
+                throw new ArgumentNullException(nameof(id), "The document id cannot be null");
+
+            if (_session.IsDeleted(id))
+                return default(T);
+
+            object existingEntity;
+            if (_session.EntitiesByKey.TryGetValue(id, out existingEntity))
+                return (T)existingEntity;
+
+            JsonDocument value;
+            if (_session.IncludedDocumentsByKey.TryGetValue(id, out value))
+            {
+                _session.IncludedDocumentsByKey.Remove(id);
+                return _session.TrackEntity<T>(value);
+            }
+
+            _session.IncrementRequestCount();
+            if (_logger.IsInfoEnabled)
+                _logger.Info($"Loading {id} from {_session.StoreIdentifier}");
+
+            var command = new GetDocumentCommand
+            {
+                Id = id
+            };
+            return command;
+        }
+
+
+        public RavenCommand<T> ByIds<T>(string[] ids)
+        {
+            if (ids.Length == 0)
+                return new T[0];
+
+            if (_session.IsDeleted(id))
+                return default(T);
+
+            object existingEntity;
+            if (_session.EntitiesByKey.TryGetValue(id, out existingEntity))
+                return (T)existingEntity;
+
+            JsonDocument value;
+            if (_session.IncludedDocumentsByKey.TryGetValue(id, out value))
+            {
+                _session.IncludedDocumentsByKey.Remove(id);
+                return _session.TrackEntity<T>(value);
+            }
+
+            _session.IncrementRequestCount();
+            if (_logger.IsInfoEnabled)
+                _logger.Info($"Loading {id} from {_session.StoreIdentifier}");
+
+            /*if (_logger.IsInfoEnabled)
+                            _logger.Info("Bulk loading ids [{0}] from {1}", string.Join(", ", ids), sessionOperations.StoreIdentifier);*/
+
+            var command = new GetDocumentCommand
+            {
+                Id = id
+            };
+            return command;
+        }
+
+        public T GetDocument<T>()
+        {
+            var document = _result.Results.FirstOrDefault();
+            if (document == null)
+            {
+                _session.RegisterMissing(id);
+                return default(T);
+            }
+            return _session.TrackEntity<T>(document);
+        }
+
+        public void SetResult(GetDocumentResult result)
+        {
+            _result = result;
+            foreach (var include in result.Includes)
+            {
+                _session.TrackIncludedDocument(include);
+            }
+
+            var finalResults = ids != null ?
+                ReturnResultsById<T>() :
+                ReturnResults<T>();
+            for (var i = 0; i < finalResults.Length; i++)
+            {
+                var finalResult = finalResults[i];
+                if (ReferenceEquals(finalResult, null))
+                    sessionOperations.RegisterMissing(ids[i]);
+            }
+
+            var includePaths = includes != null ? includes.Select(x => x.Key).ToArray() : null;
+            sessionOperations.RegisterMissingIncludes(results.Where(x => x != null).Select(x => x.DataAsJson), includePaths);
+
+            return finalResults;
+        }
+
+        public T[] GetDocuments<T>()
+        {
+            
+        }
+    }
+
     public class LoadOperation
     {
-        private static readonly ILog log = LogManager.GetLogger(typeof(LoadOperation));
+        private readonly static ILog log = LogManager.GetLogger(typeof(LoadOperation));
 
         private readonly InMemoryDocumentSessionOperations sessionOperations;
         internal Func<IDisposable> disableAllCaching { get; set; }

@@ -29,6 +29,7 @@ using Raven.Client.Util;
 using Raven.Imports.Newtonsoft.Json.Linq;
 using Raven.Imports.Newtonsoft.Json.Utilities;
 using Raven.Json.Linq;
+using Sparrow.Json;
 
 namespace Raven.Client.Document
 {
@@ -76,12 +77,12 @@ namespace Raven.Client.Document
         protected readonly Dictionary<object, InMemoryDocumentSessionOperations.DocumentMetadata> entitiesAndMetadata =
             new Dictionary<object, DocumentMetadata>(ObjectReferenceEqualityComparer<object>.Default);
 
-        protected readonly Dictionary<string, JsonDocument> includedDocumentsByKey = new Dictionary<string, JsonDocument>(StringComparer.OrdinalIgnoreCase);
+        internal readonly Dictionary<string, BlittableJsonReaderObject> IncludedDocumentsByKey = new Dictionary<string, BlittableJsonReaderObject>(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>
         /// Translate between a key and its associated entity
         /// </summary>
-        protected readonly Dictionary<string, object> EntitiesByKey = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+        internal readonly Dictionary<string, object> EntitiesByKey = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
 
         protected readonly string databaseName;
         private readonly DocumentStoreBase documentStore;
@@ -259,7 +260,7 @@ namespace Raven.Client.Document
         {
             if (IsDeleted(id))
                 return false;
-            return EntitiesByKey.ContainsKey(id) || includedDocumentsByKey.ContainsKey(id);
+            return EntitiesByKey.ContainsKey(id) || IncludedDocumentsByKey.ContainsKey(id);
         }
 
         /// <summary>
@@ -386,6 +387,26 @@ more responsive application.
                 documentFound.Metadata[Constants.Headers.LastModified] = documentFound.LastModified;
             }
 
+            return TrackEntity(entityType, documentFound.Key, documentFound.DataAsJson, documentFound.Metadata, noTracking: false);
+        }
+
+        /// <summary>
+        /// Tracks the entity inside the unit of work
+        /// </summary>
+        /// <param name="entityType"></param>
+        /// <param name="documentFound">The document found.</param>
+        /// <returns></returns>
+        public object TrackEntity(Type entityType, BlittableJsonReaderObject documentFound)
+        {
+            BlittableJsonReaderObject metadata;
+            if (documentFound.TryGet(Constants.Metadata, out metadata))
+            {
+                bool ravenDocumentDoesNotExists;
+                if (metadata.TryGet(Constants.Headers.RavenDocumentDoesNotExists, out ravenDocumentDoesNotExists) && ravenDocumentDoesNotExists)
+                {
+                    return GetDefaultValue(entityType); // document is not really there.
+                }
+            }
             return TrackEntity(entityType, documentFound.Key, documentFound.DataAsJson, documentFound.Metadata, noTracking: false);
         }
 
@@ -592,7 +613,7 @@ more responsive application.
                 Delete(entity);
                 return;
             }
-            includedDocumentsByKey.Remove(id);
+            IncludedDocumentsByKey.Remove(id);
             knownMissingIds.Add(id);
 
             Defer(new DeleteCommandData { Key = id });
@@ -1358,7 +1379,7 @@ more responsive application.
 
         public void TrackIncludedDocument(JsonDocument include)
         {
-            includedDocumentsByKey[include.Key] = include;
+            IncludedDocumentsByKey[include.Key] = include;
         }
 
         public string CreateDynamicIndexName<T>()
