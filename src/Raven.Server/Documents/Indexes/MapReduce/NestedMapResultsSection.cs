@@ -11,21 +11,15 @@ namespace Raven.Server.Documents.Indexes.MapReduce
     {
         private static readonly int SizeOfResultHeader = sizeof(ResultHeader);
         
-        private readonly TransactionOperationContext _indexContext;
-        private readonly AllocatedMemoryData _inMemorySectionBuffer;
-        private readonly Dictionary<long, BlittableJsonReaderObject> _mapResults = new Dictionary<long, BlittableJsonReaderObject>();
+        private readonly Dictionary<long, BlittableJsonReaderObject> _mapResults = new Dictionary<long, BlittableJsonReaderObject>(NumericEqualityComparer.Instance);
 
         private int _dataSize;
 
         public NestedMapResultsSection(byte* ptr, int size, TransactionOperationContext indexContext)
         {
-            _indexContext = indexContext;
-
             // need to have a copy because pointer can become invalid after defragmentation of a related page
 
-            _inMemorySectionBuffer = _indexContext.GetMemory(size);
-
-            var inMemoryPtr = (byte*)_inMemorySectionBuffer.Address;
+            var inMemoryPtr = (byte*) indexContext.GetMemory(size).Address;
 
             Memory.Copy(inMemoryPtr, ptr, size);
 
@@ -35,7 +29,7 @@ namespace Raven.Server.Documents.Indexes.MapReduce
             {
                 var resultPtr = (ResultHeader*)readPtr;
 
-                var blittableJsonReaderObject = new BlittableJsonReaderObject(readPtr + SizeOfResultHeader, resultPtr->Size, _indexContext);
+                var blittableJsonReaderObject = new BlittableJsonReaderObject(readPtr + SizeOfResultHeader, resultPtr->Size, indexContext);
 
                 _mapResults.Add(resultPtr->Id, blittableJsonReaderObject);
 
@@ -45,19 +39,23 @@ namespace Raven.Server.Documents.Indexes.MapReduce
             }
         }
 
-        public NestedMapResultsSection(TransactionOperationContext indexContext)
+        public NestedMapResultsSection()
         {
-            _indexContext = indexContext;
+            
         }
 
         public int Size => _dataSize + _mapResults.Count*SizeOfResultHeader;
 
-        public void Add(long id, BlittableJsonReaderObject result, bool isUpdate)
+        public void Add(long id, BlittableJsonReaderObject result)
         {
-            if (isUpdate)
-                _dataSize -= _mapResults[id].Size;
-
-            _mapResults[id] = result;
+            BlittableJsonReaderObject existing;
+            if (_mapResults.TryGetValue(id, out existing))
+            {
+                _dataSize -= existing.Size;
+                _mapResults[id] = result;
+            }
+            else
+                _mapResults.Add(id, result);
 
             _dataSize += result.Size;
         }

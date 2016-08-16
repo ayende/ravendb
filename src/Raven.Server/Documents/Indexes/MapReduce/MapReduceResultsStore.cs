@@ -80,7 +80,7 @@ namespace Raven.Server.Documents.Indexes.MapReduce
             _mapReduceContext.EntryDeleted(id);
         }
 
-        public void Add(long id, BlittableJsonReaderObject result, bool isUpdate)
+        public void Add(long id, BlittableJsonReaderObject result)
         {
             switch (Type)
             {
@@ -96,7 +96,7 @@ namespace Raven.Server.Documents.Indexes.MapReduce
                 case MapResultsStorageType.Nested:
                     var section = GetNestedResultsSection();
 
-                    section.Add(id, result, isUpdate);
+                    section.Add(id, result);
 
                     if (_mapReduceContext.MapEntries.ShouldGoToOverflowPage(_nestedSection.Size))
                     {
@@ -126,7 +126,7 @@ namespace Raven.Server.Documents.Indexes.MapReduce
 
             foreach (var mapResult in section.GetResults())
             {
-                Add(mapResult.Key, mapResult.Value, false);
+                Add(mapResult.Key, mapResult.Value);
             }
         }
 
@@ -139,19 +139,9 @@ namespace Raven.Server.Documents.Indexes.MapReduce
 
             var read = _mapReduceContext.MapEntries.Read(_nestedValueKey);
 
-            _nestedSection = read == null ? new NestedMapResultsSection(_indexContext) : new NestedMapResultsSection(read.Reader.Base, read.Reader.Length, _indexContext);
+            _nestedSection = read == null ? new NestedMapResultsSection() : new NestedMapResultsSection(read.Reader.Base, read.Reader.Length, _indexContext);
 
             return _nestedSection;
-        }
-
-
-        public void Dispose()
-        {
-            if (_nestedSection != null)
-            {
-                _nestedSection.Dispose();
-                _nestedSection = null;
-            }
         }
 
         public void FlushNestedValues()
@@ -165,6 +155,15 @@ namespace Raven.Server.Documents.Indexes.MapReduce
             else
             {
                 _mapReduceContext.MapEntries.Delete(_nestedValueKey);
+            }
+        }
+
+        public void Dispose()
+        {
+            if (_nestedSection != null)
+            {
+                _nestedSection.Dispose();
+                _nestedSection = null;
             }
         }
     }
