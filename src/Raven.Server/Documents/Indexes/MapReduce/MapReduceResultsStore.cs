@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
 using Raven.Server.ServerWide.Context;
 using Sparrow;
 using Sparrow.Json;
@@ -13,15 +12,18 @@ namespace Raven.Server.Documents.Indexes.MapReduce
     public unsafe class MapReduceResultsStore : IDisposable
     {
         private readonly ulong _reduceKeyHash;
-        public MapResultsStorageType Type { get; private set; }
         private readonly TransactionOperationContext _indexContext;
         private readonly MapReduceIndexingContext _mapReduceContext;
+        private readonly Slice _nestedValueKey;
+        private readonly Transaction _tx;
+
+        private NestedMapResultsSection _nestedSection;
+
+        public MapResultsStorageType Type { get; private set; }
 
         public Tree Tree;
         public HashSet<long> ModifiedPages;
         public HashSet<long> FreedPages;
-        private readonly Slice _nestedValueKey;
-        private readonly Transaction _tx;
 
         public MapReduceResultsStore(ulong reduceKeyHash, MapResultsStorageType type, TransactionOperationContext indexContext, MapReduceIndexingContext mapReduceContext, bool create)
         {
@@ -129,8 +131,6 @@ namespace Raven.Server.Documents.Indexes.MapReduce
                 Add(mapResult.Key, mapResult.Value);
             }
         }
-
-        private NestedMapResultsSection _nestedSection;
 
         public NestedMapResultsSection GetNestedResultsSection()
         {
