@@ -151,9 +151,16 @@ namespace Raven.Server.Documents.Indexes.MapReduce
 
         public void FlushNestedValues()
         {
-            var pos = _mapReduceContext.MapEntries.DirectAdd(_nestedValueKey, _nestedSection.Size);
+            if (_nestedSection.Size > 0)
+            {
+                var pos = _mapReduceContext.MapEntries.DirectAdd(_nestedValueKey, _nestedSection.Size);
 
-            _nestedSection.CopyTo(pos);
+                _nestedSection.CopyTo(pos);
+            }
+            else
+            {
+                _mapReduceContext.MapEntries.Delete(_nestedValueKey);
+            }
         }
     }
 }
