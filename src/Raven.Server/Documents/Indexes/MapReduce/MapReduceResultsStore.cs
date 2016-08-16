@@ -85,8 +85,13 @@ namespace Raven.Server.Documents.Indexes.MapReduce
             switch (Type)
             {
                 case MapResultsStorageType.Tree:
-                    var pos = Tree.DirectAdd(Slice.External(_indexContext.Allocator, (byte*)&id, sizeof(long)), result.Size);
-                    result.CopyTo(pos);
+                    using (result)
+                    {
+                        var pos = Tree.DirectAdd(Slice.External(_indexContext.Allocator, (byte*) &id, sizeof(long)),
+                            result.Size);
+                        result.CopyTo(pos);
+                    }
+
                     break;
                 case MapResultsStorageType.Nested:
                     var section = GetNestedResultsSection();

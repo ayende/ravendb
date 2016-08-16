@@ -12,22 +12,20 @@ namespace Raven.Server.Documents.Indexes.MapReduce
         private static readonly int SizeOfResultHeader = sizeof(ResultHeader);
         
         private readonly TransactionOperationContext _indexContext;
-        private readonly List<AllocatedMemoryData> _allocations = new List<AllocatedMemoryData>();
+        private readonly AllocatedMemoryData _inMemorySectionBuffer;
         private readonly Dictionary<long, BlittableJsonReaderObject> _mapResults = new Dictionary<long, BlittableJsonReaderObject>();
 
         private int _dataSize;
-        
+
         public NestedMapResultsSection(byte* ptr, int size, TransactionOperationContext indexContext)
         {
             _indexContext = indexContext;
 
             // need to have a copy because pointer can become invalid after defragmentation of a related page
 
-            var inMemorySection = _indexContext.GetMemory(size);
+            _inMemorySectionBuffer = _indexContext.GetMemory(size);
 
-            _allocations.Add(inMemorySection);
-
-            var inMemoryPtr = (byte*)inMemorySection.Address;
+            var inMemoryPtr = (byte*)_inMemorySectionBuffer.Address;
 
             Memory.Copy(inMemoryPtr, ptr, size);
 
@@ -41,9 +39,9 @@ namespace Raven.Server.Documents.Indexes.MapReduce
 
                 _mapResults.Add(resultPtr->Id, blittableJsonReaderObject);
 
-                readPtr += resultPtr->Size + SizeOfResultHeader;
-
                 _dataSize += resultPtr->Size;
+
+                readPtr += resultPtr->Size + SizeOfResultHeader;
             }
         }
 
@@ -56,16 +54,10 @@ namespace Raven.Server.Documents.Indexes.MapReduce
 
         public void Add(long id, BlittableJsonReaderObject result, bool isUpdate)
         {
-            var allocation = _indexContext.GetMemory(result.Size);
-
-            _allocations.Add(allocation);
-
-            result.CopyTo((byte*)allocation.Address); // TODO arek - we should be able to use 'result' directly
-
             if (isUpdate)
                 _dataSize -= _mapResults[id].Size;
 
-            _mapResults[id] = new BlittableJsonReaderObject((byte*) allocation.Address, result.Size, _indexContext);
+            _mapResults[id] = result;
 
             _dataSize += result.Size;
         }
@@ -77,7 +69,10 @@ namespace Raven.Server.Documents.Indexes.MapReduce
 
         public void Dispose()
         {
-
+            foreach (var result in _mapResults)
+            {
+                result.Value.Dispose();
+            }
         }
 
         public void Delete(long id)
