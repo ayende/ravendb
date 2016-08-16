@@ -27,15 +27,19 @@ namespace Raven.Server.Documents.Indexes.MapReduce
 
             _allocations.Add(inMemorySection);
 
-            Memory.Copy((byte*)inMemorySection.Address, ptr, size);
+            var inMemoryPtr = (byte*)inMemorySection.Address;
 
-            var readPtr = ptr;
+            Memory.Copy(inMemoryPtr, ptr, size);
 
-            while (readPtr - ptr < size)
+            var readPtr = inMemoryPtr;
+
+            while (readPtr - inMemoryPtr < size)
             {
                 var resultPtr = (ResultHeader*)readPtr;
 
-                _mapResults.Add(resultPtr->Id, new BlittableJsonReaderObject(readPtr + SizeOfResultHeader, resultPtr->Size, _indexContext));
+                var blittableJsonReaderObject = new BlittableJsonReaderObject(readPtr + SizeOfResultHeader, resultPtr->Size, _indexContext);
+
+                _mapResults.Add(resultPtr->Id, blittableJsonReaderObject);
 
                 readPtr += resultPtr->Size + SizeOfResultHeader;
 
