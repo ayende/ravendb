@@ -4,6 +4,8 @@ class layoutSwitcher {
 
     newLayoutMode = ko.observable<boolean>(false);
 
+    static default = new layoutSwitcher();
+
     constructor() {
         this.newLayoutMode.subscribe(newMode => {
             if (newMode) {

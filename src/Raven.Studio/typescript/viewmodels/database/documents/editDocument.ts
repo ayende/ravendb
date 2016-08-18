@@ -1,5 +1,6 @@
 import app = require("durandal/app");
 import router = require("plugins/router");
+
 import document = require("models/database/documents/document");
 import database = require("models/resources/database");
 import documentMetadata = require("models/database/documents/documentMetadata");
@@ -20,24 +21,31 @@ import aceEditorBindingHandler = require("common/bindingHelpers/aceEditorBinding
 import genUtils = require("common/generalUtils");
 import changeSubscription = require("common/changeSubscription");
 import changesContext = require("common/changesContext");
+
 import deleteDocuments = require("viewmodels/common/deleteDocuments");
 import viewModelBase = require("viewmodels/viewModelBase");
 import generateClassCommand = require("commands/database/documents/generateClassCommand");
 import showDataDialog = require("viewmodels/common/showDataDialog");
+import documentHelpers = require("common/helpers/database/documentHelpers");
+
+import recentDocumentsCtr = require("models/database/documents/recentDocuments");
+
 
 class editDocument extends viewModelBase {
+
+    recentDocuments = new recentDocumentsCtr();
 
     isConflictDocument = ko.observable<boolean>();
     document = ko.observable<document>();
     metadata: KnockoutComputed<documentMetadata>;
-    documentText = ko.observable("").extend({ required: true });
-    metadataText = ko.observable("").extend({ required: true });
+    documentText = ko.observable("");
+    metadataText = ko.observable("");
     text: KnockoutComputed<string>;
     isEditingMetadata = ko.observable(false);
     isBusy = ko.observable(false);
     metaPropsToRestoreOnSave: any[] = [];
     editedDocId: KnockoutComputed<string>;
-    userSpecifiedId = ko.observable("").extend({ required: true });
+    userSpecifiedId = ko.observable("");
     isCreatingNewDocument = ko.observable(false);
     docsList = ko.observable<pagedList>();
     queryResultList = ko.observable<pagedList>();
@@ -45,7 +53,7 @@ class editDocument extends viewModelBase {
     docEditor: AceAjax.Editor;
     documentNameElement: JQuery;
     databaseForEditedDoc: database;
-    topRecentDocuments = ko.computed(() => this.getTopRecentDocuments());
+    topRecentDocuments = ko.pureComputed(() => this.recentDocuments.getTopRecentDocuments(this.activeDatabase(), this.userSpecifiedId()));
     relatedDocumentHrefs = ko.observableArray<{id:string;href:string}>();
     docEditroHasFocus = ko.observable(true);
     documentMatchRegexp = /\w+\/\w+/ig;
@@ -66,10 +74,11 @@ class editDocument extends viewModelBase {
     changeNotification: changeSubscription;
 
     static editDocSelector = "#editDocumentContainer";
-    static recentDocumentsInDatabases = ko.observableArray<{ databaseName: string; recentDocuments: KnockoutObservableArray<string> }>();
+    
 
     constructor() {
         super();
+        this.layout.setMode(true);
         aceEditorBindingHandler.install();
 
         this.metadata = ko.computed(() => this.document() ? this.document().__metadata : null);
@@ -97,7 +106,6 @@ class editDocument extends viewModelBase {
             } catch (e) {
                 return "cannot compute";
             } 
-            
         });
 
         this.metadata.subscribe((meta: documentMetadata) => this.metadataChanged(meta));
@@ -114,16 +122,13 @@ class editDocument extends viewModelBase {
             }
         });
         this.text = ko.computed({
-            read: () => {
-                return this.isEditingMetadata() ? this.metadataText() : this.documentText();
-            },
+            read: () => this.isEditingMetadata() ? this.metadataText() : this.documentText(),
             write: (text: string) => {
                 var currentObservable = this.isEditingMetadata() ? this.metadataText : this.documentText;
                 currentObservable(text);
             },
             owner: this
         });
-
 
         this.docTitle = ko.computed(() => {
             if (this.isInDocMode()) {
@@ -274,13 +279,12 @@ class editDocument extends viewModelBase {
         }
 
         if (navigationArgs && navigationArgs.id) {
-            this.appendRecentDocument(navigationArgs.id);
+            this.recentDocuments.appendRecentDocument(this.databaseForEditedDoc, navigationArgs.id);
 
             ko.postbox.publish("SetRawJSONUrl", appUrl.forDocumentRawData(this.activeDatabase(), navigationArgs.id));
         } else if (navigationArgs && navigationArgs.index) {
             //todo: implement SetRawJSONUrl for document from query
-        }
-        else{
+        } else {
             this.editNewDocument();
         }
     }
@@ -336,16 +340,16 @@ class editDocument extends viewModelBase {
 
     updateNewlineLayoutInDocument(unescapeNewline: boolean) {
         var dirtyFlagValue = this.dirtyFlag().isDirty();
-        if (unescapeNewline == true) {
-            this.documentText(this.unescapeNewlinesAndTabsInTextFields(this.documentText()));
+        if (unescapeNewline) {
+            this.documentText(documentHelpers.unescapeNewlinesAndTabsInTextFields(this.documentText()));
             this.docEditor.getSession().setMode('ace/mode/json_newline_friendly');
         } else {
-            this.documentText(this.escapeNewlinesAndTabsInTextFields(this.documentText()));
+            this.documentText(documentHelpers.escapeNewlinesAndTabsInTextFields(this.documentText()));
             this.docEditor.getSession().setMode('ace/mode/json');
             this.formatDocument();
         }
 
-        if (dirtyFlagValue == false) {
+        if (!dirtyFlagValue) {
             this.dirtyFlag().reset();
         }
     }
@@ -389,52 +393,6 @@ class editDocument extends viewModelBase {
         messagePublisher.reportError("Could not find " + docId + " document");
     }
 
-    escapeNewlinesAndTabsInTextFields(str: string) :any {
-        var AceDocumentClass = require("ace/document").Document;
-        var AceEditSessionClass = require("ace/edit_session").EditSession;
-        var AceJSONMode = require("ace/mode/json_newline_friendly").Mode;
-        var documentTextAceDocument = new AceDocumentClass(str);
-        var jsonMode = new AceJSONMode();
-        var documentTextAceEditSession = new AceEditSessionClass(documentTextAceDocument, jsonMode);
-        var previousLine = 0;
-
-        var TokenIterator = require("ace/token_iterator").TokenIterator;
-        var iterator = new TokenIterator(documentTextAceEditSession, 0, 0);
-        var curToken = iterator.getCurrentToken();
-        var text = "";
-        while (curToken) {
-            if (iterator.$row - previousLine > 1) {
-                var rowsGap = iterator.$row - previousLine;
-                for (var i = 0; i < rowsGap -1; i++) {
-                    text += "\\r\\n";
-                }
-            }
-            if (curToken.type === "string" || curToken.type == "constant.language.escape") {
-                if (previousLine < iterator.$row) {
-                    text += "\\r\\n";
-                }
-
-                var newTokenValue = curToken.value
-                    //.replace(/(\\n|\\r\\n)/g, '\\\\r\\\\n')
-                    //.replace(/(\n|\r\n)/g, '\\r\\n')
-                    //.replace(/(\\t)/g, '\\\\t')
-                    //.replace(/(\t)/g, '\\t');                    
-                    .replace(/(\r\n)/g, '\\r\\n')
-                    .replace(/(\n)/g, '\\n')
-                    .replace(/(\t)/g, '\\t');
-                text += newTokenValue;
-                //text += curToken.value.replace(/(\n|\r\n)/g, '\\r\\n');
-            } else {
-                text += curToken.value;
-            }
-
-            previousLine = iterator.$row;
-            curToken = iterator.stepForward();
-        }
-
-        return text;
-    }
-
     toggleNewlineMode() {
         if (this.isNewLineFriendlyMode() === false && parseInt(this.documentSize().replace(",", "")) > 150) {
             app.showMessage("This operation might take long time with big documents, are you sure you want to continue?", "Toggle newline mode", ["Cancel", "Continue"])
@@ -443,9 +401,7 @@ class editDocument extends viewModelBase {
                         this.isNewLineFriendlyMode.toggle();
                     }
                 });
-        }
-        else
-        {
+        } else {
             this.isNewLineFriendlyMode.toggle();
         }
     }
@@ -466,72 +422,6 @@ class editDocument extends viewModelBase {
         folds.map(f => this.docEditor.getSession().expandFold(f));
     }
 
-    unescapeNewlinesAndTabsInTextFields(str: string): any {
-        var AceDocumentClass = require("ace/document").Document;
-        var AceEditSessionClass = require("ace/edit_session").EditSession;
-        var AceJSONMode = require("ace/mode/json").Mode;
-        var documentTextAceDocument = new AceDocumentClass(str);
-        var jsonMode = new AceJSONMode();
-        var documentTextAceEditSession = new AceEditSessionClass(documentTextAceDocument, jsonMode);
-        var TokenIterator = require("ace/token_iterator").TokenIterator;
-        var iterator = new TokenIterator(documentTextAceEditSession, 0, 0);
-        var curToken = iterator.getCurrentToken();
-        // first, calculate newline indexes
-        var rowsIndexes = str.split("").map(function (x, index) {return { char: x, index: index } }).filter(function (x) {return x.char == "\n" }).map(function (x) {return x.index });
-
-        
-
-        // start iteration from the end of the document
-        while (curToken) {
-            curToken = iterator.stepForward();
-        }
-        curToken = iterator.stepBackward();
-
-        var lastTextSectionPosEnd:{ row: number, column: number} = null;
-        
-        while (curToken) {
-            if (curToken.type === "string" || curToken.type == "constant.language.escape") {
-                if (lastTextSectionPosEnd == null) {
-                    curToken = iterator.stepForward();
-                    lastTextSectionPosEnd = { row: iterator.getCurrentTokenRow(), column: iterator.getCurrentTokenColumn() + 1 };
-                    curToken = iterator.stepBackward();
-                }
-            }
-            else {
-                if (lastTextSectionPosEnd != null) {
-                    curToken = iterator.stepForward();
-                    var lastTextSectionPosStart = { row: iterator.getCurrentTokenRow(), column: iterator.getCurrentTokenColumn() + 1 };
-                    var stringTokenStartIndexInSourceText = (lastTextSectionPosStart.row > 0 ?  rowsIndexes[lastTextSectionPosStart.row-1]:0) + lastTextSectionPosStart.column;
-                    var stringTokenEndIndexInSourceText = (lastTextSectionPosEnd.row > 0 ?rowsIndexes[lastTextSectionPosEnd.row-1]:0) + lastTextSectionPosEnd.column;
-                    var newTextPrefix = str.substring(0, stringTokenStartIndexInSourceText);
-                    var newTextSuffix = str.substring(stringTokenEndIndexInSourceText, str.length);
-                    var newStringTokenValue = str.substring(stringTokenStartIndexInSourceText, stringTokenEndIndexInSourceText)
-                        .replace(/(\\\\n|\\\\r\\\\n|\\n|\\r\\n|\\t|\\\\t)/g, (x) => {
-                        if (x == "\\\\n" || x == "\\\\r\\\\n") {
-                            return "\\r\\n";
-                        } else if (x == "\\n" || x == "\\r\\n") {
-                            return "\r\n";
-                        } else if (x == "\\t") {
-                            return "\t";
-                        } else if (x == "\\\\t") {
-                            return "\\t";
-                        } else {
-                            return "\r\n";
-                        }
-                        });
-
-                    str = newTextPrefix + newStringTokenValue + newTextSuffix ;
-                    curToken = iterator.stepBackward();
-                }
-                lastTextSectionPosEnd = null;
-            }
-            
-            curToken = iterator.stepBackward();
-        }
-
-        return str;
-    }
-
     saveDocument() {
         this.isInDocMode(true);
         var currentDocumentId = this.userSpecifiedId();
@@ -550,7 +440,7 @@ class editDocument extends viewModelBase {
             try {
                 var updatedDto: any;
                 if (this.isNewLineFriendlyMode()) {
-                    updatedDto = JSON.parse(this.escapeNewlinesAndTabsInTextFields(this.documentText()));
+                    updatedDto = JSON.parse(documentHelpers.escapeNewlinesAndTabsInTextFields(this.documentText()));
                 } else {
                     updatedDto = JSON.parse(this.documentText());
                 }
@@ -671,36 +561,9 @@ class editDocument extends viewModelBase {
     activateDoc() {
         this.isEditingMetadata(false);
 
-        if (this.isNewLineFriendlyMode() == true) {
+        if (this.isNewLineFriendlyMode()) {
             this.docEditor.getSession().setMode('ace/mode/json_newline_friendly');
         }
-    }
-
-    findRelatedDocumentsCandidates(doc: documentBase): string[] {
-        var results: string[] = [];
-        var initialDocumentFields = doc.getDocumentPropertyNames();
-        var documentNodesFlattenedList: any[] = [];
-
-        // get initial nodes list to work with
-        initialDocumentFields.forEach(curField => {
-            documentNodesFlattenedList.push(doc[curField]);
-        });
-
-        for (var documentNodesCursor = 0; documentNodesCursor < documentNodesFlattenedList.length; documentNodesCursor++) {
-            var curField = documentNodesFlattenedList[documentNodesCursor];
-            if (typeof curField === "string" && /\w+\/\w+/ig.test(curField)) {
-                
-                if (!results.first(x=>x === curField.toString())){
-                    results.push(curField.toString());
-                }
-            }
-            else if (typeof curField == "object" && !!curField) {
-                    for (var curInnerField in curField) {
-                        documentNodesFlattenedList.push(curField[curInnerField]);
-                    }
-            }
-        }
-        return results;
     }
 
     loadDocument(id: string): JQueryPromise<document> {
@@ -711,7 +574,7 @@ class editDocument extends viewModelBase {
             this.dirtyFlag().reset(); //Resync Changes
 
             this.loadRelatedDocumentsList(document);
-            this.appendRecentDocument(id);
+            this.recentDocuments.appendRecentDocument(this.databaseForEditedDoc, id);
             if (this.autoCollapseMode()) {
                 this.foldAll();
             }
@@ -872,29 +735,6 @@ class editDocument extends viewModelBase {
         router.navigate(editDocUrl, false);
     }
 
-    getTopRecentDocuments() {
-        var currentDbName = this.activeDatabase().name;
-        var recentDocumentsForCurDb = editDocument.recentDocumentsInDatabases().first(x => x.databaseName === currentDbName);
-        if (recentDocumentsForCurDb) {
-            var value = recentDocumentsForCurDb
-                .recentDocuments()
-                .filter((x:string) => {
-                  return x !== this.userSpecifiedId();
-                })
-                .slice(0, 5)
-                .map((docId: string) => {
-                    return {
-                        docId: (docId.length > 35) ? docId.substr(0,35) + '...' : docId,
-                        docUrl: appUrl.forEditDoc(docId, null, null, this.activeDatabase()),
-                        fullDocId : docId 
-                    };
-                });
-            return value;
-        } else {
-            return [];
-        }
-    }
-
     metadataChanged(meta: documentMetadata) {
         if (meta) {
             this.metaPropsToRestoreOnSave.length = 0;
@@ -911,7 +751,7 @@ class editDocument extends viewModelBase {
     }
 
     loadRelatedDocumentsList(document: documentBase) {
-        var relatedDocumentsCandidates: string[] = this.findRelatedDocumentsCandidates(document);
+        var relatedDocumentsCandidates: string[] = documentHelpers.findRelatedDocumentsCandidates(document);
         var docIDsVerifyCommand = new verifyDocumentsIDsCommand(relatedDocumentsCandidates, this.activeDatabase(), true, true);
         var response = docIDsVerifyCommand.execute();
         if (response.then) {
@@ -931,24 +771,6 @@ class editDocument extends viewModelBase {
                 };
             }));
         }
-    }
-
-    appendRecentDocument(docId: string) {
-
-        var existingRecentDocumentsStore = editDocument.recentDocumentsInDatabases.first(x=> x.databaseName == this.databaseForEditedDoc.name);
-        if (existingRecentDocumentsStore) {
-            var existingDocumentInStore = existingRecentDocumentsStore.recentDocuments.first(x=> x === docId);
-            if (!existingDocumentInStore) {
-                if (existingRecentDocumentsStore.recentDocuments().length == 5) {
-                    existingRecentDocumentsStore.recentDocuments.pop();
-                }
-                existingRecentDocumentsStore.recentDocuments.unshift(docId);
-            }
-
-        } else {
-            editDocument.recentDocumentsInDatabases.push({ databaseName: this.databaseForEditedDoc.name, recentDocuments: ko.observableArray([docId]) });
-        }
-
     }
 
     resolveConflicts() {

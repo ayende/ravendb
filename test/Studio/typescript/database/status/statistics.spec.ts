@@ -1,8 +1,6 @@
 import chai = require("chai");
 import utils = require("utils");
 
-import viewModel = require("src/Raven.Studio/typescript/viewmodels/database/status/statistics");
-
 var viewUnderTest = 'database/status/statistics';
 
 describe(viewUnderTest, () => {
@@ -25,6 +23,7 @@ function getTestData(): databaseStatisticsDto {
     var stats: any = {
         "LastDocEtag": "01000000-0000-0001-0000-000000000423",
         "CountOfIndexes": 4,
+        "StorageEngine": "voron",
         "CountOfIndexesExcludingDisabledAndAbandoned": 4,
         "InMemoryIndexingQueueSizes": [0],
         "ApproximateTaskCount": 0,

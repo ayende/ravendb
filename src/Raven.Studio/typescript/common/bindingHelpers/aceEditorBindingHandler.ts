@@ -6,6 +6,7 @@
 //TODO: <amd-dependency path="ace/mode/json_newline_friendly" />
 import composition = require("durandal/composition");
 import ace = require("ace/ace");
+import layoutSwitcher = require("viewmodels/layoutSwitcher");
 
 /*
  * A custom Knockout binding handler transforms the target element (usually a <pre>) into a code editor, powered by Ace. http://ace.c9.io
@@ -15,7 +16,7 @@ import ace = require("ace/ace");
 class aceEditorBindingHandler {
 
     defaults = {
-        theme: "ace/theme/xcode",
+        theme: layoutSwitcher.default.newLayoutMode() ? "ace/theme/ambiance": "ace/theme/xcode",
         fontSize: "16px",
         lang: "ace/mode/csharp",
         readOnly: false,
@@ -29,6 +30,9 @@ class aceEditorBindingHandler {
     static isInFullScreeenMode = ko.observable<boolean>(false);
     static goToFullScreenText = "Press Shift + F11  to enter full screen mode";
     static leaveFullScreenText = "Press Shift + F11 or Esc to leave full screen mode";
+
+    // used in tests
+    static useWebWorkers = true;
 
     static install() {
         if (!ko.bindingHandlers["aceEditor"]) {
@@ -168,6 +172,8 @@ class aceEditorBindingHandler {
         aceEditor.setOption("newLineMode", "windows");
         aceEditor.setTheme(theme);
         aceEditor.setFontSize(fontSize);
+        aceEditor.getSession().setUseWorker(aceEditorBindingHandler.useWebWorkers);
+        aceEditor.$blockScrolling = Infinity;
         aceEditor.getSession().setMode(lang);
         aceEditor.setReadOnly(readOnly);
 

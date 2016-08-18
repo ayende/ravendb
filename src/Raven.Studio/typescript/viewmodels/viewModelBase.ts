@@ -23,7 +23,9 @@ import layoutSwitcher = require("viewmodels/layoutSwitcher");
 */
 class viewModelBase {
 
-    static layout = new layoutSwitcher();
+    static layout = layoutSwitcher.default;
+
+    layout = viewModelBase.layout; //expose to view for development time - we can do data-bind="if: $root.layout.newLayoutMode()"
 
     public activeDatabase = ko.observable<database>().subscribeTo("ActivateDatabase", true);
     public activeFilesystem = ko.observable<filesystem>().subscribeTo("ActivateFilesystem", true);
