@@ -5,15 +5,15 @@
 
 /* LOCAL VARIABLES AND KEYFRAMES*/
 
-.old_layout { 
-    display: none;
-}
-
 @menu-width: 280px;
 @menu-width-collapsed: 120px;
 @navbar-height: 80px;
 
 @menu-transition-ease: .4s cubic-bezier(0.21, 0.88, 0.35, 1);
+@brand-database-color: #d90042;
+@brand-filesystem-color:#8d24b3;
+@brand-counter-color: #267fbc;
+@brand-timeseries-color:#00bc7d;
 
 @-moz-keyframes spin {
     from {
@@ -46,6 +46,10 @@
 }
 
 @spin-properties: spin .5s infinite linear;
+
+.shadow-style {
+    box-shadow: 0 5px 20px 2px rgba(0, 0, 0, 0.45);
+}
 
 
 /* GENERAL LAYOUT */
@@ -253,7 +257,7 @@ body {
 
         @media (min-width:@screen-sm) {
             display: block;
-            display:none; //HIDDEN WHILE IN DEVELOPMENT
+            display: none; //HIDDEN WHILE IN DEVELOPMENT
             position: absolute;
             top: 17px;
             right: 10px;
@@ -270,24 +274,146 @@ body {
     }
 
     .inputs-container {
-        background-color:@gray-base;
-        clear:both;
-
+        background-color: @gray-base;
+        clear: both;
         -webkit-transition: margin-left @menu-transition-ease, max-height @menu-transition-ease;
         -moz-transition: margin-left @menu-transition-ease, max-height @menu-transition-ease;
         -ms-transition: margin-left @menu-transition-ease, max-height @menu-transition-ease;
         -o-transition: margin-left @menu-transition-ease, max-height @menu-transition-ease;
         transition: margin-left @menu-transition-ease, max-height @menu-transition-ease;
 
+
+        .select-database-container, .search-container {
+
+            h4 {
+                margin:0;
+            }
+
+            a {
+                color:@gray-light;
+                text-decoration:none;
+                display:block;
+                margin:0 (@grid-gutter-width / -4);
+                padding: (@grid-gutter-width / 8) (@grid-gutter-width / 2);
+                &:hover {
+                    background-color:@gray-dark;
+                }
+            }
+
+            ul {
+                margin:0;
+                padding:0;
+                list-style:none;
+            }
+
+            .database-filter {
+                border:none;
+                background-color:@gray;
+                display:block;
+            }
+
+            .box-container {
+                .shadow-style;
+                padding: 41px (@grid-gutter-width / 4) (@grid-gutter-width / 4);
+                background-color: @gray-dark;
+                display: none;
+
+                section {
+                    padding: (@grid-gutter-width / 4);
+                    background-color: @gray-darker;
+
+                    & + section {
+                        margin-top: (@grid-gutter-width / 4);
+                    }
+                }
+            }
+
+            .form-control {
+                position: absolute;
+            }
+
+            &.active {
+                .form-control {
+                    background-color: @gray-dark;
+                    border-color: @gray-dark;
+                }
+
+                .box-container {
+                    display: block;
+                }
+            }
+        }
+
+        .database-list {
+            .database {
+                &:before {
+                    .icon-style;
+                    content: "\e90c";
+                    color:@brand-database-color;
+                }
+            }
+            .filesystem {
+                &:before {
+                    .icon-style;
+                    content: "\e90c";
+                    color:@brand-filesystem-color;
+                }
+            }
+            .counter {
+                &:before {
+                    .icon-style;
+                    content: "\e90c";
+                    color:@brand-counter-color;
+                }
+            }
+            .timeseries {
+                &:before {
+                    .icon-style;
+                    content: "\e90c";
+                    color:@brand-timeseries-color;
+                }
+            }
+        }
+
         @media (min-width: @screen-sm) {
-            clear:none;
-            background-color:transparent;
+            clear: none;
+            background-color: transparent;
             margin: 5px 120px 5px @menu-width;
-            max-height:none;
+            max-height: none;
+            position: relative;
+
+            .select-database-container {
+                position: absolute;
+                left: @grid-gutter-width / 2;
+                right: 51%;
+            }
+
+            .search-container {
+                position: absolute;
+                right: @grid-gutter-width / 2;
+                left: 51%;
+
+                input:focus {
+                    & + .search-autocomplete {
+                        display: block;
+                    }
+                }
+            }
         }
 
         &.show-inputs {
-            display:block !important;
+            display: block !important;
+        }
+
+        .select-database {
+            &:after {
+                .icon-style;
+                display: block;
+                position: absolute;
+                right: 10px;
+                top: 10px;
+                content: "\e900";
+            }
         }
     }
 }
@@ -309,8 +435,8 @@ body {
         top: @navbar-height;
         left: @menu-width;
         right: 5px;
-        padding-left:@grid-gutter-width;
-        padding-right:@grid-gutter-width;
+        padding-left: @grid-gutter-width;
+        padding-right: @grid-gutter-width;
     }
 
     .content-container-margin {
@@ -432,7 +558,7 @@ body {
         margin-right: 10px;
     }
 
-    .level {        
+    .level {
         right: 0;
         top: 0;
         bottom: 0;
@@ -441,7 +567,7 @@ body {
         position: absolute;
         z-index: 2;
         overflow-y: auto;
-        overflow-x:hidden;
+        overflow-x: hidden;
         background-color: @gray-darker;
         width: @menu-width - 40;
         -webkit-transition: all @menu-transition-ease;
@@ -697,17 +823,6 @@ body {
 
         .inputs-container {
             margin-left: @menu-width-collapsed;
-
-            .select-database {
-                &:after {
-                    
-                    display:block;
-                    position:absolute;
-                    right:10px;
-                    top:10px;
-                    content: "\e900";
-                }
-            }
         }
 
         .content-container {
@@ -788,4 +903,11 @@ body {
     &:active {
         background-color: @brand-primary;
     }
+}
+
+
+/* GLOBAL ITEMS */
+
+.form-control {
+    box-shadow: none;
 }

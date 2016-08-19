@@ -5,6 +5,7 @@ import app = require("durandal/app");
 import sys = require("durandal/system");
 import viewLocator = require("durandal/viewLocator");
 
+import menu = require("common/menu");
 import resource = require("models/resources/resource");
 import database = require("models/resources/database");
 import fileSystem = require("models/filesystem/filesystem");
@@ -162,6 +163,8 @@ class shell extends viewModelBase {
     licenseStatus = license.licenseCssClass;
     supportStatus = license.supportCssClass;
 
+    appMenu = menu;
+
     //TODO: delete me!
     static has40Features = ko.computed(() => shell.serverMainVersion() >= 4);
 
@@ -231,12 +234,13 @@ class shell extends viewModelBase {
         oauthContext.enterApiKeyTask.done(() => this.connectToRavenServer());
 
         NProgress.set(.7);
-        router.map([
+
+        var routes = [
             { route: "admin/settings*details", title: "Admin Settings", moduleId: "viewmodels/manage/adminSettings", nav: true, hash: this.appUrls.adminSettings },
             { route: ["", "resources"], title: "Resources", moduleId: "viewmodels/resources/resources", nav: true, hash: this.appUrls.resourcesManagement },
-            { route: "databases/documents", title: "Documents", moduleId: "viewmodels/database/documents/documents", nav: true, hash: this.appUrls.documents },
-            { route: "databases/conflicts", title: "Conflicts", moduleId: "viewmodels/database/conflicts/conflicts", nav: true, hash: this.appUrls.conflicts },
-            { route: "databases/patch(/:recentPatchHash)", title: "Patch", moduleId: "viewmodels/database/patch/patch", nav: true, hash: this.appUrls.patch },
+            //{ route: "databases/documents", title: "Documents", moduleId: "viewmodels/database/documents/documents", nav: true, hash: this.appUrls.documents },
+            //{ route: "databases/conflicts", title: "Conflicts", moduleId: "viewmodels/database/conflicts/conflicts", nav: true, hash: this.appUrls.conflicts },
+            //{ route: "databases/patch(/:recentPatchHash)", title: "Patch", moduleId: "viewmodels/database/patch/patch", nav: true, hash: this.appUrls.patch },
             { route: "databases/upgrade", title: "Upgrade in progress", moduleId: "viewmodels/common/upgrade", nav: false, hash: this.appUrls.upgrade },
             { route: "databases/indexes*details", title: "Indexes", moduleId: "viewmodels/database/indexes/indexesShell", nav: true, hash: this.appUrls.indexes },
             { route: "databases/transformers*details", title: "Transformers", moduleId: "viewmodels/database/transformers/transformersShell", nav: false, hash: this.appUrls.transformers },
@@ -263,7 +267,11 @@ class shell extends viewModelBase {
             { route: "timeseries/points", title: "Points", moduleId: "viewmodels/timeSeries/timeSeriesPoints", nav: true, hash: this.appUrls.timeSeriesPoints },
             { route: "timeseries/stats", title: "Stats", moduleId: "viewmodels/timeSeries/timeSeriesStats", nav: true, hash: this.appUrls.timeSeriesStats },
             { route: "timeseries/configuration*details", title: "Configuration", moduleId: "viewmodels/timeSeries/configuration/configuration", nav: true, hash: this.appUrls.timeSeriesConfiguration }
-        ]).buildNavigationModel();
+        ] as Array<DurandalRouteConfiguration>;
+
+        routes.pushAll(this.appMenu.routerConfiguration());
+
+        router.map(routes).buildNavigationModel();
 
         // Show progress whenever we navigate.
         router.isNavigating.subscribe(isNavigating => this.showNavigationProgress(isNavigating));
@@ -367,6 +375,12 @@ class shell extends viewModelBase {
             console.error(e);
             messagePublisher.reportError("Failed to load routed module!", e);
         };
+
+    }
+
+    compositionComplete() {
+        super.compositionComplete();
+        this.appMenu.setup();
     }
 
     private preLoadRecentErrorsView() {
