@@ -1,9 +1,11 @@
+/// <reference path="../typings/tsd.d.ts" />
+
 requirejs.config({
     paths: {
         text: '../lib/requirejs-text/text',
         durandal: '../lib/Durandal/js',
         plugins: '../lib/Durandal/js/plugins',
-        ace: '../lib/ace/lib/ace'
+        ace: '../Content/ace',
     },
 
     map: {
