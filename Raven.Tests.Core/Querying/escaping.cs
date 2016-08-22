@@ -10,7 +10,7 @@ namespace Raven.Tests.Core.Querying
     public class Escaping : RavenCoreTestBase
     {
 #if DNXCORE50
-        public Intersection(TestServerFixture fixture)
+        public Escaping(TestServerFixture fixture)
             : base(fixture)
         {
 
