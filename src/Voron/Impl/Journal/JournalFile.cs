@@ -128,8 +128,10 @@ namespace Voron.Impl.Journal
         /// <summary>
         /// write transaction's raw page data into journal. returns write page position
         /// </summary>
-        public long Write(LowLevelTransaction tx, CompressedPagesResult pages, LazyTransactionBuffer lazyTransactionScratch, int uncompressedPageCount)
+        public long Write(LowLevelTransaction tx, CompressedPagesResult pages, LazyTransactionBuffer lazyTransactionScratch,
+            int uncompressedPageCount, out long bytesPerTicksRatio)
         {
+            bytesPerTicksRatio = 0;
             var ptt = new Dictionary<long, PagePosition>(NumericEqualityComparer.Instance);
             var unused = new HashSet<PagePosition>();
             var pageWritePos = _writePage;
@@ -147,9 +149,13 @@ namespace Voron.Impl.Journal
 
             var position = pageWritePos * tx.Environment.Options.PageSize;
 
+            var sp = Stopwatch.StartNew();
+            long actualWrittenSize = 0;
             if (tx.IsLazyTransaction == false && (lazyTransactionScratch == null || lazyTransactionScratch.HasDataInBuffer() == false))
             {
                 _journalWriter.WritePages(position, pages.Base, pages.NumberOfPages);
+                sp.Stop();
+                actualWrittenSize = pages.NumberOfPages * tx.Environment.Options.PageSize;
             }
             else
             {
@@ -163,12 +169,20 @@ namespace Voron.Impl.Journal
                     lazyTransactionScratch.NumberOfPages > tx.Environment.ScratchBufferPool.GetAvailablePagesCount()/2)
                 {
                     lazyTransactionScratch.WriteBufferToFile(this, tx);
+                    sp.Stop();
+                    actualWrittenSize = lazyTransactionScratch.GetNumberOfPagesToWrite()*tx.Environment.Options.PageSize;
                 }
                 else 
                 {
                     lazyTransactionScratch.EnsureHasExistingReadTransaction(tx);
                 }
             }
+
+            long ellapsedTicks = sp.ElapsedTicks;
+            if (ellapsedTicks == 0)
+                bytesPerTicksRatio = 0; // lazyTx which is not yet flushed
+            else
+                bytesPerTicksRatio = actualWrittenSize / ellapsedTicks;
 
             return pageWritePos;
         }

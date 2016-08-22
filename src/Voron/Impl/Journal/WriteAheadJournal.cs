@@ -44,6 +44,7 @@ namespace Voron.Impl.Journal
         private readonly AbstractPager _compressionPager;
 
         private LazyTransactionBuffer _lazyTransactionBuffer;
+        private int _currentLz4Acceleration = LZ4.ACCELERATION_DEFAULT;
 
         public bool HasDataInLazyTxBuffer() => _lazyTransactionBuffer?.HasDataInBuffer() ?? false;
 
@@ -895,7 +896,11 @@ namespace Voron.Impl.Journal
                 CurrentFile = NextFile(pages.NumberOfPages);
             }
 
-            CurrentFile.Write(tx, pages, _lazyTransactionBuffer, pageCount);
+            long bytesPerTicksRatio;
+            CurrentFile.Write(tx, pages, _lazyTransactionBuffer, pageCount, out bytesPerTicksRatio);
+
+            if (bytesPerTicksRatio != 0)
+                _lastBytesPerTicksRatio = bytesPerTicksRatio;
 
             if (CurrentFile.AvailablePages == 0)
             {
@@ -968,14 +973,26 @@ namespace Voron.Impl.Journal
             };
         }
 
+        private long _lastBytesPerTicksRatio;
 
         private int DoCompression(byte* input, byte* output, int inputLength, int outputLength)
         {
+            
+            var sp = Stopwatch.StartNew();
             var doCompression = _lz4.Encode64(
                 input,
                 output,
                 inputLength,
-                outputLength);
+                outputLength,
+                acceleration: _currentLz4Acceleration);
+            sp.Stop();
+
+            var compressionRatio = (inputLength - doCompression) / sp.ElapsedTicks;
+
+            if (compressionRatio < _lastBytesPerTicksRatio && _currentLz4Acceleration < 100)
+                ++_currentLz4Acceleration;
+            else if ( _currentLz4Acceleration > 1)
+                --_currentLz4Acceleration;
 
             return doCompression;
         }
