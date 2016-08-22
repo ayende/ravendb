@@ -3,15 +3,13 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 using Raven.Abstractions.Data;
-using Raven.Abstractions.Indexing;
-using Raven.Client.Indexing;
 using Raven.Client.Smuggler;
 using Raven.Server.Documents;
 using Raven.Server.Documents.Versioning;
-using Raven.Server.Json;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.Smuggler.Documents.Data;
+using Raven.Server.Smuggler.Documents.Processors;
 using Sparrow;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
@@ -90,8 +88,7 @@ namespace Raven.Server.Smuggler.Documents
                                 break;
                             }
 
-                            var builder = new BlittableJsonDocumentBuilder(context,
-                                BlittableJsonDocumentBuilder.UsageMode.ToDisk, "ImportObject", parser, state);
+                            var builder = new BlittableJsonDocumentBuilder(context, BlittableJsonDocumentBuilder.UsageMode.ToDisk, "ImportObject", parser, state);
                             builder.ReadNestedObject();
                             while (builder.Read() == false)
                             {
@@ -125,69 +122,36 @@ namespace Raven.Server.Smuggler.Documents
                                     switch (operateOnType)
                                     {
                                         case "Attachments":
-                                            result.Warnings.Add(
-                                                "Attachments are not supported anymore. Use RavenFS isntead. Skipping.");
+                                            result.Warnings.Add("Attachments are not supported anymore. Use RavenFS isntead. Skipping.");
                                             break;
                                         case "Indexes":
-                                            if (OperateOnTypes.HasFlag(DatabaseItemType.Indexes))
+                                            if (OperateOnTypes.HasFlag(DatabaseItemType.Indexes) == false)
+                                                continue;
+
+                                            result.IndexesCount++;
+                                            try
                                             {
-                                                result.IndexesCount++;
-
-                                                try
-                                                {
-                                                    using (var reader = builder.CreateReader())
-                                                    {
-                                                        IndexDefinition indexDefinition;
-                                                        if (buildVersion == 0) // pre 4.0 support
-                                                        {
-                                                            indexDefinition = ReadLegacyIndexDefinition(reader);
-                                                            if (string.Equals(indexDefinition.Name, "Raven/DocumentsByEntityName", StringComparison.OrdinalIgnoreCase)) // skipping not needed old default index
-                                                                continue;
-                                                        }
-                                                        else if (buildVersion >= 40000 && buildVersion <= 44999)
-                                                        {
-                                                            indexDefinition = JsonDeserializationServer.IndexDefinition(reader);
-                                                        }
-                                                        else
-                                                            throw new NotSupportedException($"We do not support importing indexes from '{buildVersion}' build.");
-
-                                                        _database.IndexStore.CreateIndex(indexDefinition);
-                                                    }
-                                                }
-                                                catch (Exception e)
-                                                {
-                                                    result.Warnings.Add($"Could not import index. Message: {e.Message}");
-                                                }
+                                                IndexProcessor.Import(builder, _database, buildVersion);
                                             }
+                                            catch (Exception e)
+                                            {
+                                                result.Warnings.Add($"Could not import index. Message: {e.Message}");
+                                            }
+
                                             break;
                                         case "Transformers":
-                                            if (OperateOnTypes.HasFlag(DatabaseItemType.Transformers))
+                                            if (OperateOnTypes.HasFlag(DatabaseItemType.Transformers) == false)
+                                                continue;
+
+                                            result.TransformersCount++;
+
+                                            try
                                             {
-                                                result.TransformersCount++;
-
-                                                try
-                                                {
-                                                    using (var reader = builder.CreateReader())
-                                                    {
-                                                        TransformerDefinition transformerDefinition;
-                                                        if (buildVersion == 0) // pre 4.0 support
-                                                        {
-                                                            transformerDefinition = ReadLegacyTransformerDefinition(reader);
-                                                        }
-                                                        else if (buildVersion >= 40000 && buildVersion <= 44999)
-                                                        {
-                                                            transformerDefinition = JsonDeserializationServer.TransformerDefinition(reader);
-                                                        }
-                                                        else
-                                                            throw new NotSupportedException($"We do not support importing transformers from '{buildVersion}' build.");
-
-                                                        _database.TransformerStore.CreateTransformer(transformerDefinition);
-                                                    }
-                                                }
-                                                catch (Exception e)
-                                                {
-                                                    result.Warnings.Add($"Could not import transformer. Message: {e.Message}");
-                                                }
+                                                TransformerProcessor.Import(builder, _database, buildVersion);
+                                            }
+                                            catch (Exception e)
+                                            {
+                                                result.Warnings.Add($"Could not import transformer. Message: {e.Message}");
                                             }
                                             break;
                                         case "Identities":
@@ -259,132 +223,6 @@ namespace Raven.Server.Smuggler.Documents
             }
 
             return result;
-        }
-
-        private static TransformerDefinition ReadLegacyTransformerDefinition(BlittableJsonReaderObject reader)
-        {
-            string name;
-            if (reader.TryGet("name", out name) == false)
-                throw new InvalidOperationException("Could not read legacy index definition.");
-
-            BlittableJsonReaderObject definition;
-            if (reader.TryGet("definition", out definition) == false)
-                throw new InvalidOperationException("Could not read legacy index definition.");
-
-            var transformerDefinition = JsonDeserializationServer.TransformerDefinition(definition);
-            transformerDefinition.Name = name;
-
-            return transformerDefinition;
-        }
-
-        private static IndexDefinition ReadLegacyIndexDefinition(BlittableJsonReaderObject reader)
-        {
-            string name;
-            if (reader.TryGet("name", out name) == false)
-                throw new InvalidOperationException("Could not read legacy index definition.");
-
-            BlittableJsonReaderObject definition;
-            if (reader.TryGet("definition", out definition) == false)
-                throw new InvalidOperationException("Could not read legacy index definition.");
-
-            var legacyIndexDefinition = JsonDeserializationServer.LegacyIndexDefinition(definition);
-
-            var indexDefinition = new IndexDefinition
-            {
-                IndexId = legacyIndexDefinition.IndexId,
-                IndexVersion = legacyIndexDefinition.IndexVersion,
-                LockMode = legacyIndexDefinition.LockMode,
-                Maps = legacyIndexDefinition.Maps,
-                MaxIndexOutputsPerDocument = legacyIndexDefinition.MaxIndexOutputsPerDocument,
-                Name = name,
-                Reduce = legacyIndexDefinition.Reduce
-            };
-
-            foreach (var kvp in legacyIndexDefinition.Analyzers)
-            {
-                if (indexDefinition.Fields.ContainsKey(kvp.Key) == false)
-                    indexDefinition.Fields[kvp.Key] = new IndexFieldOptions();
-
-                indexDefinition.Fields[kvp.Key].Analyzer = kvp.Value;
-            }
-
-            foreach (var kvp in legacyIndexDefinition.Indexes)
-            {
-                if (indexDefinition.Fields.ContainsKey(kvp.Key) == false)
-                    indexDefinition.Fields[kvp.Key] = new IndexFieldOptions();
-
-                indexDefinition.Fields[kvp.Key].Indexing = kvp.Value;
-            }
-
-            foreach (var kvp in legacyIndexDefinition.SortOptions)
-            {
-                if (indexDefinition.Fields.ContainsKey(kvp.Key) == false)
-                    indexDefinition.Fields[kvp.Key] = new IndexFieldOptions();
-
-                SortOptions sortOptions;
-                switch (kvp.Value)
-                {
-                    case LegacyIndexDefinition.LegacySortOptions.None:
-                        sortOptions = SortOptions.None;
-                        break;
-                    case LegacyIndexDefinition.LegacySortOptions.String:
-                        sortOptions = SortOptions.String;
-                        break;
-                    case LegacyIndexDefinition.LegacySortOptions.Short:
-                    case LegacyIndexDefinition.LegacySortOptions.Long:
-                    case LegacyIndexDefinition.LegacySortOptions.Int:
-                    case LegacyIndexDefinition.LegacySortOptions.Byte:
-                        sortOptions = SortOptions.NumericDefault;
-                        break;
-                    case LegacyIndexDefinition.LegacySortOptions.Float:
-                    case LegacyIndexDefinition.LegacySortOptions.Double:
-                        sortOptions = SortOptions.NumericDouble;
-                        break;
-                    case LegacyIndexDefinition.LegacySortOptions.Custom:
-                        throw new NotImplementedException(kvp.Value.ToString());
-                    case LegacyIndexDefinition.LegacySortOptions.StringVal:
-                        sortOptions = SortOptions.StringVal;
-                        break;
-                    default:
-                        throw new NotSupportedException(kvp.Value.ToString());
-                }
-
-                indexDefinition.Fields[kvp.Key].Sort = sortOptions;
-            }
-
-            foreach (var kvp in legacyIndexDefinition.SpatialIndexes)
-            {
-                if (indexDefinition.Fields.ContainsKey(kvp.Key) == false)
-                    indexDefinition.Fields[kvp.Key] = new IndexFieldOptions();
-
-                indexDefinition.Fields[kvp.Key].Spatial = kvp.Value;
-            }
-
-            foreach (var kvp in legacyIndexDefinition.Stores)
-            {
-                if (indexDefinition.Fields.ContainsKey(kvp.Key) == false)
-                    indexDefinition.Fields[kvp.Key] = new IndexFieldOptions();
-
-                indexDefinition.Fields[kvp.Key].Storage = kvp.Value;
-            }
-
-            foreach (var kvp in legacyIndexDefinition.TermVectors)
-            {
-                if (indexDefinition.Fields.ContainsKey(kvp.Key) == false)
-                    indexDefinition.Fields[kvp.Key] = new IndexFieldOptions();
-
-                indexDefinition.Fields[kvp.Key].TermVector = kvp.Value;
-            }
-
-            foreach (var field in legacyIndexDefinition.SuggestionsOptions)
-            {
-                if (indexDefinition.Fields.ContainsKey(field) == false)
-                    indexDefinition.Fields[field] = new IndexFieldOptions();
-
-                indexDefinition.Fields[field].Suggestions = true;
-            }
-
-            return indexDefinition;
         }
 
         private async Task FinishBatchOfDocuments()
