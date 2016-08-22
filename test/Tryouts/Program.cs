@@ -388,6 +388,7 @@ namespace Tryouts
 
             if (args.Length > 0 && args[0].Equals("--import"))
             {
+<<<<<<< HEAD
                 // inMem - import file to memory first and then to database storage
                 var inMem = args.Length > 1 && args[1].Equals("inmem", StringComparison.OrdinalIgnoreCase);
                 using (var store = new DocumentStore
@@ -401,6 +402,12 @@ namespace Tryouts
                     Util.CreateDb(store);
                     var importTask = Importer.ImportData(store, inMem);
                     importTask.Wait();
+=======
+                Console.WriteLine(i);
+                using (var f = new SlowTests.Tests.Views.MapReduce())
+                {
+                    f.DoesNotOverReduce().Wait();
+>>>>>>> 2de3eb2899c627120f0a0b0abb090fdb368e4e7b
                 }
                 Console.WriteLine("End test");
                 Console.ReadKey();

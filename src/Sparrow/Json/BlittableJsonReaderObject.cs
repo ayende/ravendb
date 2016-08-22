@@ -640,8 +640,8 @@ namespace Sparrow.Json
                         case '\r':
                         case '\t':
                             break;
-                        default:
-                            throw new InvalidDataException("String not valid, invalid escape character: " + escChar);
+                        //default:
+                        //    throw new InvalidDataException("String not valid, invalid escape character: " + escChar);
                     }
                     prevEscChar = escCharOffset + 1;
                 }
