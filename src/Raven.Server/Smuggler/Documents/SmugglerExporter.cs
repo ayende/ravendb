@@ -5,11 +5,12 @@ using Raven.Client.Smuggler;
 using Raven.Server.Documents;
 using Raven.Server.Json;
 using Raven.Server.ServerWide.Context;
+using Raven.Server.Smuggler.Documents.Data;
 using Sparrow.Json;
 
-namespace Raven.Server.Smuggler
+namespace Raven.Server.Smuggler.Documents
 {
-    public class DatabaseDataExporter
+    public class SmugglerExporter
     {
         private readonly DocumentDatabase _database;
 
@@ -21,7 +22,7 @@ namespace Raven.Server.Smuggler
 
         public DatabaseItemType OperateOnTypes;
 
-        public DatabaseDataExporter(DocumentDatabase database)
+        public SmugglerExporter(DocumentDatabase database)
         {
             _database = database;
             OperateOnTypes = DatabaseItemType.Indexes | DatabaseItemType.Transformers

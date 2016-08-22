@@ -11,19 +11,20 @@ using Raven.Server.Documents.Versioning;
 using Raven.Server.Json;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
+using Raven.Server.Smuggler.Documents.Data;
 using Sparrow;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 
-namespace Raven.Server.Smuggler
+namespace Raven.Server.Smuggler.Documents
 {
-    public class DatabaseDataImporter
+    public class SmugglerImporter
     {
         private readonly DocumentDatabase _database;
 
         public DatabaseItemType OperateOnTypes;
 
-        public DatabaseDataImporter(DocumentDatabase database)
+        public SmugglerImporter(DocumentDatabase database)
         {
             _database = database;
             _batchPutCommand = new MergedBatchPutCommand(_database, 0);
@@ -292,8 +293,6 @@ namespace Raven.Server.Smuggler
             {
                 IndexId = legacyIndexDefinition.IndexId,
                 IndexVersion = legacyIndexDefinition.IndexVersion,
-                IsSideBySideIndex = legacyIndexDefinition.IsSideBySideIndex,
-                IsTestIndex = legacyIndexDefinition.IsTestIndex,
                 LockMode = legacyIndexDefinition.LockMode,
                 Maps = legacyIndexDefinition.Maps,
                 MaxIndexOutputsPerDocument = legacyIndexDefinition.MaxIndexOutputsPerDocument,
