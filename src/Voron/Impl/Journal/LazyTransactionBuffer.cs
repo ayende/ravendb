@@ -10,6 +10,7 @@ namespace Voron.Impl.Journal
         private LowLevelTransaction _readTransaction;
         private long? _firstPositionInJournalFile;
         private int _lastUsedPage;
+        public int GetNumberOfPagesToWrite() => _lastUsedPage;
         private readonly StorageEnvironmentOptions _options;
         private readonly AbstractPager _lazyTransactionPager;
         public int NumberOfPages { get; set; }
