@@ -69,6 +69,19 @@ namespace FastTests.Smuggler
                 using (var store1 = await GetDocumentStore(dbSuffixIdentifier: "store1"))
                 using (var store2 = await GetDocumentStore(dbSuffixIdentifier: "store2"))
                 {
+                    using (var session = store1.OpenSession())
+                    {
+                        // creating auto-indexes
+                        session.Query<User>()
+                            .Where(x => x.Age > 10)
+                            .ToList();
+
+                        session.Query<User>()
+                            .GroupBy(x => x.Name)
+                            .Select(x => new { Name = x.Key, Count = x.Count() })
+                            .ToList();
+                    }
+
                     new Users_ByName().Execute(store1);
                     new Users_Address().Execute(store1);
 
@@ -85,7 +98,7 @@ namespace FastTests.Smuggler
 
                     var stats = await store2.AsyncDatabaseCommands.GetStatisticsAsync();
                     Assert.Equal(3, stats.CountOfDocuments);
-                    Assert.Equal(1, stats.CountOfIndexes);
+                    Assert.Equal(3, stats.CountOfIndexes);
                     Assert.Equal(1, stats.CountOfTransformers);
                 }
             }

@@ -2,7 +2,6 @@
 using System.Threading.Tasks;
 using FastTests;
 using Raven.Client.Smuggler;
-using Raven.Tests.Core.Utils.Entities;
 using Xunit;
 
 namespace SlowTests.Smuggler

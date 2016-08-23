@@ -4,6 +4,8 @@ using Raven.Client.Data.Indexes;
 using Raven.Client.Indexing;
 using Raven.Server.Documents;
 using Raven.Server.Documents.Indexes;
+using Raven.Server.Documents.Indexes.Auto;
+using Raven.Server.Documents.Indexes.MapReduce.Auto;
 using Raven.Server.Json;
 using Raven.Server.Smuggler.Documents.Data;
 using Sparrow.Json;
@@ -16,27 +18,55 @@ namespace Raven.Server.Smuggler.Documents.Processors
         {
             using (var reader = builder.CreateReader())
             {
-                IndexDefinition indexDefinition;
                 if (buildVersion == 0) // pre 4.0 support
                 {
-                    indexDefinition = ReadLegacyIndexDefinition(reader);
+                    var indexDefinition = ReadLegacyIndexDefinition(reader);
                     if (string.Equals(indexDefinition.Name, "Raven/DocumentsByEntityName", StringComparison.OrdinalIgnoreCase)) // skipping not needed old default index
                         return;
+
+                    database.IndexStore.CreateIndex(indexDefinition);
                 }
                 else if (buildVersion >= 40000 && buildVersion <= 44999)
                 {
-                    indexDefinition = JsonDeserializationServer.IndexDefinition(reader);
+                    var indexType = ReadIndexType(reader);
+                    var definition = ReadIndexDefinition(reader);
+                    switch (indexType)
+                    {
+                        case IndexType.AutoMap:
+                            var autoMapIndexDefinition = AutoMapIndexDefinition.LoadFromJson(definition);
+                            database.IndexStore.CreateIndex(autoMapIndexDefinition);
+                            break;
+                        case IndexType.AutoMapReduce:
+                            var autoMapReduceIndexDefinition = AutoMapReduceIndexDefinition.LoadFromJson(definition);
+                            database.IndexStore.CreateIndex(autoMapReduceIndexDefinition);
+                            break;
+                        case IndexType.Map:
+                        case IndexType.MapReduce:
+                            var indexDefinition = JsonDeserializationServer.IndexDefinition(definition);
+                            database.IndexStore.CreateIndex(indexDefinition);
+                            break;
+                        default:
+                            throw new NotSupportedException(indexType.ToString());
+                    }
                 }
                 else
                     throw new NotSupportedException($"We do not support importing indexes from '{buildVersion}' build.");
-
-                database.IndexStore.CreateIndex(indexDefinition);
-
             }
         }
 
         public static void Export(BlittableJsonTextWriter writer, Index index, JsonOperationContext context)
         {
+            if (index.Type == IndexType.Faulty)
+                return;
+
+            writer.WriteStartObject();
+
+            writer.WritePropertyName(nameof(IndexDefinition.Type));
+            writer.WriteString(index.Type.ToString());
+            writer.WriteComma();
+
+            writer.WritePropertyName(nameof(IndexDefinition));
+
             if (index.Type == IndexType.Map || index.Type == IndexType.MapReduce)
             {
                 var indexDefinition = index.GetIndexDefinition();
@@ -44,16 +74,32 @@ namespace Raven.Server.Smuggler.Documents.Processors
             }
             else if (index.Type == IndexType.AutoMap || index.Type == IndexType.AutoMapReduce)
             {
-                // TODO: Export auto indexes.
-            }
-            else if (index.Type == IndexType.Faulty)
-            {
-                // TODO: Should we export them?
+                index.Definition.Persist(context, writer);
             }
             else
             {
                 throw new NotSupportedException(index.Type.ToString());
             }
+
+            writer.WriteEndObject();
+        }
+
+        private static BlittableJsonReaderObject ReadIndexDefinition(BlittableJsonReaderObject reader)
+        {
+            BlittableJsonReaderObject json;
+            if (reader.TryGet(nameof(IndexDefinition), out json) == false)
+                throw new InvalidOperationException("Could not read index definition.");
+
+            return json;
+        }
+
+        private static IndexType ReadIndexType(BlittableJsonReaderObject reader)
+        {
+            string typeAsString;
+            if (reader.TryGet(nameof(IndexDefinition.Type), out typeAsString) == false)
+                throw new InvalidOperationException("Could not read index type.");
+
+            return (IndexType)Enum.Parse(typeof(IndexType), typeAsString, ignoreCase: true);
         }
 
         private static IndexDefinition ReadLegacyIndexDefinition(BlittableJsonReaderObject reader)
