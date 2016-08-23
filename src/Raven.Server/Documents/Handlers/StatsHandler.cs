@@ -24,7 +24,7 @@ namespace Raven.Server.Documents.Handlers
             using (context.OpenReadTransaction())
             {
                 var indexes = Database.IndexStore.GetIndexes().ToList();
-                var transformersCount = Database.TransformerStore.GetTransformers().Count();
+                var transformersCount = Database.TransformerStore.GetTransformersCount();
 
                 var stats = new DatabaseStatistics();
                 stats.CountOfDocuments = Database.DocumentsStorage.GetNumberOfDocuments(context);
