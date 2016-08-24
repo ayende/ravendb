@@ -29,6 +29,14 @@ class aceEditorBindingHandler {
     // used in tests
     static useWebWorkers = true;
 
+    static getEditorBySelection(selector: JQuery): AceAjax.Editor {
+        if (selector.length) {
+            var element = selector[0];
+            return ko.utils.domData.get(element, "aceEditor");
+        }
+        return null;
+    }
+
     static install() {
         if (!ko.bindingHandlers["aceEditor"]) {
             ko.bindingHandlers["aceEditor"] = new aceEditorBindingHandler();
@@ -116,7 +124,7 @@ class aceEditorBindingHandler {
     // Called by Knockout a single time when the binding handler is setup.
     init(element: HTMLElement,
         valueAccessor: () => {
-            code: string;
+            code: KnockoutObservable<string>;
             theme?: string;
             fontSize?: string;
             lang?: string;
@@ -153,7 +161,7 @@ class aceEditorBindingHandler {
         var bubbleEnterKey = bindingValues.bubbleEnterKey || this.defaults.bubbleEnterKey;
         var getFocus = bindingValues.getFocus;
 
-        if (typeof code !== "function") {
+        if (!ko.isObservable(code)) {
             throw new Error("code should be an observable");
         }
 

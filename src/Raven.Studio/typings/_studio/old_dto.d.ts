@@ -336,10 +336,6 @@ interface logDto {
     StackTrace: string;
 }
 
-interface queryResultDto {
-    Results: any[];
-    Includes: any[];
-}
 
 interface alertContainerDto extends documentDto {
     Alerts: alertDto[];

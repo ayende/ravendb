@@ -1,5 +1,7 @@
 /// <reference path="../../../../typings/tsd.d.ts" />
 
+import document = require("models/database/documents/document");
+
 class documentHelpers {
     static findRelatedDocumentsCandidates(doc: documentBase): string[] {
         var results: string[] = [];
@@ -132,6 +134,69 @@ class documentHelpers {
 
         return text;
     }
+
+    static findSchema(documents: Array<any>): any {
+        try {
+            documents.forEach(doc => {
+                JSON.stringify(doc);
+            });
+        } catch (e) {
+            throw new Error("Cannot find schema for not serializable objects");
+        }
+
+        return documentHelpers.findSchemaForObject(documents);
+    }
+
+    private static findSchemaForObject(objects: Array<any>): any {
+        let result: any = {};
+
+        let [firstDocument] = objects;
+
+        for (let prop in firstDocument) {
+            if (firstDocument.hasOwnProperty(prop)) {
+                var defaultValue = documentHelpers.findSchemaDefaultValue(objects, prop);
+                if (typeof (defaultValue) !== "undefined") {
+                    result[prop] = defaultValue;
+                }
+            }
+        }
+        return result;
+    }
+
+    private static findSchemaDefaultValue(documents: Array<any>, property: string): any {
+        for (let i = 0; i < documents.length; i++) {
+            if (!(property in documents[i])) {
+                return undefined;
+            }
+        }
+
+        const extractedValues = documents.map(doc => doc[property]);
+        const extractedTypes = extractedValues.map(v => typeof (v));
+        const [firstType, ...restTypes] = extractedTypes;
+        for (let i = 0; i < restTypes.length; i++) {
+            if (firstType !== restTypes[i]) {
+                continue;
+            }
+        }
+
+        switch (firstType) {
+            case "undefined":
+                return undefined;
+            case "number":
+                return 0;
+            case "boolean":
+                return false;
+            case "string":
+                return "";
+            case "function":
+                return undefined;
+            case "object":
+                return documentHelpers.findSchemaForObject(extractedValues);
+            default:
+                throw new Error("Unhandled type: " + firstType);
+        }
+    }
+    
 }
 
 export = documentHelpers;

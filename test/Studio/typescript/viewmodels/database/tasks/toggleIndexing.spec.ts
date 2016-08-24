@@ -10,10 +10,10 @@ describe(viewUnderTest, () => {
     utils.initTest();
 
     it('should bind', () => {
-        utils.mockCommand('commands/database/index/getIndexingStatusCommand', {
+        utils.mockCommand('commands/database/index/getIndexingStatusCommand', () => ({
             "MappingStatus": "Mapping",
             "ReducingStatus": "Reducing"
-        });
+        }));
 
         return utils.runViewmodelTest(viewUnderTest, {
             afterAttach: (vm: viewModel) => {
@@ -25,10 +25,10 @@ describe(viewUnderTest, () => {
     });
 
     it('should update paused state', () => {
-        utils.mockCommand('commands/database/index/getIndexingStatusCommand', {
+        utils.mockCommand('commands/database/index/getIndexingStatusCommand', () => ({
             "MappingStatus": "Paused",
             "ReducingStatus": "Paused"
-        });
+        }));
 
         return utils.runViewmodelTest(viewUnderTest, {
             afterAttach: (vm: viewModel) => {

@@ -8,7 +8,7 @@ describe(viewUnderTest, () => {
     utils.initTest();
 
     it('should bind', () => {
-        utils.mockCommand('commands/resources/getDatabaseStatsCommand', getTestData());
+        utils.mockCommand('commands/resources/getDatabaseStatsCommand', getTestData);
 
         return utils.runViewmodelTest(viewUnderTest, {
             afterAttach: () => {

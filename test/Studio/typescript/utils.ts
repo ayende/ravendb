@@ -43,9 +43,13 @@ class Utils {
         });
     }
 
-    static mockCommand<T>(commandName: string, resultValue: T) {
+    static requireViewmodel<T>(viewmodelName: string, cb: Function) {
+        Utils.injector.require(["viewmodels/" + viewmodelName], cb);
+    }
+
+    static mockCommand<T>(commandName: string, resultProvider:() => T) {
         Utils.injector.mock(commandName, () => ({
-            execute: () => $.Deferred<T>().resolve(resultValue)
+            execute: () => $.Deferred<T>().resolve(resultProvider())
         }));
     }
 

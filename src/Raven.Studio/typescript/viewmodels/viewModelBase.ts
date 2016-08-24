@@ -22,17 +22,19 @@ import downloader = require("common/downloader");
 */
 class viewModelBase {
 
-    public activeDatabase = ko.observable<database>().subscribeTo("ActivateDatabase", true);
-    public activeFilesystem = ko.observable<filesystem>().subscribeTo("ActivateFilesystem", true);
-    public activeCounterStorage = ko.observable<counterStorage>().subscribeTo("ActivateCounterStorage", true);
-    public activeTimeSeries = ko.observable<timeSeries>().subscribeTo("ActivateTimeSeries", true);
-    public lastActivatedResource = ko.observable<resource>()
+    activeDatabase = ko.observable<database>().subscribeTo("ActivateDatabase", true);
+    activeFilesystem = ko.observable<filesystem>().subscribeTo("ActivateFilesystem", true);
+    activeCounterStorage = ko.observable<counterStorage>().subscribeTo("ActivateCounterStorage", true);
+    activeTimeSeries = ko.observable<timeSeries>().subscribeTo("ActivateTimeSeries", true);
+    lastActivatedResource = ko.observable<resource>()
         .subscribeTo("ActivateDatabase", true)
         .subscribeTo("ActivateFilesystem", true)
         .subscribeTo("ActivateCounterStorage", true)
         .subscribeTo("ActivateTimeSeries", true);
 
-    public downloader = new downloader();
+    downloader = new downloader();
+
+    isBusy = ko.observable<boolean>(false);
 
     private keyboardShortcutDomContainers: string[] = [];
     static modelPollingHandle: number; // mark as static to fix https://github.com/BlueSpire/Durandal/issues/181
@@ -310,7 +312,7 @@ class viewModelBase {
     }
 
     canContinueIfNotDirty(title: string, confirmationMessage: string) {
-        var deferred = $.Deferred();
+        var deferred = $.Deferred<void>();
 
         var isDirty = this.dirtyFlag().isDirty();
         if (isDirty) {
