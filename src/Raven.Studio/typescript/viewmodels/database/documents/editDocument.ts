@@ -78,7 +78,6 @@ class editDocument extends viewModelBase {
 
     constructor() {
         super();
-        this.layout.setMode(true);
         aceEditorBindingHandler.install();
 
         this.metadata = ko.computed(() => this.document() ? this.document().__metadata : null);

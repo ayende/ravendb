@@ -2,7 +2,6 @@
 //TODO: <amd-dependency path="ace/mode/json_newline_friendly" />
 import composition = require("durandal/composition");
 import ace = require("ace/ace");
-import layoutSwitcher = require("viewmodels/layoutSwitcher");
 
 /*
  * A custom Knockout binding handler transforms the target element (usually a <pre>) into a code editor, powered by Ace. http://ace.c9.io
@@ -12,7 +11,7 @@ import layoutSwitcher = require("viewmodels/layoutSwitcher");
 class aceEditorBindingHandler {
 
     defaults = {
-        theme: layoutSwitcher.default.newLayoutMode() ? "ace/theme/ambiance": "ace/theme/xcode",
+        theme: "ace/theme/xcode",
         fontSize: "16px",
         lang: "ace/mode/csharp",
         readOnly: false,

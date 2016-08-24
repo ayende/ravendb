@@ -16,16 +16,11 @@ import confirmationDialog = require("viewmodels/common/confirmationDialog");
 import saveDocumentCommand = require("commands/database/documents/saveDocumentCommand");
 import document = require("models/database/documents/document");
 import downloader = require("common/downloader");
-import layoutSwitcher = require("viewmodels/layoutSwitcher");
 
 /*
  * Base view model class that provides basic view model services, such as tracking the active database and providing a means to add keyboard shortcuts.
 */
 class viewModelBase {
-
-    static layout = layoutSwitcher.default;
-
-    layout = viewModelBase.layout; //expose to view for development time - we can do data-bind="if: $root.layout.newLayoutMode()"
 
     public activeDatabase = ko.observable<database>().subscribeTo("ActivateDatabase", true);
     public activeFilesystem = ko.observable<filesystem>().subscribeTo("ActivateFilesystem", true);
@@ -56,7 +51,6 @@ class viewModelBase {
 
     constructor() {
         this.appUrls = appUrl.forCurrentDatabase();
-        viewModelBase.layout.setMode(false);
     }
 
     /*
@@ -69,7 +63,6 @@ class viewModelBase {
     canActivate(args: any): any {
         var self = this;
         setTimeout(() => viewModelBase.showSplash(self.isAttached === false), 700);
-
         this.downloader.reset();
 
         var resource = appUrl.getResource();
