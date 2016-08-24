@@ -44,8 +44,12 @@ namespace Voron.Impl.Journal
         private readonly AbstractPager _compressionPager;
 
         private LazyTransactionBuffer _lazyTransactionBuffer;
-
         public bool HasDataInLazyTxBuffer() => _lazyTransactionBuffer?.HasDataInBuffer() ?? false;
+
+        private bool _isSlowIO;
+        private int _lastWriteBytePerTicks;
+
+
 
         public WriteAheadJournal(StorageEnvironment env)
         {
@@ -882,6 +886,8 @@ namespace Voron.Impl.Journal
 
         public void WriteToJournal(LowLevelTransaction tx, int pageCount)
         {
+            var ioRate = 0;
+
             var pages = CompressPages(tx, pageCount, _compressionPager);
 
             if (tx.IsLazyTransaction && _lazyTransactionBuffer == null)
@@ -895,13 +901,16 @@ namespace Voron.Impl.Journal
                 CurrentFile = NextFile(pages.NumberOfPages);
             }
 
-            CurrentFile.Write(tx, pages, _lazyTransactionBuffer, pageCount);
+            ioRate = CurrentFile.Write(tx, pages, _lazyTransactionBuffer, pageCount);
 
             if (CurrentFile.AvailablePages == 0)
             {
                 _lazyTransactionBuffer?.WriteBufferToFile(CurrentFile, tx);
                 CurrentFile = null;
             }
+
+            if (ioRate != 0)
+                _lastWriteBytePerTicks = ioRate;
         }
 
         private CompressedPagesResult CompressPages(LowLevelTransaction tx, int numberOfPages, AbstractPager compressionPager)
@@ -924,11 +933,27 @@ namespace Voron.Impl.Journal
                         
             // We get the pointer to the compression buffer, which will be the buffer that will hold the whole thing.
             var outputBuffer = compressionPager.AcquirePagePointer(tx, dataPagesCount);
-            
-            // Where we are going to store the input data continously to compress it afterwards.             
-            var tempBuffer = compressionPager.AcquirePagePointer(tx, 0);           
+
+            byte* tempBuffer = null;
+            byte* write;
+            bool isSizeBiggerThan64K = sizeInBytes + pageSize > 64*1024;  // +pageSize to count TransactionHeader
+
+            // even when it seems not worth to compress, if i/o is too slow - we do benefit from compression
+            if (isSizeBiggerThan64K == false && _isSlowIO)
+                    isSizeBiggerThan64K = true;
+
+            if (isSizeBiggerThan64K)
+            {
+                // Where we are going to store the input data continously to compress it afterwards.             
+                tempBuffer = compressionPager.AcquirePagePointer(tx, 0);
+                write = tempBuffer;
+            }
+            else
+            {
+                write = outputBuffer + sizeof(TransactionHeader);
+            }
+
             var txPages = tx.GetTransactionPages();
-            var write = tempBuffer;
             foreach ( var txPage in txPages )
             {
                 var scratchPage = tx.Environment.ScratchBufferPool.AcquirePagePointer(tx, txPage.ScratchFileNumber, txPage.PositionInScratchBuffer);
@@ -938,12 +963,28 @@ namespace Voron.Impl.Journal
             }
 
             var compressionBuffer = outputBuffer + sizeof(TransactionHeader);
-            var len = DoCompression(tempBuffer, compressionBuffer, sizeInBytes, outputBufferSize);
 
-            int totalLength = len + sizeof(TransactionHeader);  // We need to account for the transaction header as part of the total length.
+            int len;
+            if (isSizeBiggerThan64K)
+            {
+                var sp = Stopwatch.StartNew();
+                len = DoCompression(tempBuffer, compressionBuffer, sizeInBytes, outputBufferSize);
+                sp.Stop();
+                if (_lastWriteBytePerTicks != 0 && sp.ElapsedTicks != 0)
+                {
+                    _isSlowIO = _lastWriteBytePerTicks < (sizeInBytes - len)/sp.ElapsedTicks;
+                }
+            }
+            else
+            {
+                len = sizeInBytes;
+            }
+
+            // We need to account for the transaction header as part of the total length.
+            var totalLength = len + sizeof(TransactionHeader); ;
             var remainder = totalLength % pageSize;
             var compressedPages = (totalLength / pageSize) + (remainder == 0 ? 0 : 1);
-            
+
             if (remainder != 0)
             {
                 // zero the remainder of the page
@@ -953,7 +994,7 @@ namespace Voron.Impl.Journal
             var txHeaderPage = tx.GetTransactionHeaderPage();
             var txHeaderBase = tx.Environment.ScratchBufferPool.AcquirePagePointer(tx, txHeaderPage.ScratchFileNumber, txHeaderPage.PositionInScratchBuffer);
             var txHeader = (TransactionHeader*)txHeaderBase;
-            txHeader->Compressed = true;
+            txHeader->Compressed = isSizeBiggerThan64K;
             txHeader->CompressedSize = len;
             txHeader->UncompressedSize = sizeInBytes;
             txHeader->Hash = Hashing.XXHash64.Calculate(compressionBuffer, len);
