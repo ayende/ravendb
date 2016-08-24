@@ -42,6 +42,8 @@ namespace Raven.Database.Config
 
         public MonitoringConfiguration Monitoring { get; private set; }
 
+        public StudioConfiguration Studio { get; private set; }
+
         public StronglyTypedRavenSettings(NameValueCollection settings)
         {
             Replication = new ReplicationConfiguration();
@@ -56,6 +58,7 @@ namespace Raven.Database.Config
             WebSockets = new WebSocketsConfiguration();
             Cluster = new ClusterConfiguration();
             Monitoring = new MonitoringConfiguration();
+            Studio = new StudioConfiguration();
 
             this.settings = settings;
         }
@@ -278,6 +281,8 @@ namespace Raven.Database.Config
             FileSystem.DataDir = new StringSetting(settings[Constants.FileSystem.DataDirectory], @"~\FileSystems");
             FileSystem.DefaultStorageTypeName = new StringSetting(settings[Constants.FileSystem.Storage], string.Empty);
             FileSystem.PreventSchemaUpdate = new BooleanSetting(settings[Constants.FileSystem.PreventSchemaUpdate], false);
+
+            Studio.AllowNonAdminUsersToSetupPeriodicExport = new BooleanSetting(settings[Constants.AllowNonAdminUsersToSetupPeriodicExport], false);
 
             Counter.DataDir = new StringSetting(settings[Constants.Counter.DataDirectory], @"~\Counters");
             Counter.TombstoneRetentionTime = new TimeSpanSetting(settings[Constants.Counter.TombstoneRetentionTime], TimeSpan.FromDays(14), TimeSpanArgumentType.FromParse);
@@ -597,6 +602,11 @@ namespace Raven.Database.Config
 
             public IntegerSetting ReplicationPropagationDelayInSeconds { get; set; }
 
+        }
+
+        public class StudioConfiguration
+        {
+            public BooleanSetting AllowNonAdminUsersToSetupPeriodicExport { get; set; }
         }
 
         public class FileSystemConfiguration
