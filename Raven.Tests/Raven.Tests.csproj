@@ -299,6 +299,7 @@
     <Compile Include="Issues\RavenDB-4580.cs" />
     <Compile Include="Issues\RavenDB_3435.cs" />
     <Compile Include="Issues\RavenDB_4970.cs" />
+    <Compile Include="Issues\RavenDB_5145.cs" />
     <Compile Include="Json\JsonCodeGeneratorTests.cs" />
     <Compile Include="LicenseValidatorTest.cs" />
     <Compile Include="Linq\GroupByAndDocumentId.cs" />
