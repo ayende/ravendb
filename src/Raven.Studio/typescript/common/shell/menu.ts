@@ -91,8 +91,9 @@ class menu {
             }
         }
 
-        let hashToItem = this.itemsIndex();
-        let item: leafMenuItem = hashToItem[document.location.hash];
+        let pathToItem = this.itemsIndex();
+        let activeRoute = router.activeInstruction();
+        let item: leafMenuItem = pathToItem[activeRoute.fragment];
 
         this.activeItem(item);
         this.setLevelToActiveItem();
@@ -116,9 +117,23 @@ class menu {
         return this.items()
             .reduce((result: menuItem[], next: menuItem) =>
                 result.concat(flatten(next)), [] as menuItem[])
-            .filter((x: leafMenuItem) => !!x.path())
+            .filter((x: leafMenuItem) => !!x.route)
             .reduce((result: { [key: string]: leafMenuItem }, next: leafMenuItem) => {
-                result[next.path()] = next;
+                if (typeof(next.route) === 'string') {
+                    result[next.route as string] = next;
+                } else if (Array.isArray(next.route)) {
+                    (next.route as string[])
+                        .forEach(r => {
+                            if (!r) {
+                                return;
+                            }
+
+                            result[r] = next;
+                        });
+
+                } else {
+                    throw new Error(`Unknown route type exception: ${ next.route }`);
+                }
                 return result;
             }, {} as { [key: string]: leafMenuItem });
 
