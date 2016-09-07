@@ -7,7 +7,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Raven.Database.Indexing;
-using RTP = Raven.Database.Impl.BackgroundTaskExecuter.RavenThreadPool;
+using RTP = Raven.Database.Impl.BackgroundTaskExecuter.DefaultRavenThreadPool;
 using Raven.Tests.Common;
 using Xunit;
 
