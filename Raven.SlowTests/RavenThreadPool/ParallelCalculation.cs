@@ -189,10 +189,10 @@ namespace Raven.SlowTests.RavenThreadPool
                     Interlocked.Add(ref sum, (long)input);
                     Thread.Sleep((int)Math.Pow(input, 4) * 5);
                 }, allowPartialBatchResumption: true);
-                var waitingTasksAmount = tp.GetAllWaitingTasks().Count();
+                var waitingTasksAmount = tp.WaitingTasksAmount;
                 var runningTasksAmount = tp.RunningTasksAmount;
                 Assert.NotEqual(waitingTasksAmount + runningTasksAmount, 0);
-                while (tp.GetAllWaitingTasks().Count() != 0 || tp.RunningTasksAmount != 0)
+                while (tp.WaitingTasksAmount != 0 || tp.RunningTasksAmount != 0)
                 {
                     Thread.Sleep(100);
                 }

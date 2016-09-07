@@ -279,14 +279,24 @@ namespace Raven.Database.Impl.BackgroundTaskExecuter
             } while (_tasks.Count > 0);
         }
 
-        public override ThreadTask[] GetRunningTasks()
+        public ThreadTask[] GetRunningTasks()
         {
             return _runningTasks.Keys.ToArray();
         }
 
-        public override ThreadTask[] GetAllWaitingTasks()
+        public override IEnumerable<object> GetRunningTaskDescriptions()
+        {
+            return _runningTasks.Keys.Select(x => x.Description).ToArray();
+        }
+
+        public ThreadTask[] GetAllWaitingTasks()
         {
             return _tasks.ToArray();
+        }
+
+        public override IEnumerable<object> GetAllWaitingTaskDescriptions()
+        {
+            return _tasks.Select(x => x.Description).ToArray();
         }
 
         public override int WaitingTasksAmount
@@ -793,6 +803,30 @@ namespace Raven.Database.Impl.BackgroundTaskExecuter
             public ManualResetEventSlim StopWork;
             public Thread Thread;
             public bool Unstoppable;
+        }
+
+        public class ThreadTask
+        {
+            public Action Action;
+            public BatchStatistics BatchStats;
+            public object Description;
+            public CountdownEvent DoneEvent;
+            public Stopwatch Duration;
+            public bool EarlyBreak;
+            public DateTime QueuedAt;
+        }
+
+        public class BatchStatistics
+        {
+            public enum BatchType
+            {
+                Atomic,
+                Range
+            }
+
+            public int Completed;
+            public int Total;
+            public BatchType Type;
         }
 
         public class OperationDescription

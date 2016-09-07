@@ -73,12 +73,12 @@ namespace Raven.Tests.Issues
                     throw new NotImplementedException();
                 }
 
-                public override ThreadTask[] GetRunningTasks()
+                public override IEnumerable<object> GetRunningTaskDescriptions()
                 {
                     throw new NotImplementedException();
                 }
 
-                public override ThreadTask[] GetAllWaitingTasks()
+                public override IEnumerable<object> GetAllWaitingTaskDescriptions()
                 {
                     throw new NotImplementedException();
                 }

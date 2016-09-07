@@ -1150,15 +1150,15 @@ namespace Raven.Database.Server.Controllers
                 new
                 {
                     Database.MappingThreadPool.Name,
-                    WaitingTasks = Database.MappingThreadPool.GetAllWaitingTasks().Select(x => x.Description),
-                    RunningTasks = Database.MappingThreadPool.GetRunningTasks().Select(x => x.Description),
+                    WaitingTasks = Database.MappingThreadPool.GetAllWaitingTaskDescriptions(),
+                    RunningTasks = Database.MappingThreadPool.GetRunningTaskDescriptions(),
                     ThreadPoolStats = Database.MappingThreadPool.GetThreadPoolStats()
                 },
                 new
                 {
                     Database.ReducingThreadPool.Name,
-                    WaitingTasks = Database.ReducingThreadPool.GetAllWaitingTasks().Select(x => x.Description),
-                    RunningTasks = Database.ReducingThreadPool.GetRunningTasks().Select(x => x.Description),
+                    WaitingTasks = Database.ReducingThreadPool.GetAllWaitingTaskDescriptions(),
+                    RunningTasks = Database.ReducingThreadPool.GetRunningTaskDescriptions(),
                     ThreadPoolStats = Database.ReducingThreadPool.GetThreadPoolStats()
     }
             });
