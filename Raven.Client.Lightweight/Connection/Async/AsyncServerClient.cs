@@ -826,13 +826,16 @@ namespace Raven.Client.Connection.Async
 
                 if (results.Count >= uniqueKeys.Count)
                 {
-                    for (var i = 0; i < uniqueKeys.Count; i++)
+                    var count = 0;
+                    foreach (var key in uniqueKeys)
                     {
-                        var key = keys[i];
                         if (documents.ContainsKey(key))
+                        {
+                            count++;
                             continue;
+                        }
 
-                        documents.Add(key, results[i]);
+                        documents.Add(key, results[count++]);
                     }
                 }
 
