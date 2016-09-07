@@ -9,7 +9,7 @@ using System.Linq;
 using System.Threading;
 using Xunit;
 using Raven.Tests.Common;
-using RTP = Raven.Database.Impl.BackgroundTaskExecuter.RavenThreadPool;
+using RTP = Raven.Database.Impl.BackgroundTaskExecuter.DefaultRavenThreadPool;
 
 namespace Raven.Tests.Issues
 {

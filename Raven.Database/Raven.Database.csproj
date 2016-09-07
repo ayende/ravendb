@@ -303,6 +303,8 @@
     <Compile Include="FileSystem\Synchronization\SynchronizationTopologyDiscoverer.cs" />
     <Compile Include="FileSystem\Synchronization\SynchronizationTopology.cs" />
     <Compile Include="GplexBuffers.cs" />
+    <Compile Include="Impl\BackgroundTaskExecuter\RavenThreadPool.cs" />
+    <Compile Include="Impl\BackgroundTaskExecuter\RavenThreadPoolFactory.cs" />
     <Compile Include="Indexing\Analyzers\RavenStandardAnalyzer.cs" />
     <Compile Include="Indexing\Analyzers\RavenStandardFilter.cs" />
     <Compile Include="Indexing\LuceneAST.cs" />
@@ -440,7 +442,7 @@
     <Compile Include="FileSystem\Plugins\TriggerExtensions.cs" />
     <Compile Include="Impl\BackgroundTaskExecuter\DefaultBackgroundTaskExecuter.cs" />
     <Compile Include="Impl\BackgroundTaskExecuter\IBackgroundTaskExecuter.cs" />
-    <Compile Include="Impl\BackgroundTaskExecuter\RavenThreadPool.cs" />
+    <Compile Include="Impl\BackgroundTaskExecuter\DefaultRavenThreadPool.cs" />
     <Compile Include="FileSystem\Smuggler\SmugglerEmbeddedFilesOperations.cs" />
     <Compile Include="FileSystem\Storage\Esent\Schema\Updates\From04To05.cs" />
     <Compile Include="FileSystem\Storage\CopyFileOperation.cs" />

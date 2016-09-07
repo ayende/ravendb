@@ -153,6 +153,8 @@ namespace Raven.Database.Config
                 new IntegerSetting(settings["Raven/NumberOfItemsToExecuteReduceInSingleStep"], 1024);
             MaxNumberOfParallelProcessingTasks =
                 new IntegerSettingWithMin(settings["Raven/MaxNumberOfParallelProcessingTasks"] ?? settings["Raven/MaxNumberOfParallelIndexTasks"], Environment.ProcessorCount, 1);
+            ThreadPoolFactoryType =
+                new StringSetting(settings["Raven/ThreadPoolFactoryType"], "default");
 
             NewIndexInMemoryMaxTime =
                 new TimeSpanSetting(settings["Raven/NewIndexInMemoryMaxTime"], TimeSpan.FromMinutes(15), TimeSpanArgumentType.FromParse);
@@ -433,6 +435,8 @@ namespace Raven.Database.Config
         public IntegerSetting NumberOfItemsToExecuteReduceInSingleStep { get; private set; }
 
         public IntegerSettingWithMin MaxNumberOfParallelProcessingTasks { get; private set; }
+
+        public StringSetting ThreadPoolFactoryType { get; private set; }
 
         public MultipliedIntegerSetting NewIndexInMemoryMaxMb { get; private set; }
 

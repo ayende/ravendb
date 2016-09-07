@@ -27,6 +27,7 @@ using Raven.Database.Util;
 using Raven.Imports.Newtonsoft.Json;
 using Enum = System.Enum;
 using Raven.Abstractions;
+using Raven.Database.Impl.BackgroundTaskExecuter;
 
 namespace Raven.Database.Config
 {
@@ -221,6 +222,8 @@ namespace Raven.Database.Config
             }
 
             MaxNumberOfParallelProcessingTasks = ravenSettings.MaxNumberOfParallelProcessingTasks.Value;
+
+            ThreadPoolFactoryType = ravenSettings.ThreadPoolFactoryType.Value;
 
             NewIndexInMemoryMaxBytes = ravenSettings.NewIndexInMemoryMaxMb.Value;
 
@@ -1223,6 +1226,13 @@ namespace Raven.Database.Config
         /// </summary>
         public string TempPath { get; set; }
 
+        /// <summary>
+        /// What thread pool factory type to use
+        /// Allowed values: default or the assembly qualified type name
+        /// Default: default
+        /// </summary>
+        public string ThreadPoolFactoryType { get; set; } = "default";
+
         [Browsable(false)]
         [EditorBrowsable(EditorBrowsableState.Never)]
         public void SetSystemDatabase()
@@ -1341,6 +1351,25 @@ namespace Raven.Database.Config
                 return EsentTypeName;
 
             return DefaultStorageTypeName;
+        }
+
+        public RavenThreadPool CreateThreadPool(CancellationToken ct, DocumentDatabase database, string name = "RavenThreadPool", IReadOnlyList<Action> longRunningActions = null)
+        {
+            RavenThreadPoolFactory factory;
+
+            if (string.IsNullOrEmpty(ThreadPoolFactoryType) || StringComparer.OrdinalIgnoreCase.Equals(ThreadPoolFactoryType, "default"))
+                factory = RavenThreadPoolFactory.Default;
+            else
+            {
+                var type = Type.GetType(ThreadPoolFactoryType);
+
+                if (type == null)
+                    throw new InvalidOperationException("Could not find thread pool factory type: " + ThreadPoolFactoryType);
+
+                factory = (RavenThreadPoolFactory)Activator.CreateInstance(type);
+            }
+
+            return factory.Create(this, ct, database, name, longRunningActions);
         }
 
         public void Dispose()
