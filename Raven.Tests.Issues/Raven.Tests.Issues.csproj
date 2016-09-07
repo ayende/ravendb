@@ -512,6 +512,7 @@
     <Compile Include="RavenDB_4983.cs" />
     <Compile Include="RavenDB_505.cs" />
     <Compile Include="RavenDB_514.cs" />
+    <Compile Include="RavenDB_5241.cs" />
     <Compile Include="RavenDB_535.cs" />
     <Compile Include="RavenDB_542 .cs" />
     <Compile Include="RavenDB_554.cs" />
