@@ -1369,7 +1369,7 @@ namespace Raven.Database.Config
                 factory = (RavenThreadPoolFactory)Activator.CreateInstance(type);
             }
 
-            return factory.Create(this, MaxNumberOfParallelProcessingTasks, ct, database, name, longRunningActions);
+            return factory.Create(this, ct, database, name, longRunningActions);
         }
 
         public void Dispose()

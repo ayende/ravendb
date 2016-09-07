@@ -14,14 +14,14 @@ namespace Raven.Database.Impl.BackgroundTaskExecuter
     {
         public static readonly RavenThreadPoolFactory Default = new DefaultRavenThreadPoolFactory();
 
-        public abstract RavenThreadPool Create(InMemoryRavenConfiguration configuration, int maxLevelOfParallelism, CancellationToken ct, DocumentDatabase database, string name, IReadOnlyList<Action> longRunningActions);
+        public abstract RavenThreadPool Create(InMemoryRavenConfiguration configuration, CancellationToken ct, DocumentDatabase database, string name, IReadOnlyList<Action> longRunningActions);
 
         private class DefaultRavenThreadPoolFactory : RavenThreadPoolFactory
         {
-            public override RavenThreadPool Create(InMemoryRavenConfiguration configuration, int maxLevelOfParallelism, CancellationToken ct, DocumentDatabase database, string name, IReadOnlyList<Action> longRunningActions)
+            public override RavenThreadPool Create(InMemoryRavenConfiguration configuration, CancellationToken ct, DocumentDatabase database, string name, IReadOnlyList<Action> longRunningActions)
             {
                 // The multiplier is from DocumentDatabase which didn't respect the users configuration, but I copied to across to preserve behaviour
-                return new DefaultRavenThreadPool(maxLevelOfParallelism * 2, ct, database, name, longRunningActions);
+                return new DefaultRavenThreadPool(configuration.MaxNumberOfParallelProcessingTasks * 2, ct, database, name, longRunningActions);
             }
         }
     }

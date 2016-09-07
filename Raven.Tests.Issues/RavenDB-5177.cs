@@ -36,7 +36,7 @@ namespace Raven.Tests.Issues
 
         private class CustomThreadPoolFactory : RavenThreadPoolFactory
         {
-            public override RavenThreadPool Create(InMemoryRavenConfiguration configuration, int maxLevelOfParallelism, CancellationToken ct, DocumentDatabase database, string name, IReadOnlyList<Action> longRunningActions)
+            public override RavenThreadPool Create(InMemoryRavenConfiguration configuration, CancellationToken ct, DocumentDatabase database, string name, IReadOnlyList<Action> longRunningActions)
             {
                 return new CustomThreadPool();
             }

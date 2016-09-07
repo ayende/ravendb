@@ -1566,7 +1566,7 @@ namespace Raven.Database
             if (MappingThreadPool != null)
                 return;
 
-            MappingThreadPool = Configuration.CreateThreadPool(_tpCts.Token,this, "Map Thread Pool", new[]
+            MappingThreadPool = Configuration.CreateThreadPool(_tpCts.Token, this, "Map Thread Pool", new[]
             {
                 new Action(() => indexingExecuter.Execute())
             });
@@ -1584,7 +1584,7 @@ namespace Raven.Database
             if (ReducingThreadPool != null)
                 return;
 
-            ReducingThreadPool = Configuration.CreateThreadPool(_tpCts.Token,this, "Reduce Thread Pool", new[]
+            ReducingThreadPool = Configuration.CreateThreadPool(_tpCts.Token, this, "Reduce Thread Pool", new[]
             {
                 new Action(() => ReducingExecuter.Execute())
             });
