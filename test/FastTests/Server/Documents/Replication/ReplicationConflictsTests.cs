@@ -1,20 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Net;
-using System.Linq;
-using System.Net.Http;
-using System.Security.Cryptography.X509Certificates;
-using System.Threading;
 using System.Threading.Tasks;
-using Raven.Abstractions.Connection;
-using Raven.Client.Connection;
 using Raven.Client.Document;
 using Raven.Client.Replication.Messages;
-using Raven.Json.Linq;
 using Raven.Server.Documents.Replication;
-using Raven.Server.Extensions;
-using Sparrow.Logging;
 using Xunit;
 
 namespace FastTests.Server.Documents.Replication
@@ -292,24 +282,6 @@ namespace FastTests.Server.Documents.Replication
             } while (true);
             return conflicts;
         }
-
-        private async Task<Dictionary<string, List<ChangeVectorEntry[]>>> GetConflicts(DocumentStore store,
-            string docId)
-        {
-            var url = $"{store.Url}/databases/{store.DefaultDatabase}/replication/conflicts?docId={docId}";
-            using (var request = store.JsonRequestFactory.CreateHttpJsonRequest(
-                new CreateHttpJsonRequestParams(null, url, HttpMethod.Get, new OperationCredentials(null, CredentialCache.DefaultCredentials), new DocumentConvention())))
-            {
-                request.ExecuteRequest();
-                var conflictsJson = RavenJArray.Parse(await request.Response.Content.ReadAsStringAsync());
-                var conflicts = conflictsJson.Select(x => new
-                {
-                    Key = x.Value<string>("Key"),
-                    ChangeVector = x.Value<RavenJArray>("ChangeVector").Select(c => c.FromJson()).ToArray()
-                }).GroupBy(x => x.Key).ToDictionary(x => x.Key, x => x.Select(i => i.ChangeVector).ToList());
-
-                return conflicts;
-            }
-        }
     }
 }
+
