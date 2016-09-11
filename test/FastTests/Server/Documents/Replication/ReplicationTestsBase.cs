@@ -19,27 +19,27 @@ namespace FastTests.Server.Documents.Replication
 {
     public class ReplicationTestsBase : RavenTestBase
     {
-	    protected async Task<Dictionary<string, List<ChangeVectorEntry[]>>> GetConflicts(DocumentStore store,
-	string docId)
-		{
-			var url = $"{store.Url}/databases/{store.DefaultDatabase}/replication/conflicts?docId={docId}";
-			using (var request = store.JsonRequestFactory.CreateHttpJsonRequest(
-				new CreateHttpJsonRequestParams(null, url, HttpMethod.Get, new OperationCredentials(null, CredentialCache.DefaultCredentials), new DocumentConvention())))
-			{
-				request.ExecuteRequest();
-				var conflictsJson = RavenJArray.Parse(await request.Response.Content.ReadAsStringAsync());
-				var conflicts = conflictsJson.Select(x => new
-				{
-					Key = x.Value<string>("Key"),
-					ChangeVector = x.Value<RavenJArray>("ChangeVector").Select(c => c.FromJson()).ToArray()
-				}).GroupBy(x => x.Key).ToDictionary(x => x.Key, x => x.Select(i => i.ChangeVector).ToList());
+        protected async Task<Dictionary<string, List<ChangeVectorEntry[]>>> GetConflicts(DocumentStore store,
+    string docId)
+        {
+            var url = $"{store.Url}/databases/{store.DefaultDatabase}/replication/conflicts?docId={docId}";
+            using (var request = store.JsonRequestFactory.CreateHttpJsonRequest(
+                new CreateHttpJsonRequestParams(null, url, HttpMethod.Get, new OperationCredentials(null, CredentialCache.DefaultCredentials), new DocumentConvention())))
+            {
+                request.ExecuteRequest();
+                var conflictsJson = RavenJArray.Parse(await request.Response.Content.ReadAsStringAsync());
+                var conflicts = conflictsJson.Select(x => new
+                {
+                    Key = x.Value<string>("Key"),
+                    ChangeVector = x.Value<RavenJArray>("ChangeVector").Select(c => c.FromJson()).ToArray()
+                }).GroupBy(x => x.Key).ToDictionary(x => x.Key, x => x.Select(i => i.ChangeVector).ToList());
 
-				return conflicts;
-			}
-		}
+                return conflicts;
+            }
+        }
 
 
-		protected bool WaitForDocumentDeletion(DocumentStore store,
+        protected bool WaitForDocumentDeletion(DocumentStore store,
             string docId,
             int timeout = 10000)
         {
@@ -151,7 +151,8 @@ namespace FastTests.Server.Documents.Replication
                         new ReplicationDestination
                         {
                             Database = store.DefaultDatabase,
-                            Url = store.Url
+                            Url = store.Url,
+                            
                         });
                 session.Store(new ReplicationDocument
                 {
