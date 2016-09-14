@@ -13,6 +13,7 @@ using Raven.Client.Connection.Implementation;
 using Raven.Client.Document;
 using Raven.Client.Indexes;
 using Raven.Client.Replication.Messages;
+using Raven.Json.Linq;
 using Raven.Server.Documents.Indexes.Persistence.Lucene.Analyzers;
 using Raven.Server.Documents.Patch;
 using Raven.Server.Documents.Replication;
@@ -574,8 +575,6 @@ namespace FastTests.Server.Documents.Replication
 
             } while (true);
             return conflicts;
-        }
-    }
         }
 
         public class UserIndex : AbstractIndexCreationTask<User>
