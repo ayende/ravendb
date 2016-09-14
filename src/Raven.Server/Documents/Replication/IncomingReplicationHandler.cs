@@ -184,7 +184,6 @@ namespace Raven.Server.Documents.Replication
                                 buffer + doc.Position + (doc.ChangeVectorCount*sizeof(ChangeVectorEntry)),
                                 doc.DocumentSize, _context);
                         }
-
                         ChangeVectorEntry[] conflictingVector;
                         var conflictStatus = GetConflictStatus(_context, doc.Id, _tempReplicatedChangeVector,out conflictingVector);
                         switch (conflictStatus)

@@ -62,9 +62,9 @@ namespace Raven.Server.Documents.Handlers
                 {
                     array.Add(new DynamicJsonValue
                     {
-                        ["Key"] = conflict.Key.String,
+                        ["Key"] = conflict.Key,
                         ["ChangeVector"] = conflict.ChangeVector.ToJson(),
-						["Doc"] = conflict.Doc
+                        ["Doc"] = conflict.Doc
                     });					
                 }
 
@@ -75,7 +75,7 @@ namespace Raven.Server.Documents.Handlers
             }
         }		
 
-		[RavenAction("/databases/*/replication/topology", "GET")]
+        [RavenAction("/databases/*/replication/topology", "GET")]
         public Task GetReplicationTopology()
         {
             // TODO: Remove this, use "/databases/*/topology" isntead

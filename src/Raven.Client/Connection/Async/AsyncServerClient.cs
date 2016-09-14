@@ -12,7 +12,6 @@ using Raven.Abstractions.Data;
 using Raven.Abstractions.Exceptions;
 using Raven.Abstractions.Extensions;
 using Raven.Abstractions.Indexing;
-using Raven.Abstractions.Json;
 using Raven.Abstractions.Replication;
 using Raven.Abstractions.Util;
 using Raven.Client.Connection.Implementation;
@@ -37,6 +36,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -45,6 +45,8 @@ using Raven.Client.Data;
 using Raven.Client.Data.Indexes;
 using Raven.Client.Data.Queries;
 using Raven.Client.Indexing;
+using Raven.Client.Platform;
+using Sparrow.Json;
 
 namespace Raven.Client.Connection.Async
 {
@@ -60,8 +62,6 @@ namespace Raven.Client.Connection.Async
 
         private readonly Func<string, RequestTimeMetric> requestTimeMetricGetter;
 
-        internal readonly Func<string, IDatabaseChanges> changesGetter;
-
         private readonly IRequestTimeMetric requestTimeMetric;
 
         private readonly string databaseName;
@@ -71,8 +71,6 @@ namespace Raven.Client.Connection.Async
         private readonly OperationCredentials credentialsThatShouldBeUsedOnlyInOperationsWithoutReplication;
 
         private readonly IRequestExecuter requestExecuter;
-
-        internal readonly Lazy<IDatabaseChanges> changes;
 
         internal readonly DocumentConvention convention;
 
@@ -98,7 +96,6 @@ namespace Raven.Client.Connection.Async
             Guid? sessionId,
             Func<AsyncServerClient, string, ClusterBehavior, bool, IRequestExecuter> requestExecuterGetter,
             Func<string, RequestTimeMetric> requestTimeMetricGetter,
-            Func<string, IDatabaseChanges> changesGetter, 
             string databaseName,
             IDocumentConflictListener[] conflictListeners,
             bool incrementReadStripe,
@@ -122,9 +119,6 @@ namespace Raven.Client.Connection.Async
 
             this.requestTimeMetricGetter = requestTimeMetricGetter;
             requestTimeMetric = requestTimeMetricGetter(databaseName);
-
-            this.changesGetter = changesGetter;
-            changes = new Lazy<IDatabaseChanges>(() => changesGetter(databaseName));
         }
 
         private IRequestTimeMetric GetRequestTimeMetric(string operationUrl)
@@ -469,37 +463,21 @@ namespace Raven.Client.Connection.Async
         {
             return ExecuteWithReplication(HttpMethod.Delete, async operationMetadata =>
             {
-                var operationId = await NextOperationId(operationMetadata, token).ConfigureAwait(false);
-                var operation = new Operation(this, operationId);
-
-                await operation.Initialize().ConfigureAwait(false);
 
                 var notNullOptions = options ?? new QueryOperationOptions();
-                string path = queryToDelete.GetIndexQueryUrl(operationMetadata.Url, indexName, "queries") + "&allowStale=" + notNullOptions.AllowStale
+                string path = queryToDelete.GetIndexQueryUrl(operationMetadata.Url, indexName, "queries-delete-by-index") + "&allowStale=" + notNullOptions.AllowStale
                      + "&details=" + notNullOptions.RetrieveDetails;
                 if (notNullOptions.MaxOpsPerSecond != null)
                     path += "&maxOpsPerSec=" + notNullOptions.MaxOpsPerSecond;
                 if (notNullOptions.StaleTimeout != null)
                     path += "&staleTimeout=" + notNullOptions.StaleTimeout;
 
-                path += "&operationId=" + operationId;
+                var uri = new Uri(path.ToWebSocketPath());
 
-                token.ThrowCancellationIfNotDefault(); //maybe the operation is canceled and we can spare the request..
-                using (var request = jsonRequestFactory.CreateHttpJsonRequest(new CreateHttpJsonRequestParams(this, path, HttpMethod.Delete, operationMetadata.Credentials, convention, GetRequestTimeMetric(operationMetadata.Url)).AddOperationHeaders(OperationsHeaders)))
-                {
-                    request.AddRequestExecuterAndReplicationHeaders(this, operationMetadata.Url);
-                    try
-                    {
-                        await request.ExecuteRequestAsync().WithCancellation(token).ConfigureAwait(false);
-                    }
-                    catch (ErrorResponseException e)
-                    {
-                        if (e.StatusCode == HttpStatusCode.NotFound) throw new InvalidOperationException("There is no index named: " + indexName, e);
-                        throw;
-                    }
+                var webSocket = new RavenClientWebSocket();
+                await webSocket.ConnectAsync(uri, token);
 
-                    return operation;
-                }
+                return new Operation(webSocket, convention, token);
             }, token);
         }
 
@@ -532,7 +510,7 @@ namespace Raven.Client.Connection.Async
             }, token).ConfigureAwait(false);
             if (!ignoreMissing && batchResults[0].PatchResult != null &&
                 batchResults[0].PatchResult == PatchResult.DocumentDoesNotExists)
-                throw new DocumentDoesNotExistsException("Document with key " + key + " does not exist.");
+                throw new DocumentDoesNotExistException("Document with key " + key + " does not exist.");
             return batchResults[0].AdditionalData;
         }
 
@@ -626,7 +604,7 @@ namespace Raven.Client.Connection.Async
             if (databaseUrl == Url && ClusterBehavior == requestedClusterBehavior)
                 return this;
 
-            return new AsyncServerClient(databaseUrl, convention, credentialsThatShouldBeUsedOnlyInOperationsWithoutReplication, jsonRequestFactory, sessionId, requestExecuterGetter, requestTimeMetricGetter, changesGetter, database, conflictListeners, false, requestedClusterBehavior) { operationsHeaders = operationsHeaders };
+            return new AsyncServerClient(databaseUrl, convention, credentialsThatShouldBeUsedOnlyInOperationsWithoutReplication, jsonRequestFactory, sessionId, requestExecuterGetter, requestTimeMetricGetter, database, conflictListeners, false, requestedClusterBehavior) { operationsHeaders = operationsHeaders };
         }
 
         internal AsyncServerClient ForSystemDatabaseInternal()
@@ -635,7 +613,7 @@ namespace Raven.Client.Connection.Async
             if (databaseUrl == Url)
                 return this;
 
-            return new AsyncServerClient(databaseUrl, convention, credentialsThatShouldBeUsedOnlyInOperationsWithoutReplication, jsonRequestFactory, sessionId, requestExecuterGetter, requestTimeMetricGetter, changesGetter, databaseName, conflictListeners, false, ClusterBehavior.None) { operationsHeaders = operationsHeaders };
+            return new AsyncServerClient(databaseUrl, convention, credentialsThatShouldBeUsedOnlyInOperationsWithoutReplication, jsonRequestFactory, sessionId, requestExecuterGetter, requestTimeMetricGetter, databaseName, conflictListeners, false, ClusterBehavior.None) { operationsHeaders = operationsHeaders };
         }
 
         public NameValueCollection OperationsHeaders
@@ -873,8 +851,7 @@ namespace Raven.Client.Connection.Async
         public Task<Operation> UpdateByIndexAsync(string indexName, IndexQuery queryToUpdate, PatchRequest patch, QueryOperationOptions options = null, CancellationToken token = default(CancellationToken))
         {
             var notNullOptions = options ?? new QueryOperationOptions();
-            var requestData = RavenJObject.FromObject(patch).ToString(Formatting.Indented);
-            return UpdateByIndexImpl(indexName, queryToUpdate, notNullOptions, requestData, token);
+            return UpdateByIndexImpl(indexName, queryToUpdate, notNullOptions, patch, token);
         }
 
         public Task<QueryResult> MoreLikeThisAsync(MoreLikeThisQuery query, CancellationToken token = default(CancellationToken))
@@ -889,15 +866,6 @@ namespace Raven.Client.Connection.Async
                     return json.JsonDeserialization<QueryResult>();
                 }
             }, token);
-        }
-
-        private async Task<long> NextOperationId(OperationMetadata operationMetadata, CancellationToken token = default(CancellationToken))
-        {
-            using (var request = jsonRequestFactory.CreateHttpJsonRequest(new CreateHttpJsonRequestParams(this, operationMetadata.Url + "/operations/next-operation-id", HttpMethod.Get, operationMetadata.Credentials, convention, GetRequestTimeMetric(operationMetadata.Url)).AddOperationHeaders(OperationsHeaders)))
-            {
-                var readResponseJson = await request.ReadResponseJsonAsync().WithCancellation(token).ConfigureAwait(false);
-                return readResponseJson.Value<long>();
-            }
         }
 
         public Task<long> NextIdentityForAsync(string name, CancellationToken token = default(CancellationToken))
@@ -925,54 +893,52 @@ namespace Raven.Client.Connection.Async
             }, token);
         }
 
-        private Task<Operation> UpdateByIndexImpl(string indexName, IndexQuery queryToUpdate, QueryOperationOptions options, string requestData, CancellationToken token = default(CancellationToken))
+        private Task<Operation> UpdateByIndexImpl(string indexName, IndexQuery queryToUpdate, QueryOperationOptions options, PatchRequest requestData, CancellationToken token = default(CancellationToken))
         {
             return ExecuteWithReplication(HttpMethods.Patch, async operationMetadata =>
             {
-                var operationId = await NextOperationId(operationMetadata, token).ConfigureAwait(false);
-                var operation = new Operation(this, operationId);
-
-                await operation.Initialize().ConfigureAwait(false);
-
                 var notNullOptions = options ?? new QueryOperationOptions();
-                string path = queryToUpdate.GetIndexQueryUrl(operationMetadata.Url, indexName, "queries") + "&allowStale=" + notNullOptions.AllowStale
+                string path = queryToUpdate.GetIndexQueryUrl(operationMetadata.Url, indexName, "queries-update-by-index") + "&allowStale=" + notNullOptions.AllowStale
                     + "&maxOpsPerSec=" + notNullOptions.MaxOpsPerSecond + "&details=" + notNullOptions.RetrieveDetails;
                 if (notNullOptions.StaleTimeout != null)
                     path += "&staleTimeout=" + notNullOptions.StaleTimeout;
 
-                path += "&operationId=" + operationId;
-                
-                using (var request = jsonRequestFactory.CreateHttpJsonRequest(new CreateHttpJsonRequestParams(this, path, HttpMethods.Patch, operationMetadata.Credentials, convention, GetRequestTimeMetric(operationMetadata.Url))))
+                var uri = new Uri(path.ToWebSocketPath());
+
+                var webSocket = new RavenClientWebSocket();
+                await webSocket.ConnectAsync(uri, token);
+
+                using (var memoryStream = new MemoryStream())
                 {
-                    request.AddOperationHeaders(OperationsHeaders);
-                    await request.WriteAsync(requestData).ConfigureAwait(false);
+                    memoryStream.SetLength(4096);
 
-                    try
-                    {
-                        await request.ExecuteRequestAsync().WithCancellation(token).ConfigureAwait(false);
-                    }
-                    catch (ErrorResponseException e)
-                    {
-                        if (e.StatusCode == HttpStatusCode.NotFound) throw new InvalidOperationException("There is no index named: " + indexName);
-                        throw;
-                    }
+                    RavenJObject.FromObject(requestData).WriteTo(memoryStream);
 
-                    return operation;
+                    ArraySegment<byte> buffer;
+                    memoryStream.TryGetBuffer(out buffer);
+
+                    await webSocket.SendAsync(buffer, WebSocketMessageType.Text, true, token);
+
+                    return new Operation(webSocket, convention, token);
                 }
             }, token);
         }
 
-        public Task<FacetResults> GetFacetsAsync(string index, IndexQuery query, string facetSetupDoc, int start = 0,
-                                                 int? pageSize = null, CancellationToken token = default(CancellationToken))
+        public async Task<FacetedQueryResult> GetFacetsAsync(FacetQuery query, CancellationToken token = new CancellationToken())
         {
-            return ExecuteWithReplication(HttpMethod.Get, async operationMetadata =>
+            if (string.IsNullOrWhiteSpace(query.FacetSetupDoc) == false && query.Facets != null && query.Facets.Count > 0)
+                throw new InvalidOperationException($"You cannot specify both '{nameof(FacetQuery.FacetSetupDoc)}' and '{nameof(FacetQuery.Facets)}'.");
+
+            var method = query.CalculateHttpMethod();
+            if (method == HttpMethod.Post)
             {
-                var requestUri = operationMetadata.Url + string.Format("/facets/{0}?facetDoc={1}{2}&facetStart={3}&facetPageSize={4}",
-                Uri.EscapeUriString(index),
-                Uri.EscapeDataString(facetSetupDoc),
-                query.GetMinimalQueryString(),
-                start,
-                pageSize);
+                var results = await GetMultiFacetsAsync(new[] { query }, token).ConfigureAwait(false);
+                return results.FirstOrDefault();
+            }
+
+            return await ExecuteWithReplication(HttpMethod.Get, async operationMetadata =>
+            {
+                var requestUri = operationMetadata.Url + $"/queries/{query.IndexName}?{query.GetQueryString(method)}";
 
                 using (var request = jsonRequestFactory.CreateHttpJsonRequest(new CreateHttpJsonRequestParams(this, requestUri, HttpMethod.Get, operationMetadata.Credentials, convention, GetRequestTimeMetric(operationMetadata.Url)).AddOperationHeaders(OperationsHeaders)))
                 {
@@ -983,60 +949,31 @@ namespace Raven.Client.Connection.Async
                     request.SkipServerCheck = cachedRequestDetails.SkipServerCheck;
 
                     var json = (RavenJObject)await request.ReadResponseJsonAsync().WithCancellation(token).ConfigureAwait(false);
-                    return json.JsonDeserialization<FacetResults>();
+                    return json.JsonDeserialization<FacetedQueryResult>();
                 }
             }, token);
         }
 
-        public Task<FacetResults[]> GetMultiFacetsAsync(FacetQuery[] facetedQueries, CancellationToken token = default(CancellationToken))
+        public Task<FacetedQueryResult[]> GetMultiFacetsAsync(FacetQuery[] facetedQueries, CancellationToken token = default(CancellationToken))
         {
             var multiGetReuestItems = facetedQueries.Select(x =>
             {
-                string addition;
-                if (x.FacetSetupDoc != null)
-                {
-                    addition = "facetDoc=" + x.FacetSetupDoc;
-                    return new GetRequest()
-                    {
-                        Url = "/facets/" + x.IndexName,
-                        Query = string.Format("{0}&facetStart={1}&facetPageSize={2}&{3}",
-                            x.Query.GetQueryString(),
-                            x.PageStart,
-                            x.PageSize,
-                            addition)
-                    };
-                }
+                if (string.IsNullOrWhiteSpace(x.FacetSetupDoc) == false && x.Facets != null && x.Facets.Count > 0)
+                    throw new InvalidOperationException($"You cannot specify both '{nameof(FacetQuery.FacetSetupDoc)}' and '{nameof(FacetQuery.Facets)}'.");
 
-                var serializedFacets = SerializeFacetsToFacetsJsonString(x.Facets);
-                if (serializedFacets.Length < (32 * 1024) - 1)
+                var method = x.CalculateHttpMethod();
+                return new GetRequest
                 {
-                    addition = "facets=" + Uri.EscapeDataString(serializedFacets);
-                    return new GetRequest()
-                    {
-                        Url = "/facets/" + x.IndexName,
-                        Query = string.Format("{0}&facetStart={1}&facetPageSize={2}&{3}",
-                            x.Query.GetQueryString(),
-                            x.PageStart,
-                            x.PageSize,
-                            addition)
-                    };
-                }
-
-                return new GetRequest()
-                {
-                    Url = "/facets/" + x.IndexName,
-                    Query = string.Format("{0}&facetStart={1}&facetPageSize={2}",
-                            x.Query.GetQueryString(),
-                            x.PageStart,
-                            x.PageSize),
-                    Method = "POST",
-                    Content = serializedFacets
+                    Url = "/queries/" + x.IndexName,
+                    Query = x.GetQueryString(method),
+                    Method = method.Method,
+                    Content = method == HttpMethod.Post ? x.GetFacetsAsJson() : null
                 };
             }).ToArray();
 
             var results = MultiGetAsync(multiGetReuestItems, token).ContinueWith(x =>
             {
-                var facetResults = new FacetResults[x.Result.Length];
+                var facetResults = new FacetedQueryResult[x.Result.Length];
 
                 var getResponses = x.Result;
                 for (var facetResultCounter = 0; facetResultCounter < facetResults.Length; facetResultCounter++)
@@ -1050,76 +987,12 @@ namespace Raven.Client.Connection.Async
                     }
                     var curFacetDoc = getResponse.Result;
 
-                    facetResults[facetResultCounter] = curFacetDoc.JsonDeserialization<FacetResults>();
+                    facetResults[facetResultCounter] = curFacetDoc.JsonDeserialization<FacetedQueryResult>();
                 }
 
                 return facetResults;
             }, token);
             return results;
-        }
-
-        public Task<FacetResults> GetFacetsAsync(string index, IndexQuery query, List<Facet> facets, int start = 0,
-                                                 int? pageSize = null,
-                                                 CancellationToken token = default(CancellationToken))
-        {
-            var facetsJson = SerializeFacetsToFacetsJsonString(facets);
-            var method = facetsJson.Length > 1024 ? HttpMethod.Post : HttpMethod.Get;
-            if (method == HttpMethod.Post)
-            {
-                return GetMultiFacetsAsync(new[]
-                {
-                    new FacetQuery
-                    {
-                        Facets =  facets,
-                        IndexName = index,
-                        Query = query,
-                        PageSize = pageSize,
-                        PageStart = start
-                    }
-                }).ContinueWith(x => x.Result.FirstOrDefault());
-            }
-            return ExecuteWithReplication(method, async operationMetadata =>
-            {
-                var requestUri = operationMetadata.Url + string.Format("/facets/{0}?{1}&facetStart={2}&facetPageSize={3}",
-                                                                Uri.EscapeUriString(index),
-                                                                query.GetQueryString(),
-                                                                start,
-                                                                pageSize);
-
-                if (method == HttpMethod.Get)
-                    requestUri += "&facets=" + Uri.EscapeDataString(facetsJson);
-                using (var request = jsonRequestFactory.CreateHttpJsonRequest(new CreateHttpJsonRequestParams(this, requestUri, method, operationMetadata.Credentials, convention, GetRequestTimeMetric(operationMetadata.Url)).AddOperationHeaders(OperationsHeaders)).AddRequestExecuterAndReplicationHeaders(this, operationMetadata.Url))
-                {
-                    if (method != HttpMethod.Get)
-                    {
-                        await request.WriteAsync(facetsJson).ConfigureAwait(false);
-                    }
-
-                    var json = await request.ReadResponseJsonAsync().ConfigureAwait(false);
-
-                    return json.JsonDeserialization<FacetResults>();
-                }
-            });
-        }
-
-        internal static string SerializeFacetsToFacetsJsonString(List<Facet> facets)
-        {
-            var ravenJArray = (RavenJArray)RavenJToken.FromObject(facets, new JsonSerializer
-            {
-                NullValueHandling = NullValueHandling.Ignore,
-                DefaultValueHandling = DefaultValueHandling.Ignore,
-            });
-            foreach (var facet in ravenJArray)
-            {
-                var obj = (RavenJObject)facet;
-                if (obj.Value<string>("Name") == obj.Value<string>("DisplayName"))
-                    obj.Remove("DisplayName");
-                var jArray = obj.Value<RavenJArray>("Ranges");
-                if (jArray != null && jArray.Length == 0)
-                    obj.Remove("Ranges");
-            }
-            string facetsJson = ravenJArray.ToString(Formatting.None);
-            return facetsJson;
         }
 
         public Task<LogItem[]> GetLogsAsync(bool errorsOnly, CancellationToken token = default(CancellationToken))
@@ -1486,7 +1359,7 @@ namespace Raven.Client.Connection.Async
         {
             return ExecuteWithReplication(HttpMethod.Post, async operationMetadata =>
             {
-                using (var request = jsonRequestFactory.CreateHttpJsonRequest(new CreateHttpJsonRequestParams(this, operationMetadata.Url + "/bulk_docs", HttpMethod.Post, 
+                using (var request = jsonRequestFactory.CreateHttpJsonRequest(new CreateHttpJsonRequestParams(this, operationMetadata.Url + "/bulk_docs", HttpMethod.Post,
                     operationMetadata.Credentials, convention, GetRequestTimeMetric(operationMetadata.Url)).AddOperationHeaders(OperationsHeaders)))
                 {
                     request.AddRequestExecuterAndReplicationHeaders(this, operationMetadata.Url);
@@ -2336,7 +2209,7 @@ namespace Raven.Client.Connection.Async
         internal AsyncServerClient WithInternal(ICredentials credentialsForSession)
         {
             return new AsyncServerClient(Url, convention, new OperationCredentials(credentialsThatShouldBeUsedOnlyInOperationsWithoutReplication.ApiKey, credentialsForSession), jsonRequestFactory, sessionId,
-                                         requestExecuterGetter, requestTimeMetricGetter, changesGetter, databaseName, conflictListeners, false, convention.ClusterBehavior);
+                                         requestExecuterGetter, requestTimeMetricGetter, databaseName, conflictListeners, false, convention.ClusterBehavior);
         }
 
         internal async Task<ReplicationDocumentWithClusterInformation> DirectGetReplicationDestinationsAsync(OperationMetadata operationMetadata, TimeSpan? timeout = null)

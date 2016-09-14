@@ -8,25 +8,27 @@ namespace Voron.Data.BTrees
     public unsafe class TreeMutableState
     {
         private readonly LowLevelTransaction _tx;
-	    public long BranchPages;
+
+        public RootObjectType RootObjectType;
+        public long RootPageNumber;
+        public TreeFlags Flags;
+
+        private bool _isModified;
+        public bool InWriteTransaction;
+
+        public long BranchPages;
         public long LeafPages;
         public long OverflowPages;
         public int Depth;
         public long PageCount;
         public long NumberOfEntries;
-	    public TreeFlags Flags;
-
-        public long RootPageNumber;
-        private bool _isModified;
-
-        public bool InWriteTransaction;
 
         public TreeMutableState(LowLevelTransaction tx)
-	    {
-		    _tx = tx;
-	    }
+        {
+            _tx = tx;
+        }
 
-	    public bool IsModified
+        public bool IsModified
         {
             get { return _isModified; }
             set
@@ -37,10 +39,10 @@ namespace Voron.Data.BTrees
             }
         }
 
-	    public void CopyTo(TreeRootHeader* header)
-	    {
-	        header->RootObjectType = RootObjectType.VariableSizeTree;
-			header->Flags = Flags;
+        public void CopyTo(TreeRootHeader* header)
+        {
+            header->RootObjectType = RootObjectType;
+            header->Flags = Flags;
             header->BranchPages = BranchPages;
             header->Depth = Depth;
             header->LeafPages = LeafPages;
@@ -54,56 +56,57 @@ namespace Voron.Data.BTrees
         {
             return new TreeMutableState(_tx)
                 {
+                    RootObjectType = RootObjectType,
                     BranchPages = BranchPages,
                     Depth = Depth,
                     NumberOfEntries = NumberOfEntries,
                     LeafPages = LeafPages,
                     OverflowPages = OverflowPages,
                     PageCount = PageCount,
-					Flags = Flags,
+                    Flags = Flags,
                     RootPageNumber = RootPageNumber,
                 };
         }
 
-		public void RecordNewPage(TreePage p, int num)
-		{
-			PageCount += num;
+        public void RecordNewPage(TreePage p, int num)
+        {
+            PageCount += num;
 
-			if (p.IsBranch)
-			{
-				BranchPages++;
-			}
-			else if (p.IsLeaf)
-			{
-				LeafPages++;
-			}
-			else if (p.IsOverflow)
-			{
-				OverflowPages += num;
-			}
-		}
+            if (p.IsBranch)
+            {
+                BranchPages++;
+            }
+            else if (p.IsLeaf)
+            {
+                LeafPages++;
+            }
+            else if (p.IsOverflow)
+            {
+                OverflowPages += num;
+            }
+        }
 
-		public void RecordFreedPage(TreePage p, int num)
-		{
-			PageCount -= num;
-			Debug.Assert(PageCount >= 0);
+        public void RecordFreedPage(TreePage p, int num)
+        {
+            PageCount -= num;
+            Debug.Assert(PageCount >= 0);
 
-			if (p.IsBranch)
-			{
-				BranchPages--;
-				Debug.Assert(BranchPages >= 0);
-			}
-			else if (p.IsLeaf)
-			{
-				LeafPages--;
-				Debug.Assert(LeafPages >= 0);
-			}
-			else if (p.IsOverflow)
-			{
-				OverflowPages -= num;
-				Debug.Assert(OverflowPages >= 0);
-			}
-		}
+            if (p.IsBranch)
+            {
+                BranchPages--;
+                Debug.Assert(BranchPages >= 0);
+            }
+            else if (p.IsLeaf)
+            {
+                LeafPages--;
+                Debug.Assert(LeafPages >= 0);
+            }
+            else if (p.IsOverflow)
+            {
+                OverflowPages -= num;
+                Debug.Assert(OverflowPages >= 0);
+            }
+        }
 
         public override string ToString()
         {
