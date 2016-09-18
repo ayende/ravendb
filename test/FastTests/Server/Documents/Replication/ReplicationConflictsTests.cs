@@ -577,26 +577,6 @@ namespace FastTests.Server.Documents.Replication
             return conflicts;
         }
 
-        private async Task<Dictionary<string, List<ChangeVectorEntry[]>>> GetConflicts(DocumentStore store,
-            string docId)
-        {
-            var url = $"{store.Url}/databases/{store.DefaultDatabase}/replication/conflicts?docId={docId}";
-            using (var request = store.JsonRequestFactory.CreateHttpJsonRequest(
-                new CreateHttpJsonRequestParams(null, url, HttpMethod.Get, new OperationCredentials(null, CredentialCache.DefaultCredentials), new DocumentConvention())))
-            {
-                request.ExecuteRequest();
-                var conflictsJson = RavenJArray.Parse(await request.Response.Content.ReadAsStringAsync());
-              
-                var conflicts = conflictsJson.Select(x => new
-                {
-                    Key = x.Value<string>("Key"),
-                    ChangeVector = x.Value<RavenJArray>("ChangeVector").Select(c => c.FromJson()).ToArray()
-                }).GroupBy(x => x.Key).ToDictionary(x => x.Key, x => x.Select(i => i.ChangeVector).ToList());
-
-                return conflicts;
-            }
-        }
-
         public class UserIndex : AbstractIndexCreationTask<User>
         {
             public UserIndex()

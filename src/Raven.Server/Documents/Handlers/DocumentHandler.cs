@@ -18,14 +18,12 @@ using Raven.Server.Documents.Includes;
 using Raven.Server.Documents.Patch;
 using Raven.Server.Documents.Transformers;
 using Raven.Server.Exceptions;
-using Raven.Server.Extensions;
 using Raven.Server.Json;
 using Raven.Server.Routing;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 using Sparrow;
 using Sparrow.Json;
-using Sparrow.Json.Parsing;
 using Voron.Exceptions;
 
 namespace Raven.Server.Documents.Handlers
@@ -221,26 +219,6 @@ namespace Raven.Server.Documents.Handlers
 
                 writer.WriteEndObject();
             }
-        }
-
-        private DynamicJsonValue GetJsonForConflicts(string docId, IEnumerable<DocumentConflict> conflicts)
-        {
-            var conflictsArray = new DynamicJsonArray();
-            foreach (var c in conflicts)
-            {
-                conflictsArray.Add(new DynamicJsonValue
-                {
-                    ["ChangeVector"] = c.ChangeVector.ToJson(),
-                    ["Doc"] = c.Doc
-                });
-            }
-
-            return new DynamicJsonValue
-            {
-                ["Message"] = "Conflict detected on " + docId + ", conflict must be resolved before the document will be accessible",
-                ["DocId"] = docId,
-                ["Conflics"] = conflictsArray
-            };
         }
 
         private unsafe long ComputeEtagsFor(List<Document> documents)
