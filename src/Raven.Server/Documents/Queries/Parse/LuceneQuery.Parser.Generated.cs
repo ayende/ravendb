@@ -340,7 +340,7 @@ internal partial class LuceneQueryParser: ShiftReduceParser<ValueType, LexLocati
         break;
       case 16: // field_exp -> fieldname, range_operator_exp
 {
-        //Console.WriteLine("Found rule field_exp -> fieldname range_operator_exp");		
+        //Console.WriteLine("Found rule field_exp -> fieldname range_operator_exp");  
         CurrentSemanticValue.fn = new FieldLuceneASTNode(){FieldName = ValueStack[ValueStack.Depth-2].s, Node = ValueStack[ValueStack.Depth-1].rn};
         }
         break;

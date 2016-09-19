@@ -158,7 +158,7 @@ namespace Raven.Server.Documents.Queries.Parse
                     break;
                 case TermType.QuotedWildcard:
                 case TermType.WildCardTerm:
-                case TermType.PrefixTerm:				    
+                case TermType.PrefixTerm:        
                     yield return GetWildcardTerm(configuration).Text;
                     break;
                 case TermType.Float:
@@ -267,7 +267,7 @@ This edge-case has a very slim chance of happening, but still we should not igno
             {
                 var res = AnalyzedWildCardQueries(configuration);
                 res.Boost = boost;
-                return res;		        
+                return res;          
             }
 
             if (Type == TermType.WildCardTerm)

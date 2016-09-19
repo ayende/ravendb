@@ -115,7 +115,7 @@ namespace Raven.Server.Documents.Queries.Parse
                     var res = str[bPos];
                     switch (state)
                     {
-                        case CommaState.None:						
+                        case CommaState.None:      
                             if (res == 44)
                             {
                                 state = CommaState.Comma;
@@ -126,12 +126,12 @@ namespace Raven.Server.Documents.Queries.Parse
                         case CommaState.Comma:
                             state = CommaState.AfterComma;
                             return 44;
-                        case CommaState.AfterComma:						
+                        case CommaState.AfterComma:      
                             state = CommaState.None;
                             bPos++;
-                        return 32;						
+                        return 32;      
                     }
-                }					
+                }     
                 else if (bPos == sLen) { bPos++; return '\n'; }   // one strike, see new line
                 else { bPos++; return EndOfFile; }                // two strikes and you're out!
             }
@@ -759,28 +759,28 @@ namespace Raven.Server.Documents.Queries.Parse
                                     break;
                             }
                             return EndToken;
-                        case 1: // Recognized '{Upper128}',	Shortest string "\xC0"
-                        case 2: // Recognized '{Upper128}',	Shortest string "\x80"
-                        case 3: // Recognized '{Upper128}',	Shortest string "\xE0"
-                        case 4: // Recognized '{Upper128}',	Shortest string "\xF0"
+                        case 1: // Recognized '{Upper128}', Shortest string "\xC0"
+                        case 2: // Recognized '{Upper128}', Shortest string "\x80"
+                        case 3: // Recognized '{Upper128}', Shortest string "\xE0"
+                        case 4: // Recognized '{Upper128}', Shortest string "\xF0"
                             uppr++;
                             break;
-                        case 5: // Recognized '{Utf8pfx4}{Utf8cont}',	Shortest string "\xF0\x80"
+                        case 5: // Recognized '{Utf8pfx4}{Utf8cont}', Shortest string "\xF0\x80"
                             uppr += 2;
                             break;
-                        case 6: // Recognized '{Utf8pfx4}{Utf8cont}{2}',	Shortest string "\xF0\x80\x80"
+                        case 6: // Recognized '{Utf8pfx4}{Utf8cont}{2}', Shortest string "\xF0\x80\x80"
                             uppr += 3;
                             break;
-                        case 7: // Recognized '{Utf8pfx4}{Utf8cont}{3}',	Shortest string "\xF0\x80\x80\x80"
+                        case 7: // Recognized '{Utf8pfx4}{Utf8cont}{3}', Shortest string "\xF0\x80\x80\x80"
                             utfX += 3;
                             break;
-                        case 8: // Recognized '{Utf8pfx3}{Utf8cont}',	Shortest string "\xE0\x80"
+                        case 8: // Recognized '{Utf8pfx3}{Utf8cont}', Shortest string "\xE0\x80"
                             uppr += 2;
                             break;
-                        case 9: // Recognized '{Utf8pfx3}{Utf8cont}{2}',	Shortest string "\xE0\x80\x80"
+                        case 9: // Recognized '{Utf8pfx3}{Utf8cont}{2}', Shortest string "\xE0\x80\x80"
                             utfX += 2;
                             break;
-                        case 10: // Recognized '{Utf8pfx2}{Utf8cont}',	Shortest string "\xC0\x80"
+                        case 10: // Recognized '{Utf8pfx2}{Utf8cont}', Shortest string "\xC0\x80"
                             utfX++;
                             break;
                         default:
