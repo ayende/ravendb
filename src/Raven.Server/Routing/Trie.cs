@@ -270,7 +270,7 @@ namespace Raven.Server.Routing
         private static bool CharEqualsAt(string x, int xIndex, string y, int yIndex)
         {
             if (x[xIndex] == y[yIndex])
-                return true;			
+                return true;   
 
             if (x[xIndex] > 'Z' && y[yIndex] <= 'Z')
                 return y[yIndex] - 'A' + 'a' == x[xIndex];

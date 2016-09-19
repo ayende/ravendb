@@ -419,7 +419,7 @@ namespace Raven.Server.Documents.SqlReplication
         {
             try
             {
-                _cancellationTokenSource.Cancel();					
+                _cancellationTokenSource.Cancel();     
             }
             catch (ObjectDisposedException)
             {

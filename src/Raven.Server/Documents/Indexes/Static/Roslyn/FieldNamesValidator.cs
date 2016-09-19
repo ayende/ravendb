@@ -33,12 +33,12 @@ namespace Raven.Server.Documents.Indexes.Static.Roslyn
                 return;
 
             var message = $@"Map and Reduce functions of a index must return identical types.
-Baseline function		: {_baseFunction}
-Non matching function	: {indexingFunction}
+Baseline function  : {_baseFunction}
+Non matching function : {indexingFunction}
 
-Common fields			: {string.Join(", ", _baseFields.Intersect(_visitor.Fields))}
-Missing fields			: {string.Join(", ", _baseFields.Except(_visitor.Fields))}
-Additional fields		: {string.Join(", ", _visitor.Fields.Except(_baseFields))}";
+Common fields   : {string.Join(", ", _baseFields.Intersect(_visitor.Fields))}
+Missing fields   : {string.Join(", ", _baseFields.Except(_visitor.Fields))}
+Additional fields  : {string.Join(", ", _visitor.Fields.Except(_baseFields))}";
 
             throw new InvalidOperationException(message);
         }

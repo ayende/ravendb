@@ -1584,61 +1584,61 @@ int NextState() {
             if (yywrap())
                 return (int)Token.EOF;
             break;
-        case 1: // Recognized '{UnquotedTerm}',	Shortest string "\x01"
-        case 4: // Recognized '{UnquotedTerm}',	Shortest string "&"
-        case 15: // Recognized '{UnquotedTerm}',	Shortest string "@"
-        case 16: // Recognized '{UnquotedTerm}',	Shortest string "A"
-        case 17: // Recognized '{UnquotedTerm}',	Shortest string "D"
-        case 18: // Recognized '{UnquotedTerm}',	Shortest string "F"
-        case 19: // Recognized '{UnquotedTerm}',	Shortest string "I"
-        case 20: // Recognized '{UnquotedTerm}',	Shortest string "L"
-        case 21: // Recognized '{UnquotedTerm}',	Shortest string "N"
-        case 22: // Recognized '{UnquotedTerm}',	Shortest string "O"
-        case 23: // Recognized '{UnquotedTerm}',	Shortest string "T"
-        case 28: // Recognized '{UnquotedTerm}',	Shortest string "|"
-        case 36: // Recognized '{UnquotedTerm}',	Shortest string "NO"
-        case 37: // Recognized '{UnquotedTerm}',	Shortest string "NU"
-        case 38: // Recognized '{UnquotedTerm}',	Shortest string "NUL"
-        case 41: // Recognized '{UnquotedTerm}',	Shortest string "Lx"
-        case 42: // Recognized '{UnquotedTerm}',	Shortest string "Lx+"
-        case 44: // Recognized '{UnquotedTerm}',	Shortest string "IN"
-        case 45: // Recognized '{UnquotedTerm}',	Shortest string "Ix"
-        case 46: // Recognized '{UnquotedTerm}',	Shortest string "Ix+"
-        case 48: // Recognized '{UnquotedTerm}',	Shortest string "INT"
-        case 49: // Recognized '{UnquotedTerm}',	Shortest string "INTE"
-        case 50: // Recognized '{UnquotedTerm}',	Shortest string "INTER"
-        case 51: // Recognized '{UnquotedTerm}',	Shortest string "INTERS"
-        case 52: // Recognized '{UnquotedTerm}',	Shortest string "INTERSE"
-        case 53: // Recognized '{UnquotedTerm}',	Shortest string "INTERSEC"
-        case 55: // Recognized '{UnquotedTerm}',	Shortest string "Fx"
-        case 56: // Recognized '{UnquotedTerm}',	Shortest string "Fx+"
-        case 58: // Recognized '{UnquotedTerm}',	Shortest string "Fx0."
-        case 59: // Recognized '{UnquotedTerm}',	Shortest string "Fx0.+"
-        case 61: // Recognized '{UnquotedTerm}',	Shortest string "Fx++"
-        case 62: // Recognized '{UnquotedTerm}',	Shortest string "Fx++0"
-        case 63: // Recognized '{UnquotedTerm}',	Shortest string "Dx"
-        case 64: // Recognized '{UnquotedTerm}',	Shortest string "Dx+"
-        case 66: // Recognized '{UnquotedTerm}',	Shortest string "Dx0."
-        case 67: // Recognized '{UnquotedTerm}',	Shortest string "Dx0.+"
-        case 69: // Recognized '{UnquotedTerm}',	Shortest string "Dx++"
-        case 70: // Recognized '{UnquotedTerm}',	Shortest string "Dx++0"
-        case 71: // Recognized '{UnquotedTerm}',	Shortest string "AN"
-        case 73: // Recognized '{UnquotedTerm}',	Shortest string "@\x01"
-        case 76: // Recognized '{UnquotedTerm}',	Shortest string "@\x01<"
-        case 77: // Recognized '{UnquotedTerm}',	Shortest string "@\x01<\x01"
-        case 84: // Recognized '{UnquotedTerm}',	Shortest string "0."
-        case 88: // Recognized '{UnquotedTerm}',	Shortest string "0000-"
-        case 90: // Recognized '{UnquotedTerm}',	Shortest string "0000-0"
-        case 91: // Recognized '{UnquotedTerm}',	Shortest string "0000-00"
-        case 92: // Recognized '{UnquotedTerm}',	Shortest string "0000-00-"
-        case 93: // Recognized '{UnquotedTerm}',	Shortest string "0000-00-0"
-        case 94: // Recognized '{UnquotedTerm}',	Shortest string "0000-00-00"
-        case 95: // Recognized '{UnquotedTerm}',	Shortest string "0000-00-00T"
-        case 96: // Recognized '{UnquotedTerm}',	Shortest string "0000-00-00T0"
-        case 97: // Recognized '{UnquotedTerm}',	Shortest string "0000-00-00T00"
-        case 100: // Recognized '{UnquotedTerm}',	Shortest string "0.+"
-        case 102: // Recognized '{UnquotedTerm}',	Shortest string "0x"
-        case 103: // Recognized '{UnquotedTerm}',	Shortest string "0x+"
+        case 1: // Recognized '{UnquotedTerm}', Shortest string "\x01"
+        case 4: // Recognized '{UnquotedTerm}', Shortest string "&"
+        case 15: // Recognized '{UnquotedTerm}', Shortest string "@"
+        case 16: // Recognized '{UnquotedTerm}', Shortest string "A"
+        case 17: // Recognized '{UnquotedTerm}', Shortest string "D"
+        case 18: // Recognized '{UnquotedTerm}', Shortest string "F"
+        case 19: // Recognized '{UnquotedTerm}', Shortest string "I"
+        case 20: // Recognized '{UnquotedTerm}', Shortest string "L"
+        case 21: // Recognized '{UnquotedTerm}', Shortest string "N"
+        case 22: // Recognized '{UnquotedTerm}', Shortest string "O"
+        case 23: // Recognized '{UnquotedTerm}', Shortest string "T"
+        case 28: // Recognized '{UnquotedTerm}', Shortest string "|"
+        case 36: // Recognized '{UnquotedTerm}', Shortest string "NO"
+        case 37: // Recognized '{UnquotedTerm}', Shortest string "NU"
+        case 38: // Recognized '{UnquotedTerm}', Shortest string "NUL"
+        case 41: // Recognized '{UnquotedTerm}', Shortest string "Lx"
+        case 42: // Recognized '{UnquotedTerm}', Shortest string "Lx+"
+        case 44: // Recognized '{UnquotedTerm}', Shortest string "IN"
+        case 45: // Recognized '{UnquotedTerm}', Shortest string "Ix"
+        case 46: // Recognized '{UnquotedTerm}', Shortest string "Ix+"
+        case 48: // Recognized '{UnquotedTerm}', Shortest string "INT"
+        case 49: // Recognized '{UnquotedTerm}', Shortest string "INTE"
+        case 50: // Recognized '{UnquotedTerm}', Shortest string "INTER"
+        case 51: // Recognized '{UnquotedTerm}', Shortest string "INTERS"
+        case 52: // Recognized '{UnquotedTerm}', Shortest string "INTERSE"
+        case 53: // Recognized '{UnquotedTerm}', Shortest string "INTERSEC"
+        case 55: // Recognized '{UnquotedTerm}', Shortest string "Fx"
+        case 56: // Recognized '{UnquotedTerm}', Shortest string "Fx+"
+        case 58: // Recognized '{UnquotedTerm}', Shortest string "Fx0."
+        case 59: // Recognized '{UnquotedTerm}', Shortest string "Fx0.+"
+        case 61: // Recognized '{UnquotedTerm}', Shortest string "Fx++"
+        case 62: // Recognized '{UnquotedTerm}', Shortest string "Fx++0"
+        case 63: // Recognized '{UnquotedTerm}', Shortest string "Dx"
+        case 64: // Recognized '{UnquotedTerm}', Shortest string "Dx+"
+        case 66: // Recognized '{UnquotedTerm}', Shortest string "Dx0."
+        case 67: // Recognized '{UnquotedTerm}', Shortest string "Dx0.+"
+        case 69: // Recognized '{UnquotedTerm}', Shortest string "Dx++"
+        case 70: // Recognized '{UnquotedTerm}', Shortest string "Dx++0"
+        case 71: // Recognized '{UnquotedTerm}', Shortest string "AN"
+        case 73: // Recognized '{UnquotedTerm}', Shortest string "@\x01"
+        case 76: // Recognized '{UnquotedTerm}', Shortest string "@\x01<"
+        case 77: // Recognized '{UnquotedTerm}', Shortest string "@\x01<\x01"
+        case 84: // Recognized '{UnquotedTerm}', Shortest string "0."
+        case 88: // Recognized '{UnquotedTerm}', Shortest string "0000-"
+        case 90: // Recognized '{UnquotedTerm}', Shortest string "0000-0"
+        case 91: // Recognized '{UnquotedTerm}', Shortest string "0000-00"
+        case 92: // Recognized '{UnquotedTerm}', Shortest string "0000-00-"
+        case 93: // Recognized '{UnquotedTerm}', Shortest string "0000-00-0"
+        case 94: // Recognized '{UnquotedTerm}', Shortest string "0000-00-00"
+        case 95: // Recognized '{UnquotedTerm}', Shortest string "0000-00-00T"
+        case 96: // Recognized '{UnquotedTerm}', Shortest string "0000-00-00T0"
+        case 97: // Recognized '{UnquotedTerm}', Shortest string "0000-00-00T00"
+        case 100: // Recognized '{UnquotedTerm}', Shortest string "0.+"
+        case 102: // Recognized '{UnquotedTerm}', Shortest string "0x"
+        case 103: // Recognized '{UnquotedTerm}', Shortest string "0x+"
 if(InMethod && bStack.Count == 0) 
                                 {
                                     yylval.s = HandleTermInMethod();
@@ -1649,137 +1649,137 @@ if(InMethod && bStack.Count == 0)
                                 }
                                 return (int)Token.UNQUOTED_TERM;
             break;
-        case 2: // Recognized '{Whitespace}',	Shortest string "\t"
+        case 2: // Recognized '{Whitespace}', Shortest string "\t"
 /* skip */
             break;
-        case 3: // Recognized '"\""',	Shortest string "\""
+        case 3: // Recognized '"\""', Shortest string "\""
 return (int)Token.QUOTE;
             break;
-        case 5: // Recognized '"("',	Shortest string "("
+        case 5: // Recognized '"("', Shortest string "("
 return (int)Token.OPEN_PAREN;
             break;
-        case 6: // Recognized '")"',	Shortest string ")"
+        case 6: // Recognized '")"', Shortest string ")"
 return (int)Token.CLOSE_PAREN;
             break;
-        case 7: // Recognized '{WildCardTerm}',	Shortest string "*"
-        case 14: // Recognized '{WildCardTerm}',	Shortest string "?"
-        case 75: // Recognized '{WildCardTerm}',	Shortest string "@?"
-        case 79: // Recognized '{WildCardTerm}',	Shortest string "@\x01<?"
-        case 83: // Recognized '{WildCardTerm}',	Shortest string "@*<"
+        case 7: // Recognized '{WildCardTerm}', Shortest string "*"
+        case 14: // Recognized '{WildCardTerm}', Shortest string "?"
+        case 75: // Recognized '{WildCardTerm}', Shortest string "@?"
+        case 79: // Recognized '{WildCardTerm}', Shortest string "@\x01<?"
+        case 83: // Recognized '{WildCardTerm}', Shortest string "@*<"
 yylval.s = DiscardEscapeChar(yytext);  return (int)Token.WILDCARD_TERM;
             break;
-        case 8: // Recognized '"+"',	Shortest string "+"
+        case 8: // Recognized '"+"', Shortest string "+"
 return (int)Token.PLUS;
             break;
-        case 9: // Recognized '","',	Shortest string ","
+        case 9: // Recognized '","', Shortest string ","
 return (int)Token.COMMA;
             break;
-        case 10: // Recognized '"-"',	Shortest string "-"
+        case 10: // Recognized '"-"', Shortest string "-"
 return (int)Token.MINUS;
             break;
-        case 11: // Recognized '{Number}',	Shortest string "0"
-        case 12: // Recognized '{Number}',	Shortest string "1"
-        case 85: // Recognized '{Number}',	Shortest string "00"
-        case 86: // Recognized '{Number}',	Shortest string "000"
-        case 87: // Recognized '{Number}',	Shortest string "0000"
-        case 89: // Recognized '{Number}',	Shortest string "00000"
-        case 105: // Recognized '{Number}',	Shortest string "+0"
+        case 11: // Recognized '{Number}', Shortest string "0"
+        case 12: // Recognized '{Number}', Shortest string "1"
+        case 85: // Recognized '{Number}', Shortest string "00"
+        case 86: // Recognized '{Number}', Shortest string "000"
+        case 87: // Recognized '{Number}', Shortest string "0000"
+        case 89: // Recognized '{Number}', Shortest string "00000"
+        case 105: // Recognized '{Number}', Shortest string "+0"
 yylval.s = yytext; return (int)Token.INT_NUMBER;
             break;
-        case 13: // Recognized '":"',	Shortest string ":"
+        case 13: // Recognized '":"', Shortest string ":"
 return (int)Token.COLON;
             break;
-        case 24: // Recognized '"["',	Shortest string "["
+        case 24: // Recognized '"["', Shortest string "["
 return (int)Token.OPEN_SQUARE_BRACKET;
             break;
-        case 25: // Recognized '"]"',	Shortest string "]"
+        case 25: // Recognized '"]"', Shortest string "]"
 return (int)Token.CLOSE_SQUARE_BRACKET;
             break;
-        case 26: // Recognized '"^"',	Shortest string "^"
+        case 26: // Recognized '"^"', Shortest string "^"
 return (int)Token.BOOST;
             break;
-        case 27: // Recognized '"{"',	Shortest string "{"
+        case 27: // Recognized '"{"', Shortest string "{"
 return (int)Token.OPEN_CURLY_BRACKET;
             break;
-        case 29: // Recognized '"}"',	Shortest string "}"
+        case 29: // Recognized '"}"', Shortest string "}"
 return (int)Token.CLOSE_CURLY_BRACKET;
             break;
-        case 30: // Recognized '"~"',	Shortest string "~"
+        case 30: // Recognized '"~"', Shortest string "~"
 return (int)Token.TILDA;
             break;
-        case 31: // Recognized '{PrefixTerm}',	Shortest string "\x01*"
-        case 74: // Recognized '{PrefixTerm}',	Shortest string "@*"
-        case 78: // Recognized '{PrefixTerm}',	Shortest string "@\x01<*"
+        case 31: // Recognized '{PrefixTerm}', Shortest string "\x01*"
+        case 74: // Recognized '{PrefixTerm}', Shortest string "@*"
+        case 78: // Recognized '{PrefixTerm}', Shortest string "@\x01<*"
 yylval.s = DiscardEscapeChar(yytext);  return (int)Token.PREFIX_TERM;
             break;
-        case 32: // Recognized '"||"',	Shortest string "||"
+        case 32: // Recognized '"||"', Shortest string "||"
 return (int)Token.OR;
             break;
-        case 33: // Recognized '{UnanalizedTerm}',	Shortest string "[[]]"
+        case 33: // Recognized '{UnanalizedTerm}', Shortest string "[[]]"
 yylval.s = DiscardEscapeChar(yytext); return (int)Token.UNANALIZED_TERM;
             break;
-        case 34: // Recognized '"TO"',	Shortest string "TO"
+        case 34: // Recognized '"TO"', Shortest string "TO"
 return (int)Token.TO;
             break;
-        case 35: // Recognized '"OR"',	Shortest string "OR"
+        case 35: // Recognized '"OR"', Shortest string "OR"
 return (int)Token.OR;
             break;
-        case 39: // Recognized '"NULL"',	Shortest string "NULL"
+        case 39: // Recognized '"NULL"', Shortest string "NULL"
 yylval.s = yytext; return (int)Token.NULL;
             break;
-        case 40: // Recognized '"NOT"',	Shortest string "NOT"
+        case 40: // Recognized '"NOT"', Shortest string "NOT"
 return (int)Token.NOT;
             break;
-        case 43: // Recognized '"Lx"{Number}',	Shortest string "Lx0"
+        case 43: // Recognized '"Lx"{Number}', Shortest string "Lx0"
 yylval.s = yytext; return (int)Token.LONG_NUMBER;
             break;
-        case 47: // Recognized '"Ix"{Number}',	Shortest string "Ix0"
+        case 47: // Recognized '"Ix"{Number}', Shortest string "Ix0"
 yylval.s = yytext; return (int)Token.INT_NUMBER;
             break;
-        case 54: // Recognized '"INTERSECT"',	Shortest string "INTERSECT"
+        case 54: // Recognized '"INTERSECT"', Shortest string "INTERSECT"
 return (int)Token.INTERSECT;
             break;
-        case 57: // Recognized '"Fx"({Decimal}|{Number})',	Shortest string "Fx0"
-        case 60: // Recognized '"Fx"({Decimal}|{Number})',	Shortest string "Fx0.0"
+        case 57: // Recognized '"Fx"({Decimal}|{Number})', Shortest string "Fx0"
+        case 60: // Recognized '"Fx"({Decimal}|{Number})', Shortest string "Fx0.0"
 yylval.s = yytext; return (int)Token.FLOAT_NUMBER;
             break;
-        case 65: // Recognized '"Dx"({Decimal}|{Number})',	Shortest string "Dx0"
-        case 68: // Recognized '"Dx"({Decimal}|{Number})',	Shortest string "Dx0.0"
+        case 65: // Recognized '"Dx"({Decimal}|{Number})', Shortest string "Dx0"
+        case 68: // Recognized '"Dx"({Decimal}|{Number})', Shortest string "Dx0.0"
 yylval.s = yytext; return (int)Token.DOUBLE_NUMBER;
             break;
-        case 72: // Recognized '"AND"',	Shortest string "AND"
+        case 72: // Recognized '"AND"', Shortest string "AND"
 return (int)Token.AND;
             break;
-        case 80: // Recognized '{Method}',	Shortest string "@\x01<\x01>"
-        case 81: // Recognized '{Method}',	Shortest string "@\x01<*>"
-        case 82: // Recognized '{Method}',	Shortest string "@\x01<\t>"
+        case 80: // Recognized '{Method}', Shortest string "@\x01<\x01>"
+        case 81: // Recognized '{Method}', Shortest string "@\x01<*>"
+        case 82: // Recognized '{Method}', Shortest string "@\x01<\t>"
 yylval.s = yytext; return (int)Token.METHOD;
             break;
-        case 98: // Recognized '{DateTime}',	Shortest string "0000-00-00T00:00:00.0000000"
-        case 99: // Recognized '{DateTime}',	Shortest string "0000-00-00T00:00:00.0000000Z"
+        case 98: // Recognized '{DateTime}', Shortest string "0000-00-00T00:00:00.0000000"
+        case 99: // Recognized '{DateTime}', Shortest string "0000-00-00T00:00:00.0000000Z"
 yylval.s = yytext; return (int)Token.DATETIME;
             break;
-        case 101: // Recognized '{Decimal}',	Shortest string "0.0"
-        case 106: // Recognized '{Decimal}',	Shortest string "+0.0"
+        case 101: // Recognized '{Decimal}', Shortest string "0.0"
+        case 106: // Recognized '{Decimal}', Shortest string "+0.0"
 yylval.s = yytext; return (int)Token.FLOAT_NUMBER;
             break;
-        case 104: // Recognized '"0x"{Number}',	Shortest string "0x0"
+        case 104: // Recognized '"0x"{Number}', Shortest string "0x0"
 yylval.s = yytext; return (int)Token.HEX_NUMBER;
             break;
-        case 107: // Recognized '"*:*"',	Shortest string "*:*"
+        case 107: // Recognized '"*:*"', Shortest string "*:*"
 return (int)Token.ALL_DOC;
             break;
-        case 108: // Recognized '"&&"',	Shortest string "&&"
+        case 108: // Recognized '"&&"', Shortest string "&&"
 return (int)Token.AND;
             break;
-        case 109: // Recognized '{QuotedTerm}',	Shortest string "\"\""
+        case 109: // Recognized '{QuotedTerm}', Shortest string "\"\""
                             yylval.s = DiscardEscapeChar(yytext);
                             return (int)Token.QUOTED_TERM;
             break;
-        case 110: // Recognized '{QuotedWildcardTerm}',	Shortest string "\"*\""
+        case 110: // Recognized '{QuotedWildcardTerm}', Shortest string "\"*\""
 yylval.s = yytext; return (int)Token.QUOTED_WILDCARD_TERM;
             break;
-        case 111: // Recognized '{Comment}',	Shortest string "\t//"
+        case 111: // Recognized '{Comment}', Shortest string "\t//"
 /* skip */
             break;
         default:
