@@ -52,7 +52,7 @@ namespace Raven.Client.TimeSeries.Operations
                 {
                     DisableRequestCompression = disableRequestCompression,
                     DisableAuthentication = disableAuthentication,
-                };				
+                };    
             }
             var request = jsonRequestFactory.CreateHttpJsonRequest(@params);
         

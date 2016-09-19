@@ -1599,7 +1599,7 @@ namespace Raven.Imports.Newtonsoft.Json
         /// Gets a value indicating whether the class can return line information.
         /// </summary>
         /// <returns>
-        /// 	<c>true</c> if LineNumber and LinePosition can be provided; otherwise, <c>false</c>.
+        ///  <c>true</c> if LineNumber and LinePosition can be provided; otherwise, <c>false</c>.
         /// </returns>
         public bool HasLineInfo()
         {

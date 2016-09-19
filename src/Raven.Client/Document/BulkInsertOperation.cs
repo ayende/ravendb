@@ -52,7 +52,7 @@ namespace Raven.Client.Document
         }
 
         protected virtual TcpBulkInsertOperation GetBulkInsertOperation(IAsyncDatabaseCommands commands)
-        {			
+        {   
             return commands.GetBulkInsertOperation();
         }
 

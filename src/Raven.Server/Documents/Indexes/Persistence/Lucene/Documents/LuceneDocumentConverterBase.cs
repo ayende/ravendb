@@ -76,8 +76,8 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene.Documents
         /// * If the value is string or was set to not analyzed, create a single field with the supplied name
         /// * If the value is date, create a single field with millisecond precision with the supplied name
         /// * If the value is numeric (int, long, double, decimal, or float) will create two fields:
-        ///		1. with the supplied name, containing the numeric value as an unanalyzed string - useful for direct queries
-        ///		2. with the name: name +'_Range', containing the numeric value in a form that allows range queries
+        ///  1. with the supplied name, containing the numeric value as an unanalyzed string - useful for direct queries
+        ///  2. with the name: name +'_Range', containing the numeric value in a form that allows range queries
         /// </summary>
         public IEnumerable<AbstractField> GetRegularFields(IndexField field, object value, JsonOperationContext indexContext, bool nestedArray = false)
         {

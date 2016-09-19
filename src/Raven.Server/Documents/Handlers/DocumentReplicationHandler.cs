@@ -64,7 +64,7 @@ namespace Raven.Server.Documents.Handlers
                     {
                         ["Key"] = conflict.Key,
                         ["ChangeVector"] = conflict.ChangeVector.ToJson(),
-                    });					
+                    });     
                 }
 
                 context.Write(writer,array);
@@ -236,7 +236,7 @@ namespace Raven.Server.Documents.Handlers
                         ["Disabled"] = queueItem.Disabled,
                         ["IgnoredClient"] = queueItem.IgnoredClient,
                         ["SkipIndexReplication"] = queueItem.SkipIndexReplication,
-                        ["SpecifiedCollections"] = queueItem.SpecifiedCollections						
+                        ["SpecifiedCollections"] = queueItem.SpecifiedCollections      
                     });
                 }
 

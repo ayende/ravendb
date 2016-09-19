@@ -184,9 +184,9 @@ namespace Raven.Server.Documents.Replication
                                     _database.DocumentsStorage.Put(_context, doc.Id, null, json, _tempReplicatedChangeVector);
                                 }
                                 else
-                                {									
+                                {         
                                     _database.DocumentsStorage.AddTombstoneOnReplicationIfRelevant(
-                                        _context,doc.Id,										
+                                        _context,doc.Id,          
                                         _tempReplicatedChangeVector,
                                         doc.Collection);
                                 }

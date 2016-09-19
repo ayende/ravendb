@@ -46,7 +46,7 @@ If you really want to do in memory filtering on the data returned from the query
         }
 
         /// <summary>
-        /// 	Matches exact value
+        ///  Matches exact value
         /// </summary>
         IAsyncFilesQuery<T> IAsyncFilesQueryBase<T, IAsyncFilesQuery<T>>.WhereEquals(string fieldName, object value)
         {
@@ -55,7 +55,7 @@ If you really want to do in memory filtering on the data returned from the query
         }
 
         /// <summary>
-        /// 	Matches exact value
+        ///  Matches exact value
         /// </summary>
         IAsyncFilesQuery<T> IAsyncFilesQueryBase<T, IAsyncFilesQuery<T>>.WhereEquals<TValue>(Expression<Func<T, TValue>> propertySelector, TValue value)
         {
@@ -64,7 +64,7 @@ If you really want to do in memory filtering on the data returned from the query
         }
 
         /// <summary>
-        /// 	Matches exact value
+        ///  Matches exact value
         /// </summary>
         IAsyncFilesQuery<T> IAsyncFilesQueryBase<T, IAsyncFilesQuery<T>>.WhereEquals(WhereParams whereParams)
         {

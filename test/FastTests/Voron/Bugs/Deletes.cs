@@ -6,22 +6,22 @@ using Voron;
 namespace FastTests.Voron.Bugs
 {
     public class Deletes : StorageTest
-	{
-		[Fact]
-		public void RebalancerIssue()
-		{
-			const int DocumentCount = 750;
+ {
+  [Fact]
+  public void RebalancerIssue()
+  {
+   const int DocumentCount = 750;
 
-			var rand = new Random();
-			var testBuffer = new byte[757];
-			rand.NextBytes(testBuffer);
+   var rand = new Random();
+   var testBuffer = new byte[757];
+   rand.NextBytes(testBuffer);
 
 
-			using (var tx = Env.WriteTransaction())
-			{
-				tx.CreateTree(  "tree1");
-				tx.Commit();
-			}
+   using (var tx = Env.WriteTransaction())
+   {
+    tx.CreateTree(  "tree1");
+    tx.Commit();
+   }
 
             using (var tx = Env.WriteTransaction())
             {
@@ -44,11 +44,11 @@ namespace FastTests.Voron.Bugs
                 tx.Commit();
             }
 
-			using (var tx = Env.WriteTransaction())
-			{
-			    var t1 = tx.CreateTree("tree1");
-				t1.Delete("Foo180"); // rebalancer fails to move 1st node from one branch to another
-			}
-		}
-	}
+   using (var tx = Env.WriteTransaction())
+   {
+       var t1 = tx.CreateTree("tree1");
+    t1.Delete("Foo180"); // rebalancer fails to move 1st node from one branch to another
+   }
+  }
+ }
 }

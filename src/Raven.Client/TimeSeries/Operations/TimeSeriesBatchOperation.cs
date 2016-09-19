@@ -38,7 +38,7 @@ namespace Raven.Client.TimeSeries.Operations
 
         public Guid OperationId { get; private set; }
 
-        public TimeSeriesBatchOptions DefaultOptions { get { return _defaultOptions; } }		
+        public TimeSeriesBatchOptions DefaultOptions { get { return _defaultOptions; } }  
 
         internal TimeSeriesBatchOperation(TimeSeriesStore store, string timeSeriesName, TimeSeriesBatchOptions batchOptions = null)
             : base(store, timeSeriesName)
@@ -50,7 +50,7 @@ namespace Raven.Client.TimeSeries.Operations
             streamingStarted = new AsyncManualResetEvent();
             batchOperationTcs = new TaskCompletionSource<bool>();
             cts = new CancellationTokenSource();
-            appendQueue = new BlockingCollection<TimeSeriesAppend>(_defaultOptions.BatchSizeLimit);			
+            appendQueue = new BlockingCollection<TimeSeriesAppend>(_defaultOptions.BatchSizeLimit);   
             singleAuthUrl = string.Format("{0}ts/{1}/singleAuthToken", ServerUrl, timeSeriesName);
 
             OperationId = Guid.NewGuid();
@@ -200,7 +200,7 @@ namespace Raven.Client.TimeSeries.Operations
                     batch.Clear();
                     if (token.IsCancellationRequested)
                     {
-                        FetchAllChangeQueue(batch);	
+                        FetchAllChangeQueue(batch); 
                         FlushToServer(stream,batch);
                         break;
                     }
@@ -237,7 +237,7 @@ namespace Raven.Client.TimeSeries.Operations
                     catch (OperationCanceledException)
                     {
                         if (tcs != null)
-                            tcs.TrySetResult(null);						
+                            tcs.TrySetResult(null);      
                     }
                     catch (Exception e)
                     {

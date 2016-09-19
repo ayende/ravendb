@@ -155,11 +155,11 @@ namespace SlowTests.MailingList
             public UserToResource_Index()
             {
                 //Map = Usr => Usr.SelectMany(u => Enumerable.Select(u.ResourceUserGroups, x => LoadDocument<ResourceUserGroup>(x.id).ResourceGroups), (u, rgs) => new {u, rgs})
-                //	.SelectMany(@t => Enumerable.Select(@t.rgs, y => LoadDocument<ResourceGroup>(y.id).Resources), (@t, rs) => new ResourceToUserIndexData
+                // .SelectMany(@t => Enumerable.Select(@t.rgs, y => LoadDocument<ResourceGroup>(y.id).Resources), (@t, rs) => new ResourceToUserIndexData
                 //{
-                //	UserId = @t.u.id,
-                //	Name = @t.u.Name,
-                //	Resources = rs.Select(r => r.id).GroupBy(x => x).Select(x => x.Key)
+                // UserId = @t.u.id,
+                // Name = @t.u.Name,
+                // Resources = rs.Select(r => r.id).GroupBy(x => x).Select(x => x.Key)
                 //});
 
 

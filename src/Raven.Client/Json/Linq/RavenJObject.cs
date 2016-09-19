@@ -352,7 +352,7 @@ namespace Raven.Json.Linq
 
         public bool TryGetValue(string name, out RavenJToken value)
         {
-            return Properties.TryGetValue(name, out value);	
+            return Properties.TryGetValue(name, out value); 
         }
 
         public override RavenJToken CreateSnapshot()

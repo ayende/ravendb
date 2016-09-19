@@ -52,7 +52,7 @@ namespace Raven.Server.Extensions
                     return true;
             }
             return false;
-        }	
+        } 
 
         public static string Format(this ChangeVectorEntry[] changeVector)
         {

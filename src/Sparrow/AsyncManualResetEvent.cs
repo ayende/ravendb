@@ -12,7 +12,7 @@ namespace Sparrow
 
         public AsyncManualResetEvent()
         {
-            _token = CancellationToken.None;		    
+            _token = CancellationToken.None;      
         }
 
         public AsyncManualResetEvent(CancellationToken token)
@@ -28,8 +28,8 @@ namespace Sparrow
         }
 
         public async Task<bool> WaitAsync(TimeSpan timeout)
-        {			
-            var waitAsync = _tcs.Task;			
+        {   
+            var waitAsync = _tcs.Task;   
             var result = await Task.WhenAny(waitAsync, Task.Delay(timeout, _token));
             if (_token != CancellationToken.None)
                 return result == waitAsync && !_token.IsCancellationRequested;

@@ -457,10 +457,10 @@ namespace Raven.Client.Document
         }
 
         /// <summary>
-        /// 	Matches exact value
+        ///  Matches exact value
         /// </summary>
         /// <remarks>
-        /// 	Defaults to NotAnalyzed
+        ///  Defaults to NotAnalyzed
         /// </remarks>
         IDocumentQuery<T> IDocumentQueryBase<T, IDocumentQuery<T>>.WhereEquals(string fieldName, object value)
         {
@@ -469,7 +469,7 @@ namespace Raven.Client.Document
         }
 
         /// <summary>
-        /// 	Matches exact value
+        ///  Matches exact value
         /// </summary>
         /// <remarks>
         ///   Defaults to NotAnalyzed
@@ -481,10 +481,10 @@ namespace Raven.Client.Document
         }
 
         /// <summary>
-        /// 	Matches exact value
+        ///  Matches exact value
         /// </summary>
         /// <remarks>
-        /// 	Defaults to allow wildcards only if analyzed
+        ///  Defaults to allow wildcards only if analyzed
         /// </remarks>
         IDocumentQuery<T> IDocumentQueryBase<T, IDocumentQuery<T>>.WhereEquals(string fieldName, object value, bool isAnalyzed)
         {
@@ -493,7 +493,7 @@ namespace Raven.Client.Document
         }
 
         /// <summary>
-        /// 	Matches exact value
+        ///  Matches exact value
         /// </summary>
         /// <remarks>
         ///   Defaults to allow wildcards only if analyzed
@@ -505,7 +505,7 @@ namespace Raven.Client.Document
         }
 
         /// <summary>
-        /// 	Matches exact value
+        ///  Matches exact value
         /// </summary>
         IDocumentQuery<T> IDocumentQueryBase<T, IDocumentQuery<T>>.WhereEquals(WhereParams whereEqualsParams)
         {

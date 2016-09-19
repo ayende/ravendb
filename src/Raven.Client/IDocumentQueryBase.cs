@@ -352,17 +352,17 @@ If you really want to do in memory filtering on the data returned from the query
         TSelf Proximity(int proximity);
 
         /// <summary>
-        ///		Order the search results in alphanumeric order
-        ///		<param name="fieldName">The order by field name.</param>
-        ///		<param name="descending">if set to <c>true</c> [descending].</param>
+        ///  Order the search results in alphanumeric order
+        ///  <param name="fieldName">The order by field name.</param>
+        ///  <param name="descending">if set to <c>true</c> [descending].</param>
         /// </summary>
         TSelf AlphaNumericOrdering(string fieldName, bool descending = false);
 
         /// <summary>
-        ///		Order the search results in alphanumeric order
-        ///		<typeparam name="TResult">The type of the object that holds the property that you want to order by.</typeparam>
-        ///		<param name="propertySelector">Property selector for the field.</param>
-        ///		<param name="descending">if set to <c>true</c> [descending].</param>
+        ///  Order the search results in alphanumeric order
+        ///  <typeparam name="TResult">The type of the object that holds the property that you want to order by.</typeparam>
+        ///  <param name="propertySelector">Property selector for the field.</param>
+        ///  <param name="descending">if set to <c>true</c> [descending].</param>
         /// </summary>
         TSelf AlphaNumericOrdering<TResult>(Expression<Func<TResult, object>> propertySelector, bool descending = false);
 

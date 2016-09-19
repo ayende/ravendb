@@ -28,7 +28,7 @@ namespace SlowTests.Tests.Linq
                                   select new
                                   {
                                       EmailDomain = student.Email.Split('@').Last(), // does not work
-                                      // EmailDomain = student.Email.Split('@')[1],		// DOES WORK
+                                      // EmailDomain = student.Email.Split('@')[1],  // DOES WORK
                                       Count = 1
                                   };
 

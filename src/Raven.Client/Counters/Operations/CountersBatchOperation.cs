@@ -38,7 +38,7 @@ namespace Raven.Client.Counters.Operations
 
         public Guid OperationId { get; private set; }
 
-        public CountersBatchOptions DefaultOptions { get { return defaultOptions; } }		
+        public CountersBatchOptions DefaultOptions { get { return defaultOptions; } }  
 
         internal CountersBatchOperation(CounterStore parent, string counterStorageName, CountersBatchOptions batchOptions = null)
             : base(parent, counterStorageName)
@@ -50,7 +50,7 @@ namespace Raven.Client.Counters.Operations
             streamingStarted = new AsyncManualResetEvent();
             batchOperationTcs = new TaskCompletionSource<bool>();
             cts = new CancellationTokenSource();
-            changesQueue = new BlockingCollection<CounterChange>(defaultOptions.BatchSizeLimit);			
+            changesQueue = new BlockingCollection<CounterChange>(defaultOptions.BatchSizeLimit);   
             singleAuthUrl = string.Format("{0}/cs/{1}/singleAuthToken", ServerUrl, counterStorageName);
 
             OperationId = Guid.NewGuid();
@@ -200,7 +200,7 @@ namespace Raven.Client.Counters.Operations
                     batch.Clear();
                     if (token.IsCancellationRequested)
                     {
-                        FetchAllChangeQueue(batch);	
+                        FetchAllChangeQueue(batch); 
                         FlushToServer(stream,batch);
                         break;
                     }
@@ -237,7 +237,7 @@ namespace Raven.Client.Counters.Operations
                     catch (OperationCanceledException)
                     {
                         if (tcs != null)
-                            tcs.TrySetResult(null);						
+                            tcs.TrySetResult(null);      
                     }
                     catch (Exception e)
                     {

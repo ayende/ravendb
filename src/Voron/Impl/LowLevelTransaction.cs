@@ -254,7 +254,7 @@ namespace Voron.Impl
             }
             else
             {
-                newPage = AllocatePage(1, num, currentPage); // allocate new page in a log file but with the same number			
+                newPage = AllocatePage(1, num, currentPage); // allocate new page in a log file but with the same number   
                 pageSize = Environment.Options.PageSize;
             }
 
@@ -270,7 +270,7 @@ namespace Voron.Impl
         private bool _disposed;
 
         public Page GetPage(long pageNumber)
-        {	        
+        {         
             if (_disposed)
                 throw new ObjectDisposedException("Transaction");
 
@@ -344,7 +344,7 @@ namespace Voron.Impl
         }
 
         private Page AllocatePage(int numberOfPages, long pageNumber, Page previousVersion)
-        {	       
+        {        
             if (_disposed)
                 throw new ObjectDisposedException("Transaction");
 
