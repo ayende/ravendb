@@ -8,16 +8,16 @@ using Xunit;
 
 namespace FastTests.Voron
 {
-	public class MultiTreeSize : StorageTest
-	{
-		[Fact]
-		public void Single_AddMulti_WillUseOnePage()
-		{
-			using (var tx = Env.WriteTransaction())
-			{
-			    tx.CreateTree("foo");
-			    tx.Commit();
-			}
+ public class MultiTreeSize : StorageTest
+ {
+  [Fact]
+  public void Single_AddMulti_WillUseOnePage()
+  {
+   using (var tx = Env.WriteTransaction())
+   {
+       tx.CreateTree("foo");
+       tx.Commit();
+   }
             var usedDataFileSizeInBytes = Env.Stats().UsedDataFileSizeInBytes;
 
             using (var tx = Env.WriteTransaction())
@@ -27,17 +27,17 @@ namespace FastTests.Voron
                 tx.Commit();
             }
 
-		    Assert.Equal(0,usedDataFileSizeInBytes - Env.Stats().UsedDataFileSizeInBytes);
-		}
+      Assert.Equal(0,usedDataFileSizeInBytes - Env.Stats().UsedDataFileSizeInBytes);
+  }
 
-		[Fact]
-		public void TwoSmall_AddMulti_WillUseOnePage()
-		{
-			using (var tx = Env.WriteTransaction())
-			{
+  [Fact]
+  public void TwoSmall_AddMulti_WillUseOnePage()
+  {
+   using (var tx = Env.WriteTransaction())
+   {
                 tx.CreateTree("foo");
-				tx.Commit();
-			}
+    tx.Commit();
+   }
 
             var usedDataFileSizeInBytes = Env.Stats().UsedDataFileSizeInBytes;
 

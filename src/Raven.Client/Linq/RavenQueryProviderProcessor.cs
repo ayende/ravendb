@@ -2023,7 +2023,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
                 values[renamedField] = value;
                 if (FieldsToFetch.Contains(renamedField) == false)
                 {
-                    doc.Remove(renamedField);	
+                    doc.Remove(renamedField); 
                 }
             }
             foreach (var rename in FieldsToRename)

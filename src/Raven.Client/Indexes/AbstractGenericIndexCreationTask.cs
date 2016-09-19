@@ -90,12 +90,12 @@ namespace Raven.Client.Indexes
 
         /// <summary>
         /// Index term vector options
-        /// </summary>		
+        /// </summary>  
         protected IDictionary<Expression<Func<TReduceResult, object>>, FieldTermVector> TermVectors { get; set; }
 
         /// <summary>
         /// Index term vector options
-        /// </summary>		
+        /// </summary>  
         protected IDictionary<string, FieldTermVector> TermVectorsStrings { get; set; }
 
         /// <summary>

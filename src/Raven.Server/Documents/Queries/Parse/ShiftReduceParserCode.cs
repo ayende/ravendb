@@ -205,7 +205,7 @@ namespace Raven.Server.Documents.Queries.Parse
         /// unrecoverable errors</returns>
         public bool Parse()
         {
-            Initialize();	// allow derived classes to instantiate rules, states and nonTerminals
+            Initialize(); // allow derived classes to instantiate rules, states and nonTerminals
 
             NextToken = 0;
             FsaState = states[0];
@@ -252,7 +252,7 @@ namespace Raven.Server.Documents.Queries.Parse
                     try
                     {
                         Reduce(-action);
-                        if (action == -1)	// accept
+                        if (action == -1) // accept
                             return true;
                     }
                     catch (Exception x)
@@ -787,7 +787,7 @@ namespace Raven.Server.Documents.Queries.Parse
 #endif
         internal Dictionary<int, int> ParserTable;   // Terminal -> ParseAction
         internal int[] Goto;          // NonTerminal -> State;
-        internal int defaultAction; // = 0;		     // ParseAction
+        internal int defaultAction; // = 0;       // ParseAction
         private int shift;
 
         /// <summary>

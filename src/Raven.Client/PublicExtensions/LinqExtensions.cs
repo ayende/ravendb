@@ -373,7 +373,7 @@ namespace Raven.Client
             var ravenQueryInspector = ((RavenQueryInspector<TResult>)results);
 
             var membersList = ReflectionUtil.GetPropertiesAndFieldsFor<TResult>(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic).ToList();
-            ravenQueryInspector.FieldsToFetch(membersList.Select(x => x.Name));			
+            ravenQueryInspector.FieldsToFetch(membersList.Select(x => x.Name));   
             return (IRavenQueryable<TResult>)results;
         }
 

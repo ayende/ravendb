@@ -107,7 +107,7 @@ namespace Raven.Client.Counters.Replication
                     if (operationResult.Success)
                         return operationResult.Result;
 
-                    RefreshReplicationInformation(); //force refresh of cluster information -> we failed to do round-robin, maybe some servers are down? 													
+                    RefreshReplicationInformation(); //force refresh of cluster information -> we failed to do round-robin, maybe some servers are down?              
                 }
 
                 //if we did load balancing and got to this point, this means we failed to connect to the designated server, and then the following

@@ -45,7 +45,7 @@ namespace Raven.Client.Counters.Operations
                 {
                     DisableRequestCompression = disableRequestCompression,
                     DisableAuthentication = disableAuthentication,
-                };				
+                };    
             }
             var request = jsonRequestFactory.CreateHttpJsonRequest(@params);
         

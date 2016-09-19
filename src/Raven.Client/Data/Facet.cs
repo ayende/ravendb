@@ -245,7 +245,7 @@ namespace Raven.Client.Data
                     var property = right.Member as PropertyInfo;
                     if (property != null && right.Member != null)
                     {
-                        //This chokes on anonymous types!?													
+                        //This chokes on anonymous types!?             
                         var value = property.GetValue(property, null);
                         return value;
                     }

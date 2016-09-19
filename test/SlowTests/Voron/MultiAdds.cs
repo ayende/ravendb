@@ -50,7 +50,7 @@ namespace SlowTests.Voron
                 {
                     var tree = tx.CreateTree("foo");
                     foreach (var buffer in inputData)
-                    {						
+                    {      
                         tree.MultiAdd("ChildTreeKey", Slice.From(tx.Allocator, buffer));
                     }
                     tx.Commit();

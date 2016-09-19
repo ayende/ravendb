@@ -304,7 +304,7 @@ namespace Raven.Client.Document
         /// </summary>
         /// <param name="entity">The entity.</param>
         /// <returns>
-        /// 	<c>true</c> if the specified entity has changed; otherwise, <c>false</c>.
+        ///  <c>true</c> if the specified entity has changed; otherwise, <c>false</c>.
         /// </returns>
         public bool HasChanged(object entity)
         {

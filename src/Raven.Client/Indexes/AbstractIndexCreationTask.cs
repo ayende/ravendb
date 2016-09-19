@@ -50,7 +50,7 @@ namespace Raven.Client.Indexes
         /// Gets a value indicating whether this instance is map reduce index definition
         /// </summary>
         /// <value>
-        /// 	<c>true</c> if this instance is map reduce; otherwise, <c>false</c>.
+        ///  <c>true</c> if this instance is map reduce; otherwise, <c>false</c>.
         /// </value>
         public virtual bool IsMapReduce { get { return false; } }
 
@@ -595,7 +595,7 @@ namespace Raven.Client.Indexes
         /// Gets a value indicating whether this instance is map reduce index definition
         /// </summary>
         /// <value>
-        /// 	<c>true</c> if this instance is map reduce; otherwise, <c>false</c>.
+        ///  <c>true</c> if this instance is map reduce; otherwise, <c>false</c>.
         /// </value>
         public override bool IsMapReduce
         {

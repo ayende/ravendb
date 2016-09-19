@@ -29,7 +29,7 @@ namespace Raven.Abstractions.Spatial
                 return true;
             }
             //if (TryParseFeatureCollection(json, out result))
-            //	return true;
+            // return true;
 
             result = default(string);
             return false;
@@ -52,29 +52,29 @@ namespace Raven.Abstractions.Spatial
 
         //private bool TryParseFeatureCollection(RavenJObject obj, StringBuilder result)
         //{
-        //	result = null;
-        //	string typeString;
-        //	if (TryParseTypeString(obj, out typeString) && typeString.ToLowerInvariant() == "featurecollection")
-        //	{
-        //		RavenJToken feats = null;
-        //		if (obj.TryGetValue("features", out feats))
-        //		{
-        //			var features = feats as RavenJArray;
-        //			if (features != null)
-        //			{
-        //				var temp = new object[features.Length];
-        //				for (var index = 0; index < features.Length; index++)
-        //				{
-        //					var geometry = features[index];
-        //					if (!TryParseFeature((RavenJObject) geometry, out temp[index]))
-        //						return false;
-        //				}
-        //				result = new FeatureCollection(temp.Cast<Feature>());
-        //				return true;
-        //			}
-        //		}
-        //	}
-        //	return false;
+        // result = null;
+        // string typeString;
+        // if (TryParseTypeString(obj, out typeString) && typeString.ToLowerInvariant() == "featurecollection")
+        // {
+        //  RavenJToken feats = null;
+        //  if (obj.TryGetValue("features", out feats))
+        //  {
+        //   var features = feats as RavenJArray;
+        //   if (features != null)
+        //   {
+        //    var temp = new object[features.Length];
+        //    for (var index = 0; index < features.Length; index++)
+        //    {
+        //     var geometry = features[index];
+        //     if (!TryParseFeature((RavenJObject) geometry, out temp[index]))
+        //      return false;
+        //    }
+        //    result = new FeatureCollection(temp.Cast<Feature>());
+        //    return true;
+        //   }
+        //  }
+        // }
+        // return false;
         //}
 
         private bool TryParseFeature(RavenJObject obj, StringBuilder builder)

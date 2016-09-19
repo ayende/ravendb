@@ -64,7 +64,7 @@ namespace Raven.Abstractions.Util.Streams
 
         public override int Read(byte[] buffer, int offset, int count)
         {
-            var read = (int)Math.Min(count, _length - _position);			
+            var read = (int)Math.Min(count, _length - _position);   
 
             Buffer.BlockCopy(_buffer, _position, buffer, offset, read);
             _position += read;

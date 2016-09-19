@@ -43,7 +43,7 @@ namespace Raven.Client.Data
 
         /// <summary>
         /// Metadata for the document
-        /// </summary>		
+        /// </summary>  
         public RavenJObject Metadata
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]

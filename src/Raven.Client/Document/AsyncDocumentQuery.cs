@@ -108,10 +108,10 @@ namespace Raven.Client.Document
         }
 
         /// <summary>
-        /// 	Matches exact value
+        ///  Matches exact value
         /// </summary>
         /// <remarks>
-        /// 	Defaults to NotAnalyzed
+        ///  Defaults to NotAnalyzed
         /// </remarks>
         IAsyncDocumentQuery<T> IDocumentQueryBase<T, IAsyncDocumentQuery<T>>.WhereEquals(string fieldName, object value)
         {
@@ -132,10 +132,10 @@ namespace Raven.Client.Document
         }
 
         /// <summary>
-        /// 	Matches exact value
+        ///  Matches exact value
         /// </summary>
         /// <remarks>
-        /// 	Defaults to allow wildcards only if analyzed
+        ///  Defaults to allow wildcards only if analyzed
         /// </remarks>
         IAsyncDocumentQuery<T> IDocumentQueryBase<T, IAsyncDocumentQuery<T>>.WhereEquals(string fieldName, object value, bool isAnalyzed)
         {
@@ -561,7 +561,7 @@ namespace Raven.Client.Document
         {
             OrderByDescending(propertySelectors.Select(GetMemberQueryPathForOrderBy).ToArray());
             return this;
-        }		
+        }  
 
         IAsyncDocumentQuery<T> IDocumentQueryBase<T, IAsyncDocumentQuery<T>>.Highlight(
             string fieldName, int fragmentLength, int fragmentCount, string fragmentsField)
@@ -1036,5 +1036,5 @@ namespace Raven.Client.Document
         {
             base.SetAllowMultipleIndexEntriesForSameDocumentToResultTransformer(val);
             return this;
-}	}
+} }
 }

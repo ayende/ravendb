@@ -284,7 +284,7 @@ namespace Voron.Data.BTrees
                 else
                 {
                     implicitLeftKeyToInsert = implicitLeftKey;
-                }					
+                }     
                 
                 to.EnsureHasSpaceFor(_tx, implicitLeftKeyToInsert, -1);
                 to.AddPageRefNode(1, implicitLeftKeyToInsert, leftPageNumber);

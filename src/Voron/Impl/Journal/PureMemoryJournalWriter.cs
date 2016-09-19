@@ -46,7 +46,7 @@ namespace Voron.Impl.Journal
             finally
             {
                 _locker.ExitReadLock();
-            }		
+            }  
         }
 
         public bool Read(long pageNumber, byte* buffer, int count)

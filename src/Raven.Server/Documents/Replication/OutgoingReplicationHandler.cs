@@ -93,7 +93,7 @@ namespace Raven.Server.Documents.Replication
         {
             try
             {
-                var connectionInfo = GetTcpInfo();	            
+                var connectionInfo = GetTcpInfo();             
                 using (_tcpClient = new TcpClient())
                 {
                     ConnectSocket(connectionInfo, _tcpClient);                    
@@ -118,7 +118,7 @@ namespace Raven.Server.Documents.Replication
                             ["SourceUrl"] = _database.Configuration.Core.ServerUrl,
                             ["MachineName"] = Environment.MachineName,
                         });
-                        _writer.Flush();						
+                        _writer.Flush();      
                         using (_context.OpenReadTransaction())
                         {
                             HandleServerResponse();
@@ -126,7 +126,7 @@ namespace Raven.Server.Documents.Replication
 
                         while (_cts.IsCancellationRequested == false)
                         {
-                            _context.Reset();							
+                            _context.Reset();       
                             if (sender.ExecuteReplicationOnce() == false)
                             {
                                 using (_context.OpenReadTransaction())

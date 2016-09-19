@@ -13,7 +13,7 @@ namespace Raven.Server.Documents.Handlers
         public Task StreamDocsHead()
         {
             //why is this action exists in 3.0?
-            //TODO: review the need for this endpoint			
+            //TODO: review the need for this endpoint   
             return Task.CompletedTask;
         }
 

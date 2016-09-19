@@ -9,7 +9,7 @@ namespace Raven.Client.Data
 
         public string StackTrace { get; set; }
 
-        public int StatusCode { get; set; } //http status code for special results like 409		
+        public int StatusCode { get; set; } //http status code for special results like 409  
 
         public OperationExceptionResult()
         {

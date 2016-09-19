@@ -19,7 +19,7 @@ namespace Raven.Client.Connection
             {
                 MediaTypeHeaderValue mediaTypeHeader;
                 if (!MediaTypeHeaderValue.TryParse(contentType, out mediaTypeHeader)) //otherwise on constructor parameter such as 'application/json; charset=utf-8' will throw
-                    throw new ArgumentException("not recognized mime type in Content-Type header");	
+                    throw new ArgumentException("not recognized mime type in Content-Type header"); 
 
                 httpContent.Headers.ContentType = mediaTypeHeader;
             }

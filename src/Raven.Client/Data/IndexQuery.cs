@@ -404,7 +404,7 @@ namespace Raven.Client.Data
         /// <para>When set to Or a query such as 'Name:John Age:18' will be interpreted as:</para>
         /// <para> Name:John OR Age:18</para>
         /// <para>When set to And the query will be interpreted as:</para>
-        ///	<para> Name:John AND Age:18</para>
+        /// <para> Name:John AND Age:18</para>
         /// </summary>
         public QueryOperator DefaultOperator { get; set; }
 

@@ -19,7 +19,7 @@ namespace Raven.Abstractions.Connection
         }
 
         public ErrorResponseException()
-        {				
+        {    
         }
 
         public ErrorResponseException(ErrorResponseException e, string message)

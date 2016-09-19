@@ -36,7 +36,7 @@ namespace Raven.Abstractions.Replication
         public DateTime? LastFailureTimestamp { get; set; }
         public DateTime? FirstFailureInCycleTimestamp { get; set; }
         public int FailureCount => FailureCountInternal;
-	    public string LastError { get; set; }
+     public string LastError { get; set; }
         public RavenJArray LastStats { get; set; }
     }
 

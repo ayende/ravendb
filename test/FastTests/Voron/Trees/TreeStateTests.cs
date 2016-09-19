@@ -74,7 +74,7 @@ namespace FastTests.Voron.Trees
                 Assert.Equal(38, tree.State.LeafPages);
                 Assert.Equal(3, tree.State.BranchPages);
                 Assert.Equal(9, tree.State.OverflowPages);
-                Assert.Equal(3, tree.State.Depth);				
+                Assert.Equal(3, tree.State.Depth);    
             }
 
             using (var tx = Env.WriteTransaction())

@@ -54,7 +54,7 @@ namespace Raven.Client.TimeSeries
                     throw new InvalidOperationException("Name is null or empty and ensureDefaultTimeSeriesExists = true --> cannot create default time series with empty name");
 
                 Admin.CreateTimeSeriesAsync(MultiDatabase.CreateTimeSeriesDocument(Name)).ConfigureAwait(false).GetAwaiter().GetResult();
-            }			
+            }   
 
             replicationInformer = new TimeSeriesReplicationInformer(JsonRequestFactory, this, TimeSeriesConvention); // make sure it is initialized
         }
