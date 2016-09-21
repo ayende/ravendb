@@ -430,7 +430,7 @@ namespace Raven.Database.Server.Controllers
                 // contains non ASCII chars, needs encoding
                 return Uri.EscapeDataString(str);
             }
-
+            str = str.Replace("+", "%2B");
             return shouldDecodeUrl ? HttpUtility.UrlDecode(str) : str;
         }
 
