@@ -125,7 +125,7 @@ namespace Raven.Server.Documents.Indexes
             try
             {
                 options.SchemaVersion = 1;
-
+                options.MaxConcurrentFlushes = documentDatabase.Configuration.Storage.MaxConcurrentFlushes;
                 environment = new StorageEnvironment(options);
                 var type = IndexStorage.ReadIndexType(indexId, environment);
 
@@ -179,6 +179,7 @@ namespace Raven.Server.Documents.Indexes
                     : StorageEnvironmentOptions.ForPath(Path.Combine(documentDatabase.Configuration.Indexing.IndexStoragePath, IndexId.ToString()));
 
                 options.SchemaVersion = 1;
+                options.MaxConcurrentFlushes = documentDatabase.Configuration.Storage.MaxConcurrentFlushes;
                 try
                 {
                     Initialize(new StorageEnvironment(options), documentDatabase);

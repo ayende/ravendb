@@ -79,7 +79,7 @@ namespace Raven.Server.ServerWide
                 : StorageEnvironmentOptions.ForPath(Configuration.Core.DataDirectory);
 
             options.SchemaVersion = 1;
-
+            options.MaxConcurrentFlushes = Configuration.Storage.MaxConcurrentFlushes;
             try
             {
                 _env = new StorageEnvironment(options);
