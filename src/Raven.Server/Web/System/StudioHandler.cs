@@ -4,12 +4,13 @@
 //  </copyright>
 // -----------------------------------------------------------------------
 
-using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Net;
 using System.Threading.Tasks;
+using Raven.Server.Documents;
+using Raven.Server.Documents.Indexes;
 using Raven.Server.Routing;
-using Raven.Server.Utils;
 using Sparrow;
 
 namespace Raven.Server.Web.System
@@ -17,6 +18,8 @@ namespace Raven.Server.Web.System
 
     public class StudioHandler : RequestHandler
     {
+
+        protected DocumentDatabase Database;
         private static readonly Dictionary<string, string> MimeMapping = new Dictionary<string, string>()
         {
             { "css", "text/css"},
@@ -118,6 +121,27 @@ namespace Raven.Server.Web.System
         {
             HttpContext.Response.Headers["Location"] = "/studio/index.html";
             HttpContext.Response.StatusCode = 301;
+            return Task.CompletedTask;
+        }
+
+        [RavenAction("/databases/*/c-sharp-index-definition", "GET")]
+        public Task GenerateCSharpIndexDefinition()
+        {
+            var fullIndexName = HttpContext.Request.Query["fullIndexName"];
+            var index = Database.IndexStore.GetIndex(fullIndexName);
+            if (index == null)
+            {
+                HttpContext.Response.StatusCode = (int)HttpStatusCode.NotFound;
+                return Task.CompletedTask;
+            }
+            var indexDefinition = index.GetIndexDefinition();
+
+            using (var writer = new StreamWriter(ResponseBodyStream()))
+            {
+                var text = new IndexDefinitionCodeGenerator(indexDefinition).Generate();
+                writer.Write(text);
+            }
+
             return Task.CompletedTask;
         }
     }
