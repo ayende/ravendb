@@ -222,6 +222,7 @@ namespace Raven.Server.Documents
         public void Initialize(StorageEnvironmentOptions options)
         {
             options.SchemaVersion = 1;
+            options.MaxConcurrentFlushes = _documentDatabase.Configuration.Storage.MaxConcurrentFlushes;
             try
             {
                 Environment = new StorageEnvironment(options);

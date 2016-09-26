@@ -34,7 +34,7 @@ namespace Voron
     {
         private static readonly Lazy<GlobalFlushingBehavior> GlobalFlusher = new Lazy<GlobalFlushingBehavior>(() =>
         {
-            var flusher = new GlobalFlushingBehavior();
+            var flusher = new GlobalFlushingBehavior(_maxConcurrentFlushes);
             var thread = new Thread(flusher.VoronEnvironmentFlushing)
             {
                 IsBackground = true,
@@ -43,6 +43,8 @@ namespace Voron
             thread.Start();
             return flusher;
         });
+
+        private static int _maxConcurrentFlushes;
 
         /// <summary>
         /// This is the shared storage where we are going to store all the static constants for names. 
@@ -122,6 +124,8 @@ namespace Voron
 
                 if (_options.ManualFlushing == false)
                     Task.Run(IdleFlushTimer);
+
+                _maxConcurrentFlushes = options.MaxConcurrentFlushes;
             }
             catch (Exception)
             {
@@ -567,8 +571,14 @@ namespace Voron
         {
             private readonly ConcurrentQueue<StorageEnvironment> _maybeNeedToFlush = new ConcurrentQueue<StorageEnvironment>();
             private readonly ManualResetEventSlim _flushWriterEvent = new ManualResetEventSlim();
-            private readonly SemaphoreSlim _concurrentFlushes = new SemaphoreSlim(MaxConcurrentFlushes);
-            private const int MaxConcurrentFlushes = 10;
+            private readonly SemaphoreSlim _concurrentFlushes;
+            private readonly int _maxConcurrentFlushes;
+
+            public GlobalFlushingBehavior(int maxConcurrentFlushes)
+            {
+                _maxConcurrentFlushes = maxConcurrentFlushes;
+                _concurrentFlushes = new SemaphoreSlim(_maxConcurrentFlushes);
+            }
 
             public void VoronEnvironmentFlushing()
             {
@@ -598,7 +608,7 @@ namespace Voron
                             // we haven't reached the point where we have to flush, but we might want to, if we have enough 
                             // resources available, if we have more than half the flushing capacity, we can do it now, otherwise, we'll wait
                             // until it is actually required.
-                            if (_concurrentFlushes.CurrentCount > MaxConcurrentFlushes / 2)
+                            if (_concurrentFlushes.CurrentCount > _maxConcurrentFlushes / 2)
                                 continue;
                         }
 
