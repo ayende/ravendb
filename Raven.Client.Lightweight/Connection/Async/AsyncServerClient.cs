@@ -43,6 +43,7 @@ using System.Net.Http;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Collections;
 
 namespace Raven.Client.Connection.Async
 {
@@ -1905,12 +1906,12 @@ namespace Raven.Client.Connection.Async
             return new YieldStreamResults(request, await response.GetResponseStreamWithHttpDecompression().ConfigureAwait(false));
         }
 
-        public Task<IAsyncEnumerator<RavenJObject>> StreamQueryAsync(string index, IndexQuery query, Reference<QueryHeaderInformation> queryHeaderInfo, CancellationToken token = default(CancellationToken))
+        public Task<IEnumerator<RavenJObject>> StreamQueryAsync(string index, IndexQuery query, Reference<QueryHeaderInformation> queryHeaderInfo, CancellationToken token = default(CancellationToken))
         {
             return ExecuteWithReplication(HttpMethod.Get, (operationMetadata, requestTimeMetric) => DirectStreamQueryAsync(index, query, queryHeaderInfo, operationMetadata, requestTimeMetric, token), token);
         }
 
-        private async Task<IAsyncEnumerator<RavenJObject>> DirectStreamQueryAsync(string index, IndexQuery query, Reference<QueryHeaderInformation> queryHeaderInfo, OperationMetadata operationMetadata, IRequestTimeMetric requestTimeMetric, CancellationToken cancellationToken = default(CancellationToken))
+        private async Task<IEnumerator<RavenJObject>> DirectStreamQueryAsync(string index, IndexQuery query, Reference<QueryHeaderInformation> queryHeaderInfo, OperationMetadata operationMetadata, IRequestTimeMetric requestTimeMetric, CancellationToken cancellationToken = default(CancellationToken))
         {
             EnsureIsNotNullOrEmpty(index, "index");
             string path;
@@ -1993,8 +1994,11 @@ namespace Raven.Client.Connection.Async
                 TotalResults = int.Parse(response.Headers.GetFirstValue("Raven-Total-Results"))
             };
 
-            return new YieldStreamResults(request, await response.GetResponseStreamWithHttpDecompression().ConfigureAwait(false));
+            //return new YieldStreamResults(request, await response.GetResponseStreamWithHttpDecompression().ConfigureAwait(false));
+            return new YieldStreamResults2(request, await response.GetResponseStreamWithHttpDecompression().ConfigureAwait(false));
         }
+
+
 
         public class YieldStreamResults : IAsyncEnumerator<RavenJObject>
         {
@@ -2157,6 +2161,183 @@ namespace Raven.Client.Connection.Async
 
             public RavenJObject Current { get; private set; }
         }
+
+        public class YieldStreamResults2 : IEnumerator<RavenJObject>
+        {
+            private readonly HttpJsonRequest request;
+
+            private readonly int start;
+
+            private readonly int pageSize;
+
+            private readonly RavenPagingInformation pagingInformation;
+
+            private readonly Stream stream;
+            private readonly StreamReader streamReader;
+            private readonly JsonTextReader reader;
+            private bool complete;
+
+            private bool wasInitialized;
+            private readonly Func<JsonTextReader, bool> customizedEndResult;
+
+            public YieldStreamResults2(HttpJsonRequest request, Stream stream, int start = 0, int pageSize = 0, RavenPagingInformation pagingInformation = null, Func<JsonTextReader, bool> customizedEndResult = null)
+            {
+                this.request = request;
+                this.start = start;
+                this.pageSize = pageSize;
+                this.pagingInformation = pagingInformation;
+                this.stream = stream;
+                this.customizedEndResult = customizedEndResult;
+                streamReader = new StreamReader(stream);
+                reader = new JsonTextReader(streamReader);
+            }
+
+            void Init()
+            {
+                if (reader.Read() == false || reader.TokenType != JsonToken.StartObject)
+                    throw new InvalidOperationException("Unexpected data at start of stream");
+
+                if (reader.Read() == false || reader.TokenType != JsonToken.PropertyName || Equals("Results", reader.Value) == false)
+                    throw new InvalidOperationException("Unexpected data at stream 'Results' property name");
+
+                if (reader.Read() == false || reader.TokenType != JsonToken.StartArray)
+                    throw new InvalidOperationException("Unexpected data at 'Results', could not find start results array");
+            }
+
+            public void Dispose()
+            {
+                try
+                {
+                    reader.Close();
+                }
+                catch (Exception)
+                {
+                }
+
+                try
+                {
+#if !DNXCORE50
+                    streamReader.Close();
+#else
+                    streamReader.Dispose();
+#endif
+                }
+                catch (Exception)
+                {
+                }
+
+                try
+                {
+#if !DNXCORE50
+                    stream.Close();
+#else
+                    stream.Dispose();
+#endif
+                }
+                catch (Exception)
+                {
+                }
+
+                try
+                {
+                    request.Dispose();
+                }
+                catch (Exception)
+                {
+                }
+            }
+
+            public bool MoveNext()
+            {
+                if (complete)
+                {
+                    // to parallel IEnumerable<T>, subsequent calls to MoveNextAsync after it has returned false should
+                    // also return false, rather than throwing
+                    return false;
+                }
+
+                if (wasInitialized == false)
+                {
+                    Init();
+                    wasInitialized = true;
+                }
+
+                if (reader.Read() == false)
+                    throw new InvalidOperationException("Unexpected end of data");
+
+                if (reader.TokenType == JsonToken.EndArray)
+                {
+                    complete = true;
+
+                    TryReadNextPageStart();
+
+                    EnsureValidEndOfResponse();
+                    this.Dispose();
+                    return false;
+                }
+                Current = (RavenJObject)RavenJToken.ReadFrom(reader);
+                return true;
+            }
+
+            void TryReadNextPageStart()
+            {
+                if (!(reader.Read()) || reader.TokenType != JsonToken.PropertyName)
+                    return;
+
+                switch ((string)reader.Value)
+                {
+                    case "NextPageStart":
+                        var nextPageStart = reader.ReadAsInt32();
+                        if (pagingInformation == null)
+                            return;
+                        if (nextPageStart.HasValue == false)
+                            throw new InvalidOperationException("Unexpected end of data");
+
+                        pagingInformation.Fill(start, pageSize, nextPageStart.Value);
+                        break;
+                    case "Error":
+                        var err = reader.ReadAsString();
+                        throw new InvalidOperationException("Server error" + Environment.NewLine + err);
+                    default:
+                        if (customizedEndResult != null && customizedEndResult(reader))
+                            break;
+
+                        throw new InvalidOperationException("Unexpected property name: " + reader.Value);
+                }
+
+            }
+
+            void EnsureValidEndOfResponse()
+            {
+                if (reader.TokenType != JsonToken.EndObject && reader.Read() == false)
+                    throw new InvalidOperationException("Unexpected end of response - missing EndObject token");
+
+                if (reader.TokenType != JsonToken.EndObject)
+                    throw new InvalidOperationException(string.Format("Unexpected token type at the end of the response: {0}. Error: {1}", reader.TokenType, streamReader.ReadToEnd()));
+
+                var remainingContent = streamReader.ReadToEnd();
+
+                if (string.IsNullOrEmpty(remainingContent) == false)
+                    throw new InvalidOperationException("Server error: " + remainingContent);
+            }
+
+            public void Reset()
+            {
+                throw new NotImplementedException();
+            }
+
+            public RavenJObject Current { get; private set; }
+
+            object IEnumerator.Current
+            {
+                get
+                {
+                    return Current;
+                }
+            }
+        }
+
+
 
         public async Task<IAsyncEnumerator<RavenJObject>> StreamDocsAsync(
                         Etag fromEtag = null, string startsWith = null,

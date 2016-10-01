@@ -174,7 +174,7 @@ namespace Raven.Client
         /// </summary>
         /// <param name="query">Query to stream results for</param>
         /// <param name="token">The cancellation token.</param>
-        Task<IAsyncEnumerator<StreamResult<T>>> StreamAsync<T>(IAsyncDocumentQuery<T> query, CancellationToken token = default (CancellationToken));
+        Task<IEnumerator<StreamResult<T>>> StreamAsync<T>(IAsyncDocumentQuery<T> query, CancellationToken token = default (CancellationToken));
 
         /// <summary>
         ///     Stream the results on the query to the client, converting them to
@@ -183,17 +183,7 @@ namespace Raven.Client
         /// </summary>
         /// <param name="query">Query to stream results for</param>
         /// <param name="token">The cancellation token.</param>
-        Task<IAsyncEnumerator<StreamResult<T>>> StreamAsync<T>(IQueryable<T> query, CancellationToken token = default (CancellationToken));
-
-        /// <summary>
-        ///     Stream the results on the query to the client, converting them to
-        ///     CLR types along the way.
-        ///     <para>Does NOT track the entities in the session, and will not includes changes there when SaveChanges() is called</para>
-        /// </summary>
-        /// <param name="query">Query to stream results for</param>
-        /// <param name="queryHeaderInformation">Information about performed query</param>
-        /// <param name="token">The cancellation token.</param>
-        Task<IAsyncEnumerator<StreamResult<T>>> StreamAsync<T>(IAsyncDocumentQuery<T> query, Reference<QueryHeaderInformation> queryHeaderInformation, CancellationToken token = default (CancellationToken));
+        Task<IEnumerator<StreamResult<T>>> StreamAsync<T>(IQueryable<T> query, CancellationToken token = default (CancellationToken));
 
         /// <summary>
         ///     Stream the results on the query to the client, converting them to
@@ -203,7 +193,17 @@ namespace Raven.Client
         /// <param name="query">Query to stream results for</param>
         /// <param name="queryHeaderInformation">Information about performed query</param>
         /// <param name="token">The cancellation token.</param>
-        Task<IAsyncEnumerator<StreamResult<T>>> StreamAsync<T>(IQueryable<T> query, Reference<QueryHeaderInformation> queryHeaderInformation, CancellationToken token = default (CancellationToken));
+        Task<IEnumerator<StreamResult<T>>> StreamAsync<T>(IAsyncDocumentQuery<T> query, Reference<QueryHeaderInformation> queryHeaderInformation, CancellationToken token = default (CancellationToken));
+
+        /// <summary>
+        ///     Stream the results on the query to the client, converting them to
+        ///     CLR types along the way.
+        ///     <para>Does NOT track the entities in the session, and will not includes changes there when SaveChanges() is called</para>
+        /// </summary>
+        /// <param name="query">Query to stream results for</param>
+        /// <param name="queryHeaderInformation">Information about performed query</param>
+        /// <param name="token">The cancellation token.</param>
+        Task<IEnumerator<StreamResult<T>>> StreamAsync<T>(IQueryable<T> query, Reference<QueryHeaderInformation> queryHeaderInformation, CancellationToken token = default (CancellationToken));
 
         /// <summary>
         ///     Stream the results of documents search to the client, converting them to CLR types along the way.

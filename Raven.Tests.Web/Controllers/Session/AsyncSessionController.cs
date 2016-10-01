@@ -489,7 +489,7 @@ namespace Raven.Tests.Web.Controllers.Session
         public async Task<HttpResponseMessage> Stream3()
         {
             var enumerator = await Session.Advanced.StreamAsync(Session.Query<Person, RavenDocumentsByEntityName>());
-            while (await enumerator.MoveNextAsync())
+            while (enumerator.MoveNext())
             {
             }
 

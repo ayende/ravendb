@@ -303,7 +303,8 @@ namespace Raven.Client.Connection
             var reference = new Reference<QueryHeaderInformation>();
             var streamQueryAsync = AsyncHelpers.RunSync(() => asyncServerClient.StreamQueryAsync(index, query, reference));
             queryHeaderInfo = reference.Value;
-            return new AsyncEnumerableWrapper<RavenJObject>(streamQueryAsync);
+            //return new AsyncEnumerableWrapper<RavenJObject>(streamQueryAsync);
+            return streamQueryAsync;
         }
 
         public IEnumerator<RavenJObject> StreamDocs(Etag fromEtag = null, string startsWith = null, string matches = null, int start = 0, int pageSize = int.MaxValue, string exclude = null, RavenPagingInformation pagingInformation = null, string skipAfter = null, string transformer = null, Dictionary<string, RavenJToken> transformerParameters = null)

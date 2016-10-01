@@ -681,7 +681,7 @@ namespace Raven.Client.Connection.Async
         /// <param name="query">query definition containing all information required to query a specified index</param>
         /// <param name="queryHeaderInfo">information about performed query</param>
         /// <param name="token">The cancellation token.</param>
-        Task<IAsyncEnumerator<RavenJObject>> StreamQueryAsync(string index, IndexQuery query, Reference<QueryHeaderInformation> queryHeaderInfo, CancellationToken token = default(CancellationToken));
+        Task<IEnumerator<RavenJObject>> StreamQueryAsync(string index, IndexQuery query, Reference<QueryHeaderInformation> queryHeaderInfo, CancellationToken token = default(CancellationToken));
 
         /// <summary>
         ///     Returns a list of suggestions based on the specified suggestion query

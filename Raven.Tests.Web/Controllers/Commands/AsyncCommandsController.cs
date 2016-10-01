@@ -414,7 +414,7 @@ namespace Raven.Tests.Web.Controllers.Commands
         {
             var queryHeaderInfo = new Reference<QueryHeaderInformation>();
             var enumerator = await DocumentStore.AsyncDatabaseCommands.StreamQueryAsync(new RavenDocumentsByEntityName().IndexName, new IndexQuery(), queryHeaderInfo);
-            while (await enumerator.MoveNextAsync())
+            while (enumerator.MoveNext())
             {
             }
 
