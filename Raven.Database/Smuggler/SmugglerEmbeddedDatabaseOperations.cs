@@ -148,6 +148,12 @@ namespace Raven.Database.Smuggler
             return new CompletedTask();
         }
 
+        public Task DeleteIndex(string indexName)
+        {
+            database.Indexes.DeleteIndex(indexName);
+            return new CompletedTask();
+        }
+
         [Obsolete("Use RavenFS instead.")]
         public Task PutAttachment(AttachmentExportInfo attachmentExportInfo)
         {

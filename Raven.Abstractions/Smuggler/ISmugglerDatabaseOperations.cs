@@ -60,6 +60,8 @@ namespace Raven.Abstractions.Smuggler
 
         Task PutIndex(string indexName, RavenJToken index);
 
+        Task DeleteIndex(string indexName);
+
         Task PutTransformer(string transformerName, RavenJToken transformer);
 
         void ShowProgress(string format, params object[] args);

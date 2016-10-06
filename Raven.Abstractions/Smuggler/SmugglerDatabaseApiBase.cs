@@ -128,6 +128,8 @@ namespace Raven.Abstractions.Smuggler
                     var watch = Stopwatch.StartNew();
 
                     jsonWriter.WriteStartObject();
+                    //writing indexes at the start so we import them first
+                    var writtenIndexes = await WriteIndexes(exportOptions, jsonWriter).ConfigureAwait(false);
                     while (true)
                     {
                         if (isLastExport == false)
@@ -136,7 +138,7 @@ namespace Raven.Abstractions.Smuggler
                             lastException = await RunSingleExportAsync(exportOptions, result, maxEtags, jsonWriter, ownedStream).ConfigureAwait(false);
                         }
                         else
-                            await RunLastExportAsync(exportOptions, result, jsonWriter).ConfigureAwait(false);
+                            await RunLastExportAsync(exportOptions, result, jsonWriter, writtenIndexes).ConfigureAwait(false);
 
                         if (lastException != null)
                             break;
@@ -173,20 +175,38 @@ namespace Raven.Abstractions.Smuggler
             }
         }
 
-        private async Task RunLastExportAsync(SmugglerExportOptions<RavenConnectionStringOptions> exportOptions, OperationState state, SmugglerJsonTextWriter writer)
+        private async Task RunLastExportAsync(SmugglerExportOptions<RavenConnectionStringOptions> exportOptions, OperationState state, SmugglerJsonTextWriter writer,
+            RavenJArray writtenIndexes)
         {
             var now = SystemTime.UtcNow;
 
             Debug.Assert(exportOptions != null);
             Debug.Assert(state != null);
             Debug.Assert(writer != null);
+            RavenJArray indexes = null;
 
-            writer.WritePropertyName("Indexes");
-            writer.WriteStartArray();
-            if (Options.OperateOnTypes.HasFlag(ItemType.Indexes))
-                await ExportIndexes(exportOptions.From, writer).ConfigureAwait(false);
+            indexes = await FetchIndexesWithRetry().ConfigureAwait(false);            
 
-            writer.WriteEndArray();
+            if (indexes != null)
+            {
+                var latestIndexesNames = indexes.Select(x => x.Value<string>("name")).ToHashSet();
+                var oldIndexesNames = writtenIndexes.Select(x => x.Value<string>("name")).ToHashSet();
+                //There are new indexes we must re-write indexes part
+                if (latestIndexesNames.Except(oldIndexesNames).Any())
+                    await WriteIndexes(exportOptions, writer).ConfigureAwait(false);
+                var deleted = oldIndexesNames.Except(latestIndexesNames).ToList();
+                //Need to export deleted indexes
+                if (deleted.Any())
+                {
+                    writer.WritePropertyName("IndexDeletionList");
+                    writer.WriteStartArray();
+                    foreach (var indexName in deleted)
+                    {
+                        writer.Write(indexName);
+                    }
+                    writer.WriteEndArray();
+                }
+            }
 
             writer.WritePropertyName("Transformers");
             writer.WriteStartArray();
@@ -248,6 +268,51 @@ namespace Raven.Abstractions.Smuggler
                     state.LastDocDeleteEtag = summary.LastDocDeleteEtag;
                     state.LastDocsEtag = summary.LastDocsEtag;
                 }
+            }
+        }
+
+        private async Task<RavenJArray> FetchIndexesWithRetry()
+        {
+            int total = 0;
+            int failCount = 0;
+            RavenJArray indexes = null;
+            RavenJArray res = new RavenJArray();
+            while (true)
+            {
+                try
+                {
+                    indexes = await Operations.GetIndexes(total).ConfigureAwait(false);
+                    var sizeRead = indexes.Length;
+                    if (sizeRead == 0)
+                        break;
+                    total += sizeRead;
+                    indexes.ForEach(x=>res.Add(x));
+                }
+                catch
+                {
+                    if (++failCount == RetriesCount)
+                    {
+                        Operations.ShowProgress("Failed fetching indexes the second time, any change to indexes during the export will not show in the export");
+                        break;
+                    }
+                }
+            }
+            return res;
+        }
+
+        private async Task<RavenJArray> WriteIndexes(SmugglerExportOptions<RavenConnectionStringOptions> exportOptions, SmugglerJsonTextWriter writer)
+        {
+            writer.WritePropertyName("Indexes");
+            writer.WriteStartArray();
+            try
+            {
+                if (Options.OperateOnTypes.HasFlag(ItemType.Indexes))
+                    return await ExportIndexes(exportOptions.From, writer).ConfigureAwait(false);
+                return null;
+            }
+            finally
+            {
+                writer.WriteEndArray();
             }
         }
 
@@ -1026,6 +1091,14 @@ namespace Raven.Abstractions.Smuggler
                 return indexCount;
             });
 
+            exportSectionRegistar.Add("IndexDeletionList", async () =>
+            {
+                Operations.ShowProgress("Begin reading index deletions");
+                var indexDeletionsCount = await ImportIndexDeletions(jsonReader).ConfigureAwait(false);
+                Operations.ShowProgress("Done with reading index deletions, total: {0}", indexDeletionsCount);
+                return indexDeletionsCount;
+            });
+
             exportSectionRegistar.Add("Docs", async () =>
             {
                 Operations.ShowProgress("Begin reading documents");
@@ -1697,25 +1770,57 @@ namespace Raven.Abstractions.Smuggler
             return count;
         }
 
-        private async Task ExportIndexes(RavenConnectionStringOptions src, SmugglerJsonTextWriter jsonWriter)
+        private async Task<int> ImportIndexDeletions(JsonReader jsonReader)
+        {
+            var count = 0;
+
+            while (jsonReader.Read() && jsonReader.TokenType != JsonToken.EndArray)
+            {
+                Options.CancelToken.Token.ThrowIfCancellationRequested();
+
+                var indexName = ((RavenJValue)RavenJToken.ReadFrom(jsonReader)).ToString();
+                if ((Options.OperateOnTypes & ItemType.Indexes) != ItemType.Indexes)
+                    continue;
+
+                try
+                {
+                    await Operations.DeleteIndex(indexName).ConfigureAwait(false);
+                }
+                catch (Exception e)
+                {
+                    if (IgnoreErrorsAndContinue == false)
+                        throw;
+
+                    Operations.ShowProgress("Failed to import index deletion {0}. Message: {1}", indexName, e.Message);
+                }
+
+                count++;
+            }
+
+            return count;
+        }
+
+        private async Task<RavenJArray> ExportIndexes(RavenConnectionStringOptions src, SmugglerJsonTextWriter jsonWriter)
         {
             var totalCount = 0;
             int retries = RetriesCount;
-
+            RavenJArray indexes;
+            RavenJArray res = new RavenJArray();
             while (true)
             {
-                RavenJArray indexes;
+                
 
                 try
                 {
                     indexes = await Operations.GetIndexes(totalCount).ConfigureAwait(false);
+                    indexes.ForEach(x=>res.Add(x));
                 }
                 catch (Exception e)
                 {
                     if (retries-- == 0 && IgnoreErrorsAndContinue)
                     {
                         Operations.ShowProgress("Failed getting indexes too much times, stopping the index export entirely. Message: {0}", e.Message);
-                        return;
+                        return null;
                     }
 
                     if (IgnoreErrorsAndContinue == false)
@@ -1747,6 +1852,7 @@ namespace Raven.Abstractions.Smuggler
                     }
                 }
             }
+            return res;
         }
 
         protected async Task<ServerSupportedFeatures> DetectServerSupportedFeatures(ISmugglerDatabaseOperations ops, RavenConnectionStringOptions server)

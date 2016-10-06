@@ -253,6 +253,11 @@ namespace Raven.Smuggler
             return new CompletedTask();
         }
 
+        public Task DeleteIndex(string indexName)
+        {
+            return Store.AsyncDatabaseCommands.DeleteIndexAsync(indexName);
+        }
+
         public async Task PutTransformer(string transformerName, RavenJToken transformer)
         {
             if (isTransformersSupported() == false)
