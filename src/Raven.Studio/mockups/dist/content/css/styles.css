@@ -1219,6 +1219,9 @@ input[type="button"].btn-block {
 .icon-style + span {
   margin-left: 9px;
 }
+.icon-filesystem:before {
+  content: "\e942";
+}
 .icon-coffee:before {
   content: "\e941";
 }
@@ -3380,7 +3383,7 @@ pre {
   top: 2px;
   line-height: 100%;
   font-size: 120%;
-  content: "\e90d";
+  content: "\e926";
   margin-right: 7.5px;
 }
 .objects-list a.document:before + span {
@@ -3506,8 +3509,12 @@ pre {
   width: 0;
   height: 0;
 }
+.editDocument .documentId .fav-object {
+  position: relative;
+  top: -3px;
+}
 .editDocument .documentId #obj-name .edit-inline {
-  border: 1px solid #686f6f;
+  border: 1px solid #3a4242;
   margin: -1px;
 }
 .editDocument .documentId #obj-name .edit-inline:focus {
