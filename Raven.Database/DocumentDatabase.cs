@@ -538,14 +538,17 @@ namespace Raven.Database
 
             if (unfilteredAggregate == null || unfilteredAggregate.Catalogs.Count == 0)
                 return new List<string>();
-
-            return types
-                .SelectMany(type => unfilteredAggregate.GetExports(new ImportDefinition(info => info.Metadata.ContainsKey("Bundle"), type.FullName, ImportCardinality.ZeroOrMore, false, false)))
-                .Select(info => info.Item2.Metadata["Bundle"] as string)
-                .Where(x => x != null)
+           
+            var bundles = unfilteredAggregate.SelectMany(x => x.ExportDefinitions)
+                .Where(x => x.Metadata.ContainsKey("Bundle"))
+                .OrderBy(x => x.Metadata.ContainsKey("Order")
+                    ? (int)x.Metadata["Order"]
+                    : int.MaxValue)
+                .Select(x => x.Metadata["Bundle"] as string)
                 .Distinct()
-                .OrderBy(x => x)
                 .ToList();
+           
+            return bundles;
         }
 
         public IndexingPerformanceStatistics[] IndexingPerformanceStatistics => (from pair in IndexDefinitionStorage.IndexDefinitions
@@ -948,6 +951,12 @@ namespace Raven.Database
 
             exceptionAggregator.Execute(() =>
             {
+                if (workContext != null)
+                    workContext.StopWorkRude();
+            });
+
+            exceptionAggregator.Execute(() =>
+            {
                 if (prefetcher != null)
                     prefetcher.Dispose();
             });
@@ -956,9 +965,6 @@ namespace Raven.Database
             {
                 initializer.UnsubscribeToDomainUnloadOrProcessExit();
                 disposed = true;
-
-                if (workContext != null)
-                    workContext.StopWorkRude();
             });
 
             if (initializer != null)
