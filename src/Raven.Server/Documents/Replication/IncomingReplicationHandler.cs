@@ -33,7 +33,7 @@ namespace Raven.Server.Documents.Replication
     {
         private readonly DocumentDatabase _database;
         private readonly TcpClient _tcpClient;
-        private readonly NetworkStream _stream;
+        private readonly Stream _stream;
         private readonly DocumentReplicationLoader _parent;
         private Thread _incomingThread;
         private readonly CancellationTokenSource _cts;
@@ -58,12 +58,90 @@ namespace Raven.Server.Documents.Replication
             
             _database = options.DocumentDatabase;
             _tcpClient = options.TcpClient;
-            _stream = options.Stream;
+            _stream = new MyStream(options.Stream);
             ConnectionInfo.RemoteIp = ((IPEndPoint)_tcpClient.Client.RemoteEndPoint).Address.ToString();
             _parent = parent;
 
             _log = LoggingSource.Instance.GetLogger<IncomingReplicationHandler>(_database.Name);
             _cts = CancellationTokenSource.CreateLinkedTokenSource(_database.DatabaseShutdown);
+        }
+
+        public class MyStream : Stream
+        {
+            public Stream _inner;
+            private Stream _stdout;
+
+            public MyStream(Stream inner)
+            {
+                _inner = inner;
+                _stdout = Console.OpenStandardOutput();
+            }
+
+
+            public override void Flush()
+            {
+                _inner.Flush();
+            }
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                return _inner.Read(buffer, offset, count);
+            }
+
+            public override long Seek(long offset, SeekOrigin origin)
+            {
+                return _inner.Seek(offset, origin);
+            }
+
+            public override void SetLength(long value)
+            {
+                _inner.SetLength(value);
+            }
+
+            public override void Write(byte[] buffer, int offset, int count)
+            {
+                lock (typeof(Stream))
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    
+                    _stdout.Write(buffer, offset, count);
+                    Console.ForegroundColor = ConsoleColor.White;
+                    Console.WriteLine();
+                }
+                _inner.Write(buffer, offset, count);
+                _inner.Flush();
+            }
+
+            public override bool CanRead
+            {
+                get { return _inner.CanRead; }
+            }
+
+            public override bool CanSeek
+            {
+                get { return _inner.CanSeek; }
+            }
+
+            public override bool CanWrite
+            {
+                get { return _inner.CanWrite; }
+            }
+
+            public override long Length
+            {
+                get { return _inner.Length; }
+            }
+
+            public override long Position
+            {
+                get { return _inner.Position; }
+                set { _inner.Position = value; }
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                _inner.Dispose();
+            }
         }
 
 

@@ -427,7 +427,7 @@ namespace Raven.Server.Documents.Replication
             while (true)
             {
                 using (var replicationBatchReplyMessage = interruptableRead.ParseToMemory(
-                    _stream,
+                    new MyStream(_stream), 
                     "replication acknowledge message",
                     Timeout.Infinite,
                     _buffer,
@@ -437,7 +437,7 @@ namespace Raven.Server.Documents.Replication
                     {
                         ThrowConnectionClosed();
                     }
-
+                    Console.WriteLine(replicationBatchReplyMessage.Document);
                     var replicationBatchReply = HandleServerResponse(replicationBatchReplyMessage.Document,
                         allowNotify: false);
                     if (replicationBatchReply == null)
@@ -452,6 +452,86 @@ namespace Raven.Server.Documents.Replication
                 }
             }
         }
+
+        public class MyStream : Stream
+        {
+            public Stream _inner;
+            private Stream _stdout;
+
+            public MyStream(Stream inner)
+            {
+                _inner = inner;
+                _stdout = Console.OpenStandardOutput();
+            }
+
+
+            public override void Flush()
+            {
+                _inner.Flush();
+            }
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                var read = _inner.Read(buffer, offset, count);
+                lock (typeof(Stream))
+                {
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+
+                    _stdout.Write(buffer, offset, read);
+                    Console.ForegroundColor = ConsoleColor.White;
+                    Console.WriteLine();
+                }
+                return read;
+            }
+
+            public override long Seek(long offset, SeekOrigin origin)
+            {
+                return _inner.Seek(offset, origin);
+            }
+
+            public override void SetLength(long value)
+            {
+                _inner.SetLength(value);
+            }
+
+            public override void Write(byte[] buffer, int offset, int count)
+            {
+                _inner.Write(buffer, offset, count);
+            }
+
+            public override bool CanRead
+            {
+                get { return _inner.CanRead; }
+            }
+
+            public override bool CanSeek
+            {
+                get { return _inner.CanSeek; }
+            }
+
+            public override bool CanWrite
+            {
+                get { return _inner.CanWrite; }
+            }
+
+            public override long Length
+            {
+                get { return _inner.Length; }
+            }
+
+            public override long Position
+            {
+                get { return _inner.Position; }
+                set { _inner.Position = value; }
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                _inner.Dispose();
+            }
+        }
+
+
 
         private static void ThrowConnectionClosed()
         {
