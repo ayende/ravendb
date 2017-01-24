@@ -58,7 +58,7 @@ namespace Raven.Server.Documents.Replication
             
             _database = options.DocumentDatabase;
             _tcpClient = options.TcpClient;
-            _stream = new MyStream(options.Stream);
+            _stream = options.Stream;
             ConnectionInfo.RemoteIp = ((IPEndPoint)_tcpClient.Client.RemoteEndPoint).Address.ToString();
             _parent = parent;
 
@@ -183,17 +183,18 @@ namespace Raven.Server.Documents.Replication
             IsIncomingReplicationThread = true;
             try
             {
-                using(_connectionOptions.ConnectionProcessingInProgress())
+                
+                using (_connectionOptions.ConnectionProcessingInProgress())
                 using (_stream)
+                using (var interruptibleRead = new InterruptibleRead(_replicationFromAnotherSource,
+                            _database.DocumentsStorage.ContextPool,
+                            _stream))
                 {
                     while (!_cts.IsCancellationRequested)
                     {
                         try
                         {
-                            var interruptibleRead = new InterruptibleRead(_replicationFromAnotherSource,
-                                _database.DocumentsStorage.ContextPool);
                             using (var msg = interruptibleRead.ParseToMemory(
-                                _connectionOptions.Stream,
                                 "IncomingReplication/read-message",
                                 Timeout.Infinite,
                                 _connectionOptions.PinnedBuffer,
