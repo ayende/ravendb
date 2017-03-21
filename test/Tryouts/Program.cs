@@ -8,15 +8,13 @@ namespace Tryouts
     {
         public static void Main(string[] args)
         {
-            for (int i = 0; i < 10; i++)
+            for (int i = 0; i < 1000; i++)
             {
-                Console.WriteLine(i);
-
-                using (var a = new FastTests.Server.Replication.ReplicationIndexesAndTransformers())
+                using (var testclass = new FastTests.Client.FirstClassPatch())
                 {
-                    a.Manually_removed_indexes_would_remove_metadata_on_startup().Wait();
+                    testclass.CanPatchAndModify();
                 }
-                
+                Console.WriteLine(i);
             }
         }
     }
