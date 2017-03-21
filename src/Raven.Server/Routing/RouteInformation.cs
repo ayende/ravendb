@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Threading.Tasks;
@@ -65,6 +66,9 @@ namespace Raven.Server.Routing
         public Task CreateDatabase(RequestHandlerContext context)
         {
             var databaseName = context.RouteMatch.GetCapture();
+            if(databaseName.Length == 0 || string.IsNullOrWhiteSpace(databaseName.String))
+                throw new ArgumentNullException(nameof(databaseName), $"Database name in the path is null or empty. Cannot continue...");
+
             var databasesLandlord = context.RavenServer.ServerStore.DatabasesLandlord;
             var database = databasesLandlord.TryGetOrCreateResourceStore(databaseName);
 

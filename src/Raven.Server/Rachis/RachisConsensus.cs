@@ -1050,7 +1050,7 @@ namespace Raven.Server.Rachis
         public unsafe void CastVoteInTerm(TransactionOperationContext context, long term, string votedFor)
         {
             Debug.Assert(context.Transaction != null);
-            if (term <= CurrentTerm)
+            if (term < CurrentTerm)
                 throw new ConcurrencyException($"The current term {CurrentTerm} is larger than {term}, aborting change");
 
             var state = context.Transaction.InnerTransaction.CreateTree(GlobalStateSlice);
