@@ -64,7 +64,7 @@ namespace Raven.Server.Documents
             Changes = new DocumentsChanges();
             DocumentsStorage = new DocumentsStorage(this);
             IndexStore = new IndexStore(this, _indexAndTransformerLocker);
-            TransformerStore = new TransformerStore(this, _indexAndTransformerLocker);
+            TransformerStore = new TransformerStore(this, serverStore, _indexAndTransformerLocker);
             EtlLoader = new EtlLoader(this);
             DocumentReplicationLoader = new DocumentReplicationLoader(this);
             DocumentTombstoneCleaner = new DocumentTombstoneCleaner(this);
@@ -78,6 +78,7 @@ namespace Raven.Server.Documents
             ConfigurationStorage = new ConfigurationStorage(this);
             NotificationCenter = new NotificationCenter.NotificationCenter(ConfigurationStorage.NotificationsStorage, Name, _databaseShutdown.Token);
             DatabaseInfoCache = serverStore?.DatabaseInfoCache;
+            _serverStore = serverStore;
         }
 
         public DateTime LastIdleTime => new DateTime(_lastIdleTicks);
@@ -217,7 +218,7 @@ namespace Raven.Server.Documents
             EtlLoader.Initialize();
 
             DocumentTombstoneCleaner.Initialize();
-            BundleLoader = new BundleLoader(this);
+            BundleLoader = new BundleLoader(this,_serverStore);
 
             try
             {
@@ -385,9 +386,11 @@ namespace Raven.Server.Documents
         }
 
         private static readonly string CachedDatabaseInfo = "CachedDatabaseInfo";
+        private ServerStore _serverStore;
+
         public DynamicJsonValue GenerateDatabaseInfo()
         {
-            var envs = GetAllStoragesEnvironment();
+            var envs = GetAllStoragesEnvironment().ToList();
             if (envs.Any(x => x.Environment == null))
                 return null;
             Size size = new Size(envs.Sum(env => env.Environment.Stats().AllocatedDataFileSizeInBytes));
@@ -493,6 +496,11 @@ namespace Raven.Server.Documents
         public void IncrementalBackupTo(string backupPath)
         {
             BackupMethods.Incremental.ToFile(GetAllStoragesEnvironmentInformation(), backupPath);
+        }
+
+        public void StateChanged()
+        {
+            
         }
     }
 

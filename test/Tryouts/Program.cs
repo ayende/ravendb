@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Diagnostics;
+using System.Threading.Tasks;
 
 namespace Tryouts
 {
@@ -7,16 +8,15 @@ namespace Tryouts
     {
         public static void Main(string[] args)
         {
-            Console.WriteLine(Process.GetCurrentProcess().Id);
-            Console.WriteLine();
-
-            for (int i = 0; i < 10; i++)
+            for (int i = 0; i < 100; i++)
             {
                 Console.WriteLine(i);
-                using (var a = new SlowTests.Blittable.BlittableJsonWriterTests.ManualBuilderTestsSlow())
+
+                using (var a = new FastTests.Server.Documents.Versioning.Versioning())
                 {
-                    a.BigAmountOfPreperties(short.MaxValue);
+                    a.ServerSaveBundlesAfterRestart().Wait();
                 }
+                
             }
         }
     }
