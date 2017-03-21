@@ -9,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Raven.Client.Extensions;
 using Sparrow.Json;
+using Sparrow.Logging;
 
 namespace Raven.Client.Http
 {
@@ -22,7 +23,7 @@ namespace Raven.Client.Http
         public int AuthenticationRetries;
         public abstract bool IsReadRequest { get; }
         public HttpStatusCode StatusCode;
-
+        private readonly Logger _log  = LoggingSource.Instance.GetLogger<RavenCommand<TResult>>(nameof(RavenCommand<TResult>));
         public bool AvoidFailover;
 
         public RavenCommandResponseType ResponseType { get; protected set; } = RavenCommandResponseType.Object;
@@ -30,11 +31,42 @@ namespace Raven.Client.Http
         public TimeSpan? Timeout { get; protected set; }
 
         public abstract HttpRequestMessage CreateRequest(ServerNode node, out string url);
+
+        public virtual void SetResponseCheckForNullResponse(BlittableJsonReaderObject response, bool fromCache)
+        {
+            if (CheckIfResponseIsNull(response)) return; //avoid NRE
+            SetResponse(response, fromCache);
+        }
+
+        private bool CheckIfResponseIsNull(object response)
+        {
+            if (response == null)
+            {
+                if (_log.IsInfoEnabled)
+                {
+                    _log.Info($"Got a null response when setting response in {GetType().Name}, the database is probably shutting down.");
+                }
+                return true;
+            }
+            return false;
+        }
+
         public abstract void SetResponse(BlittableJsonReaderObject response, bool fromCache);
 
+        public virtual void SetResponseCheckForNullResponse(BlittableJsonReaderArray response, bool fromCache)
+        {
+            if (CheckIfResponseIsNull(response)) return; //avoid NRE
+            SetResponse(response, fromCache);
+        }
         public virtual void SetResponse(BlittableJsonReaderArray response, bool fromCache)
         {
             throw new NotSupportedException($"When {nameof(ResponseType)} is set to Array then please override this method to handle the response.");
+        }
+
+        public virtual void SetResponseUncachedCheckForNullResponse(HttpResponseMessage response, Stream stream)
+        {
+            if (CheckIfResponseIsNull(response)) return; //avoid NRE
+            SetResponseUncached(response, stream);
         }
 
         public virtual void SetResponseUncached(HttpResponseMessage response, Stream stream)
@@ -76,7 +108,7 @@ namespace Raven.Client.Http
                     {
                         CacheResponse(cache, url, response, json);
                     }
-                    SetResponse(json, fromCache: false);
+                    SetResponseCheckForNullResponse(json, fromCache: false);
                     return;
                 }
 
@@ -84,7 +116,7 @@ namespace Raven.Client.Http
                 {
                     var array = await context.ParseArrayToMemoryAsync(stream, "response/array", BlittableJsonDocumentBuilder.UsageMode.None);
                     // TODO: Either cache also arrays or the better way is to remove all array respones by converting them to objects.
-                    SetResponse(array.Item1, fromCache: false);
+                    SetResponseCheckForNullResponse(array.Item1, fromCache: false);
                     return;
                 }
 
@@ -92,7 +124,7 @@ namespace Raven.Client.Http
                 // We do not cache the stream response.
                 var uncompressedStream = await RequestExecutor.ReadAsStreamUncompressedAsync(response);
               
-                SetResponseUncached(response, uncompressedStream);
+                SetResponseUncachedCheckForNullResponse(response, uncompressedStream);
             }
         }
 
