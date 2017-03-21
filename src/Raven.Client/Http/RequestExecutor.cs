@@ -215,7 +215,7 @@ namespace Raven.Client.Http
                     var aggresiveCacheOptions = AggressiveCaching.Value;
                     if (aggresiveCacheOptions != null && cachedItem.Age < aggresiveCacheOptions.Duration)
                     {
-                        command.SetResponse(cachedValue, fromCache: true);
+                        command.SetResponseCheckForNullResponse(cachedValue, fromCache: true);
                         return;
                     }
 
@@ -267,7 +267,7 @@ namespace Raven.Client.Http
                 if (response.StatusCode == HttpStatusCode.NotModified)
                 {
                     cachedItem.NotModified();
-                    command.SetResponse(cachedValue, fromCache: true);
+                    command.SetResponseCheckForNullResponse(cachedValue, fromCache: true);
                     return;
                 }
                 if (response.IsSuccessStatusCode == false)
@@ -317,11 +317,11 @@ namespace Raven.Client.Http
             {
                 case HttpStatusCode.NotFound:
                     if (command.ResponseType == RavenCommandResponseType.Object)
-                        command.SetResponse((BlittableJsonReaderObject)null, fromCache: false);
+                        command.SetResponseCheckForNullResponse((BlittableJsonReaderObject)null, fromCache: false);
                     else if (command.ResponseType == RavenCommandResponseType.Array)
-                        command.SetResponse((BlittableJsonReaderArray)null, fromCache: false);
+                        command.SetResponseCheckForNullResponse((BlittableJsonReaderArray)null, fromCache: false);
                     else
-                        command.SetResponseUncached(response, null);
+                        command.SetResponseUncachedCheckForNullResponse(response, null);
                     return true;
                 case HttpStatusCode.Unauthorized:
                 case HttpStatusCode.PreconditionFailed:
