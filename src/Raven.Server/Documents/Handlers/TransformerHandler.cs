@@ -39,9 +39,9 @@ namespace Raven.Server.Documents.Handlers
                 long index;
                 using (var putTransfomerCommand = context.ReadObject(new DynamicJsonValue
                 {
-                    ["Type"] = nameof(PutTransformerCommand),
-                    [nameof(PutTransformerCommand.TransformerDefinition)] = json,
-                    [nameof(PutTransformerCommand.DatabaseName)] = Database.Name,
+                    ["Type"] = nameof(PutUpdateTransformerCommand),
+                    [nameof(PutUpdateTransformerCommand.TransformerDefinition)] = json,
+                    [nameof(PutUpdateTransformerCommand.DatabaseName)] = Database.Name,
                 }, "put-transformer-cmd"))
                 {
                     index = await ServerStore.SendToLeaderAsync(putTransfomerCommand);
@@ -133,15 +133,15 @@ namespace Raven.Server.Documents.Handlers
 
                 var delVal = new DynamicJsonValue
                 {
-                    ["Type"] = nameof(DeleteTransformerCommand),
-                    [nameof(DeleteTransformerCommand.TransformerName)] = name,
-                    [nameof(DeleteTransformerCommand.DatabaseName)] = Database.Name,
+                    ["Type"] = nameof(DeleteUpdateTransformerCommand),
+                    [nameof(DeleteUpdateTransformerCommand.TransformerName)] = name,
+                    [nameof(DeleteUpdateTransformerCommand.DatabaseName)] = Database.Name,
                 };
                 var putVal = new DynamicJsonValue
                 {
-                    ["Type"] = nameof(PutTransformerCommand),
-                    [nameof(PutTransformerCommand.TransformerDefinition)] = transformerBlittable,
-                    [nameof(PutTransformerCommand.DatabaseName)] = Database.Name,
+                    ["Type"] = nameof(PutUpdateTransformerCommand),
+                    [nameof(PutUpdateTransformerCommand.TransformerDefinition)] = transformerBlittable,
+                    [nameof(PutUpdateTransformerCommand.DatabaseName)] = Database.Name,
                 };
 
                 using (var deleteTransformerCommand = context.ReadObject(delVal, "delete-transformer-cmd"))
@@ -184,10 +184,10 @@ namespace Raven.Server.Documents.Handlers
 
                     using (var setTranformerLockModeCommand = context.ReadObject(new DynamicJsonValue
                     {
-                        ["Type"] = nameof(SetTransformerLockModeCommand),
-                        [nameof(SetTransformerLockModeCommand.LockMode)] = mode,
-                        [nameof(SetTransformerLockModeCommand.DatabaseName)] = Database.Name,
-                        [nameof(SetTransformerLockModeCommand.TransformerName)] = name,
+                        ["Type"] = nameof(SetUpdateTransformerLockModeCommand),
+                        [nameof(SetUpdateTransformerLockModeCommand.LockMode)] = mode,
+                        [nameof(SetUpdateTransformerLockModeCommand.DatabaseName)] = Database.Name,
+                        [nameof(SetUpdateTransformerLockModeCommand.TransformerName)] = name,
                     }, "set-transformer_lock_mode-cmd"))
                     {
                         index = await ServerStore.SendToLeaderAsync(setTranformerLockModeCommand);
@@ -212,9 +212,9 @@ namespace Raven.Server.Documents.Handlers
                 long index = 0;
                 using (var deleteTransformerCommand = context.ReadObject(new DynamicJsonValue
                 {
-                    ["Type"] = nameof(DeleteTransformerCommand),
-                    [nameof(DeleteTransformerCommand.TransformerName)] = name,
-                    [nameof(DeleteTransformerCommand.DatabaseName)] = Database.Name,
+                    ["Type"] = nameof(DeleteUpdateTransformerCommand),
+                    [nameof(DeleteUpdateTransformerCommand.TransformerName)] = name,
+                    [nameof(DeleteUpdateTransformerCommand.DatabaseName)] = Database.Name,
                 }, "delete-transformer-cmd"))
                 {
                     index = await ServerStore.SendToLeaderAsync(deleteTransformerCommand);

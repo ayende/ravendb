@@ -13,6 +13,7 @@ using Raven.Client.Documents;
 using Raven.Client.Documents.Conventions;
 using Raven.Client.Documents.Exceptions.Indexes;
 using Raven.Client.Documents.Indexes;
+using Raven.Client.Documents.Operations.Indexes;
 using Raven.Client.Documents.Session;
 using Raven.Client.Documents.Transformers;
 using Raven.Client.Exceptions.Security;
@@ -87,7 +88,6 @@ namespace Raven.Server.ServerWide
             if (cmd.TryGet("Type", out type) == false)
                 return;
 
-
             switch (type)
             {
                 case nameof(AddDatabaseCommand):
@@ -104,10 +104,13 @@ namespace Raven.Server.ServerWide
                 case nameof(DeleteValueCommand):
                     DeleteValue(context, cmd, index, leader);
                     break;
-                case nameof(PutTransformerCommand):
-                case nameof(SetTransformerLockModeCommand):
-                case nameof(DeleteTransformerCommand):
+                case nameof(PutUpdateTransformerCommand):
+                case nameof(SetUpdateTransformerLockModeCommand):
+                case nameof(DeleteUpdateTransformerCommand):
                 case nameof(EditVersioningCommand):
+                case nameof(PutIndexCommand):
+                case nameof(ChangeIndexLockModeCommand):
+                case nameof(DeleteIndexCommand):
                     UpdateDatabase(context, type, cmd, index, leader);
                     break;
                 case nameof(PutValueCommand):
@@ -691,12 +694,10 @@ namespace Raven.Server.ServerWide
         public string Name;
     }
 
-    public class EditVersioningCommand : IUpdateDatabaseCommand
+    public class EditVersioningCommand : UpdateDatabaseCommand
     {
-        public string DatabaseName;
         public VersioningConfiguration Configuration;
-
-        public void UpdateDatabaseRecord(DatabaseRecord databaseRecord)
+        public override void UpdateDatabaseRecord(DatabaseRecord databaseRecord)
         {
             databaseRecord.VersioningConfiguration = Configuration;
         }
@@ -784,39 +785,70 @@ namespace Raven.Server.ServerWide
         }
     }
 
-    public interface IUpdateDatabaseCommand
+    public abstract class UpdateDatabaseCommand
     {
-        void UpdateDatabaseRecord(DatabaseRecord record);
+        public abstract void UpdateDatabaseRecord(DatabaseRecord record);
+        public string DatabaseName { get; set; }
     }
 
-    public class PutTransformerCommand : IUpdateDatabaseCommand
+    public abstract class UpdateTransformerCommand : UpdateDatabaseCommand
     {
-        public string DatabaseName;
+        public string TransformerName;
+    }
+    public class PutUpdateTransformerCommand : UpdateTransformerCommand
+    {
         public TransformerDefinition TransformerDefinition;
-        public void UpdateDatabaseRecord(DatabaseRecord record)
+        public override void UpdateDatabaseRecord(DatabaseRecord record)
         {
             record.AddTransformer(TransformerDefinition);
         }
     }
 
-    public class SetTransformerLockModeCommand : IUpdateDatabaseCommand
+    public class SetUpdateTransformerLockModeCommand : UpdateTransformerCommand
     {
-        public string DatabaseName;
-        public string TransformerName;
         public TransformerLockMode LockMode;
-        public void UpdateDatabaseRecord(DatabaseRecord record)
+        public override void UpdateDatabaseRecord(DatabaseRecord record)
         {
             record.Transformers[TransformerName].LockMode = LockMode;
         }
     }
 
-    public class DeleteTransformerCommand : IUpdateDatabaseCommand
+    public class DeleteUpdateTransformerCommand : UpdateTransformerCommand
     {
-        public string DatabaseName;
-        public string TransformerName;
-        public void UpdateDatabaseRecord(DatabaseRecord record)
+        public override void UpdateDatabaseRecord(DatabaseRecord record)
         {
             record.Transformers.Remove(TransformerName);
+        }
+    }
+
+    public abstract class UpdateIndexCommand:UpdateDatabaseCommand
+    {
+        public string IndexName;
+    }
+
+    public class PutIndexCommand : UpdateIndexCommand
+    {
+        public IndexDefinition IndexDefiniiton;
+        public override void UpdateDatabaseRecord(DatabaseRecord record)
+        {
+            record.Indexes[IndexName] = IndexDefiniiton;
+        }
+    }
+
+    public class ChangeIndexLockModeCommand:UpdateIndexCommand
+    {
+        public IndexLockMode LockMode;
+        public override void UpdateDatabaseRecord(DatabaseRecord record)
+        {
+            record.Indexes[IndexName].LockMode = LockMode;
+        }
+    }
+
+    public class DeleteIndexCommand:UpdateIndexCommand
+    {
+        public override void UpdateDatabaseRecord(DatabaseRecord record)
+        {
+            record.Indexes.Remove(IndexName);
         }
     }
 
@@ -841,12 +873,15 @@ namespace Raven.Server.ServerWide
         public static readonly Func<BlittableJsonReaderObject, DatabaseRecord> DatabaseRecord = GenerateJsonDeserializationRoutine<DatabaseRecord>();
         public static readonly Func<BlittableJsonReaderObject, RemoveNodeFromDatabaseCommand> RemoveNodeFromDatabaseCommand = GenerateJsonDeserializationRoutine<RemoveNodeFromDatabaseCommand>();
 
-        public static Dictionary<string, Func<BlittableJsonReaderObject, IUpdateDatabaseCommand>> UpdateDatabaseCommands = new Dictionary<string, Func<BlittableJsonReaderObject, IUpdateDatabaseCommand>>()
+        public static Dictionary<string, Func<BlittableJsonReaderObject, UpdateDatabaseCommand>> UpdateDatabaseCommands = new Dictionary<string, Func<BlittableJsonReaderObject, UpdateDatabaseCommand>>()
         {
             [nameof(EditVersioningCommand)] = GenerateJsonDeserializationRoutine<EditVersioningCommand>(),
-            [nameof(PutTransformerCommand)] = GenerateJsonDeserializationRoutine<PutTransformerCommand>(),
-            [nameof(DeleteTransformerCommand)] = GenerateJsonDeserializationRoutine<DeleteTransformerCommand>(),
-            [nameof(SetTransformerLockModeCommand)] = GenerateJsonDeserializationRoutine<SetTransformerLockModeCommand>()
+            [nameof(PutUpdateTransformerCommand)] = GenerateJsonDeserializationRoutine<PutUpdateTransformerCommand>(),
+            [nameof(DeleteUpdateTransformerCommand)] = GenerateJsonDeserializationRoutine<DeleteUpdateTransformerCommand>(),
+            [nameof(SetUpdateTransformerLockModeCommand)] = GenerateJsonDeserializationRoutine<SetUpdateTransformerLockModeCommand>(),
+            [nameof(PutIndexCommand)] = GenerateJsonDeserializationRoutine<PutIndexCommand>(),
+            [nameof(ChangeIndexLockModeCommand)] = GenerateJsonDeserializationRoutine<ChangeIndexLockModeCommand>(),
+            [nameof(DeleteIndexCommand)] = GenerateJsonDeserializationRoutine<DeleteIndexCommand>(),
         };
 
         public static readonly Func<BlittableJsonReaderObject, ServerStore.PutRaftCommandResult> PutRaftCommandResult = GenerateJsonDeserializationRoutine<ServerStore.PutRaftCommandResult>();

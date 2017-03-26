@@ -29,25 +29,25 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Auto
             new MapResult()
         };
 
-        private AutoMapReduceIndex(int indexId, AutoMapReduceIndexDefinition definition)
-            : base(indexId, IndexType.AutoMapReduce, definition)
+        private AutoMapReduceIndex(AutoMapReduceIndexDefinition definition)
+            : base(IndexType.AutoMapReduce, definition)
         {
         }
 
-        public static AutoMapReduceIndex CreateNew(int indexId, AutoMapReduceIndexDefinition definition,
+        public static AutoMapReduceIndex CreateNew(AutoMapReduceIndexDefinition definition,
             DocumentDatabase documentDatabase)
         {
-            var instance = new AutoMapReduceIndex(indexId, definition);
+            var instance = new AutoMapReduceIndex(definition);
             instance.Initialize(documentDatabase, documentDatabase.Configuration.Indexing, documentDatabase.Configuration.PerformanceHints);
 
             return instance;
         }
 
-        public static AutoMapReduceIndex Open(int indexId, StorageEnvironment environment,
+        public static AutoMapReduceIndex Open(StorageEnvironment environment,
             DocumentDatabase documentDatabase)
         {
             var definition = AutoMapReduceIndexDefinition.Load(environment);
-            var instance = new AutoMapReduceIndex(indexId, definition);
+            var instance = new AutoMapReduceIndex(definition);
             instance.Initialize(environment, documentDatabase, documentDatabase.Configuration.Indexing, documentDatabase.Configuration.PerformanceHints);
 
             return instance;

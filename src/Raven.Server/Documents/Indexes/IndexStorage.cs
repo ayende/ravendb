@@ -353,7 +353,7 @@ namespace Raven.Server.Documents.Indexes
                 throw new SimulatedVoronUnrecoverableErrorException("Simulated corruption.");
 
             if (_logger.IsInfoEnabled)
-                _logger.Info($"Writing last etag for '{_index.Name} ({_index.IndexId})'. Tree: {tree}. Collection: {collection}. Etag: {etag}.");
+                _logger.Info($"Writing last etag for '{_index.Name} ({_index.Etag})'. Tree: {tree}. Collection: {collection}. Etag: {etag}.");
 
             var statsTree = tx.InnerTransaction.CreateTree(tree);
             Slice etagSlice;
@@ -382,7 +382,7 @@ namespace Raven.Server.Documents.Indexes
         public unsafe IndexFailureInformation UpdateStats(DateTime indexingTime, IndexingRunStats stats)
         {
             if (_logger.IsInfoEnabled)
-                _logger.Info($"Updating statistics for '{_index.Name} ({_index.IndexId})'. Stats: {stats}.");
+                _logger.Info($"Updating statistics for '{_index.Name} ({_index.Etag})'. Stats: {stats}.");
 
             TransactionOperationContext context;
             using (_contextPool.AllocateOperationContext(out context))
@@ -390,7 +390,7 @@ namespace Raven.Server.Documents.Indexes
             {
                 var result = new IndexFailureInformation
                 {
-                    IndexId = _index.IndexId,
+                    Etag = _index.Etag,
                     Name = _index.Name
                 };
 
@@ -463,17 +463,17 @@ namespace Raven.Server.Documents.Indexes
             table.DeleteForwardFrom(_errorsSchema.Indexes[IndexSchema.ErrorTimestampsSlice], Slices.BeforeAllKeys, false, numberOfEntriesToDelete);
         }
 
-        public static IndexType ReadIndexType(int indexId, StorageEnvironment environment)
+        public static IndexType ReadIndexType(StorageEnvironment environment)
         {
             using (var tx = environment.ReadTransaction())
             {
                 var statsTree = tx.ReadTree(IndexSchema.StatsTree);
                 if (statsTree == null)
-                    throw new InvalidOperationException($"Index '{indexId}' does not contain 'Stats' tree.");
+                    throw new InvalidOperationException("Index does not contain 'Stats' tree.");
 
                 var result = statsTree.Read(IndexSchema.TypeSlice);
                 if (result == null)
-                    throw new InvalidOperationException($"Stats tree does not contain 'Type' entry in index '{indexId}'.");
+                    throw new InvalidOperationException("Stats tree does not contain 'Type' entry in index.");
 
                 return (IndexType)result.Reader.ReadLittleEndianInt32();
             }

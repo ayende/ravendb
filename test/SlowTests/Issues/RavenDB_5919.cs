@@ -146,7 +146,7 @@ namespace SlowTests.Issues
 
                 var index2 = documentStore.Admin.Send(new GetIndexOperation($"{Constants.Documents.Indexing.SideBySideIndexNamePrefix}Entity/ById"));
 
-                Assert.Equal(index1.IndexId, index2.IndexId);
+                Assert.Equal(index1.Etag, index2.Etag);
             }
         }
 
@@ -188,14 +188,10 @@ namespace SlowTests.Issues
                 var result1 = store.Admin.Send(new PutIndexesOperation(definition))[0];
 
                 Assert.Equal(definition.Name, result1.Index);
-                Assert.Equal(1, result1.IndexId);
 
                 definition.LockMode = IndexLockMode.LockedError;
                 definition.Priority = IndexPriority.High;
-
-                var result2 = store.Admin.Send(new PutIndexesOperation(definition))[0];
-
-                Assert.Equal(result1.IndexId, result2.IndexId);
+                
 
                 var serverDefinition = store.Admin.Send(new GetIndexOperation(definition.Name));
                 Assert.Equal(serverDefinition.Priority, definition.Priority);

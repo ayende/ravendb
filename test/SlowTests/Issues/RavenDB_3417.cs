@@ -28,7 +28,7 @@ namespace SlowTests.Issues
 
                 foreach (var stats in indexingPerformanceStatistics)
                 {
-                    Assert.True(stats.IndexId > 0);
+                    Assert.True(stats.Etag > 0);
                     Assert.NotNull(stats.IndexName);
                     Assert.NotNull(stats.Performance);
                     Assert.True(stats.Performance.Length > 0);

@@ -64,7 +64,7 @@ namespace Raven.Server.Documents
             IoChanges = new IoChangesNotifications();
             Changes = new DocumentsChanges();
             DocumentsStorage = new DocumentsStorage(this);
-            IndexStore = new IndexStore(this, _indexAndTransformerLocker);
+            IndexStore = new IndexStore(this,serverStore, _indexAndTransformerLocker);
             TransformerStore = new TransformerStore(this, serverStore, _indexAndTransformerLocker);
             EtlLoader = new EtlLoader(this);
             DocumentReplicationLoader = new DocumentReplicationLoader(this);

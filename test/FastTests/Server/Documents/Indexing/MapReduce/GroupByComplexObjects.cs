@@ -22,7 +22,7 @@ namespace FastTests.Server.Documents.Indexing.MapReduce
         {
             using (var database = CreateDocumentDatabase())
             {
-                using (var index = MapReduceIndex.CreateNew(1, new IndexDefinition()
+                using (var index = MapReduceIndex.CreateNew(new IndexDefinition()
                 {
                     Name = "Users_ByCount_GroupByLocation",
                     Maps = { @"from user in docs.Users select new { 
@@ -78,7 +78,7 @@ namespace FastTests.Server.Documents.Indexing.MapReduce
         {
             using (var database = CreateDocumentDatabase())
             {
-                using (var index = MapReduceIndex.CreateNew(1, new IndexDefinition()
+                using (var index = MapReduceIndex.CreateNew(new IndexDefinition()
                 {
                     Name = "Users_GroupByHobbies",
                     Maps = { @"from user in docs.Users select new { 
@@ -141,7 +141,7 @@ namespace FastTests.Server.Documents.Indexing.MapReduce
         {
             using (var database = CreateDocumentDatabase())
             {
-                using (var index = MapReduceIndex.CreateNew(1, new IndexDefinition()
+                using (var index = MapReduceIndex.CreateNew(new IndexDefinition()
                 {
                     Name = "Users_GroupByLocationAndResidenceAddress",
                     Maps = { @"from user in docs.Users select new { 
@@ -211,7 +211,7 @@ namespace FastTests.Server.Documents.Indexing.MapReduce
         {
             using (var database = CreateDocumentDatabase())
             {
-                using (var index = MapReduceIndex.CreateNew(1, new IndexDefinition()
+                using (var index = MapReduceIndex.CreateNew(new IndexDefinition()
                 {
                     Name = "Users_GroupByLocationAndResidenceAddress",
                     Maps = { @"from user in docs.Users select new { 
