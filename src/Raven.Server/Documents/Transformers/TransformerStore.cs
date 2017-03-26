@@ -14,7 +14,7 @@ using Sparrow.Logging;
 
 namespace Raven.Server.Documents.Transformers
 {
-    public class TransformerStore
+    public class TransformerStore:IDisposable
     {
         private readonly Logger _log;
 
@@ -263,6 +263,13 @@ namespace Raven.Server.Documents.Transformers
                 Type = TransformerChangeTypes.TransformerAdded
             });
         }
- 
+
+        public void Dispose()
+        {
+            if (_serverStore != null)
+            {
+                _serverStore.Cluster.DatabaseChanged -= HandleDatabaseRecordChange;
+            }
+        }
     }
 }

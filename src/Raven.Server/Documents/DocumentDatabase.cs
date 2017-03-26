@@ -297,6 +297,11 @@ namespace Raven.Server.Documents
                     TxMerger.Dispose();
                 });
 
+                exceptionAggregator.Execute(() =>
+                {
+                    TransformerStore.Dispose();
+                });
+
                 if (_indexStoreTask != null)
                 {
                     exceptionAggregator.Execute(() =>
