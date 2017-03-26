@@ -37,6 +37,7 @@ namespace Raven.Server.Documents.Indexes
         }
 
         public string Name { get; private set; }
+        public long Etag { get; private set; }
 
         public HashSet<string> Collections { get; }
 
@@ -47,6 +48,8 @@ namespace Raven.Server.Documents.Indexes
         public IndexPriority Priority { get; set; }
 
         public virtual bool HasDynamicFields => false;
+
+        
 
         public void Persist(TransactionOperationContext context, StorageEnvironmentOptions options)
         {
@@ -165,7 +168,7 @@ namespace Raven.Server.Documents.Indexes
         {
             var indexDefinition = GetOrCreateIndexDefinitionInternal() ?? new IndexDefinition();
             indexDefinition.Name = index.Name;
-            indexDefinition.IndexId = index.IndexId;
+            indexDefinition.Etag = index.Etag;
             indexDefinition.Type = index.Type;
             indexDefinition.LockMode = LockMode;
             indexDefinition.Priority = Priority;
@@ -252,15 +255,15 @@ namespace Raven.Server.Documents.Indexes
             return true;
         }
 
-        public static string GetIndexNameSafeForFileSystem(int id, string name)
+        public static string GetIndexNameSafeForFileSystem(string name)
         {
             foreach (var invalidPathChar in Path.GetInvalidFileNameChars())
             {
                 name = name.Replace(invalidPathChar, '_');
             }
             if (name.Length < 64)
-                return $"{id:0000}-{name}";
-            return $"{id:0000}-{name.Substring(0, 64)}";
+                return name;
+            return name.Substring(0, 64);
         }
 
         protected static string ReadName(BlittableJsonReaderObject reader)

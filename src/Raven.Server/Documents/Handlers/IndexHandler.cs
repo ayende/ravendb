@@ -17,6 +17,7 @@ using Raven.Server.Documents.Indexes.Static;
 using Raven.Server.Documents.Queries;
 using Raven.Server.Json;
 using Raven.Server.Routing;
+using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 using Sparrow.Extensions;
 using Raven.Server.Utils;
@@ -33,19 +34,43 @@ namespace Raven.Server.Documents.Handlers
             DocumentsOperationContext context;
             using (ContextPool.AllocateOperationContext(out context))
             {
-                var createdIndexes = new List<KeyValuePair<string, int>>();
                 var tuple = await context.ParseArrayToMemoryAsync(RequestBodyStream(), "Indexes", BlittableJsonDocumentBuilder.UsageMode.None);
+                var indexes = tuple.Item1;
+                var indexTaskAndDefinitionsTuples = new List<Tuple<Task<long>, IndexDefinition>>(indexes.Length);
+                
                 using (tuple.Item2)
                 {
-                    foreach (var indexToAdd in tuple.Item1)
+                    foreach (var indexToAdd in indexes)
                     {
                         var indexDefinition = JsonDeserializationServer.IndexDefinition((BlittableJsonReaderObject)indexToAdd);
-
+                 
                         if (indexDefinition.Maps == null || indexDefinition.Maps.Count == 0)
                             throw new ArgumentException("Index must have a 'Maps' fields");
-                        var indexId = Database.IndexStore.CreateIndex(indexDefinition);
-                        createdIndexes.Add(new KeyValuePair<string, int>(indexDefinition.Name, indexId));
+                        
+                        using (var putTransfomerCommand = context.ReadObject(new DynamicJsonValue
+                        {
+                            ["Type"] = nameof(PutIndexCommand),
+                            [nameof(PutIndexCommand.IndexDefiniiton)] = indexToAdd,
+                            [nameof(PutIndexCommand.DatabaseName)] = Database.Name,
+                        }, "put-transformer-cmd"))
+                        {
+                            indexTaskAndDefinitionsTuples.Add(Tuple.Create( ServerStore.SendToLeaderAsync(putTransfomerCommand), indexDefinition));
+                        }
                     }
+
+                    Exception operationException = null;
+                    try
+                    {
+                        await Task.WhenAll(indexTaskAndDefinitionsTuples.Select(x=>x.Item1));
+                    }
+                    catch (Exception e)
+                    {
+                        operationException = e;
+                    }
+
+                    await ServerStore.Cluster.WaitForIndexNotification(indexTaskAndDefinitionsTuples.Last().Item1.Result);
+                    if (operationException != null)
+                        throw operationException;
                 }
 
                 HttpContext.Response.StatusCode = (int)HttpStatusCode.Created;
@@ -54,16 +79,16 @@ namespace Raven.Server.Documents.Handlers
                 {
                     writer.WriteStartObject();
 
-                    writer.WriteResults(context, createdIndexes, (w, c, index) =>
+                    writer.WriteResults(context, indexTaskAndDefinitionsTuples, (w, c, index) =>
                     {
                         w.WriteStartObject();
-                        w.WritePropertyName(nameof(PutIndexResult.IndexId));
-                        w.WriteInteger(index.Value);
+                        w.WritePropertyName(nameof(PutIndexResult.Etag));
+                        w.WriteInteger(index.Item1.Result);
 
                         w.WriteComma();
 
                         w.WritePropertyName(nameof(PutIndexResult.Index));
-                        w.WriteString(index.Key);
+                        w.WriteString(index.Item2.Name);
                         w.WriteEndObject();
                     });
 
@@ -683,7 +708,7 @@ namespace Raven.Server.Documents.Handlers
                 .Select(x => new IndexPerformanceStats
                 {
                     IndexName = x.Name,
-                    IndexId = x.IndexId,
+                    Etag = x.Etag,
                     Performance = x.GetIndexingPerformance()
                 })
                 .ToArray();
@@ -749,7 +774,7 @@ namespace Raven.Server.Documents.Handlers
             if (names.Count == 0)
                 indexes = Database.IndexStore
                     .GetIndexes()
-                    .OrderBy(x => x.IndexId);
+                    .OrderBy(x => x.Etag);
             else
             {
                 indexes = Database.IndexStore

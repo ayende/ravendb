@@ -22,8 +22,8 @@ namespace Raven.Server.Documents.Indexes.Static
 
         private HandleReferences _handleReferences;
 
-        private MapIndex(int indexId, MapIndexDefinition definition, StaticIndexBase compiled)
-            : base(indexId, IndexType.Map, definition)
+        private MapIndex(MapIndexDefinition definition, StaticIndexBase compiled)
+            : base(IndexType.Map, definition)
         {
             _compiled = compiled;
 
@@ -164,9 +164,9 @@ namespace Raven.Server.Documents.Indexes.Static
             }
         }
 
-        public static Index CreateNew(int indexId, IndexDefinition definition, DocumentDatabase documentDatabase)
+        public static Index CreateNew(long etag, IndexDefinition definition, DocumentDatabase documentDatabase)
         {
-            var instance = CreateIndexInstance(indexId, definition);
+            var instance = CreateIndexInstance(definition);
             instance.Initialize(documentDatabase,
                 new SingleIndexConfiguration(definition.Configuration, documentDatabase.Configuration),
                 documentDatabase.Configuration.PerformanceHints);
@@ -174,10 +174,10 @@ namespace Raven.Server.Documents.Indexes.Static
             return instance;
         }
 
-        public static Index Open(int indexId, StorageEnvironment environment, DocumentDatabase documentDatabase)
+        public static Index Open(StorageEnvironment environment, DocumentDatabase documentDatabase)
         {
             var definition = MapIndexDefinition.Load(environment);
-            var instance = CreateIndexInstance(indexId, definition);
+            var instance = CreateIndexInstance(definition);
 
             instance.Initialize(environment, documentDatabase,
                 new SingleIndexConfiguration(definition.Configuration, documentDatabase.Configuration),
@@ -195,12 +195,12 @@ namespace Raven.Server.Documents.Indexes.Static
             staticMapIndex.Update(staticMapIndexDefinition, new SingleIndexConfiguration(definition.Configuration, documentDatabase.Configuration));
         }
 
-        private static MapIndex CreateIndexInstance(int indexId, IndexDefinition definition)
+        private static MapIndex CreateIndexInstance(IndexDefinition definition)
         {
             var staticIndex = IndexAndTransformerCompilationCache.GetIndexInstance(definition);
 
             var staticMapIndexDefinition = new MapIndexDefinition(definition, staticIndex.Maps.Keys.ToHashSet(), staticIndex.OutputFields, staticIndex.HasDynamicFields);
-            var instance = new MapIndex(indexId, staticMapIndexDefinition, staticIndex);
+            var instance = new MapIndex(staticMapIndexDefinition, staticIndex);
             return instance;
         }
     }

@@ -10,6 +10,7 @@ using Raven.Client.Documents.Changes;
 using Raven.Client.Documents.Exceptions.Compilation;
 using Raven.Client.Documents.Exceptions.Indexes;
 using Raven.Client.Documents.Indexes;
+using Raven.Server.Config.Categories;
 using Raven.Server.Config.Settings;
 using Raven.Server.Documents.Indexes.Auto;
 using Raven.Server.Documents.Indexes.Configuration;
@@ -21,6 +22,7 @@ using Raven.Server.Documents.Indexes.Static;
 using Raven.Server.Documents.Queries.Dynamic;
 using Raven.Server.NotificationCenter.Notifications;
 using Raven.Server.NotificationCenter.Notifications.Details;
+using Raven.Server.ServerWide;
 using Raven.Server.Utils;
 using Sparrow.Logging;
 
@@ -31,6 +33,7 @@ namespace Raven.Server.Documents.Indexes
         private readonly Logger _logger;
 
         private readonly DocumentDatabase _documentDatabase;
+        private readonly ServerStore _serverStore;
 
         private readonly CollectionOfIndexes _indexes = new CollectionOfIndexes();
 
@@ -47,11 +50,20 @@ namespace Raven.Server.Documents.Indexes
 
         public Logger Logger => _logger;
 
-        public IndexStore(DocumentDatabase documentDatabase, object indexAndTransformerLocker)
+        public IndexStore(DocumentDatabase documentDatabase, ServerStore serverStore, object indexAndTransformerLocker)
         {
             _documentDatabase = documentDatabase;
+            _serverStore = serverStore;
             _logger = LoggingSource.Instance.GetLogger<IndexStore>(_documentDatabase.Name);
             _indexAndTransformerLocker = indexAndTransformerLocker;
+            if (serverStore!= null)
+                serverStore.Cluster.DatabaseChanged += HandleDatabaseRecordChanged;
+
+        }
+
+        private void HandleDatabaseRecordChanged(object o, string s)
+        {
+            
         }
 
         public Task InitializeAsync()
@@ -81,15 +93,6 @@ namespace Raven.Server.Documents.Indexes
             }
         }
 
-        public Index GetIndex(int id)
-        {
-            Index index;
-            if (_indexes.TryGetById(id, out index) == false)
-                return null;
-
-            return index;
-        }
-
         public Index GetIndex(string name)
         {
             Index index;
@@ -99,7 +102,16 @@ namespace Raven.Server.Documents.Indexes
             return index;
         }
 
-        public int CreateIndex(IndexDefinition definition)
+        public Index GetIndex(long id)
+        {
+            Index index;
+            if (_indexes.TryGetById(id, out index) == false)
+                return null;
+
+            return index;
+        }
+
+        public long CreateIndex(IndexDefinition definition, string path=null)
         {
             if (definition == null)
                 throw new ArgumentNullException(nameof(definition));
@@ -131,7 +143,7 @@ namespace Raven.Server.Documents.Indexes
 
                     TryDeleteIndexIfExists(replacementIndexName);
 
-                    return existingIndex.IndexId;
+                    return existingIndex.Etag;
                 }
 
                 if (creationOptions == IndexCreationOptions.UpdateWithoutUpdatingCompiledIndex)
@@ -139,7 +151,7 @@ namespace Raven.Server.Documents.Indexes
                     Debug.Assert(existingIndex != null);
 
                     if (lockMode == IndexLockMode.LockedIgnore)
-                        return existingIndex.IndexId;
+                        return existingIndex.Etag;
 
                     if (lockMode == IndexLockMode.LockedError)
                         throw new InvalidOperationException("Can not overwrite locked index: " + existingIndex.Name);
@@ -147,7 +159,7 @@ namespace Raven.Server.Documents.Indexes
                     TryDeleteIndexIfExists(replacementIndexName);
 
                     UpdateIndex(definition, existingIndex);
-                    return existingIndex.IndexId;
+                    return existingIndex.Etag;
                 }
 
                 if (creationOptions == IndexCreationOptions.Update)
@@ -155,7 +167,7 @@ namespace Raven.Server.Documents.Indexes
                     Debug.Assert(existingIndex != null);
 
                     if (lockMode == IndexLockMode.LockedIgnore)
-                        return existingIndex.IndexId;
+                        return existingIndex.Etag;
 
                     if (lockMode == IndexLockMode.LockedError)
                         throw new InvalidOperationException($"Can not overwrite locked index: {existingIndex.Name}");
@@ -167,44 +179,43 @@ namespace Raven.Server.Documents.Indexes
                     {
                         creationOptions = GetIndexCreationOptions(definition, existingIndex);
                         if (creationOptions == IndexCreationOptions.Noop)
-                            return existingIndex.IndexId;
+                            return existingIndex.Etag;
 
                         if (creationOptions == IndexCreationOptions.UpdateWithoutUpdatingCompiledIndex)
                         {
                             UpdateIndex(definition, existingIndex);
-                            return existingIndex.IndexId;
+                            return existingIndex.Etag;
                         }
                     }
 
                     TryDeleteIndexIfExists(replacementIndexName);
                 }
-
-                var indexId = _indexes.GetNextIndexId();
+                
                 Index index;
 
                 switch (definition.Type)
                 {
                     case IndexType.Map:
-                        index = MapIndex.CreateNew(indexId, definition, _documentDatabase);
+                        index = MapIndex.CreateNew(definition.Etag, definition, _documentDatabase);
                         break;
                     case IndexType.MapReduce:
-                        index = MapReduceIndex.CreateNew(indexId, definition, _documentDatabase);
+                        index = MapReduceIndex.CreateNew(definition, _documentDatabase);
                         break;
                     default:
                         throw new NotSupportedException($"Cannot create {definition.Type} index from IndexDefinition");
                 }
 
-                return CreateIndexInternal(index, indexId);
+                return CreateIndexInternal(index);
             }
         }
 
-        public int CreateIndex(IndexDefinitionBase definition)
+        public long CreateIndex(IndexDefinitionBase definition, string path = null)
         {
             if (definition == null)
                 throw new ArgumentNullException(nameof(definition));
 
             if (definition is MapIndexDefinition)
-                return CreateIndex(((MapIndexDefinition)definition).IndexDefinition);
+                return CreateIndex(((MapIndexDefinition)definition).IndexDefinition, path);
 
             lock (_indexAndTransformerLocker)
             {
@@ -227,7 +238,7 @@ namespace Raven.Server.Documents.Indexes
                 {
                     Debug.Assert(existingIndex != null);
 
-                    return existingIndex.IndexId;
+                    return existingIndex.Etag;
                 }
 
                 if (creationOptions == IndexCreationOptions.UpdateWithoutUpdatingCompiledIndex || creationOptions == IndexCreationOptions.Update)
@@ -235,7 +246,7 @@ namespace Raven.Server.Documents.Indexes
                     Debug.Assert(existingIndex != null);
 
                     if (lockMode == IndexLockMode.LockedIgnore)
-                        return existingIndex.IndexId;
+                        return existingIndex.Etag;
 
                     if (lockMode == IndexLockMode.LockedError)
                         throw new InvalidOperationException($"Can not overwrite locked index: {existingIndex.Name}");
@@ -243,18 +254,16 @@ namespace Raven.Server.Documents.Indexes
                     throw new NotSupportedException($"Can not update auto-index: {existingIndex.Name}");
                 }
 
-                var indexId = _indexes.GetNextIndexId();
-
                 Index index;
 
                 if (definition is AutoMapIndexDefinition)
-                    index = AutoMapIndex.CreateNew(indexId, (AutoMapIndexDefinition)definition, _documentDatabase);
+                    index = AutoMapIndex.CreateNew((AutoMapIndexDefinition)definition, _documentDatabase);
                 else if (definition is AutoMapReduceIndexDefinition)
-                    index = AutoMapReduceIndex.CreateNew(indexId, (AutoMapReduceIndexDefinition)definition, _documentDatabase);
+                    index = AutoMapReduceIndex.CreateNew((AutoMapReduceIndexDefinition)definition, _documentDatabase);
                 else
                     throw new NotImplementedException($"Unknown index definition type: {definition.GetType().FullName}");
 
-                return CreateIndexInternal(index, indexId);
+                return CreateIndexInternal(index);
             }
         }
 
@@ -273,10 +282,9 @@ namespace Raven.Server.Documents.Indexes
             return creationOptions != IndexCreationOptions.Noop;
         }
 
-        private int CreateIndexInternal(Index index, int indexId)
+        private long CreateIndexInternal(Index index)
         {
             Debug.Assert(index != null);
-            Debug.Assert(indexId > 0);
 
             if (_documentDatabase.Configuration.Indexing.Disabled == false && _run)
                 index.Start();
@@ -292,8 +300,7 @@ namespace Raven.Server.Documents.Indexes
                     Type = IndexChangeTypes.IndexAdded,
                     Etag = etag
                 });
-
-            return indexId;
+            return index.Etag;
         }
 
         private void UpdateIndex(IndexDefinition definition, Index existingIndex)
@@ -332,7 +339,7 @@ namespace Raven.Server.Documents.Indexes
             if (result == IndexDefinitionCompareDifferences.All)
                 return IndexCreationOptions.Update;
 
-            result &= ~IndexDefinitionCompareDifferences.IndexId; // we do not care about IndexId
+            result &= ~IndexDefinitionCompareDifferences.Etag; // we do not care about IndexId
 
             if (result == IndexDefinitionCompareDifferences.None)
                 return IndexCreationOptions.Noop;
@@ -399,7 +406,7 @@ namespace Raven.Server.Documents.Indexes
             }
         }
 
-        public int ResetIndex(string name)
+        public long ResetIndex(string name)
         {
             var index = GetIndex(name);
             if (index == null)
@@ -408,7 +415,7 @@ namespace Raven.Server.Documents.Indexes
             return ResetIndexInternal(index);
         }
 
-        public int ResetIndex(int id)
+        public long ResetIndex(long id)
         {
             var index = GetIndex(id);
             if (index == null)
@@ -427,7 +434,7 @@ namespace Raven.Server.Documents.Indexes
             return true;
         }
 
-        public void DeleteIndex(int id)
+        public void DeleteIndex(long id)
         {
             var index = GetIndex(id);
             if (index == null)
@@ -441,7 +448,7 @@ namespace Raven.Server.Documents.Indexes
             lock (_indexAndTransformerLocker)
             {
                 Index _;
-                _indexes.TryRemoveById(index.IndexId, out _);
+                _indexes.TryRemoveById(index.Etag, out _);
 
                 try
                 {
@@ -450,7 +457,7 @@ namespace Raven.Server.Documents.Indexes
                 catch (Exception e)
                 {
                     if (_logger.IsInfoEnabled)
-                        _logger.Info($"Could not dispose index '{index.Name}' ({index.IndexId}).", e);
+                        _logger.Info($"Could not dispose index '{index.Name}' ({index.Etag}).", e);
                 }
 
                 var tombstoneEtag = _documentDatabase.IndexMetadataPersistence.OnIndexDeleted(index);
@@ -464,7 +471,7 @@ namespace Raven.Server.Documents.Indexes
                 if (index.Configuration.RunInMemory)
                     return;
 
-                var name = IndexDefinitionBase.GetIndexNameSafeForFileSystem(index.IndexId, index.Name);
+                var name = IndexDefinitionBase.GetIndexNameSafeForFileSystem(index.Name);
 
                 var indexPath = index.Configuration.StoragePath.Combine(name);
 
@@ -594,15 +601,22 @@ namespace Raven.Server.Documents.Indexes
                 exceptionAggregator.Execute(index.Dispose);
             });
 
+            if (_serverStore != null)
+                exceptionAggregator.Execute(() =>
+                {
+                    _serverStore.Cluster.DatabaseChanged += HandleDatabaseRecordChanged;
+                });
+            
+
             exceptionAggregator.ThrowIfNeeded();
         }
 
-        private int ResetIndexInternal(Index index)
+        private long ResetIndexInternal(Index index)
         {
             lock (_indexAndTransformerLocker)
             {
-                DeleteIndex(index.IndexId);
-                return CreateIndex(index.Definition);
+                DeleteIndex(index.Etag);
+                return CreateIndex(index.Definition, index.Configuration.StoragePath.ToString());
             }
         }
 
@@ -619,6 +633,280 @@ namespace Raven.Server.Documents.Indexes
                 {
                     foreach (var path in _documentDatabase.Configuration.Indexing.AdditionalStoragePaths)
                         OpenIndexesFromDirectory(path);
+                }
+            }
+        }
+
+        private List<DirectoryInfo> GetAllIndexesInAllDirectories(IndexingConfiguration indexingConfig)
+        {
+            
+            var allIndexPaths = new List<PathSetting>((indexingConfig.AdditionalStoragePaths?.Length+1)??1);
+            
+            allIndexPaths.Add(indexingConfig.StoragePath);
+            if (indexingConfig.AdditionalStoragePaths != null)
+            {
+                allIndexPaths.AddRange(indexingConfig.AdditionalStoragePaths);
+            }
+
+            return allIndexPaths.Where(path=>Directory.Exists(path.FullPath)).SelectMany(path => new DirectoryInfo(path.FullPath).GetDirectories()).ToList();
+
+        }
+
+        private void OpenIndexesFromDatabaseRecord(IndexingConfiguration indexingConfiguration, DatabaseRecord dbRecord)
+        {
+            var existingIndexes = GetAllIndexesInAllDirectories(indexingConfiguration);            
+            var indexesToDelete = new List<DirectoryInfo>();
+
+            RemoveRedundantIndexes(dbRecord, existingIndexes, indexesToDelete);
+                        
+            foreach (var indexDefinition in dbRecord.Indexes.Values)
+            {
+                if (_documentDatabase.DatabaseShutdown.IsCancellationRequested)
+                    return;
+
+                var indexConfiguration = new SingleIndexConfiguration(indexDefinition.Configuration, _documentDatabase.Configuration);
+
+                string indexDirectoryPath = null;
+                            
+                indexDirectoryPath = TryFixIndexPath(indexDefinition, indexConfiguration);
+
+                // todo: make sure we have one "current" instance and max of one "side by side" instance
+                var indexDirectoryInfo = new DirectoryInfo(indexDirectoryPath);
+
+                DirectoryInfo[] indexInstancedDirectories;
+
+                // Call "CreateIndex" if no index traces were found
+                if (indexDirectoryInfo.Exists == false || (indexInstancedDirectories = indexDirectoryInfo.GetDirectories().ToArray()).Length == 0)
+                {
+                    CreateIndex(indexDefinition, indexDirectoryPath);
+                    continue;
+                }
+
+                AssertIndexDirectory(indexDirectoryPath, indexInstancedDirectories);
+
+                Array.Sort(indexInstancedDirectories, (x, y) => x.Name.CompareTo(y.Name));
+
+                if (indexInstancedDirectories.Select(x => x.Name).Contains(indexDefinition.Etag.ToString()))
+                {
+                    LoadIndexInstancesInIndexDirectory(indexInstancedDirectories);
+                }
+                else
+                {
+                    TryReplaceOrCreateNewIndex(indexDefinition, indexDirectoryPath, indexInstancedDirectories);
+                }
+
+                
+            }
+
+        }
+
+        private void LoadIndexInstancesInIndexDirectory(DirectoryInfo[] indexInstancedDirectories)
+        {
+            foreach (var instanceDirectory in indexInstancedDirectories)
+            {
+                if (_documentDatabase.DatabaseShutdown.IsCancellationRequested)
+                    return;
+
+                long indexEtag = long.Parse(instanceDirectory.Name);
+                List<Exception> exceptions = null;
+                var indexName = instanceDirectory.Parent.Name;
+                var indexPath = instanceDirectory.FullName;
+
+                if (_documentDatabase.Configuration.Core.ThrowIfAnyIndexOrTransformerCouldNotBeOpened)
+                    exceptions = new List<Exception>();
+
+                Index _;
+                if (_indexes.TryGetById(indexEtag, out _))
+                {
+                    // todo: add/move this validation to cluster?
+                    var message = $"Could not open index with etag {indexEtag} at '{indexPath}'. Index with the same etag already exists.";
+
+                    exceptions?.Add(new InvalidOperationException(message));
+
+                    if (_logger.IsOperationsEnabled)
+                        _logger.Operations(message);
+                }
+                else
+                {
+                    try
+                    {
+                        OpenIndexInstace(indexEtag, indexName, instanceDirectory);
+                    }
+                    catch (Exception ex)
+                    {
+                        exceptions?.Add(ex);
+                    }
+                }
+
+
+                if (exceptions != null && exceptions.Count > 0)
+                    throw new AggregateException("Could not load some of the indexes", exceptions);
+            }
+        }
+
+        private void AssertIndexDirectory(string indexDirectoryPath, DirectoryInfo[] indexInstancedDirectories)
+        {
+            // todo: considering deleting unneeded directories instead of validation
+            if (indexInstancedDirectories.Length > 2)
+            {
+                var message = $"Index directory {indexDirectoryPath} contains unexpected number of sub directories: {indexInstancedDirectories.Length}";
+
+                if (_logger.IsOperationsEnabled)
+                    _logger.Operations(message);
+
+                throw new AggregateException("Could not load some of the indexes", new InvalidOperationException(message));
+            }
+
+            // validate index instance folder names
+            var anyIllegalIndexInstanceNames =
+                indexInstancedDirectories.Where(x =>
+                {
+                    long indexEtag;
+                    return long.TryParse(x.Name, out indexEtag) == false;
+                }).ToList();
+
+            if (anyIllegalIndexInstanceNames.Count > 0)
+            {
+                var message = $"Illegal directory name(s) {string.Join(",", anyIllegalIndexInstanceNames)} inside index directory: {indexDirectoryPath}";
+
+                if (_logger.IsOperationsEnabled)
+                    _logger.Operations(message);
+
+                if (_documentDatabase.Configuration.Core.ThrowIfAnyIndexOrTransformerCouldNotBeOpened)
+                    throw new AggregateException(new InvalidOperationException(message));
+            }
+        }
+
+        private bool TryReplaceOrCreateNewIndex(IndexDefinition indexDefinition, string indexDirectoryPath, DirectoryInfo[] indexInstancedDirectories)
+        {
+            string newIndexPath = null;
+            if (indexInstancedDirectories.Length == 1)
+            {
+                TryRenameIndexWhileLoadigStore(indexDefinition, indexDirectoryPath, indexInstancedDirectories[0].FullName, out newIndexPath);
+                return true;
+            }
+            else
+            {
+                if (TryRenameIndexWhileLoadigStore(indexDefinition, indexDirectoryPath, oldInstancePath: indexInstancedDirectories[0].FullName, newPath: out newIndexPath))
+                {
+                    using (var sideBySideIndex = Index.Open(indexInstancedDirectories[1].FullName, _documentDatabase))
+                    {
+                        DeleteIndexInternal(sideBySideIndex);
+                    }
+                    OpenIndexInstace(indexDefinition.Etag, indexDefinition.Name, new DirectoryInfo(newIndexPath));
+                    return true;
+
+                }
+                else if (TryRenameIndexWhileLoadigStore(indexDefinition, indexDirectoryPath, oldInstancePath: indexInstancedDirectories[1].FullName, newPath: out newIndexPath))
+                {
+                    // todo: make sure that here we make the "side-by-side" index into our "current" index          
+                    using (var existingIndex = Index.Open(indexInstancedDirectories[0].FullName, _documentDatabase))
+                    {
+                        DeleteIndexInternal(existingIndex);
+                    }
+                    OpenIndexInstace(indexDefinition.Etag, indexDefinition.Name, new DirectoryInfo(newIndexPath));
+                    return true;
+                }
+            }
+
+            CreateIndex(indexDefinition, indexDirectoryPath);
+            return true;
+        }
+
+        private void OpenIndexInstace(long indexEtag, string indexName, DirectoryInfo indexInstancePath)
+        {
+            Index index = null;
+
+            try
+            {
+                index = Index.Open(indexInstancePath.FullName, _documentDatabase);
+                index.Start();
+                if (_logger.IsInfoEnabled)
+                    _logger.Info($"Started {index.Name} from {indexInstancePath}");
+
+                _indexes.Add(index);
+            }
+            catch (Exception e)
+            {
+                index?.Dispose();               
+
+                var configuration = new FaultyInMemoryIndexConfiguration(new PathSetting(indexInstancePath.Parent.FullName), _documentDatabase.Configuration);
+                var fakeIndex = new FaultyInMemoryIndex(e, indexEtag, IndexDefinitionBase.TryReadNameFromMetadataFile(indexInstancePath.FullName) ?? indexName,
+                    configuration);
+
+                var message = $"Could not open index with id {indexEtag} at '{indexInstancePath}'. Created in-memory, fake instance: {fakeIndex.Name}";
+
+                if (_logger.IsInfoEnabled)
+                    _logger.Info(message, e);
+
+                _documentDatabase.NotificationCenter.Add(AlertRaised.Create("Indexes store initialization error",
+                    message,
+                    AlertType.IndexStore_IndexCouldNotBeOpened,
+                    NotificationSeverity.Error,
+                    key: fakeIndex.Name,
+                    details: new ExceptionDetails(e)));
+
+                _indexes.Add(fakeIndex);
+
+                throw;
+            }
+        }
+
+        private bool TryRenameIndexWhileLoadigStore(IndexDefinition indexDefinition, string indexDirectoryPath, string oldInstancePath, out string newPath)
+        {
+            newPath = null;
+            using (var existingIndex = Index.Open(oldInstancePath, _documentDatabase))
+            {
+                var existingIndexDefinition = existingIndex.GetIndexDefinition();
+                if (existingIndexDefinition.Equals(indexDefinition))
+                {
+                    newPath = new PathSetting(indexDirectoryPath)
+                        .Combine(indexDefinition.Etag.ToString())
+                        .FullPath;
+
+                    IOExtensions.MoveDirectory(oldInstancePath, newPath);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static string TryFixIndexPath(IndexDefinition indexDefinition, SingleIndexConfiguration indexConfiguration)
+        {
+            string indexPath;
+            string desiredIndexDirName = IndexDefinitionBase.GetIndexNameSafeForFileSystem(indexDefinition.Name);
+            var indexDirectory = indexConfiguration.StoragePath.Combine(indexDefinition.Name);
+            if (indexDefinition.Name != desiredIndexDirName)
+            {
+                var newPath = new PathSetting(indexConfiguration.StoragePath.FullPath)
+                    .Combine(desiredIndexDirName)
+                    .FullPath;
+
+                IOExtensions.MoveDirectory(indexDirectory.FullPath, newPath);
+
+                indexPath = newPath;
+            }
+            else
+                indexPath = indexDirectory.FullPath;
+            return indexPath;
+        }
+
+        private void RemoveRedundantIndexes(DatabaseRecord dbRecord, List<DirectoryInfo> existingIndexes, List<DirectoryInfo> indexesToDelete)
+        {
+            foreach (var existingIndexDirectory in existingIndexes)
+            {
+                if (dbRecord.Indexes.Keys.Contains(existingIndexDirectory.Name) == false)
+                {
+                    indexesToDelete.Add(existingIndexDirectory);
+                }
+            }
+
+            foreach (var indexToDelete in indexesToDelete)
+            {
+                foreach (var indexInstanceToDelete in indexToDelete.GetDirectories())
+                {
+                    var index = Index.Open(indexInstanceToDelete.FullName, _documentDatabase);
+                    DeleteIndexInternal(index);
                 }
             }
         }
@@ -647,7 +935,7 @@ namespace Raven.Server.Documents.Indexes
 
                 if (nameFromMetadata != null &&
                     indexDirectory.Name !=
-                    (desiredIndexDirName = IndexDefinitionBase.GetIndexNameSafeForFileSystem(indexId, nameFromMetadata)))
+                    (desiredIndexDirName = IndexDefinitionBase.GetIndexNameSafeForFileSystem(nameFromMetadata)))
                 {
                     var newPath = new PathSetting(indexDirectory.FullName)
                         .Combine("..")
@@ -691,7 +979,7 @@ namespace Raven.Server.Documents.Indexes
 
                     try
                     {
-                        index = Index.Open(indexId, indexPath, _documentDatabase);
+                        index = Index.Open(indexPath, _documentDatabase);
                         index.Start();
                         if (_logger.IsInfoEnabled)
                             _logger.Info($"Started {index.Name} from {indexPath}");
@@ -790,7 +1078,7 @@ namespace Raven.Server.Documents.Indexes
                         {
                             item.Index.SetState(IndexState.Idle);
                             if (_logger.IsInfoEnabled)
-                                _logger.Info($"Changed index '{item.Index.Name} ({item.Index.IndexId})' priority to idle. Age: {age}. Last query: {lastQuery}. Query difference: {differenceBetweenNewestAndCurrentQueryingTime}.");
+                                _logger.Info($"Changed index '{item.Index.Name} ({item.Index.Etag})' priority to idle. Age: {age}. Last query: {lastQuery}. Query difference: {differenceBetweenNewestAndCurrentQueryingTime}.");
                         }
                     }
 
@@ -801,9 +1089,9 @@ namespace Raven.Server.Documents.Indexes
                 {
                     if (age <= ageThreshold || lastQuery >= timeToWaitBeforeDeletingAutoIndexMarkedAsIdle.AsTimeSpan)
                     {
-                        DeleteIndex(item.Index.IndexId);
+                        DeleteIndex(item.Index.Etag);
                         if (_logger.IsInfoEnabled)
-                            _logger.Info($"Deleted index '{item.Index.Name} ({item.Index.IndexId})' due to idleness. Age: {age}. Last query: {lastQuery}.");
+                            _logger.Info($"Deleted index '{item.Index.Name} ({item.Index.Etag})' due to idleness. Age: {age}. Last query: {lastQuery}.");
                     }
                 }
             }
@@ -929,6 +1217,11 @@ namespace Raven.Server.Documents.Indexes
                 OldIndexName = oldIndexName,
                 Type = IndexChangeTypes.Renamed
             });
+        }
+
+        public void SwapIndexInstances(string indexName, long oldEtag, long newEtag)
+        {
+            throw new NotImplementedException("TBI");
         }
     }
 }

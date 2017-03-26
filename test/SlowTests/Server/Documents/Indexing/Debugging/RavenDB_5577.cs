@@ -21,7 +21,7 @@ namespace SlowTests.Server.Documents.Indexing.Debugging
         {
             using (var database = CreateDocumentDatabase())
             {
-                using (var index = MapReduceIndex.CreateNew(1, new IndexDefinition
+                using (var index = MapReduceIndex.CreateNew(new IndexDefinition
                 {
                     Name = "Users_ByCount_GroupByProduct",
                     Maps = {@"from order in docs.Orders
@@ -103,7 +103,7 @@ select new
         {
             using (var database = CreateDocumentDatabase())
             {
-                using (var index = MapReduceIndex.CreateNew(1, new IndexDefinition
+                using (var index = MapReduceIndex.CreateNew(new IndexDefinition
                 {
                     Name = "Users_ByCount_GroupByProduct",
                     Maps = { @"from order in docs.Orders
