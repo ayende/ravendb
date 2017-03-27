@@ -1488,13 +1488,12 @@ namespace Raven.Server.Documents
                         if (_documentDatabase.BundleLoader.VersioningStorage.ShouldVersionDocument(
                             collectionName, 
                             nonPersistentFlags,
-                            context,
-                            ref oldValue,
+                            oldValue.Pointer != null ? TableValueToDocument(context, ref oldValue) : null,
                             document,
                             ref flags,
                             out configuration))
                         {
-                            _documentDatabase.BundleLoader.VersioningStorage.PutFromDocument(context, key, document, flags, changeVector, configuration);
+                            _documentDatabase.BundleLoader.VersioningStorage.PutFromDocument(context, key, document, flags, changeVector, modifiedTicks, configuration);
                         }
                     }
                 }
@@ -1867,6 +1866,8 @@ namespace Raven.Server.Documents
 
         public IEnumerable<string> GetTombstoneCollections(Transaction transaction)
         {
+            yield return AttachmentsStorage.AttachmentsTombstones;
+
             using (var it = transaction.LowLevelTransaction.RootObjects.Iterate(false))
             {
                 it.RequiredPrefix = TombstonesPrefix;

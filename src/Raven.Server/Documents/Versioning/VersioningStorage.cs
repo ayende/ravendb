@@ -7,6 +7,7 @@ using Raven.Client.Documents.Attachments;
 using Raven.Client.Documents.Replication.Messages;
 using Raven.Server.Documents.Replication;
 using Raven.Server.Json;
+using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 using Sparrow;
 using Sparrow.Binary;
@@ -33,6 +34,8 @@ namespace Raven.Server.Documents.Versioning
         private readonly DocumentsStorage _documentsStorage;
         private readonly VersioningConfiguration _versioningConfiguration;
 
+        internal VersioningConfiguration VersioningConfiguration => _versioningConfiguration;
+        
         // The documents schema is as follows
         // (lowered key, recored separator, etag, lowered key, recored separator, change vector, lazy string key, document)
         // We are you using the record separator in order to avoid loading another documents that has the same key prefix, 
@@ -50,6 +53,7 @@ namespace Raven.Server.Documents.Versioning
             Key = 4,
             Document = 5,
             Flags = 6,
+            LastModified = 7,
         }
 
         public const byte RecordSeperator = 30;
@@ -101,28 +105,35 @@ namespace Raven.Server.Documents.Versioning
             });
         }
 
-        public static VersioningStorage LoadConfigurations(DocumentDatabase database)
+        public static VersioningStorage LoadConfigurations(DocumentDatabase database, ServerStore serverStore, VersioningStorage versioningStorage)
         {
-            DocumentsOperationContext context;
-            using (database.DocumentsStorage.ContextPool.AllocateOperationContext(out context))
+            TransactionOperationContext context;
+            using (serverStore.ContextPool.AllocateOperationContext(out context))
             {
                 context.OpenReadTransaction();
-
-                var configuration = database.DocumentsStorage.Get(context, Constants.Documents.Versioning.ConfigurationKey);
-                if (configuration == null)
+                var dbDoc = serverStore.Cluster.ReadDatabase(context, database.Name);
+                if (dbDoc == null)
                     return null;
-
                 try
                 {
-                    var versioningConfiguration = JsonDeserializationServer.VersioningConfiguration(configuration.Data);
-                    return new VersioningStorage(database, versioningConfiguration);
+                    var versioningConfiguration = dbDoc.VersioningConfiguration;
+                    if (versioningConfiguration == null)
+                        return null;
+                    if (versioningConfiguration.Equals(versioningStorage?.VersioningConfiguration))
+                        return versioningStorage;                    
+                    var config = new VersioningStorage(database, versioningConfiguration);
+                    if (_logger.IsInfoEnabled)
+                        _logger.Info("Versioning configuration changed");
+                    return config;
                 }
                 catch (Exception e)
                 {
                     //TODO: This should generate an alert, so admin will know that something is very bad
                     //TODO: Or this should throw and we should have a config flag to ignore the error
                     if (_logger.IsOperationsEnabled)
-                        _logger.Operations($"Cannot enable versioning for documents as the versioning configuration document {Constants.Documents.Versioning.ConfigurationKey} is not valid: {configuration.Data}", e);
+                        _logger.Operations(
+                            $"Cannot enable versioning for documents as the versioning configuration in the database record is missing or not valid: {dbDoc}",
+                            e);
                     return null;
                 }
             }
@@ -144,9 +155,13 @@ namespace Raven.Server.Documents.Versioning
             return _emptyConfiguration;
         }
 
-        public bool ShouldVersionDocument(CollectionName collectionName, NonPersistentDocumentFlags nonPersistentFlags, 
-            DocumentsOperationContext context, ref TableValueReader oldDocument, BlittableJsonReaderObject document,
-            ref DocumentFlags documentFlags, out VersioningConfigurationCollection configuration)
+
+        public bool ShouldVersionDocument(CollectionName collectionName,
+            NonPersistentDocumentFlags nonPersistentFlags,
+            Document existingDocument,
+            BlittableJsonReaderObject document,
+            ref DocumentFlags documentFlags,
+            out VersioningConfigurationCollection configuration)
         {
             configuration = GetVersioningConfiguration(collectionName);
             if (configuration.Active == false)
@@ -156,8 +171,7 @@ namespace Raven.Server.Documents.Versioning
             {
                 if ((nonPersistentFlags & NonPersistentDocumentFlags.FromSmuggler) != NonPersistentDocumentFlags.FromSmuggler)
                     return true;
-
-                if (oldDocument.Pointer == null)
+                if (existingDocument == null)
                 {
                     // we are not going to create a revision if it's an import from v3
                     // (since this import is going to import revisions as well)
@@ -165,7 +179,6 @@ namespace Raven.Server.Documents.Versioning
                 }
 
                 // compare the contents of the existing and the new document
-                var existingDocument = _documentsStorage.TableValueToDocument(context, ref oldDocument);
                 if (existingDocument.IsMetadataEqualTo(document) && existingDocument.IsEqualTo(document))
                 {
                     // no need to create a new revision, both documents have identical content
@@ -181,13 +194,13 @@ namespace Raven.Server.Documents.Versioning
         }
 
         public void PutFromDocument(DocumentsOperationContext context, string key, BlittableJsonReaderObject document, 
-            DocumentFlags flags, ChangeVectorEntry[] changeVector, VersioningConfigurationCollection configuration = null)
+            DocumentFlags flags, ChangeVectorEntry[] changeVector, long lastModifiedTicks, VersioningConfigurationCollection configuration = null)
         {
             var table = context.Transaction.InnerTransaction.OpenTable(DocsSchema, RevisionDocumentsSlice);
 
             byte* lowerKey;
             int lowerKeySize;
-            PutInternal(context, key, document, flags, table, changeVector, out lowerKey, out lowerKeySize);
+            PutInternal(context, key, document, flags, lastModifiedTicks, table, changeVector, out lowerKey, out lowerKeySize);
 
             if ((flags & DocumentFlags.HasAttachments) == DocumentFlags.HasAttachments)
             {
@@ -211,17 +224,17 @@ namespace Raven.Server.Documents.Versioning
             }
         }
 
-        public void PutDirect(DocumentsOperationContext context, string key, BlittableJsonReaderObject document,
-            DocumentFlags flags, ChangeVectorEntry[] changeVector)
+        public void PutDirect(DocumentsOperationContext context, string key, BlittableJsonReaderObject document, DocumentFlags flags, 
+            ChangeVectorEntry[] changeVector, long lastModifiedTicks)
         {
             var table = context.Transaction.InnerTransaction.OpenTable(DocsSchema, RevisionDocumentsSlice);
             byte* lowerKey;
             int lowerKeySize;
-            PutInternal(context, key, document, flags, table, changeVector, out lowerKey, out lowerKeySize);
+            PutInternal(context, key, document, flags, lastModifiedTicks, table, changeVector, out lowerKey, out lowerKeySize);
         }
 
         private void PutInternal(DocumentsOperationContext context, string key, BlittableJsonReaderObject document, 
-            DocumentFlags flags, Table table, ChangeVectorEntry[] changeVector, out byte* lowerKey, out int lowerSize)
+            DocumentFlags flags, long lastModifiedTicks, Table table, ChangeVectorEntry[] changeVector, out byte* lowerKey, out int lowerSize)
         {
             BlittableJsonReaderObject.AssertNoModifications(document, key, assertChildren: true);
 
@@ -259,6 +272,7 @@ namespace Raven.Server.Documents.Versioning
                     tbv.Add(keyPtr, keySize);
                     tbv.Add(data.BasePointer, data.Size);
                     tbv.Add((int)flags);
+                    tbv.Add(lastModifiedTicks);
                     table.Set(tbv);
                 }
             }
@@ -287,7 +301,7 @@ namespace Raven.Server.Documents.Versioning
                 numberOfRevisionsToDelete,
                 deleted =>
                 {
-                    var revision = TableValueToDocument(context, ref deleted.Reader);
+                    var revision = TableValueToRevision(context, ref deleted.Reader);
                     maxEtagDeleted = Math.Max(maxEtagDeleted, revision.Etag);
                     if ((revision.Flags & DocumentFlags.HasAttachments) == DocumentFlags.HasAttachments)
                     {
@@ -363,7 +377,7 @@ namespace Raven.Server.Documents.Versioning
                     if (take-- <= 0)
                         yield break;
 
-                    var document = TableValueToDocument(context, ref tvr.Result.Reader);
+                    var document = TableValueToRevision(context, ref tvr.Result.Reader);
                     yield return document;
                 }
             }
@@ -375,7 +389,7 @@ namespace Raven.Server.Documents.Versioning
 
             foreach (var tvr in table.SeekForwardFrom(DocsSchema.FixedSizeIndexes[RevisionsEtagsSlice], etag, 0))
             {
-                var document = TableValueToDocument(context, ref tvr.Reader);
+                var document = TableValueToRevision(context, ref tvr.Reader);
                 yield return document;
 
                 if (take-- <= 0)
@@ -389,11 +403,11 @@ namespace Raven.Server.Documents.Versioning
 
             foreach (var tvr in table.SeekForwardFrom(DocsSchema.FixedSizeIndexes[RevisionsEtagsSlice], etag, 0))
             {
-                yield return ReplicationBatchItem.From(TableValueToDocument(context, ref tvr.Reader));
+                yield return ReplicationBatchItem.From(TableValueToRevision(context, ref tvr.Reader));
             }
         }
 
-        private Document TableValueToDocument(DocumentsOperationContext context, ref TableValueReader tvr)
+        private Document TableValueToRevision(DocumentsOperationContext context, ref TableValueReader tvr)
         {
             var result = new Document
             {
@@ -405,6 +419,7 @@ namespace Raven.Server.Documents.Versioning
 
             int size;
             result.Data = new BlittableJsonReaderObject(tvr.Read((int)Columns.Document, out size), size, context);
+            result.LastModified = new DateTime(*(long*)tvr.Read((int)Columns.LastModified, out size));
 
             var ptr = tvr.Read((int)Columns.ChangeVector, out size);
             int changeVecotorCount = size / sizeof(ChangeVectorEntry);
