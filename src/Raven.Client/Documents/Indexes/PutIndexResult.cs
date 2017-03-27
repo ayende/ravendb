@@ -16,6 +16,6 @@ namespace Raven.Client.Documents.Indexes
         /// <summary>
         /// Gets or sets the total results for this query
         /// </summary>
-        public int IndexId { get; set; }
+        public long Etag { get; set; }
     }
 }

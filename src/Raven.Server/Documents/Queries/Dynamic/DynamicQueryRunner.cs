@@ -278,7 +278,7 @@ namespace Raven.Server.Documents.Queries.Dynamic
                     {
                         try
                         {
-                            _indexStore.DeleteIndex(supercededIndex.IndexId);
+                            _indexStore.DeleteIndex(supercededIndex.Etag);
                         }
                         catch (IndexDoesNotExistException)
                         {

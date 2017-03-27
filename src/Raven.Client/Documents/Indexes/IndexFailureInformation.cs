@@ -53,7 +53,7 @@ namespace Raven.Client.Documents.Indexes
         /// <summary>
         /// Index id (internal).
         /// </summary>
-        public int IndexId { get; set; }
+        public long Etag { get; set; }
 
         /// <summary>
         /// Index name
@@ -104,9 +104,9 @@ namespace Raven.Client.Documents.Indexes
         public string GetErrorMessage()
         {
             if (ReduceAttempts.HasValue == false)
-                return $"Index {Name} ({IndexId}) is invalid, out of {MapAttempts} map attempts, {MapErrors} has failed. Error rate of {FailureRate:#.##%} exceeds allowed 15% error rate";
+                return $"Index {Name} ({Etag}) is invalid, out of {MapAttempts} map attempts, {MapErrors} has failed. Error rate of {FailureRate:#.##%} exceeds allowed 15% error rate";
 
-            return $"Index {Name} ({IndexId}) is invalid, out of {MapAttempts} map attempts and {ReduceAttempts} reduce attempts, {MapErrors} and {ReduceErrors} has failed respectively. Error rate of {FailureRate:#.##%} exceeds allowed 15% error rate";
+            return $"Index {Name} ({Etag}) is invalid, out of {MapAttempts} map attempts and {ReduceAttempts} reduce attempts, {MapErrors} and {ReduceErrors} has failed respectively. Error rate of {FailureRate:#.##%} exceeds allowed 15% error rate";
         }
     }
 }
