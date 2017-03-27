@@ -7,9 +7,11 @@ using System.Threading;
 using System.Threading.Tasks;
 using Raven.Client;
 using Raven.Client.Documents.Changes;
+using Raven.Client.Documents.Conventions;
 using Raven.Client.Documents.Exceptions.Compilation;
 using Raven.Client.Documents.Exceptions.Indexes;
 using Raven.Client.Documents.Indexes;
+using Raven.Client.Documents.Session;
 using Raven.Server.Config.Categories;
 using Raven.Server.Config.Settings;
 using Raven.Server.Documents.Indexes.Auto;
@@ -23,7 +25,9 @@ using Raven.Server.Documents.Queries.Dynamic;
 using Raven.Server.NotificationCenter.Notifications;
 using Raven.Server.NotificationCenter.Notifications.Details;
 using Raven.Server.ServerWide;
+using Raven.Server.ServerWide.Context;
 using Raven.Server.Utils;
+using Sparrow.Json;
 using Sparrow.Logging;
 
 namespace Raven.Server.Documents.Indexes
@@ -37,16 +41,14 @@ namespace Raven.Server.Documents.Indexes
 
         private readonly CollectionOfIndexes _indexes = new CollectionOfIndexes();
 
-        /// <summary>
-        /// The current lock, used to make sure indexes/transformers have a unique names
-        /// </summary>
-        private readonly object _indexAndTransformerLocker;
 
         private bool _initialized;
 
         private bool _run = true;
 
         public readonly IndexIdentities Identities = new IndexIdentities();
+        private readonly object _indexAndTransformerLocker;
+        private readonly string _databaseIndexesLocalKey;
 
         public Logger Logger => _logger;
 
@@ -54,42 +56,153 @@ namespace Raven.Server.Documents.Indexes
         {
             _documentDatabase = documentDatabase;
             _serverStore = serverStore;
-            _logger = LoggingSource.Instance.GetLogger<IndexStore>(_documentDatabase.Name);
             _indexAndTransformerLocker = indexAndTransformerLocker;
-            if (serverStore!= null)
+            _logger = LoggingSource.Instance.GetLogger<IndexStore>(_documentDatabase.Name);
+            if (serverStore != null)
                 serverStore.Cluster.DatabaseChanged += HandleDatabaseRecordChanged;
 
+            _databaseIndexesLocalKey = $"db/{_documentDatabase.Name}/indexes";
         }
 
         private void HandleDatabaseRecordChanged(object o, string s)
         {
-            
+
         }
 
         public Task InitializeAsync()
         {
-            if (_initialized)
-                throw new InvalidOperationException($"{nameof(IndexStore)} was already initialized.");
-
             lock (_indexAndTransformerLocker)
             {
                 if (_initialized)
                     throw new InvalidOperationException($"{nameof(IndexStore)} was already initialized.");
 
-                if (_documentDatabase.Configuration.Indexing.RunInMemory == false)
+                TransactionOperationContext context;
+                using (_serverStore.ContextPool.AllocateOperationContext(out context))
                 {
-                    InitializePath(_documentDatabase.Configuration.Indexing.StoragePath);
-
-                    if (_documentDatabase.Configuration.Indexing.AdditionalStoragePaths != null)
+                    BlittableJsonReaderObject localIndexesJson;
+                    DatabaseRecord databaseRecord;
+                    DatabaseLocalNodeIndexes localIndexes;
+                    using (context.OpenReadTransaction())
                     {
-                        foreach (var path in _documentDatabase.Configuration.Indexing.AdditionalStoragePaths)
-                            InitializePath(path);
+                        localIndexesJson = _serverStore.Cluster.ReadLocal(context, _databaseIndexesLocalKey);
+                        localIndexes = localIndexesJson != null
+                            ? JsonDeserializationCluster.DatabaseLocalNodeIndexes(localIndexesJson)
+                            : new DatabaseLocalNodeIndexes { Indexes = new Dictionary<string, DatabaseLocalNodeIndexes.IndexHolder>() };
+
+                        databaseRecord = _serverStore.Cluster.ReadDatabase(context, _documentDatabase.Name);
+                    }
+
+                    UpdateLocalStateBasedOnDatabaseRecord(localIndexes.Indexes, databaseRecord.Indexes);
+
+                    var afterUpdateLocalState = EntityToBlittable.ConvertEntityToBlittable(localIndexes, DocumentConventions.Default, context);
+
+                    if (localIndexesJson == null || afterUpdateLocalState.Equals(localIndexesJson) == false)
+                    {
+                        using (context.OpenWriteTransaction())
+                        {
+                            _serverStore.Cluster.WriteLocal(context, _databaseIndexesLocalKey, afterUpdateLocalState);
+
+                            context.Transaction.Commit();
+                        }
                     }
                 }
 
                 _initialized = true;
+            }
 
-                return Task.Factory.StartNew(OpenIndexes, TaskCreationOptions.LongRunning);
+            return Task.Factory.StartNew(OpenIndexes);
+        }
+
+        private void UpdateLocalStateBasedOnDatabaseRecord(Dictionary<string, DatabaseLocalNodeIndexes.IndexHolder> existingIndexes, Dictionary<string, IndexDefinition> expectedIndexes)
+        {
+            var errors = new List<Exception>();
+
+            foreach (var name in existingIndexes.Keys.ToArray())
+            {
+                IndexDefinition value;
+                if (expectedIndexes.TryGetValue(name, out value))
+                    continue;
+
+                var index = existingIndexes[name];
+                existingIndexes.Remove(name);
+
+                // need to delete
+                DeleteIndexDirectory(index.Current, errors, name, etag: null);
+            }
+
+            foreach (var definition in expectedIndexes.Values)
+            {
+                DatabaseLocalNodeIndexes.IndexHolder existingDefs;
+                if (existingIndexes.TryGetValue(definition.Name, out existingDefs) == false)
+                {
+                    existingIndexes[definition.Name] = new DatabaseLocalNodeIndexes.IndexHolder
+                    {
+                        Current = definition
+                    };
+                    continue;
+                }
+                Debug.Assert(existingDefs.Current != null);
+                if (existingDefs.Current.Equals(definition))
+                {
+                    DeleteIndexDirectory(existingDefs.SideBySide, errors, definition.Name, definition.Etag);
+                    existingDefs.SideBySide = null;
+                    continue;
+                }
+                if (existingDefs.SideBySide?.Equals(definition) == true)
+                {
+                    continue;
+                }
+                DeleteIndexDirectory(existingDefs.SideBySide, errors, definition.Name, definition.Etag);
+                existingDefs.SideBySide = definition;
+            }
+
+            if (errors.Count == 0)
+                return;
+
+            if (_documentDatabase.Configuration.Core.ThrowIfAnyIndexOrTransformerCouldNotBeOpened)
+                throw new AggregateException(errors);
+
+            _documentDatabase.NotificationCenter.Add(AlertRaised.Create("Indexes store initialization error",
+                "Failed to update indexes status",
+                AlertType.IndexStore_IndexCouldNotBeOpened,
+                NotificationSeverity.Error,
+                key: "UpdateLocalStateBasedOnDatabaseRecord",
+                details: new ExceptionDetails(new AggregateException(errors))));
+        }
+
+        private void DeleteIndexDirectory(IndexDefinition definition, List<Exception> errors, string name, long? etag)
+        {
+            if (definition == null)
+                return;
+            try
+            {
+                var configuration = new SingleIndexConfiguration(definition.Configuration, _documentDatabase.Configuration);
+                if (configuration.JournalsStoragePath != null)
+                {
+                    IOExtensions.DeleteDirectory(etag != null
+                        ? Path.Combine(configuration.JournalsStoragePath.FullPath, name, etag.Value.ToString())
+                        : Path.Combine(configuration.JournalsStoragePath.FullPath, name));
+                }
+                if (configuration.TempPath != null)
+                {
+                    IOExtensions.DeleteDirectory(etag != null
+                        ? Path.Combine(configuration.TempPath.FullPath, name, etag.Value.ToString())
+                        : Path.Combine(configuration.TempPath.FullPath, name));
+                }
+                if (configuration.StoragePath != null)
+                {
+                    IOExtensions.DeleteDirectory(etag != null
+                        ? Path.Combine(configuration.StoragePath.FullPath, name, etag.Value.ToString())
+                        : Path.Combine(configuration.StoragePath.FullPath, name));
+                }
+            }
+            catch (Exception e)
+            {
+                if (_logger.IsOperationsEnabled)
+                {
+                    errors.Add(e);
+                    _logger.Operations($"Unable to delete index {name} when found that our local state includes it and the database record does not", e);
+                }
             }
         }
 
@@ -111,7 +224,7 @@ namespace Raven.Server.Documents.Indexes
             return index;
         }
 
-        public long CreateIndex(IndexDefinition definition, string path=null)
+        public long CreateIndex(IndexDefinition definition, string path = null)
         {
             if (definition == null)
                 throw new ArgumentNullException(nameof(definition));
@@ -190,7 +303,7 @@ namespace Raven.Server.Documents.Indexes
 
                     TryDeleteIndexIfExists(replacementIndexName);
                 }
-                
+
                 Index index;
 
                 switch (definition.Type)
@@ -604,9 +717,9 @@ namespace Raven.Server.Documents.Indexes
             if (_serverStore != null)
                 exceptionAggregator.Execute(() =>
                 {
-                    _serverStore.Cluster.DatabaseChanged += HandleDatabaseRecordChanged;
+                    _serverStore.Cluster.DatabaseChanged -= HandleDatabaseRecordChanged;
                 });
-            
+
 
             exceptionAggregator.ThrowIfNeeded();
         }
@@ -622,219 +735,61 @@ namespace Raven.Server.Documents.Indexes
 
         private void OpenIndexes()
         {
-            if (_documentDatabase.Configuration.Indexing.RunInMemory)
-                return;
-
             lock (_indexAndTransformerLocker)
             {
-                OpenIndexesFromDirectory(_documentDatabase.Configuration.Indexing.StoragePath);
-
-                if (_documentDatabase.Configuration.Indexing.AdditionalStoragePaths != null)
+                TransactionOperationContext context;
+                using (_serverStore.ContextPool.AllocateOperationContext(out context))
                 {
-                    foreach (var path in _documentDatabase.Configuration.Indexing.AdditionalStoragePaths)
-                        OpenIndexesFromDirectory(path);
-                }
-            }
-        }
+                    context.OpenReadTransaction();
 
-        private List<DirectoryInfo> GetAllIndexesInAllDirectories(IndexingConfiguration indexingConfig)
-        {
-            
-            var allIndexPaths = new List<PathSetting>((indexingConfig.AdditionalStoragePaths?.Length+1)??1);
-            
-            allIndexPaths.Add(indexingConfig.StoragePath);
-            if (indexingConfig.AdditionalStoragePaths != null)
-            {
-                allIndexPaths.AddRange(indexingConfig.AdditionalStoragePaths);
-            }
+                    var localIndexesJson = _serverStore.Cluster.ReadLocal(context, _databaseIndexesLocalKey);
+                    if (localIndexesJson == null)
+                        return; // shouldn't happen
 
-            return allIndexPaths.Where(path=>Directory.Exists(path.FullPath)).SelectMany(path => new DirectoryInfo(path.FullPath).GetDirectories()).ToList();
+                    var localIndexes = JsonDeserializationCluster.DatabaseLocalNodeIndexes(localIndexesJson);
 
-        }
+                    if (localIndexes.Indexes == null)
+                        return; // shouldn't happen
 
-        private void OpenIndexesFromDatabaseRecord(IndexingConfiguration indexingConfiguration, DatabaseRecord dbRecord)
-        {
-            var existingIndexes = GetAllIndexesInAllDirectories(indexingConfiguration);            
-            var indexesToDelete = new List<DirectoryInfo>();
+                    List<Exception> exceptions = null;
+                    if (_documentDatabase.Configuration.Core.ThrowIfAnyIndexOrTransformerCouldNotBeOpened)
+                        exceptions = new List<Exception>();
 
-            RemoveRedundantIndexes(dbRecord, existingIndexes, indexesToDelete);
-                        
-            foreach (var indexDefinition in dbRecord.Indexes.Values)
-            {
-                if (_documentDatabase.DatabaseShutdown.IsCancellationRequested)
-                    return;
-
-                var indexConfiguration = new SingleIndexConfiguration(indexDefinition.Configuration, _documentDatabase.Configuration);
-
-                string indexDirectoryPath = null;
-                            
-                indexDirectoryPath = TryFixIndexPath(indexDefinition, indexConfiguration);
-
-                // todo: make sure we have one "current" instance and max of one "side by side" instance
-                var indexDirectoryInfo = new DirectoryInfo(indexDirectoryPath);
-
-                DirectoryInfo[] indexInstancedDirectories;
-
-                // Call "CreateIndex" if no index traces were found
-                if (indexDirectoryInfo.Exists == false || (indexInstancedDirectories = indexDirectoryInfo.GetDirectories().ToArray()).Length == 0)
-                {
-                    CreateIndex(indexDefinition, indexDirectoryPath);
-                    continue;
-                }
-
-                AssertIndexDirectory(indexDirectoryPath, indexInstancedDirectories);
-
-                Array.Sort(indexInstancedDirectories, (x, y) => x.Name.CompareTo(y.Name));
-
-                if (indexInstancedDirectories.Select(x => x.Name).Contains(indexDefinition.Etag.ToString()))
-                {
-                    LoadIndexInstancesInIndexDirectory(indexInstancedDirectories);
-                }
-                else
-                {
-                    TryReplaceOrCreateNewIndex(indexDefinition, indexDirectoryPath, indexInstancedDirectories);
-                }
-
-                
-            }
-
-        }
-
-        private void LoadIndexInstancesInIndexDirectory(DirectoryInfo[] indexInstancedDirectories)
-        {
-            foreach (var instanceDirectory in indexInstancedDirectories)
-            {
-                if (_documentDatabase.DatabaseShutdown.IsCancellationRequested)
-                    return;
-
-                long indexEtag = long.Parse(instanceDirectory.Name);
-                List<Exception> exceptions = null;
-                var indexName = instanceDirectory.Parent.Name;
-                var indexPath = instanceDirectory.FullName;
-
-                if (_documentDatabase.Configuration.Core.ThrowIfAnyIndexOrTransformerCouldNotBeOpened)
-                    exceptions = new List<Exception>();
-
-                Index _;
-                if (_indexes.TryGetById(indexEtag, out _))
-                {
-                    // todo: add/move this validation to cluster?
-                    var message = $"Could not open index with etag {indexEtag} at '{indexPath}'. Index with the same etag already exists.";
-
-                    exceptions?.Add(new InvalidOperationException(message));
-
-                    if (_logger.IsOperationsEnabled)
-                        _logger.Operations(message);
-                }
-                else
-                {
-                    try
+                    foreach (var index in localIndexes.Indexes)
                     {
-                        OpenIndexInstace(indexEtag, indexName, instanceDirectory);
+                        AddIndexInstance(index.Value.Current,  exceptions);
+
+                        if(index.Value.SideBySide != null)
+                            AddIndexInstance(index.Value.SideBySide, exceptions);
                     }
-                    catch (Exception ex)
-                    {
-                        exceptions?.Add(ex);
-                    }
+
+                    if (exceptions != null && exceptions.Count > 0)
+                        throw new AggregateException("Could not load some of the indexes", exceptions);
                 }
-
-
-                if (exceptions != null && exceptions.Count > 0)
-                    throw new AggregateException("Could not load some of the indexes", exceptions);
             }
         }
 
-        private void AssertIndexDirectory(string indexDirectoryPath, DirectoryInfo[] indexInstancedDirectories)
+        private void AddIndexInstance(IndexDefinition indexDefinition, List<Exception> exceptions)
         {
-            // todo: considering deleting unneeded directories instead of validation
-            if (indexInstancedDirectories.Length > 2)
-            {
-                var message = $"Index directory {indexDirectoryPath} contains unexpected number of sub directories: {indexInstancedDirectories.Length}";
-
-                if (_logger.IsOperationsEnabled)
-                    _logger.Operations(message);
-
-                throw new AggregateException("Could not load some of the indexes", new InvalidOperationException(message));
-            }
-
-            // validate index instance folder names
-            var anyIllegalIndexInstanceNames =
-                indexInstancedDirectories.Where(x =>
-                {
-                    long indexEtag;
-                    return long.TryParse(x.Name, out indexEtag) == false;
-                }).ToList();
-
-            if (anyIllegalIndexInstanceNames.Count > 0)
-            {
-                var message = $"Illegal directory name(s) {string.Join(",", anyIllegalIndexInstanceNames)} inside index directory: {indexDirectoryPath}";
-
-                if (_logger.IsOperationsEnabled)
-                    _logger.Operations(message);
-
-                if (_documentDatabase.Configuration.Core.ThrowIfAnyIndexOrTransformerCouldNotBeOpened)
-                    throw new AggregateException(new InvalidOperationException(message));
-            }
-        }
-
-        private bool TryReplaceOrCreateNewIndex(IndexDefinition indexDefinition, string indexDirectoryPath, DirectoryInfo[] indexInstancedDirectories)
-        {
-            string newIndexPath = null;
-            if (indexInstancedDirectories.Length == 1)
-            {
-                TryRenameIndexWhileLoadigStore(indexDefinition, indexDirectoryPath, indexInstancedDirectories[0].FullName, out newIndexPath);
-                return true;
-            }
-            else
-            {
-                if (TryRenameIndexWhileLoadigStore(indexDefinition, indexDirectoryPath, oldInstancePath: indexInstancedDirectories[0].FullName, newPath: out newIndexPath))
-                {
-                    using (var sideBySideIndex = Index.Open(indexInstancedDirectories[1].FullName, _documentDatabase))
-                    {
-                        DeleteIndexInternal(sideBySideIndex);
-                    }
-                    OpenIndexInstace(indexDefinition.Etag, indexDefinition.Name, new DirectoryInfo(newIndexPath));
-                    return true;
-
-                }
-                else if (TryRenameIndexWhileLoadigStore(indexDefinition, indexDirectoryPath, oldInstancePath: indexInstancedDirectories[1].FullName, newPath: out newIndexPath))
-                {
-                    // todo: make sure that here we make the "side-by-side" index into our "current" index          
-                    using (var existingIndex = Index.Open(indexInstancedDirectories[0].FullName, _documentDatabase))
-                    {
-                        DeleteIndexInternal(existingIndex);
-                    }
-                    OpenIndexInstace(indexDefinition.Etag, indexDefinition.Name, new DirectoryInfo(newIndexPath));
-                    return true;
-                }
-            }
-
-            CreateIndex(indexDefinition, indexDirectoryPath);
-            return true;
-        }
-
-        private void OpenIndexInstace(long indexEtag, string indexName, DirectoryInfo indexInstancePath)
-        {
-            Index index = null;
-
+            Index indexInstance = null;
+            var singleIndexConfiguration = new SingleIndexConfiguration(indexDefinition.Configuration, _documentDatabase.Configuration);
             try
             {
-                index = Index.Open(indexInstancePath.FullName, _documentDatabase);
-                index.Start();
-                if (_logger.IsInfoEnabled)
-                    _logger.Info($"Started {index.Name} from {indexInstancePath}");
+                // check if the path exists, it not, create it
+                indexInstance = Index.Open(singleIndexConfiguration, indexDefinition, _documentDatabase);
 
-                _indexes.Add(index);
+                _indexes.Add(indexInstance);
             }
             catch (Exception e)
             {
-                index?.Dispose();               
+                indexInstance?.Dispose();
+                exceptions?.Add(e);
 
-                var configuration = new FaultyInMemoryIndexConfiguration(new PathSetting(indexInstancePath.Parent.FullName), _documentDatabase.Configuration);
-                var fakeIndex = new FaultyInMemoryIndex(e, indexEtag, IndexDefinitionBase.TryReadNameFromMetadataFile(indexInstancePath.FullName) ?? indexName,
-                    configuration);
+                var configuration = new FaultyInMemoryIndexConfiguration(singleIndexConfiguration.StoragePath, _documentDatabase.Configuration);
+                var fakeIndex = new FaultyInMemoryIndex(e, indexDefinition.Etag, indexDefinition.Name, configuration);
 
-                var message = $"Could not open index with id {indexEtag} at '{indexInstancePath}'. Created in-memory, fake instance: {fakeIndex.Name}";
+                var message =
+                    $"Could not open index with id {indexDefinition.Name} at '{singleIndexConfiguration.StoragePath}'. Created in-memory, fake instance: {fakeIndex.Name}";
 
                 if (_logger.IsInfoEnabled)
                     _logger.Info(message, e);
@@ -847,171 +802,6 @@ namespace Raven.Server.Documents.Indexes
                     details: new ExceptionDetails(e)));
 
                 _indexes.Add(fakeIndex);
-
-                throw;
-            }
-        }
-
-        private bool TryRenameIndexWhileLoadigStore(IndexDefinition indexDefinition, string indexDirectoryPath, string oldInstancePath, out string newPath)
-        {
-            newPath = null;
-            using (var existingIndex = Index.Open(oldInstancePath, _documentDatabase))
-            {
-                var existingIndexDefinition = existingIndex.GetIndexDefinition();
-                if (existingIndexDefinition.Equals(indexDefinition))
-                {
-                    newPath = new PathSetting(indexDirectoryPath)
-                        .Combine(indexDefinition.Etag.ToString())
-                        .FullPath;
-
-                    IOExtensions.MoveDirectory(oldInstancePath, newPath);
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        private static string TryFixIndexPath(IndexDefinition indexDefinition, SingleIndexConfiguration indexConfiguration)
-        {
-            string indexPath;
-            string desiredIndexDirName = IndexDefinitionBase.GetIndexNameSafeForFileSystem(indexDefinition.Name);
-            var indexDirectory = indexConfiguration.StoragePath.Combine(indexDefinition.Name);
-            if (indexDefinition.Name != desiredIndexDirName)
-            {
-                var newPath = new PathSetting(indexConfiguration.StoragePath.FullPath)
-                    .Combine(desiredIndexDirName)
-                    .FullPath;
-
-                IOExtensions.MoveDirectory(indexDirectory.FullPath, newPath);
-
-                indexPath = newPath;
-            }
-            else
-                indexPath = indexDirectory.FullPath;
-            return indexPath;
-        }
-
-        private void RemoveRedundantIndexes(DatabaseRecord dbRecord, List<DirectoryInfo> existingIndexes, List<DirectoryInfo> indexesToDelete)
-        {
-            foreach (var existingIndexDirectory in existingIndexes)
-            {
-                if (dbRecord.Indexes.Keys.Contains(existingIndexDirectory.Name) == false)
-                {
-                    indexesToDelete.Add(existingIndexDirectory);
-                }
-            }
-
-            foreach (var indexToDelete in indexesToDelete)
-            {
-                foreach (var indexInstanceToDelete in indexToDelete.GetDirectories())
-                {
-                    var index = Index.Open(indexInstanceToDelete.FullName, _documentDatabase);
-                    DeleteIndexInternal(index);
-                }
-            }
-        }
-
-        private void OpenIndexesFromDirectory(PathSetting path)
-        {
-            if (Directory.Exists(path.FullPath) == false)
-                return;
-
-            if (_logger.IsInfoEnabled)
-                _logger.Info($"Starting to load indexes from {path}");
-
-            var indexes = new SortedList<int, Tuple<string, string>>();
-            foreach (var indexDirectory in new DirectoryInfo(path.FullPath).GetDirectories())
-            {
-                if (_documentDatabase.DatabaseShutdown.IsCancellationRequested)
-                    return;
-
-                int indexId;
-                string indexName;
-                if (IndexDefinitionBase.TryReadIdFromDirectory(indexDirectory, out indexId, out indexName) == false)
-                    continue;
-
-                var nameFromMetadata = IndexDefinitionBase.TryReadNameFromMetadataFile(indexDirectory.FullName);
-                string desiredIndexDirName;
-
-                if (nameFromMetadata != null &&
-                    indexDirectory.Name !=
-                    (desiredIndexDirName = IndexDefinitionBase.GetIndexNameSafeForFileSystem(nameFromMetadata)))
-                {
-                    var newPath = new PathSetting(indexDirectory.FullName)
-                        .Combine("..")
-                        .Combine(desiredIndexDirName)
-                        .FullPath;
-
-                    IOExtensions.MoveDirectory(indexDirectory.FullName, newPath);
-
-                    indexes[indexId] = Tuple.Create(newPath, indexName);
-                }
-                else
-                    indexes[indexId] = Tuple.Create(indexDirectory.FullName, indexName);
-            }
-
-            foreach (var indexDirectory in indexes)
-            {
-                if (_documentDatabase.DatabaseShutdown.IsCancellationRequested)
-                    return;
-
-                var indexId = indexDirectory.Key;
-                var indexName = indexDirectory.Value.Item2;
-                var indexPath = indexDirectory.Value.Item1;
-
-                List<Exception> exceptions = null;
-                if (_documentDatabase.Configuration.Core.ThrowIfAnyIndexOrTransformerCouldNotBeOpened)
-                    exceptions = new List<Exception>();
-
-                Index _;
-                if (_indexes.TryGetById(indexId, out _))
-                {
-                    var message = $"Could not open index with id {indexId} at '{indexPath}'. Index with the same id already exists.";
-
-                    exceptions?.Add(new InvalidOperationException(message));
-
-                    if (_logger.IsOperationsEnabled)
-                        _logger.Operations(message);
-                }
-                else
-                {
-                    Index index = null;
-
-                    try
-                    {
-                        index = Index.Open(indexPath, _documentDatabase);
-                        index.Start();
-                        if (_logger.IsInfoEnabled)
-                            _logger.Info($"Started {index.Name} from {indexPath}");
-
-                        _indexes.Add(index);
-                    }
-                    catch (Exception e)
-                    {
-                        index?.Dispose();
-                        exceptions?.Add(e);
-
-                        var configuration = new FaultyInMemoryIndexConfiguration(path, _documentDatabase.Configuration);
-                        var fakeIndex = new FaultyInMemoryIndex(e, indexId, IndexDefinitionBase.TryReadNameFromMetadataFile(indexPath) ?? indexName, configuration);
-
-                        var message = $"Could not open index with id {indexId} at '{indexPath}'. Created in-memory, fake instance: {fakeIndex.Name}";
-
-                        if (_logger.IsInfoEnabled)
-                            _logger.Info(message, e);
-
-                        _documentDatabase.NotificationCenter.Add(AlertRaised.Create("Indexes store initialization error",
-                            message,
-                            AlertType.IndexStore_IndexCouldNotBeOpened,
-                            NotificationSeverity.Error,
-                            key: fakeIndex.Name,
-                            details: new ExceptionDetails(e)));
-
-                        _indexes.Add(fakeIndex);
-                    }
-                }
-
-                if (exceptions != null && exceptions.Count > 0)
-                    throw new AggregateException("Could not load some of the indexes", exceptions);
             }
         }
 
@@ -1097,11 +887,6 @@ namespace Raven.Server.Documents.Indexes
             }
         }
 
-        private void InitializePath(PathSetting path)
-        {
-            if (Directory.Exists(path.FullPath) == false && _documentDatabase.Configuration.Indexing.RunInMemory == false)
-                Directory.CreateDirectory(path.FullPath);
-        }
 
         private static void ValidateAnalyzers(IndexDefinition definition)
         {
@@ -1223,5 +1008,16 @@ namespace Raven.Server.Documents.Indexes
         {
             throw new NotImplementedException("TBI");
         }
+    }
+
+    public class DatabaseLocalNodeIndexes
+    {
+        public class IndexHolder
+        {
+            public IndexDefinition Current;
+            public IndexDefinition SideBySide;
+        }
+
+        public Dictionary<string, IndexHolder> Indexes;
     }
 }

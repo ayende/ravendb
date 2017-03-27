@@ -20,6 +20,7 @@ using Raven.Client.Exceptions.Security;
 using Raven.Client.Http.OAuth;
 using Raven.Client.Server.Commands;
 using Raven.Client.Server.Tcp;
+using Raven.Server.Documents.Indexes;
 using Raven.Server.Documents.Versioning;
 using Raven.Server.Json;
 using Raven.Server.Rachis;
@@ -39,13 +40,15 @@ namespace Raven.Server.ServerWide
 {
     public class ClusterStateMachine : RachisStateMachine
     {
-        private static readonly TableSchema ItemsSchema;
+        private static readonly TableSchema ItemsSchema, LocalSchema;
         private static readonly Slice EtagIndexName;
         private static readonly Slice Items;
+        private static readonly Slice Local;
 
         static ClusterStateMachine()
         {
             Slice.From(StorageEnvironment.LabelsContext, "Items", out Items);
+            Slice.From(StorageEnvironment.LabelsContext, "Local", out Local);
             Slice.From(StorageEnvironment.LabelsContext, "EtagIndexName", out EtagIndexName);
 
             ItemsSchema = new TableSchema();
@@ -64,6 +67,16 @@ namespace Raven.Server.ServerWide
                 IsGlobal = true,
                 StartIndex = 3
             });
+
+            // We use the follow format for the items data
+            // { lowered key, key, data }
+            LocalSchema = new TableSchema();
+            LocalSchema.DefineKey(new TableSchema.SchemaIndexDef
+            {
+                StartIndex = 0,
+                Count = 1
+            });
+
         }
 
         private readonly AsyncManualResetEvent _notifiedListeners = new AsyncManualResetEvent();
@@ -102,9 +115,9 @@ namespace Raven.Server.ServerWide
                 case nameof(DeleteValueCommand):
                     DeleteValue(context, cmd, index, leader);
                     break;
-                case nameof(PutUpdateTransformerCommand):
-                case nameof(SetUpdateTransformerLockModeCommand):
-                case nameof(DeleteUpdateTransformerCommand):
+                case nameof(PutTransformerCommand):
+                case nameof(SetTransformerLockModeCommand):
+                case nameof(DeleteTransformerCommand):
                 case nameof(EditVersioningCommand):
                 case nameof(PutIndexCommand):
                 case nameof(ChangeIndexLockModeCommand):
@@ -377,7 +390,7 @@ namespace Raven.Server.ServerWide
             using (Slice.From(context.Allocator, dbKey.ToLowerInvariant(), out valueNameLowered))
             {
                 long etag;
-                var doc = ReadInternal(context, out etag, valueNameLowered);
+                var doc = ReadInternal(context, context.Transaction.InnerTransaction.OpenTable(ItemsSchema, Items), valueNameLowered, out etag);
 
                 if (doc == null)
                 {
@@ -438,6 +451,7 @@ namespace Raven.Server.ServerWide
         {
             base.Initialize(parent, context);
             ItemsSchema.Create(context.Transaction.InnerTransaction, Items, 32);
+            LocalSchema.Create(context.Transaction.InnerTransaction, Local, 32);
         }
 
         public IEnumerable<Tuple<string, BlittableJsonReaderObject>> ItemsStartingWith(TransactionOperationContext context, string prefix, int start, int take)
@@ -458,7 +472,7 @@ namespace Raven.Server.ServerWide
             }
         }
 
-        public IEnumerable<string> GetdatabaseNames(TransactionOperationContext context,int start = 0, int take = Int32.MaxValue)
+        public IEnumerable<string> GetdatabaseNames(TransactionOperationContext context, int start = 0, int take = Int32.MaxValue)
         {
             var items = context.Transaction.InnerTransaction.OpenTable(ItemsSchema, Items);
 
@@ -466,7 +480,7 @@ namespace Raven.Server.ServerWide
             Slice loweredPrefix;
             using (Slice.From(context.Allocator, dbKey, out loweredPrefix))
             {
-                
+
                 foreach (var result in items.SeekByPrimaryKeyPrefix(loweredPrefix, Slices.Empty, 0))
                 {
                     if (take-- <= 0)
@@ -515,20 +529,18 @@ namespace Raven.Server.ServerWide
 
         public BlittableJsonReaderObject Read(TransactionOperationContext context, string name, out long etag)
         {
-
             var dbKey = name.ToLowerInvariant();
             Slice key;
             using (Slice.From(context.Allocator, dbKey, out key))
             {
-                return ReadInternal(context, out etag, key);
+                return ReadInternal(context, context.Transaction.InnerTransaction.OpenTable(ItemsSchema, Items), key, out etag);
             }
         }
 
-        private static unsafe BlittableJsonReaderObject ReadInternal(TransactionOperationContext context, out long etag, Slice key)
+        private static unsafe BlittableJsonReaderObject ReadInternal(TransactionOperationContext context, Table table, Slice key, out long etag)
         {
-            var items = context.Transaction.InnerTransaction.OpenTable(ItemsSchema, Items);
             TableValueReader reader;
-            if (items.ReadByKey(key, out reader) == false)
+            if (table.ReadByKey(key, out reader) == false)
             {
                 etag = 0;
                 return null;
@@ -601,7 +613,7 @@ namespace Raven.Server.ServerWide
         {
             var listOfDatabaseName = GetdatabaseNames(context).ToList();
             //There is potentially a lot of work to be done here so we are responding to the change on a separate task.
-            if(DatabaseChanged != null)
+            if (DatabaseChanged != null)
             {
                 Task.Run(() =>
                 {
@@ -610,7 +622,39 @@ namespace Raven.Server.ServerWide
                         DatabaseChanged.Invoke(this, db);
                     }
                 });
-            }            
+            }
+        }
+
+        public BlittableJsonReaderObject ReadLocal(TransactionOperationContext context, string name)
+        {
+            var dbKey = name.ToLowerInvariant();
+            Slice key;
+            using (Slice.From(context.Allocator, dbKey, out key))
+            {
+                long etag;
+                return ReadInternal(context, context.Transaction.InnerTransaction.OpenTable(LocalSchema, Local), key, out etag);
+            }
+        }
+
+        public unsafe void WriteLocal(TransactionOperationContext context, string name, BlittableJsonReaderObject value)
+        {
+            var items = context.Transaction.InnerTransaction.OpenTable(ItemsSchema, Local);
+
+            Slice key;
+            Slice loweredKey;
+            using (Slice.From(context.Allocator, name, out key))
+            using (Slice.From(context.Allocator, name.ToLowerInvariant(), out loweredKey))
+            {
+                TableValueBuilder builder;
+                using (items.Allocate(out builder))
+                {
+                    builder.Add(loweredKey);
+                    builder.Add(key);
+                    builder.Add(value.BasePointer, value.Size);
+
+                    items.Set(builder);
+                }
+            }
         }
     }
 
@@ -662,12 +706,10 @@ namespace Raven.Server.ServerWide
         public string DatabaseName { get; set; }
     }
 
-    public abstract class UpdateTransformerCommand : UpdateDatabaseCommand
+
+    public class PutTransformerCommand : UpdateDatabaseCommand
     {
         public string TransformerName;
-    }
-    public class PutUpdateTransformerCommand : UpdateTransformerCommand
-    {
         public TransformerDefinition TransformerDefinition;
         public override void UpdateDatabaseRecord(DatabaseRecord record)
         {
@@ -675,8 +717,9 @@ namespace Raven.Server.ServerWide
         }
     }
 
-    public class SetUpdateTransformerLockModeCommand : UpdateTransformerCommand
+    public class SetTransformerLockModeCommand : UpdateDatabaseCommand
     {
+        public string TransformerName;
         public TransformerLockMode LockMode;
         public override void UpdateDatabaseRecord(DatabaseRecord record)
         {
@@ -684,21 +727,18 @@ namespace Raven.Server.ServerWide
         }
     }
 
-    public class DeleteUpdateTransformerCommand : UpdateTransformerCommand
+    public class DeleteTransformerCommand : UpdateDatabaseCommand
     {
+        public string TransformerName;
         public override void UpdateDatabaseRecord(DatabaseRecord record)
         {
             record.Transformers.Remove(TransformerName);
         }
     }
 
-    public abstract class UpdateIndexCommand:UpdateDatabaseCommand
+    public class PutIndexCommand : UpdateDatabaseCommand
     {
         public string IndexName;
-    }
-
-    public class PutIndexCommand : UpdateIndexCommand
-    {
         public IndexDefinition IndexDefiniiton;
         public override void UpdateDatabaseRecord(DatabaseRecord record)
         {
@@ -706,8 +746,9 @@ namespace Raven.Server.ServerWide
         }
     }
 
-    public class ChangeIndexLockModeCommand:UpdateIndexCommand
+    public class ChangeIndexLockModeCommand : UpdateDatabaseCommand
     {
+        public string IndexName;
         public IndexLockMode LockMode;
         public override void UpdateDatabaseRecord(DatabaseRecord record)
         {
@@ -715,8 +756,9 @@ namespace Raven.Server.ServerWide
         }
     }
 
-    public class DeleteIndexCommand:UpdateIndexCommand
+    public class DeleteIndexCommand : UpdateDatabaseCommand
     {
+        public string IndexName;
         public override void UpdateDatabaseRecord(DatabaseRecord record)
         {
             record.Indexes.Remove(IndexName);
@@ -732,6 +774,7 @@ namespace Raven.Server.ServerWide
 
     public class JsonDeserializationCluster : JsonDeserializationBase
     {
+        public static readonly Func<BlittableJsonReaderObject, DatabaseLocalNodeIndexes> DatabaseLocalNodeIndexes = GenerateJsonDeserializationRoutine<DatabaseLocalNodeIndexes>();
 
         public static readonly Func<BlittableJsonReaderObject, PutValueCommand> PutValueCommand = GenerateJsonDeserializationRoutine<PutValueCommand>();
 
@@ -746,9 +789,9 @@ namespace Raven.Server.ServerWide
         public static Dictionary<string, Func<BlittableJsonReaderObject, UpdateDatabaseCommand>> UpdateDatabaseCommands = new Dictionary<string, Func<BlittableJsonReaderObject, UpdateDatabaseCommand>>()
         {
             [nameof(EditVersioningCommand)] = GenerateJsonDeserializationRoutine<EditVersioningCommand>(),
-            [nameof(PutUpdateTransformerCommand)] = GenerateJsonDeserializationRoutine<PutUpdateTransformerCommand>(),
-            [nameof(DeleteUpdateTransformerCommand)] = GenerateJsonDeserializationRoutine<DeleteUpdateTransformerCommand>(),
-            [nameof(SetUpdateTransformerLockModeCommand)] = GenerateJsonDeserializationRoutine<SetUpdateTransformerLockModeCommand>(),
+            [nameof(PutTransformerCommand)] = GenerateJsonDeserializationRoutine<PutTransformerCommand>(),
+            [nameof(DeleteTransformerCommand)] = GenerateJsonDeserializationRoutine<DeleteTransformerCommand>(),
+            [nameof(SetTransformerLockModeCommand)] = GenerateJsonDeserializationRoutine<SetTransformerLockModeCommand>(),
             [nameof(PutIndexCommand)] = GenerateJsonDeserializationRoutine<PutIndexCommand>(),
             [nameof(ChangeIndexLockModeCommand)] = GenerateJsonDeserializationRoutine<ChangeIndexLockModeCommand>(),
             [nameof(DeleteIndexCommand)] = GenerateJsonDeserializationRoutine<DeleteIndexCommand>(),

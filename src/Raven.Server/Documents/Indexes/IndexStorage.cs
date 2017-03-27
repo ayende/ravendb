@@ -469,11 +469,11 @@ namespace Raven.Server.Documents.Indexes
             {
                 var statsTree = tx.ReadTree(IndexSchema.StatsTree);
                 if (statsTree == null)
-                    throw new InvalidOperationException("Index does not contain 'Stats' tree.");
+                    throw new InvalidOperationException($"Index {environment.Options.BasePath} does not contain 'Stats' tree.");
 
                 var result = statsTree.Read(IndexSchema.TypeSlice);
                 if (result == null)
-                    throw new InvalidOperationException("Stats tree does not contain 'Type' entry in index.");
+                    throw new InvalidOperationException($"Stats tree does not contain 'Type' entry in Index { environment.Options.BasePath}");
 
                 return (IndexType)result.Reader.ReadLittleEndianInt32();
             }

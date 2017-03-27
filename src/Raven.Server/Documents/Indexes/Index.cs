@@ -22,6 +22,7 @@ using Raven.Server.Config.Categories;
 using Raven.Server.Config.Settings;
 using Raven.Server.Documents.Includes;
 using Raven.Server.Documents.Indexes.Auto;
+using Raven.Server.Documents.Indexes.Configuration;
 using Raven.Server.Documents.Indexes.MapReduce.Auto;
 using Raven.Server.Documents.Indexes.MapReduce.Static;
 using Raven.Server.Documents.Indexes.Persistence.Lucene;
@@ -162,20 +163,18 @@ namespace Raven.Server.Documents.Indexes
                 HandleAllDocs = true;
         }
 
-        public static Index Open(string path, DocumentDatabase documentDatabase)
+        public static Index Open(SingleIndexConfiguration configuration, DocumentDatabase documentDatabase)
         {
             StorageEnvironment environment = null;
 
-            var name = Path.GetDirectoryName(path);
-            var indexPath = path;
+            var path = configuration.StoragePath.ToFullPath();
 
-            var indexTempPath =
-                documentDatabase.Configuration.Indexing.TempPath?.Combine(name);
+            var indexTempPath = configuration.TempPath?.ToFullPath();
 
-            var journalPath = documentDatabase.Configuration.Indexing.JournalsStoragePath?.Combine(name);
+            var journalPath = configuration.JournalsStoragePath?.ToFullPath();
 
             var options = StorageEnvironmentOptions.ForPath(indexPath, indexTempPath?.FullPath, journalPath?.FullPath,
-                documentDatabase.IoChanges, documentDatabase.CatastrophicFailureNotification);
+                documentDatabase.IoChanges);
             try
             {
                 options.SchemaVersion = 1;
@@ -913,9 +912,8 @@ namespace Raven.Server.Documents.Indexes
         internal void HandleWriteErrors(IndexingStatsScope stats, IndexWriteException iwe)
         {
             stats.AddWriteError(iwe);
-            //todo: figure out why SystemException won't compile
-            // if (iwe.InnerException is SystemException) // Don't count transient errors
-            //   return;
+            if (iwe.InnerException is SystemException) // Don't count transient errors
+                return;
 
             var writeErrors = Interlocked.Increment(ref _writeErrors);
 

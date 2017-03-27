@@ -44,5 +44,6 @@
     <PackageReference Include="System.Threading" Version="4.3.0" />
     <PackageReference Include="System.Threading.Thread" Version="4.3.0" />
     <PackageReference Include="System.Threading.Timer" Version="4.3.0" />
+    <PackageReference Include="system.ValueTuple" Version="4.3.0" />
   </ItemGroup>
 </Project>

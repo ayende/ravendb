@@ -17,7 +17,8 @@ namespace Raven.Server.Documents.Indexes
 
         public void Add(Index index)
         {
-            _indexesByName[index.Name] = index;
+            _indexesByName.TryAdd(index.Name, index); // this is fine if we can't do that, because we always add a side by side after current version
+            _indexesById.TryAdd(index.Etag, index);
 
             foreach (var collection in index.Definition.Collections)
             {
@@ -50,9 +51,10 @@ namespace Raven.Server.Documents.Indexes
 
         public void RenameIndex(Index index, string oldName, string newName)
         {
-            _indexesByName.AddOrUpdate(newName, index, (key, oldValue) => index);
-            Index _;
-            _indexesByName.TryRemove(oldName, out _);
+            throw new NotImplementedException();
+            //_indexesByName.AddOrUpdate(newName, index, (key, oldValue) => index);
+            //Index _;
+            //_indexesByName.TryRemove(oldName, out _);
         }
 
         public bool TryGetByName(string name, out Index index)

@@ -568,7 +568,7 @@ namespace Sparrow.Json
         }
 
 
-        public async Task<Tuple<BlittableJsonReaderArray, IDisposable>> ParseArrayToMemoryAsync(Stream stream, string debugTag,
+        public async Task<(BlittableJsonReaderArray array, IDisposable disposeArray)> ParseArrayToMemoryAsync(Stream stream, string debugTag,
             BlittableJsonDocumentBuilder.UsageMode mode, bool noCache = false)
         {
             _jsonParserState.Reset();
@@ -597,7 +597,7 @@ namespace Sparrow.Json
                 }
                 builder.FinalizeDocument();
                 var arrayReader = builder.CreateArrayReader(noCache);
-                return Tuple.Create(arrayReader, (IDisposable) arrayReader.Parent);
+                return (arrayReader, (IDisposable) arrayReader.Parent);
             }
         }
 

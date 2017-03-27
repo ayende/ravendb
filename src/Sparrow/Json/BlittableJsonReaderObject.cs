@@ -1012,7 +1012,7 @@ namespace Sparrow.Json
             return false;
         }
 
-        protected bool Equals(BlittableJsonReaderObject other)
+        public bool Equals(BlittableJsonReaderObject other)
         {
             if (_size != other.Size)
                 return false;

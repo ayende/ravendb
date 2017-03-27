@@ -35,10 +35,15 @@ namespace Raven.Server.Documents.Handlers
             using (ContextPool.AllocateOperationContext(out context))
             {
                 var tuple = await context.ParseArrayToMemoryAsync(RequestBodyStream(), "Indexes", BlittableJsonDocumentBuilder.UsageMode.None);
-                var indexes = tuple.Item1;
-                var indexTaskAndDefinitionsTuples = new List<Tuple<Task<long>, IndexDefinition>>(indexes.Length);
-                
-                using (tuple.Item2)
+                var indexes = tuple.array;
+                var indexTaskAndDefinitionsTuples = new List<(Task<long> putIndexTask, IndexDefinition definition)>(indexes.Length);
+
+                if (indexes.Length == 0)
+                {
+                    throw new InvalidOperationException("At least one index must be specified when calling PUT /indexes, but none was.");
+                }
+
+                using (tuple.disposeArray)
                 {
                     foreach (var indexToAdd in indexes)
                     {
@@ -54,23 +59,24 @@ namespace Raven.Server.Documents.Handlers
                             [nameof(PutIndexCommand.DatabaseName)] = Database.Name,
                         }, "put-transformer-cmd"))
                         {
-                            indexTaskAndDefinitionsTuples.Add(Tuple.Create( ServerStore.SendToLeaderAsync(putTransfomerCommand), indexDefinition));
+                            indexTaskAndDefinitionsTuples.Add( (ServerStore.SendToLeaderAsync(putTransfomerCommand), indexDefinition) );
                         }
                     }
 
                     Exception operationException = null;
                     try
                     {
-                        await Task.WhenAll(indexTaskAndDefinitionsTuples.Select(x=>x.Item1));
+                        await Task.WhenAll(indexTaskAndDefinitionsTuples.Select(x=>x.putIndexTask));
                     }
                     catch (Exception e)
                     {
                         operationException = e;
                     }
 
-                    await ServerStore.Cluster.WaitForIndexNotification(indexTaskAndDefinitionsTuples.Last().Item1.Result);
                     if (operationException != null)
-                        throw operationException;
+                        throw new InvalidOperationException("Failed to put indexes", operationException);
+
+                    await ServerStore.Cluster.WaitForIndexNotification(indexTaskAndDefinitionsTuples.Last().putIndexTask.Result);
                 }
 
                 HttpContext.Response.StatusCode = (int)HttpStatusCode.Created;
@@ -83,12 +89,12 @@ namespace Raven.Server.Documents.Handlers
                     {
                         w.WriteStartObject();
                         w.WritePropertyName(nameof(PutIndexResult.Etag));
-                        w.WriteInteger(index.Item1.Result);
+                        w.WriteInteger(index.putIndexTask.Result);
 
                         w.WriteComma();
 
                         w.WritePropertyName(nameof(PutIndexResult.Index));
-                        w.WriteString(index.Item2.Name);
+                        w.WriteString(index.definition.Name);
                         w.WriteEndObject();
                     });
 

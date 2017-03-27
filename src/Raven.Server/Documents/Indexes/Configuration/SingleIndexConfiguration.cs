@@ -82,8 +82,6 @@ namespace Raven.Server.Documents.Indexes.Configuration
 
         public override PathSetting JournalsStoragePath => _databaseConfiguration.Indexing.JournalsStoragePath;
 
-        public override PathSetting[] AdditionalStoragePaths => _databaseConfiguration.Indexing.AdditionalStoragePaths;
-
         public IndexUpdateType CalculateUpdateType(SingleIndexConfiguration newConfiguration)
         {
             var result = IndexUpdateType.None;
