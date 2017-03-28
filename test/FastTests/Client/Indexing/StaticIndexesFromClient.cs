@@ -6,6 +6,7 @@ using Raven.Client.Documents.Operations;
 using Raven.Client.Documents.Operations.Indexes;
 using Raven.Tests.Core.Utils.Entities;
 using Xunit;
+using FastTests.Server.Documents.Notifications;
 
 namespace FastTests.Client.Indexing
 {
@@ -38,9 +39,8 @@ namespace FastTests.Client.Indexing
                 var output = await store
                     .Admin
                     .SendAsync(new GetIndexOperation("Users_ByName"));
-
-                Assert.Equal(1, output.Etag);
-                Assert.True(input.Equals(output, compareIndexIds: false, ignoreFormatting: false));
+                                
+                Assert.True(input.Equals(output, compareEtags: false, ignoreFormatting: false));
             }
         }
 
@@ -85,25 +85,36 @@ namespace FastTests.Client.Indexing
                     .Admin
                     .SendAsync(new GetIndexOperation("Users_ByName"));
 
-                Assert.Equal(1, output.Etag);
-                Assert.True(input.Equals(output, compareIndexIds: false, ignoreFormatting: false));
-
+                
+                Assert.True(input.Equals(output, compareEtags: false, ignoreFormatting: false));
+                
                 await store
                     .Admin
                     .SendAsync(new PutIndexesOperation(new[] { input2 }));
 
-                WaitForIndexing(store);
+                var mre = new ManualResetEvent(false);
 
+                var docDB = await GetDocumentDatabaseInstanceFor(store);
+                docDB.Changes.OnIndexChange += x=>
+                {
+                    if (x.Type == Raven.Client.Documents.Changes.IndexChangeTypes.BatchCompleted)
+                        mre.Set();
+                };
+                              
+                mre.WaitOne();
+               
                 output = await store
                     .Admin
                     .SendAsync(new GetIndexOperation("Users_ByName"));
 
-                Assert.Equal(2, output.Etag);
+                
                 Assert.Equal("Users_ByName", output.Name);
-                Assert.True(input2.Equals(output, compareIndexIds: false, ignoreFormatting: false));
+                Assert.True(input2.Equals(output, compareEtags: false, ignoreFormatting: false));
 
             }
         }
+
+      
 
         [Fact]
         public async Task Can_Put_Replace_And_Back_To_Original()
@@ -140,8 +151,8 @@ namespace FastTests.Client.Indexing
                     .Admin
                     .SendAsync(new GetIndexOperation("Users_ByName"));
 
-                Assert.Equal(1, output.Etag);
-                Assert.True(input.Equals(output, compareIndexIds: false, ignoreFormatting: false));
+                Assert.Equal(3, output.Etag);
+                Assert.True(input.Equals(output, compareEtags: false, ignoreFormatting: false));
 
                 await store
                     .Admin
@@ -151,14 +162,22 @@ namespace FastTests.Client.Indexing
                    .Admin
                    .SendAsync(new PutIndexesOperation(new[] { input }));
 
-                WaitForIndexing(store);
+                var mre = new ManualResetEvent(false);
+                var docDB = await GetDocumentDatabaseInstanceFor(store);
+                docDB.Changes.OnIndexChange += x =>
+                {
+                    if (x.Type == Raven.Client.Documents.Changes.IndexChangeTypes.BatchCompleted)
+                        mre.Set();
+                };
+
+                mre.WaitOne();
 
                 output = await store
                     .Admin
                     .SendAsync(new GetIndexOperation("Users_ByName"));
 
-                Assert.NotEqual(2, output.Etag);
-                Assert.True(input.Equals(output, compareIndexIds: false, ignoreFormatting: false));
+                Assert.NotEqual(4, output.Etag);
+                Assert.True(input.Equals(output, compareEtags: false, ignoreFormatting: false));
 
             }
         }

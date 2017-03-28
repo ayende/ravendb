@@ -95,5 +95,26 @@ namespace Raven.Server.Config.Settings
         {
             return FullPath;
         }
+
+        public override bool Equals(object obj)
+        {
+            if (ReferenceEquals(null, obj))
+                return false;
+
+            if (ReferenceEquals(this, obj))
+                return true;
+
+            var pathSetting = obj as PathSetting;
+
+            if (pathSetting != null)
+                return Equals(pathSetting);
+
+            return false;
+            
+        }
+        public bool Equals(PathSetting obj)
+        {
+            return this.FullPath == obj.FullPath;
+        }
     }
 }

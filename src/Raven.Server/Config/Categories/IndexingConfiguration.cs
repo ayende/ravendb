@@ -28,7 +28,7 @@ namespace Raven.Server.Config.Categories
             get
             {
                 if (_runInMemory == null)
-                    _runInMemory = _root.Core.RunInMemory;
+                    _runInMemory = _root?.Core.RunInMemory??true;
 
                 return _runInMemory.Value;
             }
@@ -50,7 +50,7 @@ namespace Raven.Server.Config.Categories
         {
             get
             {
-                return _indexStoragePath ?? (_indexStoragePath = _root.Core.DataDirectory.Combine("Indexes"));
+                return _indexStoragePath ?? (_indexStoragePath = _root?.Core.DataDirectory.Combine("Indexes")??new PathSetting("Indexes"));
             }
             protected set
             {
@@ -68,6 +68,7 @@ namespace Raven.Server.Config.Categories
         [ConfigurationEntry("Raven/Indexing/JournalsStoragePath")]
         public virtual PathSetting JournalsStoragePath { get; protected set; }
 
+        // todo: remove AdditionalStoragePaths from all logic
         [Description("List of paths separated by semicolon ';' where database will look for index when it loads.")]
         [DefaultValue(null)]
         [IndexUpdateType(IndexUpdateType.None)]

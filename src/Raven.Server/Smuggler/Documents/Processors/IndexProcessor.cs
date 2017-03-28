@@ -69,7 +69,8 @@ namespace Raven.Server.Smuggler.Documents.Processors
                             indexDefinitionField.Value.Analyzer = null;
                         }
                     }
-                    database.IndexStore.CreateIndex(indexDefinition);
+                    database.IndexStore.CreateIndex(
+                        new IndexLocalizedData(indexDefinition,0,database),existingIndex:null);
                     break;
                 default:
                     throw new NotSupportedException(indexType.ToString());

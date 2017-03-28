@@ -4,75 +4,85 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
-
+using Jint.Parser.Ast;
+using Raven.Client.Documents.Exceptions.Indexes;
+using Raven.Server.Documents.Indexes.Debugging;
 using Sparrow.Collections;
 
 namespace Raven.Server.Documents.Indexes
 {
-    public class CollectionOfIndexes : IEnumerable<Index>
+    public class CollectionOfIndexes : IEnumerable<CollectionOfIndexes.IndexPair>
     {
-        private readonly ConcurrentDictionary<long, Index> _indexesById = new ConcurrentDictionary<long, Index>();
-        private readonly ConcurrentDictionary<string, Index> _indexesByName = new ConcurrentDictionary<string, Index>(StringComparer.OrdinalIgnoreCase);
-        private readonly ConcurrentDictionary<string, ConcurrentSet<Index>> _indexesByCollection = new ConcurrentDictionary<string, ConcurrentSet<Index>>(StringComparer.OrdinalIgnoreCase);
-
-        public void Add(Index index)
+        public class IndexPair
         {
-            _indexesByName.TryAdd(index.Name, index); // this is fine if we can't do that, because we always add a side by side after current version
+            private Index _current;
+            private Index _sideBySide;
+            public Index Current{get { return _current; } set { _current = value; }}
+            public Index SideBySide { get { return _sideBySide; } set { _sideBySide = value; } }
+        }
+        private readonly ConcurrentDictionary<long, Index> _indexesById = new ConcurrentDictionary<long, Index>();
+        private readonly ConcurrentDictionary<string, IndexPair> _indexesByName = new ConcurrentDictionary<string, IndexPair>(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, ConcurrentDictionary<string,IndexPair>> _indexesByCollection = new ConcurrentDictionary<string, ConcurrentDictionary<string, IndexPair>>();
+
+        public void AddNewIndex(Index index)
+        {
+            bool indexExists = _indexesByName.ContainsKey(index.Name);
+            Debug.Assert(indexExists == false, $"Index {index.Name} already exists. Should not happen");
+            
+            var indexPair = new IndexPair {
+                Current = index
+            };
+
+            _indexesByName[index.Name] = indexPair;
+
             _indexesById.TryAdd(index.Etag, index);
+
 
             foreach (var collection in index.Definition.Collections)
             {
-                var indexes = _indexesByCollection.GetOrAdd(collection, s => new ConcurrentSet<Index>());
-                indexes.Add(index);
+                var indexesOnCollection = _indexesByCollection.GetOrAdd(collection, s => new ConcurrentDictionary<string, IndexPair>());
+
+                indexExists = indexesOnCollection.ContainsKey(index.Name);
+                Debug.Assert(indexExists == false);
+                indexesOnCollection.TryAdd(index.Name,indexPair);
             }
         }
 
-        public void ReplaceIndex(string name, Index oldIndex, Index newIndex)
+        public void SetSideBySideIndex(Index index)
         {
-            Debug.Assert(oldIndex == null || string.Equals(name, oldIndex.Name, StringComparison.OrdinalIgnoreCase));
-
-            _indexesByName.AddOrUpdate(name, oldIndex, (key, oldValue) => newIndex);
-
-            Index _;
-            _indexesByName.TryRemove(newIndex.Name, out _);
-
-            if (oldIndex == null)
-                return;
-
-            foreach (var collection in oldIndex.Definition.Collections)
-            {
-                ConcurrentSet<Index> indexes;
-                if (_indexesByCollection.TryGetValue(collection, out indexes) == false)
-                    continue;
-
-                indexes.TryRemove(oldIndex);
-            }
+            IndexPair indexPair;
+            bool indexExists = _indexesByName.TryGetValue(index.Name, out indexPair);
+            Debug.Assert(indexExists, $"Index {index.Name} does not exists. Should not happen");
+            
+            indexPair.SideBySide = index;
+            _indexesById.TryAdd(index.Etag, index);
         }
 
         public void RenameIndex(Index index, string oldName, string newName)
         {
+            // todo: not sure how to implement that yet
             throw new NotImplementedException();
             //_indexesByName.AddOrUpdate(newName, index, (key, oldValue) => index);
             //Index _;
             //_indexesByName.TryRemove(oldName, out _);
         }
 
-        public bool TryGetByName(string name, out Index index)
+        public bool TryGetByName(string name, out IndexPair indexpair)
         {
-            return _indexesByName.TryGetValue(name, out index);
+            return _indexesByName.TryGetValue(name, out indexpair);
         }
 
-        public IEnumerable<Index> GetForCollection(string collection)
+        public IEnumerable<IndexPair> GetForCollection(string collection)
         {
-            ConcurrentSet<Index> indexes;
+            ConcurrentDictionary<string,IndexPair> indexes;
 
             if (_indexesByCollection.TryGetValue(collection, out indexes) == false)
-                return Enumerable.Empty<Index>();
+                return Enumerable.Empty<IndexPair>();
 
-            return indexes;
+            return indexes.Values;
         }
         
-        public IEnumerator<Index> GetEnumerator()
+        public IEnumerator<IndexPair> GetEnumerator()
         {
             return _indexesByName.Values.GetEnumerator();
         }
@@ -89,24 +99,58 @@ namespace Raven.Server.Documents.Indexes
             return _indexesById.TryGetValue(id, out index);
         }
 
-        public bool TryRemoveById(long id, out Index index)
+        public bool TryRemoveById(long etag, out Index index)
         {
-            var result = _indexesById.TryRemove(id, out index);
+            var result = _indexesById.TryRemove(etag, out index);
             if (result == false)
                 return false;
-
-            _indexesByName.TryRemove(index.Name, out index);
-
-            foreach (var collection in index.Definition.Collections)
+            
+            if (_indexesByName.TryGetValue(index.Name, out IndexPair indexPair))
             {
-                ConcurrentSet<Index> indexes;
-                if (_indexesByCollection.TryGetValue(collection, out indexes) == false)
-                    continue;
+                if (indexPair.SideBySide == null && indexPair.Current?.Etag == etag)
+                {
+                    Debug.Assert(indexPair.Current.Etag == index.Etag);
+                    _indexesByName.TryRemove(index.Name, out indexPair);
+                    foreach (var collection in indexPair.Current.Collections)
+                    {
+                        ConcurrentDictionary<string, IndexPair> indexes;
+                        if (_indexesByCollection.TryGetValue(collection, out indexes)==false)
+                            continue;
 
-                indexes.TryRemove(index);
+                        indexes.TryRemove(index.Name, out IndexPair pair);
+                    }
+                }
+                else
+                {
+                    if (indexPair.Current.Etag == index.Etag)
+                    {
+                        // todo: this code path may be redundant, or maybe illegal?
+                        indexPair.Current= indexPair.SideBySide;
+                        indexPair.Current.IsSideBySide = false;
+                    }
+                    else
+                    {
+                        Debug.Assert(indexPair.SideBySide?.Etag == index.Etag);
+                        indexPair.SideBySide = null;
+                        
+                    }
+                }
             }
 
             return true;
+        }
+
+        public bool TryRemoveByName(string id, out IndexPair pair )
+        {
+            if (_indexesByName.TryRemove(id, out pair))
+            {
+                Index index;
+                if (pair.SideBySide != null)
+                    TryRemoveById(pair.SideBySide.Etag, index: out index);
+                TryRemoveById(pair.Current.Etag, out index);
+                return true;
+            }
+            return false;
         }
     }
 }

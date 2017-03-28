@@ -10,7 +10,7 @@ using DatabaseSmuggler = Raven.Server.Smuggler.Documents.DatabaseSmuggler;
 
 namespace SlowTests.Issues
 {
-    public class RavenDB_5998 : RavenLowLevelTestBase
+    public class RavenDB_5998 : RavenTestBase
     {
         [Theory]
         [InlineData("SlowTests.Smuggler.Northwind_3.5.35168.ravendbdump")]

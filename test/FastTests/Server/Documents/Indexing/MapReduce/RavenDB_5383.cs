@@ -10,7 +10,7 @@ using Xunit;
 
 namespace FastTests.Server.Documents.Indexing.MapReduce
 {
-    public class RavenDB_5383 : RavenLowLevelTestBase
+    public class RavenDB_5383 : RavenTestBase
     {
         [Theory]
         [InlineData(1)]
@@ -18,7 +18,7 @@ namespace FastTests.Server.Documents.Indexing.MapReduce
         {
             using (var database = CreateDocumentDatabase())
             {
-                using (var index = MapReduceIndex.CreateNew(new IndexDefinition()
+                using (var index = MapReduceIndex.CreateNew(new IndexLocalizedData( new IndexDefinition()
                 {
                     Name = "Users_ByCount_GroupByProduct",
                     Maps = { @"from order in docs.Orders
@@ -32,7 +32,7 @@ select new
     Count = g.Sum(x=> x.Count),
     Total = g.Sum(x=> x.Total)
 }",
-                }, database))
+                },0,database), database))
                 {
                     using (var context = DocumentsOperationContext.ShortTermSingleUse(database))
                     {

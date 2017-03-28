@@ -24,7 +24,6 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Static
         private readonly HashSet<CollectionName> _referencedCollections = new HashSet<CollectionName>(CollectionNameComparer.Instance);
 
         protected internal readonly StaticIndexBase _compiled;
-        private bool? _isSideBySide;
 
         private HandleReferences _handleReferences;
 
@@ -51,18 +50,18 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Static
 
         public override bool IsMultiMap => _compiled.Maps.Count > 1 || _compiled.Maps.Any(x => x.Value.Count > 1);
 
-        public static MapReduceIndex CreateNew(IndexDefinition definition, DocumentDatabase documentDatabase)
+        public static MapReduceIndex CreateNew(IndexLocalizedData localizedData, DocumentDatabase documentDatabase)
         {
-            var instance = CreateIndexInstance(definition);
+            var instance = CreateIndexInstance(localizedData.Definition);
             ValidateReduceResultsCollectionName(instance, documentDatabase);
 
             instance.Initialize(documentDatabase,
-                new SingleIndexConfiguration(definition.Configuration, documentDatabase.Configuration),
+                new SingleIndexConfiguration(localizedData, documentDatabase.Configuration),
                 documentDatabase.Configuration.PerformanceHints);
 
             return instance;
         }
-
+        
         private static void ValidateReduceResultsCollectionName(MapReduceIndex index, DocumentDatabase documentDatabase)
         {
             var outputReduceToCollection = index.Definition.OutputReduceToCollection;
@@ -126,11 +125,11 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Static
             return false;
         }
 
-        public static Index Open(StorageEnvironment environment, DocumentDatabase documentDatabase)
+        public static Index Open(StorageEnvironment environment, DocumentDatabase documentDatabase, bool isSideBySide)
         {
             var definition = MapIndexDefinition.Load(environment);
             var instance = CreateIndexInstance(definition);
-
+            instance.IsSideBySide = isSideBySide;
             instance.Initialize(environment, documentDatabase,
                 new SingleIndexConfiguration(definition.Configuration, documentDatabase.Configuration),
                 documentDatabase.Configuration.PerformanceHints);
@@ -138,14 +137,14 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Static
             return instance;
         }
 
-        public static void Update(Index index, IndexDefinition definition, DocumentDatabase documentDatabase)
+        public static void Update(Index index, IndexLocalizedData localizedData, DocumentDatabase documentDatabase)
         {
             var staticMapIndex = (MapReduceIndex)index;
             var staticIndex = staticMapIndex._compiled;
 
-            var staticMapIndexDefinition = new MapReduceIndexDefinition(definition, staticIndex.Maps.Keys.ToHashSet(), staticIndex.OutputFields,
+            var staticMapIndexDefinition = new MapReduceIndexDefinition(localizedData.Definition, staticIndex.Maps.Keys.ToHashSet(), staticIndex.OutputFields,
                 staticIndex.GroupByFields, staticIndex.HasDynamicFields);
-            staticMapIndex.Update(staticMapIndexDefinition, new SingleIndexConfiguration(definition.Configuration, documentDatabase.Configuration));
+            staticMapIndex.Update(staticMapIndexDefinition, new SingleIndexConfiguration(localizedData, documentDatabase.Configuration));
         }
 
         private static MapReduceIndex CreateIndexInstance(IndexDefinition definition)
@@ -155,7 +154,6 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Static
             var staticMapIndexDefinition = new MapReduceIndexDefinition(definition, staticIndex.Maps.Keys.ToHashSet(), staticIndex.OutputFields,
                 staticIndex.GroupByFields, staticIndex.HasDynamicFields);
             var instance = new MapReduceIndex(staticMapIndexDefinition, staticIndex);
-
             return instance;
         }
 
@@ -228,10 +226,7 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Static
 
         protected override bool ShouldReplace()
         {
-            if (_isSideBySide.HasValue == false)
-                _isSideBySide = Name.StartsWith(Constants.Documents.Indexing.SideBySideIndexNamePrefix, StringComparison.OrdinalIgnoreCase);
-
-            if (_isSideBySide == false)
+            if (IsSideBySide == false)
                 return false;
 
             DocumentsOperationContext databaseContext;
@@ -243,8 +238,9 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Static
                 using (databaseContext.OpenReadTransaction())
                 {
                     var canReplace = StaticIndexHelper.CanReplace(this, IsStale(databaseContext, indexContext), DocumentDatabase, databaseContext, indexContext);
-                    if (canReplace)
-                        _isSideBySide = null;
+                    // todo: see if we should substiture this logic
+                    //if (canReplace) 
+                    //    _isSideBySide = null;
 
                     return canReplace;
                 }

@@ -9,7 +9,7 @@ using Xunit;
 
 namespace FastTests.Issues
 {
-    public class RavenDB_5570 : RavenLowLevelTestBase
+    public class RavenDB_5570 : RavenTestBase
     {
         [Fact]
         public void Doing_PUT_without_commit_should_not_cause_NRE_on_subsequent_PUTs()

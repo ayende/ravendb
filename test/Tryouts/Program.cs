@@ -6,6 +6,8 @@ using Lucene.Net.Store;
 using SlowTests.Server.Rachis;
 using Sparrow.Logging;
 using Directory = System.IO.Directory;
+using FastTests.Client.Indexing;
+using Raven.Client.Util;
 
 namespace Tryouts
 {
@@ -15,18 +17,19 @@ namespace Tryouts
         {
             for (int i = 0; i < 100; i++)
             {
-                Console.WriteLine(i);
-                LoggingSource.Instance.SetupLogMode(LogMode.Information, "logs");
-                Parallel.For(0, 10, _ =>
+                using (var test = new StaticIndexesFromClient())
                 {
-                    using (var a = new BasicTests())
+                    try
                     {
-                        a.CanApplyCommitAcrossAllCluster(amount: 7).Wait();
+                        AsyncHelpers.RunSync(() =>
+                            test.Can_Put_And_Replace());
                     }
-                });
-                LoggingSource.Instance.SetupLogMode(LogMode.None, "logs");
-                Directory.Delete("logs", true);
-
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine(ex);
+                    }
+                    Console.WriteLine(i);
+                }
             }
         }
     }

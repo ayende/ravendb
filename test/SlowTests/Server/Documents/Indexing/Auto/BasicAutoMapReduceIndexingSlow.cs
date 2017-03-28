@@ -14,7 +14,7 @@ using Xunit;
 namespace SlowTests.Server.Documents.Indexing.Auto
 {
     [SuppressMessage("ReSharper", "ConsiderUsingConfigureAwait")]
-    public class BasicAutoMapReduceIndexingSlow : RavenLowLevelTestBase
+    public class BasicAutoMapReduceIndexingSlow : RavenTestBase
     {
 
         [Fact]

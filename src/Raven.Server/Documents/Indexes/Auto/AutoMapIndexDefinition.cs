@@ -9,8 +9,8 @@ namespace Raven.Server.Documents.Indexes.Auto
 {
     public class AutoMapIndexDefinition : IndexDefinitionBase
     {
-        public AutoMapIndexDefinition(string collection, IndexField[] fields)
-            : base(IndexNameFinder.FindMapIndexName(collection, fields), new HashSet<string> { collection }, IndexLockMode.Unlock, IndexPriority.Normal, fields)
+        public AutoMapIndexDefinition(string collection, IndexField[] fields, long etag = 0)
+            : base(IndexNameFinder.FindMapIndexName(collection, fields), etag, new HashSet<string> { collection }, IndexLockMode.Unlock, IndexPriority.Normal, fields)
         {
             if (string.IsNullOrEmpty(collection))
                 throw new ArgumentNullException(nameof(collection));
@@ -83,8 +83,9 @@ namespace Raven.Server.Documents.Indexes.Auto
             var priority = ReadPriority(reader);
             var collections = ReadCollections(reader);
             var fields = ReadMapFields(reader);
+            var etag = ReadEtag(reader);
 
-            return new AutoMapIndexDefinition(collections[0], fields)
+            return new AutoMapIndexDefinition(collections[0],fields, etag)
             {
                 LockMode = lockMode,
                 Priority = priority

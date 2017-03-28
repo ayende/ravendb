@@ -89,7 +89,7 @@ namespace Raven.Server.ServerWide
 
             while (index > Volatile.Read(ref _lastNotified))
             {
-                await task;
+                await task.ConfigureAwait(false);
                 task = timeout.HasValue ? _notifiedListeners.WaitAsync(timeout.Value) : _notifiedListeners.WaitAsync();
             }
         }
@@ -403,7 +403,7 @@ namespace Raven.Server.ServerWide
                 var updateCommand = JsonDeserializationCluster.UpdateDatabaseCommands[type](cmd);
                 try
                 {
-                    updateCommand.UpdateDatabaseRecord(databaseRecord);
+                    updateCommand.UpdateDatabaseRecord(databaseRecord,index);
                     doUpdate = true;
                 }
                 catch (Exception e)
@@ -625,20 +625,31 @@ namespace Raven.Server.ServerWide
             }
         }
 
-        public BlittableJsonReaderObject ReadLocal(TransactionOperationContext context, string name)
+        public unsafe BlittableJsonReaderObject ReadLocal(TransactionOperationContext context, string name)
         {
+            var table = context.Transaction.InnerTransaction.OpenTable(LocalSchema, Local);
             var dbKey = name.ToLowerInvariant();
             Slice key;
             using (Slice.From(context.Allocator, dbKey, out key))
             {
-                long etag;
-                return ReadInternal(context, context.Transaction.InnerTransaction.OpenTable(LocalSchema, Local), key, out etag);
+                TableValueReader reader;
+                if (table.ReadByKey(key, out reader) == false)
+                {
+                    return null;
+                }
+
+                int size;
+                var ptr = reader.Read(2, out size);
+                var doc = new BlittableJsonReaderObject(ptr, size, context);
+
+                return doc;
+                
             }
         }
 
         public unsafe void WriteLocal(TransactionOperationContext context, string name, BlittableJsonReaderObject value)
         {
-            var items = context.Transaction.InnerTransaction.OpenTable(ItemsSchema, Local);
+            var items = context.Transaction.InnerTransaction.OpenTable(LocalSchema, Local);
 
             Slice key;
             Slice loweredKey;
@@ -651,7 +662,7 @@ namespace Raven.Server.ServerWide
                     builder.Add(loweredKey);
                     builder.Add(key);
                     builder.Add(value.BasePointer, value.Size);
-
+                    
                     items.Set(builder);
                 }
             }
@@ -672,7 +683,7 @@ namespace Raven.Server.ServerWide
     public class EditVersioningCommand : UpdateDatabaseCommand
     {
         public VersioningConfiguration Configuration;
-        public override void UpdateDatabaseRecord(DatabaseRecord databaseRecord)
+        public override void UpdateDatabaseRecord(DatabaseRecord databaseRecord, long etag)
         {
             databaseRecord.VersioningConfiguration = Configuration;
         }
@@ -702,7 +713,7 @@ namespace Raven.Server.ServerWide
 
     public abstract class UpdateDatabaseCommand
     {
-        public abstract void UpdateDatabaseRecord(DatabaseRecord record);
+        public abstract void UpdateDatabaseRecord(DatabaseRecord record, long etag);
         public string DatabaseName { get; set; }
     }
 
@@ -711,8 +722,8 @@ namespace Raven.Server.ServerWide
     {
         public string TransformerName;
         public TransformerDefinition TransformerDefinition;
-        public override void UpdateDatabaseRecord(DatabaseRecord record)
-        {
+        public override void UpdateDatabaseRecord(DatabaseRecord record, long etag)
+        {            
             record.AddTransformer(TransformerDefinition);
         }
     }
@@ -721,7 +732,7 @@ namespace Raven.Server.ServerWide
     {
         public string TransformerName;
         public TransformerLockMode LockMode;
-        public override void UpdateDatabaseRecord(DatabaseRecord record)
+        public override void UpdateDatabaseRecord(DatabaseRecord record, long etag)
         {
             record.Transformers[TransformerName].LockMode = LockMode;
         }
@@ -730,7 +741,7 @@ namespace Raven.Server.ServerWide
     public class DeleteTransformerCommand : UpdateDatabaseCommand
     {
         public string TransformerName;
-        public override void UpdateDatabaseRecord(DatabaseRecord record)
+        public override void UpdateDatabaseRecord(DatabaseRecord record, long etag)
         {
             record.Transformers.Remove(TransformerName);
         }
@@ -738,11 +749,11 @@ namespace Raven.Server.ServerWide
 
     public class PutIndexCommand : UpdateDatabaseCommand
     {
-        public string IndexName;
         public IndexDefinition IndexDefiniiton;
-        public override void UpdateDatabaseRecord(DatabaseRecord record)
+        public override void UpdateDatabaseRecord(DatabaseRecord record, long etag)
         {
-            record.Indexes[IndexName] = IndexDefiniiton;
+            IndexDefiniiton.Etag = etag;
+            record.AddIndex(IndexDefiniiton);            
         }
     }
 
@@ -750,26 +761,21 @@ namespace Raven.Server.ServerWide
     {
         public string IndexName;
         public IndexLockMode LockMode;
-        public override void UpdateDatabaseRecord(DatabaseRecord record)
+        public override void UpdateDatabaseRecord(DatabaseRecord record, long etag)
         {
-            record.Indexes[IndexName].LockMode = LockMode;
+            IndexDefinition indexDefinition = record.Indexes[IndexName];
+            indexDefinition.Etag = etag;
+            indexDefinition.LockMode = LockMode;
         }
     }
 
     public class DeleteIndexCommand : UpdateDatabaseCommand
     {
         public string IndexName;
-        public override void UpdateDatabaseRecord(DatabaseRecord record)
+        public override void UpdateDatabaseRecord(DatabaseRecord record, long etag)
         {
             record.Indexes.Remove(IndexName);
         }
-    }
-
-    public enum DeletionInProgressStatus
-    {
-        No,
-        SoftDelete,
-        HardDelete
     }
 
     public class JsonDeserializationCluster : JsonDeserializationBase

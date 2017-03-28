@@ -70,6 +70,7 @@ namespace Raven.Server.Documents.Indexes
 
     public abstract class Index : IDocumentTombstoneAware, IDisposable
     {
+        internal bool IsSideBySide;
         private long _writeErrors;
 
         private long _criticalErrors;
@@ -157,24 +158,22 @@ namespace Raven.Server.Documents.Indexes
         {
             Type = type;
             Definition = definition;
+            IsSideBySide = false;
             Collections = new HashSet<string>(Definition.Collections, StringComparer.OrdinalIgnoreCase);
 
             if (Collections.Contains(Constants.Documents.Indexing.AllDocumentsCollection))
                 HandleAllDocs = true;
         }
 
-        public static Index Open(SingleIndexConfiguration configuration, DocumentDatabase documentDatabase)
+        public static Index Open(IndexLocalizedData IndexLocalizedData, DocumentDatabase documentDatabase, bool isSideBySide)
         {
             StorageEnvironment environment = null;
-
-            var path = configuration.StoragePath.ToFullPath();
-
-            var indexTempPath = configuration.TempPath?.ToFullPath();
-
-            var journalPath = configuration.JournalsStoragePath?.ToFullPath();
-
-            var options = StorageEnvironmentOptions.ForPath(indexPath, indexTempPath?.FullPath, journalPath?.FullPath,
-                documentDatabase.IoChanges);
+                        
+            var options = StorageEnvironmentOptions.ForPath(IndexLocalizedData.StorageFinalPath, 
+                IndexLocalizedData.TempFinalPath, 
+                IndexLocalizedData.JournalFinalPath,
+                documentDatabase.IoChanges,
+                documentDatabase.CatastrophicFailureNotification);
             try
             {
                 options.SchemaVersion = 1;
@@ -190,7 +189,7 @@ namespace Raven.Server.Documents.Indexes
                 catch (Exception e)
                 {
                     throw new IndexOpenException(
-                        $"Could not read index type from storage in '{path}'. This indicates index data file corruption.",
+                        $"Could not read index type from storage in '{IndexLocalizedData.StorageFinalPath}'. This indicates index data file corruption.",
                         e);
                 }
 
@@ -201,11 +200,11 @@ namespace Raven.Server.Documents.Indexes
                     case IndexType.AutoMapReduce:
                         return AutoMapReduceIndex.Open(environment, documentDatabase);
                     case IndexType.Map:
-                        return MapIndex.Open(environment, documentDatabase);
+                        return MapIndex.Open(environment, documentDatabase, isSideBySide);
                     case IndexType.MapReduce:
-                        return MapReduceIndex.Open(environment, documentDatabase);
+                        return MapReduceIndex.Open(environment, documentDatabase, isSideBySide);
                     default:
-                        throw new ArgumentException($"Uknown index type {type} for index at path {path}");
+                        throw new ArgumentException($"Uknown index type {type} for index at path {IndexLocalizedData.StorageFinalPath}");
                 }
             }
             catch (Exception e)
@@ -218,7 +217,7 @@ namespace Raven.Server.Documents.Indexes
                 if (e is IndexOpenException)
                     throw;
 
-                throw new IndexOpenException($"Could not open index from '{path}'.", e);
+                throw new IndexOpenException($"Could not open index from '{IndexLocalizedData.StorageFinalPath}'.", e);
             }
         }
 
@@ -273,19 +272,11 @@ namespace Raven.Server.Documents.Indexes
             {
                 if (_initialized)
                     throw new InvalidOperationException($"Index '{Name} ({Etag})' was already initialized.");
-
-                var name = IndexDefinitionBase.GetIndexNameSafeForFileSystem(Name);
-
-                var indexPath = configuration.StoragePath.Combine(name);
-
-                var indexTempPath = configuration.TempPath?.Combine(name);
-
-                var journalPath = configuration.JournalsStoragePath?.Combine(name);
-
+                
                 var options = configuration.RunInMemory
-                    ? StorageEnvironmentOptions.CreateMemoryOnly(indexPath.FullPath, indexTempPath?.FullPath,
+                    ? StorageEnvironmentOptions.CreateMemoryOnly(configuration.StoragePath.FullPath, configuration.TempPath?.FullPath,
                         documentDatabase.IoChanges, documentDatabase.CatastrophicFailureNotification)
-                    : StorageEnvironmentOptions.ForPath(indexPath.FullPath, indexTempPath?.FullPath, journalPath?.FullPath,
+                    : StorageEnvironmentOptions.ForPath(configuration.StoragePath.FullPath, configuration.TempPath?.FullPath, configuration.JournalsStoragePath?.FullPath,
                         documentDatabase.IoChanges, documentDatabase.CatastrophicFailureNotification);
 
                 options.SchemaVersion = 1;
@@ -686,14 +677,12 @@ namespace Raven.Server.Documents.Indexes
 
                                 if (ShouldReplace())
                                 {
-                                    var originalName = Name.Replace(Constants.Documents.Indexing.SideBySideIndexNamePrefix, string.Empty);
-
                                     // this can fail if the indexes lock is currently held, so we'll retry
                                     // however, we might be requested to shutdown, so we want to skip replacing
                                     // in this case, worst case scenario we'll handle this in the next batch
                                     while (_cts.IsCancellationRequested == false)
                                     {
-                                        if (DocumentDatabase.IndexStore.TryReplaceIndexes(originalName, Definition.Name))
+                                        if (DocumentDatabase.IndexStore.SwitchSideBySideIndexWithCurrent(Name))
                                             break;
                                     }
                                 }
@@ -1375,7 +1364,7 @@ namespace Raven.Server.Documents.Indexes
         {
             var stats = new IndexStats.MemoryStats();
 
-            var name = IndexDefinitionBase.GetIndexNameSafeForFileSystem(Name);
+            var name = IndexDefinitionBase.GetIndexPathEndSafeForFileSystem(Name,Etag);
 
             var indexPath = Configuration.StoragePath.Combine(name);
 
@@ -2183,7 +2172,7 @@ namespace Raven.Server.Documents.Indexes
 
                     Dispose();
 
-                    compactPath = Configuration.StoragePath.Combine(IndexDefinitionBase.GetIndexNameSafeForFileSystem(Name) + "_Compact");
+                    compactPath = Configuration.StoragePath.Combine("_Compact");
 
                     using (var compactOptions = (StorageEnvironmentOptions.DirectoryStorageEnvironmentOptions)
                         StorageEnvironmentOptions.ForPath(compactPath.FullPath, null, null, DocumentDatabase.IoChanges, DocumentDatabase.CatastrophicFailureNotification))

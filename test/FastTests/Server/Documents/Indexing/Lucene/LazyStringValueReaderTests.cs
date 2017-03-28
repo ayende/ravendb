@@ -8,7 +8,7 @@ using Xunit;
 
 namespace FastTests.Server.Documents.Indexing.Lucene
 {
-    public class LazyStringValueReaderTests : RavenLowLevelTestBase
+    public class LazyStringValueReaderTests : RavenTestBase
     {
         private readonly LazyStringReader _sut = new LazyStringReader();
         private readonly JsonOperationContext _ctx;

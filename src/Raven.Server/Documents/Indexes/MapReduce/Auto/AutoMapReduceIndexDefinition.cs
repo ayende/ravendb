@@ -12,8 +12,8 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Auto
     {
         public readonly Dictionary<string, IndexField> GroupByFields;
 
-        public AutoMapReduceIndexDefinition(string collection, IndexField[] mapFields, IndexField[] groupByFields)
-            : base(IndexNameFinder.FindMapReduceIndexName(collection, mapFields, groupByFields), new HashSet<string> { collection }, IndexLockMode.Unlock, IndexPriority.Normal, mapFields)
+        public AutoMapReduceIndexDefinition(string collection, IndexField[] mapFields, IndexField[] groupByFields, long etag = 0)
+            : base(IndexNameFinder.FindMapReduceIndexName(collection, mapFields, groupByFields),etag, new HashSet<string> { collection }, IndexLockMode.Unlock, IndexPriority.Normal, mapFields)
         {
             foreach (var field in mapFields)
             {
@@ -141,6 +141,7 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Auto
         {
             var lockMode = ReadLockMode(reader);
             var priority = ReadPriority(reader);
+            var etag = ReadEtag(reader);
             BlittableJsonReaderArray jsonArray;
 
             if(reader.TryGet(nameof(Collections), out jsonArray) == false)
@@ -212,7 +213,7 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Auto
                 groupByFields[i] = field;
             }
 
-            return new AutoMapReduceIndexDefinition(collection, mapFields, groupByFields)
+            return new AutoMapReduceIndexDefinition(collection, mapFields, groupByFields, etag)
             {
                 LockMode = lockMode,
                 Priority = priority

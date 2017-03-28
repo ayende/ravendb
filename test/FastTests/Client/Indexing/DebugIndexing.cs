@@ -85,7 +85,7 @@ namespace FastTests.Client.Indexing
                     .DatabasesLandlord
                     .TryGetOrCreateResourceStore(new StringSegment(store.DefaultDatabase));
 
-                var index = database.IndexStore.GetIndex(1);
+                var index = database.IndexStore.GetIndex(0);
 
                 var now = SystemTime.UtcNow;
                 index.CurrentlyRunningQueries.TryAdd(new ExecutingQueryInfo(now, query1, 10, OperationCancelToken.None));

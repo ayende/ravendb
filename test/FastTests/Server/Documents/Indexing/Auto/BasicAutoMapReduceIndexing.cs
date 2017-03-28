@@ -22,7 +22,7 @@ using Xunit;
 namespace FastTests.Server.Documents.Indexing.Auto
 {
     [SuppressMessage("ReSharper", "ConsiderUsingConfigureAwait")]
-    public class BasicAutoMapReduceIndexing : RavenLowLevelTestBase
+    public class BasicAutoMapReduceIndexing : RavenTestBase
     {
         [Fact]
         public async Task CanUseSimpleReduction()

@@ -14,7 +14,7 @@ using Xunit;
 
 namespace SlowTests.Issues
 {
-    public class RavenDB_3264 : RavenLowLevelTestBase
+    public class RavenDB_3264 : RavenTestBase
     {
         [Fact]
         public void PatcherCanOutputObjectsCorrectly()

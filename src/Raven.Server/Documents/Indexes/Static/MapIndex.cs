@@ -18,7 +18,7 @@ namespace Raven.Server.Documents.Indexes.Static
         private readonly HashSet<string> _referencedCollections = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         protected internal readonly StaticIndexBase _compiled;
-        private bool? _isSideBySide;
+        
 
         private HandleReferences _handleReferences;
 
@@ -99,10 +99,7 @@ namespace Raven.Server.Documents.Indexes.Static
 
         protected override bool ShouldReplace()
         {
-            if (_isSideBySide.HasValue == false)
-                _isSideBySide = Name.StartsWith(Constants.Documents.Indexing.SideBySideIndexNamePrefix, StringComparison.OrdinalIgnoreCase);
-
-            if (_isSideBySide == false)
+            if (IsSideBySide == false)
                 return false;
 
             DocumentsOperationContext databaseContext;
@@ -114,8 +111,9 @@ namespace Raven.Server.Documents.Indexes.Static
                 using (databaseContext.OpenReadTransaction())
                 {
                     var canReplace = StaticIndexHelper.CanReplace(this, IsStale(databaseContext, indexContext), DocumentDatabase, databaseContext, indexContext);
-                    if (canReplace)
-                        _isSideBySide = null;
+                    // todo: see if we should substiture this logic
+                    //if (canReplace)
+                    //    _isSideBySide = null;
 
                     return canReplace;
                 }
@@ -164,20 +162,22 @@ namespace Raven.Server.Documents.Indexes.Static
             }
         }
 
-        public static Index CreateNew(long etag, IndexDefinition definition, DocumentDatabase documentDatabase)
+        public static Index CreateNew(IndexLocalizedData indexLocalizedData, DocumentDatabase documentDatabase)
         {
-            var instance = CreateIndexInstance(definition);
+            var instance = CreateIndexInstance(indexLocalizedData.Definition);
+
             instance.Initialize(documentDatabase,
-                new SingleIndexConfiguration(definition.Configuration, documentDatabase.Configuration),
+                new SingleIndexConfiguration(indexLocalizedData, documentDatabase.Configuration),
                 documentDatabase.Configuration.PerformanceHints);
 
             return instance;
         }
 
-        public static Index Open(StorageEnvironment environment, DocumentDatabase documentDatabase)
+        public static Index Open(StorageEnvironment environment, DocumentDatabase documentDatabase, bool isSideBySide)
         {
             var definition = MapIndexDefinition.Load(environment);
             var instance = CreateIndexInstance(definition);
+            instance.IsSideBySide = isSideBySide;
 
             instance.Initialize(environment, documentDatabase,
                 new SingleIndexConfiguration(definition.Configuration, documentDatabase.Configuration),
@@ -186,13 +186,13 @@ namespace Raven.Server.Documents.Indexes.Static
             return instance;
         }
 
-        public static void Update(Index index, IndexDefinition definition, DocumentDatabase documentDatabase)
+        public static void Update(Index index, IndexLocalizedData localizedData, DocumentDatabase documentDatabase)
         {
             var staticMapIndex = (MapIndex)index;
             var staticIndex = staticMapIndex._compiled;
 
-            var staticMapIndexDefinition = new MapIndexDefinition(definition, staticIndex.Maps.Keys.ToHashSet(), staticIndex.OutputFields, staticIndex.HasDynamicFields);
-            staticMapIndex.Update(staticMapIndexDefinition, new SingleIndexConfiguration(definition.Configuration, documentDatabase.Configuration));
+            var staticMapIndexDefinition = new MapIndexDefinition(localizedData.Definition, staticIndex.Maps.Keys.ToHashSet(), staticIndex.OutputFields, staticIndex.HasDynamicFields);
+            staticMapIndex.Update(staticMapIndexDefinition, new SingleIndexConfiguration(localizedData, documentDatabase.Configuration));
         }
 
         private static MapIndex CreateIndexInstance(IndexDefinition definition)

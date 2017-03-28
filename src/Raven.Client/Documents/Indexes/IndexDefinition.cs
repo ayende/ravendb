@@ -58,7 +58,7 @@ namespace Raven.Client.Documents.Indexes
         /// Index reduce function
         /// </summary>
         public string Reduce { get; set; }
-
+        
         public Dictionary<string, IndexFieldOptions> Fields
         {
             get { return _fields ?? (_fields = new Dictionary<string, IndexFieldOptions>()); }
@@ -148,9 +148,9 @@ namespace Raven.Client.Documents.Indexes
         /// Equals the specified other.
         /// </summary>
         /// <param name="other">The other.</param>
-        /// <param name="compareIndexIds">allow caller to choose whether to include the index Id in the comparison</param>
+        /// <param name="compareEtags">allow caller to choose whether to include the index Id in the comparison</param>
         /// <param name="ignoreFormatting">Comparision ignores formatting in both of the definitions</param>
-        public bool Equals(IndexDefinition other, bool compareIndexIds = true, bool ignoreFormatting = false)
+        public bool Equals(IndexDefinition other, bool compareEtags = true, bool ignoreFormatting = false)
         {
             if (ReferenceEquals(null, other))
                 return false;
@@ -163,7 +163,7 @@ namespace Raven.Client.Documents.Indexes
             if (result == IndexDefinitionCompareDifferences.None)
                 return true;
 
-            if (compareIndexIds && result.HasFlag(IndexDefinitionCompareDifferences.Etag))
+            if (compareEtags && result.HasFlag(IndexDefinitionCompareDifferences.Etag))
                 return false;
 
             var mapsReduceEquals = ignoreFormatting

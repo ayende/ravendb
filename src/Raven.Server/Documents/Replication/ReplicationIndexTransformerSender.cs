@@ -67,22 +67,7 @@ namespace Raven.Server.Documents.Replication
                                         switch (item.Type)
                                         {
                                             case IndexEntryType.Index:
-                                                var index = _parent._database.IndexStore.GetIndex(item.Id);
-                                                if (index == null) //precaution
-                                                    throw new InvalidDataException(
-                                                        $"Index with name {item.Name} has metadata, but is not at the index store. This is not supposed to happen and is likely a bug.");
-
-                                                try
-                                                {
-                                                    IndexProcessor.Export(writer, index, configurationContext, false);
-                                                }
-                                                catch (InvalidOperationException e)
-                                                {
-                                                    if (_log.IsInfoEnabled)
-                                                        _log.Info(
-                                                            $"Failed to export index definition for replication. Index name = {item.Name}",
-                                                            e);
-                                                }
+                                               //noop
                                                 break;
                                             case IndexEntryType.Transformer:
                                                // noop

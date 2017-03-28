@@ -20,7 +20,7 @@ using Xunit;
 
 namespace FastTests.Server.Documents.Indexing.Static
 {
-    public class CollisionsOfReduceKeyHashes : RavenLowLevelTestBase
+    public class CollisionsOfReduceKeyHashes : RavenTestBase
     {
         [Theory]
         [InlineData(5, new[] { "Israel", "Poland" })]
@@ -66,7 +66,7 @@ namespace FastTests.Server.Documents.Indexing.Static
         {
             using (var database = CreateDocumentDatabase())
             {
-                var index = MapReduceIndex.CreateNew(new IndexDefinition()
+                var index = MapReduceIndex.CreateNew(new IndexLocalizedData(new IndexDefinition()
                 {
                     Name = "Users_ByCount_GroupByLocation",
                     Maps = { "from user in docs.Users select new { user.Location, Count = 1 }" },
@@ -78,7 +78,7 @@ namespace FastTests.Server.Documents.Indexing.Static
                         {"Location", new IndexFieldOptions {Storage = FieldStorage.Yes}},
                         {"Count", new IndexFieldOptions {Storage = FieldStorage.Yes, Sort = SortOptions.Numeric}}
                     }
-                }, database);
+                },0,database), database);
 
                 var mapReduceContext = new MapReduceIndexingContext();
                 using (var contextPool = new TransactionContextPool(database.DocumentsStorage.Environment))

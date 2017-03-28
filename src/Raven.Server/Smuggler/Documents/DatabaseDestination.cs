@@ -99,7 +99,9 @@ namespace Raven.Server.Smuggler.Documents
 
             public void WriteIndex(IndexDefinition indexDefinition)
             {
-                _database.IndexStore.CreateIndex(indexDefinition);
+                _database.IndexStore.CreateIndex(
+                    new IndexLocalizedData(indexDefinition, 0, _database),
+                    existingIndex:null);
             }
 
             public void Dispose()

@@ -14,7 +14,7 @@ using Xunit;
 
 namespace FastTests.Server.Documents.Indexing.MapReduce
 {
-    public class RavenDB_6041 : RavenLowLevelTestBase
+    public class RavenDB_6041 : RavenTestBase
     {
         [Theory]
         [InlineData(1)]
@@ -23,7 +23,7 @@ namespace FastTests.Server.Documents.Indexing.MapReduce
         {
             using (var database = CreateDocumentDatabase())
             {
-                using (var index = MapReduceIndex.CreateNew(new IndexDefinition()
+                using (var index = MapReduceIndex.CreateNew(new IndexLocalizedData(new IndexDefinition()
                 {
                     Name = "Users_ByLocation",
                     Maps = { @"from user in docs.Users
@@ -35,7 +35,7 @@ select new
     Location = g.Key,
     Count = g.Sum(x=> x.Count)
 }",
-                }, database))
+                },0,database), database))
                 {
                     using (var context = DocumentsOperationContext.ShortTermSingleUse(database))
                     {

@@ -14,6 +14,8 @@ using Raven.Server.Documents;
 using Raven.Server.ServerWide;
 using Raven.Server.Utils;
 using Sparrow.Collections;
+using Sparrow.Json;
+using Sparrow.Json.Parsing;
 using Sparrow.Logging;
 using Sparrow.Platform;
 
@@ -112,7 +114,7 @@ namespace FastTests
 
         private readonly object _getNewServerSync = new object();
 
-        protected RavenServer GetNewServer(IDictionary<string, string> customSettings = null, bool deletePrevious = true, bool runInMemory = true, string partialPath = null)
+        public RavenServer GetNewServer(IDictionary<string, string> customSettings = null, bool deletePrevious = true, bool runInMemory = true, string partialPath = null)
         {
             lock (_getNewServerSync)
             {
@@ -189,7 +191,10 @@ namespace FastTests
 
             return path;
         }
-
+        protected static BlittableJsonReaderObject CreateDocument(JsonOperationContext context, string key, DynamicJsonValue value)
+        {
+            return context.ReadObject(value, key, BlittableJsonDocumentBuilder.UsageMode.ToDisk);
+        }
         protected abstract void Dispose(ExceptionAggregator exceptionAggregator);
 
         public virtual void Dispose()

@@ -74,6 +74,7 @@ namespace Raven.Client.Documents.Operations
 
     public class IndexInformation
     {
+        // todo: show indexes in pairs: current and side-by-side
         public long Etag { get; set; }
 
         public string Name { get; set; }

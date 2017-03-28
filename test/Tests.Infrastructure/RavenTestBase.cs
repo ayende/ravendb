@@ -15,6 +15,7 @@ using Raven.Client.Documents.Session;
 using Raven.Client.Extensions;
 using Raven.Client.Server;
 using Raven.Client.Server.Operations;
+using Raven.Client.Util;
 using Raven.Server;
 using Raven.Server.Config;
 using Raven.Server.Config.Attributes;
@@ -37,6 +38,7 @@ namespace FastTests
         {
             return Server.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(store.DefaultDatabase);
         }
+
 
         private readonly object _getDocumentStoreSync = new object();
 
@@ -291,6 +293,11 @@ namespace FastTests
             session.Advanced.RequestExecutor.Execute(putCommand, session.Advanced.Context);
         }
 
+        protected DocumentDatabase CreateDocumentDatabase([CallerMemberName] string caller = null, bool runInMemory = true, string dataDirectory = null, Action<RavenConfiguration> modifyConfiguration = null)
+        {
+            return AsyncHelpers.RunSync(()=>GetDocumentDatabaseInstanceFor(GetDocumentStore()));
+        }
+
         protected Task PutCommandAsync(IAsyncDocumentSession session, object entity, string id, 
             bool skipMetadata = false, CancellationToken token = default(CancellationToken))
         {
@@ -329,5 +336,7 @@ namespace FastTests
                 exceptionAggregator.Execute(store.Dispose);
             CreatedStores.Clear();
         }
+
+
     }
 }

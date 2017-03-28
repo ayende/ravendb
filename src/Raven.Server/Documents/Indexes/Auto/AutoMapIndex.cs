@@ -16,6 +16,7 @@ namespace Raven.Server.Documents.Indexes.Auto
 
         public static AutoMapIndex CreateNew(AutoMapIndexDefinition definition, DocumentDatabase documentDatabase)
         {
+            // todo: treat auto indexes in raft
             var instance = new AutoMapIndex(definition);
             instance.Initialize(documentDatabase, documentDatabase.Configuration.Indexing, documentDatabase.Configuration.PerformanceHints);
 

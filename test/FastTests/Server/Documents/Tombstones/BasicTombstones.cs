@@ -13,7 +13,7 @@ using Xunit;
 
 namespace FastTests.Server.Documents.Tombstones
 {
-    public class BasicTombstones : RavenLowLevelTestBase
+    public class BasicTombstones : RavenTestBase
     {
         [Fact]
         public void CanCreateAndGetTombstone()
