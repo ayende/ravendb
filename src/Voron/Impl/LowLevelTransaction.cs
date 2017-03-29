@@ -59,12 +59,14 @@ namespace Voron.Impl
             public FastDictionary<long, PageFromScratchBuffer, NumericEqualityStructComparer> ScratchPagesTablePool = new FastDictionary<long, PageFromScratchBuffer, NumericEqualityStructComparer>(new NumericEqualityStructComparer());
             public FastDictionary<long, long, NumericEqualityStructComparer> DirtyOverflowPagesPool = new FastDictionary<long, long, NumericEqualityStructComparer>(new NumericEqualityStructComparer());
             public HashSet<long> DirtyPagesPool = new HashSet<long>(NumericEqualityComparer.Instance);
+            public HashSet<long> PreviousDirtyPagesPool = new HashSet<long>(NumericEqualityComparer.Instance);
 
             public void Reset()
             {
                 ScratchPagesTablePool.Clear();
                 DirtyOverflowPagesPool.Clear();
                 DirtyPagesPool.Clear();
+                PreviousDirtyPagesPool.Clear();
                 TableValueBuilder.Reset();
             }
 
@@ -126,8 +128,7 @@ namespace Voron.Impl
 
         public ulong Hash => _txHeader->Hash;
 
-        private LowLevelTransaction(
-            LowLevelTransaction previous)
+        private LowLevelTransaction(LowLevelTransaction previous)
         {
             // this is meant to be used with transaction merging only
             // so it makes a lot of assumptions about the usage scenario
@@ -173,11 +174,21 @@ namespace Voron.Impl
             // because we are going to need to scratch buffer pool
             _dirtyOverflowPages = previous._dirtyOverflowPages;
             _dirtyOverflowPages.Clear();
-            _dirtyPages = previous._dirtyPages;
-            _dirtyPages.Clear();
 
             // intentionally copying it, we need to reuse the translation table here
             _scratchPagesTable = previous._scratchPagesTable;
+
+            foreach (var grandParentDirty in _env.WriteTransactionPool.PreviousDirtyPagesPool)
+            {
+                // if it was modified by both grand parent and parent, we need to keep 
+                // it is the scratch pages table
+                if(previous._dirtyPages.Contains(grandParentDirty))
+                    continue;
+                _scratchPagesTable.Remove(grandParentDirty);
+            }
+            _dirtyPages = _env.WriteTransactionPool.PreviousDirtyPagesPool;
+            _dirtyPages.Clear();
+            _env.WriteTransactionPool.PreviousDirtyPagesPool = previous._dirtyPages;
 
             _freedPages = new HashSet<long>(NumericEqualityComparer.Instance);
             _unusedScratchPages = new List<PageFromScratchBuffer>();
@@ -702,6 +713,7 @@ namespace Voron.Impl
         }
 
         internal Task AsyncCommit;
+        private LowLevelTransaction _asyncCommitNextTransaction;
 
         /// <summary>
         /// This begins an async commit and starts a new transaction immediately.
@@ -712,6 +724,8 @@ namespace Voron.Impl
         {
             if (Flags != TransactionFlags.ReadWrite)
                 ThrowReadTranscationCannotDoAsyncCommit();
+            if (_asyncCommitNextTransaction != null)
+                ThrowAsyncCommitAlreadyCalled();
 
             // we have to check the state before we complete the transaction
             // because that would change whatever we need to write to the journal
@@ -720,6 +734,7 @@ namespace Voron.Impl
             CommitStage1_CompleteTransaction();
 
             var nextTx = new LowLevelTransaction(this);
+            _asyncCommitNextTransaction = nextTx;
             AsyncCommit = writeToJournalIsRequired
                   ? Task.Run(() => { CommitStage2_WriteToJournal(); })
                   : Task.CompletedTask;
@@ -727,9 +742,9 @@ namespace Voron.Impl
             try
             {
                 _env.IncrementUsageOnNewTransaction();
-                _env.WriteTransactionStarted();
                 _env.ActiveTransactions.Add(nextTx);
-                
+                _env.WriteTransactionStarted();
+
                 return nextTx;
             }
             catch (Exception)
@@ -745,6 +760,11 @@ namespace Voron.Impl
 
                 throw;
             }
+        }
+
+        private static void ThrowAsyncCommitAlreadyCalled()
+        {
+            throw new InvalidOperationException("Cannot start a new async commit because one was already started");
         }
 
         private static void ThrowReadTranscationCannotDoAsyncCommit()
@@ -834,6 +854,20 @@ namespace Voron.Impl
 
                 Committed = true;
                 _env.TransactionAfterCommit(this);
+
+                if (_asyncCommitNextTransaction != null)
+                {
+                    var old = _asyncCommitNextTransaction.JournalFiles;
+                    _asyncCommitNextTransaction.JournalFiles = _env.Journal.Files;
+                    foreach (var journalFile in _asyncCommitNextTransaction.JournalFiles)
+                    {
+                        journalFile.AddRef();
+                    }
+                    foreach (var journalFile in old)
+                    {
+                        journalFile.Release();
+                    }
+                }
             }
             catch (Exception e)
             {

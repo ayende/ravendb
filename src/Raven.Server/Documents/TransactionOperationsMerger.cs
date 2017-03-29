@@ -440,7 +440,7 @@ namespace Raven.Server.Documents
                     var modifiedSize = llt.NumberOfModifiedPages * Constants.Storage.PageSize;
                     if (modifiedSize > 4 * Constants.Size.Megabyte)
                     {
-                        break;
+                        return PendingOperations.CompletedAll;
                     }
                 }
 
@@ -449,7 +449,10 @@ namespace Raven.Server.Documents
             {
                 _log.Info($"Merged {pendingOps.Count} operations in {sp.Elapsed} and there is no more work");
             }
-            return PendingOperations.CompletedAll;
+            if(context.Transaction.ModifiedSystemDocuments)
+                return PendingOperations.ModifiedsSystemDocuments;
+
+            return GetPendingOperationsStatus(context, pendingOps.Count == 0);
         }
 
         private bool TryGetNextOperation(Task previousOperation, out MergedTransactionCommand op)
@@ -485,7 +488,7 @@ namespace Raven.Server.Documents
             }
         }
 
-        private PendingOperations GetPendingOperationsStatus(DocumentsOperationContext context)
+        private PendingOperations GetPendingOperationsStatus(DocumentsOperationContext context, bool forceCompletion = false)
         {
             if (sizeof(int) == IntPtr.Size || _parent.Configuration.Storage.ForceUsing32BitsPager) // this optimization is disabled for 32 bits
                 return PendingOperations.CompletedAll;
@@ -498,9 +501,10 @@ namespace Raven.Server.Documents
                 // kind of work
                 return PendingOperations.ModifiedsSystemDocuments;
 
-            return _operations.Count == 0
-                ? PendingOperations.CompletedAll
-                : PendingOperations.HasMore;
+            if (forceCompletion)
+                return PendingOperations.CompletedAll;
+
+            return PendingOperations.HasMore;
         }
 
         private void NotifyOnThreadPool(MergedTransactionCommand cmd)

@@ -24,7 +24,7 @@ namespace FastTests.Voron
 
             using (var tx = Env.WriteTransaction())
             {
-                Env.ScratchBufferPool.Free(allocate.ScratchFileNumber, allocate.PositionInScratchBuffer, tx.LowLevelTransaction);
+                Env.ScratchBufferPool.Free(allocate.ScratchFileNumber, allocate.PositionInScratchBuffer, tx.LowLevelTransaction.Id);
                 tx.Commit();
             }
 

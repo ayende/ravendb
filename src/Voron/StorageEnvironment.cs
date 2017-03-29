@@ -78,6 +78,7 @@ namespace Voron
         private EndOfDiskSpaceEvent _endOfDiskSpace;
         internal int SizeOfUnflushedTransactionsInJournalFile;
 
+        public long LastSyncCounter;
         public long LastSyncTimeInTicks = DateTime.MinValue.Ticks;
 
         internal DateTime LastFlushTime;
@@ -601,9 +602,11 @@ namespace Voron
                 throw new InvalidOperationException("A write transaction is already opened by this thread");
             }
 
-            throw new TimeoutException("Waited for " + wait +
-                                       " for transaction write lock, but could not get it, the tx is currenly owned by " +
-                                       $"thread {copy.Id} - {copy.Name}");
+            var message = $"Waited for {wait} for transaction write lock, but could not get it";
+            if (copy != null)
+                message += @", the tx is currenly owned by thread {copy.Id} - {copy.Name}";
+
+            throw new TimeoutException(message);
         }
 
         public long CurrentReadTransactionId => Volatile.Read(ref _transactionsCounter);
@@ -650,6 +653,7 @@ namespace Voron
 
             using (PreventNewReadTransactions())
             {
+                Journal.Applicator.OnTransactionCommitted(tx);
                 ScratchBufferPool.UpdateCacheForPagerStatesOfAllScratches();
                 Journal.UpdateCacheForJournalSnapshots();
 
