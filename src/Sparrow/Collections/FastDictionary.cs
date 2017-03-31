@@ -352,6 +352,7 @@ namespace Sparrow.Collections
 
                 uint nHash;
                 int numProbes = 1;
+                int capacity = _capacity;
                 do
                 {
                     nHash = entries[bucket].Hash;
@@ -361,9 +362,13 @@ namespace Sparrow.Collections
                     bucket = (bucket + numProbes) & _capacityMask;
                     numProbes++;
 
-                    //Debug.Assert(numProbes < 100);
-                    if (numProbes >= _capacity)
+#if DEBUG
+                    if (numProbes >= 100)
+                        throw new InvalidOperationException("The hash function used for this object is not good enough. The distribution is causing clusters and causing huge slowdowns.");
+#else
+                    if (numProbes >= capacity)
                         break;
+#endif                
                 }
                 while (nHash != KUnusedHash);
 
@@ -521,7 +526,7 @@ namespace Sparrow.Collections
             int bucket = hash & _capacityMask;
 
             var entries = _entries;
-
+            int capacity = _capacity;
             uint uhash = (uint)hash;
             int numProbes = 1; // how many times we've probed
 
@@ -535,9 +540,13 @@ namespace Sparrow.Collections
                 bucket = ((bucket + numProbes) & _capacityMask);
                 numProbes++;
 
-                //Debug.Assert(numProbes < 100);
-                if (numProbes >= _capacity)
+#if DEBUG       
+                if (numProbes >= 100)
+                    throw new InvalidOperationException("The hash function used for this object is not good enough. The distribution is causing clusters and causing huge slowdowns.");
+#else
+                if (numProbes >= capacity)
                     break;
+#endif                
             }
             while (nHash != KUnusedHash);
 
