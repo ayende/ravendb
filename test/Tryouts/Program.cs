@@ -21,9 +21,9 @@ namespace Tryouts
             for (int i = 0; i < 1000; i++)
             {
                 Console.WriteLine(i);
-                using (var a = new FastTests.Server.Replication.ReplicationTombstoneTests())
+                using (var a = new SlowTests.SlowTests.Issues.RavenDB_1280())
                 {
-                    a.Tombstone_should_replicate_in_master_master_cycle();
+                    a.Referenced_Docs_Are_Indexed_During_Heavy_Writing();
                 }
             }
         }

@@ -277,7 +277,7 @@ namespace Raven.Server.Documents
                 while (true)
                 {
                     if (_log.IsInfoEnabled)
-                        _log.Info($"More pending operations than can handle quickly, started async commit and proceeding concurrently, has {_operations.Count} additional operations");
+                        _log.Info($"BeginAsyncCommit on {previous.InnerTransaction.LowLevelTransaction.Id} with {_operations.Count} additional operations pending");
                     try
                     {
                         context.Transaction = previous.BeginAsyncCommitAndStartNewTransaction();
@@ -369,6 +369,9 @@ namespace Raven.Server.Documents
             try
             {
                 previous.EndAsyncCommit();
+                if (_log.IsInfoEnabled)
+                    _log.Info($"EndAsyncCommit on {previous.InnerTransaction.LowLevelTransaction.Id}");
+
                 NotifyOnThreadPool(previousPendingOps);
             }
             catch (Exception e)

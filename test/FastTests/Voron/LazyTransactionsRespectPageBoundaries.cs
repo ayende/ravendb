@@ -1,4 +1,5 @@
 ﻿using Voron;
+using Voron.Impl.Journal;
 using Voron.Impl.Scratch;
 using Xunit;
 
@@ -58,7 +59,10 @@ namespace FastTests.Voron
 
             // and now we force them to sync
             Env.FlushLogToDataFile();
-            Env.Journal.Applicator.SyncDataFile();
+            using (var op = new WriteAheadJournal.JournalApplicator.SyncOperation(Env.Journal.Applicator))
+            {
+                op.SyncDataFile();
+            }
         }
     }
 

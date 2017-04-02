@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Runtime.ExceptionServices;
 using System.Threading;
 using Sparrow.Logging;
+using Voron.Impl.Journal;
 
 namespace Voron
 {
@@ -169,7 +170,10 @@ namespace Voron
 
             try
             {
-                req.Env.Journal.Applicator.SyncDataFile();
+                using (var operation = new WriteAheadJournal.JournalApplicator.SyncOperation(req.Env.Journal.Applicator))
+                {
+                    operation.SyncDataFile();
+                }
             }
             catch (Exception e)
             {
