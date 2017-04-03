@@ -56,20 +56,20 @@ namespace Voron.Impl
 #endif
             public TableValueBuilder TableValueBuilder = new TableValueBuilder();
 
-            public Dictionary<long, PageFromScratchBuffer> ScratchPagesTablePool = new Dictionary<long, PageFromScratchBuffer>(new NumericEqualityStructComparer());
+            public int ScratchPagesTablePoolIndex = 0;
+            public Dictionary<long, PageFromScratchBuffer> ScratchPagesTablePool2 = new Dictionary<long, PageFromScratchBuffer>(new NumericEqualityStructComparer());
+            public Dictionary<long, PageFromScratchBuffer> ScratchPagesTablePool1 = new Dictionary<long, PageFromScratchBuffer>(new NumericEqualityStructComparer());
             public FastDictionary<long, long, NumericEqualityStructComparer> DirtyOverflowPagesPool = new FastDictionary<long, long, NumericEqualityStructComparer>(new NumericEqualityStructComparer());
             public HashSet<long> DirtyPagesPool = new HashSet<long>(NumericEqualityComparer.Instance);
-            public HashSet<long> PreviousDirtyPagesPool = new HashSet<long>(NumericEqualityComparer.Instance);
 
             public void Reset()
             {
-                ScratchPagesTablePool.Clear();
+                ScratchPagesTablePool2.Clear();
+                ScratchPagesTablePool1.Clear();
                 DirtyOverflowPagesPool.Clear();
                 DirtyPagesPool.Clear();
-                PreviousDirtyPagesPool.Clear();
                 TableValueBuilder.Reset();
             }
-
         }
 
         // BEGIN: Structures that are safe to pool.
@@ -175,20 +175,19 @@ namespace Voron.Impl
             _dirtyOverflowPages = previous._dirtyOverflowPages;
             _dirtyOverflowPages.Clear();
 
-            // intentionally copying it, we need to reuse the translation table here
-            _scratchPagesTable = previous._scratchPagesTable;
+            _scratchPagesTable = _env.WriteTransactionPool.ScratchPagesTablePool2;
 
-            foreach (var grandParentDirty in _env.WriteTransactionPool.PreviousDirtyPagesPool)
+            foreach (var kvp in previous._scratchPagesTable)
             {
-                // if it was modified by both grand parent and parent, we need to keep 
-                // it is the scratch pages table
-                if(previous._dirtyPages.Contains(grandParentDirty))
-                    continue;
-                _scratchPagesTable.Remove(grandParentDirty);
+                if (previous._dirtyPages.Contains(kvp.Key))
+                    _scratchPagesTable.Add(kvp.Key, kvp.Value);
             }
-            _dirtyPages = _env.WriteTransactionPool.PreviousDirtyPagesPool;
+            previous._scratchPagesTable.Clear();
+            _env.WriteTransactionPool.ScratchPagesTablePool1 = _scratchPagesTable;
+            _env.WriteTransactionPool.ScratchPagesTablePool2 = previous._scratchPagesTable;
+
+            _dirtyPages = previous._dirtyPages;
             _dirtyPages.Clear();
-            _env.WriteTransactionPool.PreviousDirtyPagesPool = previous._dirtyPages;
 
             _freedPages = new HashSet<long>(NumericEqualityComparer.Instance);
             _unusedScratchPages = new List<PageFromScratchBuffer>();
@@ -249,7 +248,7 @@ namespace Voron.Impl
             }
             _env.WriteTransactionPool.Reset();
             _dirtyOverflowPages = _env.WriteTransactionPool.DirtyOverflowPagesPool;
-            _scratchPagesTable = _env.WriteTransactionPool.ScratchPagesTablePool;
+            _scratchPagesTable = _env.WriteTransactionPool.ScratchPagesTablePool1;
             _dirtyPages = _env.WriteTransactionPool.DirtyPagesPool;
             _freedPages = new HashSet<long>(NumericEqualityComparer.Instance);
             _unusedScratchPages = new List<PageFromScratchBuffer>();
@@ -786,7 +785,6 @@ namespace Voron.Impl
             }
 
             AsyncCommit.Wait();
-
             CommitStage3_DisposeTransactionResources();
             OnCommit?.Invoke(this);
         }

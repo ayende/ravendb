@@ -13,6 +13,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.ExceptionServices;
 using System.Threading;
+using System.Threading.Tasks;
 using Sparrow.Compression;
 using Sparrow.Logging;
 using Sparrow.Utils;
@@ -436,6 +437,7 @@ namespace Voron.Impl.Journal
             private bool _ignoreLockAlreadyTaken;
             private long _totalWrittenButUnsyncedBytes;
             private Action<LowLevelTransaction> _updateJournalStateAfterFlush;
+            private Task _pendingSync = Task.CompletedTask;
 
             public void OnTransactionCommitted(LowLevelTransaction tx)
             {
@@ -581,7 +583,8 @@ namespace Voron.Impl.Journal
                     {
                         var operation = new SyncOperation(this);
                         operation.GatherInformationToStartSync();
-                        if(ThreadPool.QueueUserWorkItem(state => ((SyncOperation)state).CompleteSync(), operation) == false)
+                        _pendingSync = operation.Task;
+                        if (ThreadPool.QueueUserWorkItem(state => ((SyncOperation)state).CompleteSync(), operation) == false)
                         {
                             operation.CompleteSync();
                         }
@@ -606,7 +609,6 @@ namespace Voron.Impl.Journal
                 // the idea here is that even though we need to run the journal through its state update under the transaction lock
                 // we don't actually have to do that in our own transaction, what we'll do is to setup things so if there is a running
                 // write transaction, we'll piggy back on its commit to complete our process, without interrupting its work
-
                 _waj._env.FlushInProgressLock.EnterWriteLock();
                 try
                 {
@@ -818,6 +820,7 @@ namespace Voron.Impl.Journal
                 private readonly List<KeyValuePair<long, JournalFile>> journalsToDelete;
                 bool _flushLockTaken ;
                 private TransactionHeader _transactionHeader;
+                private TaskCompletionSource<object> _tcs = new TaskCompletionSource<object>();
 
                 public SyncOperation(JournalApplicator parent)
                 {
@@ -831,6 +834,8 @@ namespace Voron.Impl.Journal
                     _transactionHeader = new TransactionHeader();
                 }
 
+                public Task Task => _tcs.Task;
+
                 public void SyncDataFile()
                 {
                     GatherInformationToStartSync();
@@ -842,11 +847,22 @@ namespace Voron.Impl.Journal
 
                 public void CompleteSync()
                 {
-                    using (this)
+                    try
                     {
-                        CallPagerSync();
+                        using (this)
+                        {
+                            if (_parent._waj._env.Disposed == false)// not already disposed / disposing
+                            {
+                                CallPagerSync();
 
-                        UpdateDatabaseStateAfterSync();
+                                UpdateDatabaseStateAfterSync();
+                            }
+                            _tcs.TrySetResult(null);
+                        }
+                    }
+                    catch (Exception e)
+                    {
+                        _tcs.TrySetException(e);
                     }
                 }
 
@@ -1097,6 +1113,7 @@ namespace Voron.Impl.Journal
                     // and we will need them on a next database recovery
                     journalFile.Value.Release();
                 }
+                _pendingSync.Wait();
             }
 
             public bool IsCurrentThreadInFlushOperation => Monitor.IsEntered(_flushingLock);
