@@ -1113,7 +1113,18 @@ namespace Voron.Impl.Journal
                     // and we will need them on a next database recovery
                     journalFile.Value.Release();
                 }
-                _pendingSync.Wait();
+
+                try
+                {
+                    _pendingSync.Wait();
+                }
+                catch (AggregateException)
+                {
+                    if (_waj._env.Disposed)
+                        return;
+
+                    throw;
+                }
             }
 
             public bool IsCurrentThreadInFlushOperation => Monitor.IsEntered(_flushingLock);

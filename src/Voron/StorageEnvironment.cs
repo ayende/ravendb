@@ -413,9 +413,9 @@ namespace Voron
                 var errors = new List<Exception>();
                 foreach (var disposable in new IDisposable[]
                 {
+                    _journal,
                     _headerAccessor,
                     _scratchBufferPool,
-                    _journal,
                     _decompressionBuffers,
                     _options.OwnsPagers ? _options : null
                 }.Concat(_tempPagesPool))
