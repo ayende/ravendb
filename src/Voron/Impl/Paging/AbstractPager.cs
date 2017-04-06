@@ -140,7 +140,7 @@ namespace Voron.Impl.Paging
             if (pageNumber > NumberOfAllocatedPages || pageNumber < 0)
                 ThrowOnInvalidPageNumber(pageNumber, tx?.Environment);
 
-            var state = pagerState ?? _pagerState;
+            var state = pagerState ?? _pagerState;            
 
             tx?.EnsurePagerStateReference(state);
 

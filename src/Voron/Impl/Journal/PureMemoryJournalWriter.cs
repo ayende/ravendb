@@ -9,6 +9,7 @@ namespace Voron.Impl.Journal
 {
     public unsafe class PureMemoryJournalWriter : IJournalWriter
     {
+        private readonly StorageEnvironmentOptions.PureMemoryStorageEnvironmentOptions _parent;
         private readonly string _name;
         private long _journalSize;
         private int _refs;
@@ -16,8 +17,9 @@ namespace Voron.Impl.Journal
 
         public override string ToString() => _name;
 
-        public PureMemoryJournalWriter(string name, long journalSize)
+        public PureMemoryJournalWriter(StorageEnvironmentOptions.PureMemoryStorageEnvironmentOptions parent, string name, long journalSize)
         {
+            _parent = parent;
             _name = name;
             _journalSize = journalSize;
             _ptr = (byte*)Marshal.AllocHGlobal((IntPtr)_journalSize);
@@ -61,7 +63,7 @@ namespace Voron.Impl.Journal
 
         public AbstractPager CreatePager()
         {
-            throw new NotImplementedException();
+            return new PureMemoryPager(_parent, _name, _ptr, _journalSize);
         }
 
         public bool Read(byte* buffer, long numOfBytes, long offsetInFile)

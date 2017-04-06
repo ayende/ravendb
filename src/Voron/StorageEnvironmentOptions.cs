@@ -663,7 +663,7 @@ namespace Voron
                 var guid = Guid.NewGuid();
                 var filename = $"ravendb-{Process.GetCurrentProcess().Id}-{_instanceId}-{name}-{guid}";
 
-                value = new PureMemoryJournalWriter(filename, journalSize);
+                value = new PureMemoryJournalWriter(this, filename, journalSize);
 
                 _logs[name] = value;
                 return value;

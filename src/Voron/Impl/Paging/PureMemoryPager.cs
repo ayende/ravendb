@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using Sparrow;
+using Sparrow.Collections;
+using Sparrow.Collections.LockFree;
 using Sparrow.Platform;
 using Sparrow.Platform.Posix;
 using Sparrow.Platform.Win32;
@@ -14,11 +16,28 @@ namespace Voron.Impl.Paging
     public unsafe class PureMemoryPager : AbstractPager
     {
         private long _totalAllocationSize;
+        private bool _memoryBelongsToSomeoneElse;
 
         public PureMemoryPager(StorageEnvironmentOptions options, string name) : base(options)
         {
+            
             FileName = name;
-            SetPagerState(CreatePagerState(4 * Constants.Size.Megabyte));
+            SetPagerState(CreatePagerState(4 * Constants.Storage.PageSize));
+        }
+
+        public PureMemoryPager(StorageEnvironmentOptions options, string name, byte*ptr, long size) : base(options)
+        {
+            _memoryBelongsToSomeoneElse = true;
+            FileName = name;
+            SetPagerState(new PagerState(this)
+            {
+                MapBase = ptr,
+                AllocationInfos = new[] { new PagerState.AllocationInfo
+                {
+                    BaseAddress = ptr,
+                    Size = size
+                } }
+            });
         }
 
         private PagerState CreatePagerState(long sizeInBytes)
@@ -28,16 +47,18 @@ namespace Voron.Impl.Paging
             NumberOfAllocatedPages = _totalAllocationSize / Constants.Storage.PageSize;
             if (ptr == null)
                 throw new OutOfMemoryException("Could not allocate any longer");
-            var allocationInfo = new PagerState.AllocationInfo
-            {
-                BaseAddress = ptr,
-                Size = sizeInBytes
-            };
 
             var newPager = new PagerState(this)
             {
                 MapBase = ptr,
-                AllocationInfos = new[] { allocationInfo }
+                AllocationInfos = new[] 
+                {
+                    new PagerState.AllocationInfo
+                    {
+                        BaseAddress = ptr,
+                        Size = sizeInBytes
+                    }
+                }
             };
             return newPager;
         }
@@ -70,13 +91,23 @@ namespace Voron.Impl.Paging
 
         protected override PagerState AllocateMorePages(long newLength)
         {
-            if (newLength <= _totalAllocationSize)
-                return null;
-            var pagerState = CreatePagerState(newLength);
+            lock (this)
+            {
+                if (newLength <= _totalAllocationSize)
+                    return null;
+                var pagerState = CreatePagerState(newLength);
 
-            Memory.Copy(pagerState.MapBase, PagerState.MapBase, PagerState.AllocationInfos[0].Size);
+                Memory.Copy(pagerState.MapBase, PagerState.MapBase, PagerState.AllocationInfos[0].Size);
 
-            return pagerState;
+                //in this pager we will always have only one pager state
+                //not sure about this, but from what I see,
+                //one of the issues is that when ScratchBufferFile::Allocate() is run, 
+                //there is old pagerState in the pager, and not the newly allocated one,
+                //and thus AcquirePage gets invalid pointer
+                SetPagerState(pagerState);
+
+                return pagerState;
+            }
         }
 
         public override string ToString()
@@ -86,13 +117,16 @@ namespace Voron.Impl.Paging
 
         public override void ReleaseAllocationInfo(byte* baseAddress, long size)
         {
+            if (_memoryBelongsToSomeoneElse)
+                return;
             if (PlatformDetails.RunningOnPosix)
             {
                 if(Syscall.munmap((IntPtr)baseAddress, (UIntPtr)size)!= 0)
                     throw new InvalidOperationException("Could not free memory", new Win32Exception(Marshal.GetLastWin32Error()));
                 return;
             }
-            if (Win32MemoryProtectMethods.VirtualFree(baseAddress, (UIntPtr)size, Win32MemoryProtectMethods.FreeType.MEM_RELEASE) == false)
+
+            if (Win32MemoryProtectMethods.VirtualFree(baseAddress, UIntPtr.Zero, Win32MemoryProtectMethods.FreeType.MEM_RELEASE) == false)
                 throw new InvalidOperationException("Could not free memory", new Win32Exception(Marshal.GetLastWin32Error()));
         }
 
