@@ -5,6 +5,7 @@ using Newtonsoft.Json.Linq;
 using Raven.Client;
 using Raven.Client.Documents.Indexes;
 using Raven.Client.Documents.Subscriptions;
+using Raven.Server.Documents.Indexes;
 using Raven.Server.ServerWide.Context;
 using Sparrow.Json.Parsing;
 using Xunit;
@@ -12,7 +13,7 @@ using Voron.Impl.Backup;
 
 namespace FastTests.Voron.Backups
 {
-    public class BackupToOneZipFile : RavenLowLevelTestBase
+    public class BackupToOneZipFile : RavenTestBase
     {
         [Fact]
         public void FullBackupToOneZipFile()
@@ -35,18 +36,18 @@ namespace FastTests.Voron.Backups
                 var reader = context.Read(stream, "docs/1");
                 database.SubscriptionStorage.CreateSubscription(reader);
 
-                database.IndexStore.CreateIndex(new IndexDefinition()
+                database.IndexStore.CreateIndex(new IndexLocalizedData(new IndexDefinition()
                 {
                     Name = "Users_ByName",
                     Maps = { "from user in docs.Users select new { user.Name }" },
                     Type = IndexType.Map
-                });
-                database.IndexStore.CreateIndex(new IndexDefinition()
+                }, 0, database));
+                database.IndexStore.CreateIndex(new IndexLocalizedData(new IndexDefinition()
                 {
                     Name = "Users_ByName2",
                     Maps = { "from user in docs.Users select new { user.Name }" },
                     Type = IndexType.Map
-                });
+                }, 0, database));
 
                 using (var tx = context.OpenWriteTransaction())
                 {
@@ -117,12 +118,12 @@ namespace FastTests.Voron.Backups
                     var reader = context.Read(stream, "docs/1");
                     database.SubscriptionStorage.CreateSubscription(reader);
 
-                    database.IndexStore.CreateIndex(new IndexDefinition()
+                    database.IndexStore.CreateIndex(new IndexLocalizedData(new IndexDefinition()
                     {
                         Name = "Users_ByName",
                         Maps = { "from user in docs.Users select new { user.Name }" },
                         Type = IndexType.Map
-                    });
+                    },0,database));
 
                     foreach (var index in database.IndexStore.GetIndexes())
                     {
@@ -158,12 +159,12 @@ namespace FastTests.Voron.Backups
                         string.Format("voron-test.{0}-incremental-backup.zip", 0)));
 
 
-                    database.IndexStore.CreateIndex(new IndexDefinition()
+                    database.IndexStore.CreateIndex(new IndexLocalizedData(new IndexDefinition()
                     {
                         Name = "Users_ByName2",
                         Maps = { "from user in docs.Users select new { user.Name }" },
                         Type = IndexType.Map
-                    });
+                    },0,database));
 
                     foreach (var index in database.IndexStore.GetIndexes())
                     {

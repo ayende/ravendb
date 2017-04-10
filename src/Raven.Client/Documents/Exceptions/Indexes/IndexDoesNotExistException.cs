@@ -43,7 +43,7 @@ namespace Raven.Client.Documents.Exceptions.Indexes
             throw new IndexDoesNotExistException($"There is no index with '{indexName}' name.");
         }
 
-        public static IndexDoesNotExistException ThrowFor(int indexId)
+        public static IndexDoesNotExistException ThrowFor(long indexId)
         {
             throw new IndexDoesNotExistException($"There is no index with '{indexId}' id.");
         }

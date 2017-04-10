@@ -17,6 +17,7 @@ using Raven.Server.Documents.Indexes.Static;
 using Raven.Server.Documents.Queries;
 using Raven.Server.Json;
 using Raven.Server.Routing;
+using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 using Sparrow.Extensions;
 using Raven.Server.Utils;
@@ -33,19 +34,53 @@ namespace Raven.Server.Documents.Handlers
             DocumentsOperationContext context;
             using (ContextPool.AllocateOperationContext(out context))
             {
-                var createdIndexes = new List<KeyValuePair<string, int>>();
-                var tuple = await context.ParseArrayToMemoryAsync(RequestBodyStream(), "Indexes", BlittableJsonDocumentBuilder.UsageMode.None);
-                using (tuple.Item2)
+                var tuple = await context.ParseArrayToMemoryAsync(RequestBodyStream(), "Indexes", BlittableJsonDocumentBuilder.UsageMode.None).ConfigureAwait(false);
+                var indexes = tuple.array;
+                var indexTaskAndDefinitionsTuples = new List<(Task<long> putIndexTask,  IndexDefinition definition)>(indexes.Length);
+
+                if (indexes.Length == 0)
                 {
-                    foreach (var indexToAdd in tuple.Item1)
+                    throw new InvalidOperationException("At least one index must be specified when calling PUT /indexes, but none was.");
+                }
+
+                using (tuple.disposeArray)
+                {
+                    foreach (var indexToAdd in indexes)
                     {
                         var indexDefinition = JsonDeserializationServer.IndexDefinition((BlittableJsonReaderObject)indexToAdd);
-
+                 
                         if (indexDefinition.Maps == null || indexDefinition.Maps.Count == 0)
                             throw new ArgumentException("Index must have a 'Maps' fields");
-                        var indexId = Database.IndexStore.CreateIndex(indexDefinition);
-                        createdIndexes.Add(new KeyValuePair<string, int>(indexDefinition.Name, indexId));
+                        
+                        using (var putTransfomerCommand = context.ReadObject(new DynamicJsonValue
+                        {
+                            ["Type"] = nameof(PutIndexCommand),
+                            [nameof(PutIndexCommand.IndexDefiniiton)] = indexToAdd,
+                            [nameof(PutIndexCommand.DatabaseName)] = Database.Name,
+                        }, "put-transformer-cmd"))
+                        {
+                            indexTaskAndDefinitionsTuples.Add( (ServerStore.SendToLeaderAsync(putTransfomerCommand), indexDefinition) );
+                        }
                     }
+
+                    long lastIndex = 0;
+
+                    Exception operationException = null;
+                    try
+                    {
+                        var results = 
+                            await Task.WhenAll(indexTaskAndDefinitionsTuples.Select(x=>x.putIndexTask)).ConfigureAwait(false);
+                        lastIndex = results.Last();
+                    }
+                    catch (Exception e)
+                    {
+                        operationException = e;
+                    }
+                    
+                    if (operationException != null)
+                        throw new InvalidOperationException("Failed to put indexes", operationException);
+
+                    await ServerStore.Cluster.WaitForIndexNotification(lastIndex).ConfigureAwait(false);
                 }
 
                 HttpContext.Response.StatusCode = (int)HttpStatusCode.Created;
@@ -54,16 +89,16 @@ namespace Raven.Server.Documents.Handlers
                 {
                     writer.WriteStartObject();
 
-                    writer.WriteResults(context, createdIndexes, (w, c, index) =>
+                    writer.WriteResults(context, indexTaskAndDefinitionsTuples, (w, c, index) =>
                     {
                         w.WriteStartObject();
-                        w.WritePropertyName(nameof(PutIndexResult.IndexId));
-                        w.WriteInteger(index.Value);
+                        w.WritePropertyName(nameof(PutIndexResult.Etag));
+                        w.WriteInteger(index.putIndexTask.Result);
 
                         w.WriteComma();
 
                         w.WritePropertyName(nameof(PutIndexResult.Index));
-                        w.WriteString(index.Key);
+                        w.WriteString(index.definition.Name);
                         w.WriteEndObject();
                     });
 
@@ -76,20 +111,10 @@ namespace Raven.Server.Documents.Handlers
         public Task Replace()
         {
             var name = GetQueryStringValueAndAssertIfSingleAndNotEmpty("name");
-            var replacementName = Constants.Documents.Indexing.SideBySideIndexNamePrefix + name;
-
-            var oldIndex = Database.IndexStore.GetIndex(name);
-            var newIndex = Database.IndexStore.GetIndex(replacementName);
-
-            if (oldIndex == null && newIndex == null)
-                throw new IndexDoesNotExistException($"Could not find '{name}' and '{replacementName}' indexes.");
-
-            if (newIndex == null)
-                throw new IndexDoesNotExistException($"Could not find side-by-side index for '{name}'.");
 
             while (Database.DatabaseShutdown.IsCancellationRequested == false)
             {
-                if (Database.IndexStore.TryReplaceIndexes(name, newIndex.Name))
+                if (Database.IndexStore.SwitchSideBySideIndexWithCurrent(name))
                     break;
             }
 
@@ -170,6 +195,7 @@ namespace Raven.Server.Documents.Handlers
         [RavenAction("/databases/*/indexes/rename", "POST")]
         public Task Rename()
         {
+            throw new NotSupportedException("index renaming is not supported");
             var name = GetQueryStringValueAndAssertIfSingleAndNotEmpty("name");
             var newName = GetQueryStringValueAndAssertIfSingleAndNotEmpty("newName");
 
@@ -397,15 +423,31 @@ namespace Raven.Server.Documents.Handlers
         }
 
         [RavenAction("/databases/*/indexes", "DELETE")]
-        public Task Delete()
+        public async Task Delete()
         {
             var name = GetQueryStringValueAndAssertIfSingleAndNotEmpty("name");
+            long index;
+            using (ContextPool.AllocateOperationContext(out JsonOperationContext context))
+            {
+                
+                using (var putTransfomerCommand = context.ReadObject(new DynamicJsonValue
+                {
+                    ["Type"] = nameof(DeleteIndexCommand),
+                    [nameof(DeleteIndexCommand.IndexName)] = name,
+                    [nameof(PutIndexCommand.DatabaseName)] = Database.Name,
+                }, "delete-index-cmd"))
+                {
+                    index = await ServerStore.SendToLeaderAsync(putTransfomerCommand);
+                    
+                }
+            }
+
+            await ServerStore.Cluster.WaitForIndexNotification(index);
 
             HttpContext.Response.StatusCode = Database.IndexStore.TryDeleteIndexIfExists(name)
                 ? (int)HttpStatusCode.NoContent
                 : (int)HttpStatusCode.NotFound;
 
-            return Task.CompletedTask;
         }
 
         [RavenAction("/databases/*/indexes/c-sharp-index-definition", "GET")]
@@ -683,7 +725,7 @@ namespace Raven.Server.Documents.Handlers
                 .Select(x => new IndexPerformanceStats
                 {
                     IndexName = x.Name,
-                    IndexId = x.IndexId,
+                    Etag = x.Etag,
                     Performance = x.GetIndexingPerformance()
                 })
                 .ToArray();
@@ -749,7 +791,7 @@ namespace Raven.Server.Documents.Handlers
             if (names.Count == 0)
                 indexes = Database.IndexStore
                     .GetIndexes()
-                    .OrderBy(x => x.IndexId);
+                    .OrderBy(x => x.Etag);
             else
             {
                 indexes = Database.IndexStore

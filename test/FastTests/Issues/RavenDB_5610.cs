@@ -1,11 +1,15 @@
 ﻿using Raven.Client.Documents.Indexes;
+using Raven.Client.Documents.Operations.Indexes;
+using Raven.Client.Util;
 using Raven.Server.Config;
 using Raven.Server.Documents.Indexes;
+using System.Linq;
+using System.Threading;
 using Xunit;
 
 namespace FastTests.Issues
 {
-    public class RavenDB_5610 : RavenLowLevelTestBase
+    public class RavenDB_5610 : RavenTestBase
     {
         [Fact]
         public void UpdateType()
@@ -15,16 +19,16 @@ namespace FastTests.Issues
                 var indexDefinition = CreateIndexDefinition();
                 indexDefinition.Configuration[RavenConfiguration.GetKey(x => x.Indexing.MapTimeout)] = "33";
 
-                Assert.Equal(1, database.IndexStore.CreateIndex(indexDefinition));
+                Assert.Equal(0, database.IndexStore.CreateIndex(new IndexLocalizedData(indexDefinition, 0, database)));
 
-                var index = database.IndexStore.GetIndex(1);
+                var index = database.IndexStore.GetIndexes().First();
 
                 var options = database.IndexStore.GetIndexCreationOptions(indexDefinition, index);
                 Assert.Equal(IndexCreationOptions.Noop, options);
 
                 indexDefinition = CreateIndexDefinition();
                 indexDefinition.Configuration[RavenConfiguration.GetKey(x => x.Indexing.MapTimeout)] = "30";
-
+                
                 options = database.IndexStore.GetIndexCreationOptions(indexDefinition, index);
                 Assert.Equal(IndexCreationOptions.UpdateWithoutUpdatingCompiledIndex, options);
 
@@ -47,28 +51,33 @@ namespace FastTests.Issues
         public void WillUpdate()
         {
             var path = NewDataPath();
-            using (var database = CreateDocumentDatabase(runInMemory: false, dataDirectory: path))
+            using (var server = GetNewServer(runInMemory: false, partialPath: "CanPersist"))
+            using (var store = GetDocumentStore(modifyName: x => "CanPersistDB", defaultServer: server, deleteDatabaseWhenDisposed: false, modifyDatabaseRecord: x => x.Settings["Raven/RunInMemory"] = "False"))
             {
                 var indexDefinition = CreateIndexDefinition();
                 indexDefinition.Configuration[RavenConfiguration.GetKey(x => x.Indexing.MapTimeout)] = "33";
 
-                Assert.Equal(1, database.IndexStore.CreateIndex(indexDefinition));
+                store.Admin.Send(new PutIndexesOperation(indexDefinition));                
 
-                var index = database.IndexStore.GetIndex(1);
-                Assert.Equal(33, index.Configuration.MapTimeout.AsTimeSpan.TotalSeconds);
+                var index = store.Admin.Send(new GetIndexOperation(indexDefinition.Name));
+                Assert.Equal("33", index.Configuration["Raven/Indexing/MapTimeoutInSec"]);
 
                 indexDefinition = CreateIndexDefinition();
+                
                 indexDefinition.Configuration[RavenConfiguration.GetKey(x => x.Indexing.MapTimeout)] = "30";
 
-                Assert.Equal(1, database.IndexStore.CreateIndex(indexDefinition));
+                store.Admin.Send(new PutIndexesOperation(indexDefinition));
+                                      
+                index = store.Admin.Send(new GetIndexesOperation(0,10)).Last();
 
-                index = database.IndexStore.GetIndex(1);
-                Assert.Equal(30, index.Configuration.MapTimeout.AsTimeSpan.TotalSeconds);
+                Assert.Equal("30", index.Configuration["Raven/Indexing/MapTimeoutInSec"]);
+                
             }
 
-            using (var database = CreateDocumentDatabase(runInMemory: false, dataDirectory: path))
+            using (var server = GetNewServer(runInMemory: false, deletePrevious: false, partialPath: "CanPersist"))
             {
-                var index = database.IndexStore.GetIndex(1);
+                var database = AsyncHelpers.RunSync(() => server.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore("CanPersistDB"));
+                var index = database.IndexStore.GetIndexes().First();
                 Assert.Equal(30, index.Configuration.MapTimeout.AsTimeSpan.TotalSeconds);
             }
         }

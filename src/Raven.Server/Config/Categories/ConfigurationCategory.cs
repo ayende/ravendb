@@ -71,7 +71,7 @@ namespace Raven.Server.Config.Categories
                 foreach (var entry in property.GetCustomAttributes<ConfigurationEntryAttribute>())
                 {
                     var settingValue = getSetting(entry.Key);
-                    var value = settingValue.CurrentValue ?? settingValue.ServerValue;
+                    var value = settingValue?.CurrentValue ?? settingValue?.ServerValue;
                     setDefaultValueOfNeeded &= entry.SetDefaultValueIfNeeded;
 
                     if (value == null)
@@ -115,8 +115,10 @@ namespace Raven.Server.Config.Categories
                                 {
                                     var paths = value.Split(';');
 
-                                    if (settingValue.CurrentValue != null)
+                                    if (settingValue.CurrentValue != null && serverDataDir!= null)
+                                    {
                                         property.SetValue(this, paths.Select(x => new PathSetting(Convert.ToString(x), serverDataDir)).ToArray());
+                                    }
                                     else
                                         property.SetValue(this, paths.Select(x => new PathSetting(Convert.ToString(x), type, resourceName)).ToArray());
                                 }

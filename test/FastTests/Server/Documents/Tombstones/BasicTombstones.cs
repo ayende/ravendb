@@ -13,7 +13,7 @@ using Xunit;
 
 namespace FastTests.Server.Documents.Tombstones
 {
-    public class BasicTombstones : RavenLowLevelTestBase
+    public class BasicTombstones : RavenTestBase
     {
         [Fact]
         public void CanCreateAndGetTombstone()
@@ -72,7 +72,7 @@ namespace FastTests.Server.Documents.Tombstones
         {
             using (var database = CreateDocumentDatabase())
             {
-                using (var index = AutoMapIndex.CreateNew(1, new AutoMapIndexDefinition("Users", new[] { new IndexField
+                using (var index = AutoMapIndex.CreateNew(new AutoMapIndexDefinition("Users", new[] { new IndexField
                 {
                     Name = "Name",
                     Highlighted = false,

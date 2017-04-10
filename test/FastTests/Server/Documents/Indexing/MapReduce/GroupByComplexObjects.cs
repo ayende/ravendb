@@ -15,14 +15,14 @@ using Xunit;
 
 namespace FastTests.Server.Documents.Indexing.MapReduce
 {
-    public class GroupByComplexObjects : RavenLowLevelTestBase
+    public class GroupByComplexObjects : RavenTestBase
     {
         [Fact]
         public async Task By_single_complex_object()
         {
             using (var database = CreateDocumentDatabase())
             {
-                using (var index = MapReduceIndex.CreateNew(1, new IndexDefinition()
+                using (var index = MapReduceIndex.CreateNew(new IndexLocalizedData(new IndexDefinition()
                 {
                     Name = "Users_ByCount_GroupByLocation",
                     Maps = { @"from user in docs.Users select new { 
@@ -40,7 +40,7 @@ namespace FastTests.Server.Documents.Indexing.MapReduce
                             Indexing = FieldIndexing.Analyzed,
                         } }
                     }
-                }, database))
+                }, 0, database), database))
                 {
                     DocumentQueryResult queryResult;
                     using (var context = DocumentsOperationContext.ShortTermSingleUse(database))
@@ -78,7 +78,7 @@ namespace FastTests.Server.Documents.Indexing.MapReduce
         {
             using (var database = CreateDocumentDatabase())
             {
-                using (var index = MapReduceIndex.CreateNew(1, new IndexDefinition()
+                using (var index = MapReduceIndex.CreateNew(new IndexLocalizedData(new IndexDefinition()
                 {
                     Name = "Users_GroupByHobbies",
                     Maps = { @"from user in docs.Users select new { 
@@ -97,7 +97,7 @@ namespace FastTests.Server.Documents.Indexing.MapReduce
                             }
                         }
                     }
-                }, database))
+                }, 0, database), database))
                 {
                     DocumentQueryResult queryResult;
                     using (var context = DocumentsOperationContext.ShortTermSingleUse(database))
@@ -141,7 +141,7 @@ namespace FastTests.Server.Documents.Indexing.MapReduce
         {
             using (var database = CreateDocumentDatabase())
             {
-                using (var index = MapReduceIndex.CreateNew(1, new IndexDefinition()
+                using (var index = MapReduceIndex.CreateNew(new IndexLocalizedData(new IndexDefinition()
                 {
                     Name = "Users_GroupByLocationAndResidenceAddress",
                     Maps = { @"from user in docs.Users select new { 
@@ -167,7 +167,7 @@ namespace FastTests.Server.Documents.Indexing.MapReduce
                             }
                         }
                     }
-                }, database))
+                }, 0, database), database))
                 {
                     DocumentQueryResult queryResult;
                     using (var context = DocumentsOperationContext.ShortTermSingleUse(database))
@@ -211,7 +211,7 @@ namespace FastTests.Server.Documents.Indexing.MapReduce
         {
             using (var database = CreateDocumentDatabase())
             {
-                using (var index = MapReduceIndex.CreateNew(1, new IndexDefinition()
+                using (var index = MapReduceIndex.CreateNew(new IndexLocalizedData(new IndexDefinition()
                 {
                     Name = "Users_GroupByLocationAndResidenceAddress",
                     Maps = { @"from user in docs.Users select new { 
@@ -237,7 +237,7 @@ namespace FastTests.Server.Documents.Indexing.MapReduce
                             }
                         }
                     }
-                }, database))
+                },0,database), database))
                 {
                     DocumentQueryResult queryResult;
                     using (var context = DocumentsOperationContext.ShortTermSingleUse(database))

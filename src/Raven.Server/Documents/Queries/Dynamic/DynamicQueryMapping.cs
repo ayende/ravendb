@@ -37,6 +37,7 @@ namespace Raven.Server.Documents.Queries.Dynamic
         {
             if (IsMapReduce == false)
             {
+                // todo: make sure we resolve the index etag issue
                 return new AutoMapIndexDefinition(ForCollection, MapFields.Select(field =>
                     new IndexField
                     {
@@ -53,6 +54,7 @@ namespace Raven.Server.Documents.Queries.Dynamic
             if (GroupByFields.Length == 0)
                 throw new InvalidOperationException("Invalid dynamic map-reduce query mapping. There is no group by field specified.");
 
+            // todo: make sure we resolve the index etag issue
             return new AutoMapReduceIndexDefinition(ForCollection, MapFields.Select(field =>
                     new IndexField
                     {

@@ -18,7 +18,7 @@ using Xunit;
 
 namespace FastTests
 {
-    public abstract class RavenLowLevelTestBase : IDisposable
+    public abstract class RavenLowLevelTestBase2 : IDisposable
     {
         private readonly ConcurrentSet<string> _pathsToDelete = new ConcurrentSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -30,7 +30,7 @@ namespace FastTests
 
         private static int _counter;
 
-        protected DocumentDatabase CreateDocumentDatabase([CallerMemberName] string caller = null, bool runInMemory = true, string dataDirectory = null, Action<RavenConfiguration> modifyConfiguration = null)
+        protected DocumentDatabase CreateDocumentDatabase([CallerMemberName] string caller = null, bool runInMemory = true, string dataDirectory = null, Action<RavenConfiguration> modifyConfiguration = null, ServerStore serverStore = null)
         {
             var name = caller != null ? $"{caller}_{Interlocked.Increment(ref _counter)}" : Guid.NewGuid().ToString("N");
 
@@ -49,7 +49,7 @@ namespace FastTests
             
             configuration.Initialize();
 
-            var documentDatabase = new DocumentDatabase(name, configuration, null);
+            var documentDatabase = new DocumentDatabase(name, configuration, serverStore);
             documentDatabase.Initialize();
 
             return documentDatabase;

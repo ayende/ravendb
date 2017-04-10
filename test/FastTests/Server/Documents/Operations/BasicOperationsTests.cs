@@ -11,7 +11,7 @@ using Xunit;
 
 namespace FastTests.Server.Documents.Operations
 {
-    public class BasicOperationsTests : RavenLowLevelTestBase
+    public class BasicOperationsTests : RavenTestBase
     {
         [Fact]
         public void Can_notify_about_operations_progress_and_completion()

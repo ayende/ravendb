@@ -19,7 +19,7 @@ using Xunit;
 
 namespace FastTests.Server.NotificationCenter
 {
-    public class NotificationCenterTests : RavenLowLevelTestBase
+    public class NotificationCenterTests : RavenTestBase
     {
         [Fact]
         public void Should_get_notification()

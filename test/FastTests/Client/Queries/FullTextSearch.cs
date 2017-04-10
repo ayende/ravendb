@@ -36,6 +36,8 @@ namespace FastTests.Client.Queries
                     Maps = { "from doc in docs.Images select new { doc.Tags }" },
                     Name = "test"
                 }}));
+                
+                
 
                 using (var session = store.OpenSession())
                 {

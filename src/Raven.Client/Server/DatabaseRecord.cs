@@ -66,6 +66,30 @@ namespace Raven.Client.Documents
 
             Transformers[definition.Name] = definition;
         }
+
+        public void AddIndex(IndexDefinition definition)
+        {
+            if (Transformers!= null && Transformers.ContainsKey(definition.Name))
+            {
+                throw new IndexOrTransformerAlreadyExistException($"Tried to create a index with a name of {definition.Name}, but an transformer under the same name exist");
+            }
+
+
+            //IndexStore.ValidateIndexName(definition.Name);
+            definition.RemoveDefaultValues();
+
+
+            var lockMode = IndexLockMode.Unlock;
+            
+            IndexDefinition existingDefinition;
+            if (Indexes.TryGetValue(definition.Name, out existingDefinition) && existingDefinition.LockMode != null)
+                lockMode = existingDefinition.LockMode.Value;
+
+            if (lockMode == IndexLockMode.LockedError)
+                throw new IndexOrTransformerAlreadyExistException($"Cannot edit existing index {definition.Name} with lock mode {lockMode}");
+
+            Indexes[definition.Name] = definition;
+        }
     }
 
     public enum DeletionInProgressStatus

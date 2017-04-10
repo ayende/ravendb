@@ -11,17 +11,19 @@ using Raven.Server.ServerWide.Context;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using Xunit;
+using Raven.Client.Documents.Operations.Indexes;
+using Raven.Client.Util;
 
 namespace FastTests.Server.Documents.Indexing.Static
 {
-    public class BasicStaticMapReduceIndexing : RavenLowLevelTestBase
+    public class BasicStaticMapReduceIndexing : RavenTestBase
     {
         [Fact]
         public async Task The_simpliest_static_map_reduce_index()
         {
             using (var database = CreateDocumentDatabase())
             {
-                using (var index = MapReduceIndex.CreateNew(1, new IndexDefinition()
+                using (var index = MapReduceIndex.CreateNew(new IndexLocalizedData(new IndexDefinition()
                 {
                     Name = "Users_ByCount_GroupByLocation",
                     Maps = { @"from user in docs.Users select new { 
@@ -36,7 +38,7 @@ namespace FastTests.Server.Documents.Indexing.Static
                                 CountDouble = g.Sum(x => x.CountDouble),
                                 CastedInteger = g.Sum(x => (int)x.CastedInteger) 
                             }"
-                }, database))
+                }, 0, database), database))
                 {
                     DocumentQueryResult queryResult;
                     using (var context = DocumentsOperationContext.ShortTermSingleUse(database))
@@ -112,7 +114,7 @@ namespace FastTests.Server.Documents.Indexing.Static
         {
             using (var database = CreateDocumentDatabase())
             {
-                using (var index = MapReduceIndex.CreateNew(1, new IndexDefinition()
+                using (var index = MapReduceIndex.CreateNew(new IndexLocalizedData( new IndexDefinition()
                 {
                     Name = "Users_ByCount_GroupByLocation",
                     Maps = { @"from order in docs.Orders
@@ -130,7 +132,7 @@ select new
                     {
                         { "Product", new IndexFieldOptions { Storage = FieldStorage.Yes} }
                     }
-                }, database))
+                },0,database), database))
                 {
                     DocumentQueryResult queryResult;
                     using (var context = DocumentsOperationContext.ShortTermSingleUse(database))
@@ -214,7 +216,8 @@ select new
             var path = NewDataPath();
             IndexDefinition defOne, defTwo;
 
-            using (var database = CreateDocumentDatabase(runInMemory: false, dataDirectory: path))
+            using (var server = GetNewServer(runInMemory: false, partialPath: "CanPersist"))
+            using (var store = GetDocumentStore(modifyName: x => "CanPersistDB", defaultServer: server, deleteDatabaseWhenDisposed: false, modifyDatabaseRecord: x => x.Settings["Raven/RunInMemory"] = "False"))
             {
                 defOne = new IndexDefinition
                 {
@@ -222,10 +225,8 @@ select new
                     Maps = {"from user in docs.Users select new { user.Location, Count = 1 }"},
                     Reduce = "from result in results group result by result.Location into g select new { Location = g.Key, Count = g.Sum(x => x.Count) }",
                 };
-
-                var index = database.IndexStore.GetIndex(database.IndexStore.CreateIndex(defOne));
-
-                Assert.Equal(1, index.IndexId);
+                
+                Assert.Equal(3, store.Admin.Send(new PutIndexesOperation(defOne)).First().Etag);
 
                 defTwo = new IndexDefinition()
                 {
@@ -246,8 +247,11 @@ select new
                         { "Product", new IndexFieldOptions { Indexing = FieldIndexing.Analyzed} }
                     },
                     LockMode = IndexLockMode.LockedError
-                };
-                Assert.Equal(2, database.IndexStore.CreateIndex(defTwo));
+                };                
+
+                Assert.Equal(4, store.Admin.Send(new PutIndexesOperation(defTwo)).First().Etag);
+
+                var database = AsyncHelpers.RunSync(()=>server.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(store.DefaultDatabase));
 
                 using (var context = DocumentsOperationContext.ShortTermSingleUse(database))
                 {
@@ -266,21 +270,22 @@ select new
                         }
                         tx.Commit();
                     }
-
-                    index.DoIndexingWork(new IndexingStatsScope(new IndexingRunStats()), CancellationToken.None);
+                    var index1 = database.IndexStore.GetIndex(3);
+                    index1.DoIndexingWork(new IndexingStatsScope(new IndexingRunStats()), CancellationToken.None);
                 }
             }
 
-            using (var database = CreateDocumentDatabase(runInMemory: false, dataDirectory: path, modifyConfiguration: configuration => configuration.Core.ThrowIfAnyIndexOrTransformerCouldNotBeOpened = true))
-            {
+            using (var server = GetNewServer(runInMemory: false, deletePrevious: false, partialPath: "CanPersist"))
+            {                
+                var database = AsyncHelpers.RunSync(() => server.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore("CanPersistDB"));
                 var indexes = database
                     .IndexStore
                     .GetIndexes()
-                    .OrderBy(x => x.IndexId)
+                    .OrderBy(x => x.Etag)
                     .OfType<MapReduceIndex>()
                     .ToList();
 
-                Assert.Equal(1, indexes[0].IndexId);
+                Assert.Equal(3, indexes[0].Etag);
                 Assert.Equal(IndexType.MapReduce, indexes[0].Type);
                 Assert.Equal("Users_ByCount_GroupByLocation", indexes[0].Name);
                 Assert.Equal(1, indexes[0].Definition.Collections.Count);
@@ -290,11 +295,11 @@ select new
                 Assert.Contains("Count", indexes[0].Definition.MapFields.Keys);
                 Assert.Equal(IndexLockMode.Unlock, indexes[0].Definition.LockMode);
                 Assert.Equal(IndexPriority.Normal, indexes[0].Definition.Priority);
-                Assert.Equal(IndexDefinitionCompareDifferences.None, indexes[0].Definition.Compare(defOne));
-                Assert.True(defOne.Equals(indexes[0].GetIndexDefinition(), compareIndexIds: false, ignoreFormatting: false));
+                Assert.Equal(IndexDefinitionCompareDifferences.Etag, indexes[0].Definition.Compare(defOne));
+                Assert.True(defOne.Equals(indexes[0].GetIndexDefinition(), compareEtags: false, ignoreFormatting: false));
                 Assert.Equal(1, indexes[0].MapReduceWorkContext.NextMapResultId);
 
-                Assert.Equal(2, indexes[1].IndexId);
+                Assert.Equal(4, indexes[1].Etag);
                 Assert.Equal(IndexType.MapReduce, indexes[1].Type);
                 Assert.Equal("Orders_ByCount_GroupByProduct", indexes[1].Name);
                 Assert.Equal(1, indexes[1].Definition.Collections.Count);
@@ -306,8 +311,8 @@ select new
                 Assert.Contains("Total", indexes[1].Definition.MapFields.Keys);
                 Assert.Equal(IndexLockMode.LockedError, indexes[1].Definition.LockMode);
                 Assert.Equal(IndexPriority.Normal, indexes[1].Definition.Priority);
-                Assert.Equal(IndexDefinitionCompareDifferences.None, indexes[1].Definition.Compare(defTwo));
-                Assert.True(defTwo.Equals(indexes[1].GetIndexDefinition(), compareIndexIds: false, ignoreFormatting: false));
+                Assert.Equal(IndexDefinitionCompareDifferences.Etag, indexes[1].Definition.Compare(defTwo));
+                Assert.True(defTwo.Equals(indexes[1].GetIndexDefinition(), compareEtags: false, ignoreFormatting: false));
                 Assert.Equal(0, indexes[1].MapReduceWorkContext.NextMapResultId);
             }
         }

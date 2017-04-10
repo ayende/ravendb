@@ -15,7 +15,7 @@ using Xunit;
 
 namespace FastTests.Server.Documents
 {
-    public class DocumentsCrud : RavenLowLevelTestBase
+    public class DocumentsCrud : RavenTestBase
     {
         private RavenConfiguration _configuration;
         private DocumentDatabase _documentDatabase;
@@ -27,8 +27,8 @@ namespace FastTests.Server.Documents
 
             _configuration.Core.RunInMemory = true;
             _configuration.Core.DataDirectory = new PathSetting(Path.GetTempPath() + @"\crud");
-
-            _documentDatabase = new DocumentDatabase("foo", _configuration, null);
+                        
+            _documentDatabase = new DocumentDatabase("foo", _configuration, Server.ServerStore);
             _documentDatabase.Initialize();
         }
 
@@ -278,7 +278,7 @@ namespace FastTests.Server.Documents
             _configuration.Initialize();
             _configuration.Core.RunInMemory = true;
 
-            _documentDatabase = new DocumentDatabase("test", _configuration, null);
+            _documentDatabase = new DocumentDatabase("test", _configuration, Server.ServerStore);
             _documentDatabase.Initialize(options);
         }
 

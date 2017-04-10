@@ -22,13 +22,14 @@ namespace Raven.Server.Documents.Indexes
 
         private int? _cachedHashCode;
 
-        protected IndexDefinitionBase(string name, HashSet<string> collections, IndexLockMode lockMode, IndexPriority priority, IndexField[] mapFields)
+        protected IndexDefinitionBase(string name, long etag, HashSet<string> collections, IndexLockMode lockMode, IndexPriority priority, IndexField[] mapFields)
         {
             Name = name;
             Collections = collections;
             MapFields = mapFields.ToDictionary(x => x.Name, x => x, StringComparer.Ordinal);
             LockMode = lockMode;
             Priority = priority;
+            Etag = etag;
         }
 
         static IndexDefinitionBase()
@@ -37,6 +38,7 @@ namespace Raven.Server.Documents.Indexes
         }
 
         public string Name { get; private set; }
+        public long Etag { get; private set; }
 
         public HashSet<string> Collections { get; }
 
@@ -47,6 +49,8 @@ namespace Raven.Server.Documents.Indexes
         public IndexPriority Priority { get; set; }
 
         public virtual bool HasDynamicFields => false;
+
+        
 
         public void Persist(TransactionOperationContext context, StorageEnvironmentOptions options)
         {
@@ -165,7 +169,7 @@ namespace Raven.Server.Documents.Indexes
         {
             var indexDefinition = GetOrCreateIndexDefinitionInternal() ?? new IndexDefinition();
             indexDefinition.Name = index.Name;
-            indexDefinition.IndexId = index.IndexId;
+            indexDefinition.Etag = index.Etag;
             indexDefinition.Type = index.Type;
             indexDefinition.LockMode = LockMode;
             indexDefinition.Priority = Priority;
@@ -252,15 +256,23 @@ namespace Raven.Server.Documents.Indexes
             return true;
         }
 
-        public static string GetIndexNameSafeForFileSystem(int id, string name)
+        /// <summary>
+        /// Returns normailzed path end of the index, consisteing of it's name and
+        /// </summary>
+        /// <param name="name">Index name</param>
+        /// <param name="etag">Index Etag, if passed null, will return path of the index directory, rather than the instances inside</param>
+        /// <returns></returns>
+        public static string GetIndexPathEndSafeForFileSystem(string name, long? etag)
         {
             foreach (var invalidPathChar in Path.GetInvalidFileNameChars())
             {
                 name = name.Replace(invalidPathChar, '_');
             }
-            if (name.Length < 64)
-                return $"{id:0000}-{name}";
-            return $"{id:0000}-{name.Substring(0, 64)}";
+            if (name.Length >= 64)
+                name = name.Substring(0, 64);
+            if (etag == null)
+                return name;
+            return $"{name}\\{etag:00000000}";
         }
 
         protected static string ReadName(BlittableJsonReaderObject reader)
@@ -301,6 +313,15 @@ namespace Raven.Server.Documents.Indexes
                 throw new InvalidOperationException("No persisted priority");
 
             return (IndexPriority)priorityAsInt;
+        }
+
+        protected static long ReadEtag(BlittableJsonReaderObject reader)
+        {
+            long etag;
+            if (reader.TryGet(nameof(Etag), out etag) == false)
+                throw new InvalidOperationException("No persisted etag");
+
+            return etag;
         }
 
         protected static IndexField[] ReadMapFields(BlittableJsonReaderObject reader)

@@ -7,8 +7,8 @@ namespace Raven.Server.Documents.Indexes.Errors
 {
     public class FaultyIndexDefinition : IndexDefinitionBase
     {
-        public FaultyIndexDefinition(string name, HashSet<string> collections, IndexLockMode lockMode, IndexPriority priority, IndexField[] mapFields)
-            : base(name, collections, lockMode, priority, mapFields)
+        public FaultyIndexDefinition(string name, long etag, HashSet<string> collections, IndexLockMode lockMode, IndexPriority priority, IndexField[] mapFields)
+            : base(name, etag, collections, lockMode, priority, mapFields)
         {
         }
 

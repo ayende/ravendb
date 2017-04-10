@@ -14,14 +14,14 @@ using Xunit;
 
 namespace SlowTests.Server.Documents.Indexing.Debugging
 {
-    public class RavenDB_5577 : RavenLowLevelTestBase
+    public class RavenDB_5577 : RavenTestBase
     {
         [Fact]
         public void Getting_identifiers_of_source_docs()
         {
             using (var database = CreateDocumentDatabase())
             {
-                using (var index = MapReduceIndex.CreateNew(1, new IndexDefinition
+                using (var index = MapReduceIndex.CreateNew(new IndexLocalizedData( new IndexDefinition
                 {
                     Name = "Users_ByCount_GroupByProduct",
                     Maps = {@"from order in docs.Orders
@@ -35,7 +35,7 @@ select new
     Count = g.Sum(x=> x.Count),
     Total = g.Sum(x=> x.Total)
 }",
-                }, database))
+                }, 0, database), database))
                 {
                     var numberOfDocs = 100;
 
@@ -103,7 +103,7 @@ select new
         {
             using (var database = CreateDocumentDatabase())
             {
-                using (var index = MapReduceIndex.CreateNew(1, new IndexDefinition
+                using (var index = MapReduceIndex.CreateNew(new IndexLocalizedData( new IndexDefinition
                 {
                     Name = "Users_ByCount_GroupByProduct",
                     Maps = { @"from order in docs.Orders
@@ -117,7 +117,7 @@ select new
     Count = g.Sum(x=> x.Count),
     Total = g.Sum(x=> x.Total)
 }",
-                }, database))
+                },0,database), database))
                 {
                     using (var context = DocumentsOperationContext.ShortTermSingleUse(database))
                     {

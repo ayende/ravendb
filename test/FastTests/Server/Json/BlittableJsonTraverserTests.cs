@@ -9,7 +9,7 @@ using Xunit;
 
 namespace FastTests.Server.Json
 {
-    public class BlittableJsonTraverserTests : RavenLowLevelTestBase
+    public class BlittableJsonTraverserTests : RavenTestBase
     {
         private readonly JsonOperationContext _ctx;
         private readonly List<BlittableJsonReaderObject> _docs = new List<BlittableJsonReaderObject>();

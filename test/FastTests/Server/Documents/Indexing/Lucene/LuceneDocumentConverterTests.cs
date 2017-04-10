@@ -12,7 +12,7 @@ using Document = Raven.Server.Documents.Document;
 
 namespace FastTests.Server.Documents.Indexing.Lucene
 {
-    public class LuceneDocumentConverterTests : RavenLowLevelTestBase
+    public class LuceneDocumentConverterTests : RavenTestBase
     {
         private LuceneDocumentConverter _sut;
 

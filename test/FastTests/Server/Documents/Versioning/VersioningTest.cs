@@ -1,14 +1,9 @@
-using System;
 using System.Collections.Generic;
-using System.Threading;
 using System.Threading.Tasks;
-using Raven.Client;
-using Raven.Client.Documents;
 using Raven.Client.Documents.Conventions;
 using Raven.Client.Documents.Session;
 using Raven.Server.Documents.Versioning;
 using Sparrow.Json;
-using Xunit;
 
 namespace FastTests.Server.Documents.Versioning
 {
