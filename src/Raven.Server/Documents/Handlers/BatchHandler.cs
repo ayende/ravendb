@@ -1,12 +1,15 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Net;
 using System.Text;
 using System.Threading.Tasks;
 using Raven.Client;
+using Raven.Client.Documents.Replication;
 using Raven.Client.Extensions;
 using Raven.Server.Documents.Indexes;
+using Raven.Server.Documents.Replication;
 using Raven.Server.Routing;
 using Raven.Server.ServerWide.Context;
 using Sparrow;
@@ -88,6 +91,7 @@ namespace Raven.Server.Documents.Handlers
             }
             var throwOnTimeoutInWaitForReplicas = GetBoolValueQueryString("throwOnTimeoutInWaitForReplicas") ?? true;
 
+            
             var waitForReplicationAsync = Database.ReplicationLoader.WaitForReplicationAsync(
                 numberOfReplicasToWaitFor,
                 waitForReplicasTimeout,
@@ -96,9 +100,16 @@ namespace Raven.Server.Documents.Handlers
             var replicatedPast = await waitForReplicationAsync;
             if (replicatedPast < numberOfReplicasToWaitFor && throwOnTimeoutInWaitForReplicas)
             {
-                throw new TimeoutException(
-                    $"Could not verify that etag {mergedCmd.LastEtag} was replicated to {numberOfReplicasToWaitFor} servers in {waitForReplicasTimeout}. So far, it only replicated to {replicatedPast}");
+                var msg = $"Could not verify that etag {mergedCmd.LastEtag} was replicated to {numberOfReplicasToWaitFor} servers in {waitForReplicasTimeout}. So far, it only replicated to {replicatedPast}.";
+                msg += $" There were {Database.ReplicationLoader.OutgoingFailureInfo.Count} replication failures, failures overview: <<<starting destination failures>>>{string.Join(",", Database.ReplicationLoader.OutgoingFailureInfo.Select(ReplicationFailureToString))}<<<ending destination failures>>>";
+                
+                throw new TimeoutException(msg);
             }
+        }
+
+        private string ReplicationFailureToString(KeyValuePair<ReplicationDestination, ReplicationLoader.ConnectionShutdownInfo> kvp)
+        {
+            return $"[{kvp.Key.Database}->{kvp.Key.Url}] => [error count:{kvp.Value.ErrorCount}, last exception: <<starting exception string>> {kvp.Value.LastException} <<ending exception string>>]";
         }
 
         private async Task WaitForIndexesAsync(TimeSpan timeout, long lastEtag, HashSet<string> modifiedCollections)

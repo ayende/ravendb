@@ -133,8 +133,9 @@ namespace Voron
                 if (_options.ManualFlushing == false)
                     Task.Run(IdleFlushTimer);
             }
-            catch (Exception)
+            catch (Exception e)
             {
+                Console.WriteLine(e);
                 Dispose();
                 throw;
             }

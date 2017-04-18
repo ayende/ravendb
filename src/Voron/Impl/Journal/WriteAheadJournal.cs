@@ -1319,7 +1319,7 @@ namespace Voron.Impl.Journal
 
             pagerState = _compressionPager.EnsureContinuous(pagesWritten, outputBufferInPages);
             tx.EnsurePagerStateReference(pagerState);
-
+          
             _compressionPager.EnsureMapped(tx, pagesWritten, outputBufferInPages);
 
             var fullTxBuffer = _compressionPager.AcquirePagePointer(tx, pagesWritten);
