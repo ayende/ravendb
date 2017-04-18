@@ -503,9 +503,9 @@ namespace Raven.Server.Rachis
             {
                 [nameof(ClusterTopology.TopologyId)] = topology.TopologyId,
                 [nameof(ClusterTopology.ApiKey)] = topology.ApiKey,
-                [nameof(ClusterTopology.Members)] = ToDynamicJsonValue(topology.Members),
-                [nameof(ClusterTopology.Promotables)] = ToDynamicJsonValue(topology.Promotables),
-                [nameof(ClusterTopology.Watchers)] = ToDynamicJsonValue(topology.Watchers),
+                [nameof(ClusterTopology.Members)] = DynamicJsonValue.Convert(topology.Members),
+                [nameof(ClusterTopology.Promotables)] = DynamicJsonValue.Convert(topology.Promotables),
+                [nameof(ClusterTopology.Watchers)] = DynamicJsonValue.Convert(topology.Watchers),
                 [nameof(ClusterTopology.LastNodeId)] = topology.LastNodeId
             };
 
@@ -515,17 +515,7 @@ namespace Raven.Server.Rachis
 
             return topologyJson;
         }
-
-        private static DynamicJsonValue ToDynamicJsonValue(Dictionary<string, string> dictionary)
-        {
-            var djv = new DynamicJsonValue();
-            foreach (var kvp in dictionary)
-            {
-                djv[kvp.Key] = kvp.Value;
-            }
-            return djv;
-        }
-
+        
         public static unsafe void SetTopology(RachisConsensus engine, Transaction tx,
             BlittableJsonReaderObject topologyJson)
         {
