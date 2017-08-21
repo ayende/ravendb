@@ -311,10 +311,9 @@ interface subscriptionDataFromUI {
     TaskName: string;
     Script: string;
     Collection: string;
-    ChangeVectorEntry: string;
+    ChangeVector: Raven.Client.Constants.Documents.SubscriptionChangeVectorSpecialStates | string;
     IncludeRevisions: boolean;
 } 
-
 
 interface layoutable {
     x: number;

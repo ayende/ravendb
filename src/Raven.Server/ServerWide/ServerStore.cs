@@ -1385,7 +1385,7 @@ namespace Raven.Server.ServerWide
                 if (_nodeHttpServerUrl != null)
                     return _nodeHttpServerUrl;
 
-                Debug.Assert(_ravenServer.WebUrls != null && _ravenServer.WebUrls.Length > 0);
+                Debug.Assert(Configuration.Core.PublicServerUrl.HasValue || _ravenServer.WebUrls != null && _ravenServer.WebUrls.Length > 0);
                 return _nodeHttpServerUrl = Configuration.Core.GetNodeHttpServerUrl(
                     Configuration.Core.PublicServerUrl?.UriValue ?? _ravenServer.WebUrls[0]
                     );
