@@ -1357,6 +1357,23 @@ namespace Raven.Server.Rachis
                 await task;
 
             await task;
+          
+        }
+
+        public void EnsureNodeRemovalOnDeletion(TransactionOperationContext context, string nodeTag)
+        {
+            var djv = new RemoveNodeFromClusterCommand
+            {
+                RemovedNode = nodeTag
+            }.ToJson(context);
+            var index = InsertToLeaderLog(context, context.ReadObject(djv, "remove"), RachisEntryFlags.StateMachineCommand);
+            context.Transaction.InnerTransaction.LowLevelTransaction.OnDispose += tx =>
+            {
+                if (tx is LowLevelTransaction llt && llt.Committed)
+                {
+                    _currentLeader.AddToEntries(index);
+                }
+            };
         }
 
         private volatile string _leaderTag;

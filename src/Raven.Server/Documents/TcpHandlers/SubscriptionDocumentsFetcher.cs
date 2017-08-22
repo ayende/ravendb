@@ -180,7 +180,7 @@ namespace Raven.Server.Documents.TcpHandlers
             exception = null;
             var conflictStatus = ChangeVectorUtils.GetConflictStatus(
                 remoteAsString: doc.ChangeVector,
-                localAsString: subscriptionState.ChangeVector);
+                localAsString: subscriptionState.ChangeVectorForNextBatchStartingPoint);
 
             if (conflictStatus == ConflictStatus.AlreadyMerged)
                 return false;
@@ -219,7 +219,7 @@ namespace Raven.Server.Documents.TcpHandlers
             transformResult = null;
             var conflictStatus = ChangeVectorUtils.GetConflictStatus(
                 remoteAsString: item.ChangeVector,
-                localAsString: subscriptionState.ChangeVector);
+                localAsString: subscriptionState.ChangeVectorForNextBatchStartingPoint);
 
             if (conflictStatus == ConflictStatus.AlreadyMerged)
                 return false;

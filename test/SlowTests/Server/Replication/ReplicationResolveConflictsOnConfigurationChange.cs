@@ -91,12 +91,13 @@ namespace SlowTests.Server.Replication
 
                 var config = new ConflictSolver
                 {
-                    DatabaseResolverId = storage1.DbId.ToString()
+                    DatabaseResolverId = storage1.DbBase64Id
                 };
                 await SetupReplicationAsync(store1, config, store2);
 
                 Assert.True(WaitForDocument<User>(store1, "foo/bar", u => u.Name == "Store1"));
                 Assert.True(WaitForDocument<User>(store2, "foo/bar", u => u.Name == "Store1"));
+                WaitForUserToContinueTheTest(store1);
             }
         }
 
@@ -111,7 +112,7 @@ namespace SlowTests.Server.Replication
                 await DeleteOngoingTask(store2, list[1].TaskId, OngoingTaskType.Replication);
                 await GenerateConflicts(store1, store2, "users/2");
                 var storage1 = await Server.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(store1.Database);
-                await UpdateConflictResolver(store1, storage1.DbId.ToString());
+                await UpdateConflictResolver(store1, storage1.DbBase64Id);
 
                 Assert.True(WaitForDocument<User>(store1, "users/1", u => u.Name == "Store1"));
                 Assert.True(WaitForDocument<User>(store2, "users/1", u => u.Name == "Store1"));

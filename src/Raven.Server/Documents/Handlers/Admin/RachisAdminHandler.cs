@@ -4,6 +4,7 @@ using System.Net;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading.Tasks;
 using Raven.Client;
+using Raven.Client.Exceptions;
 using Raven.Client.Exceptions.Cluster;
 using Raven.Client.Http;
 using Raven.Client.ServerWide.Commands;
@@ -214,16 +215,6 @@ namespace Raven.Server.Documents.Handlers.Admin
             return Task.CompletedTask;
         }
 
-        private void SetupCORSHeaders()
-        {
-            // TODO: handle this properly when using https
-            // https://developer.mozilla.org/en-US/docs/Web/HTTP/Access_control_CORS
-            HttpContext.Response.Headers.Add("Access-Control-Allow-Origin", HttpContext.Request.Headers["Origin"]);
-            HttpContext.Response.Headers.Add("Access-Control-Allow-Methods", "PUT, POST, GET, OPTIONS, DELETE");
-            HttpContext.Response.Headers.Add("Access-Control-Allow-Headers", HttpContext.Request.Headers["Access-Control-Request-Headers"]);
-            HttpContext.Response.Headers.Add("Access-Control-Max-Age", "86400");
-        }
-
         [RavenAction("/admin/cluster/node", "OPTIONS", AuthorizationStatus.ServerAdmin)]
         [RavenAction("/admin/cluster/reelect", "OPTIONS", AuthorizationStatus.ServerAdmin)]
         [RavenAction("/admin/cluster/timeout", "OPTIONS", AuthorizationStatus.ServerAdmin)]
@@ -258,7 +249,16 @@ namespace Raven.Server.Documents.Handlers.Admin
             using (var requestExecutor = ClusterRequestExecutor.CreateForSingleNode(nodeUrl, Server.ServerCertificateHolder.Certificate))
             {
                 var infoCmd = new GetNodeInfoCommand();
-                await requestExecutor.ExecuteAsync(infoCmd, ctx);
+
+                try
+                {
+                    await requestExecutor.ExecuteAsync(infoCmd, ctx);
+                }
+                catch (AllTopologyNodesDownException e)
+                {
+                    throw new InvalidOperationException($"Couldn't contact node at {nodeUrl}", e);
+                }
+
                 nodeInfo = infoCmd.Result;
 
                 if (ServerStore.IsPassive() && nodeInfo.TopologyId != null)

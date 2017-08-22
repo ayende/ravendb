@@ -602,10 +602,11 @@ namespace Raven.Client.Http
                 {
                     if (shouldRetry == false)
                         throw;
-
                     sp.Stop();
                     if (await HandleServerDown(url, chosenNode, nodeIndex, context, command, request, response, e).ConfigureAwait(false) == false)
+                    {
                         throw new AllTopologyNodesDownException($"Tried to send {command.GetType().Name} request to all configured nodes in the topology, all of them seem to be down or not responding. I've tried to access the following nodes: " + string.Join(",", _nodeSelector?.Topology.Nodes.Select(x => x.Url) ?? new string[0]), _nodeSelector?.Topology, e);
+                    }
 
                     return;
                 }
@@ -636,7 +637,7 @@ namespace Raven.Client.Http
                                 var name = databaseMissing.FirstOrDefault();
                                 if (name != null)
                                     throw new DatabaseDoesNotExistException(name);
-                            }                               
+                            }
 
                             if (command.FailedNodes.Count == 0) //precaution, should never happen at this point
                                 throw new InvalidOperationException("Received unsuccessful response and couldn't recover from it. Also, no record of exceptions per failed nodes. This is weird and should not happen.");
