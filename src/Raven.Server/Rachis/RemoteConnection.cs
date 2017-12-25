@@ -1,8 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.CompilerServices;
+using System.Threading;
 using Sparrow;
 using Sparrow.Binary;
+using Sparrow.Collections;
+using Sparrow.Collections.LockFree;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using Sparrow.Logging;
@@ -28,13 +32,35 @@ namespace Raven.Server.Rachis
             _buffer = JsonOperationContext.ManagedPinnedBuffer.LongLivedInstance();
         }
 
-        public RemoteConnection(string dest, string src, Stream stream)
+        public class RemoteConnectionInfo
+        {
+            public string Caller;
+            public DateTime StartAt;
+            public string Destination;
+            public int Number;
+        }
+
+        private readonly RemoteConnectionInfo _info;
+        private static int _connectionNumber = 0; 
+        public static ConcurrentSet<RemoteConnectionInfo> RemoteConnectionsList = new ConcurrentSet<RemoteConnectionInfo>();
+
+        public RemoteConnection(string dest, string src, Stream stream, [CallerMemberName] string caller = null)
         {
             _destTag = dest;
             _src = src;
             _log = LoggingSource.Instance.GetLogger<RemoteConnection>($"{_src} > {_destTag}");
             _stream = stream;
             _buffer = JsonOperationContext.ManagedPinnedBuffer.LongLivedInstance();
+
+            var number = Interlocked.Increment(ref _connectionNumber);
+            _info = new RemoteConnectionInfo
+            {
+                Caller = caller,
+                Destination = dest,
+                StartAt = DateTime.UtcNow,
+                Number = number
+            };
+            RemoteConnectionsList.Add(_info);
         }
 
         public void Send(JsonOperationContext context, RachisHello helloMsg)
@@ -82,7 +108,7 @@ namespace Raven.Server.Rachis
 
         public void Send(JsonOperationContext context, RequestVoteResponse rvr)
         {
-            if (_log.IsInfoEnabled == true)
+            if (_log.IsInfoEnabled)
             {
                 _log.Info($"Voting {rvr.VoteGranted} for term {rvr.Term} because: {rvr.Message}");
             }
@@ -369,6 +395,7 @@ namespace Raven.Server.Rachis
 
         public void Dispose()
         {
+            RemoteConnectionsList.TryRemove(_info);
             _stream?.Dispose();
             _buffer?.Dispose();
         }
