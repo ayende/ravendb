@@ -58,6 +58,15 @@ namespace Voron.Data.BTrees
                 Add(keySlice, valueSlice);
             }
         }
+        
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        public void Add(string key, long value)
+        {
+            using (Slice.From(_llt.Allocator, key, ByteStringType.Immutable, out var keySlice))
+            {
+                Add(keySlice, value);
+            }
+        }
 
         public DirectAddScope DirectAdd(string key, int len, out byte* ptr)
         {

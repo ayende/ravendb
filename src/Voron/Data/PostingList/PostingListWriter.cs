@@ -36,7 +36,7 @@ namespace Voron.Data.PostingList
                 return;
 
             FlushBuffer(done: false);
-            Buffer.Start = num;
+            Buffer.Last = Buffer.Start = num;
             if (Buffer.TryAppend(num) == false)
                 ThrowImpossibleToWriteToNewBuffer();
         }
@@ -64,11 +64,11 @@ namespace Voron.Data.PostingList
             byte* data = tvr.Read(1, out size);
             Buffer.Used = size;
             Buffer.HasModifications = false;
-            Buffer.Size = Math.Min(MaximumBufferSize, Bits.NextPowerOf2(size + 1));
+            Buffer.Size = Math.Max(64, Math.Min(MaximumBufferSize, Bits.NextPowerOf2(size + 1)));
             Debug.Assert(Buffer.Used <= Buffer.Size);
             Buffer.Scope = Tx.Allocator.Allocate(Buffer.Size, out Buffer.Buffer);
             Unsafe.CopyBlock(Buffer.Buffer.Ptr, data, (uint)Buffer.Used);
-            Buffer.ComputeLast();
+            Buffer.Last = Buffer.ComputeLast();
         }
 
         private static void ThrowImpossibleToWriteToNewBuffer()
@@ -132,7 +132,7 @@ namespace Voron.Data.PostingList
             if (Buffer.Size < MaximumBufferSize && done == false)
             {
                 Buffer.Scope.Dispose();
-                Buffer.Size = Math.Min(MaximumBufferSize, Bits.NextPowerOf2(Buffer.Size + 1));
+                Buffer.Size = Math.Max(64, Math.Min(MaximumBufferSize, Bits.NextPowerOf2(Buffer.Size + 1)));
                 Buffer.Scope = Tx.Allocator.Allocate(Buffer.Size, out Buffer.Buffer);
             }
         }
@@ -150,6 +150,10 @@ namespace Voron.Data.PostingList
                     }
                     else
                     {
+#if VALIDATE
+                        Debug.Assert(Buffer.Last == Buffer.ComputeLast());
+#endif
+
                         tvb.Add(key);
                         tvb.Add(Buffer.Buffer.Ptr, Buffer.Used);
                         Table.Set(tvb);

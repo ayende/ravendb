@@ -18,6 +18,28 @@ namespace FastTests.Voron.PostingLists
             }
         }
 
+
+        [Fact]
+        public void MultipleWrites()
+        {
+            using (var tx = Env.WriteTransaction())
+            {
+                using (var w = PostingListWriter.Create(tx, "Name", "Oren"))
+                {
+                    w.Append(1);
+                }
+                using (var w = PostingListWriter.Create(tx, "Name", "Oren"))
+                {
+                    w.Append(2);
+                    w.Append(13);
+                    w.Append(19);
+                    w.Append(27);
+                    w.Append(31);
+                    w.Append(36);
+                }
+            }
+        }
+
         [Fact]
         public void CanAddAndReadItemsFromPostingList()
         {

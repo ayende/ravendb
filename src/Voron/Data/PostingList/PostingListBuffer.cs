@@ -16,7 +16,7 @@ namespace Voron.Data.PostingList
         public int Used;
         public bool HasModifications;
 
-        public void ComputeLast()
+        public long ComputeLast()
         {
             byte* buffer = Buffer.Ptr;
             byte* end = buffer + Used;
@@ -27,12 +27,12 @@ namespace Voron.Data.PostingList
                 value += delta;
             }
 
-            Last = value;
+            return value;
         }
 
         public bool TryAppend(long num)
         {
-            if (num <= Last)
+            if (num < Last)
                 ThrowInvalidAppend(num);
 
             var buffer = stackalloc byte[9]; // max size
@@ -108,6 +108,7 @@ namespace Voron.Data.PostingList
         public bool Delete(long val)
         {
             var currentBufferPos = Buffer.Ptr;
+            var end = Buffer.Ptr + Used;
             byte* previousBufferPos;
             var current = Start;
             long delta = 0;
@@ -116,7 +117,7 @@ namespace Voron.Data.PostingList
                 previousBufferPos = currentBufferPos;
                 delta = ReadVariableSizeLong(ref currentBufferPos);
                 current += delta;
-            } while (current < val && current < Last);
+            } while (current < val && currentBufferPos < end);
 
             if (current != val)
                 return false; // value not found, nothing to do
@@ -146,12 +147,13 @@ namespace Voron.Data.PostingList
         {
             var sb = new StringBuilder();
             var currentBufferPos = Buffer.Ptr;
+            var end = currentBufferPos + Used;
             var current = Start;
-            while (current < Last)
+            while (currentBufferPos < end)
             {
                 var delta = ReadVariableSizeLong(ref currentBufferPos);
                 current += delta;
-                sb.AppendFormat("{0:#,#}", current).AppendLine();
+                sb.AppendFormat("{0:#,#}, ", current).AppendLine();
             }
             return sb.ToString();
         }
