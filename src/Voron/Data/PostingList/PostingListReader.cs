@@ -6,9 +6,10 @@ namespace Voron.Data.PostingList
 {
     public unsafe class PostingListReader : PostingList
     {
+        private byte* _blockStart;
         private byte* _buffer;
         private byte* _end;
-
+        public (long Start, long End) Block;
         private long _last;
 
         public static PostingListReader Create(Transaction tx, string field, string term)
@@ -36,8 +37,25 @@ namespace Voron.Data.PostingList
 
             var key = tvr.Read(0, out int size);
             var blockStart = Bits.SwapBytes(*(long*)(key + size - sizeof(long)));
+
+            using (Slice.External(Tx.Allocator, key, size, out var slice))
+            {
+                if(Table.SeekNext(slice, out var nextKeyTvr))
+                {
+                    var nextKeyPtr = nextKeyTvr.Read(0, out size);
+                    var nextBlockStart = Bits.SwapBytes(*(long*)(nextKeyPtr + size - sizeof(long)));
+                    Block = (blockStart, nextBlockStart - 1);
+                }
+                else
+                {
+                    Block = (blockStart, long.MaxValue); // no end in sight :-)
+                }
+            }
+
+
             _last = blockStart;
             _buffer = tvr.Read(1, out size);
+            _blockStart = _buffer;
             _end = _buffer + size;
         }
 
@@ -79,9 +97,20 @@ namespace Voron.Data.PostingList
 
         public void Seek(long val)
         {
-            ReadBlock(val);
-            if (_buffer == null)
-                return;
+            if(Block.Start < val && Block.End > val)
+            {
+                // we are in a different block now, let's try 
+                // loading the right one
+                ReadBlock(val);
+                if (_buffer == null)
+                    return;
+            }
+            else if(_last >= val)
+            {
+                // we are in the same block, but already read past that
+                // let's rewind to the beginning of the block and try again
+                _buffer = _blockStart;
+            }
             while (_buffer < _end)
             {
                 var prevBuffer = _buffer;

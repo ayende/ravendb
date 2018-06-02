@@ -860,6 +860,22 @@ namespace Voron.Data.Tables
             return fst.NumberOfEntries;
         }
 
+        public bool SeekNext(Slice existingKey, out TableValueReader tvr)
+        {
+            var pkTree = GetTree(_schema.Key);
+            using (var it = pkTree.Iterate(false))
+            {
+                if (it.Seek(existingKey) == false || it.MoveNext() == false)
+                {
+                    tvr = default;
+                    return false;
+                }
+                GetTableValueReader(it, out tvr);
+                return true;
+            }
+
+        }
+
         public IEnumerable<SeekResult> SeekForwardFrom(TableSchema.SchemaIndexDef index, Slice value, int skip, bool startsWith = false)
         {
             var tree = GetTree(index);
