@@ -1,6 +1,7 @@
 ﻿using Sparrow;
 using System;
 using System.Diagnostics;
+using System.Diagnostics.Contracts;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Sparrow.Json;
@@ -64,21 +65,25 @@ namespace Voron
             return new Slice(context.Skip(this.Content, bytesToSkip, type));       
         }
 
+        [Pure]
         public void CopyTo(int from, byte* dest, int offset, int count)
         {
             this.Content.CopyTo(from, dest, offset, count);
         }
 
+        [Pure]
         public void CopyTo(byte* dest)
         {
             this.Content.CopyTo(dest);
         }   
          
+        [Pure]
         public void CopyTo(byte[] dest)
         {
             this.Content.CopyTo(dest);
         }
 
+        [Pure]
         public void CopyTo(int from, byte[] dest, int offset, int count)
         {
             this.Content.CopyTo(from, dest, offset, count);

@@ -1189,6 +1189,56 @@ namespace Voron.Data.Tables
             }
         }
 
+        public bool SeekOnePrimaryKeyPrefix(Slice slice, Slice prefix, out TableValueReader reader)
+        {
+            Debug.Assert(slice.Options == SliceOptions.Key, "Should be called with Key only");
+
+            var pk = _schema.Key;
+            var tree = GetTree(pk);
+            using (var it = tree.Iterate(false))
+            {
+                it.SetRequiredPrefix(prefix);
+
+                if (it.Seek(slice) == false)
+                {
+                    reader = default(TableValueReader);
+                    return false;
+                }
+
+                GetTableValueReader(it, out reader);
+                return true;
+            }
+        }
+
+        public bool SeekOneBeforePrimaryKeyPrefix(Slice slice, Slice prefix, out TableValueReader reader)
+        {
+            Debug.Assert(slice.Options == SliceOptions.Key, "Should be called with Key only");
+
+            var pk = _schema.Key;
+            var tree = GetTree(pk);
+            using (var it = tree.Iterate(false))
+            {
+                // we can't set the required prefix here, it might filter values we need to
+                // Consider: [ a|1, a|2, b|1, b|2]
+                // And we want to get values after a|3. 
+                // seeking for a|3 will give us b|1, which will be filtered by the prefix
+                // And using AfterAllKeys will give us b|2.
+                if ((it.Seek(slice) == false  || it.MovePrev() == false) && it.Seek(Slices.AfterAllKeys) == false)
+                {
+                    reader = default;
+                    return false;
+                }
+                it.SetRequiredPrefix(prefix);
+                if (it.ValidateCurrentKey(tree.Llt, it.Current) == false)
+                {
+                    reader = default;
+                    return false;
+                }
+                GetTableValueReader(it, out reader);
+                return true;
+            }
+        }
+
         public IEnumerable<TableValueHolder> SeekForwardFrom(TableSchema.FixedSizeSchemaIndexDef index, long key, int skip)
         {
             var fst = GetFixedSizeTree(index);
