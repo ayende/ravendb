@@ -34,7 +34,7 @@ namespace Tryouts
                 using (builder.BeginIndexing())
                 {
                     var serializer = new JsonSerializer();
-                    foreach (var item in System.IO.Directory.GetFiles(@"F:\collection\objects\", "*.json", SearchOption.AllDirectories).Take(10))
+                    foreach (var item in System.IO.Directory.GetFiles(@"F:\collection\objects\", "*.json", SearchOption.AllDirectories))
                     {
                         dynamic obj = serializer.Deserialize(new JsonTextReader(new StreamReader(item)));
                         if (obj == null)
@@ -53,25 +53,26 @@ namespace Tryouts
 
                     builder.CompleteIndexing();
                 }
+                Console.WriteLine(sp.Elapsed);
                 Console.WriteLine(JsonConvert.SerializeObject(env.Stats(), Formatting.Indented));
             }
 
-            using (var env = new StorageEnvironment(StorageEnvironmentOptions.ForPath("mu")))
-            using (var pool = new TransactionContextPool(env))
-            {
-                var reader = new IndexReader(pool);
-                using (pool.AllocateOperationContext(out TransactionOperationContext ctx))
-                {
-                    ctx.OpenReadTransaction();
-                    var a = reader.GetTerms(ctx, 2, "Name");
-                }
+            //using (var env = new StorageEnvironment(StorageEnvironmentOptions.ForPath("mu")))
+            //using (var pool = new TransactionContextPool(env))
+            //{
+            //    var reader = new IndexReader(pool);
+            //    using (pool.AllocateOperationContext(out TransactionOperationContext ctx))
+            //    {
+            //        ctx.OpenReadTransaction();
+            //        var a = reader.GetTerms(ctx, 2, "Name");
+            //    }
                 
-                foreach (var item in reader.Query("Classification", "Metalwork"))
-                {
-                    Console.WriteLine(item);
-                }
+            //    foreach (var item in reader.Query("Classification", "Metalwork"))
+            //    {
+            //        Console.WriteLine(item);
+            //    }
               
-            }
+            //}
 
             //var fsDir = FSDirectory.Open("mu");
             ////using (var env = new StorageEnvironment(StorageEnvironmentOptions.ForPath("mu")))
