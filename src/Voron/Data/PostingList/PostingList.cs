@@ -64,7 +64,7 @@ namespace Voron.Data.PostingList
         {
             ByteStringContext<ByteStringMemoryCache>.InternalScope scope = Tx.Allocator.Allocate(Term.Size + (sizeof(byte) * 3) + sizeof(long),
                 out ByteString prefixBuffer);
-            prefixBuffer.Ptr[0] = (byte)'V';
+            prefixBuffer.Ptr[0] = (byte)'S'; // string
             prefixBuffer.Ptr[1] = (byte)':';
             Term.CopyTo(prefixBuffer.Ptr + 2);
             prefixBuffer.Ptr[Term.Size + 2] = (byte)':';
@@ -77,7 +77,7 @@ namespace Voron.Data.PostingList
         protected ByteStringContext<ByteStringMemoryCache>.InternalScope TermStats(out Slice slice)
         {
             ByteStringContext<ByteStringMemoryCache>.InternalScope scope = Tx.Allocator.Allocate(Term.Size + (sizeof(byte) * 2), out ByteString prefixBuffer);
-            prefixBuffer.Ptr[0] = (byte)'S';
+            prefixBuffer.Ptr[0] = (byte)'M'; // metrics for this term
             prefixBuffer.Ptr[1] = (byte)':';
             Term.CopyTo(prefixBuffer.Ptr + 2);
 
