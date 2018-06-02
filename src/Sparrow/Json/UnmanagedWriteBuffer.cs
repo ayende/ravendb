@@ -17,6 +17,40 @@ namespace Sparrow.Json
         void EnsureSingleChunk(out byte* ptr, out int size);
     }
 
+    public static class UnmanagedWriteBufferExtensions
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static unsafe void WriteVariableSizeIntInReverse<TWriter>(this TWriter writer, int value)
+        where TWriter : struct, IUnmanagedWriteBuffer
+        {
+            // assume that we don't use negative values very often
+            var buffer = stackalloc byte[9];
+            var count = 0;
+            var v = (uint)value;
+            while (v >= 0x80)
+            {
+                buffer[count++] = (byte)(v | 0x80);
+                v >>= 7;
+            }
+            buffer[count++] = (byte)(v);
+
+            if (count == 1)
+            {
+                writer.WriteByte(*buffer);
+            }
+            else
+            {
+                for (int i = count - 1; i >= count / 2; i--)
+                {
+                    var tmp = buffer[i];
+                    buffer[i] = buffer[count - 1 - i];
+                    buffer[count - 1 - i] = tmp;
+                }
+                writer.Write(buffer, count);
+            }
+        }
+    }
+
     public unsafe struct UnmanagedStreamBuffer : IUnmanagedWriteBuffer
     {
         private readonly Stream _stream;

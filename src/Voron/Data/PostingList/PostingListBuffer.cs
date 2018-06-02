@@ -82,7 +82,7 @@ namespace Voron.Data.PostingList
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int WriteVariableSizeLong(long value, byte* buffer)
+        public static int WriteVariableSizeLong(long value, byte* buffer)
         {
             // see zig zap trick here:
             // https://developers.google.com/protocol-buffers/docs/encoding?csw=1#types

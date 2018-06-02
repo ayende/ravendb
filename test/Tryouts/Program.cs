@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using FastTests.Server.Documents.Queries.Parser;
 using Lucene.Net.Analysis;
@@ -33,7 +34,7 @@ namespace Tryouts
                 using (builder.BeginIndexing())
                 {
                     var serializer = new JsonSerializer();
-                    foreach (var item in System.IO.Directory.GetFiles(@"F:\collection\objects\", "*.json", SearchOption.AllDirectories))
+                    foreach (var item in System.IO.Directory.GetFiles(@"F:\collection\objects\", "*.json", SearchOption.AllDirectories).Take(10))
                     {
                         dynamic obj = serializer.Deserialize(new JsonTextReader(new StreamReader(item)));
                         if (obj == null)
@@ -44,16 +45,34 @@ namespace Tryouts
                         builder.Term("Classification", ((string)obj.classification)?.Trim());
                         builder.Term("Medium", (string)obj.medium);
                         builder.FinishEntry();
-                        //if ((items++ % 10_000) == 0)
-                        //{
-                        //    builder.FlushState();
-                        //}
+                        if ((items++ % 10_000) == 0)
+                        {
+                            builder.FlushState();
+                        }
                     }
 
                     builder.CompleteIndexing();
                 }
                 Console.WriteLine(JsonConvert.SerializeObject(env.Stats(), Formatting.Indented));
             }
+
+            using (var env = new StorageEnvironment(StorageEnvironmentOptions.ForPath("mu")))
+            using (var pool = new TransactionContextPool(env))
+            {
+                var reader = new IndexReader(pool);
+                using (pool.AllocateOperationContext(out TransactionOperationContext ctx))
+                {
+                    ctx.OpenReadTransaction();
+                    var a = reader.GetTerms(ctx, 2, "Name");
+                }
+                
+                foreach (var item in reader.Query("Classification", "Metalwork"))
+                {
+                    Console.WriteLine(item);
+                }
+              
+            }
+
             //var fsDir = FSDirectory.Open("mu");
             ////using (var env = new StorageEnvironment(StorageEnvironmentOptions.ForPath("mu")))
             ////using (var pool = new TransactionContextPool(env))
@@ -98,10 +117,6 @@ namespace Tryouts
             //    }
             //    writer.Close(true);
             //}
-            Console.WriteLine(sp.Elapsed);
-            Console.WriteLine(items);
-
-            Console.WriteLine("+");
         }
     }
 }

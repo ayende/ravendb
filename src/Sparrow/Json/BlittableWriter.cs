@@ -310,8 +310,8 @@ namespace Sparrow.Json
         {
             var propertiesStart = WritePropertyNames(rootOffset);
 
-            WriteVariableSizeIntInReverse(rootOffset);
-            WriteVariableSizeIntInReverse(propertiesStart);
+            _unmanagedWriteBuffer.WriteVariableSizeIntInReverse(rootOffset);
+            _unmanagedWriteBuffer.WriteVariableSizeIntInReverse(propertiesStart);
             WriteNumber((int)documentToken, sizeof(byte));
         }
 
@@ -402,37 +402,6 @@ namespace Sparrow.Json
             return count;
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public unsafe int WriteVariableSizeIntInReverse(int value)
-        {
-            // assume that we don't use negative values very often
-            var buffer = _innerBuffer.Address;
-            var count = 0;
-            var v = (uint)value;
-            while (v >= 0x80)
-            {
-                buffer[count++] = (byte)(v | 0x80);
-                v >>= 7;
-            }
-            buffer[count++] = (byte)(v);
-
-            if (count == 1)
-            {
-                _unmanagedWriteBuffer.WriteByte(*buffer);
-            }
-            else
-            {
-                for (int i = count - 1; i >= count / 2; i--)
-                {
-                    var tmp = buffer[i];
-                    buffer[i] = buffer[count - 1 - i];
-                    buffer[count - 1 - i] = tmp;
-                }
-                _unmanagedWriteBuffer.Write(buffer, count);
-            }
-
-            return count;
-        }
 
         public unsafe int WriteValue(string str, out BlittableJsonToken token, UsageMode mode = UsageMode.None)
         {
