@@ -2,19 +2,15 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
-using Lucene.Net.Search;
-using Lucene.Net.Spatial.Util;
-using Raven.Client.Documents.Linq;
 using Raven.Server.ServerWide.Context;
-using Sparrow;
+using Sparrow.Binary;
 using Sparrow.Json;
 using Voron;
 using Voron.Data.PostingList;
 using Voron.Data.Tables;
-using Voron.Impl;
-using Bits = Sparrow.Binary.Bits;
 
 namespace Tryouts
 {
@@ -27,14 +23,13 @@ namespace Tryouts
             _pool = pool;
         }
 
-        public IEnumerable<(long Id, string ExternalId)> Query(string field, string term)
+        public IEnumerable<(long Id, string ExternalId)> Query(Query q)
         {
             using (_pool.AllocateOperationContext(out TransactionOperationContext context))
             using (var tx = context.OpenReadTransaction())
             {
                 var entriesTable = tx.InnerTransaction.OpenTable(IndexBuilder.EntriesTableSchema, "Entries");
-                var reader = PostingListReader.Create(tx.InnerTransaction, field, term);
-                while (reader.ReadNext(out var entryId))
+                foreach (var entryId in q.Execute(context, this))
                 {
                     var externalId = GetExternalId(context, entriesTable, entryId);
                     yield return (entryId, externalId);
@@ -221,6 +216,39 @@ namespace Tryouts
         private static void ThrowInvalidOffsetSize()
         {
             throw new ArgumentOutOfRangeException("Invalid offset size for index entry");
+        }
+    }
+
+    public abstract class Query
+    {
+        public abstract IEnumerable<long> Execute(TransactionOperationContext context, IndexReader reader);
+    }
+
+    public class TermQuery : Query
+    {
+        public string Field;
+        public string Term;
+
+        public override IEnumerable<long> Execute(TransactionOperationContext context, IndexReader reader)
+        {
+            var plr = PostingListReader.Create(context.Transaction.InnerTransaction, Field, Term);
+            while (plr.ReadNext(out var id))
+            {
+                yield return id;
+            }
+        }
+    }
+
+    public class AndQuery : Query
+    {
+        public Query Left, Right;
+
+        public override IEnumerable<long> Execute(TransactionOperationContext context, IndexReader reader)
+        {
+            // BAD IMPL here!
+
+            return Left.Execute(context, reader).Intersect(Right.Execute(context, reader));
+
         }
     }
 }

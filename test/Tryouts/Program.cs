@@ -22,57 +22,41 @@ namespace Tryouts
     {
         public static void Main(string[] args)
         {
-            if (System.IO.Directory.Exists("mu"))
-                System.IO.Directory.Delete("mu", true);
-            var sp = Stopwatch.StartNew();
-            var items = 0;
-            using (var env = new StorageEnvironment(StorageEnvironmentOptions.ForPath("mu")))
+            using (var env = new StorageEnvironment(StorageEnvironmentOptions.CreateMemoryOnly()))
             using (var pool = new TransactionContextPool(env))
             {
                 var builder = new IndexBuilder(pool);
 
                 using (builder.BeginIndexing())
                 {
-                    var serializer = new JsonSerializer();
-                    foreach (var item in System.IO.Directory.GetFiles(@"F:\collection\objects\", "*.json", SearchOption.AllDirectories))
-                    {
-                        dynamic obj = serializer.Deserialize(new JsonTextReader(new StreamReader(item)));
-                        if (obj == null)
-                            continue;
+                    builder.NewEntry("users/1");
+                    builder.Term("Name", "Oren");
+                    builder.Term("Lang", "C#");
+                    builder.Term("Lang", "Hebrew");
+                    builder.Term("Lang", "Bark");
+                    builder.FinishEntry();
 
-                        builder.NewEntry((string)obj.id);
-                        builder.Term("Name", (string)obj.object_name);
-                        builder.Term("Classification", ((string)obj.classification)?.Trim());
-                        builder.Term("Medium", (string)obj.medium);
-                        builder.FinishEntry();
-                        if ((items++ % 10_000) == 0)
-                        {
-                            builder.FlushState();
-                        }
-                    }
+                    builder.NewEntry("dogs/1");
+                    builder.Term("Name", "Arava");
+                    builder.Term("Lang", "Bark");
+                    builder.FinishEntry();
 
                     builder.CompleteIndexing();
                 }
-                Console.WriteLine(sp.Elapsed);
-                Console.WriteLine(JsonConvert.SerializeObject(env.Stats(), Formatting.Indented));
-            }
 
-            //using (var env = new StorageEnvironment(StorageEnvironmentOptions.ForPath("mu")))
-            //using (var pool = new TransactionContextPool(env))
-            //{
-            //    var reader = new IndexReader(pool);
-            //    using (pool.AllocateOperationContext(out TransactionOperationContext ctx))
-            //    {
-            //        ctx.OpenReadTransaction();
-            //        var a = reader.GetTerms(ctx, 2, "Name");
-            //    }
-                
-            //    foreach (var item in reader.Query("Classification", "Metalwork"))
-            //    {
-            //        Console.WriteLine(item);
-            //    }
-              
-            //}
+
+                var reader = new IndexReader(pool);
+                foreach (var item in reader.Query(
+                    new AndQuery
+                    {
+                        Left = new TermQuery { Field = "Lang", Term = "Bark" },
+                        Right = new TermQuery { Field = "Name", Term = "Arava" }
+                    }))
+                {
+                    Console.WriteLine(item);
+                }
+
+            }
 
             //var fsDir = FSDirectory.Open("mu");
             ////using (var env = new StorageEnvironment(StorageEnvironmentOptions.ForPath("mu")))
