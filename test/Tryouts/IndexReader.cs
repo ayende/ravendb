@@ -25,15 +25,11 @@ namespace Tryouts
 
         public IEnumerable<(long Id, string ExternalId)> Query(Query q)
         {
-            using (_pool.AllocateOperationContext(out TransactionOperationContext context))
-            using (var tx = context.OpenReadTransaction())
+            var entriesTable = q.Context.Transaction.InnerTransaction.OpenTable(IndexBuilder.EntriesTableSchema, "Entries");
+            while (q.ReadNext(out var entryId))
             {
-                var entriesTable = tx.InnerTransaction.OpenTable(IndexBuilder.EntriesTableSchema, "Entries");
-                foreach (var entryId in q.Execute(context, this))
-                {
-                    var externalId = GetExternalId(context, entriesTable, entryId);
-                    yield return (entryId, externalId);
-                }
+                var externalId = GetExternalId(q.Context, entriesTable, entryId);
+                yield return (entryId, externalId);
             }
         }
 
@@ -221,34 +217,91 @@ namespace Tryouts
 
     public abstract class Query
     {
-        public abstract IEnumerable<long> Execute(TransactionOperationContext context, IndexReader reader);
+        public readonly TransactionOperationContext Context;
+        protected readonly IndexReader Reader;
+
+        public Query(TransactionOperationContext context, IndexReader reader)
+        {
+            Context = context;
+            Reader = reader;
+        }
+
+        public abstract bool ReadNext(out long output);
+
+        public abstract bool Seek(long value, out long output);
     }
 
     public class TermQuery : Query
     {
-        public string Field;
-        public string Term;
+        public readonly string Field;
+        public readonly string Term;
+        private readonly PostingListReader _postingListReader;
 
-        public override IEnumerable<long> Execute(TransactionOperationContext context, IndexReader reader)
+        public TermQuery(TransactionOperationContext context, IndexReader reader, string field, string term) : base(context, reader)
         {
-            var plr = PostingListReader.Create(context.Transaction.InnerTransaction, Field, Term);
-            while (plr.ReadNext(out var id))
-            {
-                yield return id;
-            }
+            Field = field;
+            Term = term;
+            _postingListReader = PostingListReader.Create(context.Transaction.InnerTransaction, Field, Term);
+        }
+
+        public override bool ReadNext(out long output)
+        {
+            return _postingListReader.ReadNext(out output);
+        }
+
+        public override bool Seek(long value, out long output)
+        {
+            _postingListReader.Seek(value);
+            return _postingListReader.ReadNext(out output);
         }
     }
 
     public class AndQuery : Query
     {
-        public Query Left, Right;
+        private Query _left, _right;
+        private long _leftVal = -1, _rightVal = -2;
+        private bool _done;
 
-        public override IEnumerable<long> Execute(TransactionOperationContext context, IndexReader reader)
+        public AndQuery(TransactionOperationContext context, IndexReader reader, Query left, Query right) : base(context, reader)
         {
-            // BAD IMPL here!
+            _left = left;
+            _right = right;
 
-            return Left.Execute(context, reader).Intersect(Right.Execute(context, reader));
+            _done |= _left.ReadNext(out _leftVal) == false;
+            _done |= _right.ReadNext(out _rightVal) == false;
+        }
 
+        public override bool ReadNext(out long output)
+        {
+            while (_done == false)
+            {
+                if (_leftVal == _rightVal)
+                {
+                    output = _leftVal;
+                    _done |= _left.ReadNext(out _leftVal) == false;
+                    _done |= _right.ReadNext(out _rightVal) == false;
+                    return true;
+                }
+
+                if (_leftVal > _rightVal)
+                {
+                    _done |= _right.Seek(_leftVal, out _rightVal) == false;
+                }
+                else // if (_rightVal > _leftVal)
+                {
+                    _done |= _left.Seek(_rightVal, out _leftVal) == false;
+                }
+            }
+
+            output = -1;
+            return false;
+        }
+
+        public override bool Seek(long value, out long output)
+        {
+            _done |= _left.Seek(value, out _leftVal) == false;
+            _done |= _right.Seek(value, out _rightVal) == false;
+            return ReadNext(out output);
         }
     }
 }
