@@ -56,7 +56,7 @@ namespace Tryouts
                 {
                     Count = 1,
                     StartIndex = 1,
-                    IsGlobal =false,
+                    IsGlobal = false,
                     Name = IdToString
                 });
         }
@@ -70,7 +70,6 @@ namespace Tryouts
         }
 
         private int _lastEntrySize = 64;
-        private ((int Start, int Size, int FieldIdOffset)[] Offsets, long[] Fields) _fieldsOffsetCache;
         private long _lastStringId;
         private long _lastEntryId;
         private long _currentEntryId;
@@ -79,7 +78,7 @@ namespace Tryouts
         private RavenTransaction _tx;
         private Table _stringsTable;
         private Table _entriesTable;
-        private readonly Dictionary<long, List<long>> _values = new Dictionary<long, List<long>>();
+        private readonly Dictionary<long, HashSet<long>> _values = new Dictionary<long, HashSet<long>>();
         private string _externalId;
 
 
@@ -156,75 +155,33 @@ namespace Tryouts
         public unsafe void FinishEntry()
         {
             var buffer = stackalloc byte[9];
-            using (var writer = new UnmanagedWriteBuffer(_context, _context.GetMemory((_lastEntrySize))))
+            using (var writer = new UnmanagedWriteBuffer(_context, _context.GetMemory(_lastEntrySize)))
             {
                 int size;
-                if (_fieldsOffsetCache.Fields == null || _fieldsOffsetCache.Fields.Length < _values.Count)
-                {
-                    size = Bits.NextPowerOf2(_values.Count);
-                    _fieldsOffsetCache = (new (int Start, int Size, int FieldIdOffset)[size], new long[size]);
-                }
-
-                int index = 0;
-                int offsetSize = 1;
                 foreach (var (fieldId, terms) in _values)
                 {
-                    _fieldsOffsetCache.Fields[index] = fieldId;
-                    var fieldIdOffset = writer.SizeInBytes;
-                    size = PostingListBuffer.WriteVariableSizeLong(fieldId, buffer);
-                    writer.Write(buffer, size);
-                    var start = writer.SizeInBytes;
-                    foreach (var term in terms)
+                    using (var temp = new UnmanagedWriteBuffer(_context, _context.GetMemory(_lastEntrySize)))
                     {
-                        size = PostingListBuffer.WriteVariableSizeLong(term, buffer);
+                        foreach (var term in terms)
+                        {
+                            size = PostingListBuffer.WriteVariableSizeLong(term, buffer);
+                            temp.Write(buffer, size);
+                        }
+
+                        size = PostingListBuffer.WriteVariableSizeLong(fieldId, buffer);
                         writer.Write(buffer, size);
-                    }
 
-                    var finalSize = writer.SizeInBytes - start;
-                    offsetSize = Math.Max(offsetSize, MinOffsetSize(start + finalSize));
-                    _fieldsOffsetCache.Offsets[index] = (start, finalSize, fieldIdOffset);
+                        temp.EnsureSingleChunk(out var termsBuf, out int termsSize);
 
-                    index++;
-                }
+                        size = PostingListBuffer.WriteVariableSizeLong(termsSize, buffer);
+                        writer.Write(buffer, size);
 
-                Array.Sort(_fieldsOffsetCache.Fields, _fieldsOffsetCache.Offsets, 0, _values.Count);
-                var arrayStart = writer.SizeInBytes;
-                for (int i = 0; i < _values.Count; i++)
-                {
-                    switch (offsetSize)
-                    {
-                        case 1:
-                            writer.WriteByte((byte)_fieldsOffsetCache.Offsets[i].Start);
-                            writer.WriteByte((byte)_fieldsOffsetCache.Offsets[i].Size);
-                            writer.WriteByte((byte)_fieldsOffsetCache.Offsets[i].FieldIdOffset);
-                            break;
-                        case 2:
-                            var s = (ushort)_fieldsOffsetCache.Offsets[i].Start;
-                            writer.Write((byte*)&s, sizeof(ushort));
-                            s = (ushort)_fieldsOffsetCache.Offsets[i].Size;
-                            writer.Write((byte*)&s, sizeof(ushort));
-                            s = (ushort)_fieldsOffsetCache.Offsets[i].FieldIdOffset;
-                            writer.Write((byte*)&s, sizeof(ushort));
-                            break;
-                        case 4:
-                            var n = _fieldsOffsetCache.Offsets[i].Start;
-                            writer.Write((byte*)&n, sizeof(int));
-                            n = _fieldsOffsetCache.Offsets[i].Size;
-                            writer.Write((byte*)&s, sizeof(int));
-                            n =  _fieldsOffsetCache.Offsets[i].FieldIdOffset;
-                            writer.Write((byte*)&s, sizeof(int));
-                            break;
-                        default:
-                            ThrowInvalidOffsetSize();
-                            break; // never hit
+                        writer.Write(termsBuf, termsSize);
                     }
                 }
-
-                writer.WriteVariableSizeIntInReverse(arrayStart);
-                writer.WriteVariableSizeIntInReverse(_values.Count);
-                writer.WriteByte((byte)offsetSize);
-
                 writer.EnsureSingleChunk(out var output, out int entrySize);
+
+                _lastEntrySize = Math.Max(Bits.NextPowerOf2(entrySize), _lastEntrySize);
 
                 using (_entriesTable.Allocate(out var tvb))
                 using (Slice.From(_context.Allocator, _externalId, out var externalIdSlice))
@@ -272,7 +229,7 @@ namespace Tryouts
             var fieldId = GetStringId(field, cache: true);
             if (_values.TryGetValue(fieldId, out var list) == false)
             {
-                list = new List<long>();
+                list = new HashSet<long>();
                 _values[fieldId] = list;
             }
 

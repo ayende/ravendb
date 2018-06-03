@@ -29,11 +29,12 @@ namespace Tryouts
 
                 using (builder.BeginIndexing())
                 {
+                    //builder.DeleteEntry("users/1");
                     builder.NewEntry("users/1");
                     builder.Term("Name", "Oren");
                     builder.Term("Lang", "C#");
                     builder.Term("Lang", "Hebrew");
-                    builder.Term("Lang", "Bark");
+                    builder.Term("Lang", "Bulgerian");
                     builder.FinishEntry();
 
                     builder.NewEntry("dogs/1");
@@ -49,13 +50,16 @@ namespace Tryouts
                 using (pool.AllocateOperationContext(out TransactionOperationContext ctx))
                 using (ctx.OpenReadTransaction())
                 {
-                    var query = new AndQuery(ctx,reader,
-                        new TermQuery(ctx,reader, "Lang", "Bark"), 
-                        new TermQuery(ctx,reader, "Name", "Oren")
-                        );
-                    foreach (var item in reader.Query(query))
+                    //var query = new OrQuery(ctx, reader,
+                    //    new TermQuery(ctx, reader, "Lang", "C#"),
+                    //    new TermQuery(ctx, reader, "Name", "Arava")
+                    //    );
+                    foreach (var item in reader.Query(new PrefixQuery(ctx, reader, "Lang", "B")))
                     {
+                        Console.WriteLine(string.Join(", ", reader.GetTerms(ctx, item.Id, "Name")));
+
                         Console.WriteLine(item);
+                        Console.WriteLine("----");
                     }
 
                 }

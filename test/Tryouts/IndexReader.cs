@@ -66,8 +66,8 @@ namespace Tryouts
                 var stringId = GetStringId(context, stringsTable, field);
 
                 var termIds = reader.GetTermsFor(stringId);
-                var terms = new string[termIds.Length];
-                for (int i = 0; i < termIds.Length; i++)
+                var terms = new string[termIds.Count];
+                for (int i = 0; i < termIds.Count; i++)
                 {
                     var curTerm = termIds[i];
                     using (Slice.From(context.Allocator, (byte*)&curTerm, sizeof(long), out key))
@@ -113,99 +113,67 @@ namespace Tryouts
     public unsafe struct EntryReader
     {
         private readonly byte* _ptr;
-        private readonly byte* _arrayStart;
         private readonly int _size;
-        private readonly int _count;
-        private readonly byte _offsetSize;
 
         public EntryReader(byte* ptr, int size)
         {
             _ptr = ptr;
             _size = size;
-
-            _offsetSize = _ptr[_size - 1];
-            _count = BlittableJsonReaderBase.ReadVariableSizeIntInReverse(_ptr, _size - 2, out byte offset);
-            var arrayOffset = BlittableJsonReaderBase.ReadVariableSizeIntInReverse(_ptr, _size - 2 - offset, out offset);
-            _arrayStart = _ptr + arrayOffset;
         }
 
-        [StructLayout(LayoutKind.Sequential, Pack = 1, Size = 3)]
-        private struct ByteTriple
-        {
-            public byte Start, Size, FieldIdOffset;
-        }
 
-        [StructLayout(LayoutKind.Sequential, Pack = 1, Size = 6)]
-        private struct UShortTriple
+        public List<long> GetTermsFor(long fieldId)
         {
-            public ushort Start, Size, FieldIdOffset;
-        }
-
-        [StructLayout(LayoutKind.Sequential, Pack = 1, Size = 12)]
-        private struct IntTriple
-        {
-            public int Start, Size, FieldIdOffset;
-        }
-
-        public long[] GetTermsFor(long fieldId)
-        {
-            var (Start, Size) = FindRangeForField(fieldId);
-            if (Size == 0)
-                return Array.Empty<long>();
-            var count = Size / _offsetSize;
-            var terms = new long[count]; // TODO: avoid this allocation, is this even called often enough?
-            for (int i = 0; i < count; i++)
+            var range = FindRangeForField(fieldId);
+            var end = range.Ptr + range.Size;
+            var list = new List<long>();
+            while (range.Ptr < end)
             {
-                switch (_offsetSize)
+                list.Add(PostingListBuffer.ReadVariableSizeLong(ref range.Ptr));
+            }
+            return list;
+        }
+
+        public override string ToString()
+        {
+            var sb = new StringBuilder();
+            var ptr = _ptr;
+            var end = _ptr + _size;
+            while (ptr < end)
+            {
+                var actualfieldId = PostingListBuffer.ReadVariableSizeLong(ref ptr);
+                var size = PostingListBuffer.ReadVariableSizeLong(ref ptr);
+                sb.Append(actualfieldId).Append(":\t");
+                var fieldEnd = ptr + size;
+                while (ptr < fieldEnd)
                 {
-                    case 1:
-                        terms[i] = (_ptr + Start)[i];
-                        break;
-                    case 2:
-                        terms[i] = ((short*)(_ptr + Start))[i];
-                        break;
-                    case 4:
-                        terms[i] = ((int*)(_ptr + Start))[i];
-                        break;
-                    default:
-                        ThrowInvalidOffsetSize();
-                        break;
+                    var entry = PostingListBuffer.ReadVariableSizeLong(ref ptr);
+                    sb.Append(entry).Append(", ");
                 }
             }
 
-            return terms;
+            return sb.ToString();
         }
 
-        private (int Start, int Size) FindRangeForField(long fieldId)
+        private struct TermsRange
         {
-            // TODO: do binary search here? The values are sorted by field id
-            byte* ptr;
-            for (int i = 0; i < _count; i++)
-            {
-                switch (_offsetSize)
-                {
-                    case 1:
-                        ptr = ((ByteTriple*)_arrayStart)[i].FieldIdOffset + _ptr;
-                        if (PostingListBuffer.ReadVariableSizeLong(ref ptr) == fieldId)
-                            return (((ByteTriple*)_arrayStart)[i].Start, ((ByteTriple*)_arrayStart)[i].Size);
-                        break;
-                    case 2:
-                        ptr = ((UShortTriple*)_arrayStart)[i].FieldIdOffset + _ptr;
-                        if (PostingListBuffer.ReadVariableSizeLong(ref ptr) == fieldId)
-                            return (((UShortTriple*)_arrayStart)[i].Start, ((UShortTriple*)_arrayStart)[i].Size);
-                        break;
-                    case 4:
-                        ptr = ((IntTriple*)_arrayStart)[i].FieldIdOffset + _ptr;
-                        if (PostingListBuffer.ReadVariableSizeLong(ref ptr) == fieldId)
-                            return (((IntTriple*)_arrayStart)[i].Start, ((IntTriple*)_arrayStart)[i].Size);
-                        break;
-                    default:
-                        ThrowInvalidOffsetSize();
-                        return (0, 0); // never hit
-                }
-            }
+            public byte* Ptr;
+            public int Size;
+        }
 
-            return (0, 0); // not found
+        private TermsRange FindRangeForField(long fieldId)
+        {
+            var ptr = _ptr;
+            var end = _ptr + _size;
+            while(ptr < end)
+            {
+                var actualfieldId = PostingListBuffer.ReadVariableSizeLong(ref ptr);
+                var size = PostingListBuffer.ReadVariableSizeLong(ref ptr);
+                if (actualfieldId == fieldId)
+                    return new TermsRange { Ptr = ptr, Size = (int)size };
+                ptr += size;
+            }
+            return new TermsRange();
         }
 
 
@@ -256,10 +224,98 @@ namespace Tryouts
         }
     }
 
+    public class PrefixQuery : Query
+    {
+        public readonly string Field, Prefix;
+
+        public PrefixQuery(TransactionOperationContext context, IndexReader reader, string field, string prefix) : base(context, reader)
+        {
+            Field = field;
+            Prefix = prefix;
+
+            var table = context.Transaction.InnerTransaction.OpenTable(PostingList.PostingListSchema, field);
+            if (table == null)
+                return;
+
+            // TODO: avoid this allocation
+            using (Slice.From(context.Allocator, "S:" + prefix, out var prefixSlice))
+            {
+                foreach (var item in table.SeekByPrimaryKeyPrefix(prefixSlice, Slices.Empty, 0))
+                {
+//                    item.Value.Reader
+                }
+                
+            }
+        }
+
+        public override bool ReadNext(out long output)
+        {
+            throw new NotImplementedException();
+
+            
+        }
+
+        public override bool Seek(long value, out long output)
+        {
+            throw new NotImplementedException();
+        }
+    }
+
+    public class OrQuery : Query
+    {
+        private readonly Query _left, _right;
+        private long _leftVal, _rightVal;
+        private bool _leftDone, _rightDone;
+
+        public OrQuery(TransactionOperationContext context, IndexReader reader, Query left, Query right) : base(context, reader)
+        {
+            _left = left;
+            _right = right;
+
+            _leftDone = _left.ReadNext(out _leftVal) == false;
+            _rightDone = _right.ReadNext(out _rightVal) == false;
+        }
+
+        public override bool ReadNext(out long output)
+        {
+            while (_leftDone == false || _rightDone == false)
+            {
+                if (_leftDone == false && (_leftVal < _rightVal || _rightDone))
+                {
+                    output = _leftVal;
+                    _leftDone = _left.ReadNext(out _leftVal) == false;
+                    return true;
+                }
+
+                if (_rightDone == false && (_leftVal > _rightVal || _leftDone))
+                {
+                    output = _rightVal;
+                    _rightDone = _right.ReadNext(out _rightVal) == false;
+                    return true;
+                }
+
+                output = _leftVal;
+                _leftDone = _left.ReadNext(out _leftVal) == false;
+                _rightDone = _right.ReadNext(out _rightVal) == false;
+                return true;
+            }
+
+            output = -1;
+            return false;
+        }
+
+        public override bool Seek(long value, out long output)
+        {
+            _leftDone |= _left.Seek(value, out _leftVal) == false;
+            _rightDone |= _right.Seek(value, out _rightVal) == false;
+            return ReadNext(out output);
+        }
+    }
+    
     public class AndQuery : Query
     {
-        private Query _left, _right;
-        private long _leftVal = -1, _rightVal = -2;
+        private readonly Query _left, _right;
+        private long _leftVal, _rightVal;
         private bool _done;
 
         public AndQuery(TransactionOperationContext context, IndexReader reader, Query left, Query right) : base(context, reader)
