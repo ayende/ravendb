@@ -1,18 +1,15 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using Raven.Client.Documents.Linq;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
-using SlowTests.MailingList;
 using Sparrow.Json;
 using Voron;
 using Voron.Data.PostingList;
 using Voron.Data.Tables;
-using Voron.Impl;
 using Bits = Sparrow.Binary.Bits;
 
-namespace Tryouts
+namespace Tryouts.Corax
 {
     /// <summary>
     /// Index builder builds the index :-)

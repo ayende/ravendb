@@ -13,8 +13,11 @@ using Raven.Server.ServerWide.Context;
 using SlowTests.Client;
 using SlowTests.Issues;
 using SlowTests.MailingList;
+using Tryouts.Corax;
+using Tryouts.Corax.Queries;
 using Voron;
 using static Lucene.Net.Index.IndexWriter;
+using IndexReader = Tryouts.Corax.IndexReader;
 
 namespace Tryouts
 {
@@ -50,11 +53,11 @@ namespace Tryouts
                 using (pool.AllocateOperationContext(out TransactionOperationContext ctx))
                 using (ctx.OpenReadTransaction())
                 {
-                    //var query = new OrQuery(ctx, reader,
-                    //    new TermQuery(ctx, reader, "Lang", "C#"),
-                    //    new TermQuery(ctx, reader, "Name", "Arava")
-                    //    );
-                    foreach (var item in reader.Query(new PrefixQuery(ctx, reader, "Lang", "B")))
+                    var query = new OrQuery(ctx, reader,
+                        new TermQuery(ctx, reader, "Lang", "C#"),
+                        new TermQuery(ctx, reader, "Name", "Arava")
+                        );
+                    foreach (var item in reader.Query(query))
                     {
                         Console.WriteLine(string.Join(", ", reader.GetTerms(ctx, item.Id, "Name")));
 
