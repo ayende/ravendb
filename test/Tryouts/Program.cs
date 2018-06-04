@@ -105,7 +105,8 @@ namespace Tryouts
                     //    new TermQuery(ctx, reader, "Name", "Arava")
                     //    );
                     foreach (var item in reader.Query(
-                        new PrefixQuery(ctx, reader, "Lang", "B")
+                        //new PrefixQuery(ctx, reader, "Lang", "B")
+                        new RangeQuery(ctx, reader, "Lang", "A", "C")
                         ))
                     {
                         Console.WriteLine(string.Join(", ", reader.GetTerms(ctx, item.Id, "Name")));

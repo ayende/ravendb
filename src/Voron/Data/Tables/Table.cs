@@ -30,7 +30,7 @@ namespace Voron.Data.Tables
 
         public readonly Slice Name;
         private readonly byte _tableType;
-        
+
         public long NumberOfEntries { get; private set; }
 
         private long _overflowPageCount;
@@ -233,7 +233,7 @@ namespace Voron.Data.Tables
                     var tvr = new TableValueReader(oldData, oldDataSize);
                     UpdateValuesFromIndex(id,
                         ref tvr,
-                        builder, 
+                        builder,
                         forceUpdate);
 
                     builder.CopyTo(pos);
@@ -465,7 +465,7 @@ namespace Voron.Data.Tables
 
             if (size + sizeof(RawDataSection.RawDataEntrySizes) < RawDataSection.MaxItemSize)
             {
-                id = AllocateFromSmallActiveSection(builder,size);
+                id = AllocateFromSmallActiveSection(builder, size);
 
                 if (ActiveDataSmallSection.TryWriteDirect(id, size, out pos) == false)
                     throw new VoronErrorException(
@@ -670,7 +670,7 @@ namespace Voron.Data.Tables
 
         public FixedSizeTree GetFixedSizeTree(TableSchema.FixedSizeSchemaIndexDef indexDef)
         {
-            
+
             if (indexDef.IsGlobal)
                 return _tx.GetGlobalFixedSizeTree(indexDef.Name, sizeof(long), isIndexTree: true, newPageAllocator: _globalPageAllocator);
 
@@ -826,7 +826,7 @@ namespace Voron.Data.Tables
                     {
                         it.Seek(long.MaxValue);
                     }
-                    
+
                     var result = new TableValueHolder();
                     while (it.MovePrev())
                     {
@@ -1025,7 +1025,7 @@ namespace Voron.Data.Tables
                 } while (it.MovePrev());
             }
         }
-        
+
         public TableValueHolder SeekOneBackwardFrom(TableSchema.SchemaIndexDef index, Slice prefix, Slice last)
         {
             var tree = GetTree(index);
@@ -1041,7 +1041,7 @@ namespace Voron.Data.Tables
                 if (SliceComparer.StartWith(it.CurrentKey, it.RequiredPrefix) == false)
                 {
                     if (it.MovePrev() == false)
-                    return null;
+                        return null;
                 }
 
                 do
@@ -1090,6 +1090,26 @@ namespace Voron.Data.Tables
                 {
                     GetTableValueReader(it, out result.Reader);
                     yield return (it.CurrentKey, result);
+                }
+                while (it.MoveNext());
+            }
+        }
+
+        public IEnumerable<Slice> SeekByPrimaryKeyForKeyOnly(Slice start, Slice requiredPrefix)
+        {
+            var pk = _schema.Key;
+            var tree = GetTree(pk);
+            using (var it = tree.Iterate(false))
+            {
+                if (requiredPrefix.Size > 0)
+                    it.SetRequiredPrefix(requiredPrefix);
+
+                if (it.Seek(start) == false)
+                    yield break;
+
+                do
+                {
+                    yield return it.CurrentKey;
                 }
                 while (it.MoveNext());
             }
@@ -1158,7 +1178,7 @@ namespace Voron.Data.Tables
                     }
                 }
             }
-            finally 
+            finally
             {
                 value.Release(_tx.Allocator);
             }
@@ -1239,7 +1259,7 @@ namespace Voron.Data.Tables
                 // And we want to get values after a|3. 
                 // seeking for a|3 will give us b|1, which will be filtered by the prefix
                 // And using AfterAllKeys will give us b|2.
-                if ((it.Seek(slice) == false  || it.MovePrev() == false) && it.Seek(Slices.AfterAllKeys) == false)
+                if ((it.Seek(slice) == false || it.MovePrev() == false) && it.Seek(Slices.AfterAllKeys) == false)
                 {
                     reader = default;
                     return false;
@@ -1298,8 +1318,8 @@ namespace Voron.Data.Tables
             {
                 if (it.SeekToLast() == false)
                     yield break;
-                
-                if(it.Skip(-skip) == false)
+
+                if (it.Skip(-skip) == false)
                     yield break;
 
                 var result = new TableValueHolder();
@@ -1449,7 +1469,7 @@ namespace Voron.Data.Tables
         }
 
         public long DeleteForwardFrom(TableSchema.SchemaIndexDef index, Slice value, bool startsWith, long numberOfEntriesToDelete,
-            Action<TableValueHolder> beforeDelete = null, Func<TableValueHolder,bool> shouldAbort = null)
+            Action<TableValueHolder> beforeDelete = null, Func<TableValueHolder, bool> shouldAbort = null)
         {
             AssertWritableTable();
 
@@ -1614,7 +1634,7 @@ namespace Voron.Data.Tables
                 {
                     if (NumberOfEntries != indexNumberOfEntries)
                         ThrowInconsistentItemsCountInIndexes(fsi.Key.ToString(), NumberOfEntries, indexNumberOfEntries);
-                        
+
                 }
                 else
                 {
@@ -1624,7 +1644,7 @@ namespace Voron.Data.Tables
                         ThrowInconsistentItemsCountInIndexes(fsi.Key.ToString(), NumberOfEntries, indexNumberOfEntries);
                 }
             }
-           
+
             if (_schema.Key == null)
                 return;
 

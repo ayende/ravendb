@@ -1,29 +1,30 @@
-﻿using Raven.Server.ServerWide.Context;
+﻿using System;
+using Raven.Server.ServerWide.Context;
 using Sparrow;
 using Voron;
 using Voron.Data.PostingList;
-using Voron.Data.Tables;
 
 namespace Tryouts.Corax.Queries
 {
-    public class PrefixQuery : Query
+    public class RangeQuery : Query
     {
-        public readonly string Field, Prefix;
+        public readonly string Field, Min, Max;
 
-        public PrefixQuery(TransactionOperationContext context, IndexReader reader, string field, string prefix) : base(context, reader)
+        public RangeQuery(TransactionOperationContext context, IndexReader reader, string field, string min, string max) : base(context, reader)
         {
             Field = field;
-            Prefix = prefix;
+            Min = min;
+            Max = max;
         }
 
-        protected unsafe ByteStringContext<ByteStringMemoryCache>.InternalScope TermPrefix(out Slice slice)
+        protected unsafe ByteStringContext<ByteStringMemoryCache>.InternalScope TermSlice(string value, out Slice slice)
         {
-            using (Slice.From(Context.Allocator, Prefix, out var prefixSlice))
+            using (Slice.From(Context.Allocator, value, out var buffer))
             {
-                ByteStringContext<ByteStringMemoryCache>.InternalScope scope = Context.Allocator.Allocate(prefixSlice.Size + (sizeof(byte) * 2), out ByteString prefixBuffer);
+                ByteStringContext<ByteStringMemoryCache>.InternalScope scope = Context.Allocator.Allocate(buffer.Size + (sizeof(byte) * 2), out ByteString prefixBuffer);
                 prefixBuffer.Ptr[0] = (byte)'M'; // metrics for this term
                 prefixBuffer.Ptr[1] = (byte)':';
-                prefixSlice.CopyTo(prefixBuffer.Ptr + 2);
+                buffer.CopyTo(prefixBuffer.Ptr + 2);
 
                 slice = new Slice(prefixBuffer);
                 return scope;
@@ -38,12 +39,19 @@ namespace Tryouts.Corax.Queries
                 // because we need to run over individual terms, we run over the metrics, where we have a single
                 // entry per term, instear of the possible many posting list blocks.
 
-                using (TermPrefix(out var prefix))
+                using (TermSlice(Min, out var minSlice))
+                using (TermSlice(Max, out var maxSlice))
                 {
                     results = new PackedBitmapReader(); // empty
                     var plr = new PostingListReader(Context.Transaction.InnerTransaction, fieldSlice);
-                    foreach (var item in table.SeekByPrimaryKeyForKeyOnly(prefix, prefix))
+                    foreach (var item in table.SeekByPrimaryKeyForKeyOnly(minSlice, Slices.Empty))
                     {
+                        var size = Math.Min(item.Size, maxSlice.Size);
+                        var cmp = Memory.Compare(item.Content.Ptr, maxSlice.Content.Ptr, size);
+
+                        if (cmp > 0 || cmp == 0 && maxSlice.Size <= item.Size)
+                            break;// too big, done
+
                         using (Context.Allocator.Allocate(item.Size - 2, out var keyBuffer))
                         {
                             Memory.Copy(keyBuffer.Ptr, item.Content.Ptr + 2, item.Size - 2);
