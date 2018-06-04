@@ -1,6 +1,4 @@
-﻿using System.Collections;
-using Ewah;
-using Raven.Server.ServerWide.Context;
+﻿using Raven.Server.ServerWide.Context;
 using Voron.Data.PostingList;
 
 namespace Tryouts.Corax.Queries
@@ -18,15 +16,16 @@ namespace Tryouts.Corax.Queries
             _postingListReader = PostingListReader.Create(context.Transaction.InnerTransaction, Field, Term);
         }
 
-        public override EwahCompressedBitArray Run()
+        public override void Run(out PackedBitmapReader results)
         {
-            var bitmap = new EwahCompressedBitArray((int)(_postingListReader.NumberOfEntries));
-            while (_postingListReader.ReadNext(out var val))
+            using (var builder = new PackedBitmapBuilder(Context))
             {
-                bitmap.Set((int)val);//TODO: support LONG
+                while (_postingListReader.ReadNext(out var val))
+                {
+                    builder.Set((ulong)val);
+                }
+                builder.Complete(out results);
             }
-
-            return bitmap;
         }
     }
 }

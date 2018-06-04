@@ -1,5 +1,4 @@
-﻿using Ewah;
-using Raven.Server.ServerWide.Context;
+﻿using Raven.Server.ServerWide.Context;
 using Tryouts.Corax.Queries;
 
 namespace Tryouts.Corax
@@ -14,9 +13,26 @@ namespace Tryouts.Corax
             _right = right;
         }
 
-        public override EwahCompressedBitArray Run()
+
+        public override void Run(out PackedBitmapReader results)
         {
-            return _left.Run().And(_right.Run());
+            _left.Run(out var leftResults);
+            try
+            {
+                _right.Run(out var rightResults);
+                try
+                {
+                    PackedBitmapReader.And(Context, ref leftResults, ref rightResults, out results);
+                }
+                finally
+                {
+                    rightResults.Dispose();
+                }
+            }
+            finally
+            {
+                leftResults.Dispose();
+            }
         }
     }
 }

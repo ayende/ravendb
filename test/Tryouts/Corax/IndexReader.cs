@@ -23,9 +23,10 @@ namespace Tryouts.Corax
         public IEnumerable<(long Id, string ExternalId)> Query(Query q)
         {
             var entriesTable = q.Context.Transaction.InnerTransaction.OpenTable(IndexBuilder.EntriesTableSchema, "Entries");
-            var bitmap = q.Run();
-            foreach (var entryId in bitmap)
+            q.Run(out var results);
+            while (results.MoveNext())
             {
+                var entryId = (long)results.Current;
                 var externalId = GetExternalId(q.Context, entriesTable, entryId);
                 yield return (entryId, externalId);
             }
