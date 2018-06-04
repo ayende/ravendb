@@ -100,13 +100,14 @@ namespace Tryouts
                 using (pool.AllocateOperationContext(out TransactionOperationContext ctx))
                 using (ctx.OpenReadTransaction())
                 {
-                    //var query = new OrQuery(ctx, reader,
-                    //    new TermQuery(ctx, reader, "Lang", "C#"),
-                    //    new TermQuery(ctx, reader, "Name", "Arava")
-                    //    );
+                    var query = new XorQuery(ctx, reader,
+                        new PrefixQuery(ctx, reader, "Lang", "B"),
+                        new TermQuery(ctx, reader, "Name", "Arava")
+                        );
                     foreach (var item in reader.Query(
-                        //new PrefixQuery(ctx, reader, "Lang", "B")
-                        new RangeQuery(ctx, reader, "Lang", "A", "C")
+                       //new PrefixQuery(ctx, reader, "Lang", "B")
+                       // new RangeQuery(ctx, reader, "Lang", "A", "C")
+                       query
                         ))
                     {
                         Console.WriteLine(string.Join(", ", reader.GetTerms(ctx, item.Id, "Name")));
