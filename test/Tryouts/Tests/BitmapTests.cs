@@ -17,11 +17,99 @@ namespace Tryouts.Tests
         {
             Validate(Array.Empty<ulong>());
         }
-        
+
+
+        [Fact]
+        public void SimpleXor()
+        {
+            var size = ValidateXor(new ulong[] { 1, 2, 3 }, new ulong[] { 2, 4, 8 });
+            Assert.Equal(14, size);
+        }
+
+
+        [Fact]
+        public void XorUsingArray()
+        {
+            var size = ValidateXor(
+                Enumerable.Range(0, 2048).Select(x => (ulong)x * 2),
+                Enumerable.Range(0, 1048).Select(x => (ulong)x * 2 + 1024)
+                );
+            Assert.Equal(4003, size);
+        }
+        [Fact]
+        public void XorUsingBitmap()
+        {
+            var size = ValidateXor(
+                Enumerable.Range(0, 8048).Select(x => (ulong)x * 2),
+                Enumerable.Range(0, 1048).Select(x => (ulong)x * 2 + 1024)
+                );
+            Assert.Equal(8193, size);
+        }
+
+        [Fact]
+        public void SimpleAnd()
+        {
+            var size = ValidateAnd(new ulong[] { 1, 2, 3 }, new ulong[] { 2, 4, 8 });
+            Assert.Equal(6, size);
+        }
+
+
+        [Fact]
+        public void AndUsingArray()
+        {
+            var size = ValidateAnd(
+                Enumerable.Range(0, 2048).Select(x => (ulong)x * 2),
+                Enumerable.Range(0, 1048).Select(x => (ulong)x * 2 + 1024)
+                );
+            Assert.Equal(4195, size);
+        }
+        [Fact]
+        public void AndUsingBitmap()
+        {
+            var size = ValidateAnd(
+                Enumerable.Range(0, 8048).Select(x => (ulong)x * 2),
+                Enumerable.Range(0, 1048).Select(x => (ulong)x * 2  + 1024)
+                );
+            Assert.Equal(8193, size);
+        }
+
+        [Fact]
+        public void SimpleOr()
+        {
+            var size = ValidateOr(new ulong[] { 1, 2, 3}, new ulong[] { 2, 4, 8 });
+            Assert.Equal(10, size);
+        }
+
+        [Fact]
+        public void OrUsingArray()
+        {
+            var size = ValidateOr(
+                Enumerable.Range(0, 2048).Select(x=>  (ulong)x*2),
+                Enumerable.Range(0, 1048).Select(x => (ulong)x * 2 + 16*1024)
+                );
+            Assert.Equal(6195, size);
+        }
+
+        [Fact]
+        public void OrUsingBitmap()
+        {
+            var size = ValidateOr(
+                Enumerable.Range(0, 8048).Select(x => (ulong)x * 2),
+                Enumerable.Range(0, 1048).Select(x => (ulong)x * 2 + 16 * 1024)
+                );
+            Assert.Equal(8193, size);
+        }
+
         [Fact]
         public void SmallConsecutiveValues()
         {
             Validate(new ulong[] { 1, 2, 3, 4, 5 });
+        }
+
+        [Fact]
+        public void Manual()
+        {
+            Validate(new ulong[] { 1, 2, 7, 70_000 + 48, 70_000 + 49, 1_000_000, (ulong)int.MaxValue + 3, (ulong)int.MaxValue*18});
         }
 
         [Fact]
@@ -96,24 +184,110 @@ namespace Tryouts.Tests
         {
             var items = vals.ToArray();
             using (var ctx = JsonOperationContext.ShortTermSingleUse())
-            using (var writer = ctx.GetStream(8192))
-            using (ctx.GetManagedBuffer(out var buffer))
             {
-                var builder = new PackedBitmapBuilder(writer, buffer);
-                foreach (var item in items)
+                PackedBitmapReader reader;
+                using (var builder = new PackedBitmapBuilder(ctx))
                 {
-                    builder.Set(item);
+                    foreach (var item in items)
+                    {
+                        builder.Set(item);
+                    }
+                    builder.Complete(out reader);
                 }
-                builder.Complete(out var ptr, out var size);
                 
-                var reader = new PackedBitmapReader(ptr,size);
                 int index = 0;
                 while (reader.MoveNext())
                 {
                     Assert.Equal(items[index++], reader.Current);
                 }
                 Assert.Equal(items.Length, index);
-                return writer.SizeInBytes;
+                return reader.SizeInBytes;
+            }
+        }
+
+        private unsafe int ValidateOr(IEnumerable<ulong> a, IEnumerable<ulong> b)
+        {
+            var itemsA = a.ToArray();
+            var itemsb = b.ToArray();
+            using (var ctx = JsonOperationContext.ShortTermSingleUse())
+            {
+                var readerA = Build(ctx, itemsA);
+                var readerB = Build(ctx, itemsb);
+                var final = itemsA.Union(itemsb).ToList();
+                final.Sort();
+
+                var reader = PackedBitmapReader.Or(ctx, ref readerA, ref readerB);
+                int index = 0;
+                while (reader.MoveNext())
+                {
+                    Assert.Equal(final[index++], reader.Current);
+                }
+                Assert.Equal(final.Count, index);
+                return reader.SizeInBytes;
+            }
+        }
+
+        private unsafe int ValidateAnd(IEnumerable<ulong> a, IEnumerable<ulong> b)
+        {
+            var itemsA = a.ToArray();
+            var itemsb = b.ToArray();
+            using (var ctx = JsonOperationContext.ShortTermSingleUse())
+            {
+                var readerA = Build(ctx, itemsA);
+                var readerB = Build(ctx, itemsb);
+                var final = itemsA.Intersect(itemsb).ToList();
+                final.Sort();
+
+                var reader = PackedBitmapReader.And(ctx, ref readerA, ref readerB);
+                int index = 0;
+                while (reader.MoveNext())
+                {
+                    Assert.Equal(final[index++], reader.Current);
+                }
+                Assert.Equal(final.Count, index);
+                return reader.SizeInBytes;
+            }
+        }
+
+        private unsafe int ValidateXor(IEnumerable<ulong> a, IEnumerable<ulong> b)
+        {
+            var itemsA = a.ToArray();
+            var itemsb = b.ToArray();
+            using (var ctx = JsonOperationContext.ShortTermSingleUse())
+            {
+                var readerA = Build(ctx, itemsA);
+                var readerB = Build(ctx, itemsb);
+                var final = itemsA.Union(itemsb).ToList();
+                var toRemove = itemsA.Intersect(itemsb).ToList();
+                foreach (var item in toRemove)
+                {
+                    final.Remove(item);
+                }
+                final.Sort();
+
+                var reader = PackedBitmapReader.Xor(ctx, ref readerA, ref readerB);
+                int index = 0;
+                while (reader.MoveNext())
+                {
+                    Assert.Equal(final[index++], reader.Current);
+                }
+                Assert.Equal(final.Count, index);
+                return reader.SizeInBytes;
+            }
+        }
+
+
+        private static unsafe PackedBitmapReader Build(JsonOperationContext ctx, ulong[] items)
+        {
+            using(var builder = new PackedBitmapBuilder(ctx))
+            {
+                foreach (var item in items)
+                {
+                    builder.Set(item);
+                }
+                builder.Complete(out var reader);
+
+                return reader;
             }
         }
     }

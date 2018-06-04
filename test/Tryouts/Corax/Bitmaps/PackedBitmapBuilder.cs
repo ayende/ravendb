@@ -5,25 +5,28 @@ using Sparrow.Json;
 
 namespace Tryouts.Corax
 {
-    public unsafe struct PackedBitmapBuilder
+    public unsafe struct PackedBitmapBuilder : IDisposable  
     {
         private UnmanagedWriteBuffer _writer;
-        private readonly ulong* _bitmapBuffer;
-        private readonly ushort* _arrayBuffer;
+        internal readonly ulong* _bitmapBuffer;
+        internal readonly ushort* _arrayBuffer;
 
         private ulong _currentContainer;
         private bool _useBitmap;
         private int _disjointAdds;
         private int _arrayIndex;
-
+        private JsonOperationContext.ReturnBuffer _returnBuffer;
         private ushort _prevOffsetInContainer;
 
-        public PackedBitmapBuilder(UnmanagedWriteBuffer writer, JsonOperationContext.ManagedPinnedBuffer buffer)
+        public PackedBitmapBuilder(JsonOperationContext ctx)
         {
+            _returnBuffer = ctx.GetManagedBuffer(out var buffer);
+            _writer = ctx.GetStream(8192);
             _bitmapBuffer = (ulong*)buffer.Pointer;
             _arrayBuffer = (ushort*)(buffer.Pointer + 8192);
-            Debug.Assert(buffer.Length > 8192 * 2);// we use it for array & bitmap handling
-            _writer = writer;
+            // we use it for array & bitmap handling, and when 
+            // merging packed bitmaps
+            Debug.Assert(buffer.Length == 8192 * 4);
             _arrayIndex = 0;
             _disjointAdds = 0;
             _currentContainer = 0;
@@ -66,44 +69,46 @@ namespace Tryouts.Corax
             _arrayBuffer[_arrayIndex++] = offset;
         }
 
-        public void Complete(out byte* ptr, out int size)
+        public void Complete(out PackedBitmapReader reader)
         {
             PushContainer(_currentContainer);
-            _writer.EnsureSingleChunk(out ptr, out size);
+            _writer.EnsureSingleChunk(out var ptr, out var size);
+            reader = new PackedBitmapReader(ptr, size, _writer);
+            _writer = default;
         }
 
-        private (ushort Start, ushort Length) FindRun(int offset)
+        internal static (ushort Start, int Length) FindRun(ulong* bitmap, int offset)
         {
             ushort start = (ushort)offset;
-            ushort length = 0;
+            int length = 0;
             var bitOffset = offset % 64;
             var byteOffset = offset >> 6;
             if (bitOffset != 0)
             {
-                if (ScanPartialLong(bitOffset, _bitmapBuffer) == false)
+                if (ScanPartialLong(bitOffset) == false)
                     return (start, length);
                 byteOffset++;
             }
             bitOffset = 64;
             for (; byteOffset < 1024; byteOffset++)
             {
-                if (_bitmapBuffer[byteOffset] == ulong.MaxValue)
+                if (bitmap[byteOffset] == ulong.MaxValue)
                 {
                     length += 64;
                 }
-                else if (_bitmapBuffer[byteOffset] == 0UL)
+                else if (bitmap[byteOffset] == 0UL)
                 {
                     if (length != 0)
                         return (start, length);
                     start += 64;
                 }
-                else if (ScanPartialLong(0, _bitmapBuffer) == false)
+                else if (ScanPartialLong(0) == false)
                     return (start, length);
             }
-            ScanPartialLong(bitOffset, _bitmapBuffer);
+            ScanPartialLong(bitOffset);
             return (start, length);
 
-            bool ScanPartialLong(int bitStart, ulong* bitmap)
+            bool ScanPartialLong(int bitStart)
             {
                 for (int i = bitStart; i < 64; i++)
                 {
@@ -133,11 +138,19 @@ namespace Tryouts.Corax
                     int start = 0;
                     while (start < ushort.MaxValue)
                     {
-                        var r = FindRun(start);
+                        var r = FindRun(_bitmapBuffer, start);
                         if (r.Length == 0)
                             break;
+                        if (r.Length > ushort.MaxValue)
+                        {
+                            var half = r.Length / 2;
+                            _arrayBuffer[index++] = r.Start;
+                            _arrayBuffer[index++] = (ushort)half;
+                            r.Length -= half;
+                            r.Start += (ushort)half;
+                        }
                         _arrayBuffer[index++] = r.Start;
-                        _arrayBuffer[index++] = r.Length;
+                        _arrayBuffer[index++] = (ushort)r.Length;
                         start = r.Start + r.Length;
                     }
                     WriteArray(_arrayBuffer, index, ContainerType.RunLength);
@@ -187,7 +200,7 @@ namespace Tryouts.Corax
         {
             _writer.WriteByte((byte)type);
             _writer.WriteVariableSizeInt(count);
-            _writer.Write((byte*)array, _arrayIndex * sizeof(ushort));
+            _writer.Write((byte*)array, count * sizeof(ushort));
         }
 
         internal void WriteBitmap(byte* bitmap)
@@ -204,6 +217,12 @@ namespace Tryouts.Corax
                 ulong skip = container - (_currentContainer + 1);
                 _writer.WriteVariableSizeLong((long)skip);
             }
+        }
+
+        public void Dispose()
+        {
+            _returnBuffer.Dispose();
+            _writer.Dispose();
         }
     }
 }

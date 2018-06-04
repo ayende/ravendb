@@ -30,8 +30,7 @@ namespace Tryouts
     {
         public unsafe static void Main(string[] args)
         {
-            var a = Bits.LeadingZeroes((ulong)ushort.MaxValue);
-            new BitmapTests().UsingBitmapsWithCompression();
+            new BitmapTests().XorUsingBitmap();
 
             //var values = File.ReadAllText(@"C:\Users\ayende\Downloads\weather_sept_85_srt.csv39.txt").Split(',').Select(ulong.Parse).ToList();
             //values.Sort();
@@ -73,51 +72,51 @@ namespace Tryouts
             //    }
             //}
 
-            //            using (var env = new StorageEnvironment(StorageEnvironmentOptions.CreateMemoryOnly()))
-            //            using (var pool = new TransactionContextPool(env))
-            //            {
-            //                var builder = new IndexBuilder(pool);
-            //
-            //                using (builder.BeginIndexing())
-            //                {
-            //                    //builder.DeleteEntry("users/1");
-            //                    builder.NewEntry("users/1");
-            //                    builder.Term("Name", "Oren");
-            //                    builder.Term("Lang", "C#");
-            //                    builder.Term("Lang", "Hebrew");
-            //                    builder.Term("Lang", "Bulgerian");
-            //                    builder.FinishEntry();
-            //
-            //                    builder.NewEntry("dogs/1");
-            //                    builder.Term("Name", "Arava");
-            //                    builder.Term("Lang", "Bark");
-            //                    builder.FinishEntry();
-            //
-            //                    builder.CompleteIndexing();
-            //                }
-            //
-            //
-            //                var reader = new IndexReader(pool);
-            //                using (pool.AllocateOperationContext(out TransactionOperationContext ctx))
-            //                using (ctx.OpenReadTransaction())
-            //                {
-            //                    var query = new OrQuery(ctx, reader,
-            //                        new TermQuery(ctx, reader, "Lang", "C#"),
-            //                        new TermQuery(ctx, reader, "Name", "Arava")
-            //                        );
-            //                    foreach (var item in reader.Query(query))
-            //                    {
-            //                        Console.WriteLine(string.Join(", ", reader.GetTerms(ctx, item.Id, "Name")));
-            //
-            //                        Console.WriteLine(item);
-            //                        Console.WriteLine("----");
-            //                    }
-            //
-            //                }
-            //
-            //                Console.WriteLine("+============+");
-            //            }
-            //
+            //using (var env = new StorageEnvironment(StorageEnvironmentOptions.CreateMemoryOnly()))
+            //using (var pool = new TransactionContextPool(env))
+            //{
+            //    var builder = new IndexBuilder(pool);
+
+            //    using (builder.BeginIndexing())
+            //    {
+            //        //builder.DeleteEntry("users/1");
+            //        builder.NewEntry("users/1");
+            //        builder.Term("Name", "Oren");
+            //        builder.Term("Lang", "C#");
+            //        builder.Term("Lang", "Hebrew");
+            //        builder.Term("Lang", "Bulgerian");
+            //        builder.FinishEntry();
+
+            //        builder.NewEntry("dogs/1");
+            //        builder.Term("Name", "Arava");
+            //        builder.Term("Lang", "Bark");
+            //        builder.FinishEntry();
+
+            //        builder.CompleteIndexing();
+            //    }
+
+
+            //    var reader = new IndexReader(pool);
+            //    using (pool.AllocateOperationContext(out TransactionOperationContext ctx))
+            //    using (ctx.OpenReadTransaction())
+            //    {
+            //        var query = new OrQuery(ctx, reader,
+            //            new TermQuery(ctx, reader, "Lang", "C#"),
+            //            new TermQuery(ctx, reader, "Name", "Arava")
+            //            );
+            //        foreach (var item in reader.Query(query))
+            //        {
+            //            Console.WriteLine(string.Join(", ", reader.GetTerms(ctx, item.Id, "Name")));
+
+            //            Console.WriteLine(item);
+            //            Console.WriteLine("----");
+            //        }
+
+            //    }
+
+            //    Console.WriteLine("+============+");
+            //}
+
             //var fsDir = FSDirectory.Open("mu");
             ////using (var env = new StorageEnvironment(StorageEnvironmentOptions.ForPath("mu")))
             ////using (var pool = new TransactionContextPool(env))
