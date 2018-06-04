@@ -3,24 +3,27 @@ using System.Collections;
 using System.Collections.Generic;
 using Jint;
 using SlowTests.Issues;
+using Sparrow.Json;
 using Voron.Data.PostingList;
 
 namespace Tryouts.Corax
 {
     public unsafe struct PackedBitmapReader : IEnumerator<ulong>
     {
-        private byte* _data;
+        private byte* _start;
+        private byte* _current;
         private ulong* _bitmap;
         private ushort* _array;
         private readonly byte* _end;
         private ulong _currentContainer;
         private int _arraySize, _arrayIndex;
         private int _bitPos;
-        private byte _currentContainerType;
+        private ContainerType _currentContainerType;
 
         public PackedBitmapReader(byte* data, int size)
         {
-            _data = data;
+            _start = data;
+            _current = data;
             _end = data + size;
             _currentContainerType = 0;
             _array = null;
@@ -32,18 +35,21 @@ namespace Tryouts.Corax
             Current = 0;
         }
 
+        private bool Done => _current == _end;
+
         public bool MoveNext()
         {
             while (true)
             {
                 switch (_currentContainerType)
                 {
-                    case 0: // need to read the next one
-                        if (_data == _end)
+                    case ContainerType.Skip:
+                    case ContainerType.None: // need to read the next one
+                        if (_current == _end)
                             return false;
                         SwitchContainers();
                         continue;// select next container behavior immediately
-                    case (byte)'B':
+                    case ContainerType.Bitmap:
                         while (_bitPos <= ushort.MaxValue)
                         {
                             if ((_bitmap[_bitPos >> 6] & (1UL << _bitPos)) == 0)
@@ -57,14 +63,14 @@ namespace Tryouts.Corax
                             return true;
                         }
                         break;
-                    case (byte)'A':
+                    case ContainerType.Array:
                         if (_arrayIndex < _arraySize)
                         {
                             Current = (_currentContainer << 16) | _array[_arrayIndex++];
                             return true;
                         }
                         break;
-                    case (byte)'R':
+                    case ContainerType.RunLength:
                         while (_arrayIndex < _arraySize)
                         {
                             if (_array[_arrayIndex + 1] == _bitPos)
@@ -90,26 +96,26 @@ namespace Tryouts.Corax
 
         private void SwitchContainers()
         {
-            _currentContainerType = *(_data++);
+            _currentContainerType = (ContainerType)(*(_current++));
             switch (_currentContainerType)
             {
-                case (byte)'S': // skip
-                    var delta = PostingListBuffer.ReadVariableSizeLong(ref _data);
+                case ContainerType.Skip:
+                    var delta = PostingListBuffer.ReadVariableSizeLong(ref _current);
                     _currentContainer += (ulong)delta;
-                    _currentContainerType = 0;
+                    _currentContainerType = ContainerType.Skip;
                     break;
-                case (byte)'B':
-                    _bitmap = (ulong*)_data;
-                    _data += 8192;
+                case ContainerType.Bitmap:
+                    _bitmap = (ulong*)_current;
+                    _current += 8192;
                     _bitPos = 0;
                     break;
-                case (byte)'A':
-                case (byte)'R':
-                    _arraySize = PostingListBuffer.ReadVariableSizeInt(ref _data);
-                    _array = (ushort*)_data;
+                case ContainerType.Array:
+                case ContainerType.RunLength:
+                    _arraySize = PostingListBuffer.ReadVariableSizeInt(ref _current);
+                    _array = (ushort*)_current;
                     _arrayIndex = 0;
                     _bitPos = 0;
-                    _data += _arraySize * sizeof(ushort);
+                    _current += _arraySize * sizeof(ushort);
                     break;
                 default:
                     ThrowInvalidContainerType();

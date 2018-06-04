@@ -140,14 +140,11 @@ namespace Tryouts.Corax
                         _arrayBuffer[index++] = r.Length;
                         start = r.Start + r.Length;
                     }
-                    _writer.WriteByte((byte)'R');
-                    _writer.WriteVariableSizeInt(index);
-                    _writer.Write((byte*)_arrayBuffer, index * sizeof(ushort));
+                    WriteArray(_arrayBuffer, index, ContainerType.RunLength);
                 }
                 else
                 {
-                    _writer.WriteByte((byte)'B');
-                    _writer.Write((byte*)_bitmapBuffer, 8192);
+                    WriteBitmap((byte*)_bitmapBuffer);
                 }
             }
             else if (_arrayIndex > 0)
@@ -170,29 +167,43 @@ namespace Tryouts.Corax
                         temp[index++] = _arrayBuffer[i];
                     }
                     temp[index++] = runs;
-                    _writer.WriteByte((byte)'R');
-                    _writer.WriteVariableSizeInt(index);
-                    _writer.Write((byte*)temp, index * sizeof(ushort));
+                    WriteArray(temp, index, ContainerType.RunLength);
                 }
                 else
                 {
-                    _writer.WriteByte((byte)'A');
-                    _writer.WriteVariableSizeInt(_arrayIndex);
-                    _writer.Write((byte*)_arrayBuffer, _arrayIndex * sizeof(ushort));
+                    WriteArray(_arrayBuffer, _arrayIndex, ContainerType.Array);
                 }
             }
-            if (container - _currentContainer > 1)
-            {
-                _writer.WriteByte((byte)'S');
-                ulong skip = container - (_currentContainer + 1);
-                _writer.WriteVariableSizeLong((long)skip);
-            }
+            WriteSkippedContainers(container);
 
             _currentContainer = container;
             _arrayIndex = 0;
             _useBitmap = false;
             _disjointAdds = 0;
             _prevOffsetInContainer = ushort.MaxValue;
+        }
+
+        internal void WriteArray(ushort* array, int count, ContainerType type)
+        {
+            _writer.WriteByte((byte)type);
+            _writer.WriteVariableSizeInt(count);
+            _writer.Write((byte*)array, _arrayIndex * sizeof(ushort));
+        }
+
+        internal void WriteBitmap(byte* bitmap)
+        {
+            _writer.WriteByte((byte)ContainerType.Bitmap);
+            _writer.Write(bitmap, 8192);
+        }
+
+        internal void WriteSkippedContainers(ulong container)
+        {
+            if (container - _currentContainer > 1)
+            {
+                _writer.WriteByte((byte)ContainerType.Skip);
+                ulong skip = container - (_currentContainer + 1);
+                _writer.WriteVariableSizeLong((long)skip);
+            }
         }
     }
 }
