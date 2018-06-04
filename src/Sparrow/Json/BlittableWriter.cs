@@ -61,7 +61,7 @@ namespace Sparrow.Json
         public int WriteValue(long value)
         {
             var startPos = _position;
-            _position += WriteVariableSizeLong(value);
+            _position += _unmanagedWriteBuffer.WriteVariableSizeLong(value);
             return startPos;
         }
 
@@ -76,7 +76,7 @@ namespace Sparrow.Json
         public int WriteValue(bool value)
         {
             var startPos = _position;
-            _position += WriteVariableSizeInt(value ? 1 : 0);
+            _position += _unmanagedWriteBuffer.WriteVariableSizeInt(value ? 1 : 0);
             return startPos;
         }
 
@@ -174,7 +174,7 @@ namespace Sparrow.Json
             var positionSize = SetOffsetSizeFlag(ref objectToken, distanceFromFirstProperty);
             var propertyIdSize = SetPropertyIdSizeFlag(ref objectToken, maxPropId);
 
-            _position += WriteVariableSizeInt(properties.Count);
+            _position += _unmanagedWriteBuffer.WriteVariableSizeInt(properties.Count);
 
             // Write object metadata
             for (int i = 0; i < properties.Count; i++)
@@ -199,7 +199,7 @@ namespace Sparrow.Json
             var arrayInfoStart = _position;
 
 
-            _position += WriteVariableSizeInt(positions.Count);
+            _position += _unmanagedWriteBuffer.WriteVariableSizeInt(positions.Count);
             if (positions.Count == 0)
             {
                 listToken |= BlittableJsonToken.OffsetSizeByte;
@@ -354,54 +354,6 @@ namespace Sparrow.Json
             _unmanagedWriteBuffer.WriteByte((byte)(value >> 24));
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public unsafe int WriteVariableSizeLong(long value)
-        {
-            // see zig zap trick here:
-            // https://developers.google.com/protocol-buffers/docs/encoding?csw=1#types
-            // for negative values
-
-            var buffer = _innerBuffer.Address;
-            var count = 0;
-            var v = (ulong)((value << 1) ^ (value >> 63));
-            while (v >= 0x80)
-            {
-                buffer[count++] = (byte)(v | 0x80);
-                v >>= 7;
-            }
-            buffer[count++] = (byte)(v);
-
-            if (count == 1)
-                _unmanagedWriteBuffer.WriteByte(*buffer);
-            else
-                _unmanagedWriteBuffer.Write(buffer, count);
-
-            return count;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public unsafe int WriteVariableSizeInt(int value)
-        {
-            // assume that we don't use negative values very often
-            var buffer = _innerBuffer.Address;
-
-            var count = 0;
-            var v = (uint)value;
-            while (v >= 0x80)
-            {
-                buffer[count++] = (byte)(v | 0x80);
-                v >>= 7;
-            }
-            buffer[count++] = (byte)(v);
-
-            if (count == 1)
-                _unmanagedWriteBuffer.WriteByte(*buffer);
-            else
-                _unmanagedWriteBuffer.Write(buffer, count);
-
-            return count;
-        }
-
 
         public unsafe int WriteValue(string str, out BlittableJsonToken token, UsageMode mode = UsageMode.None)
         {
@@ -445,7 +397,7 @@ namespace Sparrow.Json
             var startPos = _position;
             token = BlittableJsonToken.String;
 
-            _position += WriteVariableSizeInt(str.Size);
+            _position += _unmanagedWriteBuffer.WriteVariableSizeInt(str.Size);
 
             var escapeSequencePos = GetSizeIncludingEscapeSequences(str.Buffer, str.Size);
             _unmanagedWriteBuffer.Write(str.Buffer, escapeSequencePos);
@@ -471,9 +423,9 @@ namespace Sparrow.Json
             var startPos = _position;
             token = BlittableJsonToken.CompressedString;
 
-            _position += WriteVariableSizeInt(str.UncompressedSize);
+            _position += _unmanagedWriteBuffer.WriteVariableSizeInt(str.UncompressedSize);
 
-            _position += WriteVariableSizeInt(str.CompressedSize);
+            _position += _unmanagedWriteBuffer.WriteVariableSizeInt(str.CompressedSize);
 
             var escapeSequencePos = GetSizeIncludingEscapeSequences(str.Buffer, str.CompressedSize);
             _unmanagedWriteBuffer.Write(str.Buffer, escapeSequencePos);
@@ -486,7 +438,7 @@ namespace Sparrow.Json
             int startPos = _position;
             token = BlittableJsonToken.String;
 
-            _position += WriteVariableSizeInt(size);
+            _position += _unmanagedWriteBuffer.WriteVariableSizeInt(size);
 
             // if we are more than this size, we want to abort the compression early and just use
             // the verbatim string
@@ -499,7 +451,7 @@ namespace Sparrow.Json
             _unmanagedWriteBuffer.Write(buffer, size);
             _position += size;
 
-            _position += WriteVariableSizeInt(0);
+            _position += _unmanagedWriteBuffer.WriteVariableSizeInt(0);
             return startPos;
         }
 
@@ -510,7 +462,7 @@ namespace Sparrow.Json
             int startPos = position;
             token = BlittableJsonToken.String;
 
-            position += WriteVariableSizeInt(size);
+            position += _unmanagedWriteBuffer.WriteVariableSizeInt(size);
 
             // if we are more than this size, we want to abort the compression early and just use
             // the verbatim string
@@ -525,18 +477,18 @@ namespace Sparrow.Json
 
             if (escapePositions == null)
             {
-                position += WriteVariableSizeInt(0);
+                position += _unmanagedWriteBuffer.WriteVariableSizeInt(0);
                 goto Finish;
             }
 
             // we write the number of the escape sequences required
             // and then we write the distance to the _next_ escape sequence
-            position += WriteVariableSizeInt(escapePositions.Count);
+            position += _unmanagedWriteBuffer.WriteVariableSizeInt(escapePositions.Count);
 
             // PERF: Use indexer to avoid the allocation and overhead of the foreach. 
             int count = escapePositions.Count;
             for (int i = 0; i < count; i++)
-                position += WriteVariableSizeInt(escapePositions[i]);
+                position += _unmanagedWriteBuffer.WriteVariableSizeInt(escapePositions[i]);
 
             Finish:
             _position = position;
@@ -548,10 +500,10 @@ namespace Sparrow.Json
         {
             int startPos = _position;
 
-            int writtenBytes = WriteVariableSizeInt(size);
+            int writtenBytes = _unmanagedWriteBuffer.WriteVariableSizeInt(size);
             _unmanagedWriteBuffer.Write(buffer, size);
             writtenBytes += size;
-            writtenBytes += WriteVariableSizeInt(0);
+            writtenBytes += _unmanagedWriteBuffer.WriteVariableSizeInt(0);
 
             _position += writtenBytes;
 
@@ -561,24 +513,24 @@ namespace Sparrow.Json
         public unsafe int WriteValue(byte* buffer, int size, int[] escapePositions)
         {
             var startPos = _position;
-            _position += WriteVariableSizeInt(size);
+            _position += _unmanagedWriteBuffer.WriteVariableSizeInt(size);
             _unmanagedWriteBuffer.Write(buffer, size);
             _position += size;
 
             if (escapePositions == null || escapePositions.Length == 0)
             {
-                _position += WriteVariableSizeInt(0);
+                _position += _unmanagedWriteBuffer.WriteVariableSizeInt(0);
                 return startPos;
             }
 
             // we write the number of the escape sequences required
             // and then we write the distance to the _next_ escape sequence
-            _position += WriteVariableSizeInt(escapePositions.Length);
+            _position += _unmanagedWriteBuffer.WriteVariableSizeInt(escapePositions.Length);
 
             // PERF: Use indexer to avoid the allocation and overhead of the foreach. 
             int count = escapePositions.Length;
             for (int i = 0; i < count; i++)
-                _position += WriteVariableSizeInt(escapePositions[i]);
+                _position += _unmanagedWriteBuffer.WriteVariableSizeInt(escapePositions[i]);
 
             return startPos;
         }
@@ -588,13 +540,13 @@ namespace Sparrow.Json
             int position = _position;
 
             int startPos = position;
-            position += WriteVariableSizeInt(size);
+            position += _unmanagedWriteBuffer.WriteVariableSizeInt(size);
             _unmanagedWriteBuffer.Write(buffer, size);
             position += size;
 
             if (escapePositions == null || escapePositions.Count == 0)
             {
-                position += WriteVariableSizeInt(0);
+                position += _unmanagedWriteBuffer.WriteVariableSizeInt(0);
                 goto Finish;
             }
 
@@ -602,11 +554,11 @@ namespace Sparrow.Json
 
             // we write the number of the escape sequences required
             // and then we write the distance to the _next_ escape sequence
-            position += WriteVariableSizeInt(escapePositionCount);
+            position += _unmanagedWriteBuffer.WriteVariableSizeInt(escapePositionCount);
 
             // PERF: Use indexer to avoid the allocation and overhead of the foreach. 
             for (int i = 0; i < escapePositionCount; i++)
-                position += WriteVariableSizeInt(escapePositions[i]);
+                position += _unmanagedWriteBuffer.WriteVariableSizeInt(escapePositions[i]);
 
             Finish:
             _position = position;
@@ -618,7 +570,7 @@ namespace Sparrow.Json
             var startPos = _position;
             token = BlittableJsonToken.String;
 
-            _position += WriteVariableSizeInt(size);
+            _position += _unmanagedWriteBuffer.WriteVariableSizeInt(size);
 
             // if we are more than this size, we want to abort the compression early and just use
             // the verbatim string
@@ -633,18 +585,18 @@ namespace Sparrow.Json
 
             if (escapePositions == null)
             {
-                _position += WriteVariableSizeInt(0);
+                _position += _unmanagedWriteBuffer.WriteVariableSizeInt(0);
                 return startPos;
             }
 
             // we write the number of the escape sequences required
             // and then we write the distance to the _next_ escape sequence
-            _position += WriteVariableSizeInt(escapePositions.Length);
+            _position += _unmanagedWriteBuffer.WriteVariableSizeInt(escapePositions.Length);
 
             // PERF: Use indexer to avoid the allocation and overhead of the foreach. 
             int count = escapePositions.Length;
             for (int i = 0; i < count; i++)
-                _position += WriteVariableSizeInt(escapePositions[i]);
+                _position += _unmanagedWriteBuffer.WriteVariableSizeInt(escapePositions[i]);
 
             return startPos;
         }
@@ -675,7 +627,7 @@ namespace Sparrow.Json
                     token = BlittableJsonToken.CompressedString;
                     buffer = compressionBuffer;
                     size = compressedSize;
-                    position += WriteVariableSizeInt(compressedSize);
+                    position += _unmanagedWriteBuffer.WriteVariableSizeInt(compressedSize);
                 }
             }
             return size;

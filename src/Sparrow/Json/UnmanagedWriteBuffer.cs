@@ -20,11 +20,61 @@ namespace Sparrow.Json
     public static class UnmanagedWriteBufferExtensions
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static unsafe void WriteVariableSizeIntInReverse<TWriter>(this TWriter writer, int value)
-        where TWriter : struct, IUnmanagedWriteBuffer
+        public static unsafe int WriteVariableSizeLong<TWriter>(this TWriter writer, long value)
+            where TWriter : struct, IUnmanagedWriteBuffer
+        {
+            // see zig zap trick here:
+            // https://developers.google.com/protocol-buffers/docs/encoding?csw=1#types
+            // for negative values
+
+            var buffer = stackalloc byte[9];
+            var count = 0;
+            var v = (ulong)((value << 1) ^ (value >> 63));
+            while (v >= 0x80)
+            {
+                buffer[count++] = (byte)(v | 0x80);
+                v >>= 7;
+            }
+            buffer[count++] = (byte)(v);
+
+            if (count == 1)
+                writer.WriteByte(*buffer);
+            else
+                writer.Write(buffer, count);
+
+            return count;
+        }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static unsafe int WriteVariableSizeInt<TWriter>(this TWriter writer, int value)
+            where TWriter : struct, IUnmanagedWriteBuffer
         {
             // assume that we don't use negative values very often
-            var buffer = stackalloc byte[9];
+            var buffer = stackalloc byte[5];
+
+            var count = 0;
+            var v = (uint)value;
+            while (v >= 0x80)
+            {
+                buffer[count++] = (byte)(v | 0x80);
+                v >>= 7;
+            }
+            buffer[count++] = (byte)(v);
+
+            if (count == 1)
+                writer.WriteByte(*buffer);
+            else
+                writer.Write(buffer, count);
+
+            return count;
+        }
+
+        
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static unsafe void WriteVariableSizeIntInReverse<TWriter>(this TWriter writer, int value)
+            where TWriter : struct, IUnmanagedWriteBuffer
+        {
+            // assume that we don't use negative values very often
+            var buffer = stackalloc byte[5];
             var count = 0;
             var v = (uint)value;
             while (v >= 0x80)

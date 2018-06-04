@@ -46,6 +46,37 @@ namespace Voron.Data.PostingList
             Last = num;
             return true;
         }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static int ReadVariableSizeInt(ref byte* buffer)
+        {
+            // Read out an Int32 7 bits at a time.  The high bit 
+            // of the byte when on means to continue reading more bytes.
+            // we assume that the value shouldn't be zero very often
+            // because then we'll always take 5 bytes to store it
+
+            int count = 0;
+            byte shift = 0;
+            byte b;
+            do
+            {
+                if (shift == 35)
+                    goto Error; // PERF: Using goto to diminish the size of the loop.
+
+                b = *(buffer++);
+              
+
+                count |= (b & 0x7F) << shift;
+                shift += 7;                
+            }
+            while ((b & 0x80) != 0);
+
+            return count;
+
+            Error:
+            ThrowInvalidShift();            
+
+            return -1;
+        }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static long ReadVariableSizeLong(ref byte* buffer)
