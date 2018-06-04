@@ -103,6 +103,8 @@ namespace Tryouts.Corax
 
         private void SwitchContainers()
         {
+            if (_current == _end)
+                return;
             _currentContainerType = (ContainerType)(*(_current++));
             switch (_currentContainerType)
             {
@@ -143,6 +145,8 @@ namespace Tryouts.Corax
         public ulong Current { get; private set; }
 
         object IEnumerator.Current => Current;
+
+        public UnmanagedWriteBuffer InnerWriter => _writer;
 
         public void Dispose()
         {
@@ -270,23 +274,43 @@ namespace Tryouts.Corax
             }
         }
 
+        public static void Or(JsonOperationContext ctx, ref PackedBitmapReader a, ref PackedBitmapReader b, out PackedBitmapReader results)
+        {
+            Operate<OrOperation>(ctx, ref a, ref b, out results);
+        }
+
+        public static void And(JsonOperationContext ctx, ref PackedBitmapReader a, ref PackedBitmapReader b, out PackedBitmapReader results)
+        {
+            Operate<AndOperation>(ctx, ref a, ref b, out results);
+        }
+
+        public static void Xor(JsonOperationContext ctx, ref PackedBitmapReader a, ref PackedBitmapReader b, out PackedBitmapReader results)
+        {
+            Operate<XorOperation>(ctx, ref a, ref b, out results);
+        }
+
         public static PackedBitmapReader Or(JsonOperationContext ctx, ref PackedBitmapReader a, ref PackedBitmapReader b)
         {
-            return Operate<OrOperation>(ctx, ref a, ref b);
+            Operate<OrOperation>(ctx, ref a, ref b, out var v);
+            return v;
         }
 
         public static PackedBitmapReader And(JsonOperationContext ctx, ref PackedBitmapReader a, ref PackedBitmapReader b)
         {
-            return Operate<AndOperation>(ctx, ref a, ref b);
+            Operate<AndOperation>(ctx, ref a, ref b, out var v);
+            return v;
         }
 
         public static PackedBitmapReader Xor(JsonOperationContext ctx, ref PackedBitmapReader a, ref PackedBitmapReader b)
         {
-            return Operate<XorOperation>(ctx, ref a, ref b);
+
+            Operate<XorOperation>(ctx, ref a, ref b, out var r);
+            return r;
         }
 
 
-        private static PackedBitmapReader Operate<TOp>(JsonOperationContext ctx, ref PackedBitmapReader a, ref PackedBitmapReader b)
+        private static void Operate<TOp>(JsonOperationContext ctx, ref PackedBitmapReader a, ref PackedBitmapReader b,
+            out PackedBitmapReader results)
             where TOp : struct, IBinaryOp
         {
             var op = new TOp();
@@ -339,8 +363,7 @@ namespace Tryouts.Corax
 
                 } while (a.Done == false && b.Done == false);
 
-                builder.Complete(out var output);
-                return output;
+                builder.Complete(out results);
             }
         }
 

@@ -1,4 +1,5 @@
-﻿using System.Diagnostics;
+﻿using System;
+using System.Diagnostics;
 using Sparrow;
 using Sparrow.Binary;
 using Voron.Data.Tables;
@@ -6,7 +7,7 @@ using Voron.Impl;
 
 namespace Voron.Data.PostingList
 {
-     /// <summary>
+    /// <summary>
     ///     A posting list is a data structure that allow us to hold
     ///     in Voron all the relevant documents matching a particular term.
     ///     The posting list has the following operations:
@@ -25,7 +26,7 @@ namespace Voron.Data.PostingList
         // S:term:start -> raw entries
         public static readonly TableSchema PostingListSchema;
         protected readonly Table Table;
-        protected readonly Slice Term;
+        protected Slice Term;
 
         protected readonly Transaction Tx;
         protected PostingListBuffer Buffer;
@@ -45,11 +46,18 @@ namespace Voron.Data.PostingList
         protected PostingList(Transaction tx, Slice field, Slice term)
         {
             Tx = tx;
-            Term = term;
             Table = Tx.OpenTable(PostingListSchema, field);
             if (Table == null)
                 return;
-            
+
+
+            if (term.Size != 0)
+                SetTerm(term);
+        }
+
+        protected void SetTerm(Slice term)
+        {
+            Term = term;
             using (TermStats(out var key))
             {
                 if (Table.ReadByKey(key, out var tvr) == false)

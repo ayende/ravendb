@@ -26,6 +26,18 @@ namespace Voron.Data.PostingList
             ReadBlock(0);
         }
 
+        public PostingListReader(Transaction tx, Slice field) : base(tx, field, Slices.Empty)
+        {
+        }
+
+        public void Reset(Slice term)
+        {
+            if (Table == null)
+                return;
+            SetTerm(term);
+            ReadBlock(0);
+        }
+
         private void ReadBlock(long start)
         {
             if (GetIdForBlockFor(start, out var tvr) == false)
