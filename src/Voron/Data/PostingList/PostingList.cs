@@ -21,8 +21,8 @@ namespace Voron.Data.PostingList
         protected const int MaximumBufferSize = 1024;
 
         // The table holds:
-        // s:term- -> stats
-        // v:term:start -> raw entries
+        // M:term- -> metrics
+        // S:term:start -> raw entries
         public static readonly TableSchema PostingListSchema;
         protected readonly Table Table;
         protected readonly Slice Term;

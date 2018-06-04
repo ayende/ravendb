@@ -2,8 +2,10 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices.ComTypes;
 using System.Threading.Tasks;
 using FastTests.Server.Documents.Queries.Parser;
+using GeoAPI.Geometries;
 using Lucene.Net.Analysis;
 using Lucene.Net.Documents;
 using Lucene.Net.Index;
@@ -13,50 +15,107 @@ using Raven.Server.ServerWide.Context;
 using SlowTests.Client;
 using SlowTests.Issues;
 using SlowTests.MailingList;
+using Sparrow.Binary;
+using Sparrow.Json;
+using Tryouts.Corax;
+using Tryouts.Corax.Queries;
+using Tryouts.Tests;
 using Voron;
 using static Lucene.Net.Index.IndexWriter;
+using IndexReader = Tryouts.Corax.IndexReader;
 
 namespace Tryouts
 {
     public static class Program
     {
-        public static void Main(string[] args)
+        public unsafe static void Main(string[] args)
         {
-            using (var env = new StorageEnvironment(StorageEnvironmentOptions.CreateMemoryOnly()))
-            using (var pool = new TransactionContextPool(env))
-            {
-                var builder = new IndexBuilder(pool);
+            new BitmapTests().XorUsingBitmap();
 
-                using (builder.BeginIndexing())
-                {
-                    builder.NewEntry("users/1");
-                    builder.Term("Name", "Oren");
-                    builder.Term("Lang", "C#");
-                    builder.Term("Lang", "Hebrew");
-                    builder.Term("Lang", "Bark");
-                    builder.FinishEntry();
+            //var values = File.ReadAllText(@"C:\Users\ayende\Downloads\weather_sept_85_srt.csv39.txt").Split(',').Select(ulong.Parse).ToList();
+            //values.Sort();
+            //using (var ctx = JsonOperationContext.ShortTermSingleUse())
+            //using(var writer = ctx.GetStream(8192))
+            //{
+            //    using (ctx.GetManagedBuffer(out var buffer))
+            //    {
+            //        var builder = new PackedBitmapBuilder(writer, buffer);
+            //        foreach (var value in values)
+            //        {
+            //            builder.Set(value);
+            //        }
+            //        builder.Complete(out var buf, out var size);
+            //        Console.WriteLine(writer.SizeInBytes);
+            //        Console.WriteLine(values .Count);
 
-                    builder.NewEntry("dogs/1");
-                    builder.Term("Name", "Arava");
-                    builder.Term("Lang", "Bark");
-                    builder.FinishEntry();
+            //        var reader = new PackedBitmapReader(buf, size);
+            //        int index = 0;
+            //        while (reader.MoveNext())
+            //        {
+            //            if (index == 65535) {
+            //                global::System.Console.WriteLine("a");
+            //            }
 
-                    builder.CompleteIndexing();
-                }
+            //                if (reader.Current != values[index])
+            //            {
+            //                Console.WriteLine("Error on " + index+" expected " + values[index] + " but was " + reader.Current);
+            //                return;
+            //            }
+
+            //            index++;
+            //        }
+
+            //        if (index != values.Count)
+            //        {
+            //            Console.WriteLine("missing values, expected: " + values.Count + " but was " +index );
+            //        }
+            //    }
+            //}
+
+            //using (var env = new StorageEnvironment(StorageEnvironmentOptions.CreateMemoryOnly()))
+            //using (var pool = new TransactionContextPool(env))
+            //{
+            //    var builder = new IndexBuilder(pool);
+
+            //    using (builder.BeginIndexing())
+            //    {
+            //        //builder.DeleteEntry("users/1");
+            //        builder.NewEntry("users/1");
+            //        builder.Term("Name", "Oren");
+            //        builder.Term("Lang", "C#");
+            //        builder.Term("Lang", "Hebrew");
+            //        builder.Term("Lang", "Bulgerian");
+            //        builder.FinishEntry();
+
+            //        builder.NewEntry("dogs/1");
+            //        builder.Term("Name", "Arava");
+            //        builder.Term("Lang", "Bark");
+            //        builder.FinishEntry();
+
+            //        builder.CompleteIndexing();
+            //    }
 
 
-                var reader = new IndexReader(pool);
-                foreach (var item in reader.Query(
-                    new AndQuery
-                    {
-                        Left = new TermQuery { Field = "Lang", Term = "Bark" },
-                        Right = new TermQuery { Field = "Name", Term = "Arava" }
-                    }))
-                {
-                    Console.WriteLine(item);
-                }
+            //    var reader = new IndexReader(pool);
+            //    using (pool.AllocateOperationContext(out TransactionOperationContext ctx))
+            //    using (ctx.OpenReadTransaction())
+            //    {
+            //        var query = new OrQuery(ctx, reader,
+            //            new TermQuery(ctx, reader, "Lang", "C#"),
+            //            new TermQuery(ctx, reader, "Name", "Arava")
+            //            );
+            //        foreach (var item in reader.Query(query))
+            //        {
+            //            Console.WriteLine(string.Join(", ", reader.GetTerms(ctx, item.Id, "Name")));
 
-            }
+            //            Console.WriteLine(item);
+            //            Console.WriteLine("----");
+            //        }
+
+            //    }
+
+            //    Console.WriteLine("+============+");
+            //}
 
             //var fsDir = FSDirectory.Open("mu");
             ////using (var env = new StorageEnvironment(StorageEnvironmentOptions.ForPath("mu")))

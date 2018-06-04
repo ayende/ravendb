@@ -25,18 +25,18 @@ namespace Voron.Data.PostingList
         {
         }
 
-        public void Append(long num)
+        public void Append(long entryId)
         {
             NumberOfEntries++;
             if (Buffer.Size == 0)
                 LoadBufferFirstTime();
 
-            if (Buffer.TryAppend(num))
+            if (Buffer.TryAppend(entryId))
                 return;
 
             FlushBuffer(done: false);
-            Buffer.Last = Buffer.Start = num;
-            if (Buffer.TryAppend(num) == false)
+            Buffer.Last = Buffer.Start = entryId;
+            if (Buffer.TryAppend(entryId) == false)
                 ThrowImpossibleToWriteToNewBuffer();
         }
 
