@@ -1,6 +1,7 @@
 ﻿using System;
 using Raven.Server.ServerWide.Context;
 using Sparrow;
+using Tryouts.Corax.Bitmaps;
 using Voron;
 using Voron.Data.PostingList;
 
@@ -41,8 +42,8 @@ namespace Tryouts.Corax.Queries
 
                 using (TermSlice(Min, out var minSlice))
                 using (TermSlice(Max, out var maxSlice))
+                using (var builder = new PackedBitmapMultiSequenceBuilder(Context))
                 {
-                    results = new PackedBitmapReader(); // empty
                     var plr = new PostingListReader(Context.Transaction.InnerTransaction, fieldSlice);
                     foreach (var item in table.SeekByPrimaryKeyForKeyOnly(minSlice, Slices.Empty))
                     {
@@ -56,27 +57,13 @@ namespace Tryouts.Corax.Queries
                         {
                             Memory.Copy(keyBuffer.Ptr, item.Content.Ptr + 2, item.Size - 2);
                             plr.Reset(new Slice(keyBuffer));
-                            using (var builder = new PackedBitmapBuilder(Context))
+                            while (plr.ReadNext(out var v))
                             {
-                                while (plr.ReadNext(out var v))
-                                {
-                                    builder.Set((ulong)v);
-                                }
-                                builder.Complete(out var current);
-                                var writerToDispose = results.InnerWriter;
-                                try
-                                {
-                                    PackedBitmapReader.Or(Context, ref results, ref current, out results);
-                                }
-                                finally
-                                {
-                                    current.Dispose();
-                                    writerToDispose.Dispose();
-                                }
+                                builder.Set((ulong)v);
                             }
-
                         }
                     }
+                    builder.Complete(out results);
                 }
             }
         }

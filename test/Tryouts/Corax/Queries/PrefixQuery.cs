@@ -1,5 +1,6 @@
 ﻿using Raven.Server.ServerWide.Context;
 using Sparrow;
+using Tryouts.Corax.Bitmaps;
 using Voron;
 using Voron.Data.PostingList;
 using Voron.Data.Tables;
@@ -39,8 +40,8 @@ namespace Tryouts.Corax.Queries
                 // entry per term, instear of the possible many posting list blocks.
 
                 using (TermPrefix(out var prefix))
+                using (var builder = new PackedBitmapMultiSequenceBuilder(Context))
                 {
-                    results = new PackedBitmapReader(); // empty
                     var plr = new PostingListReader(Context.Transaction.InnerTransaction, fieldSlice);
                     foreach (var item in table.SeekByPrimaryKeyForKeyOnly(prefix, prefix))
                     {
@@ -48,27 +49,15 @@ namespace Tryouts.Corax.Queries
                         {
                             Memory.Copy(keyBuffer.Ptr, item.Content.Ptr + 2, item.Size - 2);
                             plr.Reset(new Slice(keyBuffer));
-                            using (var builder = new PackedBitmapBuilder(Context))
                             {
                                 while (plr.ReadNext(out var v))
                                 {
                                     builder.Set((ulong)v);
                                 }
-                                builder.Complete(out var current);
-                                var writerToDispose = results.InnerWriter;
-                                try
-                                {
-                                    PackedBitmapReader.Or(Context, ref results, ref current, out results);
-                                }
-                                finally
-                                {
-                                    current.Dispose();
-                                    writerToDispose.Dispose();
-                                }
                             }
-
                         }
                     }
+                    builder.Complete(out results);
                 }
             }
         }
