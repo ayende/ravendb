@@ -3,11 +3,11 @@ using Tryouts.Corax.Queries;
 
 namespace Tryouts.Corax
 {
-    public class XorQuery : Query
+    public class AndNotQuery : Query
     {
         private readonly Query _left, _right;
 
-        public XorQuery(TransactionOperationContext context, IndexReader reader, Query left, Query right) : base(context, reader)
+        public AndNotQuery(TransactionOperationContext context, IndexReader reader, Query left, Query right) : base(context, reader)
         {
             _left = left;
             _right = right;
@@ -22,7 +22,7 @@ namespace Tryouts.Corax
                 _right.Run(out var rightResults);
                 try
                 {
-                    PackedBitmapReader.Xor(Context, ref leftResults, ref rightResults, out results);
+                    PackedBitmapReader.AndNot(Context, ref leftResults, ref rightResults, out results);
                 }
                 finally
                 {

@@ -18,6 +18,8 @@ namespace Tryouts.Corax
         private JsonOperationContext.ReturnBuffer _returnBuffer;
         private ushort _prevOffsetInContainer;
 
+        public ulong NumberOfSetBits;
+
         public PackedBitmapBuilder(JsonOperationContext ctx)
         {
             _returnBuffer = ctx.GetManagedBuffer(out var buffer);
@@ -30,12 +32,14 @@ namespace Tryouts.Corax
             _arrayIndex = 0;
             _disjointAdds = 0;
             _currentContainer = 0;
+            NumberOfSetBits = 0;
             _useBitmap = false;
             _prevOffsetInContainer = ushort.MaxValue;
         }
 
         public void Set(ulong pos)
         {
+            NumberOfSetBits++;
             var container = pos >> 16;
             var offset = (ushort)pos;
             if (container != _currentContainer)

@@ -38,9 +38,9 @@ namespace Voron.Data.PostingList
             ReadBlock(0);
         }
 
-        private void ReadBlock(long start)
+        private void ReadBlock(long start, bool preferEarlier = true)
         {
-            if (GetIdForBlockFor(start, out var tvr) == false)
+            if (GetIdForBlockFor(start, preferEarlier, out var tvr) == false)
             {
                 _buffer = null;
                 _end = null;
@@ -94,16 +94,7 @@ namespace Voron.Data.PostingList
         private bool TryFindInNextBlock(out long val)
         {
             var nextValue = _last + 1;
-            ReadBlock(nextValue);
-            if (_last < nextValue)
-            {
-                // couldn't find a value, done
-                _buffer = null;
-                _end = null;
-                _last = 0;
-                val = 0;
-                return false;
-            }
+            ReadBlock(nextValue, preferEarlier: false);
             return ReadNext(out val);
         }
 

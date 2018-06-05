@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Text;
 using Jint;
 using SlowTests.Issues;
 using Sparrow;
@@ -24,6 +25,18 @@ namespace Tryouts.Corax
         private int _bitPos;
         private ContainerType _currentContainerType;
 
+        public override string ToString()
+        {
+            var sb = new StringBuilder();
+            var copy = this;
+            copy._current = _start;
+            while (copy.MoveNext())
+            {
+                sb.Append(copy.Current).AppendLine();
+            }
+            return sb.ToString();
+        }
+
         public int SizeInBytes => (int)(_end - _start);
 
         public PackedBitmapReader(byte* data, int size, UnmanagedWriteBuffer writer = default)
@@ -42,7 +55,26 @@ namespace Tryouts.Corax
             Current = 0;
         }
 
-        private bool Done => _current == _end;
+        private bool Done
+        {
+            get
+            {
+                var readAll = _current == _end;
+                if (readAll == false)
+                    return false;
+                switch (_currentContainerType)
+                {
+                    case ContainerType.Bitmap:
+                        return _bitPos == 8192;
+                    case ContainerType.Array:
+                        return _arrayIndex == _arraySize;
+                    case ContainerType.RunLength:
+                        return _arrayIndex == _arraySize - 2 && _array[_arrayIndex + 1] == _bitPos;
+                    default:
+                        return true;
+                }
+            }
+        }
 
         public bool MoveNext()
         {
@@ -95,9 +127,9 @@ namespace Tryouts.Corax
                         ThrowInvalidContainerType();
                         break;
                 }
-
-                _currentContainerType = 0;
-                _currentContainer++;
+                // this will send us back to the container selection
+                // as well as increment the container number
+                _currentContainerType = ContainerType.Skip;
             }
         }
 
@@ -105,6 +137,8 @@ namespace Tryouts.Corax
         {
             if (_current == _end)
                 return;
+            if (_currentContainerType != ContainerType.None)
+                _currentContainer++;
             _currentContainerType = (ContainerType)(*(_current++));
             switch (_currentContainerType)
             {
@@ -117,6 +151,7 @@ namespace Tryouts.Corax
                     _bitmap = (ulong*)_current;
                     _current += 8192;
                     _bitPos = 0;
+
                     break;
                 case ContainerType.Array:
                 case ContainerType.RunLength:
@@ -155,7 +190,7 @@ namespace Tryouts.Corax
 
         private interface IBinaryOp
         {
-            void OtherSideMissing(ref PackedBitmapReader x, in PackedBitmapBuilder builder);
+            void OtherSideMissing(ref PackedBitmapReader x, bool isA, in PackedBitmapBuilder builder);
             void Merge(ulong* pos, ulong a, ulong b);
             void MergeContainer(ulong* buffer, in PackedBitmapReader a, in PackedBitmapReader b);
             void MergeWithBitmap(ulong* bitmap, in PackedBitmapReader b);
@@ -184,7 +219,7 @@ namespace Tryouts.Corax
             }
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public void OtherSideMissing(ref PackedBitmapReader x, in PackedBitmapBuilder builder)
+            public void OtherSideMissing(ref PackedBitmapReader x, bool isA, in PackedBitmapBuilder builder)
             {
                 CopyAndAdvanceContainer(ref x, in builder);
             }
@@ -226,18 +261,18 @@ namespace Tryouts.Corax
             }
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public void OtherSideMissing(ref PackedBitmapReader x, in PackedBitmapBuilder builder)
+            public void OtherSideMissing(ref PackedBitmapReader x, bool isA, in PackedBitmapBuilder builder)
             {
                 x.SwitchContainers();
             }
         }
 
-        private struct XorOperation : IBinaryOp
+        private struct AndNotOperation : IBinaryOp
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             public void Merge(ulong* pos, ulong a, ulong b)
             {
-                *pos = a ^ b;
+                *pos = a & ~b;
             }
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -250,7 +285,7 @@ namespace Tryouts.Corax
                 OrBitsFromReader(tempArray, b);
                 for (int i = 0; i < 1024; i++)
                 {
-                    buffer[i] ^= tempArray[i];
+                    buffer[i] &= ~tempArray[i];
                 }
             }
 
@@ -263,13 +298,15 @@ namespace Tryouts.Corax
 
                 for (int i = 0; i < 1024; i++)
                 {
-                    bitmap[i] ^= tempArray[i];
+                    bitmap[i] &= ~tempArray[i];
                 }
             }
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public void OtherSideMissing(ref PackedBitmapReader x, in PackedBitmapBuilder builder)
+            public void OtherSideMissing(ref PackedBitmapReader x, bool isA, in PackedBitmapBuilder builder)
             {
+                if (isA == false)
+                    return;
                 CopyAndAdvanceContainer(ref x, in builder);
             }
         }
@@ -284,9 +321,9 @@ namespace Tryouts.Corax
             Operate<AndOperation>(ctx, ref a, ref b, out results);
         }
 
-        public static void Xor(JsonOperationContext ctx, ref PackedBitmapReader a, ref PackedBitmapReader b, out PackedBitmapReader results)
+        public static void AndNot(JsonOperationContext ctx, ref PackedBitmapReader a, ref PackedBitmapReader b, out PackedBitmapReader results)
         {
-            Operate<XorOperation>(ctx, ref a, ref b, out results);
+            Operate<AndNotOperation>(ctx, ref a, ref b, out results);
         }
 
         public static PackedBitmapReader Or(JsonOperationContext ctx, ref PackedBitmapReader a, ref PackedBitmapReader b)
@@ -301,10 +338,10 @@ namespace Tryouts.Corax
             return v;
         }
 
-        public static PackedBitmapReader Xor(JsonOperationContext ctx, ref PackedBitmapReader a, ref PackedBitmapReader b)
+        public static PackedBitmapReader AndNot(JsonOperationContext ctx, ref PackedBitmapReader a, ref PackedBitmapReader b)
         {
 
-            Operate<XorOperation>(ctx, ref a, ref b, out var r);
+            Operate<AndNotOperation>(ctx, ref a, ref b, out var r);
             return r;
         }
 
@@ -315,55 +352,76 @@ namespace Tryouts.Corax
         {
             var op = new TOp();
 
-            using (var builder = new PackedBitmapBuilder(ctx))
+            var builder = new PackedBitmapBuilder(ctx);
+            try
             {
                 a._current = a._start;
+                a._currentContainerType = ContainerType.None;
                 b._current = b._start;
+                b._currentContainerType = ContainerType.None;
 
                 a.SwitchContainers();
                 b.SwitchContainers();
 
                 do
                 {
-                    while (a._currentContainer < b._currentContainer)
+                    if (a._currentContainer == b._currentContainer)
                     {
-                        op.OtherSideMissing(ref a, in builder);
-                    }
-                    while (b._currentContainer < a._currentContainer)
-                    {
-                        op.OtherSideMissing(ref b, in builder);
-                    }
-                    if (a._currentContainer != b._currentContainer)
-                        continue;
+                        MergeSameContainer<TOp>(ref a, ref b, ref builder);
+                        b._bitPos = a._bitPos = 8192;
+                        a.SwitchContainers();
+                        b.SwitchContainers();
 
-                    if (a._currentContainerType == ContainerType.Bitmap &&
-                        b._currentContainerType == ContainerType.Bitmap)
-                    {
-                        for (int i = 0; i < 1024; i++)
-                        {
-                            op.Merge(builder._bitmapBuffer + i, a._bitmap[i], b._bitmap[i]);
-                        }
-                        builder.WriteBitmap((byte*)builder._bitmapBuffer);
                         continue;
                     }
-                    if (a._currentContainerType == ContainerType.Bitmap ||
-                        b._currentContainerType == ContainerType.Bitmap)
+                  
+                    while (a._currentContainer < b._currentContainer || a.Done == false && b.Done)
                     {
-                        var withBitmap = a._currentContainerType == ContainerType.Bitmap ? a : b;
-                        var withoutBitmap = a._currentContainerType != ContainerType.Bitmap ? a : b;
-                        Memory.Copy(builder._bitmapBuffer, withBitmap._bitmap, 8192);
-                        op.MergeWithBitmap(builder._bitmapBuffer, in withoutBitmap);
-                        builder.WriteBitmap((byte*)builder._bitmapBuffer);
-                        continue;
+                        op.OtherSideMissing(ref a, isA: true, in builder);
                     }
-                    op.MergeContainer(builder._bitmapBuffer, in a, in b);
+                    while (b._currentContainer < a._currentContainer || b.Done == false && a.Done)
+                    {
+                        op.OtherSideMissing(ref b, isA: false, in builder);
+                    }
 
-                    // now need to see if can optimize
-                    OptimizeSingleContainer(in builder);
-
-                } while (a.Done == false && b.Done == false);
+                } while (a.Done == false || b.Done == false);
 
                 builder.Complete(out results);
+            }
+            finally
+            {
+                builder.Dispose();
+            }
+        }
+
+        private static void MergeSameContainer<TOp>(ref PackedBitmapReader a, ref PackedBitmapReader b, ref PackedBitmapBuilder builder)
+            where TOp : struct, IBinaryOp
+        {
+            var op = new TOp();
+            if (a._currentContainerType == ContainerType.Bitmap &&
+                                    b._currentContainerType == ContainerType.Bitmap)
+            {
+                for (int i = 0; i < 1024; i++)
+                {
+                    op.Merge(builder._bitmapBuffer + i, a._bitmap[i], b._bitmap[i]);
+                }
+                builder.WriteBitmap((byte*)builder._bitmapBuffer);
+            }
+            else if (a._currentContainerType == ContainerType.Bitmap ||
+                b._currentContainerType == ContainerType.Bitmap)
+            {
+                var withBitmap = a._currentContainerType == ContainerType.Bitmap ? a : b;
+                var withoutBitmap = a._currentContainerType != ContainerType.Bitmap ? a : b;
+                Memory.Copy(builder._bitmapBuffer, withBitmap._bitmap, 8192);
+                op.MergeWithBitmap(builder._bitmapBuffer, in withoutBitmap);
+                builder.WriteBitmap((byte*)builder._bitmapBuffer);
+            }
+            else
+            {
+                op.MergeContainer(builder._bitmapBuffer, in a, in b);
+
+                // now need to see if can optimize
+                OptimizeSingleContainer(in builder);
             }
         }
 

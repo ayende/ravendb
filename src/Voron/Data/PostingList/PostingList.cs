@@ -93,14 +93,14 @@ namespace Voron.Data.PostingList
             return scope;
         }
 
-        protected bool GetIdForBlockFor(long num, out TableValueReader tvr)
+        protected bool GetIdForBlockFor(long num, bool preferEarlier, out TableValueReader tvr)
         {
             using (BuildId(num, out Slice key))
             using (Slice.External(Tx.Allocator, key.Content.Ptr, key.Content.Length - sizeof(long), out var termPrefix))
             {
                 if (Table.ReadByKey(key, out tvr))
                     return true;
-                if (Table.SeekOneBeforePrimaryKeyPrefix(key, termPrefix, out tvr))
+                if (preferEarlier && Table.SeekOneBeforePrimaryKeyPrefix(key, termPrefix, out tvr))
                     return true;
                 return Table.SeekOnePrimaryKeyPrefix(key, termPrefix, out tvr);
             }

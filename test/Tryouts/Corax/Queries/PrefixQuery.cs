@@ -1,4 +1,5 @@
-﻿using Raven.Server.ServerWide.Context;
+﻿using System.Collections.Generic;
+using Raven.Server.ServerWide.Context;
 using Sparrow;
 using Tryouts.Corax.Bitmaps;
 using Voron;
@@ -42,6 +43,7 @@ namespace Tryouts.Corax.Queries
                 using (TermPrefix(out var prefix))
                 using (var builder = new PackedBitmapMultiSequenceBuilder(Context))
                 {
+                    var s = new HashSet<ulong>();
                     var plr = new PostingListReader(Context.Transaction.InnerTransaction, fieldSlice);
                     foreach (var item in table.SeekByPrimaryKeyForKeyOnly(prefix, prefix))
                     {
@@ -49,11 +51,10 @@ namespace Tryouts.Corax.Queries
                         {
                             Memory.Copy(keyBuffer.Ptr, item.Content.Ptr + 2, item.Size - 2);
                             plr.Reset(new Slice(keyBuffer));
+                            while (plr.ReadNext(out var v))
                             {
-                                while (plr.ReadNext(out var v))
-                                {
-                                    builder.Set((ulong)v);
-                                }
+                                s.Add((ulong)v);
+                                builder.Set((ulong)v);
                             }
                         }
                     }

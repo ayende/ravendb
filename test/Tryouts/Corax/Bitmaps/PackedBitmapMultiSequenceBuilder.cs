@@ -12,31 +12,43 @@ namespace Tryouts.Corax.Bitmaps
         private PackedBitmapReader _previous;
         private ulong _last;
 
+        public ulong NumberOfSetBits;
+
         public PackedBitmapMultiSequenceBuilder(JsonOperationContext ctx)
         {
             _ctx = ctx;
             _builder = new PackedBitmapBuilder(ctx);
             _previous = new PackedBitmapReader(); // initially empty
             _last = 0;
+            NumberOfSetBits = 0;
         }
 
         public void Set(ulong pos)
         {
-            if(_last < pos)
+            NumberOfSetBits++;
+            if (_last < pos)
             {
+                _last = pos;
                 _builder.Set(pos);
                 return;
             }
-            UnlikelyMergeBitmaps();
+            UnlikelyMergeBitmaps(pos);
+        }
+
+        private void UnlikelyMergeBitmaps(ulong pos)
+        {
+            _last = pos;
+            _builder.Complete(out var current);
+            MergeBitmaps(current);
+            _builder = new PackedBitmapBuilder(_ctx);
             _builder.Set(pos);
         }
 
-        private void UnlikelyMergeBitmaps()
+        private void MergeBitmaps(PackedBitmapReader current)
         {
-            _builder.Complete(out var current);
             using (_previous)
             {
-                if (_previous.SizeInBytes != 0)
+                if (_previous.SizeInBytes == 0)
                 {
                     _previous = current;
                 }
@@ -52,7 +64,6 @@ namespace Tryouts.Corax.Bitmaps
                     }
                 }
             }
-            _builder = new PackedBitmapBuilder(_ctx);
         }
 
         public void Dispose()
@@ -62,7 +73,9 @@ namespace Tryouts.Corax.Bitmaps
 
         internal void Complete(out PackedBitmapReader results)
         {
-            _builder.Complete(out results);
+            _builder.Complete(out var temp);
+            MergeBitmaps(temp);
+            results = _previous;
         }
     }
 }

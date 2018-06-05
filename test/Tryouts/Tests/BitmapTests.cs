@@ -22,7 +22,7 @@ namespace Tryouts.Tests
         [Fact]
         public void SimpleXor()
         {
-            var size = ValidateXor(new ulong[] { 1, 2, 3 }, new ulong[] { 2, 4, 8 });
+            var size = ValidateAndNot(new ulong[] { 1, 2, 3 }, new ulong[] { 2, 4, 8 });
             Assert.Equal(14, size);
         }
 
@@ -30,7 +30,7 @@ namespace Tryouts.Tests
         [Fact]
         public void XorUsingArray()
         {
-            var size = ValidateXor(
+            var size = ValidateAndNot(
                 Enumerable.Range(0, 2048).Select(x => (ulong)x * 2),
                 Enumerable.Range(0, 1048).Select(x => (ulong)x * 2 + 1024)
                 );
@@ -39,7 +39,7 @@ namespace Tryouts.Tests
         [Fact]
         public void XorUsingBitmap()
         {
-            var size = ValidateXor(
+            var size = ValidateAndNot(
                 Enumerable.Range(0, 8048).Select(x => (ulong)x * 2),
                 Enumerable.Range(0, 1048).Select(x => (ulong)x * 2 + 1024)
                 );
@@ -249,7 +249,7 @@ namespace Tryouts.Tests
             }
         }
 
-        private unsafe int ValidateXor(IEnumerable<ulong> a, IEnumerable<ulong> b)
+        private unsafe int ValidateAndNot(IEnumerable<ulong> a, IEnumerable<ulong> b)
         {
             var itemsA = a.ToArray();
             var itemsb = b.ToArray();
@@ -265,7 +265,7 @@ namespace Tryouts.Tests
                 }
                 final.Sort();
 
-                var reader = PackedBitmapReader.Xor(ctx, ref readerA, ref readerB);
+                var reader = PackedBitmapReader.AndNot(ctx, ref readerA, ref readerB);
                 int index = 0;
                 while (reader.MoveNext())
                 {

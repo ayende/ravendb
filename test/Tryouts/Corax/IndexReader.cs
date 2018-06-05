@@ -27,7 +27,7 @@ namespace Tryouts.Corax
             while (results.MoveNext())
             {
                 var entryId = (long)results.Current;
-                var externalId = GetExternalId(q.Context, entriesTable, entryId);
+                var externalId = "";//GetExternalId(q.Context, entriesTable, entryId);
                 yield return (entryId, externalId);
             }
         }

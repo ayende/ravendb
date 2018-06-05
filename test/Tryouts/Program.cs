@@ -9,12 +9,15 @@ using GeoAPI.Geometries;
 using Lucene.Net.Analysis;
 using Lucene.Net.Documents;
 using Lucene.Net.Index;
+using Lucene.Net.Search;
 using Lucene.Net.Store;
 using Newtonsoft.Json;
+using Raven.Server.Documents.Indexes.Persistence.Lucene.Collectors;
 using Raven.Server.ServerWide.Context;
 using SlowTests.Client;
 using SlowTests.Issues;
 using SlowTests.MailingList;
+using Sparrow;
 using Sparrow.Binary;
 using Sparrow.Json;
 using Tryouts.Corax;
@@ -71,100 +74,149 @@ namespace Tryouts
             //        }
             //    }
             //}
-
-            using (var env = new StorageEnvironment(StorageEnvironmentOptions.CreateMemoryOnly()))
-            using (var pool = new TransactionContextPool(env))
             {
-                var builder = new IndexBuilder(pool);
 
-                using (builder.BeginIndexing())
+                using (var env = new StorageEnvironment(StorageEnvironmentOptions.CreateMemoryOnly()))
+                using (var pool = new TransactionContextPool(env))
                 {
-                    //builder.DeleteEntry("users/1");
-                    builder.NewEntry("users/1");
-                    builder.Term("Name", "Oren");
-                    builder.Term("Lang", "C#");
-                    builder.Term("Lang", "Hebrew");
-                    builder.Term("Lang", "Bulgerian");
-                    builder.FinishEntry();
-
-                    builder.NewEntry("dogs/1");
-                    builder.Term("Name", "Arava");
-                    builder.Term("Lang", "Bark");
-                    builder.FinishEntry();
-
-                    builder.CompleteIndexing();
-                }
-
-
-                var reader = new IndexReader(pool);
-                using (pool.AllocateOperationContext(out TransactionOperationContext ctx))
-                using (ctx.OpenReadTransaction())
-                {
-                    var query = new XorQuery(ctx, reader,
-                        new PrefixQuery(ctx, reader, "Lang", "B"),
-                        new TermQuery(ctx, reader, "Name", "Arava")
-                        );
-                    foreach (var item in reader.Query(
-                       //new PrefixQuery(ctx, reader, "Lang", "B")
-                       // new RangeQuery(ctx, reader, "Lang", "A", "C")
-                       query
-                        ))
+                    var builder = new IndexBuilder(pool);
+                    var currentAllocs = GC.GetAllocatedBytesForCurrentThread();
+                    var sp = Stopwatch.StartNew();
+                    for (int ix = 0; ix < 10; ix++)
                     {
-                        Console.WriteLine(string.Join(", ", reader.GetTerms(ctx, item.Id, "Name")));
+                        using (builder.BeginIndexing())
+                        {
+                            //builder.DeleteEntry("users/1");
+                            for (int i = 0; i < 15_000; i++)
+                            {
+                                builder.NewEntry("users/" + Guid.NewGuid());
+                                builder.Term("Name", "Oren");
+                                builder.Term("Lang", "C#");
+                                builder.Term("Lang", "Hebrew");
+                                builder.Term("Lang", "Bulgerian");
+                                builder.FinishEntry();
 
-                        Console.WriteLine(item);
-                        Console.WriteLine("----");
+                                builder.NewEntry("dogs/" + Guid.NewGuid());
+                                builder.Term("Name", "Arava");
+                                builder.Term("Lang", "Bark");
+                                builder.FinishEntry();
+                            }
+
+                            builder.CompleteIndexing();
+                        }
                     }
 
-                }
+                    Console.WriteLine("Indexing time corax: " + sp.ElapsedMilliseconds + ", allocations: " +
+                        new Size((GC.GetAllocatedBytesForCurrentThread() - currentAllocs), SizeUnit.Bytes));
 
-                Console.WriteLine("+============+");
+
+                    var reader = new IndexReader(pool);
+                    using (pool.AllocateOperationContext(out TransactionOperationContext ctx))
+                    {
+                        Console.WriteLine("Starting...");
+                        for (int i = 0; i < 3; i++)
+                        {
+                            using (ctx.OpenReadTransaction())
+                            {
+                                var qt = Stopwatch.StartNew();
+                                currentAllocs = GC.GetAllocatedBytesForCurrentThread();
+                                //var a = reader.Query(
+                                //    new AndNotQuery(ctx, reader,
+                                //        new Corax.Queries.PrefixQuery(ctx, reader, "Lang", "B"),
+                                //        new Corax.Queries.TermQuery(ctx, reader, "Name", "Arava")
+                                //       )
+                                //    ).Count();
+                                var a = reader.Query(
+                                     new Corax.Queries.TermQuery(ctx, reader, "Name", "Arava")
+                                 ).Count();
+                                Console.WriteLine(qt.ElapsedMilliseconds + " " + a+ ", allocations: " +
+                                    new Size((GC.GetAllocatedBytesForCurrentThread() - currentAllocs), SizeUnit.Bytes));
+                                //foreach (var item in a)
+                                //{
+                                //    Console.WriteLine(string.Join(", ", reader.GetTerms(ctx, item.Id, "Name")));
+
+                                //    Console.WriteLine(item);
+                                //    Console.WriteLine("----");
+                                //}
+
+                            }
+                        }
+                    }
+                    Console.WriteLine(new Size(env.Stats().AllocatedDataFileSizeInBytes, SizeUnit.Bytes));
+                    Console.WriteLine("+============+");
+                }
             }
 
-            //var fsDir = FSDirectory.Open("mu");
-            ////using (var env = new StorageEnvironment(StorageEnvironmentOptions.ForPath("mu")))
-            ////using (var pool = new TransactionContextPool(env))
-            //{
-            //    var writer = new IndexWriter(fsDir, new KeywordAnalyzer(), MaxFieldLength.UNLIMITED, null);
-            //    var doc = new Document();
-            //    var idFld = new Field("id()", "", Field.Store.YES, Field.Index.NOT_ANALYZED);
-            //    var nameFld = new Field("Name", "", Field.Store.NO, Field.Index.NOT_ANALYZED);
-            //    var classification = new Field("Classification", "", Field.Store.NO, Field.Index.NOT_ANALYZED);
-            //    var medium = new Field("Medium", "", Field.Store.NO, Field.Index.NOT_ANALYZED);
-            //    doc.Add(idFld);
-            //    doc.Add(nameFld);
-            //    doc.Add(classification);
-            //    doc.Add(medium);
-            //    //using (builder.BeginIndexing())
-            //    {
-            //        var serializer = new JsonSerializer();
-            //        foreach (var item in System.IO.Directory.GetFiles(@"F:\collection\objects\", "*.json", SearchOption.AllDirectories))
-            //        {
-            //            dynamic obj = serializer.Deserialize(new JsonTextReader(new StreamReader(item)));
-            //            if (obj == null)
-            //                continue;
-            //            string str = (string)obj.id;
-            //            if (str != null)
-            //                idFld.SetValue(str);
-            //            str = (string)obj.object_name;
-            //            if (str != null)
-            //                nameFld.SetValue(str);
-            //            str = ((string)obj.classification)?.Trim();
-            //            if (str != null)
-            //                classification.SetValue(str);
-            //            str = (string)obj.medium;
-            //            if (str != null)
-            //                medium.SetValue(str);
-            //            writer.AddDocument(doc, null);
-            //            if ((items++ % 10_000) == 0)
-            //            {
-            //                writer.Flush(false, true, false, null);
-            //            }
-            //        }
+            {
 
-            //    }
-            //    writer.Close(true);
-            //}
+                var d = new Lucene.Net.Store.RAMDirectory();
+                var orenIdFld = new Field("id()", "", Field.Store.YES, Field.Index.NO);
+                var aravaIdFld = new Field("id()", "", Field.Store.YES, Field.Index.NO);
+                var oren = CreateLuceneDocOren(orenIdFld);
+                var arava = CreateLuceneDocArava(aravaIdFld);
+                var currentAllocs = GC.GetAllocatedBytesForCurrentThread();
+                var sp = Stopwatch.StartNew();
+                for (int ix = 0; ix < 10; ix++)
+                {
+                    var writer = new IndexWriter(d, new KeywordAnalyzer(), MaxFieldLength.UNLIMITED, null);
+                    //builder.DeleteEntry("users/1");
+                    for (int i = 0; i < 15_000; i++)
+                    {
+                        orenIdFld.SetValue("users/" + Guid.NewGuid());
+                        aravaIdFld.SetValue("dogs/" + Guid.NewGuid());
+                        writer.AddDocument(oren, null);
+                        writer.AddDocument(arava, null);
+                    }
+
+                    writer.Close(true);
+                }
+                Console.WriteLine("Indexing time Lucene: " + sp.ElapsedMilliseconds + ", allocations: " +
+                    new Size((GC.GetAllocatedBytesForCurrentThread() - currentAllocs), SizeUnit.Bytes));
+                var searcher = new IndexSearcher(d, null);
+                for (int i = 0; i < 3; i++)
+                {
+                    var qt = Stopwatch.StartNew();
+                    currentAllocs = GC.GetAllocatedBytesForCurrentThread();
+                //    var t = searcher.Search(new BooleanQuery
+                //{
+                //    {new Lucene.Net.Search.PrefixQuery(new Term("Lang", "B")), Occur.MUST },
+                //    {new Lucene.Net.Search.TermQuery(new Term("Name", "Arava")), Occur.MUST_NOT },
+                //}, 150, null);
+                    var t = searcher.Search(new Lucene.Net.Search.TermQuery(new Term("Name", "Arava")), 150, null);
+                    Console.WriteLine(qt.ElapsedMilliseconds + " " + t.TotalHits + ", allocations: " +
+                                   new Size((GC.GetAllocatedBytesForCurrentThread() - currentAllocs), SizeUnit.Bytes));
+                }
+
+                Console.WriteLine(new Size(d.SizeInBytes(), SizeUnit.Bytes));
+            }
+        }
+
+        private static unsafe Document CreateLuceneDocOren(Field idFld)
+        {
+            var oren = new Document();
+            var nameFld = new Field("Name", "Oren", Field.Store.NO, Field.Index.NOT_ANALYZED);
+            var lng1 = new Field("Lang", "C#", Field.Store.NO, Field.Index.NOT_ANALYZED);
+            var lng2 = new Field("Lang", "Hebrew", Field.Store.NO, Field.Index.NOT_ANALYZED);
+            var lng3 = new Field("Lang", "Bulgerian", Field.Store.NO, Field.Index.NOT_ANALYZED);
+
+            oren.Add(idFld);
+            oren.Add(nameFld);
+            oren.Add(lng1);
+            oren.Add(lng2);
+            oren.Add(lng3);
+            return oren;
+        }
+
+        private static unsafe Document CreateLuceneDocArava(Field idFld)
+        {
+            var arava = new Document();
+            var nameFld = new Field("Name", "Arava", Field.Store.NO, Field.Index.NOT_ANALYZED);
+            var lng1 = new Field("Lang", "Bark", Field.Store.NO, Field.Index.NOT_ANALYZED);
+
+            arava.Add(idFld);
+            arava.Add(nameFld);
+            arava.Add(lng1);
+            return arava;
         }
     }
 }
