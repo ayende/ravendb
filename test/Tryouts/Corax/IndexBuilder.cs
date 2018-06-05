@@ -31,9 +31,12 @@ namespace Tryouts.Corax
         public static readonly TableSchema EntriesTableSchema;
         public static readonly TableSchema StringsTableSchema;
         public static readonly Slice IdToString;
+        public static readonly Slice ExternalId;
         static IndexBuilder()
         {
             Slice.From(StorageEnvironment.LabelsContext, "IdToString", out IdToString);
+
+            Slice.From(StorageEnvironment.LabelsContext, "ExternalId", out ExternalId);
 
             EntriesTableSchema = new TableSchema()
                 .DefineKey(new TableSchema.SchemaIndexDef
@@ -41,7 +44,15 @@ namespace Tryouts.Corax
                     Count = 1,
                     StartIndex = 0,
                     IsGlobal = false
+                })
+                .DefineIndex(new TableSchema.SchemaIndexDef
+                {
+                    Count = 1,
+                    StartIndex = 2,
+                    IsGlobal = false,
+                    Name = ExternalId
                 });
+
             StringsTableSchema = new TableSchema()
                 .DefineKey(new TableSchema.SchemaIndexDef
                 {
