@@ -47,6 +47,22 @@ namespace Tryouts.Corax
             }
         }
 
+        
+        public unsafe int GetTermFreq(TransactionOperationContext context, string term)
+        {
+            var stringsTable = context.Transaction.InnerTransaction.OpenTable(IndexBuilder.StringsTableSchema, "Strings");
+            using (Slice.From(context.Allocator, term, out var slice))
+            {
+                if (stringsTable.ReadByKey(slice, out var tvr) == false) 
+                    return 0;
+
+                var freq = *(int*)tvr.Read(2, out var size);
+                Debug.Assert(size == sizeof(int));
+
+                return freq;
+            }
+        }
+
         public unsafe string[] GetTerms(TransactionOperationContext context, long id, string field)
         {
             var entriesTable = context.Transaction.InnerTransaction.OpenTable(IndexBuilder.EntriesTableSchema, "Entries");

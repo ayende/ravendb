@@ -42,7 +42,7 @@ namespace Voron.Data.PostingList
 
         private void LoadBufferFirstTime()
         {
-            if (GetIdForBlockFor(long.MaxValue, preferEarlier: true, out var tvr) == false)
+            if (GetIdForBlockFor(long.MaxValue, preferEarlier: true, tvr: out var tvr) == false)
             {
                 Buffer.Start = 0;
                 Buffer.Size = 64;
@@ -92,7 +92,7 @@ namespace Voron.Data.PostingList
                 // need to load another buffer, let's save the current one
                 StoreCurrentBuffer();
 
-                if (GetIdForBlockFor(toDel, preferEarlier: true, out var tvr))
+                if (GetIdForBlockFor(toDel, preferEarlier: true, tvr: out var tvr))
                 {
                     LoadPersistedBuffer(in tvr);
                     if (Buffer.Delete(toDel))
