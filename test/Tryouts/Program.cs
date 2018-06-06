@@ -86,8 +86,14 @@ namespace Tryouts
                     {
                         using (builder.BeginIndexing())
                         {
+                            builder.NewEntry("users/" + Guid.NewGuid());
+                            builder.Term("Name", "John Doe");
+                            builder.Term("Lang", "Hebrew");
+                            builder.Term("Lang", "Bulgerian");
+                            builder.FinishEntry();
+
                             //builder.DeleteEntry("users/1");
-                            for (int i = 0; i < 15_000; i++)
+                            for (int i = 0; i < 100; i++)
                             {
                                 builder.NewEntry("users/" + Guid.NewGuid());
                                 builder.Term("Name", "Oren");
@@ -99,6 +105,7 @@ namespace Tryouts
                                 builder.NewEntry("dogs/" + Guid.NewGuid());
                                 builder.Term("Name", "Arava");
                                 builder.Term("Lang", "Bark");
+                                builder.Term("Lang", "C#");
                                 builder.FinishEntry();
                             }
 
@@ -118,6 +125,13 @@ namespace Tryouts
                         {
                             using (ctx.OpenReadTransaction())
                             {
+                                if (i == 0)
+                                {
+                                    Console.WriteLine("'John Doe' term frequency: " + reader.GetTermFreq(ctx, "John Doe"));
+                                    Console.WriteLine("'Bark' term frequency: " + reader.GetTermFreq(ctx, "Bark"));
+                                    Console.WriteLine("'C#' term frequency: " + reader.GetTermFreq(ctx, "C#"));
+                                }
+
                                 var qt = Stopwatch.StartNew();
                                 currentAllocs = GC.GetAllocatedBytesForCurrentThread();
                                 //var a = reader.Query(
