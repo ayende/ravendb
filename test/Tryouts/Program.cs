@@ -117,19 +117,21 @@ namespace Tryouts
                         new Size((GC.GetAllocatedBytesForCurrentThread() - currentAllocs), SizeUnit.Bytes));
 
 
-                    var reader = new IndexReader(pool);
                     using (pool.AllocateOperationContext(out TransactionOperationContext ctx))
                     {
+                        var reader = new IndexReader(pool);
                         Console.WriteLine("Starting...");
                         for (int i = 0; i < 3; i++)
                         {
                             using (ctx.OpenReadTransaction())
+                            using (reader.BeginReading())
                             {
+                                                    
                                 if (i == 0)
                                 {
-                                    Console.WriteLine("'John Doe' term frequency: " + reader.GetTermFreq(ctx, "John Doe"));
-                                    Console.WriteLine("'Bark' term frequency: " + reader.GetTermFreq(ctx, "Bark"));
-                                    Console.WriteLine("'C#' term frequency: " + reader.GetTermFreq(ctx, "C#"));
+                                    Console.WriteLine("'John Doe' term frequency: " + reader.GetTermFreq("John Doe"));
+                                    Console.WriteLine("'Bark' term frequency: " + reader.GetTermFreq( "Bark"));
+                                    Console.WriteLine("'C#' term frequency: " + reader.GetTermFreq("C#"));
                                 }
 
                                 var qt = Stopwatch.StartNew();
@@ -141,7 +143,7 @@ namespace Tryouts
                                 //       )
                                 //    ).Count();
                                 var a = reader.Query(
-                                     new Corax.Queries.TermQuery(ctx, reader, "Name", "Arava")
+                                     new Corax.Queries.TermQuery(reader, "Name", "Arava")
                                  ).Count();
                                 Console.WriteLine(qt.ElapsedMilliseconds + " " + a+ ", allocations: " +
                                     new Size((GC.GetAllocatedBytesForCurrentThread() - currentAllocs), SizeUnit.Bytes));

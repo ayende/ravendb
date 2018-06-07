@@ -1,8 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Runtime.InteropServices.ComTypes;
-using NetTopologySuite.Utilities;
 using Sparrow.Json;
 using Tryouts.Corax;
 using Xunit;

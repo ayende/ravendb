@@ -9,11 +9,11 @@ namespace Tryouts.Corax.Queries
         public readonly string Term;
         private readonly PostingListReader _postingListReader;
 
-        public TermQuery(TransactionOperationContext context, IndexReader reader, string field, string term) : base(context, reader)
+        public TermQuery(IndexReader reader, string field, string term) : base(reader._context, reader)
         {
             Field = field;
             Term = term;
-            _postingListReader = PostingListReader.Create(context.Transaction.InnerTransaction, Field, Term);
+            _postingListReader = PostingListReader.Create(reader._context.Transaction.InnerTransaction, Field, Term);
         }
 
         public override void Run(out PackedBitmapReader results)

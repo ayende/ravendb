@@ -13,21 +13,34 @@ namespace Tryouts.Corax
 {
     public class IndexReader
     {
-        private readonly TransactionContextPool _pool;
+        private readonly ITransactionContextPool _pool;
+        internal TransactionOperationContext Context;
+        private Table _stringsTable;
+        private Table _entriesTable;
 
-        public IndexReader(TransactionContextPool pool)
+        public IndexReader(ITransactionContextPool pool)
         {
             _pool = pool;
         }
 
+        public IDisposable BeginReading()
+        {
+            var dispose = _pool.AllocateOperationContext(out Context);
+        
+            Context.OpenReadTransaction();
+            _stringsTable = Context.Transaction.InnerTransaction.OpenTable(IndexBuilder.StringsTableSchema, "Strings");
+            _entriesTable = Context.Transaction.InnerTransaction.OpenTable(IndexBuilder.EntriesTableSchema, "Entries");
+
+            return dispose;
+        }
+
         public IEnumerable<(long Id, string ExternalId)> Query(Query q)
         {
-            var entriesTable = q.Context.Transaction.InnerTransaction.OpenTable(IndexBuilder.EntriesTableSchema, "Entries");
             q.Run(out var results);
             while (results.MoveNext())
             {
                 var entryId = (long)results.Current;
-                var externalId = "";//GetExternalId(q.Context, entriesTable, entryId);
+                var externalId = GetExternalId(Context, _entriesTable, entryId);
                 yield return (entryId, externalId);
             }
         }
@@ -36,7 +49,7 @@ namespace Tryouts.Corax
         {
             using (Slice.From(context.Allocator, key, out var slice))
             {
-                if (stringsTable.ReadByKey(slice, out var tvr) != false)
+                if (stringsTable.ReadByKey(slice, out var tvr))
                 {
                     long stringId = *(long*)tvr.Read(1, out var size);
                     Debug.Assert(size == sizeof(long));
@@ -48,12 +61,11 @@ namespace Tryouts.Corax
         }
 
         
-        public unsafe int GetTermFreq(TransactionOperationContext context, string term)
+        public unsafe int GetTermFreq(string term)
         {
-            var stringsTable = context.Transaction.InnerTransaction.OpenTable(IndexBuilder.StringsTableSchema, "Strings");
-            using (Slice.From(context.Allocator, term, out var slice))
+            using (Slice.From(Context.Allocator, term, out var slice))
             {
-                if (stringsTable.ReadByKey(slice, out var tvr) == false) 
+                if (_stringsTable.ReadByKey(slice, out var tvr) == false) 
                     return 0;
 
                 var freq = *(int*)tvr.Read(2, out var size);
@@ -63,14 +75,12 @@ namespace Tryouts.Corax
             }
         }
 
-        public unsafe string[] GetTerms(TransactionOperationContext context, long id, string field)
+        public unsafe string[] GetTerms(long id, string field)
         {
-            var entriesTable = context.Transaction.InnerTransaction.OpenTable(IndexBuilder.EntriesTableSchema, "Entries");
-            var stringsTable = context.Transaction.InnerTransaction.OpenTable(IndexBuilder.StringsTableSchema, "Strings");
-            long revId = Bits.SwapBytes(id);
-            using (Slice.From(context.Allocator, (byte*)&revId, sizeof(long), out var key))
+            var revId = Bits.SwapBytes(id);
+            using (Slice.From(Context.Allocator, (byte*)&revId, sizeof(long), out var key))
             {
-                if (entriesTable.ReadByKey(key, out var tvr) == false)
+                if (_entriesTable.ReadByKey(key, out var tvr) == false)
                 {
                     return Array.Empty<string>();
                 }
@@ -78,16 +88,16 @@ namespace Tryouts.Corax
                 var entry = tvr.Read(1, out var size);
                 var reader = new EntryReader(entry, size);
 
-                var stringId = GetStringId(context, stringsTable, field);
+                var stringId = GetStringId(Context, _stringsTable, field);
 
                 var termIds = reader.GetTermsFor(stringId);
                 var terms = new string[termIds.Count];
                 for (int i = 0; i < termIds.Count; i++)
                 {
                     var curTerm = termIds[i];
-                    using (Slice.From(context.Allocator, (byte*)&curTerm, sizeof(long), out key))
+                    using (Slice.From(Context.Allocator, (byte*)&curTerm, sizeof(long), out key))
                     {
-                        var tvh = stringsTable.SeekOneForwardFromPrefix(IndexBuilder.StringsTableSchema.Indexes[IndexBuilder.IdToString], key);
+                        var tvh = _stringsTable.SeekOneForwardFromPrefix(IndexBuilder.StringsTableSchema.Indexes[IndexBuilder.IdToString], key);
                         if (tvh == null)
                             ThrowInvalidMissingStringId(termIds[i]);
 
@@ -99,14 +109,14 @@ namespace Tryouts.Corax
             }
         }
 
-        private static unsafe void ThrowInvalidMissingStringId(long id)
+        private static void ThrowInvalidMissingStringId(long id)
         {
             throw new InvalidOperationException("Missing string whose id is: " + id);
         }
 
         private static unsafe string GetExternalId(TransactionOperationContext context, Table entriesTable, long entryId)
         {
-            long revId = Bits.SwapBytes(entryId);
+            var revId = Bits.SwapBytes(entryId);
             using (Slice.From(context.Allocator, (byte*)&revId, sizeof(long), out var key))
             {
                 if (entriesTable.ReadByKey(key, out var tvr) == false)
@@ -117,7 +127,6 @@ namespace Tryouts.Corax
                 return Encoding.UTF8.GetString(tvr.Read(2, out var size), size);
             }
         }
-
 
         private static void ThrowBadData()
         {
