@@ -242,7 +242,7 @@ namespace Tryouts.Corax
                 _values[fieldId] = list;
             }
 
-            list.Add(GetStringId(term, cache: false, incrementFreq:true));
+            list.Add(IncrementTermFreqAndGetStringId(term));
         }
 
         private PostingListWriter GetPostingListWriter(string field, string term)
@@ -262,7 +262,42 @@ namespace Tryouts.Corax
             return postingList;
         }
 
-        private unsafe long GetStringId(string key, bool cache, bool incrementFreq = false)
+        private unsafe long IncrementTermFreqAndGetStringId(string term)
+        {
+            using (Slice.From(_context.Allocator, term, out var slice))
+            {
+                if (_stringsTable.ReadByKey(slice, out var tvr) != false)
+                {
+                    var stringId = *(long*)tvr.Read(1, out var size);
+                    Debug.Assert(size == sizeof(long));
+
+                    var freq = *(int*)tvr.Read(2, out size);
+                    Debug.Assert(size == sizeof(int));
+
+                    using (_stringsTable.Allocate(out var tvb))
+                    {
+                        tvb.Add(slice);
+                        tvb.Add(stringId);
+                        tvb.Add(++freq); //term frequency
+                        _stringsTable.Update(tvr.Id, tvb);
+                    }
+
+                    return stringId;
+                }
+
+                using (_stringsTable.Allocate(out var tvb))
+                {
+                    var stringId = ++_lastStringId;
+                    tvb.Add(slice);
+                    tvb.Add(stringId);
+                    tvb.Add(1); //term frequency
+                    _stringsTable.Insert(tvb);
+                    return stringId;
+                }
+            }
+        }
+
+        private unsafe long GetStringId(string key, bool cache)
         {
             if (cache && _stringIdCache.TryGetValue(key, out var val))
                 return val;
@@ -273,20 +308,6 @@ namespace Tryouts.Corax
                 {
                     var stringId = *(long*)tvr.Read(1, out var size);                    
                     Debug.Assert(size == sizeof(long));
-
-                    if (incrementFreq)
-                    {
-                        var freq = *(int*)tvr.Read(2, out size);
-                        Debug.Assert(size == sizeof(int));
-
-                        using (_stringsTable.Allocate(out var tvb))
-                        {
-                            tvb.Add(slice);
-                            tvb.Add(stringId);
-                            tvb.Add(++freq); //term frequency
-                            _stringsTable.Update(tvr.Id, tvb);
-                        }
-                    }
 
                     if (cache)
                         _stringIdCache[key] = stringId;
