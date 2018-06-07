@@ -25,13 +25,10 @@ namespace Tryouts.Tests
                     builder.FinishEntry();
                 }
 
-                using (pool.AllocateOperationContext(out TransactionOperationContext ctx))
+                var reader = new IndexReader(pool);
+                using (reader.BeginReading())
                 {
-                    var reader = new IndexReader(pool);
-                    using (ctx.OpenReadTransaction())
-                    {
-                        Assert.Equal(0, reader.GetTermFreq("English"));
-                    }
+                    Assert.Equal(0, reader.GetTermFreq("English"));
                 }
             }
         }
@@ -46,23 +43,19 @@ namespace Tryouts.Tests
                 using (builder.BeginIndexing())
                 {
                     builder.NewEntry("users/1");
-                        builder.Term("Name", "John Doe");
-                        builder.Term("Lang", "English");
-                        builder.Term("Lang", "Hebrew");
-                        builder.Term("Lang", "English");
+                    builder.Term("Name", "John Doe");
+                    builder.Term("Lang", "English");
+                    builder.Term("Lang", "Hebrew");
+                    builder.Term("Lang", "English");
                     builder.FinishEntry();
 
                     builder.CompleteIndexing();
                 }
 
-                using (pool.AllocateOperationContext(out TransactionOperationContext ctx))
+                var reader = new IndexReader(pool);
+                using (reader.BeginReading())
                 {
-                    var reader = new IndexReader(pool);
-                    using (ctx.OpenReadTransaction())
-                    {
-
-                        Assert.Equal(2, reader.GetTermFreq("English"));
-                    }
+                    Assert.Equal(2, reader.GetTermFreq("English"));
                 }
             }
         }
@@ -74,16 +67,13 @@ namespace Tryouts.Tests
             using (var pool = new TransactionContextPool(env))
             {
                 CreateIndexData(pool);
-
-                using (pool.AllocateOperationContext(out TransactionOperationContext ctx))
+                
+                var reader = new IndexReader(pool);
+                using (reader.BeginReading())
                 {
-                    var reader = new IndexReader(pool);
-                    using (ctx.OpenReadTransaction())
-                    {
-                        Assert.Equal(2,reader.GetTermFreq("English"));
-                        Assert.Equal(1,reader.GetTermFreq("Hebrew"));
-                        Assert.Equal(3,reader.GetTermFreq("Yiddish"));
-                    }
+                    Assert.Equal(2, reader.GetTermFreq("English"));
+                    Assert.Equal(1, reader.GetTermFreq("Hebrew"));
+                    Assert.Equal(3, reader.GetTermFreq("Yiddish"));
                 }
             }
         }

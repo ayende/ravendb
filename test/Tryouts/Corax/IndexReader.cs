@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Text;
 using Raven.Server.ServerWide.Context;
 using Sparrow.Binary;
@@ -36,6 +37,9 @@ namespace Tryouts.Corax
 
         public IEnumerable<(long Id, string ExternalId)> Query(Query q)
         {
+            if(_entriesTable == null) //no entries were written yet, so OpenTable will return null
+                yield break;
+
             q.Run(out var results);
             while (results.MoveNext())
             {
@@ -45,13 +49,13 @@ namespace Tryouts.Corax
             }
         }
 
-        private unsafe long GetStringId(TransactionOperationContext context, Table stringsTable, string key)
+        private static unsafe long GetStringId(TransactionOperationContext context, Table stringsTable, string key)
         {
             using (Slice.From(context.Allocator, key, out var slice))
             {
                 if (stringsTable.ReadByKey(slice, out var tvr))
                 {
-                    long stringId = *(long*)tvr.Read(1, out var size);
+                    var stringId = *(long*)tvr.Read(1, out var size);
                     Debug.Assert(size == sizeof(long));
                     return stringId;
                 }
@@ -63,6 +67,9 @@ namespace Tryouts.Corax
         
         public unsafe int GetTermFreq(string term)
         {
+            if (_stringsTable == null && _stringsTable == null) //no entries were written yet, so OpenTable will return null
+                return 0;
+
             using (Slice.From(Context.Allocator, term, out var slice))
             {
                 if (_stringsTable.ReadByKey(slice, out var tvr) == false) 
@@ -77,6 +84,9 @@ namespace Tryouts.Corax
 
         public unsafe string[] GetTerms(long id, string field)
         {
+            if (_entriesTable == null && _stringsTable == null) //no entries were written yet, so OpenTable will return null
+                return Array.Empty<string>();
+
             var revId = Bits.SwapBytes(id);
             using (Slice.From(Context.Allocator, (byte*)&revId, sizeof(long), out var key))
             {
