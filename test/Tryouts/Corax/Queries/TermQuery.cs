@@ -1,5 +1,4 @@
-﻿using Raven.Server.ServerWide.Context;
-using Voron.Data.PostingList;
+﻿using Voron.Data.PostingList;
 
 namespace Tryouts.Corax.Queries
 {
@@ -9,7 +8,7 @@ namespace Tryouts.Corax.Queries
         public readonly string Term;
         private readonly PostingListReader _postingListReader;
 
-        public TermQuery(IndexReader reader, string field, string term) : base(reader.Context, reader)
+        public TermQuery(IndexReader reader, string field, string term) : base(reader)
         {
             Field = field;
             Term = term;

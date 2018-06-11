@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using Voron;
 using Voron.Data.PostingList;
 using Xunit;
 
@@ -218,6 +219,53 @@ namespace FastTests.Voron.PostingLists
                     Assert.Equal(item, v);
                 }
                 Assert.False(reader.ReadNext(out _));
+            }
+        }
+
+        [Fact]
+        public void CanDeleteInTheMiddle()
+        {
+            var list = new List<long>();
+
+            using (var tx = Env.WriteTransaction())
+            {
+                using (var writer = PostingListWriter.Create(tx, "Foo", "Bar"))
+                {
+                    for (int i = 0; i < 10; i++)
+                    {
+                        
+                        list.Add(i + 1);
+                        writer.Append(i + 1);
+                    }
+                }
+                tx.Commit();
+            }
+
+            using (var tx = Env.WriteTransaction())
+            {                
+                using (var writer = PostingListWriter.Create(tx, "Foo", "Bar"))
+                {
+                    writer.Delete(3L);
+                    writer.Delete(4L);
+                    list.Remove(3);
+                    list.Remove(4);
+                }
+                tx.Commit();
+            }
+
+            using (var tx = Env.ReadTransaction())
+            {
+                // here we should only have the oren's terms
+                var reader = PostingListReader.Create(tx, "Foo", "Bar");
+                Assert.Equal(8, reader.NumberOfEntries);
+                var fetchedList = new List<long>();
+                while(reader.ReadNext(out var v))
+                    fetchedList.Add(v);
+
+                for (int i = 0; i < list.Count; i++)
+                {
+                    Assert.Equal(list[i],fetchedList[i]);
+                }
             }
         }
 

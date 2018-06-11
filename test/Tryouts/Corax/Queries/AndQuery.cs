@@ -1,5 +1,4 @@
-﻿using Raven.Server.ServerWide.Context;
-using Tryouts.Corax.Queries;
+﻿using Tryouts.Corax.Queries;
 
 namespace Tryouts.Corax
 {
@@ -7,7 +6,7 @@ namespace Tryouts.Corax
     {
         private readonly Query _left, _right;
 
-        public AndQuery(TransactionOperationContext context, IndexReader reader, Query left, Query right) : base(context, reader)
+        public AndQuery(IndexReader reader, Query left, Query right) : base(reader)
         {
             _left = left;
             _right = right;

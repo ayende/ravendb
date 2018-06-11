@@ -15,7 +15,7 @@ namespace Tryouts.Corax
     public unsafe struct PackedBitmapReader : IEnumerator<ulong>
     {
         private readonly UnmanagedWriteBuffer _writer;
-        private byte* _start;
+        private readonly byte* _start;
         private byte* _current;
         private ulong* _bitmap;
         private ushort* _array;

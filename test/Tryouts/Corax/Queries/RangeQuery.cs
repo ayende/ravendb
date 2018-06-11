@@ -1,5 +1,4 @@
 ﻿using System;
-using Raven.Server.ServerWide.Context;
 using Sparrow;
 using Tryouts.Corax.Bitmaps;
 using Voron;
@@ -11,7 +10,7 @@ namespace Tryouts.Corax.Queries
     {
         public readonly string Field, Min, Max;
 
-        public RangeQuery(TransactionOperationContext context, IndexReader reader, string field, string min, string max) : base(context, reader)
+        public RangeQuery(IndexReader reader, string field, string min, string max) : base(reader)
         {
             Field = field;
             Min = min;

@@ -7,9 +7,9 @@ namespace Tryouts.Corax.Queries
         public readonly TransactionOperationContext Context;
         protected readonly IndexReader Reader;
 
-        public Query(TransactionOperationContext context, IndexReader reader)
+        protected Query(IndexReader reader)
         {
-            Context = context;
+            Context = reader.Context;
             Reader = reader;
         }
 

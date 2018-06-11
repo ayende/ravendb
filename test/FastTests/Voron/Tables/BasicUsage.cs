@@ -4,6 +4,8 @@
 //  </copyright>
 // -----------------------------------------------------------------------
 
+using System;
+using System.IO;
 using System.Text;
 using Xunit;
 using Voron;
@@ -91,6 +93,41 @@ namespace FastTests.Voron.Tables
                 tx.Commit();
             }
         }
+
+        [Fact]
+        public void Should_throw_if_updating_with_invalid_id()
+        {
+            using (var tx = Env.WriteTransaction())
+            {
+                DocsSchema.Create(tx, "docs", 16);
+
+                tx.Commit();
+            }
+
+            using (var tx = Env.WriteTransaction())
+            {
+                var docs = tx.OpenTable(DocsSchema, "docs");
+                Assert.Throws<InvalidOperationException>(() => docs.Update(-1, new TableValueBuilder()));
+            }
+        }
+
+        [Fact]
+        public void Should_throw_if_deleting_with_invalid_id()
+        {
+            using (var tx = Env.WriteTransaction())
+            {
+                DocsSchema.Create(tx, "docs", 16);
+
+                tx.Commit();
+            }
+
+            using (var tx = Env.WriteTransaction())
+            {
+                var docs = tx.OpenTable(DocsSchema, "docs");
+                Assert.Throws<InvalidOperationException>(() => docs.Delete(-1));
+            }
+        }
+
 
         [Fact]
         public void CanInsertThenDelete()

@@ -176,6 +176,15 @@ namespace Voron.Data.Tables
 
         public byte* DirectRead(long id, out int size)
         {
+            #if DEBUG
+            
+            //prevent using Id of another table
+            if(IsOwned(id) == false)
+                ThrowIdNotOwned(id);
+
+            #endif
+
+
             var posInPage = id % Constants.Storage.PageSize;
             if (posInPage == 0) // large
             {
@@ -211,6 +220,14 @@ namespace Voron.Data.Tables
 
         public long Update(long id, TableValueBuilder builder, bool forceUpdate = false)
         {
+            #if DEBUG
+            
+            //prevent using Id of another table
+            if(IsOwned(id) == false)
+                ThrowIdNotOwned(id);
+
+            #endif
+
             AssertWritableTable();
 
             // The ids returned from this function MUST NOT be stored outside of the transaction.
@@ -274,6 +291,11 @@ namespace Voron.Data.Tables
             return Insert(builder);
         }
 
+        private void ThrowIdNotOwned(long id)
+        {
+            throw new InvalidOperationException("The value " + id + " is not owned by this table: " + Name);
+        }
+
         [Conditional("DEBUG")]
         private void AssertNoReferenceToThisPage(TableValueBuilder builder, long id)
         {
@@ -321,6 +343,14 @@ namespace Voron.Data.Tables
 
         public void Delete(long id)
         {
+            #if DEBUG
+            
+            //prevent using Id of another table
+            if(IsOwned(id) == false)
+                ThrowIdNotOwned(id);
+
+            #endif
+
             AssertWritableTable();
 
             var ptr = DirectRead(id, out int size);

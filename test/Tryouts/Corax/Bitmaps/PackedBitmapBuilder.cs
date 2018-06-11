@@ -182,6 +182,7 @@ namespace Tryouts.Corax
 
                         temp[index++] = runs;
                         temp[index++] = _arrayBuffer[i];
+                        runs = 1;
                     }
                     temp[index++] = runs;
                     WriteArray(temp, index, ContainerType.RunLength);

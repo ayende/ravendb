@@ -1,5 +1,4 @@
 ﻿using System.Collections.Generic;
-using Raven.Server.ServerWide.Context;
 using Sparrow;
 using Tryouts.Corax.Bitmaps;
 using Voron;
@@ -12,7 +11,7 @@ namespace Tryouts.Corax.Queries
     {
         public readonly string Field, Prefix;
 
-        public PrefixQuery(TransactionOperationContext context, IndexReader reader, string field, string prefix) : base(context, reader)
+        public PrefixQuery(IndexReader reader, string field, string prefix) : base(reader)
         {
             Field = field;
             Prefix = prefix;
