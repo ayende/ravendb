@@ -2,7 +2,6 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.Linq;
 using System.Text;
 using Raven.Server.ServerWide.Context;
 using Sparrow.Binary;
@@ -49,7 +48,7 @@ namespace Tryouts.Corax
             }
         }
 
-        private static unsafe long GetStringId(TransactionOperationContext context, Table stringsTable, string key)
+        internal static unsafe long GetStringId(TransactionOperationContext context, Table stringsTable, string key)
         {
             using (Slice.From(context.Allocator, key, out var slice))
             {
@@ -63,7 +62,6 @@ namespace Tryouts.Corax
                 return -1;
             }
         }
-
         
         public unsafe int GetTermFreq(string term)
         {
@@ -90,6 +88,7 @@ namespace Tryouts.Corax
             var revId = Bits.SwapBytes(id);
             using (Slice.From(Context.Allocator, (byte*)&revId, sizeof(long), out var key))
             {
+                // ReSharper disable once PossibleNullReferenceException
                 if (_entriesTable.ReadByKey(key, out var tvr) == false)
                 {
                     return Array.Empty<string>();
@@ -114,7 +113,6 @@ namespace Tryouts.Corax
                         terms[i] = Encoding.UTF8.GetString(tvh.Reader.Read(0, out size), size);
                     }
                 }
-
                 return terms;
             }
         }
@@ -124,7 +122,7 @@ namespace Tryouts.Corax
             throw new InvalidOperationException("Missing string whose id is: " + id);
         }
 
-        private static unsafe string GetExternalId(TransactionOperationContext context, Table entriesTable, long entryId)
+        internal static unsafe string GetExternalId(TransactionOperationContext context, Table entriesTable, long entryId)
         {
             var revId = Bits.SwapBytes(entryId);
             using (Slice.From(context.Allocator, (byte*)&revId, sizeof(long), out var key))

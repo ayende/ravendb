@@ -1,9 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Text;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Commands;
 using Raven.Server.ServerWide.Context;
+using Sparrow;
 using Sparrow.Json;
 using Voron;
 using Voron.Data.PostingList;
@@ -89,7 +91,8 @@ namespace Tryouts.Corax
         private Table _entriesTable;
         private readonly Dictionary<long, HashSet<long>> _values = new Dictionary<long, HashSet<long>>();
         private string _externalId;
-
+        private readonly HashSet<string> _entriesToDeleteByExternalIds = new HashSet<string>();
+        private readonly HashSet<long> _entriesToDeleteByIds = new HashSet<long>();
 
         // TODO: Cache to avoid allocations
         // Queue<PostingListWriter>
@@ -112,7 +115,7 @@ namespace Tryouts.Corax
             _lastStringId = (tree.Read("LastStringId")?.Reader)?.ReadLittleEndianInt64() ?? 0;
             return dispose;
         }
-
+   
         public long NewEntry(string externalId)
         {
             _externalId = externalId;
@@ -121,30 +124,110 @@ namespace Tryouts.Corax
             return _currentEntryId;
         }
 
-        public unsafe void DeleteEntry(long id)
+        public void DeleteEntry(string externalId)
         {
-            long revId = Bits.SwapBytes(id);
+            _entriesToDeleteByExternalIds.Add(externalId);
+        }
+
+        public void DeleteEntry(long id)
+        {
+            _entriesToDeleteByIds.Add(id);
+        }
+
+        private void DeleteEntryInternal(string externalId)
+        {
+            using (Slice.From(_context.Allocator, externalId, out var key))
+            {
+                var tvh = _entriesTable.SeekOneForwardFromPrefix(EntriesTableSchema.Indexes[ExternalId], key);
+                if (tvh == null)
+                    return;
+
+                DeleteEntryInternal(tvh.Reader);
+            }
+        }
+
+        private unsafe void DeleteEntryInternal(long id)
+        {
+            var revId = Bits.SwapBytes(id);
             using (Slice.From(_context.Allocator, (byte*)&revId, sizeof(long), out var key))
             {
                 if (_entriesTable.ReadByKey(key, out var tvr) == false)
                     return;
 
-                var entry = new BlittableJsonReaderObject(tvr.Read(1, out var size), size, _context);
+                DeleteEntryInternal(tvr);
+            }
+        }
 
-                BlittableJsonReaderObject.PropertyDetails props = default;
-                for (int i = 0; i < entry.Count; i++)
+        private unsafe void DeleteEntryInternal(TableValueReader entryToDeleteTvr)
+        {
+            var entryId = Bits.SwapBytes(*(long*)entryToDeleteTvr.Read(0,out _));
+            var reader = new EntryReader(entryToDeleteTvr.Read(1, out var dataPtrSize), dataPtrSize);
+            
+            var terms = reader.GetTermsForAllFields();
+            foreach (var kvp in terms)
+            {
+                var fieldId = kvp.Key;
+                string field;
+                using (Slice.From(_context.Allocator, (byte*)&fieldId, sizeof(long), out var key))
                 {
-                    entry.GetPropertyByIndex(i, ref props, addObjectToCache: false);
-                    var values = (BlittableJsonReaderArray)props.Value;
-                    for (int j = 0; j < values.Length; j++)
+                    var tvh = _stringsTable.SeekOneForwardFromPrefix(StringsTableSchema.Indexes[IdToString], key);
+                    if (tvh == null)
                     {
-                        var value = (string)values[i];
-                        GetPostingListWriter(props.Name, value).Delete(id);
+                        ThrowInvalidStringTableEntry(fieldId);
+                        return;
+                    }
+                    field = Encoding.UTF8.GetString(tvh.Reader.Read(0, out var fieldSize), fieldSize);
+                }
+
+                foreach (var termId in kvp.Value)
+                {
+                    var term = DecrementTermFreqAndDeleteFromStringTableIfNeeded(termId);
+                    GetPostingListWriter(field,term).Delete(entryId);
+                }
+            }
+            _entriesTable.Delete(entryToDeleteTvr.Id);
+        }
+
+        private unsafe string DecrementTermFreqAndDeleteFromStringTableIfNeeded(long termId)
+        {
+            using (Slice.From(_context.Allocator, (byte*)&termId, sizeof(long), out var key))
+            {
+                var tvh = _stringsTable.SeekOneForwardFromPrefix(StringsTableSchema.Indexes[IdToString], key);
+                if (tvh == null)
+                {
+                    ThrowInvalidStringTableEntry(termId);
+                    return null;
+                }
+
+                var freq = *(int*)tvh.Reader.Read(2, out var size);
+                Debug.Assert(size == sizeof(int));
+
+                var termStringPtr = tvh.Reader.Read(0, out var termStringSize);
+                if (freq == 1) //this means we need to delete the term, since it is no longer used
+                {
+                    _stringsTable.Delete(tvh.Reader.Id);
+                }
+                else
+                {
+                    using (_stringsTable.Allocate(out var tvb))
+                    {
+                        using (Slice.From(_context.Allocator, termStringPtr, termStringSize, out var termSlice))
+                        {
+                            tvb.Add(termSlice);
+                            tvb.Add(key);
+                            tvb.Add(--freq); //term frequency
+                            _stringsTable.Update(tvh.Reader.Id, tvb);
+                        }
                     }
                 }
 
-                _entriesTable.Delete(tvr.Id);
+                return Encoding.UTF8.GetString(termStringPtr, termStringSize);
             }
+        }
+
+        private static void ThrowInvalidStringTableEntry(long id)
+        {
+            throw new InvalidOperationException($"Failed to find a string in a string table. This should not happen and it is likely a data corruption. (missing Id = {id})");
         }
 
         private static void ThrowInvalidEntry()
@@ -166,11 +249,11 @@ namespace Tryouts.Corax
             var buffer = stackalloc byte[9];
             using (var writer = new UnmanagedWriteBuffer(_context, _context.GetMemory(_lastEntrySize)))
             {
-                int size;
                 foreach (var (fieldId, terms) in _values)
                 {
                     using (var temp = new UnmanagedWriteBuffer(_context, _context.GetMemory(_lastEntrySize)))
                     {
+                        int size;
                         foreach (var term in terms)
                         {
                             size = PostingListBuffer.WriteVariableSizeLong(term, buffer);
@@ -179,7 +262,6 @@ namespace Tryouts.Corax
 
                         size = PostingListBuffer.WriteVariableSizeLong(fieldId, buffer);
                         writer.Write(buffer, size);
-
                         temp.EnsureSingleChunk(out var termsBuf, out int termsSize);
 
                         size = PostingListBuffer.WriteVariableSizeLong(termsSize, buffer);
@@ -205,7 +287,6 @@ namespace Tryouts.Corax
             _values.Clear();
         }
 
-
         private static void ThrowInvalidOffsetSize()
         {
             throw new InvalidOperationException("Invalid offset size for index entry on write");
@@ -213,6 +294,14 @@ namespace Tryouts.Corax
 
         public void FlushState()
         {
+            foreach(var externalId in _entriesToDeleteByExternalIds)
+                DeleteEntryInternal(externalId);
+            _entriesToDeleteByExternalIds.Clear();
+
+            foreach(var id in _entriesToDeleteByIds)
+                DeleteEntryInternal(id);
+            _entriesToDeleteByIds.Clear();
+
             foreach (var (_, terms) in _fields)
             {
                 foreach (var (_, postingList) in terms)
@@ -266,7 +355,7 @@ namespace Tryouts.Corax
         {
             using (Slice.From(_context.Allocator, term, out var slice))
             {
-                if (_stringsTable.ReadByKey(slice, out var tvr) != false)
+                if (_stringsTable.ReadByKey(slice, out var tvr))
                 {
                     var stringId = *(long*)tvr.Read(1, out var size);
                     Debug.Assert(size == sizeof(long));

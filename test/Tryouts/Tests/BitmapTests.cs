@@ -178,6 +178,37 @@ namespace Tryouts.Tests
             Assert.Equal(12, bytes);
         }
 
+        [Fact]
+        public void PackedBitmapBuilder_Complete_should_work()
+        {
+            using (var ctx = JsonOperationContext.ShortTermSingleUse())
+            {
+                PackedBitmapReader reader;
+                var items = new List<ulong> { 1, 2, 5, 6, 7, 8, 9, 10 };
+                using (var builder = new PackedBitmapBuilder(ctx))
+                {
+                    foreach (var item in items)
+                    {
+                        builder.Set(item);
+                    }
+
+                    builder.Complete(out reader);
+                }
+               
+                var fetchedItems = new List<ulong>();
+                using (reader)
+                {
+                    while (reader.MoveNext())
+                    {
+                        fetchedItems.Add(reader.Current);
+                    }
+                }
+
+                for (int i = 0; i < items.Count; i++)
+                    Assert.Equal(items[i], fetchedItems[i]);
+            }
+        }
+
         private unsafe int Validate(IEnumerable<ulong> vals)
         {
             var items = vals.ToArray();

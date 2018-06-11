@@ -56,6 +56,28 @@ namespace Tryouts.Corax
             public int Size;
         }
 
+        public Dictionary<long, List<long>> GetTermsForAllFields()
+        {
+            var terms = new Dictionary<long, List<long>>();
+            var ptr = _ptr;
+            var end = _ptr + _size;
+            while(ptr < end)
+            {
+                var fieldId = PostingListBuffer.ReadVariableSizeLong(ref ptr);
+                var size = PostingListBuffer.ReadVariableSizeLong(ref ptr);
+                var rangeEnd = ptr + size;
+                var termList = new List<long>();
+                while (ptr < rangeEnd)
+                {
+                    termList.Add(PostingListBuffer.ReadVariableSizeLong(ref ptr));
+                }
+
+                terms.Add(fieldId,termList);
+            }
+
+            return terms;
+        }
+
         private TermsRange FindRangeForField(long fieldId)
         {
             var ptr = _ptr;
@@ -70,7 +92,6 @@ namespace Tryouts.Corax
             }
             return new TermsRange();
         }
-
 
         private static void ThrowInvalidOffsetSize()
         {

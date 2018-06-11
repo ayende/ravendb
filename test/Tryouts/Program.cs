@@ -33,6 +33,16 @@ namespace Tryouts
     {
         public unsafe static void Main(string[] args)
         {
+            for (int i = 0; i < 1000_000; i++)
+            {
+                var test = new BitmapTests();
+                
+                if(i % 100 == 0)
+                    Console.WriteLine(i);
+                test.PackedBitmapBuilder_Complete_should_work();
+            }
+
+            return;
             //new BitmapTests().XorUsingBitmap();
 
             //var values = File.ReadAllText(@"C:\Users\ayende\Downloads\weather_sept_85_srt.csv39.txt").Split(',').Select(ulong.Parse).ToList();

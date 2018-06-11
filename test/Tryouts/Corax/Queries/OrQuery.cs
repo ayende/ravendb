@@ -1,12 +1,10 @@
-﻿using Raven.Server.ServerWide.Context;
-
-namespace Tryouts.Corax.Queries
+﻿namespace Tryouts.Corax.Queries
 {
     public class OrQuery : Query
     {
         private readonly Query _left, _right;
 
-        public OrQuery(TransactionOperationContext context, IndexReader reader, Query left, Query right) : base(context, reader)
+        public OrQuery(IndexReader reader, Query left, Query right) : base(reader)
         {
             _left = left;
             _right = right;
