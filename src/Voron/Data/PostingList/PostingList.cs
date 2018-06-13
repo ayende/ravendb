@@ -28,7 +28,7 @@ namespace Voron.Data.PostingList
         protected readonly Table Table;
         protected Slice Term;
 
-        protected readonly Transaction Tx;
+        public readonly Transaction Tx;
         protected PostingListBuffer Buffer;
         public long NumberOfEntries;
 

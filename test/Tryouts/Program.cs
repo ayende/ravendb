@@ -1,219 +1,208 @@
 using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.Linq;
-using System.Runtime.InteropServices.ComTypes;
-using System.Threading.Tasks;
-using FastTests.Server.Documents.Queries.Parser;
-using GeoAPI.Geometries;
+using System.Threading;
+using System.Threading.Tasks.Dataflow;
+using System.Xml;
 using Lucene.Net.Analysis;
 using Lucene.Net.Documents;
 using Lucene.Net.Index;
-using Lucene.Net.Search;
-using Lucene.Net.Store;
-using Newtonsoft.Json;
-using Raven.Server.Documents.Indexes.Persistence.Lucene.Collectors;
 using Raven.Server.ServerWide.Context;
-using SlowTests.Client;
-using SlowTests.Issues;
-using SlowTests.MailingList;
 using Sparrow;
-using Sparrow.Binary;
-using Sparrow.Json;
 using Tryouts.Corax;
-using Tryouts.Corax.Queries;
-using Tryouts.Tests;
 using Voron;
-using static Lucene.Net.Index.IndexWriter;
-using IndexReader = Tryouts.Corax.IndexReader;
+using Directory = System.IO.Directory;
 
 namespace Tryouts
 {
     public static class Program
     {
-        public unsafe static void Main(string[] args)
+        public enum ActionType
         {
-            for (int i = 0; i < 1000_000; i++)
+            Term,
+            NewEntry,
+            FinishEntry,
+            RestartTx
+        }
+
+        private static BlockingCollection<(string field, string term, ActionType action)> _termActionQueue = new BlockingCollection<(string field, string term, ActionType action)>();
+        private const string WikiArticlesDumpFile = @"C:\Users\Michael.HRHINOS\Downloads\wiki_articles\articles_medium.xml";
+        private const int PageCountLimit = 100000;
+
+        public static void Main(string[] args)
+        {
+            Console.WriteLine("Press any key to start...");
+            Console.ReadKey();
+            ReadXMLAndIndex("Corax", CoraxIndexTerms);
+            //ReadXMLAndIndex("Lucene", LuceneIndexTerms);
+            Console.ReadKey();
+        }
+
+        private static void ReadXMLAndIndex(string name, ThreadStart indexingMethod)
+        {
+            Console.WriteLine($"== Start indexing [{name}] ==");
+            using (var fileStream = File.Open(WikiArticlesDumpFile, FileMode.Open))
+            using (var xmlReader = XmlReader.Create(fileStream))
             {
-                var test = new BitmapTests();
-                
-                if(i % 100 == 0)
-                    Console.WriteLine(i);
-                test.PackedBitmapBuilder_Complete_should_work();
-            }
-
-            return;
-            //new BitmapTests().XorUsingBitmap();
-
-            //var values = File.ReadAllText(@"C:\Users\ayende\Downloads\weather_sept_85_srt.csv39.txt").Split(',').Select(ulong.Parse).ToList();
-            //values.Sort();
-            //using (var ctx = JsonOperationContext.ShortTermSingleUse())
-            //using(var writer = ctx.GetStream(8192))
-            //{
-            //    using (ctx.GetManagedBuffer(out var buffer))
-            //    {
-            //        var builder = new PackedBitmapBuilder(writer, buffer);
-            //        foreach (var value in values)
-            //        {
-            //            builder.Set(value);
-            //        }
-            //        builder.Complete(out var buf, out var size);
-            //        Console.WriteLine(writer.SizeInBytes);
-            //        Console.WriteLine(values .Count);
-
-            //        var reader = new PackedBitmapReader(buf, size);
-            //        int index = 0;
-            //        while (reader.MoveNext())
-            //        {
-            //            if (index == 65535) {
-            //                global::System.Console.WriteLine("a");
-            //            }
-
-            //                if (reader.Current != values[index])
-            //            {
-            //                Console.WriteLine("Error on " + index+" expected " + values[index] + " but was " + reader.Current);
-            //                return;
-            //            }
-
-            //            index++;
-            //        }
-
-            //        if (index != values.Count)
-            //        {
-            //            Console.WriteLine("missing values, expected: " + values.Count + " but was " +index );
-            //        }
-            //    }
-            //}
-            {
-
-                using (var env = new StorageEnvironment(StorageEnvironmentOptions.CreateMemoryOnly()))
-                using (var pool = new TransactionContextPool(env))
+                var propertyName = string.Empty;
+                int total = 0;
+                var indexingThread = new Thread(indexingMethod);
+                var pageCount = 0;
+                while (xmlReader.Read() && pageCount < PageCountLimit)
                 {
-                    var builder = new IndexBuilder(pool);
-                    var currentAllocs = GC.GetAllocatedBytesForCurrentThread();
-                    var sp = Stopwatch.StartNew();
-                    for (int ix = 0; ix < 10; ix++)
+                    if (xmlReader.Name == "page")
                     {
-                        using (builder.BeginIndexing())
+                        switch (xmlReader.NodeType)
                         {
-                            builder.NewEntry("users/" + Guid.NewGuid());
-                            builder.Term("Name", "John Doe");
-                            builder.Term("Lang", "Hebrew");
-                            builder.Term("Lang", "Bulgerian");
-                            builder.FinishEntry();
-
-                            //builder.DeleteEntry("users/1");
-                            for (int i = 0; i < 100; i++)
-                            {
-                                builder.NewEntry("users/" + Guid.NewGuid());
-                                builder.Term("Name", "Oren");
-                                builder.Term("Lang", "C#");
-                                builder.Term("Lang", "Hebrew");
-                                builder.Term("Lang", "Bulgerian");
-                                builder.FinishEntry();
-
-                                builder.NewEntry("dogs/" + Guid.NewGuid());
-                                builder.Term("Name", "Arava");
-                                builder.Term("Lang", "Bark");
-                                builder.Term("Lang", "C#");
-                                builder.FinishEntry();
-                            }
-
-                            builder.CompleteIndexing();
+                            case XmlNodeType.Element:
+                                _termActionQueue.Add((string.Empty, string.Empty, ActionType.NewEntry));
+                                break;
+                            case XmlNodeType.EndElement:
+                                _termActionQueue.Add((string.Empty, string.Empty, ActionType.FinishEntry));
+                                if (total++ % 10000 == 0)
+                                    _termActionQueue.Add((string.Empty, string.Empty, ActionType.RestartTx));
+                                pageCount++;
+                                break;
                         }
                     }
-
-                    Console.WriteLine("Indexing time corax: " + sp.ElapsedMilliseconds + ", allocations: " +
-                        new Size((GC.GetAllocatedBytesForCurrentThread() - currentAllocs), SizeUnit.Bytes));
-
-
-                    using (pool.AllocateOperationContext(out TransactionOperationContext ctx))
-                    {
-                        var reader = new IndexReader(pool);
-                        Console.WriteLine("Starting...");
-                        for (int i = 0; i < 3; i++)
+                    else
+                        switch (xmlReader.NodeType)
                         {
-                            using (ctx.OpenReadTransaction())
-                            using (reader.BeginReading())
-                            {
-                                                    
-                                if (i == 0)
-                                {
-                                    Console.WriteLine("'John Doe' term frequency: " + reader.GetTermFreq("John Doe"));
-                                    Console.WriteLine("'Bark' term frequency: " + reader.GetTermFreq( "Bark"));
-                                    Console.WriteLine("'C#' term frequency: " + reader.GetTermFreq("C#"));
-                                }
-
-                                var qt = Stopwatch.StartNew();
-                                currentAllocs = GC.GetAllocatedBytesForCurrentThread();
-                                //var a = reader.Query(
-                                //    new AndNotQuery(ctx, reader,
-                                //        new Corax.Queries.PrefixQuery(ctx, reader, "Lang", "B"),
-                                //        new Corax.Queries.TermQuery(ctx, reader, "Name", "Arava")
-                                //       )
-                                //    ).Count();
-                                var a = reader.Query(
-                                     new Corax.Queries.TermQuery(reader, "Name", "Arava")
-                                 ).Count();
-                                Console.WriteLine(qt.ElapsedMilliseconds + " " + a+ ", allocations: " +
-                                    new Size((GC.GetAllocatedBytesForCurrentThread() - currentAllocs), SizeUnit.Bytes));
-                                //foreach (var item in a)
-                                //{
-                                //    Console.WriteLine(string.Join(", ", reader.GetTerms(ctx, item.Id, "Name")));
-
-                                //    Console.WriteLine(item);
-                                //    Console.WriteLine("----");
-                                //}
-
-                            }
+                            case XmlNodeType.Element:
+                                propertyName = xmlReader.Name;
+                                break;
+                            case XmlNodeType.Text:
+                                _termActionQueue.Add((propertyName,
+                                    string.IsNullOrWhiteSpace(xmlReader.Value) ?
+                                        xmlReader.ReadString() : xmlReader.Value,
+                                    ActionType.Term));
+                                break;
                         }
-                    }
-                    Console.WriteLine(new Size(env.Stats().AllocatedDataFileSizeInBytes, SizeUnit.Bytes));
-                    Console.WriteLine("+============+");
+                }
+
+                Console.WriteLine($"Finished reading XML, page count is {pageCount}. Waiting for indexing to begin...");
+                _termActionQueue.CompleteAdding();
+                indexingThread.Start();
+                indexingThread.Join();
+                Console.WriteLine($"== Finished indexing [{name}] ==");
+            }
+            _termActionQueue.Dispose();
+            _termActionQueue = new BlockingCollection<(string field, string term, ActionType action)>();
+        }
+
+        private static void LuceneIndexTerms()
+        {
+            var path = new FileInfo(WikiArticlesDumpFile).Directory?.FullName;
+            path = Path.Combine(path, "Lucene");
+            if (Directory.Exists(path))
+                Directory.Delete(path, true);
+
+            var sp = Stopwatch.StartNew();
+            long terms = 0;
+            long entries = 0;
+            long pages = 0;
+            var directory = new Lucene.Net.Store.MMapDirectory(new DirectoryInfo(path));
+            var writer = new IndexWriter(directory, new KeywordAnalyzer(), IndexWriter.MaxFieldLength.UNLIMITED, null);
+            var currentDocument = new Document();
+            int emptyTakeTries = 0;
+            while (!_termActionQueue.IsCompleted)
+            {
+                (string field, string term, ActionType action) termData;
+                try
+                {
+                    termData = _termActionQueue.Take();
+                }
+                catch
+                {
+                    break;
+                }
+                switch (termData.action)
+                {
+                    case ActionType.Term:
+                        var field = new Field(termData.field, termData.term, Field.Store.NO, Field.Index.NOT_ANALYZED);
+                        currentDocument.Add(field);
+                        terms++;
+                        break;
+                    case ActionType.NewEntry:
+                        break;
+                    case ActionType.FinishEntry:
+                        writer.AddDocument(currentDocument, null);
+                        currentDocument = new Document();
+                        entries++;
+                        pages++;
+                        break;
+                    case ActionType.RestartTx:
+                        writer.Dispose(true);
+                        writer = new IndexWriter(directory, new KeywordAnalyzer(), IndexWriter.MaxFieldLength.UNLIMITED, null);
+                        break;
                 }
             }
 
-            {
+            Console.WriteLine($"Time ellapsed: {sp.Elapsed}");
+            Console.WriteLine($"Total pages: {pages}");
+            Console.WriteLine($"Total terms: {terms}");
+            Console.WriteLine($"Total allocations: {new Size(GC.GetAllocatedBytesForCurrentThread(), SizeUnit.Bytes)}");
+        }
 
-                var d = new Lucene.Net.Store.RAMDirectory();
-                var orenIdFld = new Field("id()", "", Field.Store.YES, Field.Index.NO);
-                var aravaIdFld = new Field("id()", "", Field.Store.YES, Field.Index.NO);
-                var oren = CreateLuceneDocOren(orenIdFld);
-                var arava = CreateLuceneDocArava(aravaIdFld);
-                var currentAllocs = GC.GetAllocatedBytesForCurrentThread();
+        private static void CoraxIndexTerms()
+        {
+            var path = new FileInfo(WikiArticlesDumpFile).Directory?.FullName;
+            path = Path.Combine(path, "Corax");
+            if (Directory.Exists(path))
+                Directory.Delete(path, true);
+
+            using (var env = new StorageEnvironment(StorageEnvironmentOptions.ForPath(path)))
+            using (var pool = new TransactionContextPool(env))
+            {
+                var builder = new IndexBuilder(pool);
                 var sp = Stopwatch.StartNew();
-                for (int ix = 0; ix < 10; ix++)
+                var tx = builder.BeginIndexing();
+                long terms = 0;
+                long entries = 0;
+                long pages = 0;
+                try
                 {
-                    var writer = new IndexWriter(d, new KeywordAnalyzer(), MaxFieldLength.UNLIMITED, null);
-                    //builder.DeleteEntry("users/1");
-                    for (int i = 0; i < 15_000; i++)
+                    while (_termActionQueue.IsCompleted == false)
                     {
-                        orenIdFld.SetValue("users/" + Guid.NewGuid());
-                        aravaIdFld.SetValue("dogs/" + Guid.NewGuid());
-                        writer.AddDocument(oren, null);
-                        writer.AddDocument(arava, null);
+                        (string field, string term, ActionType action) termData = _termActionQueue.Take();
+
+                        switch (termData.action)
+                        {
+                            case ActionType.Term:
+                                if (termData.term.Length > 255)
+                                {
+                                    termData.term = termData.term.Substring(0, 255);
+                                }
+                                builder.Term($"fields/{termData.field}", termData.term);
+                                terms++;
+                                break;
+                            case ActionType.NewEntry:
+                                builder.NewEntry($"entries/{entries++}");
+                                break;
+                            case ActionType.FinishEntry:
+                                builder.FinishEntry();
+                                pages++;
+                                break;
+                            case ActionType.RestartTx:
+                                builder.CompleteIndexing();
+                                tx.Dispose();
+                                tx = builder.BeginIndexing();
+                                break;
+                        }
                     }
-
-                    writer.Close(true);
                 }
-                Console.WriteLine("Indexing time Lucene: " + sp.ElapsedMilliseconds + ", allocations: " +
-                    new Size((GC.GetAllocatedBytesForCurrentThread() - currentAllocs), SizeUnit.Bytes));
-                var searcher = new IndexSearcher(d, null);
-                for (int i = 0; i < 3; i++)
+                finally
                 {
-                    var qt = Stopwatch.StartNew();
-                    currentAllocs = GC.GetAllocatedBytesForCurrentThread();
-                //    var t = searcher.Search(new BooleanQuery
-                //{
-                //    {new Lucene.Net.Search.PrefixQuery(new Term("Lang", "B")), Occur.MUST },
-                //    {new Lucene.Net.Search.TermQuery(new Term("Name", "Arava")), Occur.MUST_NOT },
-                //}, 150, null);
-                    var t = searcher.Search(new Lucene.Net.Search.TermQuery(new Term("Name", "Arava")), 150, null);
-                    Console.WriteLine(qt.ElapsedMilliseconds + " " + t.TotalHits + ", allocations: " +
-                                   new Size((GC.GetAllocatedBytesForCurrentThread() - currentAllocs), SizeUnit.Bytes));
+                    builder.CompleteIndexing();
+                    tx.Dispose();
                 }
 
-                Console.WriteLine(new Size(d.SizeInBytes(), SizeUnit.Bytes));
+                Console.WriteLine($"Time ellapsed: {sp.Elapsed}");
+                Console.WriteLine($"Total entries: {pages}");
+                Console.WriteLine($"Total terms: {terms}");
+                Console.WriteLine($"Total allocations: {new Size(GC.GetAllocatedBytesForCurrentThread(), SizeUnit.Bytes)}");
             }
         }
 

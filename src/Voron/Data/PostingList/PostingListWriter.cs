@@ -173,5 +173,6 @@ namespace Voron.Data.PostingList
         {
             _deletes.Add(val);
         }
+
     }
 }
