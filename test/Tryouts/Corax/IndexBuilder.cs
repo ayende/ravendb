@@ -94,10 +94,9 @@ namespace Tryouts.Corax
         private readonly HashSet<string> _entriesToDeleteByExternalIds = new HashSet<string>();
         private readonly HashSet<long> _entriesToDeleteByIds = new HashSet<long>();
 
-        // TODO: Cache to avoid allocations
-        // Queue<PostingListWriter>
-        // Queue<List<object>>
-        // readonly Queue<Dictionary<string, PostingListWriter>> 
+        private readonly Queue<HashSet<long>> _setCache = new Queue<HashSet<long>>();
+        private readonly Stack<PostingListWriter> _postingListWriterCache = new Stack<PostingListWriter>();
+        private readonly Queue<Dictionary<string, PostingListWriter>> _postingWriterCache = new Queue<Dictionary<string, PostingListWriter>>();
 
         public IDisposable BeginIndexing()
         {
@@ -115,7 +114,7 @@ namespace Tryouts.Corax
             _lastStringId = (tree.Read("LastStringId")?.Reader)?.ReadLittleEndianInt64() ?? 0;
             return dispose;
         }
-   
+
         public long NewEntry(string externalId)
         {
             _externalId = externalId;
@@ -160,9 +159,9 @@ namespace Tryouts.Corax
 
         private unsafe void DeleteEntryInternal(TableValueReader entryToDeleteTvr)
         {
-            var entryId = Bits.SwapBytes(*(long*)entryToDeleteTvr.Read(0,out _));
+            var entryId = Bits.SwapBytes(*(long*)entryToDeleteTvr.Read(0, out _));
             var reader = new EntryReader(entryToDeleteTvr.Read(1, out var dataPtrSize), dataPtrSize);
-            
+
             var terms = reader.GetTermsForAllFields();
             foreach (var kvp in terms)
             {
@@ -182,7 +181,7 @@ namespace Tryouts.Corax
                 foreach (var termId in kvp.Value)
                 {
                     var term = DecrementTermFreqAndDeleteFromStringTableIfNeeded(termId);
-                    GetPostingListWriter(field,term).Delete(entryId);
+                    GetPostingListWriter(field, term).Delete(entryId);
                 }
             }
             _entriesTable.Delete(entryToDeleteTvr.Id);
@@ -284,21 +283,21 @@ namespace Tryouts.Corax
                 }
             }
 
+            foreach (var set in _values.Values)
+            {
+                set.Clear();
+                _setCache.Enqueue(set);
+            }
             _values.Clear();
-        }
-
-        private static void ThrowInvalidOffsetSize()
-        {
-            throw new InvalidOperationException("Invalid offset size for index entry on write");
         }
 
         public void FlushState()
         {
-            foreach(var externalId in _entriesToDeleteByExternalIds)
+            foreach (var externalId in _entriesToDeleteByExternalIds)
                 DeleteEntryInternal(externalId);
             _entriesToDeleteByExternalIds.Clear();
 
-            foreach(var id in _entriesToDeleteByIds)
+            foreach (var id in _entriesToDeleteByIds)
                 DeleteEntryInternal(id);
             _entriesToDeleteByIds.Clear();
 
@@ -307,7 +306,10 @@ namespace Tryouts.Corax
                 foreach (var (_, postingList) in terms)
                 {
                     postingList.Dispose();
+                    _postingListWriterCache.Push(postingList);
                 }
+                terms.Clear();
+                _postingWriterCache.Enqueue(terms);
             }
 
             _fields.Clear();
@@ -327,7 +329,9 @@ namespace Tryouts.Corax
             var fieldId = GetStringId(field, cache: true);
             if (_values.TryGetValue(fieldId, out var list) == false)
             {
-                list = new HashSet<long>();
+                if (!_setCache.TryDequeue(out list))
+                    list = new HashSet<long>();
+
                 _values[fieldId] = list;
             }
 
@@ -338,13 +342,23 @@ namespace Tryouts.Corax
         {
             if (_fields.TryGetValue(field, out var fieldPostings) == false)
             {
-                fieldPostings = new Dictionary<string, PostingListWriter>();
+                if (!_postingWriterCache.TryDequeue(out fieldPostings))
+                    fieldPostings = new Dictionary<string, PostingListWriter>();
                 _fields[field] = fieldPostings;
             }
 
             if (fieldPostings.TryGetValue(term, out var postingList) == false)
             {
-                postingList = PostingListWriter.Create(_tx.InnerTransaction, field, term);
+                if (_postingListWriterCache.TryPop(out var writer) == false)
+                {
+                    postingList = PostingListWriter.Create(_tx.InnerTransaction, field, term);
+                }
+                else if (writer.Tx != _tx.InnerTransaction)
+                {
+                    _postingListWriterCache.Clear();
+                    postingList = PostingListWriter.Create(_tx.InnerTransaction, field, term);
+                }
+                
                 fieldPostings[term] = postingList;
             }
 
@@ -395,7 +409,7 @@ namespace Tryouts.Corax
             {
                 if (_stringsTable.ReadByKey(slice, out var tvr) != false)
                 {
-                    var stringId = *(long*)tvr.Read(1, out var size);                    
+                    var stringId = *(long*)tvr.Read(1, out var size);
                     Debug.Assert(size == sizeof(long));
 
                     if (cache)
