@@ -5,6 +5,7 @@ using System.IO;
 using System.Text;
 using Raven.Server.ServerWide.Context;
 using Sparrow.Binary;
+using Sparrow.Json;
 using Tryouts.Corax.Queries;
 using Voron;
 using Voron.Data.Tables;
@@ -34,7 +35,7 @@ namespace Tryouts.Corax
             return dispose;
         }
 
-        public IEnumerable<(long Id, string ExternalId)> Query(Query q)
+        public IEnumerable<(long Id, LazyStringValue ExternalId)> Query(Query q)
         {
             if(_entriesTable == null) //no entries were written yet, so OpenTable will return null
                 yield break;
@@ -122,7 +123,7 @@ namespace Tryouts.Corax
             throw new InvalidOperationException("Missing string whose id is: " + id);
         }
 
-        internal static unsafe string GetExternalId(TransactionOperationContext context, Table entriesTable, long entryId)
+        internal static unsafe LazyStringValue GetExternalId(TransactionOperationContext context, Table entriesTable, long entryId)
         {
             var revId = Bits.SwapBytes(entryId);
             using (Slice.From(context.Allocator, (byte*)&revId, sizeof(long), out var key))
@@ -131,8 +132,8 @@ namespace Tryouts.Corax
                 {
                     ThrowBadData();
                 }
-
-                return Encoding.UTF8.GetString(tvr.Read(2, out var size), size);
+                
+                return new LazyStringValue(null,tvr.Read(2, out var size), size, context);
             }
         }
 
