@@ -91,7 +91,6 @@ namespace Tryouts
                 var reader = new Corax.IndexReader(pool);
                 using (reader.BeginReading())
                 {
-
                     for (int i = 0; i < QueryIterationsLimit; i++)
                     {
                         using (var results = reader.Query(new TermQuery(reader, fieldToQuery, termToQuery)).GetEnumerator())
