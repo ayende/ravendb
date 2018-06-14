@@ -3,17 +3,24 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
 using System.Xml;
 using Lucene.Net.Analysis;
 using Lucene.Net.Documents;
 using Lucene.Net.Index;
+using Lucene.Net.Search;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Raven.Server.Documents.Indexes.Persistence.Lucene.Collectors;
 using Raven.Server.ServerWide.Context;
 using Sparrow;
 using Tryouts.Corax;
 using Voron;
 using Directory = System.IO.Directory;
+using IndexReader = Lucene.Net.Index.IndexReader;
+using TermQuery = Tryouts.Corax.Queries.TermQuery;
 
 namespace Tryouts
 {
@@ -28,21 +35,125 @@ namespace Tryouts
         }
 
         private static BlockingCollection<(string field, string term, ActionType action)> _termActionQueue = new BlockingCollection<(string field, string term, ActionType action)>();
-        private const string WikiArticlesDumpFile = @"C:\Users\Michael.HRHINOS\Downloads\wiki_articles\articles_medium.xml";
-        private const int PageCountLimit = 100000;
+        private const string WikiArticlesDumpFile = @"C:\Users\Michael.HRHINOS\Downloads\wiki_articles\articles_small.xml";
+        private const int PageCountLimit = 100_000;
+        private const int QueryIterationsLimit = 100_000;
+
+        //field name -> term -> list of external Ids
+        private static readonly Dictionary<string, Dictionary<string, HashSet<string>>> _termQueryData = new Dictionary<string, Dictionary<string, HashSet<string>>>();
 
         public static void Main(string[] args)
         {
-            Console.WriteLine("Press any key to start...");
-            Console.ReadKey();
-            ReadXMLAndIndex("Corax", CoraxIndexTerms);
-            //ReadXMLAndIndex("Lucene", LuceneIndexTerms);
+            var coraxPath = new FileInfo(WikiArticlesDumpFile).Directory?.FullName;
+            coraxPath = Path.Combine(coraxPath, "Corax");
+            if (Directory.Exists(coraxPath))
+                Directory.Delete(coraxPath, true);
+
+            var lucenePath = new FileInfo(WikiArticlesDumpFile).Directory?.FullName;
+            lucenePath = Path.Combine(lucenePath, "Lucene");
+            if (Directory.Exists(lucenePath))
+                Directory.Delete(lucenePath, true);
+
+            ReadXMLAndProcess("Preparing query data", PrepareQueryData);
+
+            ReadXMLAndProcess("Indexing in Corax", () => CoraxIndexTerms(coraxPath));
+
+            var queryThread = new Thread(() => QueryCoraxBenchmark(coraxPath));
+            queryThread.Start();
+            queryThread.Join();
+
+            ReadXMLAndProcess("Indexing in Lucene", () => LuceneIndexTerms(lucenePath));
+
+            queryThread = new Thread(() => QueryLuceneBenchmark(lucenePath));
+            queryThread.Start();
+            queryThread.Join();
+
             Console.ReadKey();
         }
 
-        private static void ReadXMLAndIndex(string name, ThreadStart indexingMethod)
+        private static void QueryCoraxBenchmark(string path)
         {
-            Console.WriteLine($"== Start indexing [{name}] ==");
+            Console.WriteLine($"== Starting Corax Querying ==");
+
+            const string fieldToQuery = "username";
+
+            if (!_termQueryData.TryGetValue(fieldToQuery, out var termToEntriesMap))
+            {
+                throw new InvalidOperationException("Didn't find common wiki article field name. Are you sure this is wiki articles data?");
+            }
+
+            var termToQuery = termToEntriesMap.OrderByDescending(x => x.Value.Count).FirstOrDefault().Key;
+
+            var sw = Stopwatch.StartNew();
+            using (var env = new StorageEnvironment(StorageEnvironmentOptions.ForPath(path)))
+            using (var pool = new TransactionContextPool(env))
+            {
+                var reader = new Corax.IndexReader(pool);
+                using (reader.BeginReading())
+                {
+
+                    for (int i = 0; i < QueryIterationsLimit; i++)
+                    {
+                        using (var results = reader.Query(new TermQuery(reader, fieldToQuery, termToQuery)).GetEnumerator())
+                        {
+                            int count = 0;
+                            while (results.MoveNext() && count++ < 1024)
+                            {
+                            }
+                        }
+
+                    }
+                }
+            }
+            sw.Stop();
+
+            Console.WriteLine($"Time ellapsed: {sw.Elapsed}");
+            Console.WriteLine($"Query/sec: {QueryIterationsLimit / sw.Elapsed.TotalSeconds:#,#}");
+            Console.WriteLine($"Total allocations: {new Size(GC.GetAllocatedBytesForCurrentThread(), SizeUnit.Bytes)}");
+            Console.WriteLine($"== Finished Corax Querying ==");
+
+        }
+
+        private static void QueryLuceneBenchmark(string path)
+        {
+            Console.WriteLine("== Starting Lucene Querying ==");
+
+            const string fieldToQuery = "username";
+
+            if (!_termQueryData.TryGetValue(fieldToQuery, out var termToEntriesMap))
+            {
+                throw new InvalidOperationException("Didn't find common wiki article field name. Are you sure this is wiki articles data?");
+            }
+
+            var termToQuery = termToEntriesMap.OrderByDescending(x => x.Value.Count).FirstOrDefault().Key;
+
+            var sw = Stopwatch.StartNew();
+            using (var directory = new Lucene.Net.Store.MMapDirectory(new DirectoryInfo(path)))
+            using (var searcher = new IndexSearcher(directory, null))
+            {
+                for (int i = 0; i < QueryIterationsLimit; i++)
+                {
+                    var query = new Lucene.Net.Search.TermQuery(new Term(fieldToQuery, termToQuery));
+                    var results = searcher.Search(query, 1024, null);
+                    for (int j = 0; j < results.ScoreDocs.Length; j++)
+                    {
+                        var doc = searcher.IndexReader.Document(results.ScoreDocs[j].Doc, null);
+                        doc.Get("id()", null);
+                    }
+                }
+            }
+
+            sw.Stop();
+
+            Console.WriteLine($"Time ellapsed: {sw.Elapsed}");
+            Console.WriteLine($"Query/sec: {QueryIterationsLimit / sw.Elapsed.TotalSeconds:#,#}");
+            Console.WriteLine($"Total allocations: {new Size(GC.GetAllocatedBytesForCurrentThread(), SizeUnit.Bytes)}");
+            Console.WriteLine($"== Finished Lucene Querying ==");
+        }
+
+        private static void ReadXMLAndProcess(string name, ThreadStart indexingMethod)
+        {
+            Console.WriteLine($"== Start [{name}] ==");
             using (var fileStream = File.Open(WikiArticlesDumpFile, FileMode.Open))
             using (var xmlReader = XmlReader.Create(fileStream))
             {
@@ -92,51 +203,108 @@ namespace Tryouts
             _termActionQueue = new BlockingCollection<(string field, string term, ActionType action)>();
         }
 
-        private static void LuceneIndexTerms()
+        private static void PrepareQueryData()
         {
-            var path = new FileInfo(WikiArticlesDumpFile).Directory?.FullName;
-            path = Path.Combine(path, "Lucene");
-            if (Directory.Exists(path))
-                Directory.Delete(path, true);
+            int pages = 0;
+            while (_termActionQueue.IsCompleted == false)
+            {
+                (string field, string term, ActionType action) termData = _termActionQueue.Take();
 
+                switch (termData.action)
+                {
+                    case ActionType.Term:
+                        if (termData.term.Length > 255)
+                        {
+                            termData.term = termData.term.Substring(0, 255);
+                        }
+
+                        var externalId = $"entries/{pages}";
+                        var fieldValue = termData.field;
+                        if (_termQueryData.TryGetValue(fieldValue, out var termToEntryList))
+                        {
+                            if (termToEntryList.TryGetValue(termData.term, out var entryList))
+                            {
+                                entryList.Add(externalId);
+                            }
+                            else
+                            {
+                                termToEntryList.Add(termData.term, new HashSet<string> { externalId });
+                            }
+                        }
+                        else
+                        {
+                            var termToEntryListNew = new Dictionary<string, HashSet<string>>
+                            {
+                                {
+                                    termData.term, new HashSet<string>
+                                    {
+                                        externalId
+                                    }
+                                }
+                            };
+                            _termQueryData.Add(fieldValue, termToEntryListNew);
+                        }
+
+                        break;
+                    case ActionType.FinishEntry:
+                        pages++;
+                        break;
+                }
+            }
+        }
+
+        private static void LuceneIndexTerms(string path)
+        {
             var sp = Stopwatch.StartNew();
             long terms = 0;
             long entries = 0;
             long pages = 0;
-            var directory = new Lucene.Net.Store.MMapDirectory(new DirectoryInfo(path));
-            var writer = new IndexWriter(directory, new KeywordAnalyzer(), IndexWriter.MaxFieldLength.UNLIMITED, null);
             var currentDocument = new Document();
             int emptyTakeTries = 0;
-            while (!_termActionQueue.IsCompleted)
+            IndexWriter writer = null;
+            using (var directory = new Lucene.Net.Store.MMapDirectory(new DirectoryInfo(path)))
             {
-                (string field, string term, ActionType action) termData;
                 try
                 {
-                    termData = _termActionQueue.Take();
+                    writer = new IndexWriter(directory, new KeywordAnalyzer(), IndexWriter.MaxFieldLength.UNLIMITED, null);
+                    while (!_termActionQueue.IsCompleted)
+                    {
+                        (string field, string term, ActionType action) termData;
+                        try
+                        {
+                            termData = _termActionQueue.Take();
+                        }
+                        catch
+                        {
+                            break;
+                        }
+
+                        switch (termData.action)
+                        {
+                            case ActionType.Term:
+                                var field = new Field(termData.field, termData.term, Field.Store.NO, Field.Index.NOT_ANALYZED);
+                                currentDocument.Add(field);
+                                terms++;
+                                break;
+                            case ActionType.NewEntry:
+                                break;
+                            case ActionType.FinishEntry:
+                                currentDocument.Add(new Field("id()", entries.ToString(), Field.Store.YES, Field.Index.NOT_ANALYZED));
+                                writer.AddDocument(currentDocument, null);
+                                currentDocument = new Document();
+                                entries++;
+                                pages++;
+                                break;
+                            case ActionType.RestartTx:
+                                writer.Dispose(true);
+                                writer = new IndexWriter(directory, new KeywordAnalyzer(), IndexWriter.MaxFieldLength.UNLIMITED, null);
+                                break;
+                        }
+                    }
                 }
-                catch
+                finally
                 {
-                    break;
-                }
-                switch (termData.action)
-                {
-                    case ActionType.Term:
-                        var field = new Field(termData.field, termData.term, Field.Store.NO, Field.Index.NOT_ANALYZED);
-                        currentDocument.Add(field);
-                        terms++;
-                        break;
-                    case ActionType.NewEntry:
-                        break;
-                    case ActionType.FinishEntry:
-                        writer.AddDocument(currentDocument, null);
-                        currentDocument = new Document();
-                        entries++;
-                        pages++;
-                        break;
-                    case ActionType.RestartTx:
-                        writer.Dispose(true);
-                        writer = new IndexWriter(directory, new KeywordAnalyzer(), IndexWriter.MaxFieldLength.UNLIMITED, null);
-                        break;
+                    writer?.Dispose();
                 }
             }
 
@@ -146,13 +314,8 @@ namespace Tryouts
             Console.WriteLine($"Total allocations: {new Size(GC.GetAllocatedBytesForCurrentThread(), SizeUnit.Bytes)}");
         }
 
-        private static void CoraxIndexTerms()
+        private static void CoraxIndexTerms(string path)
         {
-            var path = new FileInfo(WikiArticlesDumpFile).Directory?.FullName;
-            path = Path.Combine(path, "Corax");
-            if (Directory.Exists(path))
-                Directory.Delete(path, true);
-
             using (var env = new StorageEnvironment(StorageEnvironmentOptions.ForPath(path)))
             using (var pool = new TransactionContextPool(env))
             {
@@ -175,7 +338,8 @@ namespace Tryouts
                                 {
                                     termData.term = termData.term.Substring(0, 255);
                                 }
-                                builder.Term($"fields/{termData.field}", termData.term);
+                                builder.Term(termData.field, termData.term);
+
                                 terms++;
                                 break;
                             case ActionType.NewEntry:
@@ -204,34 +368,6 @@ namespace Tryouts
                 Console.WriteLine($"Total terms: {terms}");
                 Console.WriteLine($"Total allocations: {new Size(GC.GetAllocatedBytesForCurrentThread(), SizeUnit.Bytes)}");
             }
-        }
-
-        private static unsafe Document CreateLuceneDocOren(Field idFld)
-        {
-            var oren = new Document();
-            var nameFld = new Field("Name", "Oren", Field.Store.NO, Field.Index.NOT_ANALYZED);
-            var lng1 = new Field("Lang", "C#", Field.Store.NO, Field.Index.NOT_ANALYZED);
-            var lng2 = new Field("Lang", "Hebrew", Field.Store.NO, Field.Index.NOT_ANALYZED);
-            var lng3 = new Field("Lang", "Bulgerian", Field.Store.NO, Field.Index.NOT_ANALYZED);
-
-            oren.Add(idFld);
-            oren.Add(nameFld);
-            oren.Add(lng1);
-            oren.Add(lng2);
-            oren.Add(lng3);
-            return oren;
-        }
-
-        private static unsafe Document CreateLuceneDocArava(Field idFld)
-        {
-            var arava = new Document();
-            var nameFld = new Field("Name", "Arava", Field.Store.NO, Field.Index.NOT_ANALYZED);
-            var lng1 = new Field("Lang", "Bark", Field.Store.NO, Field.Index.NOT_ANALYZED);
-
-            arava.Add(idFld);
-            arava.Add(nameFld);
-            arava.Add(lng1);
-            return arava;
         }
     }
 }

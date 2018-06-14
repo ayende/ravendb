@@ -56,7 +56,8 @@ namespace Voron.Data.BTrees
                 DecompressedCurrentPage();
                 node = _currentPage.Search(_tx, key);
             }
-            
+
+            _cursor?.Dispose();
             _cursor = constructor.Build(key);
             _cursor.Pop();
 
