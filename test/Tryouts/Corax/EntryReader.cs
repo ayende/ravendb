@@ -1,5 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Text;
 using Voron.Data.PostingList;
 
@@ -7,16 +6,15 @@ namespace Tryouts.Corax
 {
     public unsafe struct EntryReader
     {
-        private readonly byte* _ptr;
-        private readonly int _size;
+        private byte* _ptr;
+        private int _size;     
 
         public EntryReader(byte* ptr, int size)
         {
             _ptr = ptr;
             _size = size;
         }
-
-
+      
         public List<long> GetTermsFor(long fieldId)
         {
             var range = FindRangeForField(fieldId);
@@ -91,11 +89,6 @@ namespace Tryouts.Corax
                 ptr += size;
             }
             return new TermsRange();
-        }
-
-        private static void ThrowInvalidOffsetSize()
-        {
-            throw new ArgumentOutOfRangeException("Invalid offset size for index entry");
         }
     }
 }

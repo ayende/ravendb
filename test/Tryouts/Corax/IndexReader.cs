@@ -2,8 +2,10 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Text;
 using Raven.Server.ServerWide.Context;
+using Sparrow;
 using Sparrow.Binary;
 using Sparrow.Json;
 using Tryouts.Corax.Queries;
@@ -81,47 +83,53 @@ namespace Tryouts.Corax
             }
         }
 
-        public unsafe string[] GetTerms(long id, string field)
+        public IEnumerable<LazyStringValue> GetTerms(long id, string field)
         {
             if (_entriesTable == null && _stringsTable == null) //no entries were written yet, so OpenTable will return null
-                return Array.Empty<string>();
+                yield break;
 
             var revId = Bits.SwapBytes(id);
-            using (Slice.From(Context.Allocator, (byte*)&revId, sizeof(long), out var key))
+            using (GetSliceFromLong(revId,out var key))
             {
                 // ReSharper disable once PossibleNullReferenceException
                 if (_entriesTable.ReadByKey(key, out var tvr) == false)
-                {
-                    return Array.Empty<string>();
-                }
+                    yield break;
 
-                var entry = tvr.Read(1, out var size);
-                var reader = new EntryReader(entry, size);
-
+                var reader = GetReaderForEntry(tvr);
                 var stringId = GetStringId(Context, _stringsTable, field);
-
                 var termIds = reader.GetTermsFor(stringId);
-                var terms = new string[termIds.Count];
+
                 for (int i = 0; i < termIds.Count; i++)
                 {
                     var curTerm = termIds[i];
-                    using (Slice.From(Context.Allocator, (byte*)&curTerm, sizeof(long), out key))
+                    using (GetSliceFromLong(curTerm, out key))
                     {
-                        var tvh = _stringsTable.SeekOneForwardFromPrefix(IndexBuilder.StringsTableSchema.Indexes[IndexBuilder.IdToString], key);
+                        var tvh = _stringsTable.SeekOneForwardFromPrefix(
+                            IndexBuilder.StringsTableSchema.Indexes[IndexBuilder.IdToString], key);
+
                         if (tvh == null)
                             ThrowInvalidMissingStringId(termIds[i]);
 
-                        terms[i] = Encoding.UTF8.GetString(tvh.Reader.Read(0, out size), size);
+                        yield return GetTermValue(tvh);
                     }
                 }
-                return terms;
             }
         }
 
-        private static void ThrowInvalidMissingStringId(long id)
-        {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private unsafe LazyStringValue GetTermValue(Table.TableValueHolder tvh) => 
+            Context.AllocateStringValue(null, tvh.Reader.Read(0, out var size), size);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private unsafe IDisposable GetSliceFromLong(long value, out Slice slice) => 
+            Slice.From(Context.Allocator, (byte*)&value, sizeof(long), out slice);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static unsafe EntryReader GetReaderForEntry(TableValueReader tvr) =>
+            new EntryReader(tvr.Read(1, out var size), size);
+
+        private static void ThrowInvalidMissingStringId(long id) => 
             throw new InvalidOperationException("Missing string whose id is: " + id);
-        }
 
         internal static unsafe LazyStringValue GetExternalId(TransactionOperationContext context, Table entriesTable, long entryId)
         {
@@ -132,8 +140,8 @@ namespace Tryouts.Corax
                 {
                     ThrowBadData();
                 }
-                
-                return new LazyStringValue(null,tvr.Read(2, out var size), size, context);
+
+                return context.AllocateStringValue(null, tvr.Read(2, out var size), size);
             }
         }
 
