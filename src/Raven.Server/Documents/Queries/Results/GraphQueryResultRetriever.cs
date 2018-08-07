@@ -1,11 +1,9 @@
 ﻿using System;
-using System.Collections.Generic;
 using Lucene.Net.Store;
 using Raven.Server.Documents.Includes;
 using Raven.Server.Documents.Queries.AST;
 using Raven.Server.Documents.Queries.Timings;
 using Raven.Server.ServerWide.Context;
-using Sparrow;
 using Sparrow.Json.Parsing;
 
 namespace Raven.Server.Documents.Queries.Results
@@ -32,7 +30,7 @@ namespace Raven.Server.Documents.Queries.Results
         public Document Get(Document doc)
         {
             return GetProjectionFromDocument(doc, null, 0, FieldsToFetch, _context, null);
-        }
+        }      
 
         public override Document Get(Lucene.Net.Documents.Document input, float score, IState state)
         {
