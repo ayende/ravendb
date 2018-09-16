@@ -29,6 +29,7 @@ using Raven.Server.Config.Categories;
 using Raven.Server.Exceptions;
 using Raven.Server.Rachis;
 using Raven.Server.ServerWide.Commands;
+using Raven.Server.TrafficWatch;
 using Raven.Server.Utils;
 using Voron;
 using Raven.Server.Documents.Patch;
@@ -118,6 +119,7 @@ namespace Raven.Server.Documents.Handlers
                         [nameof(BatchCommandResult.Results)] = command.Reply
                     });
                 }
+
             }
         }
 
