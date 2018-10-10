@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -27,7 +26,6 @@ using Sparrow.Json;
 using Sparrow.Logging;
 using Sparrow.LowMemory;
 using Sparrow.Platform;
-using Sparrow.Platform.Posix;
 using Sparrow.Utils;
 using Size = Sparrow.Size;
 using SizeClient = Raven.Client.Util.Size;
@@ -73,8 +71,9 @@ namespace Raven.Server.Utils.Cli
                         break;
                     case "%M":
                         {
+                            var workingSetText = PlatformDetails.RunningOnPosix == false ? "WS" : "RSS";
                             var memoryStats = MemoryStatsWithMemoryMappedInfo();
-                            msg.Append($"WS:{memoryStats.WorkingSet}");
+                            msg.Append($"{workingSetText}:{memoryStats.WorkingSet}");
                             msg.Append($"|UM:{memoryStats.TotalUnmanagedAllocations}");
                             msg.Append($"|M:{memoryStats.ManagedMemory}");
                             msg.Append($"|MP:{memoryStats.TotalMemoryMapped}");
@@ -114,6 +113,7 @@ namespace Raven.Server.Utils.Cli
             Clear,
             ResetServer,
             Stats,
+            TopThreads,
             Info,
             Gc,
             TrustServerCert,
@@ -325,6 +325,62 @@ namespace Raven.Server.Utils.Cli
             return true;
         }
 
+        private static bool CommandTopThreads(List<string> args, RavenCli cli)
+        {
+            if (cli._consoleColoring == false)
+            {
+                // beware not to allow this from remote - will disable local console!                
+                WriteText("'topThreads' command not supported on remote pipe connection.", TextColor, cli);
+                return true;
+            }
+
+            var maxTopThreads = 10;
+            var updateIntervalInMs = 1000;
+            var cpuUsageThreshold = 0d;
+
+            if (args?.Count > 0)
+            {
+                const string errorMessage = "Usage: topThreads [max-top-threads] [update-interval-ms] [higher-cpu-then]";
+                if (args.Count > 3)
+                {
+                    WriteError(errorMessage, cli);
+                    return false;
+                }
+
+                if (int.TryParse(args[0], out maxTopThreads) == false || maxTopThreads <= 0)
+                {
+                    WriteError(errorMessage, cli);
+                    return false;
+                }
+
+                if (args.Count > 1 && 
+                    int.TryParse(args[1], out updateIntervalInMs) == false &&
+                    updateIntervalInMs <= 0)
+                {
+                    WriteError(errorMessage, cli);
+                    return false;
+                }
+
+                if (args.Count > 2 &&
+                    double.TryParse(args[2], out cpuUsageThreshold) == false &&
+                    cpuUsageThreshold <= 0)
+                {
+                    WriteError(errorMessage, cli);
+                    return false;
+                }
+            }
+            
+            Console.ResetColor();
+
+            LoggingSource.Instance.DisableConsoleLogging();
+            var prevLogMode = LoggingSource.Instance.LogMode;
+            LoggingSource.Instance.SetupLogMode(LogMode.None, cli._server.Configuration.Logs.Path.FullPath);
+            Program.WriteThreadsInfoAndWaitForEsc(cli._server, maxTopThreads, updateIntervalInMs, cpuUsageThreshold);
+            LoggingSource.Instance.SetupLogMode(prevLogMode, cli._server.Configuration.Logs.Path.FullPath);
+            Console.WriteLine($"LogMode set back to {prevLogMode}.");
+            return true;
+        }
+
         private static bool CommandPrompt(List<string> args, RavenCli cli)
         {
             try
@@ -368,7 +424,7 @@ namespace Raven.Server.Utils.Cli
             var genNum = args == null || args.Count == 0 ? 2 : Convert.ToInt32(args.First());
 
             WriteText("Before collecting, managed memory used: ", TextColor, cli, newLine: false);
-            WriteText(new Size(GC.GetTotalMemory(false), SizeUnit.Bytes).ToString(), ConsoleColor.Cyan, cli);
+            WriteText(new Size(MemoryInformation.GetManagedMemoryInBytes(), SizeUnit.Bytes).ToString(), ConsoleColor.Cyan, cli);
             var startTime = DateTime.UtcNow;
             WriteText("Garbage Collecting... ", TextColor, cli, newLine: false);
 
@@ -393,7 +449,7 @@ namespace Raven.Server.Utils.Cli
 
             WriteText("Collected.", ConsoleColor.Green, cli);
             WriteText("After collecting, managed memory used:  ", TextColor, cli, newLine: false);
-            WriteText(new Size(GC.GetTotalMemory(false), SizeUnit.Bytes).ToString(), ConsoleColor.Cyan, cli, newLine: false);
+            WriteText(new Size(MemoryInformation.GetManagedMemoryInBytes(), SizeUnit.Bytes).ToString(), ConsoleColor.Cyan, cli, newLine: false);
             WriteText(" at ", TextColor, cli, newLine: false);
             WriteText(actionTime.TotalSeconds + " Seconds", ConsoleColor.Cyan, cli);
             return true;
@@ -489,7 +545,7 @@ namespace Raven.Server.Utils.Cli
                        Environment.NewLine +
                        $" PID {currentProcess.Id}, {IntPtr.Size * 8} bits, {ProcessorInfo.ProcessorCount} Cores, Arch: {RuntimeInformation.OSArchitecture}" +
                        Environment.NewLine +
-                       $" {memoryInfo.TotalPhysicalMemory} Physical Memory, {memoryInfo.AvailableMemory} Available Memory, {memoryInfo.CalculatedAvailableMemory} Calculated Available Memory" +
+                       $" {memoryInfo.TotalPhysicalMemory} Physical Memory, {memoryInfo.AvailableMemory} Available Memory, {memoryInfo.AvailableWithoutTotalCleanMemory} Calculated Available Memory" +
                        Environment.NewLine +
                        $" {RuntimeSettings.Describe()}";
             }
@@ -937,9 +993,10 @@ namespace Raven.Server.Utils.Cli
         {
             WriteText("Before simulating low-mem, memory stats: ", TextColor, cli, newLine: false);
 
+            var workingSetText = PlatformDetails.RunningOnPosix == false ? "Working Set" : "RSS";
             var memoryStats = MemoryStatsWithMemoryMappedInfo();
             var msg = new StringBuilder();
-            msg.Append($"Working Set: {memoryStats.WorkingSet}");
+            msg.Append($"{workingSetText}: {memoryStats.WorkingSet}");
             msg.Append($" Unmanaged Memory: {memoryStats.TotalUnmanagedAllocations}");
             msg.Append($" Managed Memory: {memoryStats.ManagedMemory}");
             WriteText(msg.ToString(), ConsoleColor.Cyan, cli);
@@ -964,33 +1021,28 @@ namespace Raven.Server.Utils.Cli
             string ManagedMemory,
             string TotalMemoryMapped) MemoryStatsWithMemoryMappedInfo()
         {
-            var stats = MemoryInformation.MemoryStats();
-
             long totalMemoryMapped = 0;
             foreach (var mapping in NativeMemory.FileMapping)
             {
-                var maxMapped = 0L;
-                foreach (var singleMapping in mapping.Value)
+                foreach (var singleMapping in mapping.Value.Value.Info)
                 {
-                    maxMapped = Math.Max(maxMapped, singleMapping.Value);
+                    totalMemoryMapped += singleMapping.Value;
                 }
-
-                totalMemoryMapped += maxMapped;
             }
 
             return (
-                SizeClient.Humane(stats.WorkingSet),
-                SizeClient.Humane(stats.TotalUnmanagedAllocations),
-                SizeClient.Humane(stats.ManagedMemory),
+                SizeClient.Humane(MemoryInformation.GetWorkingSetInBytes()),
+                SizeClient.Humane(MemoryInformation.GetUnManagedAllocationsInBytes()),
+                SizeClient.Humane(MemoryInformation.GetManagedMemoryInBytes()),
                 SizeClient.Humane(totalMemoryMapped));
         }
 
         private static bool CommandImportDir(List<string> args, RavenCli cli)
         {
             // ImportDir <databaseName> <path-to-dir>
-            WriteText($"ImportDir for database {args[0]} from dir `{args[1]}` to {cli._server.WebUrl}", ConsoleColor.Yellow, cli);
+            WriteText($"ImportDir for database {args[0]} from dir `{args[1]}` to {cli._server.ServerStore.GetNodeHttpServerUrl()}", ConsoleColor.Yellow, cli);
 
-            var url = $"{cli._server.WebUrl}/databases/{args[0]}/smuggler/import-dir?dir={args[1]}";
+            var url = $"{cli._server.ServerStore.GetNodeHttpServerUrl()}/databases/{args[0]}/smuggler/import-dir?dir={args[1]}";
             using (var client = new HttpClient())
             {
                 WriteText("Sending at " + DateTime.UtcNow, TextColor, cli);
@@ -1006,7 +1058,7 @@ namespace Raven.Server.Utils.Cli
             // CreateDb <databaseName> <DataDir>
             WriteText($"Create database {args[0]} with DataDir `{args[1]}`", ConsoleColor.Yellow, cli);
 
-            var port = new Uri(cli._server.WebUrl).Port;
+            var port = new Uri(cli._server.ServerStore.GetNodeHttpServerUrl()).Port;
 
             using (var store = new DocumentStore
             {
@@ -1041,6 +1093,7 @@ namespace Raven.Server.Utils.Cli
                 new[] {"helpPrompt", "Detailed prompt command usage"},
                 new[] {"clear", "Clear screen"},
                 new[] {"stats", "Online server's memory consumption stats, request ratio and documents count"},
+                new[] {"threadsInfo", "Online server's threads info (CPU, priority, state"},
                 new[] {"log [http-]<on|off|information/operations> [no-console]", "set log on/off or to specific mode. filter requests using http-on/off log. no-console to avoid printing in CLI"},
                 new[] {"info", "Print system info and current stats"},
                 new[] {"logo [no-clear]", "Clear screen and print initial logo"},
@@ -1100,6 +1153,7 @@ namespace Raven.Server.Utils.Cli
             [Command.Prompt] = new SingleAction { NumOfArgs = 1, DelegateFunc = CommandPrompt },
             [Command.HelpPrompt] = new SingleAction { NumOfArgs = 0, DelegateFunc = CommandHelpPrompt },
             [Command.Stats] = new SingleAction { NumOfArgs = 0, DelegateFunc = CommandStats },
+            [Command.TopThreads] = new SingleAction { NumOfArgs = 0, DelegateFunc = CommandTopThreads },
             [Command.Gc] = new SingleAction { NumOfArgs = 0, DelegateFunc = CommandGc },
             [Command.Log] = new SingleAction { NumOfArgs = 1, DelegateFunc = CommandLog },
             [Command.Clear] = new SingleAction { NumOfArgs = 0, DelegateFunc = CommandClear },

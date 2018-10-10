@@ -7,8 +7,10 @@
 using System;
 using System.Collections.Generic;
 using System.Net;
+using System.Text;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Primitives;
+using Raven.Client.Documents.Changes;
 using Raven.Client.Documents.Operations.Counters;
 using Raven.Client.Exceptions.Documents;
 using Raven.Client.Exceptions.Documents.Counters;
@@ -17,6 +19,7 @@ using Raven.Server.Config.Categories;
 using Raven.Server.Exceptions;
 using Raven.Server.Routing;
 using Raven.Server.ServerWide.Context;
+using Raven.Server.TrafficWatch;
 using Sparrow.Json;
 
 namespace Raven.Server.Documents.Handlers
@@ -280,6 +283,8 @@ namespace Raven.Server.Documents.Handlers
 
                 var counterBatch = JsonDeserializationClient.CounterBatch(countersBlittable);
 
+                if (TrafficWatchManager.HasRegisteredClients)
+                    AddStringToHttpContext(countersBlittable.ToString(), TrafficWatchChangeType.Counters);
                 var cmd = new ExecuteCounterBatchCommand(Database, counterBatch);
 
                 if (cmd.HasWrites)

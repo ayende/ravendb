@@ -41,6 +41,26 @@ namespace RachisTests.DatabaseCluster
         }
 
         [Fact]
+        public void CreateDatabaseOn00000Node()
+        {
+            using (var server = GetNewServer(new Dictionary<string, string>
+            {
+                [RavenConfiguration.GetKey(x => x.Core.ServerUrls)] = "http://0.0.0.0:0",
+                [RavenConfiguration.GetKey(x => x.Security.UnsecuredAccessAllowed)] = UnsecuredAccessAddressRange.PublicNetwork.ToString()
+            }))
+            using (var store = GetDocumentStore(new Options
+            {
+                Server = server,
+                ModifyDocumentStore = documentStore => documentStore.Urls = new []{server.ServerStore.GetNodeHttpServerUrl()},
+                CreateDatabase = true,
+                DeleteDatabaseOnDispose = true
+            }))
+            {
+
+            }
+        }
+
+        [Fact]
         public async Task DontPurgeTombstonesWhenNodeIsDown()
         {
             var clusterSize = 3;
@@ -611,7 +631,7 @@ namespace RachisTests.DatabaseCluster
 
             var databaseName = GetDatabaseName();
             var groupSize = 3;
-            var newUrl = "http://" + Environment.MachineName + ":8080";
+            var newUrl = "http://" + Environment.MachineName + ":0";
             string nodeTag;
 
             var leader = await CreateRaftClusterAndGetLeader(groupSize, shouldRunInMemory: false, leaderIndex: 0, customSettings: new Dictionary<string, string>
@@ -641,6 +661,7 @@ namespace RachisTests.DatabaseCluster
                     [RavenConfiguration.GetKey(x => x.Security.UnsecuredAccessAllowed)] = UnsecuredAccessAddressRange.PublicNetwork.ToString()
                 };
                 Servers[1] = GetNewServer(customSettings, runInMemory: false, deletePrevious: false, partialPath: dataDir);
+                newUrl = Servers[1].WebUrl;
                 // ensure that at this point we still can't talk to node 
                 await Task.Delay(fromSeconds); // wait for the observer to update the status
                 dbToplogy = (await leaderStore.Maintenance.Server.SendAsync(new GetDatabaseRecordOperation(databaseName))).Topology;

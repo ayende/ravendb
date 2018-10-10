@@ -2,6 +2,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
@@ -135,7 +136,7 @@ namespace Raven.Server.ServerWide.Maintenance
                 _cts = CancellationTokenSource.CreateLinkedTokenSource(token);
                 _token = _cts.Token;
                 _readStatusUpdateDebugString = $"ClusterMaintenanceServer/{ClusterTag}/UpdateState/Read-Response in term {term}";
-                _name = $"Maintenance supervisor from {_parent._server.NodeTag} to {ClusterTag} in term {term}";
+                _name = $"Heartbeats supervisor from {_parent._server.NodeTag} to {ClusterTag} in term {term}";
                 _log = LoggingSource.Instance.GetLogger<ClusterNode>(_name);
             }
 
@@ -216,6 +217,8 @@ namespace Raven.Server.ServerWide.Maintenance
                         using (var timeoutEvent = new TimeoutEvent(receiveFromWorkerTimeout, $"Timeout event for: {_name}", singleShot: false))
                         {
                             timeoutEvent.Start(OnTimeout);
+                            var unchangedReports = new List<DatabaseStatusReport>();
+
                             while (_token.IsCancellationRequested == false)
                             {
                                 BlittableJsonReaderObject rawReport;
@@ -246,10 +249,13 @@ namespace Raven.Server.ServerWide.Maintenance
                                     break;
                                 }
 
-                                var report = BuildReport(rawReport);
+                                var nodeReport = BuildReport(rawReport);
                                 timeoutEvent.Defer(_parent._leaderClusterTag);
 
-                                ReceivedReport = _lastSuccessfulReceivedReport = report;
+                                UpdateNodeReportIfNeeded(nodeReport, unchangedReports);
+                                unchangedReports.Clear();
+
+                                ReceivedReport = _lastSuccessfulReceivedReport = nodeReport;
                             }
                         }
                     }
@@ -266,6 +272,42 @@ namespace Raven.Server.ServerWide.Maintenance
                             DateTime.UtcNow,
                             _lastSuccessfulReceivedReport);
                     }
+                }
+            }
+
+            private void UpdateNodeReportIfNeeded(ClusterNodeStatusReport nodeReport, List<DatabaseStatusReport> unchangedReports)
+            {
+                // we take the last received and not the last successful.
+                // we don't want to reuse by miskate a successful report when we recieve an 'unchanged' error.
+                var lastReport = ReceivedReport;
+                if (lastReport.Status != ClusterNodeStatusReport.ReportStatus.Ok)
+                {
+                    return;
+                }
+
+                foreach (var dbReport in nodeReport.Report)
+                {
+                    if (dbReport.Value.Status == DatabaseStatus.NoChange)
+                    {
+                        unchangedReports.Add(dbReport.Value);
+                    }
+                }
+
+                if (unchangedReports.Count == 0)
+                    return;
+
+                foreach (var dbReport in unchangedReports)
+                {
+                    var dbName = dbReport.Name;
+                    if (lastReport.Report.TryGetValue(dbName, out var previous) == false)
+                    {
+                        // new db, shouldn't really be the case, but not much we can do, we'll
+                        // show it to the user as is
+                        continue;
+                    }
+                    previous.LastSentEtag = dbReport.LastSentEtag;
+                    previous.UpTime = dbReport.UpTime;
+                    nodeReport.Report[dbName] = previous;
                 }
             }
 

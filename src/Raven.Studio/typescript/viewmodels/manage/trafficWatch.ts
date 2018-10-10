@@ -7,6 +7,20 @@ import columnPreviewPlugin = require("widgets/virtualGrid/columnPreviewPlugin");
 import trafficWatchWebSocketClient = require("common/trafficWatchWebSocketClient");
 import virtualGridController = require("widgets/virtualGrid/virtualGridController");
 import generalUtils = require("common/generalUtils");
+import awesomeMultiselect = require("common/awesomeMultiselect");
+
+class typeData {
+    count = ko.observable<number>(0);
+    propertyName: Raven.Client.Documents.Changes.TrafficWatchChangeType;
+
+    constructor(propertyName: Raven.Client.Documents.Changes.TrafficWatchChangeType) {
+        this.propertyName = propertyName;
+    }
+    
+    inc() {
+        this.count(this.count() + 1);
+    }
+}
 
 class trafficWatch extends viewModelBase {
     
@@ -15,9 +29,15 @@ class trafficWatch extends viewModelBase {
     private liveClient = ko.observable<trafficWatchWebSocketClient>();
     private allData = [] as Raven.Client.Documents.Changes.TrafficWatchChange[];
     private filteredData = [] as Raven.Client.Documents.Changes.TrafficWatchChange[];
+
     private gridController = ko.observable<virtualGridController<Raven.Client.Documents.Changes.TrafficWatchChange>>();
     private columnPreview = new columnPreviewPlugin<Raven.Client.Documents.Changes.TrafficWatchChange>();
-    
+
+    private readonly allTypeData: Raven.Client.Documents.Changes.TrafficWatchChangeType[] =
+        ["BulkDocs", "Counters", "Documents", "Hilo", "Index", "MultiGet", "None", "Operations", "Queries", "Streams", "Subscriptions"];
+    private filteredTypeData = this.allTypeData.map(x => new typeData(x));
+    private selectedTypeNames = ko.observableArray<string>(this.allTypeData.splice(0));
+
     stats = {
         count: ko.observable<string>(),
         min: ko.observable<string>(),
@@ -26,17 +46,22 @@ class trafficWatch extends viewModelBase {
     };
     
     filter = ko.observable<string>();
-
-    private appendElementsTask: number;
     
+    private appendElementsTask: number;
+
     isBufferFull = ko.observable<boolean>();
     tailEnabled = ko.observable<boolean>(true);
     private duringManualScrollEvent = false;
+
+    private typesMultiSelectRefreshThrottle = _.throttle(() => this.syncMultiSelect(), 1000);
     
     constructor() {
         super();
-        
-        this.filter.throttle(500).subscribe(() => this.filterEntries());
+
+        this.updateStats();
+
+        this.filter.throttle(500).subscribe(() => this.refresh());
+        this.selectedTypeNames.subscribe(() => this.refresh());
     }
     
     activate(args: any) {
@@ -55,30 +80,40 @@ class trafficWatch extends viewModelBase {
             this.liveClient().dispose();
         }
     }
-    
-    private filterEntries() {
-        const filter = this.filter();
-        if (filter) {
-            this.filteredData = this.allData.filter(item => this.matchesFilter(item));
-        } else {
-            this.filteredData = this.allData.slice();
-        }
 
-        this.updateStats();
-        
-        this.gridController().reset(true);
+    attached() {
+        super.attached();
+        awesomeMultiselect.build($("#visibleTypesSelector"), opts => {
+            opts.enableHTML = true;
+            opts.includeSelectAllOption = true;
+            opts.nSelectedText = " types selected";
+            opts.allSelectedText = "All types selected";
+            opts.optionLabel = (element: HTMLOptionElement) => {
+                const propertyName = $(element).text();
+                const typeItem = this.filteredTypeData.find(x => x.propertyName === propertyName);
+                return `<span class="name">${generalUtils.escape(propertyName)}</span><span class="badge">${typeItem.count().toLocaleString()}</span>`;
+            };
+        });
     }
-    
-    private matchesFilter(item: Raven.Client.Documents.Changes.TrafficWatchChange) {
-        const filter = this.filter();
-        if (!filter) {
-            return true;
-        }
-        const filterLowered = filter.toLocaleLowerCase();
+
+    private syncMultiSelect() {
+        awesomeMultiselect.rebuild($("#visibleTypesSelector"));
+    }
+
+    private refresh() {
+        this.gridController().reset(false);
+    }
+
+    private matchesFilters(item: Raven.Client.Documents.Changes.TrafficWatchChange) {
+        const textFilter = this.filter();
         const uri = item.RequestUri.toLocaleLowerCase();
-        return uri.includes(filterLowered);
+        
+        const textFilterMatch = !textFilter || uri.includes(textFilter.toLocaleLowerCase()); 
+        const typeMatch = _.includes(this.selectedTypeNames(), item.Type);
+        
+        return textFilterMatch && typeMatch;
     }
-    
+
     private updateStats() {
         if (!this.filteredData.length) {
             this.stats.avg("n/a");
@@ -86,7 +121,6 @@ class trafficWatch extends viewModelBase {
             this.stats.max("n/a");
             this.stats.count("0");
         } else {
-            let countForAvg = 0;
             let sum = 0;
             let min = this.filteredData[0].ElapsedMilliseconds;
             let max = this.filteredData[0].ElapsedMilliseconds;
@@ -107,25 +141,24 @@ class trafficWatch extends viewModelBase {
                     max = item.ElapsedMilliseconds;
                 }
 
-                countForAvg++;
                 sum += item.ElapsedMilliseconds;
             }
-            
-            this.stats.min(min.toLocaleString() + " ms");
-            this.stats.max(max.toLocaleString() + " ms");
+
+            this.stats.min(generalUtils.formatTimeSpan(min, false));
+            this.stats.max(generalUtils.formatTimeSpan(max, false));
             this.stats.count(this.filteredData.length.toLocaleString());
-            
-            const avg = countForAvg ? generalUtils.formatNumberToStringFixed(sum * 1.0 / countForAvg, 2) + " ms" : "n/a"; 
-            this.stats.avg(avg);
+            if (this.filteredData.length) {
+                this.stats.avg(generalUtils.formatTimeSpan(sum / this.filteredData.length));
+            } else {
+                this.stats.avg("n/a");
+            }
         }
     }
-    
+
     compositionComplete() {
         super.compositionComplete();
 
         $('.traffic-watch [data-toggle="tooltip"]').tooltip();
-        
-        this.updateStats();
 
         const rowHighlightRules = {
             extraClass: (item: Raven.Client.Documents.Changes.TrafficWatchChange) => {
@@ -147,7 +180,9 @@ class trafficWatch extends viewModelBase {
                 new textColumn<Raven.Client.Documents.Changes.TrafficWatchChange>(grid, x => x.ResponseStatusCode, "Status", "8%", rowHighlightRules),
                 new textColumn<Raven.Client.Documents.Changes.TrafficWatchChange>(grid, x => x.DatabaseName, "Database Name", "8%", rowHighlightRules),
                 new textColumn<Raven.Client.Documents.Changes.TrafficWatchChange>(grid, x => x.ElapsedMilliseconds, "Duration", "8%", rowHighlightRules),
-                new textColumn<Raven.Client.Documents.Changes.TrafficWatchChange>(grid, x => x.HttpMethod, "Method", "10%", rowHighlightRules),
+                new textColumn<Raven.Client.Documents.Changes.TrafficWatchChange>(grid, x => x.HttpMethod, "Method", "6%", rowHighlightRules),
+                new textColumn<Raven.Client.Documents.Changes.TrafficWatchChange>(grid, x => x.Type, "Type", "6%", rowHighlightRules),
+                new textColumn<Raven.Client.Documents.Changes.TrafficWatchChange>(grid, x => x.CustomInfo, "CustomInfo", "8%", rowHighlightRules),
                 new textColumn<Raven.Client.Documents.Changes.TrafficWatchChange>(grid, x => x.RequestUri, "URI", "35%", rowHighlightRules)
             ]
         );
@@ -159,6 +194,8 @@ class trafficWatch extends viewModelBase {
                 onValue(item.RequestUri);
             } else if (column.header === "Timestamp") {
                 onValue(moment.utc(item.TimeStamp), item.TimeStamp); 
+            } else if (column.header === "CustomInfo") {
+                onValue(item.CustomInfo);
             }
         });
 
@@ -169,24 +206,33 @@ class trafficWatch extends viewModelBase {
 
             this.duringManualScrollEvent = false;
         });
-        
         this.connectWebSocket();
     }
 
-    private fetchTraffic(skip: number,  take: number): JQueryPromise<pagedResult<Raven.Client.Documents.Changes.TrafficWatchChange>> {
+    private fetchTraffic(skip: number, take: number): JQueryPromise<pagedResult<Raven.Client.Documents.Changes.TrafficWatchChange>> {
+        const textFilterDefined = this.filter();
+        const filterUsingType = this.selectedTypeNames().length !== this.filteredTypeData.length;
+        
+        if (textFilterDefined || filterUsingType) {
+            this.filteredData = this.allData.filter(item => this.matchesFilters(item));
+        } else {
+            this.filteredData = this.allData;
+        }
+        this.updateStats();
+
         return $.when({
-            totalResultCount: this.filteredData.length,
-            items: _.take(this.filteredData.slice(skip), take)
+            items: this.filteredData,
+            totalResultCount: this.filteredData.length
         });
     }
-    
+
     connectWebSocket() {
         eventsCollector.default.reportEvent("traffic-watch", "connect");
         
         const ws = new trafficWatchWebSocketClient(data => this.onData(data));
         this.liveClient(ws);
     }
-    
+
     private onData(data: Raven.Client.Documents.Changes.TrafficWatchChange) {
         if (this.allData.length === trafficWatch.maxBufferSize) {
             this.isBufferFull(true);
@@ -195,19 +241,22 @@ class trafficWatch extends viewModelBase {
         }
         
         this.allData.push(data);
-        if (this.matchesFilter(data)) {
-            this.filteredData.push(data);
-        }
         
+        this.filteredTypeData.find(x => x.propertyName === data.Type).inc();
+        this.typesMultiSelectRefreshThrottle();
+
         if (!this.appendElementsTask) {
             this.appendElementsTask = setTimeout(() => this.onAppendPendingEntries(), 333);
         }
     }
-    
+
+    clearTypeCounter(): void {
+        this.filteredTypeData.forEach(x => x.count(0));
+        this.syncMultiSelect();
+    }
+
     private onAppendPendingEntries() {
         this.appendElementsTask = null;
-        
-        this.updateStats();
         
         this.gridController().reset(false);
         
@@ -234,12 +283,14 @@ class trafficWatch extends viewModelBase {
         this.allData = [];
         this.filteredData = [];
         this.isBufferFull(false);
+        this.clearTypeCounter();
         this.gridController().reset(true);
-        
+
+        this.updateStats();
+
         // set flag to true, since grid reset is async
         this.duringManualScrollEvent = true;
         this.tailEnabled(true);
-        
         if (!this.liveClient()) {
             this.resume();
         }
@@ -265,7 +316,6 @@ class trafficWatch extends viewModelBase {
 
         this.gridController().scrollDown();
     }
-
 }
 
 export = trafficWatch;

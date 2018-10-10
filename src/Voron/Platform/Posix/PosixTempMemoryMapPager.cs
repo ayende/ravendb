@@ -30,7 +30,7 @@ namespace Voron.Platform.Posix
         private long _totalAllocationSize;
         public override long TotalAllocationSize => _totalAllocationSize;
         public PosixTempMemoryMapPager(StorageEnvironmentOptions options, VoronPathSetting file, long? initialFileSize = null)
-            : base(options)
+            : base(options, canPrefetchAhead: false)
         {
             _options = options;
             FileName = file;
@@ -125,21 +125,15 @@ namespace Voron.Platform.Posix
                 var err = Marshal.GetLastWin32Error();
                 Syscall.ThrowLastError(err, "mmap on " + FileName);
             }
-            NativeMemory.RegisterFileMapping(FileName.FullPath, startingBaseAddressPtr, _totalAllocationSize);
+            NativeMemory.RegisterFileMapping(FileName.FullPath, startingBaseAddressPtr, _totalAllocationSize, GetAllocatedInBytes);
             var allocationInfo = new PagerState.AllocationInfo
             {
                 BaseAddress = (byte*)startingBaseAddressPtr.ToPointer(),
                 Size = _totalAllocationSize,
                 MappedFile = null
             };
-
-            var newPager = new PagerState(this)
-            {
-                Files = null, // unused
-                MapBase = allocationInfo.BaseAddress,
-                AllocationInfos = new[] { allocationInfo }
-            };
-            return newPager;
+            
+            return new PagerState(this, Options.PrefetchSegmentSize, Options.PrefetchResetThreshold, allocationInfo);
         }
 
         public override void Sync(long totalUnsynced)

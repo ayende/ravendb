@@ -4,8 +4,8 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using FastTests.Server.Documents.Revisions;
 using FastTests.Server.Replication;
+using FastTests.Utils;
 using Raven.Client.Documents;
 using Raven.Client.Documents.Conventions;
 using Raven.Client.Documents.Indexes;
@@ -89,11 +89,9 @@ namespace SlowTests.Cluster
             {
                 for (int j = 0; j < numOfSessions; j++)
                 {
-
-                    bool retry;
+                    var trys = 5;
                     do
                     {
-                        retry = false;
                         try
                         {
                             using (var session = store.OpenAsyncSession(new SessionOptions
@@ -118,18 +116,20 @@ namespace SlowTests.Cluster
                                         return Task.CompletedTask;
                                     });
                                 await session.SaveChangesAsync();
+                                trys = 5;
                             }
                         }
                         catch (Exception e) when (e is ConcurrencyException)
                         {
-                            retry = true;
+                            trys--;
                         }
-                    } while (retry);
-                }
+                    } while (trys < 5 && trys > 0);
 
+                    Assert.True(trys > 0, $"Couldn't save a document after 5 retries.");
+                }
                 using (var session = store.OpenSession())
                 {
-                    var res = session.Query<User>().ToArray();
+                    var res = session.Query<User>().Customize(q => q.WaitForNonStaleResults()).ToArray();
                     Assert.Equal(numOfSessions * docsPerSession, res.Length);
                 }
             }
@@ -865,10 +865,10 @@ namespace SlowTests.Cluster
             public UserByName()
             {
                 Map = users => from user in users
-                    select new
-                    {
-                        user.Name
-                    };
+                               select new
+                               {
+                                   user.Name
+                               };
             }
         }
     }

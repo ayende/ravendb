@@ -316,8 +316,9 @@ namespace Raven.Server
 
         public static void WriteServerStatsAndWaitForEsc(RavenServer server)
         {
+            var workingSetText = PlatformDetails.RunningOnPosix == false ? "working set" : "    RSS    ";
             Console.WriteLine("Showing stats, press any key to close...");
-            Console.WriteLine("    working set     | native mem      | managed mem     | mmap size         | reqs/sec       | docs (all dbs)");
+            Console.WriteLine($"    {workingSetText}     | native mem      | managed mem     | mmap size         | reqs/sec       | docs (all dbs)");
             var i = 0;
             while (Console.KeyAvailable == false)
             {
@@ -360,6 +361,65 @@ namespace Raven.Server
             Console.ReadKey(true);
             Console.WriteLine();
             Console.WriteLine($"Stats halted.");
+        }
+
+        public static void WriteThreadsInfoAndWaitForEsc(RavenServer server, int maxTopThreads, int updateIntervalInMs, double cpuUsageThreshold)
+        {
+            Console.WriteLine("Showing threads info, press any key to close...");
+            var i = 0L;
+            var threadsUsage = new ThreadsUsage();
+            Thread.Sleep(100);
+
+            var cursorLeft = Console.CursorLeft;
+            var cursorTop = Console.CursorTop;
+
+            var waitIntervals = updateIntervalInMs / 100;
+            var maxNameLength = 0;
+            while (Console.KeyAvailable == false)
+            {
+                Console.SetCursorPosition(cursorLeft, cursorTop);
+
+                var threadsInfo = threadsUsage.Calculate();
+                Console.Write($"{(i++ % 2 == 0 ? "*" : "+")} ");
+                Console.WriteLine($"CPU usage: {threadsInfo.CpuUsage:0.00}% (total threads: {threadsInfo.List.Count:#,#0}, active cores: {threadsInfo.ActiveCores})   ");
+                
+                var count = 0;
+                var isFirst = true;
+                foreach (var threadInfo in threadsInfo.List
+                    .Where(x => x.CpuUsage >= cpuUsageThreshold)
+                    .OrderByDescending(x => x.CpuUsage))
+                {
+                    if (isFirst)
+                    {
+                        Console.WriteLine("  thread id  |  cpu usage  |   priority    |     thread name       ");
+                        isFirst = false;
+                    }
+
+                    if (++count > maxTopThreads)
+                        break;
+
+                    var nameLength = threadInfo.Name.Length;
+                    maxNameLength = Math.Max(maxNameLength, nameLength);
+                    var numberOfEmptySpaces = maxNameLength - nameLength + 1;
+                    var emptySpaces = numberOfEmptySpaces > 0 ? new string(' ', numberOfEmptySpaces) : string.Empty;
+
+                    Console.Write($"    {threadInfo.Id,-7} ");
+                    Console.Write($" |    {$"{threadInfo.CpuUsage:0.00}%",-8}");
+                    Console.Write($" | {threadInfo.Priority,-12} ");
+                    Console.Write($" | {threadInfo.Name}{emptySpaces}");
+
+                    Console.WriteLine();
+                }
+
+                for (var j = 0; j < waitIntervals && Console.KeyAvailable == false; j++)
+                {
+                    Thread.Sleep(100);
+                }
+            }
+
+            Console.ReadKey(true);
+            Console.WriteLine();
+            Console.WriteLine("Threads info halted.");
         }
     }
 }

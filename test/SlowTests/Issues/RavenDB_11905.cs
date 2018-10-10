@@ -28,12 +28,13 @@ namespace SlowTests.Issues
 
             using (var recovery = new Recovery(new VoronRecoveryConfiguration()
             {
+                LoggingMode = Sparrow.Logging.LogMode.None,
                 DataFileDirectory = dbPath,
                 PathToDataFile = Path.Combine(dbPath, "Raven.voron"),
                 OutputFileName = Path.Combine(recoveryExportPath, "recovery.ravendump"),
             }))
             {
-                recovery.Execute(CancellationToken.None);
+                recovery.Execute(TextWriter.Null, CancellationToken.None);
             }
             
             using (var store = GetDocumentStore())

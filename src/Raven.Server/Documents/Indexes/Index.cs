@@ -187,6 +187,8 @@ namespace Raven.Server.Documents.Indexes
 
         private static readonly Size DefaultMaximumMemoryAllocation = new Size(32, SizeUnit.Megabytes);
 
+        public long LastTransactionId => _environment.CurrentReadTransactionId;
+
         protected Index(IndexType type, IndexDefinitionBase definition)
         {
             Type = type;
@@ -425,7 +427,7 @@ namespace Raven.Server.Documents.Indexes
             var indexTempPath = configuration.TempPath?.Combine(name);
 
             var options = configuration.RunInMemory
-                ? StorageEnvironmentOptions.CreateMemoryOnly(indexPath.FullPath, indexTempPath?.FullPath,
+                ? StorageEnvironmentOptions.CreateMemoryOnly(indexPath.FullPath, indexTempPath?.FullPath ?? Path.Combine(indexPath.FullPath, "Temp"),
                     documentDatabase.IoChanges, documentDatabase.CatastrophicFailureNotification)
                 : StorageEnvironmentOptions.ForPath(indexPath.FullPath, indexTempPath?.FullPath, null,
                     documentDatabase.IoChanges, documentDatabase.CatastrophicFailureNotification);
@@ -447,6 +449,8 @@ namespace Raven.Server.Documents.Indexes
             options.DoNotConsiderMemoryLockFailureAsCatastrophicError = documentDatabase.Configuration.Security.DoNotConsiderMemoryLockFailureAsCatastrophicError;
             if (documentDatabase.Configuration.Storage.MaxScratchBufferSize.HasValue)
                 options.MaxScratchBufferSize = documentDatabase.Configuration.Storage.MaxScratchBufferSize.Value.GetValue(SizeUnit.Bytes);
+            options.PrefetchSegmentSize = documentDatabase.Configuration.Storage.PrefetchBatchSize.GetValue(SizeUnit.Bytes);
+            options.PrefetchResetThreshold = documentDatabase.Configuration.Storage.PrefetchResetThreshold.GetValue(SizeUnit.Bytes);
 
             if (schemaUpgrader)
             {
@@ -1079,6 +1083,12 @@ namespace Raven.Server.Documents.Indexes
 
                         try
                         {
+                            if (_lowMemoryFlag.IsRaised())
+                            {
+                                // we can reduce the sizes of the mapped temp files
+                                storageEnvironment.Cleanup();
+                            }
+
                             // the logic here is that unless we hit the memory limit on the system, we want to retain our
                             // allocated memory as long as we still have work to do (since we will reuse it on the next batch)
                             // and it is probably better to avoid alloc/free jitter.
@@ -1198,7 +1208,6 @@ namespace Raven.Server.Documents.Indexes
             ByteStringMemoryCache.CleanForCurrentThread();
             IndexPersistence.Clean();
             _currentMaximumAllowedMemory = DefaultMaximumMemoryAllocation;
-
 
             var afterFree = NativeMemory.CurrentThreadStats.TotalAllocated;
             if (_logger.IsInfoEnabled)
@@ -1329,16 +1338,14 @@ namespace Raven.Server.Documents.Indexes
 
         private static string OutOfMemoryDetails(OutOfMemoryException oome)
         {
-            var stats = MemoryInformation.MemoryStats();
-
             var memoryInfo = MemoryInformation.GetMemInfoUsingOneTimeSmapsReader();
 
-            return $"Managed memory: {new Size(stats.ManagedMemory, SizeUnit.Bytes)}, " +
-                   $"Unmanaged allocations: {new Size(stats.TotalUnmanagedAllocations, SizeUnit.Bytes)}, " +
-                   $"Mapped temp: {new Size(stats.MappedTemp, SizeUnit.Bytes)}, " +
-                   $"Working set: {new Size(stats.TotalUnmanagedAllocations, SizeUnit.Bytes)}, " +
+            return $"Managed memory: {new Size(MemoryInformation.GetManagedMemoryInBytes(), SizeUnit.Bytes)}, " +
+                   $"Unmanaged allocations: {new Size(MemoryInformation.GetUnManagedAllocationsInBytes(), SizeUnit.Bytes)}, " +
+                   $"Shared clean: {memoryInfo.SharedCleanMemory}, " +
+                   $"Working set: {memoryInfo.WorkingSet}, " +
                    $"Available memory: {memoryInfo.AvailableMemory}, " +
-                   $"Calculated Available memory: {memoryInfo.CalculatedAvailableMemory}, " +
+                   $"Calculated Available memory: {memoryInfo.AvailableWithoutTotalCleanMemory}, " +
                    $"Total memory: {memoryInfo.TotalPhysicalMemory} {Environment.NewLine}" +
                    $"Error: {oome}";
         }
@@ -1947,7 +1954,7 @@ namespace Raven.Server.Documents.Indexes
 
                 if (isIndexPath || isTempPath)
                 {
-                    foreach (var singleMapping in mapping.Value)
+                    foreach (var singleMapping in mapping.Value.Value.Info)
                         totalSize += singleMapping.Value;
                 }
             }

@@ -37,7 +37,7 @@ namespace Raven.Server.Documents.ETL.Providers.Raven
             _transformation = transformation;
             _script = script;
 
-            LoadToDestinations = _script.HasTransformation ? _script.LoadToCollections : new string[0];
+            LoadToDestinations = _script.LoadToCollections;
         }
 
         public override void Initialize(bool debugMode)
@@ -207,12 +207,17 @@ namespace Raven.Server.Documents.ETL.Providers.Raven
 
                             if (_script.HasLoadCounterBehaviors && _script.TryGetLoadCounterBehaviorFunctionFor(item.Collection, out var function))
                             {
-                                foreach (var counter in GetCountersFor(Current))
+                                var counters = GetCountersFor(Current);
+
+                                if (counters != null && counters.Count > 0)
                                 {
-                                    using (var result = BehaviorsScript.Run(Context, Context, function, new object[] { item.DocumentId, counter.Name }))
+                                    foreach (var counter in counters)
                                     {
-                                        if (result.BooleanValue == true)
-                                            _currentRun.AddCounter(item.DocumentId, counter.Name, counter.Value);
+                                        using (var result = BehaviorsScript.Run(Context, Context, function, new object[] { item.DocumentId, counter.Name }))
+                                        {
+                                            if (result.BooleanValue == true)
+                                                _currentRun.AddCounter(item.DocumentId, counter.Name, counter.Value);
+                                        }
                                     }
                                 }
                             }
@@ -251,23 +256,15 @@ namespace Raven.Server.Documents.ETL.Providers.Raven
                 switch (item.Type)
                 {
                     case EtlItemType.Document:
+
+                        if (ShouldFilterOutDeletion())
+                            break;
+
                         if (_script.HasTransformation)
                         {
                             Debug.Assert(item.IsAttachmentTombstone == false, "attachment tombstones are tracked only if script is empty");
 
-                            bool shouldDelete = true;
-
-                            if (_script.HasDeleteDocumentsBehaviors && _script.TryGetDeleteDocumentBehaviorFunctionFor(item.Collection, out var function))
-                            {
-                                using (var result = BehaviorsScript.Run(Context, Context, function, new object[] { item.DocumentId }))
-                                {
-                                    shouldDelete = result.BooleanValue == true;
-                                }
-                            }
-                               
-                            if (shouldDelete)
-                                ApplyDeleteCommands(item, OperationType.Delete);
-
+                            ApplyDeleteCommands(item, OperationType.Delete);
                         }
                         else
                         {
@@ -303,11 +300,59 @@ namespace Raven.Server.Documents.ETL.Providers.Raven
                         }
                         else
                         {
-                            
+                            if (ShouldFilterOutDeletion())
+                                break;
+
                             _currentRun.DeleteCounter(docId, counterName);
                         }
 
                         break;
+                }
+
+                bool ShouldFilterOutDeletion()
+                {
+                    if (_script.HasDeleteDocumentsBehaviors)
+                    {
+                        var collection = item.Collection ?? item.CollectionFromMetadata;
+                        var documentId = item.DocumentId;
+
+                        if (item.IsAttachmentTombstone)
+                        {
+                            documentId = AttachmentsStorage.ExtractDocIdAndAttachmentNameFromTombstone(Context, item.AttachmentTombstoneId).DocId;
+
+                            Debug.Assert(collection == null);
+
+                            var document = Database.DocumentsStorage.Get(Context, documentId);
+
+                            if (document == null)
+                                return true; // document was deleted, no need to send DELETE of attachment tombstone
+
+                            collection = Database.DocumentsStorage.ExtractCollectionName(Context, document.Data).Name;
+                        }
+                        else if (item.Type == EtlItemType.Counter)
+                            documentId = CountersStorage.ExtractDocIdAndCounterNameFromTombstone(Context, item.CounterTombstoneId).DocId;
+
+                        Debug.Assert(collection != null);
+
+                        if (_script.TryGetDeleteDocumentBehaviorFunctionFor(collection, out var function) ||
+                            _script.TryGetDeleteDocumentBehaviorFunctionFor(Transformation.GenericDeleteDocumentsBehaviorFunctionKey, out function))
+                        {
+                            object[] parameters;
+
+                            if (Transformation.GenericDeleteDocumentsBehaviorFunctionName.Equals(function, StringComparison.OrdinalIgnoreCase))
+                                parameters = new object[] { documentId, collection };
+                            else
+                                parameters = new object[] { documentId };
+
+                            using (var result = BehaviorsScript.Run(Context, Context, function, parameters))
+                            {
+                                if (result.BooleanValue == null || result.BooleanValue == false)
+                                    return true;
+                            }
+                        }
+                    }
+
+                    return false;
                 }
             }
 
@@ -335,7 +380,9 @@ namespace Raven.Server.Documents.ETL.Providers.Raven
                 return null;
             }
 
-            metadata.Modifications = new DynamicJsonValue(metadata);
+            if (metadata.Modifications == null)
+                metadata.Modifications = new DynamicJsonValue(metadata);
+
             metadata.Modifications.Remove(Constants.Documents.Metadata.Attachments);
 
             var results = new List<Attachment>();
@@ -366,7 +413,9 @@ namespace Raven.Server.Documents.ETL.Providers.Raven
                 return null;
             }
 
-            metadata.Modifications = new DynamicJsonValue(metadata);
+            if (metadata.Modifications == null)
+                metadata.Modifications = new DynamicJsonValue(metadata);
+
             metadata.Modifications.Remove(Constants.Documents.Metadata.Counters);
 
             var results = new List<(string Name, long Value)>();
@@ -429,10 +478,11 @@ namespace Raven.Server.Documents.ETL.Providers.Raven
             {
                 DefaultCollections = new HashSet<string>(transformation.Collections, StringComparer.OrdinalIgnoreCase);
 
-                if (string.IsNullOrEmpty(transformation.Script))
+                if (string.IsNullOrWhiteSpace(transformation.Script))
                     return;
 
-                Transformation = new PatchRequest(transformation.Script, PatchRequestType.RavenEtl);
+                if (transformation.IsEmptyScript == false)
+                    Transformation = new PatchRequest(transformation.Script, PatchRequestType.RavenEtl);
 
                 if (transformation.CollectionToLoadCounterBehaviorFunction != null)
                     _collectionToLoadCounterBehaviorFunction = transformation.CollectionToLoadCounterBehaviorFunction;
@@ -443,7 +493,8 @@ namespace Raven.Server.Documents.ETL.Providers.Raven
                 if (HasLoadCounterBehaviors || HasDeleteDocumentsBehaviors)
                     BehaviorFunctions = new PatchRequest(transformation.Script, PatchRequestType.EtlBehaviorFunctions);
 
-                LoadToCollections = transformation.GetCollectionsFromScript();
+                if (transformation.IsEmptyScript == false)
+                    LoadToCollections = transformation.GetCollectionsFromScript();
 
                 foreach (var collection in LoadToCollections)
                 {

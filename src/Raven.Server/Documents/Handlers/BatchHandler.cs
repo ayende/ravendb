@@ -19,6 +19,7 @@ using Sparrow;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using System.Runtime.ExceptionServices;
+using Raven.Client.Documents.Changes;
 using Raven.Client.Documents.Operations;
 using Raven.Client.Json;
 using Raven.Server.Json;
@@ -29,6 +30,7 @@ using Raven.Server.Config.Categories;
 using Raven.Server.Exceptions;
 using Raven.Server.Rachis;
 using Raven.Server.ServerWide.Commands;
+using Raven.Server.TrafficWatch;
 using Raven.Server.Utils;
 using Voron;
 using Raven.Server.Documents.Patch;
@@ -56,6 +58,10 @@ namespace Raven.Server.Documents.Handlers
                 }
                 else
                     ThrowNotSupportedType(contentType);
+                if (TrafficWatchManager.HasRegisteredClients)
+                {
+                    BatchTrafficWatch(command.ParsedCommands);
+                }
 
                 var waitForIndexesTimeout = GetTimeSpanQueryString("waitForIndexesTimeout", required: false);
                 var waitForIndexThrow = GetBoolValueQueryString("waitForIndexThrow", required: false) ?? true;
@@ -118,6 +124,7 @@ namespace Raven.Server.Documents.Handlers
                         [nameof(BatchCommandResult.Results)] = command.Reply
                     });
                 }
+
             }
         }
 
@@ -127,9 +134,34 @@ namespace Raven.Server.Documents.Handlers
             public DynamicJsonArray Array;
         }
 
+        private void BatchTrafficWatch(ArraySegment<BatchRequestParser.CommandData> parsedCommands)
+        {
+            var sb = new StringBuilder();
+            for (var i = parsedCommands.Offset; i < (parsedCommands.Offset + parsedCommands.Count); i++)
+            {
+                // log script and args if type is patch
+                if (parsedCommands.Array[i].Type == CommandType.PATCH)
+                {
+                    sb.Append(parsedCommands.Array[i].Type).Append("    ")
+                        .Append(parsedCommands.Array[i].Id).Append("    ")
+                        .Append(parsedCommands.Array[i].Patch.Script).Append("    ")
+                        .Append(parsedCommands.Array[i].PatchArgs).AppendLine();
+                }
+                else 
+                {
+                    sb.Append(parsedCommands.Array[i].Type).Append("    ")
+                        .Append(parsedCommands.Array[i].Id).AppendLine();
+                }
+            }
+            // add sb to httpContext
+            AddStringToHttpContext(sb.ToString(), TrafficWatchChangeType.BulkDocs);
+        }
+
+
         private async Task HandleClusterTransaction(DocumentsOperationContext context, MergedBatchCommand command, ClusterTransactionCommand.ClusterTransactionOptions options)
         {
-            var clusterTransactionCommand = new ClusterTransactionCommand(Database.Name, command.ParsedCommands, options);
+            var record = ServerStore.LoadDatabaseRecord(Database.Name, out _);
+            var clusterTransactionCommand = new ClusterTransactionCommand(Database.Name, record.Topology.DatabaseTopologyIdBase64, command.ParsedCommands, options);
             var result = await ServerStore.SendToLeaderAsync(clusterTransactionCommand);
 
             if (result.Result is List<string> errors)
@@ -992,16 +1024,17 @@ namespace Raven.Server.Documents.Handlers
                     continue;
                 }
 
-                ParsedCommands[i].PatchCommand = new PatchDocumentCommand(context, 
-                    ParsedCommands[i].Id, 
-                    ParsedCommands[i].ChangeVector,
-                    false,
-                    (ParsedCommands[i].Patch, ParsedCommands[i].PatchArgs),
-                    (ParsedCommands[i].PatchIfMissing, ParsedCommands[i].PatchIfMissingArgs),
-                    database,
-                    false,
-                    false,
-                    true
+                ParsedCommands[i].PatchCommand = new PatchDocumentCommand(
+                    context: context, 
+                    id: ParsedCommands[i].Id, 
+                    expectedChangeVector: ParsedCommands[i].ChangeVector,
+                    skipPatchIfChangeVectorMismatch: false,
+                    patch: (ParsedCommands[i].Patch, ParsedCommands[i].PatchArgs),
+                    patchIfMissing: (ParsedCommands[i].PatchIfMissing, ParsedCommands[i].PatchIfMissingArgs),
+                    database: database,
+                    isTest: false,
+                    debugMode: false,
+                    collectResultsNeeded: true
                 );
             }
 

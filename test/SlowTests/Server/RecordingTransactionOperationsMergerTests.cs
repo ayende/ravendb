@@ -1,23 +1,19 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
-using System.Reflection;
-using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading.Tasks;
 using FastTests;
 using FastTests.Server.Documents.Revisions;
+using FastTests.Utils;
 using FastTests.Voron.Util;
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Raven.Client;
 using Raven.Client.Documents;
 using Raven.Client.Documents.Attachments;
 using Raven.Client.Documents.Commands;
-using Raven.Client.Documents.Conventions;
 using Raven.Client.Documents.Indexes;
 using Raven.Client.Documents.Operations;
 using Raven.Client.Documents.Operations.Attachments;
@@ -36,12 +32,9 @@ using Raven.Client.ServerWide.Operations;
 using Raven.Server.Documents;
 using Raven.Server.Documents.Handlers;
 using Raven.Server.Documents.Handlers.Admin;
-using Raven.Server.Documents.Indexes.Static.Extensions;
 using Raven.Server.Documents.Queries;
 using Raven.Server.Documents.Replication;
 using Raven.Server.ServerWide.Context;
-using Raven.Server.Smuggler.Documents;
-using Raven.Server.Smuggler.Documents.Data;
 using Raven.Tests.Core.Utils.Entities;
 using Sparrow;
 using Tests.Infrastructure;
@@ -90,7 +83,7 @@ namespace SlowTests.Server
 
             var recordFilePath = NewDataPath();
 
-            var onlyStored = new User { Name = "Andrea"};
+            var onlyStored = new User { Name = "Andrea" };
             var deleted = new User { Name = "Brooke" };
 
             //Recording
@@ -353,6 +346,11 @@ namespace SlowTests.Server
                     Amount == other.Amount;
             }
 
+            public override int GetHashCode()
+            {
+                return 1;
+            }
+
             public override string ToString()
             {
                 return $"AgeGroup: Age({Age}) Amount({Amount})";
@@ -426,10 +424,10 @@ namespace SlowTests.Server
 
             using (var store = GetDocumentStore())
             {
-                await store.Maintenance.SendAsync(new ConfigureRevisionsOperation(new RevisionsConfiguration
+                await RevisionsHelper.SetupRevisions(store, Server.ServerStore, new RevisionsConfiguration
                 {
                     Default = new RevisionsCollectionConfiguration()
-                }));
+                });
 
                 //Recording
                 store.Maintenance.Send(new StartTransactionsRecordingOperation(recordFilePath));
@@ -450,10 +448,10 @@ namespace SlowTests.Server
             using (var store = GetDocumentStore())
             using (var replayStream = new FileStream(recordFilePath, FileMode.Open))
             {
-                await store.Maintenance.SendAsync(new ConfigureRevisionsOperation(new RevisionsConfiguration
+                await RevisionsHelper.SetupRevisions(store, Server.ServerStore, new RevisionsConfiguration
                 {
                     Default = new RevisionsCollectionConfiguration()
-                }));
+                });
 
                 var command = new GetNextOperationIdCommand();
                 store.Commands().Execute(command);
@@ -477,10 +475,10 @@ namespace SlowTests.Server
 
             using (var store = GetDocumentStore())
             {
-                await store.Maintenance.SendAsync(new ConfigureRevisionsOperation(new RevisionsConfiguration
+                await RevisionsHelper.SetupRevisions(store, Server.ServerStore, new RevisionsConfiguration
                 {
                     Default = new RevisionsCollectionConfiguration()
-                }));
+                });
 
                 //Recording
                 store.Maintenance.Send(new StartTransactionsRecordingOperation(recordFilePath));
@@ -499,10 +497,10 @@ namespace SlowTests.Server
             using (var store = GetDocumentStore())
             using (var replayStream = new FileStream(recordFilePath, FileMode.Open))
             {
-                await store.Maintenance.SendAsync(new ConfigureRevisionsOperation(new RevisionsConfiguration
+                await RevisionsHelper.SetupRevisions(store, Server.ServerStore, new RevisionsConfiguration
                 {
                     Default = new RevisionsCollectionConfiguration()
-                }));
+                });
 
                 var command = new GetNextOperationIdCommand();
                 store.Commands().Execute(command);
@@ -621,11 +619,11 @@ namespace SlowTests.Server
                 //Recording
                 store.Maintenance.Send(new StartTransactionsRecordingOperation(recordFilePath));
 
-                await store.Maintenance.SendAsync(new ConfigureExpirationOperation(new ExpirationConfiguration
+                await ExpirationHelper.SetupExpiration(store, Server.ServerStore, new ExpirationConfiguration
                 {
                     Disabled = false,
                     DeleteFrequencyInSec = 1
-                }));
+                });
 
                 using (var session = store.OpenAsyncSession())
                 {
@@ -685,10 +683,14 @@ namespace SlowTests.Server
 
                 var operation = new Operation(store.Commands().RequestExecutor, () => store.Changes(), store.Conventions, command.Result);
                 var operationProgresses = new List<IOperationProgress>();
-                operation.OnProgressChanged += (p) => operationProgresses.Add(p);
+                operation.OnProgressChanged += p => operationProgresses.Add(p);
+
+                await task; // we need to wait for the task
+                            // before executing WaitForCompletionAsync here
+                            // to avoid a race condition where we will wait for an operation
+                            // before it starts (request is send to the server)
 
                 var result = await operation.WaitForCompletionAsync<ReplayTxOperationResult>();
-                await task;
 
                 //Assert
                 //Todo To think how to assert this test and if this test should be exist

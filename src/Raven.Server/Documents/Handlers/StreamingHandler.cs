@@ -2,8 +2,10 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
+using System.Text;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
+using Raven.Client.Documents.Changes;
 using Raven.Client.Exceptions.Documents;
 using Raven.Client.Exceptions.Documents.Indexes;
 using Raven.Server.Documents.Queries;
@@ -11,6 +13,7 @@ using Raven.Server.Json;
 using Raven.Server.NotificationCenter;
 using Raven.Server.Routing;
 using Raven.Server.ServerWide.Context;
+using Raven.Server.TrafficWatch;
 using Sparrow.Json;
 
 namespace Raven.Server.Documents.Handlers
@@ -120,6 +123,17 @@ namespace Raven.Server.Documents.Handlers
                 var queryJson = await context.ReadForMemoryAsync(stream, "index/query");
                 var query = IndexQueryServerSide.Create(queryJson, Database.QueryMetadataCache);
                 tracker.Query = query.Query;
+
+                if (TrafficWatchManager.HasRegisteredClients)
+                {
+                    var sb = new StringBuilder();
+                    // append stringBuilder with the query
+                    sb.Append(query.Query);
+                    // if query got parameters append with parameters
+                    if (query.QueryParameters != null && query.QueryParameters.Count > 0)
+                        sb.AppendLine().Append(query.QueryParameters);
+                    AddStringToHttpContext(sb.ToString(), TrafficWatchChangeType.Streams);
+                }
 
                 var format = GetStringQueryString("format", false);
                 var properties = GetStringValuesQueryString("field", false);

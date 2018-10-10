@@ -1,5 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using Sparrow.Platform;
 using Sparrow.Platform.Posix;
 using Voron.Data.BTrees;
@@ -17,92 +19,32 @@ namespace Voron.Platform.Posix
             return CopyPageImpl(destwI4KbBatchWrites, p, pagerState);
         }
 
-        private unsafe void PrefetchRanges(List<Win32MemoryMapNativeMethods.WIN32_MEMORY_RANGE_ENTRY> ranges)
+        protected internal override unsafe void PrefetchRanges(Win32MemoryMapNativeMethods.WIN32_MEMORY_RANGE_ENTRY* list, int count)
         {
-            foreach (var range in ranges)
+            for (int i = 0; i < count; i++)
             {
-                if (Syscall.madvise(new IntPtr(range.VirtualAddress), (UIntPtr)range.NumberOfBytes.ToPointer(), MAdvFlags.MADV_WILLNEED) == -1)
-                {
-                    // ignore this error.
-                }
+                // we explicitly ignore the return code here, this is optimization only
+                Syscall.madvise(new IntPtr(list[i].VirtualAddress), (UIntPtr)list[i].NumberOfBytes.ToPointer(), MAdvFlags.MADV_WILLNEED);
             }
         }
 
-        public override unsafe void TryPrefetchingWholeFile()
+        public override unsafe byte* AcquirePagePointer(IPagerLevelTransactionState tx, long pageNumber, PagerState pagerState = null)
         {
-            if (PlatformDetails.CanPrefetch == false)
-                return; // not supported
+            // We need to decide what pager we are going to use right now or risk inconsistencies when performing prefetches from disk.
+            var state = pagerState ?? _pagerState;
 
-            long size = 0;
-            void* baseAddress = null;
-            var pagerState = PagerState;
-            var range = new List<Win32MemoryMapNativeMethods.WIN32_MEMORY_RANGE_ENTRY>(pagerState.AllocationInfos.Length);
-            for (int i = 0; i < pagerState.AllocationInfos.Length; i++)
+            if (PlatformDetails.CanPrefetch)
             {
-                var allocInfo = pagerState.AllocationInfos[i];
-                size += allocInfo.Size;
-
-                if (baseAddress == null)
-                    baseAddress = allocInfo.BaseAddress;
-
-                if (i != pagerState.AllocationInfos.Length - 1 &&
-                    pagerState.AllocationInfos[i + 1].BaseAddress == allocInfo.BaseAddress + allocInfo.Size)
+                if (this._pagerState.ShouldPrefetchSegment(pageNumber, out void* virtualAddress, out long bytes))
                 {
-                    continue; // if adjacent ranges make one syscall
+                    Syscall.madvise(new IntPtr(virtualAddress), (UIntPtr)bytes, MAdvFlags.MADV_WILLNEED);
                 }
-
-                range.Add(new Win32MemoryMapNativeMethods.WIN32_MEMORY_RANGE_ENTRY
-                {
-                    VirtualAddress = baseAddress,
-                    NumberOfBytes = new IntPtr(size)
-                });
-
-                size = 0;
-                baseAddress = null;
             }
-            PrefetchRanges(range);
+
+            return base.AcquirePagePointer(tx, pageNumber, state);
         }
 
-        public override unsafe void MaybePrefetchMemory(List<long> pagesToPrefetch)
-        {
-            if (PlatformDetails.CanPrefetch == false)
-                return; // not supported
-
-            if (pagesToPrefetch.Count == 0)
-                return;
-
-            long sizeToPrefetch = 4 * Constants.Storage.PageSize;
-
-            long size = 0;
-            void* baseAddress = null;
-            var range = new List<Win32MemoryMapNativeMethods.WIN32_MEMORY_RANGE_ENTRY>(pagesToPrefetch.Count);
-            for (int i = 0; i < pagesToPrefetch.Count; i++)
-            {
-                var addressToPrefetch = pagesToPrefetch[i];
-                size += sizeToPrefetch;
-
-                if (baseAddress == null)
-                    baseAddress = (void*)addressToPrefetch;
-
-                if (i != pagesToPrefetch.Count - 1 &&
-                    pagesToPrefetch[i + 1] == addressToPrefetch + sizeToPrefetch)
-                {
-                    continue; // if adjacent ranges make one syscall
-                }
-
-                range.Add(new Win32MemoryMapNativeMethods.WIN32_MEMORY_RANGE_ENTRY
-                {
-                    VirtualAddress = baseAddress,
-                    NumberOfBytes = new IntPtr(size)
-                });
-
-                size = 0;
-                baseAddress = null;
-            }
-            PrefetchRanges(range);
-        }
-
-        protected PosixAbstractPager(StorageEnvironmentOptions options, bool usePageProtection = false) : base(options, usePageProtection: usePageProtection)
+        protected PosixAbstractPager(StorageEnvironmentOptions options, bool canPrefetchAhead, bool usePageProtection = false) : base(options, canPrefetchAhead, usePageProtection: usePageProtection)
         {
         }
     }

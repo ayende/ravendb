@@ -38,12 +38,13 @@ namespace SlowTests.Issues
             // run recovery
             using (var recovery = new Recovery(new VoronRecoveryConfiguration()
             {
+                LoggingMode = Sparrow.Logging.LogMode.None,
                 DataFileDirectory = dbPath,
                 PathToDataFile = Path.Combine(dbPath, "Raven.voron"),
                 OutputFileName = Path.Combine(recoveryExportPath, "recovery.ravendump"),
             }))
             {
-                recovery.Execute(CancellationToken.None);
+                recovery.Execute(TextWriter.Null, CancellationToken.None);
             }
 
             // make sure no journal file was lost during the process - by default we use copy on write mode

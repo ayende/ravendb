@@ -1,14 +1,15 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace Raven.Server.Documents.Indexes.Static.Roslyn.Rewriters
 {
     public static class RewritersHelper
     {
-        public static HashSet<string> ExtractFields(AnonymousObjectCreationExpressionSyntax anonymousObjectCreationExpressionSyntax, bool retrieveOriginal = false)
+        public static HashSet<CompiledIndexField> ExtractFields(AnonymousObjectCreationExpressionSyntax anonymousObjectCreationExpressionSyntax, bool retrieveOriginal = false, bool nestFields = false)
         {
-            var fields = new HashSet<string>();
+            var fields = new HashSet<CompiledIndexField>();
             for (var i = 0; i < anonymousObjectCreationExpressionSyntax.Initializers.Count; i++)
             {
                 var initializer = anonymousObjectCreationExpressionSyntax.Initializers[i];
@@ -19,26 +20,47 @@ namespace Raven.Server.Documents.Indexes.Static.Roslyn.Rewriters
                 }
                 else
                 {
-                    var expressionSysntaxMemberAccess = initializer.Expression as MemberAccessExpressionSyntax;
-                    if (expressionSysntaxMemberAccess != null)
+                    if (initializer.Expression is MemberAccessExpressionSyntax memberAccessExpressionSyntax)
                     {
-                        name = expressionSysntaxMemberAccess.Name.Identifier.Text;
+                        fields.Add(ExtractField(memberAccessExpressionSyntax, nestFields));
+                        continue;
                     }
-                    else
-                    {
-                        var identifierNameSyntax = initializer.Expression as IdentifierNameSyntax;
 
-                        if (identifierNameSyntax == null)
-                            throw new NotSupportedException($"Cannot extract field name from: {initializer}");
+                    var identifierNameSyntax = initializer.Expression as IdentifierNameSyntax;
 
-                        name = identifierNameSyntax.Identifier.Text;
-                    }
+                    if (identifierNameSyntax == null)
+                        throw new NotSupportedException($"Cannot extract field name from: {initializer}");
+
+                    name = identifierNameSyntax.Identifier.Text;
                 }
 
-                fields.Add(name.TrimStart('@'));
+                fields.Add(new SimpleField(name));
             }
 
             return fields;
+        }
+
+        public static CompiledIndexField ExtractField(MemberAccessExpressionSyntax expression, bool nestFields = true)
+        {
+            var name = expression.Name.Identifier.Text;
+
+            string[] path = null;
+            if (nestFields)
+                path = ExtractPath(expression);
+
+            if (path == null || path.Length <= 1)
+                return new SimpleField(name);
+
+            return new NestedField(path[0], path.Skip(1).ToArray());
+        }
+
+        private static string[] ExtractPath(MemberAccessExpressionSyntax expression)
+        {
+            var path = expression.ToString().Split(".");
+
+            return path
+                .Skip(1)                // skipping variable name e.g. 'result'
+                .ToArray();
         }
     }
 }

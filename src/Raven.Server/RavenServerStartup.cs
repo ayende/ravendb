@@ -159,16 +159,19 @@ namespace Raven.Server
                 context.Response.Headers[Constants.Headers.ServerVersion] = RavenVersionAttribute.Instance.AssemblyVersion;
 
                 var sp = Stopwatch.StartNew();
+
                 database = await _router.HandlePath(context, context.Request.Method, context.Request.Path.Value);
-                sp.Stop();
 
                 if (_logger.IsInfoEnabled && SkipHttpLogging == false)
                 {
                     _logger.Info($"{context.Request.Method} {context.Request.Path.Value}?{context.Request.QueryString.Value} - {context.Response.StatusCode} - {sp.ElapsedMilliseconds:#,#;;0} ms");
                 }
 
+                // check if TW has clients
                 if (TrafficWatchManager.HasRegisteredClients)
                     LogTrafficWatch(context, sp.ElapsedMilliseconds, database);
+
+                sp.Stop();
             }
             catch (Exception e)
             {
@@ -219,9 +222,18 @@ namespace Raven.Server
             }
         }
 
+        /// <summary>
+        /// LogTrafficWatch gets HttpContext, elapsed time and database name 
+        /// </summary>
+        /// <param name="context"></param>
+        /// <param name="elapsedMilliseconds"></param>
+        /// <param name="database"></param>
         private void LogTrafficWatch(HttpContext context, long elapsedMilliseconds, string database)
         {
             var requestId = Interlocked.Increment(ref _requestId);
+            var contextItem = context.Items["TrafficWatch"];
+            (string CustomInfo, TrafficWatchChangeType Type) twTuple =
+                ((string, TrafficWatchChangeType)?)contextItem ?? ("N/A", TrafficWatchChangeType.None);
 
             var twn = new TrafficWatchChange
             {
@@ -233,7 +245,8 @@ namespace Raven.Server
                 RequestUri = context.Request.GetEncodedUrl(),
                 AbsoluteUri = $"{context.Request.Scheme}://{context.Request.Host}",
                 DatabaseName = database ?? "N/A",
-                CustomInfo = string.Empty,
+                CustomInfo = twTuple.CustomInfo,
+                Type = twTuple.Type,
                 InnerRequestsCount = 0,
                 QueryTimings = null
             };

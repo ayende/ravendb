@@ -346,17 +346,36 @@ namespace Raven.Server.ServerWide
         private List<string> ExecuteClusterTransaction(TransactionOperationContext context, BlittableJsonReaderObject cmd, long index)
         {
             var clusterTransaction = (ClusterTransactionCommand)JsonDeserializationCluster.Commands[nameof(ClusterTransactionCommand)](cmd);
+            UpdateDatabaseRecordId(context, index, clusterTransaction);
+
             var compareExchangeItems = context.Transaction.InnerTransaction.OpenTable(CompareExchangeSchema, CompareExchange);
             var error = clusterTransaction.ExecuteCompareExchangeCommands(context, index, compareExchangeItems);
             if (error == null)
             {
                 clusterTransaction.SaveCommandsBatch(context, index);
-                NotifyDatabaseAboutChanged(context, clusterTransaction.Database, index, nameof(ClusterTransactionCommand),
+                NotifyDatabaseAboutChanged(context, clusterTransaction.DatabaseName, index, nameof(ClusterTransactionCommand),
                     DatabasesLandlord.ClusterDatabaseChangeType.PendingClusterTransactions);
                 return null;
             }
             OnTransactionDispose(context, index);
             return error;
+        }
+
+        private void UpdateDatabaseRecordId(TransactionOperationContext context, long index, ClusterTransactionCommand clusterTransaction)
+        {
+            var record = ReadDatabase(context, clusterTransaction.DatabaseName);
+            if (record.Topology.DatabaseTopologyIdBase64 == null)
+            {
+                var items = context.Transaction.InnerTransaction.OpenTable(ItemsSchema, Items);
+                record.Topology.DatabaseTopologyIdBase64 = clusterTransaction.DatabaseRecordId;
+                var dbKey = "db/" + clusterTransaction.DatabaseName;
+                using (Slice.From(context.Allocator, dbKey, out var valueName))
+                using (Slice.From(context.Allocator, dbKey.ToLowerInvariant(), out var valueNameLowered))
+                {
+                    var updatedDatabaseBlittable = EntityToBlittable.ConvertCommandToBlittable(record, context);
+                    UpdateValue(index, items, valueNameLowered, valueName, updatedDatabaseBlittable);
+                }
+            }
         }
 
         private void ConfirmReceiptServerCertificate(TransactionOperationContext context, BlittableJsonReaderObject cmd, long index, ServerStore serverStore)
@@ -1395,11 +1414,23 @@ namespace Raven.Server.ServerWide
         public DatabaseRecord ReadDatabase<T>(TransactionOperationContext<T> context, string name, out long etag)
             where T : RavenTransaction
         {
-            var doc = Read(context, "db/" + name.ToLowerInvariant(), out etag);
+            var doc = ReadRawDatabase(context, name, out etag);
             if (doc == null)
                 return null;
 
             return JsonDeserializationCluster.DatabaseRecord(doc);
+        }
+
+        public BlittableJsonReaderObject ReadRawDatabase<T>(TransactionOperationContext<T> context, string name, out long etag)
+            where T : RavenTransaction
+        {
+            return Read(context, "db/" + name.ToLowerInvariant(), out etag);
+        }
+
+        public DatabaseTopology ReadDatabaseTopology(BlittableJsonReaderObject rawDatabaseRecord)
+        {
+            rawDatabaseRecord.TryGet(nameof(DatabaseRecord.Topology), out BlittableJsonReaderObject topology);
+            return JsonDeserializationCluster.DatabaseTopology(topology);
         }
 
         public IEnumerable<(string Prefix, long Value)> ReadIdentities<T>(TransactionOperationContext<T> context, string databaseName, int start, long take)
@@ -1634,7 +1665,8 @@ namespace Raven.Server.ServerWide
                     Version = TcpConnectionHeaderMessage.ClusterTcpVersion,
                     ReadResponseAndGetVersionCallback = ClusterReadResponseAndGetVersion,
                     DestinationUrl = info.Url,
-                    DestinationNodeTag = tag
+                    DestinationNodeTag = tag,
+                    SourceNodeTag = _parent.Tag
                 };
 
                 TcpConnectionHeaderMessage.SupportedFeatures supportedFeatures;

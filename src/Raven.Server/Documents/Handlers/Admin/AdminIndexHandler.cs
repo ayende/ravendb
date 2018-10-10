@@ -3,11 +3,13 @@ using System.Collections.Generic;
 using System.Net;
 using System.Threading.Tasks;
 using Raven.Client;
+using Raven.Client.Documents.Changes;
 using Raven.Client.Documents.Indexes;
 using Raven.Client.Exceptions.Documents.Indexes;
 using Raven.Server.Json;
 using Raven.Server.Routing;
 using Raven.Server.ServerWide.Context;
+using Raven.Server.TrafficWatch;
 using Sparrow.Json;
 using Sparrow.Logging;
 
@@ -69,6 +71,9 @@ namespace Raven.Server.Documents.Handlers.Admin
                     var index = await Database.IndexStore.CreateIndex(indexDefinition);
                     createdIndexes.Add(index.Name);
                 }
+                if (TrafficWatchManager.HasRegisteredClients)
+                    AddStringToHttpContext(indexes.ToString(), TrafficWatchChangeType.Index);
+
 
                 HttpContext.Response.StatusCode = (int)HttpStatusCode.Created;
 

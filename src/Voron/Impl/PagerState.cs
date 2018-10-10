@@ -1,7 +1,10 @@
 using System;
 using System.Diagnostics;
 using System.IO.MemoryMappedFiles;
+using System.Runtime.CompilerServices;
 using System.Threading;
+using Sparrow.Binary;
+using Voron.Global;
 using Voron.Impl.Paging;
 
 
@@ -11,7 +14,7 @@ namespace Voron.Impl
     {
         private readonly AbstractPager _pager;
 
-        public bool DisposeFilesOnDispose = true;
+        public bool DisposeFileOnDispose = true;
 
         public class AllocationInfo
         {
@@ -29,25 +32,73 @@ namespace Voron.Impl
         public static ConcurrentDictionary<PagerState, string> Instances = new ConcurrentDictionary<PagerState, string>();
 #endif
 
-        public PagerState(AbstractPager pager)
+        public PagerState(AbstractPager pager, long prefetchSegmentSize, long prefetchResetThreshold, AllocationInfo allocationInfo = null)
         {
             _pager = pager;
+
 #if DEBUG_PAGER_STATE
             Instances[this] = Environment.StackTrace;
 #endif
+
+            long sizeInBytes = 0;
+            if (allocationInfo != null)
+            {
+                this.AllocationInfos = new[] { allocationInfo };
+                this.MapBase = allocationInfo.BaseAddress;
+                this.File = allocationInfo.MappedFile;
+                sizeInBytes = allocationInfo.Size;
+            }
+            else
+            {
+                this.AllocationInfos = new AllocationInfo[] { };
+                this.MapBase = null;
+                this.File = null;
+            }
+                
+            this._segmentShift = Bits.MostSignificantBit(prefetchSegmentSize);
+
+            this._prefetchSegmentSize = 1 << this._segmentShift;
+            this._prefetchResetThreshold = (int)((float)prefetchResetThreshold / this._prefetchSegmentSize);
+
+            Debug.Assert((_prefetchSegmentSize - 1) >> this._segmentShift == 0);
+            Debug.Assert(_prefetchSegmentSize >> this._segmentShift == 1);
+
+            long numberOfAllocatedSegments = (sizeInBytes / _prefetchSegmentSize) + 1;
+            this._prefetchTable = new byte[(numberOfAllocatedSegments / 2) + 1];
         }
+
+        private const byte EvenPrefetchCountMask = 0x70;
+        private const byte EvenPrefetchMaskShift = 4;
+        private const byte OddPrefetchCountMask = 0x07;
+        private const byte AlreadyPrefetch = 7;
+
+        private readonly int _prefetchSegmentSize;
+        private readonly int _prefetchResetThreshold;
+
+        private readonly int _segmentShift;
+
+        // this state is accessed by multiple threads
+        // concurrently in an unsafe manner, we do so
+        // explicitly with the intention of dealing with
+        // dirty reads and writes. The only impact that this
+        // can have is a spurious call to the OS's 
+        // madvice() / PrefetchVirtualMemory
+        // Thread safety is based on the OS's own thread safety
+        // for concurrent calls to these methods. 
+        private int _refreshCounter;
+        private readonly byte[] _prefetchTable;
 
         private int _refs;
 
-        public MemoryMappedFile[] Files;
+        public MemoryMappedFile File;
 
         public AllocationInfo[] AllocationInfos;
 
         public bool DiscardOnTxCopy;
 
-        public byte* MapBase { get; set; }
+        public readonly byte* MapBase; // { get; set; }
 
-        public bool Released;
+        private bool _released;
 
         public void Release()
         {
@@ -69,21 +120,16 @@ namespace Voron.Impl
             {
                 foreach (var allocationInfo in AllocationInfos)
                     _pager.ReleaseAllocationInfo(allocationInfo.BaseAddress, allocationInfo.Size);
-                AllocationInfos = null;
-            
+                AllocationInfos = null;            
             }
 
-            if (Files != null && DisposeFilesOnDispose)
+            if (File != null && DisposeFileOnDispose)
             {
-                foreach (var file in Files)
-                {
-                    file.Dispose();
-                }
-
-                Files = null;
+                File.Dispose();
+                File = null;
             }
 
-            Released = true;
+            _released = true;
         }
 
 #if DEBUG_PAGER_STATE
@@ -91,7 +137,7 @@ namespace Voron.Impl
 #endif
         public void AddRef()
         {
-            if (Released)
+            if (_released)
                 ThrowInvalidPagerState();
 
             Interlocked.Increment(ref _refs);
@@ -141,5 +187,106 @@ namespace Voron.Impl
         }
 
         public AbstractPager CurrentPager => _pager;
+
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private int GetSegmentState(long segment)
+        {
+            if (segment < 0 || segment > _prefetchTable.Length)
+                return AlreadyPrefetch;
+
+            byte value = _prefetchTable[segment / 2];
+            if (segment % 2 == 0)
+            {
+                // The actual value is in the high byte.
+                value = (byte)(value >> EvenPrefetchMaskShift);
+            }
+            else
+            {
+                value = (byte)(value & OddPrefetchCountMask);
+            }
+
+            return value;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void SetSegmentState(long segment, int state)
+        {
+            byte value = this._prefetchTable[segment / 2];
+            if (segment % 2 == 0)
+            {
+                // The actual value is in the high byte.
+                value = (byte)((value & OddPrefetchCountMask) | (state << EvenPrefetchMaskShift));
+            }
+            else
+            {
+                value = (byte)((value & EvenPrefetchCountMask) | state);
+            }
+
+            this._prefetchTable[segment / 2] = value;
+        }
+
+        public bool ShouldPrefetchSegment(long pageNumber, out void* virtualAddress, out long sizeInBytes)
+        {
+            long segmentNumber = (pageNumber * Constants.Storage.PageSize) >> this._segmentShift;
+
+            int segmentState = GetSegmentState(segmentNumber);
+            if (segmentState < AlreadyPrefetch)
+            {
+                // We update the current segment counter
+                segmentState++;
+
+                // if the previous or next segments were loaded, eagerly
+                // load this one, probably a sequential scan of one type or
+                // another
+                int previousSegmentState = GetSegmentState(segmentNumber - 1);
+                if (previousSegmentState == AlreadyPrefetch)
+                {
+                    segmentState = AlreadyPrefetch;
+                }
+                else
+                {
+                    int nextSegmentState = GetSegmentState(segmentNumber + 1);
+                    if (nextSegmentState == AlreadyPrefetch)
+                    {
+                        segmentState = AlreadyPrefetch;
+                    }
+                }
+
+                SetSegmentState(segmentNumber, segmentState);
+
+                if (segmentState == AlreadyPrefetch)
+                {
+                    _refreshCounter++;
+
+                    // Prepare the segment information. 
+                    sizeInBytes = _prefetchSegmentSize;
+                    virtualAddress = this.MapBase + segmentNumber * _prefetchSegmentSize;
+                    return true;
+                }
+            }
+
+            sizeInBytes = 0;
+            virtualAddress = null;
+            return false;
+        }
+
+        public void CheckResetPrefetchTable()
+        {
+            if (_refreshCounter > this._prefetchResetThreshold)
+            {
+                this._refreshCounter = 0;
+
+                // We will zero out the whole table to reset the prefetching behavior. 
+                Array.Clear(this._prefetchTable, 0, this._prefetchTable.Length);
+            }
+        }
+
+        public void CopyPrefetchState(PagerState olderInstance)
+        {
+            // this is called from AllocateMorePages and is used to copy the current state of the
+            // prefetch state of the file. Our own size will be larger than the previous one. 
+            Array.Copy(olderInstance._prefetchTable, this._prefetchTable, olderInstance._prefetchTable.Length);
+        }
     }
 }

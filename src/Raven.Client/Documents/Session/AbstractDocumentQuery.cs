@@ -969,20 +969,19 @@ Use session.Query<T>() instead of session.Advanced.DocumentQuery<T>. The session
             var tokens = GetCurrentWhereTokens();
             var whereToken = tokens.Last?.Value as WhereToken;
             if (whereToken == null)
-            {
-                throw new InvalidOperationException("Missing where clause");
-            }
+                throw new InvalidOperationException("Fuzzy can only be used right after Where clause");
+
+            if (whereToken.WhereOperator != WhereOperator.Equals)
+                throw new InvalidOperationException("Fuzzy can only be used right after Where clause with equals operator");
 
             if (fuzzy < 0m || fuzzy > 1m)
-            {
                 throw new ArgumentOutOfRangeException(nameof(fuzzy), "Fuzzy distance must be between 0.0 and 1.0");
-            }
 
             whereToken.Options.Fuzzy = fuzzy;
         }
 
         /// <summary>
-        ///   Specifies a proximity distance for the phrase in the last where clause
+        ///   Specifies a proximity distance for the phrase in the last search clause
         /// </summary>
         /// <param name = "proximity">number of words within</param>
         /// <returns></returns>
@@ -993,15 +992,11 @@ Use session.Query<T>() instead of session.Advanced.DocumentQuery<T>. The session
         {
             var tokens = GetCurrentWhereTokens();
             var whereToken = tokens.Last?.Value as WhereToken;
-            if (whereToken == null)
-            {
-                throw new InvalidOperationException("Missing where clause");
-            }
+            if (whereToken == null || whereToken.WhereOperator != WhereOperator.Search)
+                throw new InvalidOperationException("Proximity can only be used right after Search clause");
 
             if (proximity < 1)
-            {
                 throw new ArgumentOutOfRangeException(nameof(proximity), "Proximity distance must be a positive number");
-            }
 
             whereToken.Options.Proximity = proximity;
         }

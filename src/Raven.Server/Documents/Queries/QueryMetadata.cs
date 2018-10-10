@@ -85,6 +85,9 @@ namespace Raven.Server.Documents.Queries
             }
 
 
+            if (IsGroupBy && IsDynamic == false)
+                throw new ArgumentException("Can't use 'group by' when querying on an Index. 'group by' can be used only when querying on collections.");
+
             DeclaredFunctions = Query.DeclaredFunctions;
 
             Build(parameters);
@@ -237,9 +240,16 @@ namespace Raven.Server.Documents.Queries
 
             if (IsGraph)
             {
-                AliasesInGraphSelect = Query.GraphQuery.WithEdgePredicates.Keys
-                    .Union(
-                        Query.GraphQuery.WithDocumentQueries.Keys)
+                var edgePredicateKeys = Query.GraphQuery.WithEdgePredicates?.Keys ?? Enumerable.Empty<StringSegment>();
+                var documentQueryKeys = Query.GraphQuery.WithDocumentQueries.Keys;
+
+                if (documentQueryKeys == null)
+                {
+                    ThrowMissingVertexMatchClauses();
+                }
+
+                AliasesInGraphSelect = edgePredicateKeys
+                    .Union(documentQueryKeys)
                     .Select(str => (string)str)
                     .ToArray();
             }
@@ -295,6 +305,11 @@ namespace Raven.Server.Documents.Queries
 
             if (Query.DeclaredFunctions != null)
                 HandleDeclaredFunctions();
+        }
+
+        private static void ThrowMissingVertexMatchClauses()
+        {
+            throw new InvalidOperationException("Graph queries should have at least one vertex match clause");
         }
 
         private void HandleDeclaredFunctions()
@@ -622,7 +637,7 @@ namespace Raven.Server.Documents.Queries
             }
         }
 
-        private void AddCounterToInclude(CounterIncludesField counterIncludes, BlittableJsonReaderObject parameters, 
+        private void AddCounterToInclude(CounterIncludesField counterIncludes, BlittableJsonReaderObject parameters,
             (object Value, ValueTokenType Type) parameterValue, string sourcePath)
         {
             if (parameterValue.Type != ValueTokenType.String)
@@ -1767,10 +1782,63 @@ namespace Raven.Server.Documents.Queries
                     case MethodType.MoreLikeThis:
                         HandleMoreLikeThis(methodName, arguments, parameters);
                         return;
+                    case MethodType.Fuzzy:
+                        HandleFuzzy(methodName, arguments, parameters);
+                        return;
+                    case MethodType.Proximity:
+                        HandleProximity(methodName, arguments, parameters);
+                        return;
                     default:
                         QueryMethod.ThrowMethodNotSupported(methodType, QueryText, parameters);
                         break;
                 }
+            }
+
+            private void HandleProximity(string methodName, List<QueryExpression> arguments, BlittableJsonReaderObject parameters)
+            {
+                if (arguments.Count != 2)
+                    throw new InvalidQueryException($"Method {methodName}() expects to have two arguments", QueryText, parameters);
+
+                var firstArgument = arguments[0] as MethodExpression;
+                if (firstArgument == null)
+                    throw new InvalidQueryException($"Method {methodName}() expects that first argument will be a method expression", QueryText, parameters);
+
+                var method = QueryMethod.GetMethodType(firstArgument.Name);
+                if (method != MethodType.Search)
+                    throw new InvalidQueryException($"Method {methodName}() expects that first argument will be a search method", QueryText, parameters);
+
+                var secondArgument = arguments[1];
+                if (secondArgument is ValueExpression == false)
+                    throw new InvalidQueryException($"Method {methodName}() expects that second argument will be a value", QueryText, parameters);
+
+                var value = QueryBuilder.GetValue(_metadata.Query, _metadata, parameters, secondArgument);
+                if (value.Type != ValueTokenType.Long)
+                    throw new InvalidQueryException($"Method {methodName}() expects that second argument will be a number", QueryText, parameters);
+
+                Visit(firstArgument, parameters);
+            }
+
+            private void HandleFuzzy(string methodName, List<QueryExpression> arguments, BlittableJsonReaderObject parameters)
+            {
+                if (arguments.Count != 2)
+                    throw new InvalidQueryException($"Method {methodName}() expects to have two arguments", QueryText, parameters);
+
+                var firstArgument = arguments[0] as BinaryExpression;
+                if (firstArgument == null)
+                    throw new InvalidQueryException($"Method {methodName}() expects that first argument will be a binary expression", QueryText, parameters);
+
+                if (firstArgument.Operator != OperatorType.Equal)
+                    throw new InvalidQueryException($"Method {methodName}() expects that first argument will be a binary expression with equals operator", QueryText, parameters);
+
+                var secondArgument = arguments[1];
+                if (secondArgument is ValueExpression == false)
+                    throw new InvalidQueryException($"Method {methodName}() expects that second argument will be a value", QueryText, parameters);
+
+                var value = QueryBuilder.GetValue(_metadata.Query, _metadata, parameters, secondArgument);
+                if (value.Type != ValueTokenType.Long && value.Type != ValueTokenType.Double)
+                    throw new InvalidQueryException($"Method {methodName}() expects that second argument will be a number", QueryText, parameters);
+
+                Visit(firstArgument, parameters);
             }
 
             private void HandleMoreLikeThis(string methodName, List<QueryExpression> arguments, BlittableJsonReaderObject parameters)

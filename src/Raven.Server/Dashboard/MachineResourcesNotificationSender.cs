@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Buffers;
-using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using Raven.Server.Background;
@@ -20,6 +19,8 @@ namespace Raven.Server.Dashboard
         private readonly TimeSpan _notificationsThrottle;
 
         private DateTime _lastSentNotification = DateTime.MinValue;
+        private readonly byte[][] _buffers;
+        private readonly SmapsReader _smapsReader;
 
         public MachineResourcesNotificationSender(string resourceName,
             ConcurrentSet<ConnectedWatcher> watchers, TimeSpan notificationsThrottle, CancellationToken shutdown)
@@ -27,6 +28,14 @@ namespace Raven.Server.Dashboard
         {
             _watchers = watchers;
             _notificationsThrottle = notificationsThrottle;
+
+            if (PlatformDetails.RunningOnLinux)
+            {
+                var buffer1 = ArrayPool<byte>.Shared.Rent(SmapsReader.BufferSize);
+                var buffer2 = ArrayPool<byte>.Shared.Rent(SmapsReader.BufferSize);
+                _buffers = new[] { buffer1, buffer2 };
+                _smapsReader = new SmapsReader(new[] { buffer1, buffer2 });
+            }
         }
 
         protected override async Task DoWork()
@@ -38,7 +47,6 @@ namespace Raven.Server.Dashboard
                 await WaitOrThrowOperationCanceled(_notificationsThrottle - timeSpan);
             }
 
-            byte[][] buffers = null;
             try
             {
                 if (CancellationToken.IsCancellationRequested)
@@ -47,15 +55,7 @@ namespace Raven.Server.Dashboard
                 if (_watchers.Count == 0)
                     return;
 
-                SmapsReader smapsReader = null;
-                if (PlatformDetails.RunningOnLinux)
-                {
-                    var buffer1 = ArrayPool<byte>.Shared.Rent(SmapsReader.BufferSize);
-                    var buffer2 = ArrayPool<byte>.Shared.Rent(SmapsReader.BufferSize);
-                    buffers = new []{buffer1, buffer2};
-                    smapsReader = new SmapsReader(new[] {buffer1, buffer2});
-                }
-                var machineResources = GetMachineResources(smapsReader);
+                var machineResources = GetMachineResources(_smapsReader);
                 foreach (var watcher in _watchers)
                 {
                     // serialize to avoid race conditions
@@ -66,45 +66,41 @@ namespace Raven.Server.Dashboard
             finally
             {
                 _lastSentNotification = DateTime.UtcNow;
-                if (buffers != null)
-                {
-                    ArrayPool<byte>.Shared.Return(buffers[0]);
-                    ArrayPool<byte>.Shared.Return(buffers[1]);
-                }
             }
         }
 
-        
-
         public static MachineResources GetMachineResources(SmapsReader smapsReader)
         {
-            using (var currentProcess = Process.GetCurrentProcess())
+            var memInfo = MemoryInformation.GetMemoryInfo(smapsReader, extendedInfo: true);
+            var cpuInfo = CpuUsage.Calculate();
+
+            var machineResources = new MachineResources
             {
-                var memInfo = MemoryInformation.GetMemoryInfo(smapsReader);
-                var isLowMemory = LowMemoryNotification.Instance.IsLowMemory(memInfo);
-                var workingSet = PlatformDetails.RunningOnLinux
-                    ? MemoryInformation.GetRssMemoryUsage(currentProcess.Id) - memInfo.SharedCleanMemory.GetValue(SizeUnit.Bytes)
-                    : currentProcess.WorkingSet64;
+                TotalMemory = memInfo.TotalPhysicalMemory.GetValue(SizeUnit.Bytes),
+                AvailableMemory = memInfo.AvailableMemory.GetValue(SizeUnit.Bytes),
+                AvailableWithoutTotalCleanMemory = memInfo.AvailableWithoutTotalCleanMemory.GetValue(SizeUnit.Bytes),
+                SystemCommitLimit = memInfo.TotalCommittableMemory.GetValue(SizeUnit.Bytes),
+                CommittedMemory = memInfo.CurrentCommitCharge.GetValue(SizeUnit.Bytes),
+                ProcessMemoryUsage = memInfo.WorkingSet.GetValue(SizeUnit.Bytes),
+                IsWindows = PlatformDetails.RunningOnPosix == false,
+                IsLowMemory = LowMemoryNotification.Instance.IsLowMemory(memInfo, smapsReader),
+                LowMemoryThreshold = LowMemoryNotification.Instance.LowMemoryThreshold.GetValue(SizeUnit.Bytes),
+                CommitChargeThreshold = LowMemoryNotification.Instance.GetCommitChargeThreshold(memInfo).GetValue(SizeUnit.Bytes),
+                MachineCpuUsage = cpuInfo.MachineCpuUsage,
+                ProcessCpuUsage = cpuInfo.ProcessCpuUsage
+            };
 
-                var cpuInfo = CpuUsage.Calculate();
+            return machineResources;
+        }
 
-                var machineResources = new MachineResources
-                {
-                    TotalMemory = memInfo.TotalPhysicalMemory.GetValue(SizeUnit.Bytes),
-                    AvailableMemory = memInfo.AvailableMemory.GetValue(SizeUnit.Bytes),
-                    CalculatedAvailableMemory = memInfo.CalculatedAvailableMemory.GetValue(SizeUnit.Bytes),
-                    SystemCommitLimit = memInfo.TotalCommittableMemory.GetValue(SizeUnit.Bytes),
-                    CommittedMemory = memInfo.CurrentCommitCharge.GetValue(SizeUnit.Bytes),
-                    ProcessMemoryUsage = workingSet,
-                    IsWindows = PlatformDetails.RunningOnPosix == false,
-                    IsLowMemory = isLowMemory,
-                    LowMemoryThreshold = LowMemoryNotification.Instance.LowMemoryThreshold.GetValue(SizeUnit.Bytes),
-                    CommitChargeThreshold = LowMemoryNotification.Instance.GetCommitChargeThreshold(memInfo).GetValue(SizeUnit.Bytes),
-                    MachineCpuUsage = cpuInfo.MachineCpuUsage,
-                    ProcessCpuUsage = Math.Min(cpuInfo.MachineCpuUsage, cpuInfo.ProcessCpuUsage) // min as sometimes +-1% due to time sampling
-                };
+        public new void Dispose()
+        {
+            base.Dispose();
 
-                return machineResources;
+            if (_buffers != null)
+            {
+                ArrayPool<byte>.Shared.Return(_buffers[0]);
+                ArrayPool<byte>.Shared.Return(_buffers[1]);
             }
         }
     }

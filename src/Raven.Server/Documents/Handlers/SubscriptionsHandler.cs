@@ -4,6 +4,7 @@ using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
 using Raven.Client;
+using Raven.Client.Documents.Changes;
 using Raven.Client.Documents.Subscriptions;
 using Raven.Client.Exceptions.Documents.Subscriptions;
 using Raven.Server.Documents.Includes;
@@ -12,6 +13,7 @@ using Raven.Server.Documents.TcpHandlers;
 using Raven.Server.Json;
 using Raven.Server.Routing;
 using Raven.Server.ServerWide.Context;
+using Raven.Server.TrafficWatch;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 
@@ -126,6 +128,9 @@ namespace Raven.Server.Documents.Handlers
                 var json = await context.ReadForMemoryAsync(RequestBodyStream(), null);
                 var options = JsonDeserializationServer.SubscriptionCreationParams(json);
 
+                if (TrafficWatchManager.HasRegisteredClients)
+                    AddStringToHttpContext(json.ToString(), TrafficWatchChangeType.Subscriptions);
+
                 var sub = SubscriptionConnection.ParseSubscriptionQuery(options.Query);
 
                 if (Enum.TryParse(
@@ -147,13 +152,27 @@ namespace Raven.Server.Documents.Handlers
                 var disabled = GetBoolValueQueryString("disabled", required: false);
                 var mentor = options.MentorNode;
                 var subscriptionId = await Database.SubscriptionStorage.PutSubscription(options, id, disabled, mentor: mentor);
+
+                var name = options.Name ?? subscriptionId.ToString();
+
+                using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext serverContext))
+                using (serverContext.OpenReadTransaction())
+                {
+                    // need to wait on the relevant remote node
+                    var node = Database.SubscriptionStorage.GetResponsibleNode(serverContext, name);
+                    if (node != null && node != ServerStore.NodeTag)
+                    {
+                        await WaitForExecutionOnSpecificNode(serverContext, ServerStore.GetClusterTopology(serverContext), node, subscriptionId);
+                    }
+                }
+
                 HttpContext.Response.StatusCode = (int)HttpStatusCode.Created; // Created
 
                 using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
                 {
                     context.Write(writer, new DynamicJsonValue
                     {
-                        ["Name"] = options.Name ?? subscriptionId.ToString()
+                        ["Name"] = name
                     });
                 }
             }

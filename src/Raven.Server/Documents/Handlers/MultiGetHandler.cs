@@ -13,9 +13,11 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
+using Raven.Client.Documents.Changes;
 using Raven.Client.Documents.Commands.MultiGet;
 using Raven.Client.Exceptions;
 using Raven.Server.Routing;
+using Raven.Server.TrafficWatch;
 using Raven.Server.Web;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
@@ -48,7 +50,9 @@ namespace Raven.Server.Documents.Handlers
                     var httpContext = new DefaultHttpContext(features);
                     var host = HttpContext.Request.Host;
                     var scheme = HttpContext.Request.Scheme;
-
+                    StringBuilder trafficWatchStringBuilder = null;
+                    if (TrafficWatchManager.HasRegisteredClients)
+                        trafficWatchStringBuilder = new StringBuilder();
                     for (int i = 0; i < requests.Length; i++)
                     {
                         var request = (BlittableJsonReaderObject)requests[i];
@@ -105,8 +109,9 @@ namespace Raven.Server.Documents.Handlers
                                 httpContext.Request.Headers.Add(header, value);
                             }
                         }
-
-                        if (method == HttpMethod.Post.Method && request.TryGet("Content", out object content))
+                        // initiated to use it at the end of for
+                        object content = null;
+                        if (method == HttpMethod.Post.Method && request.TryGet("Content", out content))
                         {
                             if (content is LazyStringValue)
                             {
@@ -124,6 +129,9 @@ namespace Raven.Server.Documents.Handlers
                                 httpContext.Request.Body = requestBody;
                                 httpContext.Request.Body.Position = 0;
                             }
+                        } else if (method == HttpMethod.Get.Method && trafficWatchStringBuilder != null)
+                        {
+                            content = request.ToString();
                         }
 
                         var bytesWrittenBeforeRequest = responseStream.BytesWritten;
@@ -184,9 +192,11 @@ namespace Raven.Server.Documents.Handlers
                             }
                         }
                         writer.WriteEndObject();
-
                         writer.WriteEndObject();
+                        trafficWatchStringBuilder?.Append(content).AppendLine();
                     }
+                    if (trafficWatchStringBuilder != null)
+                        AddStringToHttpContext(trafficWatchStringBuilder.ToString(), TrafficWatchChangeType.MultiGet);
                     writer.WriteEndArray();
                     writer.WriteEndObject();
                 }

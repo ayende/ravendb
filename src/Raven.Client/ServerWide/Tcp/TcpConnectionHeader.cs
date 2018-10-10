@@ -33,6 +33,7 @@ namespace Raven.Client.ServerWide.Tcp
         public static readonly int DropBaseLine = -2;
         public static readonly int ClusterBaseLine = 10;
         public static readonly int HeartbeatsBaseLine = 20;
+        public static readonly int Heartbeats41200 = 41_200;
         public static readonly int ReplicationBaseLine = 31;
         public static readonly int ReplicationAttachmentMissing = 40_300;
         public static readonly int ReplicationAttachmentMissingVersion41 = 41_300;
@@ -40,7 +41,7 @@ namespace Raven.Client.ServerWide.Tcp
         public static readonly int TestConnectionBaseLine = 50;
 
         public static readonly int ClusterTcpVersion = ClusterBaseLine;
-        public static readonly int HeartbeatsTcpVersion = HeartbeatsBaseLine;
+        public static readonly int HeartbeatsTcpVersion = Heartbeats41200;
         public static readonly int ReplicationTcpVersion = ReplicationAttachmentMissingVersion41;
         public static readonly int SubscriptionTcpVersion = SubscriptionBaseLine;
         public static readonly int TestConnectionTcpVersion = TestConnectionBaseLine;
@@ -167,6 +168,7 @@ namespace Raven.Client.ServerWide.Tcp
             public class HeartbeatsFeatures
             {
                 public bool BaseLine = true;
+                public bool SendChangesOnly;
             }
             public class TestConnectionFeatures
             {
@@ -212,6 +214,7 @@ namespace Raven.Client.ServerWide.Tcp
                 },
                 [OperationTypes.Heartbeats] = new List<int>
                 {
+                    Heartbeats41200,
                     HeartbeatsBaseLine
                 },
                 [OperationTypes.TestConnection] = new List<int>
@@ -284,6 +287,13 @@ namespace Raven.Client.ServerWide.Tcp
                 },
                 [OperationTypes.Heartbeats] = new Dictionary<int, SupportedFeatures>
                 {
+                    [Heartbeats41200] = new SupportedFeatures(Heartbeats41200)
+                    {
+                        Heartbeats = new SupportedFeatures.HeartbeatsFeatures
+                        {
+                            SendChangesOnly = true
+                        }
+                    },
                     [HeartbeatsBaseLine] = new SupportedFeatures(HeartbeatsBaseLine)
                     {
                         Heartbeats = new SupportedFeatures.HeartbeatsFeatures()

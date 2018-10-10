@@ -138,9 +138,9 @@ namespace Raven.Server.Documents
                 Operations = new Operations.Operations(Name, ConfigurationStorage.OperationsStorage, NotificationCenter, Changes);
                 DatabaseInfoCache = serverStore.DatabaseInfoCache;
                 RachisLogIndexNotifications = new RachisLogIndexNotifications(DatabaseShutdown);
-                CatastrophicFailureNotification = new CatastrophicFailureNotification((environmentId, e) =>
+                CatastrophicFailureNotification = new CatastrophicFailureNotification((environmentId, environmentPath, e) =>
                 {
-                    serverStore.DatabasesLandlord.CatastrophicFailureHandler.Execute(name, e, environmentId);
+                    serverStore.DatabasesLandlord.CatastrophicFailureHandler.Execute(name, e, environmentId, environmentPath);
                 });
             }
             catch (Exception)
@@ -228,6 +228,8 @@ namespace Raven.Server.Documents
         public bool CanUnload => Interlocked.Read(ref _preventUnloadCounter) == 0;
 
         public readonly QueryMetadataCache QueryMetadataCache;
+
+        public long LastTransactionId => DocumentsStorage.Environment.CurrentReadTransactionId;
 
         public void Initialize(InitializeOptions options = InitializeOptions.None)
         {
@@ -781,6 +783,7 @@ namespace Raven.Server.Documents
                 _lastIdleTicks = DateTime.UtcNow.Ticks;
                 IndexStore?.RunIdleOperations();
                 Operations?.CleanupOperations();
+                DocumentsStorage.Environment.Journal.TryReduceSizeOfCompressionBufferIfNeeded();
                 DocumentsStorage.Environment.ScratchBufferPool.Cleanup();
             }
             finally
@@ -810,7 +813,10 @@ namespace Raven.Server.Documents
                 if (env != null)
                     yield return
                         new StorageEnvironmentWithType(index.Name,
-                            StorageEnvironmentWithType.StorageEnvironmentType.Index, env);
+                            StorageEnvironmentWithType.StorageEnvironmentType.Index, env)
+                        {
+                            LastIndexQueryTime = index.GetLastQueryingTime()
+                        };
             }
         }
 
@@ -1346,6 +1352,25 @@ namespace Raven.Server.Documents
                 NotificationSeverity.Error,
                 key: resourceName));
         }
+
+
+        public long GetEnvironmentsHash()
+        {
+            long hash = 0;
+            foreach (var env in GetAllStoragesEnvironment())
+            {
+                hash = Hashing.Combine(hash, env.Environment.CurrentReadTransactionId);
+                if (env.LastIndexQueryTime.HasValue)
+                {
+                    // 2 ** 27 = 134217728, Ticks is 10 mill per sec, so about 13.4 seconds
+                    // are the rounding point here
+                    var aboutEvery13Seconds = env.LastIndexQueryTime.Value.Ticks >> 27;
+                    hash = Hashing.Combine(hash, aboutEvery13Seconds);
+                }
+            }
+
+            return hash;
+        }
     }
 
     public class StorageEnvironmentWithType
@@ -1353,6 +1378,7 @@ namespace Raven.Server.Documents
         public string Name { get; set; }
         public StorageEnvironmentType Type { get; set; }
         public StorageEnvironment Environment { get; set; }
+        public DateTime? LastIndexQueryTime;
 
         public StorageEnvironmentWithType(string name, StorageEnvironmentType type, StorageEnvironment environment)
         {

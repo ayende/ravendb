@@ -56,6 +56,7 @@ namespace Raven.Server.Documents.Replication
         private TcpClient _tcpClient;
 
         private readonly AsyncManualResetEvent _connectionDisposed = new AsyncManualResetEvent();
+        public bool IsConnectionDisposed => _connectionDisposed.IsSet;
         private JsonOperationContext.ManagedPinnedBuffer _buffer;
 
         internal CancellationToken CancellationToken => _cts.Token;
@@ -465,17 +466,10 @@ namespace Raven.Server.Documents.Replication
 
         private void AddAlertOnFailureToReachOtherSide(string msg, Exception e)
         {
-            using (_database.ConfigurationStorage.ContextPool.AllocateOperationContext(out TransactionOperationContext configurationContext))
-            using (var txw = configurationContext.OpenWriteTransaction())
-            {
-                _database.NotificationCenter.AddAfterTransactionCommit(
-                    AlertRaised.Create(
-                        _database.Name, 
-                        AlertTitle, msg, AlertType.Replication, NotificationSeverity.Warning, key: FromToString, details: new ExceptionDetails(e)),
-                    txw);
-
-                txw.Commit();
-            }
+            _database.NotificationCenter.Add(
+                AlertRaised.Create(
+                    _database.Name,
+                    AlertTitle, msg, AlertType.Replication, NotificationSeverity.Warning, key: FromToString, details: new ExceptionDetails(e)));
         }
 
         private void WriteHeaderToRemotePeer()

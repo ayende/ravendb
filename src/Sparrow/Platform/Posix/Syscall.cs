@@ -4,6 +4,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Security;
 using System.Text;
+using System.Threading;
 using Voron.Platform.Posix;
 
 namespace Sparrow.Platform.Posix
@@ -256,6 +257,44 @@ namespace Sparrow.Platform.Posix
         [DllImport(LIBC_6, SetLastError = true)]
         public static extern int mprotect(IntPtr start, ulong size, ProtFlag protFlag);
 
+        public static void PwriteOrThrow(int fd, byte *buffer, ulong count, long offset, string file, string debug)
+        {
+            Errno err = Errno.NONE;
+            bool cifsRetryOccured = false;
+            var actuallyWritten = 0L;
+            do
+            {
+                for (var cifsRetries = 0; cifsRetries < 3; cifsRetries++)
+                {
+                    var result = pwrite(fd, buffer, count - (ulong)actuallyWritten, offset + actuallyWritten);
+                    if (result < 0) // we assume zero cannot be returned at any case as defined in POSIX
+                    {
+                        err = (Errno)Marshal.GetLastWin32Error();
+                        if (err == Errno.EINVAL && CheckSyncDirectoryAllowed(file) == false)
+                        {
+                            // cifs/nfs mount can sometimes fail on EINVAL after file creation
+                            // lets give it few retries with short pauses between them - RavenDB-11954
+                            Thread.Sleep(10 * ((cifsRetries + 1) ^ 3)); // wait upto 3 time in intervals of : 10mSec, 80mSec, 270mSec
+                            cifsRetryOccured = true; // for exception message purpose
+                            continue; // retry                            
+                        }
+
+                        ThrowLastError((int)err,
+                            $"Failed to ${debug} {file} with count={count}, offset={offset}, actuallyWritten={actuallyWritten} (regular mount, not a cifs/nfs mount)");
+                    }
+
+                    actuallyWritten += result;
+                    break; // successfully written
+                }                
+            } while (actuallyWritten < (long)count);
+
+            if (actuallyWritten != (long)count)
+            {
+                ThrowLastError((int)err,
+                    $"Failed to pwrite {file} with count={count}, offset={offset}, actuallyWritten={actuallyWritten}" + (cifsRetryOccured ? " (in cifs/nfs mount)" : ""));
+            }
+        }
+
         public static int AllocateFileSpace(int fd, long size, string file, out bool usingWrite)
         {
             usingWrite = false;
@@ -275,20 +314,15 @@ namespace Sparrow.Platform.Posix
                         // fallocate is not supported, we'll use lseek instead
                         usingWrite = true;
                         byte b = 0;
-                        if (pwrite(fd, &b, 1, size - 1) != 1L)
-                        {
-                            var err = Marshal.GetLastWin32Error();
-                            ThrowLastError(err, "Failed to pwrite in order to fallocate where fallocate is not supported for " + file);
-                        }
-                        return 0;
+                        PwriteOrThrow(fd, &b, 1L, size - 1, file, "pwrite in order to fallocate where fallocate is not supported");                        
+                        return 0;                        
                 }
 
                 if (result != (int)Errno.EINTR)
                     break;
-                if (retries-- > 0)
+                if (retries-- < 0)
                     throw new IOException($"Tried too many times to call posix_fallocate {file}, but always got EINTR, cannot retry again");
             }
-
             return result;
         }
 

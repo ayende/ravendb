@@ -13,18 +13,16 @@ using Sparrow.Logging;
 using Sparrow.Platform;
 using Sparrow.Platform.Win32;
 using Sparrow.Utils;
-using Voron.Exceptions;
 using Voron.Global;
 using Voron.Impl;
 using Voron.Impl.Paging;
-using Voron.Util;
 using Voron.Util.Settings;
 using static Voron.Platform.Win32.Win32NativeMethods;
 
 namespace Voron.Platform.Win32
-{
+{    
     public unsafe class WindowsMemoryMapPager : AbstractPager
-    {
+    {        
         public const int AllocationGranularity = 64 * Constants.Size.Kilobyte;
         private long _totalAllocationSize;
         private readonly FileInfo _fileInfo;
@@ -55,8 +53,8 @@ namespace Voron.Platform.Win32
             Win32NativeFileAttributes fileAttributes = Win32NativeFileAttributes.Normal,
             Win32NativeFileAccess access = Win32NativeFileAccess.GenericRead | Win32NativeFileAccess.GenericWrite,
             bool usePageProtection = false)
-            : base(options, usePageProtection)
-        {
+            : base(options, !fileAttributes.HasFlag(Win32NativeFileAttributes.Temporary), usePageProtection)
+        {                        
             SYSTEM_INFO systemInfo;
             GetSystemInfo(out systemInfo);
             FileName = file;
@@ -136,6 +134,26 @@ namespace Voron.Platform.Win32
             SetPagerState(CreatePagerState());
         }
 
+        public override byte* AcquirePagePointer(IPagerLevelTransactionState tx, long pageNumber, PagerState pagerState = null)
+        {
+            // We need to decide what pager we are going to use right now or risk inconsistencies when performing prefetches from disk.
+            var state = pagerState ?? _pagerState;
+
+            if (PlatformDetails.CanPrefetch)
+            {
+                if (this._pagerState.ShouldPrefetchSegment(pageNumber, out void* virtualAddress, out long bytes))
+                {
+                    Win32MemoryMapNativeMethods.WIN32_MEMORY_RANGE_ENTRY entry;
+                    entry.NumberOfBytes = (IntPtr)bytes;
+                    entry.VirtualAddress = virtualAddress;
+
+                    Win32MemoryMapNativeMethods.PrefetchVirtualMemory(Win32Helper.CurrentProcess, (UIntPtr)1, &entry, 0);
+                }
+            }
+           
+            return base.AcquirePagePointer(tx, pageNumber, state);
+        }
+
         public static uint GetPhysicalDriveId(string drive)
         {
             var sdn = new StorageDeviceNumber();
@@ -190,94 +208,19 @@ namespace Voron.Platform.Win32
             var allocationSize = newLengthAfterAdjustment - _totalAllocationSize;
 
             Win32NativeFileMethods.SetFileLength(_handle, _totalAllocationSize + allocationSize);
-            PagerState newPagerState = null;
 
-#if VALIDATE
-            // If we're on validate more, we don't want to allocate continuous pages because this
-            // introduces weird conditions on the protection and unprotection routines (we have to
-            // track boundaries, which is more complex than we're willing to do)
-            newPagerState = CreatePagerState();
+            PagerState newPagerState = CreatePagerState();
+            newPagerState.CopyPrefetchState(this._pagerState);
 
             SetPagerState(newPagerState);
 
             PagerState.DebugVerify(newLengthAfterAdjustment);
-#else
-            if (TryAllocateMoreContinuousPages(allocationSize) == false)
-            {
-                newPagerState = CreatePagerState();
-
-                SetPagerState(newPagerState);
-
-                PagerState.DebugVerify(newLengthAfterAdjustment);
-            }
-#endif
 
             _totalAllocationSize += allocationSize;
             NumberOfAllocatedPages = _totalAllocationSize / Constants.Storage.PageSize;
+
             return newPagerState;
-        }
-
-        private bool TryAllocateMoreContinuousPages(long allocationSize)
-        {
-            Debug.Assert(PagerState != null);
-            Debug.Assert(PagerState.AllocationInfos != null);
-            Debug.Assert(PagerState.Files != null && PagerState.Files.Any());
-
-            var allocationInfo = RemapViewOfFileAtAddress(allocationSize, (ulong)_totalAllocationSize, PagerState.MapBase + _totalAllocationSize);
-
-            if (allocationInfo == null)
-                return false;
-
-            PagerState.Files = PagerState.Files.Concat(allocationInfo.MappedFile);
-            PagerState.AllocationInfos = PagerState.AllocationInfos.Concat(allocationInfo);
-
-            if (PlatformDetails.CanPrefetch)
-            {
-                // We are asking to allocate pages. It is a good idea that they should be already in memory to only cause a single page fault (as they are continuous).
-                Win32MemoryMapNativeMethods.WIN32_MEMORY_RANGE_ENTRY entry;
-                entry.VirtualAddress = allocationInfo.BaseAddress;
-                entry.NumberOfBytes = (IntPtr)allocationInfo.Size;
-
-                Win32MemoryMapNativeMethods.PrefetchVirtualMemory(Win32Helper.CurrentProcess, (UIntPtr)1, &entry, 0);
-            }
-            return true;
-        }
-
-        private PagerState.AllocationInfo RemapViewOfFileAtAddress(long allocationSize, ulong offsetInFile, byte* baseAddress)
-        {
-            var offset = new SplitValue { Value = offsetInFile };
-
-            var mmf = MemoryMappedFile.CreateFromFile(_fileStream, null, _fileStream.Length,
-                _memoryMappedFileAccess,
-                 HandleInheritability.None, true);
-            Win32MemoryMapNativeMethods.NativeFileMapAccessType mmfAccessType = _copyOnWriteMode
-                ? Win32MemoryMapNativeMethods.NativeFileMapAccessType.Copy
-                : Win32MemoryMapNativeMethods.NativeFileMapAccessType.Read |
-                  Win32MemoryMapNativeMethods.NativeFileMapAccessType.Write;
-            var newMappingBaseAddress = Win32MemoryMapNativeMethods.MapViewOfFileEx(mmf.SafeMemoryMappedFileHandle.DangerousGetHandle(),
-                mmfAccessType,
-                offset.High, offset.Low,
-                new UIntPtr((ulong)allocationSize),
-                baseAddress);
-
-            var hasMappingSucceeded = newMappingBaseAddress != null && newMappingBaseAddress != (byte*)0;
-            if (!hasMappingSucceeded)
-            {
-                mmf.Dispose();
-                return null;
-            }
-
-            ProtectPageRange(newMappingBaseAddress, (ulong)allocationSize);
-
-            NativeMemory.RegisterFileMapping(_fileInfo.FullName, new IntPtr(newMappingBaseAddress), allocationSize);
-
-            return new PagerState.AllocationInfo
-            {
-                BaseAddress = newMappingBaseAddress,
-                Size = allocationSize,
-                MappedFile = mmf
-            };
-        }
+        }        
 
         private PagerState CreatePagerState()
         {
@@ -309,14 +252,12 @@ namespace Voron.Platform.Win32
             {
                 var innerException = new Win32Exception(Marshal.GetLastWin32Error(), "Failed to MapView of file " + FileName);
 
-                var errorMessage = string.Format(
-                    "Unable to allocate more pages - unsuccessfully tried to allocate continuous block of virtual memory with size = {0:##,###;;0} bytes",
-                    (_fileStream.Length));
+                var errorMessage = $"Unable to allocate more pages - unsuccessfully tried to allocate continuous block of virtual memory with size = {(_fileStream.Length):##,###;;0} bytes";
 
                 throw new OutOfMemoryException(errorMessage, innerException);
             }
 
-            NativeMemory.RegisterFileMapping(_fileInfo.FullName, new IntPtr(startingBaseAddressPtr), _fileStream.Length);
+            NativeMemory.RegisterFileMapping(_fileInfo.FullName, new IntPtr(startingBaseAddressPtr), _fileStream.Length, GetAllocatedInBytes);
 
             // If we are working on memory validation mode, then protect the pages by default.
             ProtectPageRange(startingBaseAddressPtr, (ulong)_fileStream.Length);
@@ -328,13 +269,7 @@ namespace Voron.Platform.Win32
                 MappedFile = mmf
             };
 
-            var newPager = new PagerState(this)
-            {
-                Files = new[] { mmf },
-                MapBase = startingBaseAddressPtr,
-                AllocationInfos = new[] { allocationInfo }
-            };
-
+            var newPager = new PagerState(this, Options.PrefetchSegmentSize, Options.PrefetchResetThreshold, allocationInfo);
             return newPager;
         }
 
@@ -410,52 +345,15 @@ namespace Voron.Platform.Win32
             NativeMemory.UnregisterFileMapping(_fileInfo.FullName, new IntPtr(baseAddress), size);
         }
 
-        public override void MaybePrefetchMemory(List<long> pagesToPrefetch)
-        {
-            if (PlatformDetails.CanPrefetch == false)
-                return; // not supported
-
-            if (pagesToPrefetch.Count == 0)
-                return;
-
-            var entries = new Win32MemoryMapNativeMethods.WIN32_MEMORY_RANGE_ENTRY[pagesToPrefetch.Count];
-            for (int i = 0; i < entries.Length; i++)
-            {
-                entries[i].NumberOfBytes = (IntPtr)(4 * Constants.Storage.PageSize);
-                entries[i].VirtualAddress = AcquirePagePointer(null, pagesToPrefetch[i]);
-            }
-
-            fixed (Win32MemoryMapNativeMethods.WIN32_MEMORY_RANGE_ENTRY* entriesPtr = entries)
-            {
-                Win32MemoryMapNativeMethods.PrefetchVirtualMemory(Win32Helper.CurrentProcess,
-                    (UIntPtr)PagerState.AllocationInfos.Length, entriesPtr, 0);
-            }
-        }
-
         public override int CopyPage(I4KbBatchWrites destwI4KbBatchWrites, long p, PagerState pagerState)
         {
             return CopyPageImpl(destwI4KbBatchWrites, p, pagerState);
         }
 
-        public override void TryPrefetchingWholeFile()
+        protected internal override unsafe void PrefetchRanges(Win32MemoryMapNativeMethods.WIN32_MEMORY_RANGE_ENTRY* list, int count)
         {
-            if (PlatformDetails.CanPrefetch == false)
-                return; // not supported
-
-            var pagerState = PagerState;
-            var entries = stackalloc Win32MemoryMapNativeMethods.WIN32_MEMORY_RANGE_ENTRY[pagerState.AllocationInfos.Length];
-
-            for (var i = 0; i < pagerState.AllocationInfos.Length; i++)
-            {
-                entries[i].VirtualAddress = pagerState.AllocationInfos[i].BaseAddress;
-                entries[i].NumberOfBytes = (IntPtr)pagerState.AllocationInfos[i].Size;
-            }
-
-            if (Win32MemoryMapNativeMethods.PrefetchVirtualMemory(Win32Helper.CurrentProcess,
-                (UIntPtr)pagerState.AllocationInfos.Length, entries, 0) == false)
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "Failed to Prefetch Vitrual Memory of file " + FileName);
+            Win32MemoryMapNativeMethods.PrefetchVirtualMemory(Win32Helper.CurrentProcess, (UIntPtr)count, list, 0);
         }
-
 
         internal override void ProtectPageRange(byte* start, ulong size, bool force = false)
         {

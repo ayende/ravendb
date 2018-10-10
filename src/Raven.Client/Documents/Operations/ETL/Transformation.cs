@@ -22,6 +22,10 @@ namespace Raven.Client.Documents.Operations.ETL
 
         internal const string CounterMarker = "$counter/";
 
+        internal const string GenericDeleteDocumentsBehaviorFunctionKey = "$deleteDocumentsBehavior<>";
+        
+        internal const string GenericDeleteDocumentsBehaviorFunctionName = "deleteDocumentsBehavior";
+
         private static readonly Regex LoadToMethodRegex = new Regex($@"{LoadTo}(\w+)", RegexOptions.Compiled);
 
         private static readonly Regex LoadAttachmentMethodRegex = new Regex(LoadAttachment, RegexOptions.Compiled);
@@ -30,11 +34,15 @@ namespace Raven.Client.Documents.Operations.ETL
         private static readonly Regex LoadCounterMethodRegex = new Regex(LoadCounter, RegexOptions.Compiled);
         private static readonly Regex AddCounterMethodRegex = new Regex(AddCounter, RegexOptions.Compiled);
 
-        internal static readonly Regex LoadCountersBehaviorMethodRegex = new Regex(@"function\s+loadCountersOf(\w+)Behavior\s*\(.+\}", RegexOptions.Singleline);
-        internal static readonly Regex LoadCountersBehaviorMethodNameRegex = new Regex(@"loadCountersOf(\w+)Behavior", RegexOptions.Singleline);
+        internal static readonly Regex LoadCountersBehaviorMethodRegex = new Regex(@"function\s+loadCountersOf(\w+)Behavior\s*\(.+\)", RegexOptions.Compiled);
+        internal static readonly Regex LoadCountersBehaviorMethodNameRegex = new Regex(@"loadCountersOf(\w+)Behavior", RegexOptions.Compiled);
 
-        internal static readonly Regex DeleteDocumentsBehaviorMethodRegex = new Regex(@"function\s+deleteDocumentsOf(\w+)Behavior\s*\(.+\}", RegexOptions.Singleline);
-        internal static readonly Regex DeleteDocumentsBehaviorMethodNameRegex = new Regex(@"deleteDocumentsOf(\w+)Behavior", RegexOptions.Singleline);
+        private const string ParametersAndFunctionBodyRegex = @"\s*\((?:[^)(]+|\((?:[^)(]+|\([^)(]*\))*\))*\)\s*\{(?:[^}{]+|\{(?:[^}{]+|\{[^}{]*\})*\})*\}"; // https://stackoverflow.com/questions/4204136/does-anyone-have-regular-expression-match-javascript-function
+
+        internal static readonly Regex DeleteDocumentsBehaviorMethodRegex = new Regex(@"function\s+deleteDocumentsOf(\w+)Behavior" + ParametersAndFunctionBodyRegex, RegexOptions.Singleline);
+        internal static readonly Regex DeleteDocumentsBehaviorMethodNameRegex = new Regex(@"deleteDocumentsOf(\w+)Behavior", RegexOptions.Compiled);
+        
+        internal static readonly Regex GenericDeleteDocumentsBehaviorMethodRegex = new Regex(@"function\s+" + GenericDeleteDocumentsBehaviorFunctionName + ParametersAndFunctionBodyRegex, RegexOptions.Singleline);
 
         private static readonly Regex Legacy_ReplicateToMethodRegex = new Regex(@"replicateTo(\w+)", RegexOptions.Compiled);
 
@@ -49,6 +57,8 @@ namespace Raven.Client.Documents.Operations.ETL
         public bool ApplyToAllDocuments { get; set; }
 
         public string Script { get; set; }
+
+        internal bool IsEmptyScript { get; set; }
 
         internal Dictionary<string, string> CollectionToLoadCounterBehaviorFunction { get; private set; }
 
@@ -79,29 +89,8 @@ namespace Raven.Client.Documents.Operations.ETL
                     errors.Add($"{nameof(Collections)} need be specified or {nameof(ApplyToAllDocuments)} has to be set. Script name: '{Name}'");
             }
 
-            if (string.IsNullOrEmpty(Script) == false)
+            if (string.IsNullOrWhiteSpace(Script) == false)
             {
-                var collections = GetCollectionsFromScript();
-
-                if (collections == null || collections.Length == 0)
-                {
-                    string targetName;
-                    switch (type)
-                    {
-                        case EtlType.Raven:
-                            targetName = "Collection";
-                            break;
-                        case EtlType.Sql:
-                            targetName = "Table";
-                            break;
-                        default:
-                            throw new ArgumentException($"Unknown ETL type: {type}");
-
-                    }
-
-                    errors.Add($"No `loadTo<{targetName}Name>()` method call found in '{Name}' script");
-                }
-
                 if (Legacy_ReplicateToMethodRegex.Matches(Script).Count > 0)
                 {
                     errors.Add($"Found `replicateTo<TableName>()` method in '{Name}' script which is not supported. " +
@@ -139,10 +128,10 @@ namespace Raven.Client.Documents.Operations.ETL
                                     "loadCountersOf<CollectionName>Behavior(docId, counterName) and return 'true' if counter should be loaded to a destination");
                             }
 
-                            var function = counterBehaviorFunction.Groups[0].Value;
+                            var functionSignature = counterBehaviorFunction.Groups[0].Value;
                             var collection = counterBehaviorFunction.Groups[1].Value;
 
-                            var functionName = LoadCountersBehaviorMethodNameRegex.Match(function);
+                            var functionName = LoadCountersBehaviorMethodNameRegex.Match(functionSignature);
 
                             if (Collections.Contains(collection) == false)
                             {
@@ -203,6 +192,77 @@ namespace Raven.Client.Documents.Operations.ETL
                         }
                     }
                 }
+
+                var genericDeleteBehavior = GenericDeleteDocumentsBehaviorMethodRegex.Matches(Script);
+
+                if (genericDeleteBehavior.Count > 0)
+                {
+                    if (type == EtlType.Sql)
+                    {
+                        errors.Add("Delete documents behavior functions aren't supported by SQL ETL");
+                    }
+                    else
+                    {
+                        if (genericDeleteBehavior.Count > 1)
+                            errors.Add("Generic delete behavior function can be defined just once in the script");
+                        else
+                        {
+                            if (CollectionToDeleteDocumentsBehaviorFunction == null)
+                                CollectionToDeleteDocumentsBehaviorFunction = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+                            CollectionToDeleteDocumentsBehaviorFunction[GenericDeleteDocumentsBehaviorFunctionKey] = GenericDeleteDocumentsBehaviorFunctionName;
+                        }
+                    }
+                }
+
+                var collections = GetCollectionsFromScript();
+
+                if (collections == null || collections.Length == 0)
+                {
+                    var actualScript = Script;
+
+                    if (deleteBehaviors.Count > 0)
+                    {
+                        // let's skip all delete behavior functions to check if we have empty transformation
+
+                        for (int i = 0; i < deleteBehaviors.Count; i++)
+                        {
+                            actualScript = actualScript.Replace(deleteBehaviors[i].Value, string.Empty);
+                        }
+                    }
+
+                    if (genericDeleteBehavior.Count == 1)
+                    {
+                        actualScript = actualScript.Replace(genericDeleteBehavior[0].Value, string.Empty);
+                    }
+
+                    if (string.IsNullOrWhiteSpace(actualScript) == false)
+                    {
+                        string targetName;
+                        switch (type)
+                        {
+                            case EtlType.Raven:
+                                targetName = "Collection";
+                                break;
+                            case EtlType.Sql:
+                                targetName = "Table";
+                                break;
+                            default:
+                                throw new ArgumentException($"Unknown ETL type: {type}");
+
+                        }
+
+                        errors.Add($"No `loadTo<{targetName}Name>()` method call found in '{Name}' script");
+                    }
+                    else
+                    {
+                        IsEmptyScript = true;
+                    }
+                }
+            }
+            else
+            {
+                IsEmptyScript = true;
             }
 
             return errors.Count == 0;

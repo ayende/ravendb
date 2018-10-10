@@ -71,7 +71,7 @@ namespace Voron.Impl.Paging
             Win32NativeFileAttributes fileAttributes = Win32NativeFileAttributes.Normal,
             Win32NativeFileAccess access = Win32NativeFileAccess.GenericRead | Win32NativeFileAccess.GenericWrite,
             bool usePageProtection = false)
-            : base(options, usePageProtection)
+            : base(options, canPrefetchAhead: false, usePageProtection: usePageProtection)
         {
             _memoryMappedFileAccess = access == Win32NativeFileAccess.GenericRead
               ? MemoryMappedFileAccess.Read
@@ -310,7 +310,7 @@ namespace Voron.Impl.Paging
                         new Win32Exception(lastWin32Error));
                 }
 
-                NativeMemory.RegisterFileMapping(_fileInfo.FullName, new IntPtr(result), size);
+                NativeMemory.RegisterFileMapping(_fileInfo.FullName, new IntPtr(result), size, GetAllocatedInBytes);
                 Interlocked.Add(ref _totalMapped, size);
                 var mappedAddresses = new MappedAddresses
                 {
@@ -384,12 +384,15 @@ namespace Voron.Impl.Paging
                _memoryMappedFileAccess,
                 HandleInheritability.None, true);
 
-            var newPager = new PagerState(this)
+            var allocation = new PagerState.AllocationInfo
             {
-                Files = new[] { mmf },
-                MapBase = null,
-                AllocationInfos = new PagerState.AllocationInfo[0]
+                MappedFile = mmf,
+                BaseAddress = null,
+                Size = 0
             };
+
+            var newPager = new PagerState(this, Options.PrefetchSegmentSize, Options.PrefetchResetThreshold, allocation);
+
             _hFileMappingObject = mmf.SafeMemoryMappedFileHandle.DangerousGetHandle();
             return newPager;
         }
@@ -570,15 +573,9 @@ namespace Voron.Impl.Paging
             return _fileInfo.Name;
         }
 
-
-        public override void TryPrefetchingWholeFile()
+        protected internal override unsafe void PrefetchRanges(WIN32_MEMORY_RANGE_ENTRY* list, int count)
         {
-            // we never want to do this, we'll rely on the OS to do it for us
-        }
-
-        public override void MaybePrefetchMemory(List<long> pagesToPrefetch)
-        {
-            // we never want to do this here
+            // explicitly do nothing here
         }
 
         protected override void DisposeInternal()

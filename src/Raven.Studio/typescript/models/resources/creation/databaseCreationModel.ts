@@ -77,6 +77,7 @@ class databaseCreationModel {
         isFocusOnBackupDirectory: ko.observable<boolean>(),
         restorePointsCount: ko.observable<number>(0),
         disableOngoingTasks: ko.observable<boolean>(false),
+        skipIndexes: ko.observable<boolean>(false),
         requiresEncryption: undefined as KnockoutComputed<boolean>
     };
     
@@ -494,6 +495,7 @@ class databaseCreationModel {
             DatabaseName: this.name(),
             BackupLocation: this.restore.selectedRestorePoint().location,
             DisableOngoingTasks: this.restore.disableOngoingTasks(),
+            SkipIndexes: this.restore.skipIndexes(),
             LastFileNameToRestore: this.restore.selectedRestorePoint().fileName,
             DataDirectory: dataDirectory,
             EncryptionKey: this.getEncryptionConfigSection().enabled() ? this.encryption.key() : null

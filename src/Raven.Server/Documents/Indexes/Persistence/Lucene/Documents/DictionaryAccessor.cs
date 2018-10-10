@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using Raven.Server.Documents.Indexes.Static.Roslyn.Rewriters;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Lucene.Documents
 {
@@ -10,7 +11,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene.Documents
         private readonly List<KeyValuePair<string, DictionaryValueAccessor>> _propertiesInOrder =
             new List<KeyValuePair<string, DictionaryValueAccessor>>();
 
-        private DictionaryAccessor(Dictionary<string, object> instance, HashSet<string> groupByFields = null)
+        private DictionaryAccessor(Dictionary<string, object> instance, HashSet<CompiledIndexField> groupByFields = null)
         {
             if (instance == null)
                 throw new NotSupportedException("Indexed dictionary must be of type: Dictionary<string, object>");
@@ -19,24 +20,34 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene.Documents
             {
                 var getMethod = new DictionaryValueAccessor(key);
 
-                if (groupByFields != null && groupByFields.Contains(key))
-                    getMethod.IsGroupByField = true;
+                if (groupByFields != null)
+                {
+                    foreach (var groupByField in groupByFields)
+                    {
+                        if (groupByField.IsMatch(key))
+                        {
+                            getMethod.GroupByField = groupByField;
+                            getMethod.IsGroupByField = true;
+                            break;
+                        }
+                    }
+                }
 
                 _properties.Add(key, getMethod);
                 _propertiesInOrder.Add(new KeyValuePair<string, DictionaryValueAccessor>(key, getMethod));
             }
         }
 
-        internal static DictionaryAccessor Create(Dictionary<string, object> instance, HashSet<string> groupByFields = null)
+        internal static DictionaryAccessor Create(Dictionary<string, object> instance, HashSet<CompiledIndexField> groupByFields = null)
         {
             return new DictionaryAccessor(instance, groupByFields);
         }
 
-        public IEnumerable<(string Key, object Value, bool IsGroupByField)> GetPropertiesInOrder(object target)
+        public IEnumerable<(string Key, object Value, CompiledIndexField GroupByField, bool IsGroupByField)> GetPropertiesInOrder(object target)
         {
             foreach ((var key, var value) in _propertiesInOrder)
             {
-                yield return (key, value.GetValue(target), value.IsGroupByField);
+                yield return (key, value.GetValue(target), value.GroupByField, value.IsGroupByField);
             }
         }
 

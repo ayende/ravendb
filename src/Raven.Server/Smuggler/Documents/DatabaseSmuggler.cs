@@ -173,11 +173,14 @@ namespace Raven.Server.Smuggler.Documents
                     throw new ArgumentOutOfRangeException(nameof(type), type, null);
             }
 
-            counts.Processed = true;
-
-            if (counts is SmugglerProgressBase.CountsWithLastEtag countsWithEtag)
+            if (ensureStepsProcessed)
             {
-                countsWithEtag.Attachments.Processed = true;
+                counts.Processed = true;
+
+                if (counts is SmugglerProgressBase.CountsWithLastEtag countsWithEtag)
+                {
+                    countsWithEtag.Attachments.Processed = true;
+                }
             }
 
             result.AddInfo($"Finished processing {type}. {counts}");
@@ -228,6 +231,9 @@ namespace Raven.Server.Smuggler.Documents
 
             void OnSkipped(long skipped)
             {
+                if (ensureStepProcessed == false)
+                    return;
+
                 if (type == DatabaseItemType.Documents)
                     result.Documents.SkippedCount = skipped;
 
@@ -238,7 +244,7 @@ namespace Raven.Server.Smuggler.Documents
                 _onProgress.Invoke(result.Progress);
             }
 
-            var numberOfItemsSkipped = _source.SkipType(type, onSkipped: OnSkipped);
+            var numberOfItemsSkipped = _source.SkipType(type, OnSkipped, _token);
 
             if (ensureStepProcessed == false)
                 return;

@@ -2,6 +2,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Sparrow.Binary;
@@ -39,6 +40,26 @@ namespace Raven.Server.Utils
                 throw new ArgumentException("MinimumFreeCommittedMemory must be positive, but was: " + min);
 
             _minimumFreeCommittedMemory = min;
+        }
+
+        public void SetThreadsAffinityIfNeeded()
+        {
+            foreach (var pooledThread in _pool)
+            {
+                try
+                {
+                    var numberOfCoresToReduce = pooledThread.NumberOfCoresToReduce;
+                    if (numberOfCoresToReduce == null)
+                        continue;
+
+                    pooledThread.SetThreadAffinity(numberOfCoresToReduce.Value, pooledThread.ThreadMask);
+                }
+                catch (Exception e)
+                {
+                    if (_log.IsOperationsEnabled)
+                        _log.Operations("Failed to set thread affinity", e);
+                }
+            }
         }
 
         private readonly ConcurrentQueue<PooledThread> _pool = new ConcurrentQueue<PooledThread>();
@@ -116,6 +137,9 @@ namespace Raven.Server.Utils
             private ProcessThread _currentProcessThread;
             private Process _currentProcess;
 
+            public int? NumberOfCoresToReduce { get; private set; }
+            public long? ThreadMask { get; private set; }
+
             public DateTime StartedAt { get; internal set; }
 
             static PooledThread()
@@ -154,55 +178,9 @@ namespace Raven.Server.Utils
                     while (true)
                     {
                         _waitForWork.WaitOne();
-                        _workIsDone.ManagedThreadId = Thread.CurrentThread.ManagedThreadId;
-                        if (_action == null)
-                            return; // should only happen when we shutdown
 
-                        ResetCurrentThreadName();
-                        Thread.CurrentThread.Name = _name;
-
-                        try
-                        {
-                            LongRunningWork.Current = _workIsDone;
-                            _action(_state);
-                        }
-                        catch(Exception e)
-                        {
-                            if (_log.IsOperationsEnabled)
-                            {
-                                _log.Operations($"An uncaught exception occurred in '{_name}' and killed the process", e);
-                            }
-
-                            throw;
-                        }
-                        finally
-                        {
-                            _workIsDone.Set();
-                            LongRunningWork.Current = null;
-                        }
-                        _action = null;
-                        _state = null;
-                        _workIsDone = null;
-
-                        ThreadLocalCleanup.Run();
-
-                        ResetCurrentThreadName();
-                        Thread.CurrentThread.Name = "Available Pool Thread";
-
-                        if (ResetThreadPriority() == false)
+                        if (DoWork() == false)
                             return;
-
-                        if (ResetThreadAffinity() == false)
-                            return;
-
-                        _waitForWork.Reset();
-                        lock (_parent)
-                        {
-                            if (_parent._disposed)
-                                return;
-
-                            _parent._pool.Enqueue(this);
-                        }
                     }
                 }
                 finally
@@ -211,10 +189,75 @@ namespace Raven.Server.Utils
                 }
             }
 
+            //https://github.com/dotnet/coreclr/issues/20156
+            [MethodImpl(MethodImplOptions.NoInlining)]
+            private bool DoWork()
+            {
+                _workIsDone.ManagedThreadId = Thread.CurrentThread.ManagedThreadId;
+
+                if (_action == null)
+                {
+                    // should only happen when we shutdown
+                    return false;
+                }
+
+                ResetCurrentThreadName();
+                Thread.CurrentThread.Name = _name;
+
+                try
+                {
+                    LongRunningWork.Current = _workIsDone;
+                    _action(_state);
+                }
+                catch (Exception e)
+                {
+                    if (_log.IsOperationsEnabled)
+                    {
+                        _log.Operations($"An uncaught exception occurred in '{_name}' and killed the process", e);
+                    }
+
+                    throw;
+                }
+                finally
+                {
+                    _workIsDone.Set();
+                    LongRunningWork.Current = null;
+                }
+
+                _action = null;
+                _state = null;
+                _workIsDone = null;
+
+                ThreadLocalCleanup.Run();
+
+                ResetCurrentThreadName();
+                Thread.CurrentThread.Name = "Available Pool Thread";
+
+                if (ResetThreadPriority() == false)
+                    return false;
+
+                if (ResetThreadAffinity() == false)
+                    return false;
+
+                _waitForWork.Reset();
+                lock (_parent)
+                {
+                    if (_parent._disposed)
+                        return false;
+
+                    _parent._pool.Enqueue(this);
+                }
+
+                return true;
+            }
+
             private bool ResetThreadAffinity()
             {
                 if (PlatformDetails.RunningOnMacOsx)
                     return true;
+
+                NumberOfCoresToReduce = null;
+                ThreadMask = null;
 
                 try
                 {
@@ -307,6 +350,9 @@ namespace Raven.Server.Utils
             {
                 if (PlatformDetails.RunningOnMacOsx)
                     return;
+
+                NumberOfCoresToReduce = numberOfCoresToReduce;
+                ThreadMask = threadMask;
 
                 if (numberOfCoresToReduce <= 0 && threadMask == null)
                     return;

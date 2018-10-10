@@ -90,6 +90,13 @@ namespace Raven.Server.Documents.PeriodicBackup.Restore
                         onProgress,
                         result);
 
+                    if (restoreSettings != null && _restoreConfiguration.SkipIndexes)
+                    {
+                        // remove all indexes from the database record
+                        restoreSettings.DatabaseRecord.AutoIndexes = null;
+                        restoreSettings.DatabaseRecord.Indexes = null;
+                    }
+
                     // removing the snapshot from the list of files
                     _filesToRestore.RemoveAt(0);
                 }
@@ -176,6 +183,7 @@ namespace Raven.Server.Documents.PeriodicBackup.Restore
                                        $"files during snapshot restore, took: {sw.ElapsedMilliseconds:#,#;;0}ms");
                         onProgress.Invoke(result.Progress);
                     }
+
                     using (database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
                     {
                         SmugglerRestore(_restoreConfiguration.BackupLocation, database, context, databaseRecord, onProgress, result);
@@ -325,6 +333,7 @@ namespace Raven.Server.Documents.PeriodicBackup.Restore
 
             result.Identities.Processed = true;
             result.CompareExchange.Processed = true;
+            onProgress.Invoke(result.Progress);
         }
 
         private void ValidateArguments(out bool restoringToDefaultDataDirectory)
@@ -428,7 +437,7 @@ namespace Raven.Server.Documents.PeriodicBackup.Restore
             if (_filesToRestore.Count == 0)
                 return;
 
-            // we do have at least one smuggler backup
+            // we do have at least one smuggler backup, we'll take the indexes from the last file
             databaseRecord.AutoIndexes = new Dictionary<string, AutoIndexDefinition>();
             databaseRecord.Indexes = new Dictionary<string, IndexDefinition>();
 
@@ -447,6 +456,9 @@ namespace Raven.Server.Documents.PeriodicBackup.Restore
             var destination = new DatabaseDestination(database);
             for (var i = 0; i < _filesToRestore.Count - 1; i++)
             {
+                result.AddInfo($"Restoring file {(i+1):#,#;;0}/{_filesToRestore.Count:#,#;;0}");
+                onProgress.Invoke(result.Progress);
+
                 var filePath = Path.Combine(backupDirectory, _filesToRestore[i]);
                 ImportSingleBackupFile(database, onProgress, result, filePath, context, destination, options,
                     onDatabaseRecordAction: smugglerDatabaseRecord =>
@@ -459,9 +471,16 @@ namespace Raven.Server.Documents.PeriodicBackup.Restore
             options.OperateOnTypes = oldOperateOnTypes;
             var lastFilePath = Path.Combine(backupDirectory, _filesToRestore.Last());
 
+            result.AddInfo($"Restoring file {_filesToRestore.Count:#,#;;0}/{_filesToRestore.Count:#,#;;0}");
+
+            onProgress.Invoke(result.Progress);
+
             ImportSingleBackupFile(database, onProgress, result, lastFilePath, context, destination, options,
                 onIndexAction: indexAndType =>
                 {
+                    if (_restoreConfiguration.SkipIndexes)
+                        return;
+
                     switch (indexAndType.Type)
                     {
                         case IndexType.AutoMap:

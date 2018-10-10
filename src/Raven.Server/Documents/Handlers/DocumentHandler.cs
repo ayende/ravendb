@@ -13,6 +13,7 @@ using System.Runtime.ExceptionServices;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Primitives;
 using Raven.Client;
+using Raven.Client.Documents.Changes;
 using Raven.Client.Documents.Commands;
 using Raven.Client.Documents.Commands.Batches;
 using Raven.Client.Documents.Operations;
@@ -24,6 +25,7 @@ using Raven.Server.Json;
 using Raven.Server.NotificationCenter.Notifications.Details;
 using Raven.Server.Routing;
 using Raven.Server.ServerWide.Context;
+using Raven.Server.TrafficWatch;
 using Sparrow;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
@@ -109,7 +111,8 @@ namespace Raven.Server.Documents.Handlers
                 else
                     await GetDocumentsAsync(context, metadataOnly);
 
-
+                if (TrafficWatchManager.HasRegisteredClients)
+                    AddStringToHttpContext(ids.ToString(), TrafficWatchChangeType.Documents);
             }
         }
 
@@ -131,7 +134,14 @@ namespace Raven.Server.Documents.Handlers
                 }
 
                 context.OpenReadTransaction();
-                await GetDocumentsByIdAsync(context, new StringValues(ids), metadataOnly);
+
+                // init here so it can be passed to TW
+                var idsStringValues = new StringValues(ids);
+
+                if (TrafficWatchManager.HasRegisteredClients)
+                    AddStringToHttpContext(idsStringValues.ToString(), TrafficWatchChangeType.Documents);
+
+                await GetDocumentsByIdAsync(context, idsStringValues, metadataOnly);
             }
         }
 
