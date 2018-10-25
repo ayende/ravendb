@@ -135,7 +135,11 @@ namespace Raven.Server.Documents.Queries
                     }
                     else 
                     {
-                        j[item.Key] = item.Value.Multiple;
+                        var results = new DynamicJsonArray();
+                        foreach(var doc in item.Value.Multiple)
+                            results.Add(doc.Data);
+
+                        j[item.Key] = results;
                     }
                 }
             }

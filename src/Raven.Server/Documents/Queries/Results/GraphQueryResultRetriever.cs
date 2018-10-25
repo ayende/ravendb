@@ -114,7 +114,16 @@ namespace Raven.Server.Documents.Queries.Results
 
                             if (TryGetValue(fieldToFetch, d, null, null, out key, out fieldVal) == false)
                                 continue;
-                            array.Add(fieldVal);
+
+                            if (fieldVal is Document fieldDoc)
+                            {
+                                //otherwise JsonOperationContext::ReadObject() won't know how to deal with Document
+                                array.Add(fieldDoc.Data); 
+                            }
+                            else
+                            {
+                                array.Add(fieldVal);
+                            }
                         }
                         AddProjectionToResult(result, key, array);
                     }

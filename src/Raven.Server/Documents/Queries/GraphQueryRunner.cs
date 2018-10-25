@@ -668,7 +668,8 @@ namespace Raven.Server.Documents.Queries
                     {
                         if (TryGetMatchesAfterFiltering(cur, edge.Path.FieldValue,edgeResults, docAlias, edge.EdgeAlias, tmp) == false)
                         {
-                            if (min <= pathMembers.Count)
+                            if (pathMembers.Count > 0 && //if pathMembers.Count == 0 -> means no path at all
+                                min <= pathMembers.Count)
                                 AddMatch();
                         }
                         else
@@ -706,6 +707,10 @@ namespace Raven.Server.Documents.Queries
 
                 void AddMatch()
                 {
+                    if (pathMembers.Count == 0)
+                    {
+                        
+                    }
                     hasResults = true;
                     var list = new List<Document>(pathMembers.Count-1);
                     foreach (var item in pathMembers)
