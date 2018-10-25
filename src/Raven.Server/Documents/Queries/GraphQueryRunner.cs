@@ -707,10 +707,6 @@ namespace Raven.Server.Documents.Queries
 
                 void AddMatch()
                 {
-                    if (pathMembers.Count == 0)
-                    {
-                        
-                    }
                     hasResults = true;
                     var list = new List<Document>(pathMembers.Count-1);
                     foreach (var item in pathMembers)
