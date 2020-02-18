@@ -414,6 +414,11 @@ namespace Sparrow.Server
             return Length == other.Length &&
                    Memory.Compare(Ptr, other.Buffer, Length) == 0;
         }
+
+        public Span<byte> ToSpan()
+        {
+            return new Span<byte>(Ptr, Length);
+        }
     }
 
     public sealed unsafe class UnmanagedGlobalSegment : PooledItem

@@ -5,25 +5,22 @@ using Sparrow;
 using Sparrow.Collections;
 using Sparrow.Json.Parsing;
 using Sparrow.Server;
+using Voron.Impl;
 using Voron.Util;
 
 namespace Voron.Data.Tables
 {
     public unsafe class TableValueBuilder : IEnumerable
     {
-        public void Reset()
-        {
-           _values.Clear();
-           _size = 0;
-           _elementSize = 1;
-           _isDirty = false;
-        }
-
         private readonly FastList<PtrSize> _values = new FastList<PtrSize>();
-
-        private int _size;
-        private bool _isDirty;
+        private Transaction _currentTransaction;
         private int _elementSize = 1;
+        private bool _isDirty;
+        private ByteString _compressed;
+        private int _size;
+        private ByteStringContext<ByteStringMemoryCache>.InternalScope _compressedScope;
+        public bool Compressed => _compressed.HasValue;
+
 
         public int ElementSize
         {
@@ -39,10 +36,7 @@ namespace Voron.Data.Tables
                     goto Return;
                 }
 
-                if (size + _values.Count + 1 > byte.MaxValue)
-                {
-                    _elementSize = 2;
-                }
+                if (size + _values.Count + 1 > byte.MaxValue) _elementSize = 2;
 
                 Return:
                 _isDirty = false;
@@ -50,21 +44,51 @@ namespace Voron.Data.Tables
             }
         }
 
-        public int Size => _size + ElementSize * _values.Count + JsonParserState.VariableSizeIntSize(_values.Count);
+        public int Size
+        {
+            get
+            {
+                if (_compressed.HasValue)
+                    return _compressed.Length;
+
+                return _size + ElementSize * _values.Count + JsonParserState.VariableSizeIntSize(_values.Count);
+            }
+        }
 
         public int Count => _values.Count;
+
+        IEnumerator IEnumerable.GetEnumerator()
+        {
+            throw new NotSupportedException("Only for the collection initializer syntax");
+        }
+
+        public void Reset()
+        {
+            _values.Clear();
+            _size = 0;
+            _elementSize = 1;
+            _isDirty = false;
+            _currentTransaction = null;
+            _compressed = default;
+            _compressedScope.Dispose();
+        }
+
+        public void SetCurrentTransaction(Transaction value)
+        {
+            _currentTransaction = value;
+        }
 
         public int SizeOf(int index)
         {
             return _values[index].Size;
         }
 
-        public ByteStringContext.Scope SliceFromLocation(ByteStringContext context, int index, out Slice slice)
+        public ByteStringContext<ByteStringMemoryCache>.Scope SliceFromLocation(ByteStringContext context, int index, out Slice slice)
         {
             if (_values[index].IsValue)
             {
                 ulong value = _values[index].Value;
-                return Slice.From(context, (byte*) &value, _values[index].Size, out slice);
+                return Slice.From(context, (byte*)&value, _values[index].Size, out slice);
             }
 
             return Slice.External(context, _values[index].Ptr, _values[index].Size, out slice);
@@ -73,27 +97,22 @@ namespace Voron.Data.Tables
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Add<T>(T value) where T : struct
         {
-            var ptr = PtrSize.Create(value);
+            PtrSize ptr = PtrSize.Create(value);
             Add(ref ptr);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Add(Slice buffer)
         {
-            var ptr = PtrSize.Create(buffer.Content.Ptr, buffer.Content.Length);
+            PtrSize ptr = PtrSize.Create(buffer.Content.Ptr, buffer.Content.Length);
             Add(ref ptr);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Add(void* pointer, int size)
         {
-            var ptr = PtrSize.Create(pointer, size);
+            PtrSize ptr = PtrSize.Create(pointer, size);
             Add(ref ptr);
-        }
-
-        IEnumerator IEnumerable.GetEnumerator()
-        {
-            throw new NotSupportedException("Only for the collection initializer syntax");
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -114,40 +133,84 @@ namespace Voron.Data.Tables
             throw new ArgumentException("Size cannot be negative", argument);
         }
 
+        public void TryCompression()
+        {
+            if (_compressed.HasValue)
+                return;
+
+            int maxSpace = ZstdLib.GetMaxCompression(Size);
+            using var __ = _currentTransaction.Allocator.Allocate(maxSpace, out var origin);
+
+            CopyTo(origin.Ptr);
+
+            _compressedScope = _currentTransaction.Allocator.Allocate(maxSpace+1 /* flag */, out var compressed);
+
+            try
+            {
+                // TODO: where do I get the dict from?
+                using var compressor = ZstdLib.CreateContext();
+                var size = compressor.Compress(origin.ToSpan(), compressed.ToSpan());
+                if (size >= origin.Length)
+                {
+                    // we compressed large, so we skip compression here
+                    _compressedScope.Dispose();
+                    return;
+                }
+
+                _compressed = compressed;
+                _compressed.Truncate(size);
+            }
+            catch 
+            {
+                _compressedScope.Dispose();
+                throw;
+            }
+
+        }
+
         public void CopyTo(byte* ptr)
         {
+            if (_compressed.HasValue)
+            {
+                _compressed.CopyTo(ptr);
+                return;
+            }
+
             JsonParserState.WriteVariableSizeInt(ref ptr, _values.Count);
 
             int elementSize = ElementSize;
 
-            var pos = _values.Count * elementSize;
-            var dataStart = ptr + pos;
+            int pos = _values.Count * elementSize;
+            byte* dataStart = ptr + pos;
 
             switch (elementSize)
             {
                 case 1:
-                    var bytePtr = ptr;
+                    byte* bytePtr = ptr;
                     for (int i = 0; i < _values.Count; i++)
                     {
                         bytePtr[i] = (byte)pos;
                         pos += _values[i].Size;
                     }
+
                     break;
                 case 2:
-                    var shortPtr = (ushort*)ptr;
+                    ushort* shortPtr = (ushort*)ptr;
                     for (int i = 0; i < _values.Count; i++)
                     {
                         shortPtr[i] = (ushort)pos;
                         pos += _values[i].Size;
                     }
+
                     break;
                 case 4:
-                    var intPtr = (int*)ptr;
+                    int* intPtr = (int*)ptr;
                     for (int i = 0; i < _values.Count; i++)
                     {
                         intPtr[i] = pos;
                         pos += _values[i].Size;
                     }
+
                     break;
                 default:
                     throw new ArgumentOutOfRangeException(nameof(ElementSize), "Unknown element size " + ElementSize);
@@ -166,7 +229,7 @@ namespace Voron.Data.Tables
                 }
                 else
                 {
-                    srcPtr = p.Ptr;                    
+                    srcPtr = p.Ptr;
                 }
 
                 Memory.Copy(dataStart, srcPtr, p.Size);

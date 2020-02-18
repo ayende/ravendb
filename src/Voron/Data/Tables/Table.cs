@@ -188,7 +188,14 @@ namespace Voron.Data.Tables
             // here we rely on the fact that RawDataSmallSection can
             // read any RawDataSmallSection piece of data, not just something that
             // it exists in its own section, but anything from other sections as well
-            return RawDataSection.DirectRead(_tx.LowLevelTransaction, id, out size);
+            byte* directRead = RawDataSection.DirectRead(_tx.LowLevelTransaction, id, out size, out bool compressed);
+            if (compressed == false)
+                return directRead;
+
+            int decompressedSize = ZstdLib.GetDecompressedSize(new Span<byte>(directRead, size));
+
+            var ignored = _tx.Allocator.Allocate(decompressedSize, out var buffer);
+
         }
 
         public int GetAllocatedSize(long id)
@@ -213,6 +220,9 @@ namespace Voron.Data.Tables
         {
             AssertWritableTable();
 
+            if(_schema.Compressed)
+                builder.TryCompression();
+
             // The ids returned from this function MUST NOT be stored outside of the transaction.
             // These are merely for manipulation within the same transaction, and WILL CHANGE afterwards.
             int size = builder.Size;
@@ -222,13 +232,12 @@ namespace Voron.Data.Tables
             if (size + sizeof(RawDataSection.RawDataEntrySizes) < RawDataSection.MaxItemSize)
             {
                 // We must read before we call TryWriteDirect, because it will modify the size
-                int oldDataSize;
-                var oldData = DirectRead(id, out oldDataSize);
+                var oldData = DirectRead(id, out var oldDataSize);
 
                 AssertNoReferenceToOldData(builder, oldData, oldDataSize);
 
                 byte* pos;
-                if (prevIsSmall && ActiveDataSmallSection.TryWriteDirect(id, size, out pos))
+                if (prevIsSmall && ActiveDataSmallSection.TryWriteDirect(id, size, builder.Compressed, out pos))
                 {
                     var tvr = new TableValueReader(oldData, oldDataSize);
                     UpdateValuesFromIndex(id,
@@ -389,12 +398,12 @@ namespace Voron.Data.Tables
             var idsInSection = ActiveDataSmallSection.GetAllIdsInSectionContaining(id);
             foreach (var idToMove in idsInSection)
             {
-                var pos = ActiveDataSmallSection.DirectRead(idToMove, out int itemSize);
+                var pos = ActiveDataSmallSection.DirectRead(idToMove, out int itemSize, out bool compressed);
                 var newId = AllocateFromSmallActiveSection(null, itemSize);
 
                 OnDataMoved(idToMove, newId, pos, itemSize);
 
-                if (ActiveDataSmallSection.TryWriteDirect(newId, itemSize, out byte* writePos) == false)
+                if (ActiveDataSmallSection.TryWriteDirect(newId, itemSize, compressed, out byte* writePos) == false)
                     throw new VoronErrorException($"Cannot write to newly allocated size in {Name} during delete");
 
                 Memory.Copy(writePos, pos, itemSize);
@@ -466,6 +475,9 @@ namespace Voron.Data.Tables
             // Any changes done to this method should be reproduced in the Insert below, as they're used when compacting.
             // The ids returned from this function MUST NOT be stored outside of the transaction.
             // These are merely for manipulation within the same transaction, and WILL CHANGE afterwards.
+            
+            if (_schema.Compressed)
+                builder.TryCompression();
 
             var size = builder.Size;
 
@@ -476,7 +488,7 @@ namespace Voron.Data.Tables
             {
                 id = AllocateFromSmallActiveSection(builder, size);
 
-                if (ActiveDataSmallSection.TryWriteDirect(id, size, out pos) == false)
+                if (ActiveDataSmallSection.TryWriteDirect(id, size, builder.Compressed, out pos) == false)
                     throw new VoronErrorException(
                         $"After successfully allocating {size:#,#;;0} bytes, failed to write them on {Name}");
 
@@ -584,6 +596,8 @@ namespace Voron.Data.Tables
             // These are merely for manipulation within the same transaction, and WILL CHANGE afterwards.
 
             int size = reader.Size;
+            
+            bool FIGURE_IT_OUT = false;// TODO: need to see how we are handling this
 
             byte* pos;
             long id;
@@ -591,7 +605,7 @@ namespace Voron.Data.Tables
             {
                 id = AllocateFromSmallActiveSection(null, size);
 
-                if (ActiveDataSmallSection.TryWriteDirect(id, size, out pos) == false)
+                if (ActiveDataSmallSection.TryWriteDirect(id, size, FIGURE_IT_OUT, out pos) == false)
                     throw new VoronErrorException($"After successfully allocating {size:#,#;;0} bytes, failed to write them on {Name}");
             }
             else
@@ -1871,6 +1885,7 @@ namespace Voron.Data.Tables
                     throw new InvalidOperationException("Cannot use a cached table value builder when it is already in use");
 #endif
                 Builder = environmentWriteTransactionPool.TableValueBuilder;
+                Builder.SetCurrentTransaction(_tx);
             }
 
             public TableValueBuilder Builder { get; }
