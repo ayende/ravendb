@@ -29,6 +29,7 @@ namespace Voron.Data.Tables
         public static readonly Slice PkSlice;
 
         private SchemaIndexDef _primaryKey;
+        private bool _compressed;
 
         private readonly Dictionary<Slice, SchemaIndexDef> _indexes =
             new Dictionary<Slice, SchemaIndexDef>(SliceComparer.Instance);
@@ -321,6 +322,14 @@ namespace Voron.Data.Tables
             }
         }
 
+        public TableSchema CompressValues()
+        {
+            _compressed = true;
+            return this;
+        }
+
+        public bool Compressed => _compressed;
+
         public TableSchema DefineIndex(SchemaIndexDef index)
         {
             if (!index.Name.HasValue || SliceComparer.Equals(Slices.Empty, index.Name))
@@ -477,10 +486,18 @@ namespace Voron.Data.Tables
             }
         }
 
+        [Flags]
+        private enum TableSchemaSerializationFlag : byte
+        {
+            None = 0,
+            HasPrimaryKey = 1,
+            IsCompressed = 2
+        }
+
         /// <summary>
         /// Serializes structure into a byte array:
         /// 
-        ///  1. Whether the schema has a primary key
+        ///  1. flags - Whether the schema has a primary key
         ///  2. The primary key (if present)
         ///  3. Number of composite indexes
         ///  4. Values of the composite indexes
@@ -492,11 +509,16 @@ namespace Voron.Data.Tables
         {
             // Create list of serialized substructures
             var structure = new List<byte[]>();
-            bool hasPrimaryKey = _primaryKey != null;
+            var flags = TableSchemaSerializationFlag.None;
+            if (_primaryKey != null)
+                flags |= TableSchemaSerializationFlag.HasPrimaryKey;
 
-            structure.Add(BitConverter.GetBytes(hasPrimaryKey));
+            if(_compressed)
+                flags|= TableSchemaSerializationFlag.IsCompressed;
 
-            if (hasPrimaryKey)
+            structure.Add(new []{ (byte)flags });
+
+            if (_primaryKey != null)
                 structure.Add(_primaryKey.Serialize());
 
             structure.Add(BitConverter.GetBytes(_indexes.Count));
@@ -539,16 +561,18 @@ namespace Voron.Data.Tables
             // Since there might not be a primary key, we have a moving index to deserialize the schema
             int currentIndex = 0;
 
-            int currentSize;
-            byte* currentPtr = input.Read(currentIndex++, out currentSize);
+            byte* currentPtr = input.Read(currentIndex++, out var currentSize);
 
-            bool hasPrimaryKey = Convert.ToBoolean(*currentPtr);
+            TableSchemaSerializationFlag flags = (TableSchemaSerializationFlag)(*currentPtr);
+            bool hasPrimaryKey = flags.HasFlag(TableSchemaSerializationFlag.HasPrimaryKey);
             if (hasPrimaryKey)
             {
                 currentPtr = input.Read(currentIndex++, out currentSize);
                 var pk = SchemaIndexDef.ReadFrom(context, currentPtr, currentSize);
                 schema.DefineKey(pk);
             }
+
+            schema._compressed = flags.HasFlag(TableSchemaSerializationFlag.IsCompressed);
 
             // Read common schema indexes
             currentPtr = input.Read(currentIndex++, out currentSize);
