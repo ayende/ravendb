@@ -322,6 +322,12 @@ namespace Raven.Server.Documents
 
                         if (_operations.IsEmpty)
                         {
+                            using(_parent.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext ctx))
+                            using(ctx.OpenWriteTransaction())
+                            {
+                                ctx.Environment.Journal.ZeroCompressionBufferIfNeeded(ctx.Transaction.InnerTransaction.LowLevelTransaction);
+                            }
+
                             using (var generalMeter = GeneralWaitPerformanceMetrics.MeterPerformanceRate())
                             {
                                 generalMeter.IncrementCounter(1);
@@ -934,6 +940,7 @@ namespace Raven.Server.Documents
                 var opType = previousOperation == null ? string.Empty : "(async) ";
                 _log.Info($"Merged {executedOps.Count:#,#;;0} operations in {sp.Elapsed} {opType}with {currentOperationsCount:#,#;;0} operations remaining. Status: {status}");
             }
+            
             return status;
         }
 

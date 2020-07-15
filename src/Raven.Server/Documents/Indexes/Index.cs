@@ -1258,6 +1258,11 @@ namespace Raven.Server.Documents.Indexes
                             if (forceMemoryCleanup || _mre.Wait(timeToWaitForMemoryCleanup, _indexingProcessCancellationTokenSource.Token) == false)
                             {
                                 Interlocked.Exchange(ref _allocationCleanupNeeded, 0);
+                                
+                                using (var tx = _environment.WriteTransaction())
+                                {
+                                    _environment.Journal.ZeroCompressionBufferIfNeeded(tx.LowLevelTransaction);
+                                }
 
                                 // allocation cleanup has been requested multiple times or
                                 // there is no work to be done, and hasn't been for a while,
