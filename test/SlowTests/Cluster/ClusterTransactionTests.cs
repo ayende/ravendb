@@ -21,6 +21,7 @@ using Raven.Server;
 using Raven.Server.Config;
 using Raven.Server.Documents;
 using Raven.Server.Documents.Replication;
+using Raven.Server.Rachis;
 using Raven.Server.ServerWide.Commands;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.Utils;
@@ -1009,6 +1010,7 @@ namespace SlowTests.Cluster
                     Assert.Equal(leader.WebUrl, session.Advanced.RequestExecutor.Url);
                     session.Advanced.ClusterTransaction.CreateCompareExchangeValue("usernames/ayende", user1);
                     await session.StoreAsync(user3, "foo/bar");
+                    await session.StoreAsync(user3, "foo/bar/2");
                     await session.SaveChangesAsync();
 
                     var user = (await session.Advanced.ClusterTransaction.GetCompareExchangeValueAsync<User>("usernames/ayende")).Value;
@@ -1020,6 +1022,13 @@ namespace SlowTests.Cluster
                     Assert.Equal(1, list.Count);
                     var changeVector = session.Advanced.GetChangeVectorFor(user);
                     Assert.NotNull(await session.Advanced.Revisions.GetAsync<User>(changeVector));
+                }
+
+                using (var session = leaderStore.OpenAsyncSession(new SessionOptions {TransactionMode = TransactionMode.ClusterWide}))
+                {
+                    session.Delete("foo/bar/2");
+                    session.Advanced.WaitForIndexesAfterSaveChanges();
+                    await session.SaveChangesAsync();
                 }
 
                 // bring more nodes down, so only one node is left
@@ -1034,6 +1043,7 @@ namespace SlowTests.Cluster
                 {
                     Assert.Equal(leader.WebUrl, session.Advanced.RequestExecutor.Url);
                     await session.StoreAsync(user1, "foo/bar");
+
                     await session.SaveChangesAsync();
 
                     var list = await session.Advanced.Revisions.GetForAsync<User>(user1.Id);
@@ -1234,6 +1244,44 @@ namespace SlowTests.Cluster
 
                     var compareExchangeValue = await session.Advanced.ClusterTransaction.GetCompareExchangeValueAsync<List<string>>(id);
                     Assert.True(value.SequenceEqual(compareExchangeValue.Value));
+                }
+            }
+        }
+
+        [Theory]
+        [InlineData("")]
+        [InlineData(" ")]
+        [InlineData(@"
+")]
+        public async Task ClusterWideTransaction_WhenStoreDocWithEmptyStringId_ShouldThrowInformativeError(string id)
+        {
+            var e = await Assert.ThrowsAnyAsync<RavenException>(async () =>
+            {
+                using var store = GetDocumentStore();
+                using var session = store.OpenAsyncSession(new SessionOptions
+                {
+                    TransactionMode = TransactionMode.ClusterWide
+                });
+                
+                var entity = new User {Id = id};
+                await session.StoreAsync(entity);
+                await session.SaveChangesAsync();
+                WaitForUserToContinueTheTest(store);
+            });
+            Assert.True(ContainsRachisException(e));
+
+            static bool ContainsRachisException(Exception e)
+            {
+                while (true)
+                {
+                    if (e.ToString().Contains(nameof(RachisApplyException)))
+                        return true;
+                    if (e is AggregateException ae) 
+                        return ae.InnerExceptions.Any(ContainsRachisException);
+
+                    if (e.InnerException == null) 
+                        return false;
+                    e = e.InnerException;
                 }
             }
         }

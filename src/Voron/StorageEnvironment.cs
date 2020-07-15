@@ -1,5 +1,6 @@
 ﻿using Sparrow;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -102,7 +103,7 @@ namespace Voron
 
         public DateTime LastWorkTime;
 
-        private readonly Queue<TemporaryPage> _tempPagesPool = new Queue<TemporaryPage>();
+        private readonly ConcurrentQueue<TemporaryPage> _tempPagesPool = new ConcurrentQueue<TemporaryPage>();
         public bool Disposed;
         private readonly Logger _log;
         public static int MaxConcurrentFlushes = 10; // RavenDB-5221
@@ -281,6 +282,8 @@ namespace Voron
 
         private void UpgradeSchemaIfRequired()
         {
+            Options.BeforeSchemaUpgrade?.Invoke(this);
+
             try
             {
                 int schemaVersionVal;
@@ -1206,22 +1209,24 @@ namespace Voron
         {
             if (tx.Flags != TransactionFlags.ReadWrite)
                 throw new ArgumentException("Temporary pages are only available for write transactions");
-            if (_tempPagesPool.Count > 0)
+
+            if (_tempPagesPool.TryDequeue(out tmp) == false)
             {
-                tmp = _tempPagesPool.Dequeue();
-                return tmp.ReturnTemporaryPageToPool;
+                tmp = new TemporaryPage(Options);
+                try
+                {
+                    tmp.ReturnTemporaryPageToPool = new ReturnTemporaryPageToPool(this, tmp);
+                }
+                catch (Exception)
+                {
+                    tmp.Dispose();
+                    throw;
+                }
             }
 
-            tmp = new TemporaryPage(Options);
-            try
-            {
-                return tmp.ReturnTemporaryPageToPool = new ReturnTemporaryPageToPool(this, tmp);
-            }
-            catch (Exception)
-            {
-                tmp.Dispose();
-                throw;
-            }
+            tmp.PinMemory();
+
+            return tmp.ReturnTemporaryPageToPool;
         }
 
         private class ReturnTemporaryPageToPool : IDisposable
@@ -1241,6 +1246,8 @@ namespace Voron
                 {
                     if (_env.Options.EncryptionEnabled)
                         Sodium.sodium_memzero(_tmp.TempPagePointer, (UIntPtr)_tmp.PageSize);
+                    
+                    _tmp.UnpinMemory();
                     _env._tempPagesPool.Enqueue(_tmp);
                 }
                 catch (Exception)
@@ -1303,7 +1310,6 @@ namespace Voron
         public void Cleanup(bool tryCleanupRecycledJournals = false)
         {
             CleanupMappedMemory();
-            CleanupNativeMemory();
 
             if (tryCleanupRecycledJournals)
                 Options.TryCleanupRecycledJournals();
@@ -1314,16 +1320,10 @@ namespace Voron
             Journal.TryReduceSizeOfCompressionBufferIfNeeded();
             ScratchBufferPool.Cleanup();
             DecompressionBuffers.Cleanup();
-        }
 
-        public void CleanupNativeMemory()
-        {
-            if (Options.EncryptionEnabled)
+            while (_tempPagesPool.TryDequeue(out var tempPage))
             {
-                foreach (var cryptoPager in Options.GetActiveCryptoPagers())
-                {
-                    cryptoPager.CleanupEncryptionBuffersCache();
-                }
+                tempPage.Dispose();
             }
         }
 

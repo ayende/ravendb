@@ -39,7 +39,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene.Documents
         private const string CreatedFieldOptionsPropertyName = "$options";
         private const string CreatedFieldNamePropertyName = "$name";
 
-        protected override int GetFields<T>(T instance, LazyStringValue key, object document, JsonOperationContext indexContext)
+        protected override int GetFields<T>(T instance, LazyStringValue key, object document, JsonOperationContext indexContext, IWriteOperationBuffer writeBuffer)
         {
             if (!(document is ObjectInstance documentToProcess))
                 return 0;
@@ -57,7 +57,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene.Documents
                     documentToProcess.Engine,
                     documentToProcess);
 
-                instance.Add(GetReduceResultValueField(reduceResult));
+                instance.Add(GetReduceResultValueField(reduceResult, writeBuffer));
                 newFields++;
             }
 
@@ -82,7 +82,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene.Documents
                         else
                         {
                             value = TypeConverter.ToBlittableSupportedType(val, flattenArrays: false, forIndexing: true, engine: documentToProcess.Engine, context: indexContext);
-                            newFields += GetRegularFields(instance, field, value, indexContext);
+                            newFields += GetRegularFields(instance, field, value, indexContext, out _);
                             continue;
                         }
                     }
@@ -117,14 +117,14 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene.Documents
                         {
                             continue; //Ignoring bad spatial field 
                         }
-                        newFields += GetRegularFields(instance, field, spatial, indexContext);
+                        newFields += GetRegularFields(instance, field, spatial, indexContext, out _);
 
                         continue;
                     }
                 }
 
                 value = TypeConverter.ToBlittableSupportedType(propertyDescriptor.Value, flattenArrays: false, forIndexing: true, engine: documentToProcess.Engine, context: indexContext);
-                newFields += GetRegularFields(instance, field, value, indexContext);
+                newFields += GetRegularFields(instance, field, value, indexContext, out _);
 
                 if (value is IDisposable toDispose)
                 {

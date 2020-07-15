@@ -1,25 +1,23 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
+﻿using System.Collections.Generic;
 using System.Threading.Tasks;
 using FastTests;
 using Raven.Client.Documents.Operations;
 using Raven.Client.Documents.Operations.Revisions;
+using Raven.Tests.Core.Utils.Entities;
 using Xunit;
 using Xunit.Abstractions;
-using Raven.Tests.Core.Utils.Entities;
 
 namespace SlowTests.Issues
 {
     public class RavenDB_14881 : RavenTestBase
     {
         public RavenDB_14881(ITestOutputHelper output)
-            :base(output)
+            : base(output)
         {
         }
 
         [Fact]
-        public async void can_get_detailed_collection_statistics()
+        public async Task can_get_detailed_collection_statistics()
         {
             string strCollectionName = "Companies";
             using (var store = GetDocumentStore())
@@ -52,6 +50,7 @@ namespace SlowTests.Issues
                 // get detailed collection statistics before we are going to change some data
                 // right now there shouldn't be any revisions
                 var detailedCollectionStats_beforeDataChanged = await store.Maintenance.SendAsync(new GetDetailedCollectionStatisticsOperation());
+                Assert.Equal(strCollectionName, detailedCollectionStats_beforeDataChanged.Collections[strCollectionName].Name);
                 long sizeInBytesWithoutRevisions = detailedCollectionStats_beforeDataChanged.Collections[strCollectionName].Size.SizeInBytes;
                 Assert.True(sizeInBytesWithoutRevisions > 0);
 
@@ -77,7 +76,7 @@ namespace SlowTests.Issues
                 // query the detailed collection statistics again, to check if the physical size changed after the revisions were created
                 var detailedCollectionStats_afterDataChanged = await store.Maintenance.SendAsync(new GetDetailedCollectionStatisticsOperation());
                 Assert.Equal(20, detailedCollectionStats_afterDataChanged.Collections[strCollectionName].CountOfDocuments);
-                
+
                 long sizeInBytesWithRevisions = detailedCollectionStats_afterDataChanged.Collections[strCollectionName].Size.SizeInBytes;
                 Assert.True(sizeInBytesWithRevisions > sizeInBytesWithoutRevisions);
             }

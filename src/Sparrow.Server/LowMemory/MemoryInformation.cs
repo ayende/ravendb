@@ -23,6 +23,7 @@ namespace Sparrow.LowMemory
         private static readonly TimeSpan MemByTimeThrottleTime = TimeSpan.FromMilliseconds(100);
 
         private static readonly byte[] VmRss = Encoding.UTF8.GetBytes("VmRSS:");
+        private static readonly byte[] VmSwap = Encoding.UTF8.GetBytes("VmSwap:");
         private static readonly byte[] MemAvailable = Encoding.UTF8.GetBytes("MemAvailable:");
         private static readonly byte[] MemFree = Encoding.UTF8.GetBytes("MemFree:");
         private static readonly byte[] MemTotal = Encoding.UTF8.GetBytes("MemTotal:");
@@ -99,6 +100,8 @@ namespace Sparrow.LowMemory
             public Size AvailableMemoryForProcessing;
             public Size SharedCleanMemory;
             public Size TotalDirty;
+            public Size TotalSwap;
+            public Size WorkingSetSwap;
         }
 
         internal static ConcurrentSet<StrongReference<Func<long>>> DirtyMemoryObjects = new ConcurrentSet<StrongReference<Func<long>>>();
@@ -197,7 +200,7 @@ namespace Sparrow.LowMemory
         [DllImport("kernel32.dll", SetLastError = true)]
         public static extern bool GetPhysicallyInstalledSystemMemory(out long totalMemoryInKb);
 
-        private static long GetRssMemoryUsage()
+        public static (long Rss, long Swap) GetMemoryUsageFromProcStatus()
         {
             var path = $"/proc/{ProcessId}/status";
 
@@ -207,14 +210,17 @@ namespace Sparrow.LowMemory
                 {
                     bufferedReader.ReadFileIntoBuffer();
                     var vmrss = bufferedReader.ExtractNumericValueFromKeyValuePairsFormattedFile(VmRss);
-                    return vmrss * 1024;// value is in KB, we need to return bytes
+                    var vmswap = bufferedReader.ExtractNumericValueFromKeyValuePairsFormattedFile(VmSwap);
+                    
+                    // value is in KB, we need to return bytes
+                    return (vmrss * 1024, vmswap * 1024); 
                 }
             }
             catch (Exception ex)
             {
                 if (Logger.IsInfoEnabled)
                     Logger.Info($"Failed to read value from {path}", ex);
-                return -1;
+                return (-1, -1);
             }
         }
 
@@ -266,6 +272,7 @@ namespace Sparrow.LowMemory
                     var totalClean = new Size(0, SizeUnit.Kilobytes);
                     var totalDirty = new Size(0, SizeUnit.Bytes);
                     var sharedCleanMemory = new Size(0, SizeUnit.Bytes);
+                    var swapWorkingSet = new Size(0, SizeUnit.Bytes);
                     if (smapsReader != null)
                     {
                         var result = smapsReader.CalculateMemUsageFromSmaps<SmapsReaderNoAllocResults>();
@@ -273,6 +280,7 @@ namespace Sparrow.LowMemory
                         totalClean.Add(result.PrivateClean, SizeUnit.Bytes);
                         sharedCleanMemory.Set(result.SharedClean, SizeUnit.Bytes);
                         totalDirty.Add(result.TotalDirty, SizeUnit.Bytes);
+                        swapWorkingSet.Add(result.Swap, SizeUnit.Bytes);
                     }
 
                     procMemInfoResults.AvailableMemory = new Size(memFreeInKb, SizeUnit.Kilobytes);
@@ -291,6 +299,8 @@ namespace Sparrow.LowMemory
 
                     procMemInfoResults.SharedCleanMemory = sharedCleanMemory;
                     procMemInfoResults.TotalDirty = totalDirty;
+                    procMemInfoResults.TotalSwap = new Size(swapTotalInKb, SizeUnit.Kilobytes);
+                    procMemInfoResults.WorkingSetSwap = swapWorkingSet;
                 }
             }
             catch (Exception ex)
@@ -386,13 +396,17 @@ namespace Sparrow.LowMemory
             }
 
             var workingSet = new Size(0, SizeUnit.Bytes);
+            var swapUsage = new Size(0, SizeUnit.Bytes);
             if (smapsReader != null)
             {
                 // extended info is needed
-                workingSet.Set(GetRssMemoryUsage(), SizeUnit.Bytes);
+
+                var procStatus = GetMemoryUsageFromProcStatus();
+                workingSet.Set(procStatus.Rss, SizeUnit.Bytes);
+                swapUsage.Set(procStatus.Swap, SizeUnit.Bytes);
             }
 
-            SetMemoryRecords(fromProcMemInfo.AvailableMemory.GetValue(SizeUnit.Bytes));
+            SetMemoryRecords(fromProcMemInfo.AvailableMemoryForProcessing.GetValue(SizeUnit.Bytes));
 
             return new MemoryInfoResult
             {
@@ -405,6 +419,11 @@ namespace Sparrow.LowMemory
                 TotalPhysicalMemory = fromProcMemInfo.TotalMemory,
                 InstalledMemory = fromProcMemInfo.TotalMemory,
                 WorkingSet = workingSet,
+                
+                TotalSwapSize = fromProcMemInfo.TotalSwap,
+                TotalSwapUsage = swapUsage,
+                WorkingSetSwapUsage = fromProcMemInfo.WorkingSetSwap,
+                
                 IsExtended = extended
             };
         }
@@ -466,7 +485,7 @@ namespace Sparrow.LowMemory
             var availableMemoryForProcessing = availableMemory; // mac (unlike other linux distros) does calculate accurate available memory
             var workingSet = new Size(process?.WorkingSet64 ?? 0, SizeUnit.Bytes);
 
-            SetMemoryRecords(availableMemory.GetValue(SizeUnit.Bytes));
+            SetMemoryRecords(availableMemoryForProcessing.GetValue(SizeUnit.Bytes));
 
             return new MemoryInfoResult
             {
@@ -504,16 +523,17 @@ namespace Sparrow.LowMemory
             // Malformed SMBIOS data may indicate a problem with the user's computer.
             var fetchedInstalledMemory = GetPhysicallyInstalledSystemMemory(out var installedMemoryInKb);
 
-            var sharedClean = GetSharedCleanInBytes(process);
-            SetMemoryRecords((long)memoryStatus.ullAvailPhys);
+            var sharedCleanInBytes = GetSharedCleanInBytes(process);
+            var availableMemoryForProcessingInBytes = (long)memoryStatus.ullAvailPhys + sharedCleanInBytes;
+            SetMemoryRecords(availableMemoryForProcessingInBytes);
 
             return new MemoryInfoResult
             {
                 TotalCommittableMemory = new Size((long)memoryStatus.ullTotalPageFile, SizeUnit.Bytes),
                 CurrentCommitCharge = new Size((long)(memoryStatus.ullTotalPageFile - memoryStatus.ullAvailPageFile), SizeUnit.Bytes),
                 AvailableMemory = new Size((long)memoryStatus.ullAvailPhys, SizeUnit.Bytes),
-                AvailableMemoryForProcessing = new Size((long)memoryStatus.ullAvailPhys + sharedClean, SizeUnit.Bytes),
-                SharedCleanMemory = new Size(sharedClean, SizeUnit.Bytes),
+                AvailableMemoryForProcessing = new Size(availableMemoryForProcessingInBytes, SizeUnit.Bytes),
+                SharedCleanMemory = new Size(sharedCleanInBytes, SizeUnit.Bytes),
                 TotalPhysicalMemory = new Size((long)memoryStatus.ullTotalPhys, SizeUnit.Bytes),
                 InstalledMemory = fetchedInstalledMemory ?
                     new Size(installedMemoryInKb, SizeUnit.Kilobytes) :
@@ -594,7 +614,7 @@ namespace Sparrow.LowMemory
         public static long GetWorkingSetInBytes()
         {
             if (PlatformDetails.RunningOnLinux)
-                return GetRssMemoryUsage();
+                return GetMemoryUsageFromProcStatus().Rss;
 
             using (var currentProcess = Process.GetCurrentProcess())
             {
@@ -602,14 +622,14 @@ namespace Sparrow.LowMemory
             }
         }
 
-        private static void SetMemoryRecords(long availableRamInBytes)
+        private static void SetMemoryRecords(long availableMemoryForProcessingInBytes)
         {
             var now = DateTime.UtcNow;
 
-            if (HighSinceStartup < availableRamInBytes)
-                HighSinceStartup = availableRamInBytes;
-            if (LowSinceStartup > availableRamInBytes)
-                LowSinceStartup = availableRamInBytes;
+            if (HighSinceStartup < availableMemoryForProcessingInBytes)
+                HighSinceStartup = availableMemoryForProcessingInBytes;
+            if (LowSinceStartup > availableMemoryForProcessingInBytes)
+                LowSinceStartup = availableMemoryForProcessingInBytes;
 
             while (MemByTime.TryPeek(out var existing) &&
                    (now - existing.Item2) > TimeSpan.FromMinutes(5))
@@ -623,7 +643,7 @@ namespace Sparrow.LowMemory
 
             _memoryRecordsSet = now;
 
-            MemByTime.Enqueue(new Tuple<long, DateTime>(availableRamInBytes, now));
+            MemByTime.Enqueue(new Tuple<long, DateTime>(availableMemoryForProcessingInBytes, now));
 
             long highLastOneMinute = 0;
             long lowLastOneMinute = long.MaxValue;

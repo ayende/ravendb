@@ -415,12 +415,6 @@ namespace Raven.Server.ServerWide
                                 ClusterMaintenanceSupervisor.AddToCluster(node.Key, clusterTopology.GetUrlFromTag(node.Key));
                             }
 
-                            if (newNodes.Count > 1)
-                            {
-                                // calculate only if we have more than one node
-                                LicenseManager.CalculateLicenseLimits(forceFetchingNodeInfo: true).Wait(ServerShutdown);
-                            }
-
                             var leaderChanged = _engine.WaitForLeaveState(RachisState.Leader, ServerShutdown);
 
                             if (Task.WaitAny(new[] { topologyChangedTask, leaderChanged }, ServerShutdown) == 1)
@@ -653,6 +647,7 @@ namespace Raven.Server.ServerWide
 
             options.SchemaVersion = SchemaUpgrader.CurrentVersion.ServerVersion;
             options.SchemaUpgrader = SchemaUpgrader.Upgrader(SchemaUpgrader.StorageType.Server, null, null, this);
+            options.BeforeSchemaUpgrade = _server.BeforeSchemaUpgrade;
             options.ForceUsing32BitsPager = Configuration.Storage.ForceUsing32BitsPager;
             options.EnablePrefetching = Configuration.Storage.EnablePrefetching;
 
@@ -722,7 +717,7 @@ namespace Raven.Server.ServerWide
             LicenseManager.Initialize(_env, ContextPool);
             LatestVersionCheck.Instance.Check(this);
 
-            ConcurrentBackupsCounter = new ConcurrentBackupsCounter(Configuration.Backup.MaxNumberOfConcurrentBackups, LicenseManager);
+            ConcurrentBackupsCounter = new ConcurrentBackupsCounter(Configuration.Backup, LicenseManager);
 
             ConfigureAuditLog();
 
@@ -1052,6 +1047,9 @@ namespace Raven.Server.ServerWide
                 case nameof(PutLicenseCommand):
                     LicenseManager.ReloadLicense();
                     ConcurrentBackupsCounter.ModifyMaxConcurrentBackups();
+
+                    // we are not waiting here on purpose
+                    var t = LicenseManager.PutMyNodeInfoAsync().IgnoreUnobservedExceptions();
                     break;
                 case nameof(PutLicenseLimitsCommand):
                 case nameof(UpdateLicenseLimitsCommand):
@@ -1080,16 +1078,43 @@ namespace Raven.Server.ServerWide
                 {
                     topology = rawRecord.Topology;
                     backupConfig = rawRecord.GetPeriodicBackupConfiguration(taskId);
+
+                    if (backupConfig == null)
+                        throw new InvalidOperationException($"Could not reschedule the wakeup timer for idle database '{db}', because there is no backup task with id '{taskId}'.");
                 }
 
                 var tag = topology.WhoseTaskIsIt(Engine.CurrentState, backupConfig, null);
-                if (Engine.Tag == tag)
+                if (Engine.Tag != tag)
                 {
-                    var wakeup = CrontabSchedule.Parse(backupConfig.FullBackupFrequency).GetNextOccurrence(SystemTime.UtcNow);
-                    var dueTime = (int)(wakeup - SystemTime.UtcNow).TotalMilliseconds;
-
-                    DatabasesLandlord.RescheduleDatabaseWakeup(db, dueTime, wakeup);
+                    if (Logger.IsOperationsEnabled)
+                        Logger.Operations($"Could not reschedule the wakeup timer for idle database '{db}', because backup task '{backupConfig.Name}' with id '{taskId}' belongs to node '{tag}' current node is '{Engine.Tag}'.");
+                    continue;
                 }
+
+                if (backupConfig.Disabled || backupConfig.FullBackupFrequency == null && backupConfig.IncrementalBackupFrequency == null)
+                    continue;
+
+                var now = SystemTime.UtcNow;
+                DateTime wakeup;
+                if (backupConfig.FullBackupFrequency == null)
+                {
+                    wakeup = CrontabSchedule.Parse(backupConfig.IncrementalBackupFrequency).GetNextOccurrence(now);
+                }
+                else
+                {
+                    wakeup = CrontabSchedule.Parse(backupConfig.FullBackupFrequency).GetNextOccurrence(now);
+                    if (backupConfig.IncrementalBackupFrequency != null)
+                    {
+                        var incremental = CrontabSchedule.Parse(backupConfig.IncrementalBackupFrequency).GetNextOccurrence(now);
+                        wakeup = new DateTime(Math.Min(wakeup.Ticks, incremental.Ticks));
+                    }
+                }
+
+                var dueTime = (int)(wakeup - now).TotalMilliseconds;
+                DatabasesLandlord.RescheduleDatabaseWakeup(db, dueTime, wakeup);
+
+                if (Logger.IsOperationsEnabled)
+                    Logger.Operations($"Rescheduling the wakeup timer for idle database '{db}', because backup task '{backupConfig.Name}' with id '{taskId}' which belongs to node '{Engine.Tag}', new timer is set to: '{wakeup}', with dueTime: {dueTime} ms.");
             }
         }
 
@@ -2128,14 +2153,14 @@ namespace Raven.Server.ServerWide
                             }
                         }
 
-                        if (DatabasesLandlord.UnloadDirectly(db, idleDbInstance.PeriodicBackupRunner.GetWakeDatabaseTimeUtc()))
+                        if (DatabasesLandlord.UnloadDirectly(db, idleDbInstance.PeriodicBackupRunner.GetWakeDatabaseTimeUtc(idleDbInstance.Name)))
                             IdleDatabases[idleDbInstance.Name] = dbIdEtagDictionary;
                     }
                 }
                 catch (Exception e)
                 {
-                    if (Logger.IsInfoEnabled)
-                        Logger.Info("Error during idle operations for the server", e);
+                    if (Logger.IsOperationsEnabled)
+                        Logger.Operations("Error during idle operations for the server", e);
                 }
             }
             finally
@@ -2262,13 +2287,15 @@ namespace Raven.Server.ServerWide
             return SendToLeaderAsync(addDatabaseCommand);
         }
 
-        public void EnsureNotPassive(string publicServerUrl = null, string nodeTag = "A")
+        public void EnsureNotPassive(string publicServerUrl = null, string nodeTag = "A", bool skipLicenseActivation = false)
         {
             if (_engine.CurrentState != RachisState.Passive)
                 return;
 
             _engine.Bootstrap(publicServerUrl ?? _server.ServerStore.GetNodeHttpServerUrl(), nodeTag);
-            LicenseManager.TryActivateLicense(Server.ThrowOnLicenseActivationFailure);
+
+            if (skipLicenseActivation == false)
+                LicenseManager.TryActivateLicense(Server.ThrowOnLicenseActivationFailure);
 
             // we put a certificate in the local state to tell the server who to trust, and this is done before
             // the cluster exists (otherwise the server won't be able to receive initial requests). Only when we 
@@ -2407,10 +2434,18 @@ namespace Raven.Server.ServerWide
 
         public License LoadLicense()
         {
-            using (ContextPool.AllocateOperationContext(out TransactionOperationContext context))
+            return LoadLicense(ContextPool);
+        }
+
+        public License LoadLicense(TransactionContextPool contextPool)
+        {
+            var lowerName = LicenseStorageKey.ToLowerInvariant();
+
+            using (contextPool.AllocateOperationContext(out TransactionOperationContext context))
             using (context.OpenReadTransaction())
+            using (Slice.From(context.Allocator, lowerName, out Slice key))
             {
-                var licenseBlittable = Cluster.Read(context, LicenseStorageKey);
+                var licenseBlittable = ClusterStateMachine.ReadInternal(context, out _, key);
                 if (licenseBlittable == null)
                     return null;
 
@@ -2443,38 +2478,16 @@ namespace Raven.Server.ServerWide
             await WaitForCommitIndexChange(RachisConsensus.CommitIndexModification.GreaterOrEqual, result.Index);
         }
 
-        public void PutLicenseLimits(LicenseLimits licenseLimits, string raftRequestId)
+        public async Task PutNodeLicenseLimitsAsync(string nodeTag, DetailsPerNode detailsPerNode, int maxLicensedCores)
         {
-            var command = new PutLicenseLimitsCommand(LicenseLimitsStorageKey, licenseLimits, raftRequestId);
-            SendToLeaderAsync(command).IgnoreUnobservedExceptions();
-        }
-
-        public async Task PutLicenseLimitsAsync(LicenseLimits licenseLimits, string raftRequestId)
-        {
-            var command = new PutLicenseLimitsCommand(LicenseLimitsStorageKey, licenseLimits, raftRequestId);
-
-            var result = await SendToLeaderAsync(command);
-
-            await WaitForCommitIndexChange(RachisConsensus.CommitIndexModification.GreaterOrEqual, result.Index);
-        }
-
-        public async Task PutMyNodeInfoAsync(int maxLicenseCores)
-        {
-            var licenseLimits = LoadLicenseLimits();
-            if (licenseLimits == null)
-                return;
-
-            if (licenseLimits.NodeLicenseDetails.TryGetValue(NodeTag, out _) == false)
-                return;
-
-            var nodeInfo = GetNodeInfo();
             var nodeLicenseLimits = new NodeLicenseLimits
             {
-                NodeTag = NodeTag,
-                DetailsPerNode = DetailsPerNode.FromNodeInfo(nodeInfo),
-                LicensedCores = maxLicenseCores,
+                NodeTag = nodeTag,
+                DetailsPerNode = detailsPerNode,
+                LicensedCores = maxLicensedCores,
                 AllNodes = GetClusterTopology().AllNodes.Keys.ToList()
             };
+
             var command = new UpdateLicenseLimitsCommand(LicenseLimitsStorageKey, nodeLicenseLimits, RaftIdGenerator.NewId());
 
             var result = await SendToLeaderAsync(command);

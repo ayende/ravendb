@@ -171,6 +171,10 @@ namespace Raven.Server.Documents
                 {
                     // the database was disabled while we were trying to execute an action (e.g. PendingClusterTransactions)
                 }
+                catch (ObjectDisposedException)
+                {
+                    // the server is disposed when we are trying to access to database
+                }
                 catch (DatabaseConcurrentLoadTimeoutException e)
                 {
                     var title = $"Concurrent load timeout of '{databaseName}' database";
@@ -270,9 +274,9 @@ namespace Raven.Server.Documents
             return disabled || isRestoring;
         }
 
-        private void UnloadDatabaseInternal(string databaseName)
+        private void UnloadDatabaseInternal(string databaseName, string caller = null)
         {
-            DatabasesCache.RemoveLockAndReturn(databaseName, CompleteDatabaseUnloading, out _).Dispose();
+            DatabasesCache.RemoveLockAndReturn(databaseName, CompleteDatabaseUnloading, out _, caller).Dispose();
         }
 
         public bool ShouldDeleteDatabase(TransactionOperationContext context, string dbName, RawDatabaseRecord rawRecord)
@@ -895,15 +899,71 @@ namespace Raven.Server.Documents
         public bool UnloadDirectly(StringSegment databaseName, DateTime? wakeup = null, [CallerMemberName] string caller = null)
         {
             if (ShouldContinueDispose(databaseName.Value, wakeup, out var dueTime) == false)
+            {
+                LogUnloadFailureReason(databaseName, $"{nameof(dueTime)} is {dueTime} ms which is less than {TimeSpan.FromMinutes(5).TotalMilliseconds} ms.");
                 return false;
+            }
 
-            LastRecentlyUsed.TryRemove(databaseName, out _);
-            DatabasesCache.RemoveLockAndReturn(databaseName.Value, CompleteDatabaseUnloading, out _, caller).Dispose();
+            if (DatabasesCache.TryGetValue(databaseName, out var databaseTask) == false)
+            {
+                LogUnloadFailureReason(databaseName, "database was already unloaded or deleted.");
+                return false;
+            }
 
-            if (dueTime > 0)
-                _wakeupTimers.TryAdd(databaseName.Value, new Timer(_ => StartDatabaseOnTimer(databaseName.Value, wakeup), null, dueTime, Timeout.Infinite));
+            if (databaseTask.IsCompleted == false)
+            {
+                LogUnloadFailureReason(databaseName, "database is loading.");
+                return false;
+            }
 
-            return true;
+            if (databaseTask.IsCompletedSuccessfully == false)
+            {
+                LogUnloadFailureReason(databaseName, "database task is faulted or canceled.");
+                return false;
+            }
+
+            try
+            {
+                UnloadDatabaseInternal(databaseName.Value, caller);
+                LastRecentlyUsed.TryRemove(databaseName, out _);
+
+                if (dueTime > 0)
+                    _wakeupTimers.TryAdd(databaseName.Value, new Timer(_ => StartDatabaseOnTimer(databaseName.Value, wakeup), null, dueTime, Timeout.Infinite));
+
+                if (_logger.IsOperationsEnabled)
+                {
+                    var msg = dueTime > 0 ? $"wakeup timer set to: {wakeup}, which will happen in {dueTime} ms." : "without setting a wakeup timer.";
+                    _logger.Operations($"Unloading directly database '{databaseName}', {msg}");
+                }
+
+                return true;
+            }
+            catch (AggregateException ae) when (nameof(DeleteDatabase).Equals(ae.InnerException.Data["Source"]))
+            {
+                LogUnloadFailureReason(databaseName, "database is in the process of being deleted.");
+                return false;
+            }
+            catch (AggregateException ae) when (ae.InnerException is DatabaseDisabledException)
+            {
+                LogUnloadFailureReason(databaseName, "database is already disabled when we try to unload it.");
+                return false;
+            }
+            catch (DatabaseDisabledException)
+            {
+                LogUnloadFailureReason(databaseName, "database is already disabled when we try to unload it.");
+                return false;
+            }
+            catch (ObjectDisposedException)
+            {
+                LogUnloadFailureReason(databaseName, "the server is disposed when we are trying to access to database.");
+                return false;
+            }
+        }
+
+        private void LogUnloadFailureReason(StringSegment databaseName, string reason)
+        {
+            if (_logger.IsOperationsEnabled)
+                _logger.Operations($"Could not unload database '{databaseName}', reason: {reason}");
         }
 
         public void RescheduleDatabaseWakeup(string name, long milliseconds, DateTime? wakeup = null)

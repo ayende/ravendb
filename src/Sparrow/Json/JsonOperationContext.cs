@@ -59,6 +59,10 @@ namespace Sparrow.Json
         private int _numberOfAllocatedStringsValues;
         private readonly FastList<LazyStringValue> _allocateStringValues = new FastList<LazyStringValue>(256);
 
+        private int _highestNumberOfReusedAllocatedStringsValuesInCurrentInterval;
+        private DateTime _lastAllocatedStringValueTime = DateTime.UtcNow;
+        private static readonly TimeSpan _allocatedStringValuesCheckInterval = TimeSpan.FromMinutes(1);
+
         /// <summary>
         /// This flag means that this should be disposed, usually because we exceeded the maximum
         /// amount of memory budget we have and need to return it to the system
@@ -102,6 +106,8 @@ namespace Sparrow.Json
             if (_numberOfAllocatedStringsValues < _allocateStringValues.Count)
             {
                 var lazyStringValue = _allocateStringValues[_numberOfAllocatedStringsValues++];
+                _highestNumberOfReusedAllocatedStringsValuesInCurrentInterval = Math.Max(_highestNumberOfReusedAllocatedStringsValuesInCurrentInterval, _numberOfAllocatedStringsValues);
+
                 lazyStringValue.Renew(str, ptr, size);
                 return lazyStringValue;
             }
@@ -111,7 +117,10 @@ namespace Sparrow.Json
             {
                 _allocateStringValues.Add(allocateStringValue);
                 _numberOfAllocatedStringsValues++;
+
+                _lastAllocatedStringValueTime = DateTime.UtcNow;
             }
+
             return allocateStringValue;
         }
 
@@ -138,12 +147,11 @@ namespace Sparrow.Json
                 var bufferBefore = BufferInstance;
                 BufferInstance = null;
                 Buffer = new ArraySegment<byte>();
-                if (_handle.IsAllocated)
-                    _handle.Free();
+               
+                UnpinMemory();
 
                 Length = 0;
                 Valid = Used = 0;
-                Pointer = null;
 
                 if (bufferBefore != null)
                 {
@@ -158,8 +166,7 @@ namespace Sparrow.Json
 
             ~ManagedPinnedBuffer()
             {
-                if (_handle.IsAllocated)
-                    _handle.Free();
+                UnpinMemory();
             }
 
             public (IDisposable ReleaseBuffer, ManagedPinnedBuffer Buffer) Clone<T>(JsonContextPoolBase<T> pool)
@@ -209,20 +216,35 @@ namespace Sparrow.Json
                 GC.SuppressFinalize(this); // we only want finalization if we have values
             }
 
-            private void Init(BufferSegment buffer, byte* pointer, GCHandle handle)
+            private void Init(BufferSegment buffer)
             {
                 BufferInstance = buffer;
                 Buffer = new ArraySegment<byte>(buffer.Array, buffer.Offset, buffer.Count);
                 Length = buffer.Count;
-                Pointer = pointer;
-                _handle = handle;
                 GC.ReRegisterForFinalize(this);
             }
 
-            private static ObjectPool<ManagedPinnedBuffer> _pinnedBufferPool = new ObjectPool<ManagedPinnedBuffer>(() => new ManagedPinnedBuffer());
-            private static ObjectPool<BufferSegment> _smallBufferSegments = new ObjectPool<BufferSegment>(CreateSmallBuffers);
+            public void PinMemory()
+            {
+                Debug.Assert(_handle.IsAllocated == false, "_handle.IsAllocated == false");
 
-            private static ObjectPool<BufferSegment> _largeBufferSegments = new ObjectPool<BufferSegment>(() => new BufferSegment
+                _handle = GCHandle.Alloc(BufferInstance.Array, GCHandleType.Pinned);
+                Pointer = (byte*)_handle.AddrOfPinnedObject() + BufferInstance.Offset;
+            }
+
+            public void UnpinMemory()
+            {
+                if (_handle.IsAllocated)
+                {
+                    _handle.Free();
+                    Pointer = null;
+                }
+            }
+
+            private static readonly ObjectPool<ManagedPinnedBuffer> _pinnedBufferPool = new ObjectPool<ManagedPinnedBuffer>(() => new ManagedPinnedBuffer());
+            private static readonly ObjectPool<BufferSegment> _smallBufferSegments = new ObjectPool<BufferSegment>(CreateSmallBuffers);
+
+            private static readonly ObjectPool<BufferSegment> _largeBufferSegments = new ObjectPool<BufferSegment>(() => new BufferSegment
             {
                 Array = new byte[LargeBufferSize],
                 Count = LargeBufferSize,
@@ -267,17 +289,18 @@ namespace Sparrow.Json
             private static ManagedPinnedBuffer AllocateInstance(ObjectPool<BufferSegment> pool)
             {
                 var buffer = pool.Allocate();
-                var handle = GCHandle.Alloc(buffer.Array, GCHandleType.Pinned);
+               
                 try
                 {
-                    var ptr = (byte*)handle.AddrOfPinnedObject();
                     var mpb = _pinnedBufferPool.Allocate();
-                    mpb.Init(buffer, ptr + buffer.Offset, handle);
+
+                    mpb.Init(buffer);
+                    mpb.PinMemory();
+
                     return mpb;
                 }
                 catch (Exception)
                 {
-                    handle.Free();
                     pool.Free(buffer);
                     throw;
                 }
@@ -305,7 +328,7 @@ namespace Sparrow.Json
 
         public static JsonOperationContext ShortTermSingleUse()
         {
-            return new JsonOperationContext(4096, 1024, 32 * 1024, SharedMultipleUseFlag.None);
+            return new JsonOperationContext(4096, 1024, 8 * 1024, SharedMultipleUseFlag.None);
         }
 
         public JsonOperationContext(int initialSize, int longLivedSize, int maxNumberOfAllocatedStringValues, SharedMultipleUseFlag lowMemoryFlag)
@@ -388,9 +411,13 @@ namespace Sparrow.Json
             if (_managedBuffers.Count == 0)
                 buffer = ManagedPinnedBuffer.ShortLivedInstance();
             else
+            {
                 buffer = _managedBuffers.Pop();
+                buffer.PinMemory();
+            }
 
             buffer.Valid = buffer.Used = 0;
+
             return new ReturnBuffer(buffer, this);
         }
 
@@ -415,6 +442,7 @@ namespace Sparrow.Json
                 if (_parent.Disposed)
                     ThrowParentWasDisposed();
 
+                _buffer.UnpinMemory();
                 _parent._managedBuffers.Push(_buffer);
                 _buffer = null;
             }
@@ -981,7 +1009,7 @@ namespace Sparrow.Json
             }
         }
 
-        protected internal virtual unsafe void Reset(bool forceReleaseLongLivedAllocator = false)
+        protected internal virtual unsafe void Reset(bool forceReleaseLongLivedAllocator = false, bool releaseAllocatedStringValues = false)
         {
             if (_tempBuffer != null && _tempBuffer.Address != null)
             {
@@ -1020,6 +1048,20 @@ namespace Sparrow.Json
                 _allocateStringValues[i].Reset();
 
             _numberOfAllocatedStringsValues = 0;
+
+            if (releaseAllocatedStringValues && _allocateStringValues.Count > 0)
+            {
+                var now = DateTime.UtcNow;
+                if (now - _lastAllocatedStringValueTime >= _allocatedStringValuesCheckInterval)
+                {
+                    _lastAllocatedStringValueTime = now;
+                    var halfOfAllocatedStringValues = _allocateStringValues.Count / 2;
+                    if (_highestNumberOfReusedAllocatedStringsValuesInCurrentInterval <= halfOfAllocatedStringValues)
+                        _allocateStringValues.Trim(halfOfAllocatedStringValues);
+
+                    _highestNumberOfReusedAllocatedStringsValuesInCurrentInterval = 0;
+                }
+            }
 
             _objectJsonParser.Reset(null);
             _arenaAllocator.ResetArena();

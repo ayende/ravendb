@@ -108,7 +108,9 @@ class editDocument extends viewModelBase {
     isNewLineFriendlyMode = ko.observable<boolean>(false);
     autoCollapseMode = ko.observable<boolean>(false);
     isSaving = ko.observable<boolean>(false);
+    
     displayDocumentChange = ko.observable<boolean>(false);
+    displayDocumentDeleted = ko.observable<boolean>(false);
     
     private metaPropsToRestoreOnSave: any[] = [];
 
@@ -493,12 +495,16 @@ class editDocument extends viewModelBase {
         return this.changesContext.databaseChangesApi().watchDocument(docId, (n: Raven.Client.Documents.Changes.DocumentChange) => this.onDocumentChange(n));
     }
 
-    onDocumentChange(n: Raven.Client.Documents.Changes.DocumentChange): void {
-        if (this.isSaving() || n.ChangeVector === this.metadata().changeVector() || this.inReadOnlyMode()) {
+    onDocumentChange(change: Raven.Client.Documents.Changes.DocumentChange): void {
+        if (this.isSaving() || change.ChangeVector === this.metadata().changeVector() || this.inReadOnlyMode()) {
             return;
         }
-
-        this.displayDocumentChange(true);
+        
+        if (change.Type === 'Delete') {
+            this.displayDocumentDeleted(true);
+        } else {
+            this.displayDocumentChange(true);
+        }
     }
 
     updateNewlineLayoutInDocument(unescapeNewline: boolean) {
@@ -899,7 +905,7 @@ class editDocument extends viewModelBase {
         const revisionChangeVector = item.__metadata.changeVector();
         return new getDocumentAtRevisionCommand(revisionChangeVector, this.activeDatabase())
             .execute()
-            .done((doc: document) => {
+            .done((rightDoc: document) => {
                 const wasDirty = this.dirtyFlag().isDirty();
                 
                 this.documentTextStash(this.documentText());
@@ -908,10 +914,9 @@ class editDocument extends viewModelBase {
                 const leftDocDto = leftDoc.toDiffDto();
                 this.documentText(this.stringify(leftDocDto));
                 
-                if (doc) {
-                    const docDto = doc.toDiffDto();
-                    const docText = this.stringify(docDto);
-                    this.documentTextRight(docText);
+                if (rightDoc) {
+                    const rightDocDto = rightDoc.toDiffDto();
+                    this.documentTextRight(this.stringify(rightDocDto));
                 }
                 
                 if (!wasDirty) {
@@ -996,6 +1001,12 @@ class editDocument extends viewModelBase {
             });
     }
 
+    navigateAfterExternalDelete() {
+        this.dirtyFlag().reset();
+        this.connectedDocuments.onDocumentDeleted();
+        this.displayDocumentDeleted(false);
+    }
+
     deleteDocument() {
         eventsCollector.default.reportEvent("document", "delete");
         const doc = this.document();
@@ -1064,9 +1075,9 @@ class editDocument extends viewModelBase {
     private renderDifferences() {
         if (!this.inDiffMode()) {
             this.inDiffMode(true);
-            this.currentDiff(new aceDiff(this.docEditor, this.docEditorRight));    
+            this.currentDiff(new aceDiff(this.docEditor, this.docEditorRight, this.leftRevisionIsNewer()));
         } else {
-            this.currentDiff().refresh();
+            this.currentDiff().refresh(this.leftRevisionIsNewer());
         }
     }
 

@@ -1035,6 +1035,16 @@ namespace Raven.Server.ServerWide
                     tasks.Add(() => OnDatabaseChanges(record.DatabaseName, index, nameof(RemoveNodeFromCluster), DatabasesLandlord.ClusterDatabaseChangeType.RecordChanged));
                 }
 
+                // delete the node license limits
+                var licenseLimitsBlittable = Read(context, ServerStore.LicenseLimitsStorageKey, out _);
+                if (licenseLimitsBlittable != null)
+                {
+                    var licenseLimits = JsonDeserializationServer.LicenseLimits(licenseLimitsBlittable);
+                    licenseLimits.NodeLicenseDetails.Remove(removed);
+                    var value = context.ReadObject(licenseLimits.ToJson(), "overwrite-license-limits");
+                    PutValueDirectly(context, ServerStore.LicenseLimitsStorageKey, value, index);
+                }
+
                 ExecuteManyOnDispose(context, index, nameof(RemoveNodeFromCluster), tasks);
             }
             catch (Exception e)
@@ -2787,14 +2797,14 @@ namespace Raven.Server.ServerWide
         public BlittableJsonReaderObject Read<T>(TransactionOperationContext<T> context, string name, out long etag)
             where T : RavenTransaction
         {
-            var dbKey = name.ToLowerInvariant();
-            using (Slice.From(context.Allocator, dbKey, out Slice key))
+            var lowerName = name.ToLowerInvariant();
+            using (Slice.From(context.Allocator, lowerName, out Slice key))
             {
                 return ReadInternal(context, out etag, key);
             }
         }
 
-        private static unsafe BlittableJsonReaderObject ReadInternal<T>(TransactionOperationContext<T> context, out long etag, Slice key)
+        public static unsafe BlittableJsonReaderObject ReadInternal<T>(TransactionOperationContext<T> context, out long etag, Slice key)
             where T : RavenTransaction
         {
             var items = context.Transaction.InnerTransaction.OpenTable(ItemsSchema, Items);
@@ -3034,7 +3044,7 @@ namespace Raven.Server.ServerWide
             }
 
             var items = context.Transaction.InnerTransaction.OpenTable(ItemsSchema, Items);
-            ApplyDatabaseRecordUpdates(toUpdate, type, index, items, context);
+            ApplyDatabaseRecordUpdates(toUpdate, type, index, index, items, context);
         }
 
         private void UpdateDatabasesWithNewServerWideBackupConfiguration(TransactionOperationContext context, string type, ServerWideBackupConfiguration serverWideBackupConfiguration, long index)
@@ -3051,13 +3061,13 @@ namespace Raven.Server.ServerWide
 
             const string dbKey = "db/";
             var toUpdate = new List<(string Key, BlittableJsonReaderObject DatabaseRecord, string DatabaseName)>();
+            long? oldTaskId = null;
 
             using (Slice.From(context.Allocator, dbKey, out var loweredPrefix))
             {
                 foreach (var result in items.SeekByPrimaryKeyPrefix(loweredPrefix, Slices.Empty, 0))
                 {
                     var (key, oldDatabaseRecord) = GetCurrentItem(context, result.Value);
-                    long? oldTaskId = null;
 
                     oldDatabaseRecord.TryGet(nameof(DatabaseRecord.Encrypted), out bool encrypted);
 
@@ -3098,7 +3108,7 @@ namespace Raven.Server.ServerWide
                 }
             }
 
-            ApplyDatabaseRecordUpdates(toUpdate, type, index, items, context);
+            ApplyDatabaseRecordUpdates(toUpdate, type, oldTaskId ?? index, index, items, context);
         }
 
         private void DeleteServerWideBackupConfigurationFromAllDatabases(TransactionOperationContext context, string type, BlittableJsonReaderObject cmd, long index)
@@ -3154,7 +3164,7 @@ namespace Raven.Server.ServerWide
                 }
             }
 
-            ApplyDatabaseRecordUpdates(toUpdate, type, index, items, context);
+            ApplyDatabaseRecordUpdates(toUpdate, type, index, index, items, context);
         }
 
         private bool IsServerWideBackupWithTaskName(BlittableJsonReaderObject backup, string backupNameToFind)
@@ -3164,9 +3174,9 @@ namespace Raven.Server.ServerWide
                    backupNameToFind.Equals(backupName, StringComparison.OrdinalIgnoreCase);
         }
 
-        private void ApplyDatabaseRecordUpdates(List<(string Key, BlittableJsonReaderObject DatabaseRecord, string DatabaseName)> toUpdate, string type, long index, Table items, TransactionOperationContext context)
+        private void ApplyDatabaseRecordUpdates(List<(string Key, BlittableJsonReaderObject DatabaseRecord, string DatabaseName)> toUpdate, string type, long indexForValueChanges, long index, Table items, TransactionOperationContext context)
         {
-            var tasks = new List<Func<Task>> { () => OnValueChanges(index, type) };
+            var tasks = new List<Func<Task>> { () => OnValueChanges(indexForValueChanges, type) };
 
             foreach (var update in toUpdate)
             {
@@ -3229,7 +3239,7 @@ namespace Raven.Server.ServerWide
 
             // reload license can send a notification which will open a write tx
             serverStore.LicenseManager.ReloadLicense();
-            await serverStore.LicenseManager.CalculateLicenseLimits();
+            await serverStore.LicenseManager.PutMyNodeInfoAsync();
 
             _rachisLogIndexNotifications.NotifyListenersAbout(lastIncludedIndex, null);
         }

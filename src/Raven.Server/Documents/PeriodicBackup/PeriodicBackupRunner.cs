@@ -95,33 +95,77 @@ namespace Raven.Server.Documents.PeriodicBackup
             PeriodicBackupStatus backupStatus,
             string responsibleNodeTag)
         {
-            var taskStatus = GetTaskStatus(databaseRecord.Topology, configuration, skipErrorLog: true);
+            var taskStatus = GetTaskStatus(databaseRecord.Topology, configuration, disableLog: true);
             return taskStatus == TaskStatus.Disabled ? null : GetNextBackupDetails(configuration, backupStatus, responsibleNodeTag, skipErrorLog: true);
         }
 
-        private DateTime? GetNextWakeupTimeLocal(long lastEtag, PeriodicBackupConfiguration configuration, PeriodicBackupStatus backupStatus)
+        private DateTime? GetNextWakeupTimeLocal(string databaseName, long lastEtag, PeriodicBackupConfiguration configuration, TransactionOperationContext context)
         {
             // we will always wake up the database for a full backup.
             // but for incremental we will wake the database only if there were changes made.
 
-            var now = SystemTime.UtcNow;
+            if (configuration.Disabled || configuration.IncrementalBackupFrequency == null && configuration.FullBackupFrequency == null)
+                return null;
 
+            var backupStatus = GetBackupStatusFromCluster(_serverStore, context, databaseName, configuration.TaskId);
             if (backupStatus == null)
             {
-                return GetNextBackupOccurrenceLocal(configuration.FullBackupFrequency, now, configuration, skipErrorLog: false);
+                // we want to wait for the backup occurrence
+                if (_logger.IsOperationsEnabled)
+                    _logger.Operations($"Backup Task '{configuration.TaskId}' of database '{databaseName}' is never backed up yet.");
+
+                return DateTime.UtcNow;
+            }
+
+            var nextBackup = GetNextBackupDetails(configuration, backupStatus, _serverStore.NodeTag);
+            if (nextBackup == null)
+            {
+                if (_logger.IsOperationsEnabled)
+                    _logger.Operations($"Backup Task '{configuration.TaskId}' of database '{databaseName}' doesn't have next backup. Should not happen and likely a bug.");
+
+                return null;
+            }
+
+            var nowUtc = SystemTime.UtcNow;
+            if (nextBackup.DateTime < nowUtc)
+            {
+                // this backup is delayed
+                if (_logger.IsOperationsEnabled)
+                    _logger.Operations($"Backup Task '{configuration.TaskId}' of database '{databaseName}' is delayed.");
+                return DateTime.UtcNow;
             }
 
             if (backupStatus.LastEtag != lastEtag)
             {
-                var lastIncrementalBackupUtc = backupStatus.LastIncrementalBackupInternal ?? backupStatus.LastFullBackupInternal ?? now;
-                var nextLastIncrementalBackupLocal = GetNextBackupOccurrenceLocal(configuration.IncrementalBackupFrequency, lastIncrementalBackupUtc, configuration, skipErrorLog: false);
-
-                if (nextLastIncrementalBackupLocal != null)
-                    return nextLastIncrementalBackupLocal;
+                // we have changes since last backup
+                var type = nextBackup.IsFull ? "full" : "incremental";
+                if (_logger.IsOperationsEnabled)
+                    _logger.Operations($"Backup Task '{configuration.TaskId}' of database '{databaseName}' have changes since last backup. Wakeup timer will be set to the next {type} backup at '{nextBackup.DateTime}'.");
+                return nextBackup.DateTime;
             }
 
-            var lastFullBackup = backupStatus.LastFullBackupInternal ?? now;
-            return GetNextBackupOccurrenceLocal(configuration.FullBackupFrequency, lastFullBackup, configuration, skipErrorLog: false);
+            if (nextBackup.IsFull)
+            {
+                if (_logger.IsOperationsEnabled)
+                    _logger.Operations($"Backup Task '{configuration.TaskId}' of database '{databaseName}' doesn't have changes since last backup. Wakeup timer will be set to the next full backup at '{nextBackup.DateTime}'.");
+                return nextBackup.DateTime;
+            }
+
+            // we don't have changes since the last backup and the next backup is incremental
+            var lastFullBackup = backupStatus.LastFullBackupInternal ?? nowUtc;
+            var nextFullBackup = GetNextBackupOccurrenceLocal(configuration.FullBackupFrequency, lastFullBackup, configuration, skipErrorLog: false);
+            if (nextFullBackup < nowUtc)
+            {
+                if (_logger.IsOperationsEnabled)
+                    _logger.Operations($"Backup Task '{configuration.TaskId}' of database '{databaseName}' doesn't have changes since last backup but has delayed backup.");
+                // this backup is delayed
+                return DateTime.UtcNow;
+            }
+
+            if (_logger.IsOperationsEnabled)
+                _logger.Operations($"Backup Task '{configuration.TaskId}' of database '{databaseName}' doesn't have changes since last backup. Wakeup timer set to next full backup at {nextFullBackup}, and will skip the incremental backups.");
+
+            return nextFullBackup;
         }
 
         private NextBackup GetNextBackupDetails(
@@ -263,8 +307,8 @@ namespace Raven.Server.Documents.PeriodicBackup
 
                     message += $", error: {e.Message}";
 
-                    if (_logger.IsInfoEnabled)
-                        _logger.Info(message);
+                    if (_logger.IsOperationsEnabled)
+                        _logger.Operations(message);
 
                     _database.NotificationCenter.Add(AlertRaised.Create(
                         _database.Name,
@@ -288,7 +332,7 @@ namespace Raven.Server.Documents.PeriodicBackup
 
                 var backupDetails = (NextBackup)backupTaskDetails;
 
-                if (ShouldRunBackupAfterTimerCallback(backupDetails, out PeriodicBackup periodicBackup) == false)
+                if (ShouldRunBackupAfterTimerCallbackAndRescheduleIfNeeded(backupDetails, out PeriodicBackup periodicBackup) == false)
                     return;
 
                 StartBackupTaskAndRescheduleIfNeeded(periodicBackup, backupDetails);
@@ -308,7 +352,7 @@ namespace Raven.Server.Documents.PeriodicBackup
 
                 var backupDetails = (NextBackup)backupTaskDetails;
 
-                if (ShouldRunBackupAfterTimerCallback(backupDetails, out PeriodicBackup periodicBackup) == false)
+                if (ShouldRunBackupAfterTimerCallbackAndRescheduleIfNeeded(backupDetails, out PeriodicBackup periodicBackup) == false)
                     return;
 
                 var remainingInterval = backupDetails.TimeSpan - MaxTimerTimeout;
@@ -334,8 +378,8 @@ namespace Raven.Server.Documents.PeriodicBackup
             }
             catch (BackupDelayException e)
             {
-                if (_logger.IsInfoEnabled)
-                    _logger.Info($"Backup task will be retried in {(int)e.DelayPeriod.TotalSeconds} seconds.", e);
+                if (_logger.IsOperationsEnabled)
+                    _logger.Operations($"Backup task will be retried in {(int)e.DelayPeriod.TotalSeconds} seconds, Reason: {e.Message}");
 
                 // we'll retry in one minute
                 var backupTaskDetails = new NextBackup
@@ -383,8 +427,11 @@ namespace Raven.Server.Documents.PeriodicBackup
             return CreateBackupTask(periodicBackup, isFullBackup, SystemTime.UtcNow);
         }
 
-        public DateTime? GetWakeDatabaseTimeUtc()
+        public DateTime? GetWakeDatabaseTimeUtc(string databaseName)
         {
+            if (_periodicBackups.Count == 0)
+                return null;
+
             long lastEtag;
 
             using (_database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
@@ -394,21 +441,25 @@ namespace Raven.Server.Documents.PeriodicBackup
             }
 
             DateTime? wakeupDatabase = null;
-            foreach (var backup in _periodicBackups)
+            using (_serverStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
+            using (context.OpenReadTransaction())
             {
-                var nextBackup = GetNextWakeupTimeLocal(lastEtag, backup.Value.Configuration, backup.Value.BackupStatus);
-                if (nextBackup == null)
-                    continue;
+                foreach (var backup in _periodicBackups)
+                {
+                    var nextBackup = GetNextWakeupTimeLocal(databaseName, lastEtag, backup.Value.Configuration, context);
+                    if (nextBackup == null)
+                        continue;
 
-                if (wakeupDatabase == null)
-                {
-                    // first time
-                    wakeupDatabase = nextBackup;
-                }
-                else if (nextBackup < wakeupDatabase)
-                {
-                    // next backup is earlier than the current one
-                    wakeupDatabase = nextBackup.Value;
+                    if (wakeupDatabase == null)
+                    {
+                        // first time
+                        wakeupDatabase = nextBackup;
+                    }
+                    else if (nextBackup < wakeupDatabase)
+                    {
+                        // next backup is earlier than the current one
+                        wakeupDatabase = nextBackup.Value;
+                    }
                 }
             }
 
@@ -455,7 +506,7 @@ namespace Raven.Server.Documents.PeriodicBackup
                     };
                 }
 
-                _serverStore.ConcurrentBackupsCounter.StartBackup(periodicBackup.Configuration.Name);
+                _serverStore.ConcurrentBackupsCounter.StartBackup(periodicBackup.Configuration.Name, _logger);
 
                 try
                 {
@@ -522,11 +573,12 @@ namespace Raven.Server.Documents.PeriodicBackup
                         periodicBackup.BackupStatus.LastIncrementalBackupInternal = startTimeInUtc;
 
                     BackupTask.SaveBackupStatus(periodicBackup.BackupStatus, _database, _logger);
-                    ScheduleNextBackup(periodicBackup);
 
                     var message = $"Failed to start the backup task: '{periodicBackup.Configuration.Name}'";
                     if (_logger.IsOperationsEnabled)
                         _logger.Operations(message, e);
+
+                    ScheduleNextBackup(periodicBackup, null);
 
                     _database.NotificationCenter.Add(AlertRaised.Create(
                         _database.Name,
@@ -550,6 +602,8 @@ namespace Raven.Server.Documents.PeriodicBackup
 
         private void RunBackupThread(PeriodicBackup periodicBackup, BackupTask backupTask, Action<IOperationProgress> onProgress, TaskCompletionSource<IOperationResult> tcs)
         {
+            BackupResult backupResult = null;
+
             try
             {
                 Thread.CurrentThread.Priority = ThreadPriority.BelowNormal;
@@ -557,7 +611,8 @@ namespace Raven.Server.Documents.PeriodicBackup
 
                 using (_database.PreventFromUnloading())
                 {
-                    tcs.SetResult(backupTask.RunPeriodicBackup(onProgress));
+                    backupResult = (BackupResult)backupTask.RunPeriodicBackup(onProgress);
+                    tcs.SetResult(backupResult);
                 }
             }
             catch (OperationCanceledException)
@@ -573,15 +628,15 @@ namespace Raven.Server.Documents.PeriodicBackup
             }
             finally
             {
-                ScheduleNextBackup(periodicBackup);
+                ScheduleNextBackup(periodicBackup, backupResult?.Elapsed);
             }
         }
 
-        private void ScheduleNextBackup(PeriodicBackup periodicBackup)
+        private void ScheduleNextBackup(PeriodicBackup periodicBackup, TimeSpan? elapsed)
         {
             try
             {
-                _serverStore.ConcurrentBackupsCounter.FinishBackup();
+                _serverStore.ConcurrentBackupsCounter.FinishBackup(periodicBackup.Configuration.Name, periodicBackup.RunningBackupStatus, elapsed, _logger);
 
                 periodicBackup.RunningTask = null;
                 periodicBackup.RunningBackupTaskId = null;
@@ -620,10 +675,13 @@ namespace Raven.Server.Documents.PeriodicBackup
             return isFullBackup ? "Snapshot" : "Incremental Snapshot";
         }
 
-        private bool ShouldRunBackupAfterTimerCallback(NextBackup backupInfo, out PeriodicBackup periodicBackup)
+        private bool ShouldRunBackupAfterTimerCallbackAndRescheduleIfNeeded(NextBackup backupInfo, out PeriodicBackup periodicBackup)
         {
             if (_periodicBackups.TryGetValue(backupInfo.TaskId, out periodicBackup) == false)
             {
+                if (_logger.IsOperationsEnabled)
+                    _logger.Operations($"Backup {backupInfo.TaskId}, doesn't exist anymore");
+
                 // periodic backup doesn't exist anymore
                 return false;
             }
@@ -640,6 +698,31 @@ namespace Raven.Server.Documents.PeriodicBackup
             }
 
             var taskStatus = GetTaskStatus(topology, periodicBackup.Configuration);
+            if (_forTestingPurposes != null && _forTestingPurposes.SimulateClusterDownStatus)
+            {
+                taskStatus = TaskStatus.ClusterDown;
+                _forTestingPurposes.ClusterDownStatusSimulated = true;
+            }
+
+            string msg;
+            switch (taskStatus)
+            {
+                case TaskStatus.ActiveByCurrentNode:
+                    msg = $"Backup {backupInfo.TaskId}, current status is {taskStatus}, the backup will be executed on current node.";
+                    break;
+                case TaskStatus.ClusterDown:
+                    msg = $"Backup {backupInfo.TaskId}, current status is {taskStatus}, the backup will be rescheduled on current node.";
+                    var status = GetBackupStatus(backupInfo.TaskId, periodicBackup.BackupStatus);
+                    periodicBackup.UpdateTimer(GetTimer(periodicBackup.Configuration, status));
+                    break;
+                default:
+                    msg = $"Backup {backupInfo.TaskId}, current status is {taskStatus}, the backup will be canceled on current node.";
+                    break;
+            }
+
+            if (_logger.IsOperationsEnabled)
+                _logger.Operations(msg);
+
             return taskStatus == TaskStatus.ActiveByCurrentNode;
         }
 
@@ -824,17 +907,14 @@ namespace Raven.Server.Documents.PeriodicBackup
             ClusterDown
         }
 
-        private TaskStatus GetTaskStatus(
-            DatabaseTopology topology,
-            PeriodicBackupConfiguration configuration,
-            bool skipErrorLog = false)
+        private TaskStatus GetTaskStatus(DatabaseTopology topology, PeriodicBackupConfiguration configuration, bool disableLog = false)
         {
             if (configuration.Disabled)
                 return TaskStatus.Disabled;
 
             if (configuration.HasBackup() == false)
             {
-                if (skipErrorLog == false)
+                if (disableLog == false)
                 {
                     var message = $"All backup destinations are disabled for backup task id: {configuration.TaskId}";
                     _database.NotificationCenter.Add(AlertRaised.Create(
@@ -856,7 +936,7 @@ namespace Raven.Server.Documents.PeriodicBackup
             if (whoseTaskIsIt == _serverStore.NodeTag)
                 return TaskStatus.ActiveByCurrentNode;
 
-            if (_logger.IsInfoEnabled)
+            if (disableLog == false && _logger.IsInfoEnabled)
                 _logger.Info($"Backup job is skipped at {SystemTime.UtcNow}, because it is managed " +
                              $"by '{whoseTaskIsIt}' node and not the current node ({_serverStore.NodeTag})");
 
@@ -879,8 +959,8 @@ namespace Raven.Server.Documents.PeriodicBackup
             }
             catch (Exception e)
             {
-                if (_logger.IsInfoEnabled)
-                    _logger.Info("Error when disposing periodic backup runner task", e);
+                if (_logger.IsOperationsEnabled)
+                    _logger.Operations("Error when disposing periodic backup runner task", e);
             }
         }
 
@@ -992,6 +1072,22 @@ namespace Raven.Server.Documents.PeriodicBackup
             {
                 [Constants.Documents.Collections.AllDocumentsCollection] = minLastEtag
             };
+        }
+
+        internal TestingStuff _forTestingPurposes;
+
+        internal TestingStuff ForTestingPurposesOnly()
+        {
+            if (_forTestingPurposes != null)
+                return _forTestingPurposes;
+
+            return _forTestingPurposes = new TestingStuff();
+        }
+
+        internal class TestingStuff
+        {
+            internal bool SimulateClusterDownStatus;
+            internal bool ClusterDownStatusSimulated;
         }
     }
 }

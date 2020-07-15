@@ -18,7 +18,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene.Documents
             _isMultiMap = isMultiMap;
         }
 
-        protected override int GetFields<T>(T instance, LazyStringValue key, object document, JsonOperationContext indexContext)
+        protected override int GetFields<T>(T instance, LazyStringValue key, object document, JsonOperationContext indexContext, IWriteOperationBuffer writeBuffer)
         {
             int newFields = 0;
             if (key != null)
@@ -54,7 +54,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene.Documents
                     throw new InvalidOperationException($"Field '{property.Key}' is not defined. Available fields: {string.Join(", ", _fields.Keys)}.", e);
                 }
 
-                var numberOfCreatedFields = GetRegularFields(instance, field, value, indexContext);
+                var numberOfCreatedFields = GetRegularFields(instance, field, value, indexContext, out var shouldSkip);
 
                 newFields += numberOfCreatedFields;
 
@@ -69,7 +69,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene.Documents
                     }
                 }
 
-                if (reduceResult != null && numberOfCreatedFields > 0)
+                if (reduceResult != null && shouldSkip == false)
                 {
                     reduceResult[property.Key] = TypeConverter.ToBlittableSupportedType(value, flattenArrays: true);
                 }
@@ -77,7 +77,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene.Documents
 
             if (_reduceOutput)
             {
-                instance.Add(GetReduceResultValueField(Scope.CreateJson(reduceResult, indexContext)));
+                instance.Add(GetReduceResultValueField(Scope.CreateJson(reduceResult, indexContext), writeBuffer));
                 newFields++;
             }
 

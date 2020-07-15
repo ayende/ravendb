@@ -139,15 +139,13 @@ namespace Raven.Server.Documents.PeriodicBackup
                 if (_isFullBackup == false)
                 {
                     // if we come from old version the _previousBackupStatus won't have LastRaftIndex
-                    if (_previousBackupStatus.LastRaftIndex == null)
-                        _previousBackupStatus.LastRaftIndex = new LastRaftIndex();
+                    _previousBackupStatus.LastRaftIndex ??= new LastRaftIndex();
 
                     // no-op if nothing has changed
                     var (currentLastEtag, currentChangeVector) = _database.ReadLastEtagAndChangeVector();
 
                     // if we come from old version the _previousBackupStatus won't have LastRaftIndex
-                    if (_previousBackupStatus.LastRaftIndex == null)
-                        _previousBackupStatus.LastRaftIndex = new LastRaftIndex();
+                    _previousBackupStatus.LastRaftIndex ??= new LastRaftIndex();
 
                     if (currentLastEtag == _previousBackupStatus.LastEtag
                         && currentChangeVector == _previousBackupStatus.LastDatabaseChangeVector
@@ -160,6 +158,7 @@ namespace Raven.Server.Documents.PeriodicBackup
 
                         UpdateOperationId(runningBackupStatus);
                         runningBackupStatus.LastIncrementalBackup = _periodicBackup.StartTimeInUtc;
+                        runningBackupStatus.LocalBackup.IncrementalBackupDurationInMs = 0;
                         DatabaseSmuggler.EnsureProcessed(_backupResult);
                         AddInfo(message);
 
@@ -275,7 +274,6 @@ namespace Raven.Server.Documents.PeriodicBackup
                     runningBackupStatus.Version = ++_previousBackupStatus.Version;
 
                     _periodicBackup.BackupStatus = runningBackupStatus;
-
 
                     // save the backup status
                     AddInfo("Saving backup status");
@@ -569,9 +567,7 @@ namespace Raven.Server.Documents.PeriodicBackup
                     if (_configuration.BackupType == BackupType.Backup ||
                         _configuration.BackupType == BackupType.Snapshot && _isFullBackup == false)
                     {
-                        var backupType = _configuration.BackupType == BackupType.Snapshot ? "snapshot " : string.Empty;
-                        var backupSizeType = _isFullBackup ? "a full" : "an incremental";
-                        AddInfo($"Started {backupSizeType} {backupType}backup");
+                        AddInfo($"Started {GetBackupDescription(_configuration.BackupType, _isFullBackup)}");
 
                         // smuggler backup
                         var options = new DatabaseSmugglerOptionsServerSide
@@ -658,6 +654,13 @@ namespace Raven.Server.Documents.PeriodicBackup
             }
 
             return internalBackupResult;
+        }
+
+        public static string GetBackupDescription(BackupType backupType, bool isFull)
+        {
+            var isFullText = isFull ? "a full" : "an incremental";
+            var backupTypeText = backupType == BackupType.Snapshot ? "snapshot backup" : "backup";
+            return $"{isFullText} {backupTypeText}";
         }
 
         private void DeleteFile(string path)

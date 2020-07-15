@@ -14,10 +14,12 @@ namespace Sparrow.Json
     {
         private readonly object _locker = new object();
 
-        private long _generation;
         private bool _disposed;
 
         protected SharedMultipleUseFlag LowMemoryFlag = new SharedMultipleUseFlag();
+        private readonly MultipleUseFlag _isExtremelyLowMemory = new MultipleUseFlag();
+        private long _generation;
+
         private readonly CancellationTokenSource _cts = new CancellationTokenSource();
         private readonly long _maxContextSizeToKeepInBytes;
         private readonly long _maxNumberOfContextsToKeepInGlobalStack;
@@ -34,7 +36,7 @@ namespace Sparrow.Json
             {
                 _perCoreContexts[i] = new T[64];
             }
-            _cleanupTimer = new Timer(CleanupTimer, null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
+            _cleanupTimer = new Timer(Cleanup, null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
             LowMemoryNotification.Instance?.RegisterLowMemoryHandler(this);
             _maxContextSizeToKeepInBytes = long.MaxValue;
             _maxNumberOfContextsToKeepInGlobalStack = PlatformDetails.Is32Bits == false
@@ -170,7 +172,7 @@ namespace Sparrow.Json
                     return;
                 }
 
-                Context.Reset();
+                Context.Reset(releaseAllocatedStringValues: true);
                 // These contexts are reused, so we don't want to use LowerOrDie here.
                 Context.InUse.Lower();
                 Context.InPoolSince = DateTime.UtcNow;
@@ -188,7 +190,7 @@ namespace Sparrow.Json
         private DateTime _lastGlobalStackRebuild = DateTime.UtcNow;
         private readonly TimeSpan _globalStackRebuildInterval = TimeSpan.FromMinutes(15);
 
-        private void CleanupTimer(object _)
+        private void Cleanup(object _)
         {
             if (Monitor.TryEnter(_locker) == false)
                 return;
@@ -345,15 +347,16 @@ namespace Sparrow.Json
 
         public void LowMemory(LowMemorySeverity lowMemorySeverity)
         {
-            var alreadyInLowMem = !LowMemoryFlag.Raise();
+            if (LowMemoryFlag.Raise())
+            {
+                Interlocked.Increment(ref _generation);
+            }
 
             if (lowMemorySeverity != LowMemorySeverity.ExtremelyLow)
                 return;
 
-            if (alreadyInLowMem)
+            if (_isExtremelyLowMemory.Raise() == false)
                 return;
-
-            Interlocked.Increment(ref _generation);
 
             ClearStack(_globalStack);
 
@@ -386,6 +389,7 @@ namespace Sparrow.Json
         public void LowMemoryOver()
         {
             LowMemoryFlag.Lower();
+            _isExtremelyLowMemory.Lower();
         }
 
         private sealed class CountingConcurrentStack<TItem>

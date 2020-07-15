@@ -17,6 +17,7 @@ using Sparrow.Platform.Posix;
 using Sparrow.Server.Platform.Win32;
 using Sparrow.Utils;
 using Size = Raven.Client.Util.Size;
+using Voron.Impl;
 
 namespace Raven.Server.Documents.Handlers.Debugging
 {
@@ -149,6 +150,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
                 try
                 {
                     var result = new SmapsReader(buffers).CalculateMemUsageFromSmaps<SmapsReaderJsonResults>();
+                    var procStatus = MemoryInformation.GetMemoryUsageFromProcStatus();
                     var djv = new DynamicJsonValue
                     {
                         ["Totals"] = new DynamicJsonValue
@@ -158,7 +160,11 @@ namespace Raven.Server.Documents.Handlers.Debugging
                             ["PrivateClean"] = result.PrivateClean,
                             ["TotalClean"] = result.SharedClean + result.PrivateClean,
                             ["TotalDirty"] = result.TotalDirty, // This includes not only r-ws buffer and voron files, but also dotnet's and heap dirty memory
+                            ["WorkingSetSwap"] = result.Swap, // Swap values sum for r-ws entries only
+                            ["Swap"] = procStatus.Swap,
                             ["RssHumanly"] = Sizes.Humane(result.Rss),
+                            ["SwapHumanly"] = Sizes.Humane(procStatus.Swap),
+                            ["WorkingSetSwapHumanly"] = Sizes.Humane(result.Swap),
                             ["SharedCleanHumanly"] = Sizes.Humane(result.SharedClean),
                             ["PrivateCleanHumanly"] = Sizes.Humane(result.PrivateClean),
                             ["TotalCleanHumanly"] = Sizes.Humane(result.SharedClean + result.PrivateClean)
@@ -192,6 +198,20 @@ namespace Raven.Server.Documents.Handlers.Debugging
                 {
                     context.Write(write, djv);
                 }
+                return Task.CompletedTask;
+            }
+        }
+
+        [RavenAction("/admin/debug/memory/encryption-buffer-pool", "GET", AuthorizationStatus.Operator, IsDebugInformationEndpoint = true)]
+        public Task EncryptionBufferPoolStats()
+        {
+            using (ServerStore.ContextPool.AllocateOperationContext(out JsonOperationContext context))
+            {
+                using (var write = new BlittableJsonTextWriter(context, ResponseBodyStream()))
+                {
+                    context.Write(write, EncryptionBuffersPool.Instance.GetStats().ToJson());
+                }
+
                 return Task.CompletedTask;
             }
         }
@@ -313,6 +333,8 @@ namespace Raven.Server.Documents.Handlers.Debugging
             long managedMemoryInBytes = AbstractLowMemoryMonitor.GetManagedMemoryInBytes();
             long workingSetInBytes = memInfo.WorkingSet.GetValue(SizeUnit.Bytes);
             var dirtyMemoryState = MemoryInformation.GetDirtyMemoryState();
+            var encryptionBuffers = EncryptionBuffersPool.Instance.GetStats();
+
             var djv = new DynamicJsonValue
             {
                 [nameof(MemoryInfo.WorkingSet)] = workingSetInBytes,
@@ -336,6 +358,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
                 {
                     [nameof(MemoryInfoHumane.WorkingSet)] = Size.Humane(workingSetInBytes),
                     [nameof(MemoryInfoHumane.TotalUnmanagedAllocations)] = Size.Humane(totalUnmanagedAllocations),
+                    ["EncryptionBuffers"] = Size.Humane(encryptionBuffers.TotalSize),
                     [nameof(MemoryInfoHumane.ManagedAllocations)] = Size.Humane(managedMemoryInBytes),
                     [nameof(MemoryInfoHumane.TotalMemoryMapped)] = Size.Humane(totalMapping)
                 },
@@ -344,6 +367,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
 
                 [nameof(MemoryInfo.Mappings)] = fileMappings
             };
+
             return djv;
         }
 

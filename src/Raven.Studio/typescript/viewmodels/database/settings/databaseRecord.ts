@@ -10,7 +10,9 @@ import eventsCollector = require("common/eventsCollector");
 import saveDatabaseSettingsCommand = require("commands/resources/saveDatabaseSettingsCommand");
 
 class databaseRecord extends viewModelBase {
-    autoCollapseMode = ko.observable<boolean>(false);
+    isDocumentCollapsed = ko.observable<boolean>(false);
+    forceFold: boolean = true;
+    
     document = ko.observable<document>();
     documentText = ko.observable<string>().extend({ required: true });
     docEditor: AceAjax.Editor;
@@ -31,7 +33,7 @@ class databaseRecord extends viewModelBase {
             }
         });
         
-        this.bindToCurrentInstance("toggleAutoCollapse", "save", "exitEditMode");
+        this.bindToCurrentInstance("toggleCollapse", "save", "exitEditMode");
     }
 
     canActivate(args: any) {
@@ -64,19 +66,28 @@ class databaseRecord extends viewModelBase {
 
     compositionComplete() {
         super.compositionComplete();
+        
+        this.docEditor = aceEditorBindingHandler.getEditorBySelection($("#dbDocEditor"));
+        
+        if (this.docEditor) {
+            this.docEditor.getSession().on("tokenizerUpdate", () => {
+                if (this.forceFold) {
+                    this.foldAll();
 
-        const editorElement = $("#dbDocEditor");
-        if (editorElement.length > 0) {
-            this.docEditor = ko.utils.domData.get(editorElement[0], "aceEditor");
+                    this.forceFold = false;
+                    this.isDocumentCollapsed(true);
+                }
+            });
         }
     }
 
-    toggleAutoCollapse() {
-        this.autoCollapseMode.toggle();
-        if (this.autoCollapseMode()) {
-            this.foldAll();
-        } else {
+    toggleCollapse() {
+        if (this.isDocumentCollapsed()) {
             this.docEditor.getSession().unfold(null, true);
+            this.isDocumentCollapsed(false);
+        } else {
+            this.foldAll();
+            this.isDocumentCollapsed(true);
         }
     }
 
@@ -91,6 +102,7 @@ class databaseRecord extends viewModelBase {
         eventsCollector.default.reportEvent("database-settings", "refresh");
 
         this.fetchDatabaseSettings(this.activeDatabase(), reportFetchProgress);
+        this.forceFold = true;
     }
 
     enterEditMode() {
@@ -100,6 +112,7 @@ class databaseRecord extends viewModelBase {
                     const docText = this.stringify(this.document().toDto(), false);
                     this.documentText(docText);
                     this.inEditMode(true);
+                    this.isDocumentCollapsed(false);
                 }
             })
     }
@@ -108,6 +121,7 @@ class databaseRecord extends viewModelBase {
         const docText = this.stringify(this.document().toDto(), true);
         this.documentText(docText);
         this.inEditMode(false);
+        this.isDocumentCollapsed(false);
     }
     
     confirm() {

@@ -1236,13 +1236,6 @@ namespace Raven.Server.Documents.Indexes
                                 _currentMaximumAllowedMemory = Size.Min(_currentMaximumAllowedMemory,
                                     new Size(NativeMemory.CurrentThreadStats.TotalAllocated, SizeUnit.Bytes));
 
-                                if (storageEnvironment.Options.EncryptionEnabled)
-                                {
-                                    // if encryption is turned on then a lot of memory might be consumed by encryption buffers caches
-                                    // let's clean it so our allocation budget won't be occupied by them
-                                    storageEnvironment.CleanupNativeMemory();
-                                }
-
                                 if (_allocationCleanupNeeded > AllocationCleanupRequestsLimit)
                                     forceMemoryCleanup = true;
                             }
@@ -1310,11 +1303,14 @@ namespace Raven.Server.Documents.Indexes
         {
             AlertRaised alert = null;
             int numberOfTimesSlept = 0;
-            while (DocumentDatabase.ServerStore.Server.CpuCreditsBalance.BackgroundTasksAlertRaised.IsRaised() &&
-                DocumentDatabase.DatabaseShutdown.IsCancellationRequested == false)
+
+            while (DocumentDatabase.ServerStore.Server.CpuCreditsBalance.BackgroundTasksAlertRaised.IsRaised() && _indexDisabled == false)
             {
+                _indexingProcessCancellationTokenSource.Token.ThrowIfCancellationRequested();
+
                 // give us a bit more than a measuring cycle to gain more CPU credits
                 Thread.Sleep(1250);
+
                 if (alert == null && numberOfTimesSlept++ > 5)
                 {
                     alert = AlertRaised.Create(
@@ -1327,6 +1323,7 @@ namespace Raven.Server.Documents.Indexes
                     DocumentDatabase.NotificationCenter.Add(alert);
                 }
             }
+
             if (alert != null)
             {
                 DocumentDatabase.NotificationCenter.Dismiss(alert.Id);
@@ -3647,6 +3644,7 @@ namespace Raven.Server.Documents.Indexes
                 _batchStopped = DocumentDatabase.IndexStore.StoppedConcurrentIndexBatches.Wait(
                     timeout,
                     _indexingProcessCancellationTokenSource.Token);
+
                 if (_batchStopped)
                     break;
 
@@ -3665,15 +3663,13 @@ namespace Raven.Server.Documents.Indexes
 
             result.SizeBeforeCompactionInMb = CalculateIndexStorageSize().GetValue(SizeUnit.Megabytes);
 
-            if (Type.IsMapReduce())
-            {
-                result.AddMessage($"Skipping compaction of '{Name}' index because compaction of map-reduce indexes isn't supported");
-                onProgress?.Invoke(result.Progress);
-                result.TreeName = null;
-                result.SizeAfterCompactionInMb = result.SizeBeforeCompactionInMb;
+            if (_environment.Options.IncrementalBackupEnabled)
+                throw new InvalidOperationException(
+                    $"Index '{Name}' cannot be compacted because incremental backup is enabled.");
 
-                return;
-            }
+            if (Configuration.RunInMemory)
+                throw new InvalidOperationException(
+                    $"Index '{Name}' cannot be compacted because it runs in memory.");
 
             result.AddMessage($"Starting compaction of index '{Name}'.");
             result.AddMessage($"Draining queries for {Name}.");
@@ -3681,14 +3677,6 @@ namespace Raven.Server.Documents.Indexes
 
             using (DrainRunningQueries())
             {
-                if (_environment.Options.IncrementalBackupEnabled)
-                    throw new InvalidOperationException(
-                        $"Index '{Name}' cannot be compacted because incremental backup is enabled.");
-
-                if (Configuration.RunInMemory)
-                    throw new InvalidOperationException(
-                        $"Index '{Name}' cannot be compacted because it runs in memory.");
-
                 _isCompactionInProgress = true;
                 PathSetting compactPath = null;
                 PathSetting tempPath = null;
@@ -3698,8 +3686,18 @@ namespace Raven.Server.Documents.Indexes
                 {
                     var storageEnvironmentOptions = _environment.Options;
 
-                    using (RestartEnvironment())
+                    using (RestartEnvironment(onBeforeEnvironmentDispose: Optimize))
                     {
+                        if (Type.IsMapReduce())
+                        {
+                            result.AddMessage($"Skipping data compaction of '{Name}' index because data compaction of map-reduce indexes isn't supported");
+                            onProgress?.Invoke(result.Progress);
+                            result.TreeName = null;
+                            result.SizeAfterCompactionInMb = CalculateIndexStorageSize().GetValue(SizeUnit.Megabytes);
+
+                            return;
+                        }
+
                         var environmentOptions =
                                                 (StorageEnvironmentOptions.DirectoryStorageEnvironmentOptions)storageEnvironmentOptions;
                         var srcOptions = StorageEnvironmentOptions.ForPath(environmentOptions.BasePath.FullPath, environmentOptions.TempPath?.FullPath, null, DocumentDatabase.IoChanges,
@@ -3754,10 +3752,25 @@ namespace Raven.Server.Documents.Indexes
 
                     _isCompactionInProgress = false;
                 }
+
+                void Optimize()
+                {
+                    result.AddMessage($"Starting data optimization of index '{Name}'.");
+                    onProgress?.Invoke(result.Progress);
+
+                    using (_contextPool.AllocateOperationContext(out TransactionOperationContext indexContext))
+                    using (var txw = indexContext.OpenWriteTransaction())
+                    using (var writer = IndexPersistence.OpenIndexWriter(indexContext.Transaction.InnerTransaction, indexContext))
+                    {
+                        writer.Optimize();
+
+                        txw.Commit();
+                    }
+                }
             }
         }
 
-        public IDisposable RestartEnvironment()
+        public IDisposable RestartEnvironment(Action onBeforeEnvironmentDispose = null)
         {
             // shutdown environment
             if (_currentlyRunningQueriesLock.IsWriteLockHeld == false)
@@ -3768,6 +3781,8 @@ namespace Raven.Server.Documents.Indexes
             // are handled using the DrainRunningQueries portion
             var thread = GetWaitForIndexingThreadToExit(disableIndex: false);
             thread?.Join(Timeout.Infinite);
+
+            onBeforeEnvironmentDispose?.Invoke();
 
             _environment.Dispose();
 

@@ -38,6 +38,7 @@ namespace Raven.Server.Documents.Replication
 {
     public class ReplicationLoader : IDisposable, ITombstoneAware
     {
+        private readonly ReaderWriterLockSlim _locker = new ReaderWriterLockSlim();
         public event Action<IncomingReplicationHandler> IncomingReplicationAdded;
         public event Action<IncomingReplicationHandler> IncomingReplicationRemoved;
 
@@ -721,12 +722,22 @@ namespace Raven.Server.Documents.Replication
             DropIncomingConnections(changes.RemovedDestiantions, instancesToDispose);
 
             var newDestinations = GetMyNewDestinations(newRecord, changes.AddedDestinations);
-
-            Task.Run(() =>
+            if (newDestinations.Count > 0)
             {
-                // here we might have blocking calls to fetch the tcp info.
-                StartOutgoingConnections(newDestinations, external: true);
-            });
+                Task.Run(() =>
+                {
+                    // here we might have blocking calls to fetch the tcp info.
+                    try
+                    {
+                        StartOutgoingConnections(newDestinations, external: true);
+                    }
+                    catch (Exception e)
+                    {
+                        if (_log.IsOperationsEnabled)
+                            _log.Operations($"Failed to start the outgoing connections to {newDestinations.Count} new destinations", e);
+                    }
+                });
+            }
 
             _externalDestinations.RemoveWhere(changes.RemovedDestiantions.Contains);
             foreach (var newDestination in newDestinations)
@@ -903,9 +914,6 @@ namespace Raven.Server.Documents.Replication
 
         private void StartOutgoingConnections(IReadOnlyCollection<ReplicationNode> connectionsToAdd, bool external = false)
         {
-            if (connectionsToAdd.Count == 0)
-                return;
-
             if (_log.IsInfoEnabled)
                 _log.Info($"Initializing {connectionsToAdd.Count:#,#} outgoing replications from {Database} on {_server.NodeTag}.");
 
@@ -967,15 +975,32 @@ namespace Raven.Server.Documents.Replication
                 // this means that we were unable to retrieve the tcp connection info and will try it again later
                 return;
             }
-            var outgoingReplication = new OutgoingReplicationHandler(this, Database, node, external, info);
-            outgoingReplication.Failed += OnOutgoingSendingFailed;
-            outgoingReplication.SuccessfulTwoWaysCommunication += OnOutgoingSendingSucceeded;
-            outgoingReplication.SuccessfulReplication += ResetReplicationFailuresInfo;
-            _outgoing.TryAdd(outgoingReplication); // can't fail, this is a brand new instance
 
-            outgoingReplication.Start();
+            if (_locker.TryEnterReadLock(0) == false)
+            {
+                // the db being disposed
+                return;
+            }
 
-            OutgoingReplicationAdded?.Invoke(outgoingReplication);
+            try
+            {
+                if (Database == null)
+                    return;
+
+                var outgoingReplication = new OutgoingReplicationHandler(this, Database, node, external, info);
+                outgoingReplication.Failed += OnOutgoingSendingFailed;
+                outgoingReplication.SuccessfulTwoWaysCommunication += OnOutgoingSendingSucceeded;
+                outgoingReplication.SuccessfulReplication += ResetReplicationFailuresInfo;
+                _outgoing.TryAdd(outgoingReplication); // can't fail, this is a brand new instance
+
+                outgoingReplication.Start();
+
+                OutgoingReplicationAdded?.Invoke(outgoingReplication);
+            }
+            finally
+            {
+                _locker.ExitReadLock();
+            }
         }
 
         private TcpConnectionInfo GetConnectionInfo(ReplicationNode node, bool external)
@@ -1096,7 +1121,15 @@ namespace Raven.Server.Documents.Replication
                     {
                         requestExecutor.Execute(cmd, ctx);
                     }
-                    catch
+                    catch (Exception e)
+                    {
+                        if (_log.IsInfoEnabled)
+                            _log.Info($"Failed to execute {nameof(GetRemoteTaskTopologyCommand)} for {pullReplicationAsSink.Name}", e);
+
+                        // failed to connect, will retry later
+                        throw;
+                    }
+                    finally
                     {
                         // we want to set node Url even if we fail to connect to destination, so they can be used in replication stats
                         pullReplicationAsSink.Url = requestExecutor.Url;
@@ -1278,36 +1311,45 @@ namespace Raven.Server.Documents.Replication
         }
         public void Dispose()
         {
-            var ea = new ExceptionAggregator("Failed during dispose of document replication loader");
+            _locker.EnterWriteLock();
 
-            ea.Execute(() =>
+            try
             {
-                using (var waitHandle = new ManualResetEvent(false))
+                var ea = new ExceptionAggregator("Failed during dispose of document replication loader");
+
+                ea.Execute(() =>
                 {
-                    if (_reconnectAttemptTimer.Dispose(waitHandle))
+                    using (var waitHandle = new ManualResetEvent(false))
                     {
-                        waitHandle.WaitOne();
+                        if (_reconnectAttemptTimer.Dispose(waitHandle))
+                        {
+                            waitHandle.WaitOne();
+                        }
                     }
-                }
-            });
+                });
 
-            ea.Execute(() => ConflictResolver?.ResolveConflictsTask.Wait());
+                ea.Execute(() => ConflictResolver?.ResolveConflictsTask.Wait());
 
-            ConflictResolver = null;
+                ConflictResolver = null;
 
-            if (_log.IsInfoEnabled)
-                _log.Info("Closing and disposing document replication connections.");
+                if (_log.IsInfoEnabled)
+                    _log.Info("Closing and disposing document replication connections.");
 
-            foreach (var incoming in _incoming)
-                ea.Execute(incoming.Value.Dispose);
+                foreach (var incoming in _incoming)
+                    ea.Execute(incoming.Value.Dispose);
 
-            foreach (var outgoing in _outgoing)
-                ea.Execute(outgoing.Dispose);
+                foreach (var outgoing in _outgoing)
+                    ea.Execute(outgoing.Dispose);
 
-            Database.TombstoneCleaner?.Unsubscribe(this);
+                Database.TombstoneCleaner?.Unsubscribe(this);
 
-            Database = null;
-            ea.ThrowIfNeeded();
+                Database = null;
+                ea.ThrowIfNeeded();
+            }
+            finally
+            {
+                _locker.ExitWriteLock();
+            }
         }
 
         public string TombstoneCleanerIdentifier => "Replication";

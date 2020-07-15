@@ -178,6 +178,9 @@ namespace Raven.Server.Rachis
 
         public void Record(string message)
         {
+            if (_current == null)
+                return; // ignore - shutting down
+
             Timings.Add(new RachisLogEntry
             {
                 Message = message,
@@ -378,7 +381,7 @@ namespace Raven.Server.Rachis
             Timeout.TimeoutPeriod = _rand.Next(timeout / 3 * 2, timeout);
         }
 
-        public unsafe void Initialize(StorageEnvironment env, RavenConfiguration configuration, string myUrl, out long clusterTopologyEtag)
+        public void Initialize(StorageEnvironment env, RavenConfiguration configuration, string myUrl, out long clusterTopologyEtag)
         {
             try
             {

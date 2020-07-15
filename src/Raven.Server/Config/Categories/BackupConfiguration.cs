@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using Microsoft.Extensions.Configuration;
+using Raven.Client.Documents.Operations.Backups;
 using Raven.Server.Config.Attributes;
 using Raven.Server.Config.Settings;
 using Raven.Server.ServerWide;
@@ -32,6 +33,12 @@ namespace Raven.Server.Config.Categories
         [ConfigurationEntry("Backup.MaxNumberOfConcurrentBackups", ConfigurationEntryScope.ServerWideOnly)]
         public int? MaxNumberOfConcurrentBackups { get; set; }
 
+        [Description("Number of seconds to delay the backup after hitting the maximum number of concurrent backups limit")]
+        [DefaultValue(30)]
+        [TimeUnit(TimeUnit.Seconds)]
+        [ConfigurationEntry("Backup.ConcurrentBackupsDelayInSec", ConfigurationEntryScope.ServerWideOnly)]
+        public TimeSetting ConcurrentBackupsDelay { get; set; }
+
         [Description("Number of minutes to delay the backup after entering the low memory state by the Server.")]
         [DefaultValue(10)]
         [TimeUnit(TimeUnit.Minutes)]
@@ -50,10 +57,11 @@ namespace Raven.Server.Config.Categories
             ValidateAllowedRegions();
         }
 
-        private readonly HashSet<string> _allDestinations = new HashSet<string>
-        {
-            "None", "Local", "Azure", "AmazonGlacier", "AmazonS3", "FTP", "GoogleCloud"
-        };
+        internal static readonly HashSet<string> _allDestinations =
+            new HashSet<string>(Enum.GetValues(typeof(PeriodicBackupConfiguration.BackupDestination))
+                .Cast<PeriodicBackupConfiguration.BackupDestination>().Select(x => x.ToString()));
+
+        private const string _noneDestination = nameof(PeriodicBackupConfiguration.BackupDestination.None);
 
         private void ValidateLocalRootPath()
         {
@@ -67,12 +75,12 @@ namespace Raven.Server.Config.Categories
             }
         }
         
-        private void ValidateAllowedDestinations()
+        internal void ValidateAllowedDestinations()
         {
             if (AllowedDestinations == null)
                 return;
 
-            if (AllowedDestinations.Contains("None", StringComparer.OrdinalIgnoreCase))
+            if (AllowedDestinations.Contains(_noneDestination, StringComparer.OrdinalIgnoreCase))
             {
                 if (AllowedDestinations.Length > 1)
                     throw new ArgumentException($"If you specify \"None\" under '{RavenConfiguration.GetKey(x => x.Backup.AllowedDestinations)}' then it must be the only value.");
@@ -84,6 +92,7 @@ namespace Raven.Server.Config.Categories
             {
                 if (_allDestinations.Contains(dest, StringComparer.OrdinalIgnoreCase))
                     continue;
+
                 throw new ArgumentException($"The destination '{dest}' defined in the configuration under '{RavenConfiguration.GetKey(x => x.Backup.AllowedDestinations)}' is unknown. Make sure to use the following destinations: {string.Join(", ", _allDestinations)}.");
             }
         }
@@ -110,10 +119,10 @@ namespace Raven.Server.Config.Categories
             if (AllowedDestinations == null)
                 return;
 
-            if (AllowedDestinations.Contains("None"))
+            if (AllowedDestinations.Contains(_noneDestination, StringComparer.OrdinalIgnoreCase))
                 throw new ArgumentException("Backups are not allowed in this RavenDB server. Contact the administrator for more information.");
 
-            if (AllowedDestinations.Contains(dest))
+            if (AllowedDestinations.Contains(dest, StringComparer.OrdinalIgnoreCase))
                 return;
 
             throw new ArgumentException($"The selected backup destination '{dest}' is not allowed in this RavenDB server. Contact the administrator for more information. Allowed backup destinations: {string.Join(", ", AllowedDestinations)}");

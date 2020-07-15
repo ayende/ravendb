@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.IO;
 using System.Runtime.CompilerServices;
 using Lucene.Net.Analysis;
@@ -15,7 +14,6 @@ using Raven.Server.Indexing;
 using Raven.Server.Utils;
 using Sparrow.Logging;
 using Sparrow.Server.Utils;
-using Voron.Exceptions;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Lucene
 {
@@ -197,14 +195,25 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
             }
             catch (SystemException e)
             {
-                if (e.Message.StartsWith("this writer hit an OutOfMemoryError"))
-                    LuceneIndexWriter.ThrowOutOfMemoryException(e);
+                LuceneIndexWriter.TryThrowingBetterException(e, _directory);
 
-                if (e is Win32Exception win32Exception && win32Exception.IsOutOfMemory())
-                    LuceneIndexWriter.ThrowOutOfMemoryException(e);
+                throw;
+            }
+            finally
+            {
+                RecreateIndexWriter(state);
+            }
+        }
 
-                if (e.InnerException is VoronUnrecoverableErrorException)
-                    LuceneIndexWriter.ThrowVoronUnrecoverableErrorException(e);
+        public void Optimize(IState state)
+        {
+            try
+            {
+                _indexWriter.Optimize(state);
+            }
+            catch (SystemException e)
+            {
+                LuceneIndexWriter.TryThrowingBetterException(e, _directory);
 
                 throw;
             }

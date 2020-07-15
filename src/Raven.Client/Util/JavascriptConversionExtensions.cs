@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Linq.Expressions;
+using System.Net;
 using System.Reflection;
 using System.Text.RegularExpressions;
 using Lambda2Js;
@@ -14,6 +15,7 @@ using Raven.Client.Documents.Linq;
 using Raven.Client.Documents.Queries;
 using Raven.Client.Documents.Session;
 using Raven.Client.Extensions;
+using Sparrow;
 using Sparrow.Extensions;
 
 namespace Raven.Client.Util
@@ -1875,6 +1877,47 @@ namespace Raven.Client.Util
             }
         }
 
+        public class ConstantSupport : JavascriptConversionExtension
+        {
+            public static readonly ConstantSupport Instance = new ConstantSupport();
+
+            private ConstantSupport()
+            {
+            }
+
+            public override void ConvertToJavascript(JavascriptConversionContext context)
+            {
+                if (!(context.Node is ConstantExpression ce))
+                    return;
+
+                string toWrite = null;
+                if (ce.Type == typeof(DateTime))
+                {
+                    var dateTime = (DateTime)ce.Value;
+                    toWrite = dateTime.GetDefaultRavenFormat(dateTime.Kind == DateTimeKind.Utc);
+                }
+                else if (ce.Type == typeof(DateTimeOffset))
+                {
+                    var dto = (DateTimeOffset)ce.Value;
+                    toWrite = dto.ToString(DefaultFormat.DateTimeOffsetFormatsToWrite);
+                }
+                else if (ce.Type.IsEnum || ce.Type == typeof(Guid) || ce.Type == typeof(TimeSpan))
+                {
+                    toWrite = ce.Value.ToString();
+                }
+
+                if (toWrite == null)
+                    return;
+
+                context.PreventDefault();
+
+                var writer = context.GetWriter();
+                writer.Write("\"");
+                writer.Write(toWrite);
+                writer.Write("\"");
+            }
+        }
+
         public class NewSupport : JavascriptConversionExtension
         {
             public static readonly NewSupport Instance = new NewSupport();
@@ -2122,7 +2165,7 @@ namespace Raven.Client.Util
             {
                 if (!(context.Node is MethodCallExpression mce) || 
                     mce.Method.DeclaringType != typeof(string))
-                    return; 
+                    return;
 
                 string newName;
                 switch (mce.Method.Name)
