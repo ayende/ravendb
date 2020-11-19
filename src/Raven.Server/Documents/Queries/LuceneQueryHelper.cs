@@ -8,6 +8,7 @@ using Lucene.Net.Analysis.Tokenattributes;
 using Lucene.Net.Index;
 using Lucene.Net.Search;
 using Raven.Client;
+using Raven.Server.Documents.Queries.LuceneIntegration;
 using Sparrow.Json;
 
 namespace Raven.Server.Documents.Queries
@@ -338,7 +339,8 @@ This edge-case has a very slim chance of happening, but still we should not igno
 
         private static Query CreateRange(string fieldName, long minValue, bool inclusiveMin, long maxValue, bool inclusiveMax)
         {
-            return NumericRangeQuery.NewLongRange(fieldName, 4, minValue, maxValue, inclusiveMin, inclusiveMax);
+                return new BetweenQuery<long>(fieldName, minValue, inclusiveMin, maxValue, inclusiveMax);
+                //return NumericRangeQuery.NewLongRange(fieldName, 4, minValue, maxValue, inclusiveMin, inclusiveMax);
         }
 
         private static Query CreateRange(string fieldName, double minValue, bool inclusiveMin, double maxValue, bool inclusiveMax)
