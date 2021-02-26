@@ -27,7 +27,6 @@ using Raven.Client.ServerWide;
 using Raven.Client.ServerWide.Operations;
 using Raven.Client.ServerWide.Operations.Migration;
 using Raven.Client.Util;
-using Raven.Server.Commercial;
 using Raven.Server.Config;
 using Raven.Server.Config.Categories;
 using Raven.Server.Config.Settings;
@@ -64,7 +63,7 @@ namespace Raven.Server.Web.System
     {
         private static readonly Logger Logger = LoggingSource.Instance.GetLogger<AdminDatabasesHandler>("Server");
 
-        [RavenAction("/admin/databases", "GET", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/databases", "GET", AuthorizationStatus.Operator, EndpointType.Read)]
         public Task Get()
         {
             var name = GetQueryStringValueAndAssertIfSingleAndNotEmpty("name");
@@ -110,7 +109,7 @@ namespace Raven.Server.Web.System
         }
 
         // add database to already existing database group
-        [RavenAction("/admin/databases/node", "PUT", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/databases/node", "PUT", AuthorizationStatus.Operator, EndpointType.Write)]
         public async Task AddDatabaseNode()
         {
             var name = GetQueryStringValueAndAssertIfSingleAndNotEmpty("name").Trim();
@@ -242,7 +241,7 @@ namespace Raven.Server.Web.System
             return url.StartsWith("https:", StringComparison.OrdinalIgnoreCase) == false;
         }
 
-        [RavenAction("/admin/databases", "PUT", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/databases", "PUT", AuthorizationStatus.Operator, EndpointType.Write)]
         public async Task Put()
         {
             var raftRequestId = GetRaftRequestIdFromQuery();
@@ -479,7 +478,7 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/admin/databases/reorder", "POST", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/databases/reorder", "POST", AuthorizationStatus.Operator, EndpointType.Write)]
         public async Task Reorder()
         {
             var name = GetStringQueryString("name");
@@ -541,7 +540,7 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/admin/restore/points", "POST", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/restore/points", "POST", AuthorizationStatus.Operator, EndpointType.Write)]
         public async Task GetRestorePoints()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
@@ -627,7 +626,7 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/admin/restore/database", "POST", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/restore/database", "POST", AuthorizationStatus.Operator, EndpointType.Write)]
         public async Task RestoreDatabase()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
@@ -704,7 +703,7 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/admin/databases", "DELETE", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/databases", "DELETE", AuthorizationStatus.Operator, EndpointType.Write)]
         public async Task Delete()
         {
             await ServerStore.EnsureNotPassiveAsync();
@@ -824,19 +823,19 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/admin/databases/disable", "POST", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/databases/disable", "POST", AuthorizationStatus.Operator, EndpointType.Write)]
         public async Task DisableDatabases()
         {
             await ToggleDisableDatabases(disable: true);
         }
 
-        [RavenAction("/admin/databases/enable", "POST", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/databases/enable", "POST", AuthorizationStatus.Operator, EndpointType.Write)]
         public async Task EnableDatabases()
         {
             await ToggleDisableDatabases(disable: false);
         }
 
-        [RavenAction("/admin/databases/indexing", "POST", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/databases/indexing", "POST", AuthorizationStatus.Operator, EndpointType.Write)]
         public async Task ToggleIndexing()
         {
             var raftRequestId = GetRaftRequestIdFromQuery();
@@ -854,7 +853,7 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/admin/databases/dynamic-node-distribution", "POST", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/databases/dynamic-node-distribution", "POST", AuthorizationStatus.Operator, EndpointType.Write)]
         public async Task ToggleDynamicDatabaseDistribution()
         {
             var name = GetQueryStringValueAndAssertIfSingleAndNotEmpty("name");
@@ -938,7 +937,7 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/admin/databases/promote", "POST", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/databases/promote", "POST", AuthorizationStatus.Operator, EndpointType.Write)]
         public async Task PromoteImmediately()
         {
             var name = GetStringQueryString("name");
@@ -963,7 +962,7 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/admin/console", "POST", AuthorizationStatus.ClusterAdmin)]
+        [RavenAction("/admin/console", "POST", AuthorizationStatus.ClusterAdmin, EndpointType.Write)]
         public async Task AdminConsole()
         {
             var name = GetStringQueryString("database", false);
@@ -1022,7 +1021,7 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/admin/replication/conflicts/solver", "POST", AuthorizationStatus.DatabaseAdmin)]
+        [RavenAction("/admin/replication/conflicts/solver", "POST", AuthorizationStatus.DatabaseAdmin, EndpointType.Write)]
         public async Task UpdateConflictSolver()
         {
             var name = GetQueryStringValueAndAssertIfSingleAndNotEmpty("name");
@@ -1061,7 +1060,7 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/admin/compact", "POST", AuthorizationStatus.Operator, DisableOnCpuCreditsExhaustion = true)]
+        [RavenAction("/admin/compact", "POST", AuthorizationStatus.Operator, EndpointType.Write, DisableOnCpuCreditsExhaustion = true)]
         public async Task CompactDatabase()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
@@ -1168,7 +1167,7 @@ namespace Raven.Server.Web.System
             return new Size(database.GetSizeOnDisk().Data.SizeInBytes, SizeUnit.Bytes);
         }
 
-        [RavenAction("/admin/databases/unused-ids", "POST", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/databases/unused-ids", "POST", AuthorizationStatus.Operator, EndpointType.Write)]
         public async Task SetUnusedDatabaseIds()
         {
             var database = GetStringQueryString("name");
@@ -1185,7 +1184,7 @@ namespace Raven.Server.Web.System
             NoContentStatus();
         }
 
-        [RavenAction("/admin/migrate", "POST", AuthorizationStatus.Operator, DisableOnCpuCreditsExhaustion = true)]
+        [RavenAction("/admin/migrate", "POST", AuthorizationStatus.Operator, EndpointType.Write, DisableOnCpuCreditsExhaustion = true)]
         public async Task MigrateDatabases()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
@@ -1203,7 +1202,7 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/admin/migrate/offline", "POST", AuthorizationStatus.Operator, DisableOnCpuCreditsExhaustion = true)]
+        [RavenAction("/admin/migrate/offline", "POST", AuthorizationStatus.Operator, EndpointType.Write, DisableOnCpuCreditsExhaustion = true)]
         public async Task MigrateDatabaseOffline()
         {
             await ServerStore.EnsureNotPassiveAsync();

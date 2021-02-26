@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -27,7 +26,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
         private const string _serverWidePrefix = "server-wide";
 
         //this endpoint is intended to be called by /debug/cluster-info-package only
-        [RavenAction("/admin/debug/remote-cluster-info-package", "GET", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/debug/remote-cluster-info-package", "GET", AuthorizationStatus.Operator, EndpointType.Read)]
         public async Task GetClusterWideInfoPackageForRemote()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext transactionOperationContext))
@@ -51,7 +50,6 @@ namespace Raven.Server.Documents.Handlers.Debugging
                         {
                             await WriteForDatabase(archive, jsonOperationContext, localEndpointClient, databaseName);
                         }
-
                     }
 
                     ms.Position = 0;
@@ -60,7 +58,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
             }
         }
 
-        [RavenAction("/admin/debug/cluster-info-package", "GET", AuthorizationStatus.Operator, IsDebugInformationEndpoint = true)]
+        [RavenAction("/admin/debug/cluster-info-package", "GET", AuthorizationStatus.Operator, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public async Task GetClusterWideInfoPackage()
         {
             var contentDisposition = $"attachment; filename={DateTime.UtcNow:yyyy-MM-dd H:mm:ss} Cluster Wide.zip";
@@ -195,13 +193,13 @@ namespace Raven.Server.Documents.Handlers.Debugging
             }
         }
 
-        [RavenAction("/admin/debug/info-package", "GET", AuthorizationStatus.Operator, IsDebugInformationEndpoint = true)]
+        [RavenAction("/admin/debug/info-package", "GET", AuthorizationStatus.Operator, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public async Task GetInfoPackage()
         {
             var contentDisposition = $"attachment; filename={DateTime.UtcNow:yyyy-MM-dd H:mm:ss} - Node [{ServerStore.NodeTag}].zip";
             HttpContext.Response.Headers["Content-Disposition"] = contentDisposition;
             HttpContext.Response.Headers["Content-Type"] = "application/zip";
-            
+
             using (ServerStore.ContextPool.AllocateOperationContext(out JsonOperationContext context))
             {
                 using (var ms = new MemoryStream())
@@ -311,7 +309,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
                     {
                         if (rawRecord == null ||
                             rawRecord.Topology.RelevantFor(ServerStore.NodeTag) == false ||
-                            rawRecord.IsDisabled||
+                            rawRecord.IsDisabled ||
                             rawRecord.DatabaseState == DatabaseStateStatus.RestoreInProgress ||
                             IsDatabaseBeingDeleted(ServerStore.NodeTag, rawRecord))
                             continue;
@@ -388,7 +386,6 @@ namespace Raven.Server.Documents.Handlers.Debugging
 
             return nodeUrlToDatabaseNames;
         }
-
 
         internal class NodeDebugInfoRequestHeader
         {

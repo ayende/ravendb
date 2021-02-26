@@ -23,7 +23,7 @@ namespace Raven.Server.Documents.Handlers.Streaming
 {
     public class StreamingHandler : DatabaseRequestHandler
     {
-        [RavenAction("/databases/*/streams/docs", "GET", AuthorizationStatus.ValidUser, DisableOnCpuCreditsExhaustion = true)]
+        [RavenAction("/databases/*/streams/docs", "GET", AuthorizationStatus.ValidUser, EndpointType.Read, DisableOnCpuCreditsExhaustion = true)]
         public Task StreamDocsGet()
         {
             var start = GetStart();
@@ -78,8 +78,7 @@ namespace Raven.Server.Documents.Handlers.Streaming
             return Task.CompletedTask;
         }
 
-        
-        [RavenAction("/databases/*/streams/timeseries", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/streams/timeseries", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public async Task Stream()
         {
             var documentId = GetStringQueryString("docId");
@@ -88,8 +87,8 @@ namespace Raven.Server.Documents.Handlers.Streaming
             var toStr = GetStringQueryString("to", required: false);
             var offset = GetTimeSpanQueryString("offset", required: false);
 
-            var from = string.IsNullOrEmpty(fromStr) 
-                ? DateTime.MinValue 
+            var from = string.IsNullOrEmpty(fromStr)
+                ? DateTime.MinValue
                 : TimeSeriesHandler.ParseDate(fromStr, name);
 
             var to = string.IsNullOrEmpty(toStr)
@@ -120,13 +119,13 @@ namespace Raven.Server.Documents.Handlers.Streaming
             }
         }
 
-        [RavenAction("/databases/*/streams/queries", "HEAD", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/streams/queries", "HEAD", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task SteamQueryHead()
         {
             return Task.CompletedTask;
         }
 
-        [RavenAction("/databases/*/streams/queries", "GET", AuthorizationStatus.ValidUser, DisableOnCpuCreditsExhaustion = true)]
+        [RavenAction("/databases/*/streams/queries", "GET", AuthorizationStatus.ValidUser, EndpointType.Read, DisableOnCpuCreditsExhaustion = true)]
         public async Task StreamQueryGet()
         {
             // ReSharper disable once ArgumentsStyleLiteral
@@ -218,7 +217,7 @@ namespace Raven.Server.Documents.Handlers.Streaming
             }
         }
 
-        [RavenAction("/databases/*/streams/queries", "POST", AuthorizationStatus.ValidUser, DisableOnCpuCreditsExhaustion = true)]
+        [RavenAction("/databases/*/streams/queries", "POST", AuthorizationStatus.ValidUser, EndpointType.Read, DisableOnCpuCreditsExhaustion = true)]
         public async Task StreamQueryPost()
         {
             // ReSharper disable once ArgumentsStyleLiteral

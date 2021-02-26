@@ -14,13 +14,13 @@ using Sparrow.Json.Parsing;
 
 namespace Raven.Server.Web.System
 {
-    class CompareExchangeHandler : DatabaseRequestHandler
+    internal class CompareExchangeHandler : DatabaseRequestHandler
     {
-        [RavenAction("/databases/*/cmpxchg", "GET", AuthorizationStatus.ValidUser, DisableOnCpuCreditsExhaustion = true)]
+        [RavenAction("/databases/*/cmpxchg", "GET", AuthorizationStatus.ValidUser, EndpointType.Read, DisableOnCpuCreditsExhaustion = true)]
         public Task GetCompareExchangeValues()
         {
             var keys = GetStringValuesQueryString("key", required: false);
-            
+
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
             using (context.OpenReadTransaction())
             {
@@ -29,7 +29,7 @@ namespace Raven.Server.Web.System
                 else
                     GetCompareExchangeValues(context);
             }
-            
+
             return Task.CompletedTask;
         }
 
@@ -47,7 +47,7 @@ namespace Raven.Server.Web.System
             using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
             {
                 writer.WriteStartObject();
-                
+
                 writer.WriteArray(context, "Results", items,
                     (textWriter, operationContext, item) =>
                     {
@@ -63,17 +63,17 @@ namespace Raven.Server.Web.System
                 writer.WriteEndObject();
             }
 
-            AddPagingPerformanceHint(PagingOperationType.CompareExchange, nameof(ClusterStateMachine.GetCompareExchangeValuesStartsWith), 
+            AddPagingPerformanceHint(PagingOperationType.CompareExchange, nameof(ClusterStateMachine.GetCompareExchangeValuesStartsWith),
                 HttpContext.Request.QueryString.Value, numberOfResults, pageSize, sw.ElapsedMilliseconds);
         }
-        
+
         public class CompareExchangeListItem
         {
             public string Key { get; set; }
             public object Value { get; set; }
             public long Index { get; set; }
         }
-        
+
         private void GetCompareExchangeValuesByKey(TransactionOperationContext context, Microsoft.Extensions.Primitives.StringValues keys)
         {
             var sw = Stopwatch.StartNew();
@@ -95,7 +95,7 @@ namespace Raven.Server.Web.System
             using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
             {
                 writer.WriteStartObject();
-                
+
                 writer.WriteArray(context, "Results", items,
                     (textWriter, operationContext, item) =>
                     {
@@ -111,12 +111,11 @@ namespace Raven.Server.Web.System
                 writer.WriteEndObject();
             }
 
-            AddPagingPerformanceHint(PagingOperationType.CompareExchange, nameof(GetCompareExchangeValuesByKey), HttpContext.Request.QueryString.Value, 
+            AddPagingPerformanceHint(PagingOperationType.CompareExchange, nameof(GetCompareExchangeValuesByKey), HttpContext.Request.QueryString.Value,
                 numberOfResults, keys.Count, sw.ElapsedMilliseconds);
         }
 
-
-        [RavenAction("/databases/*/cmpxchg", "PUT", AuthorizationStatus.ValidUser, DisableOnCpuCreditsExhaustion = true)]
+        [RavenAction("/databases/*/cmpxchg", "PUT", AuthorizationStatus.ValidUser, EndpointType.Write, DisableOnCpuCreditsExhaustion = true)]
         public async Task PutCompareExchangeValue()
         {
             var key = GetStringQueryString("key");
@@ -146,8 +145,8 @@ namespace Raven.Server.Web.System
                 }
             }
         }
-        
-        [RavenAction("/databases/*/cmpxchg", "DELETE", AuthorizationStatus.ValidUser, DisableOnCpuCreditsExhaustion = true)]
+
+        [RavenAction("/databases/*/cmpxchg", "DELETE", AuthorizationStatus.ValidUser, EndpointType.Write, DisableOnCpuCreditsExhaustion = true)]
         public async Task DeleteCompareExchangeValue()
         {
             var key = GetStringQueryString("key");

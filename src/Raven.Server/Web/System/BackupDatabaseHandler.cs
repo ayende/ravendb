@@ -12,7 +12,7 @@ namespace Raven.Server.Web.System
 {
     public sealed class BackupDatabaseHandler : RequestHandler
     {
-        [RavenAction("/periodic-backup", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/periodic-backup", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task GetPeriodicBackup()
         {
             var name = GetQueryStringValueAndAssertIfSingleAndNotEmpty("name");
@@ -39,7 +39,7 @@ namespace Raven.Server.Web.System
             return Task.CompletedTask;
         }
 
-        [RavenAction("/periodic-backup/status", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/periodic-backup/status", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task GetPeriodicBackupStatus()
         {
             var name = GetQueryStringValueAndAssertIfSingleAndNotEmpty("name");
@@ -64,7 +64,7 @@ namespace Raven.Server.Web.System
             return Task.CompletedTask;
         }
 
-        [RavenAction("/admin/debug/periodic-backup/timers", "GET", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/debug/periodic-backup/timers", "GET", AuthorizationStatus.Operator, EndpointType.Read)]
         public async Task GetAllPeriodicBackupsTimers()
         {
             var first = true;

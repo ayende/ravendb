@@ -117,6 +117,7 @@ namespace Raven.Server.Documents.Handlers
                                 countersToRemove.Remove(operation.CounterName);
                             }
                             break;
+
                         case CounterOperationType.Delete:
                             if (_fromEtl && doc == null)
                                 break;
@@ -126,6 +127,7 @@ namespace Raven.Server.Documents.Handlers
                             countersToAdd.Remove(operation.CounterName);
                             countersToRemove.Add(operation.CounterName);
                             break;
+
                         case CounterOperationType.Put:
                             if (_fromEtl == false || doc == null)
                                 break;
@@ -135,11 +137,14 @@ namespace Raven.Server.Documents.Handlers
                             countersToAdd.Add(operation.CounterName);
                             countersToRemove.Remove(operation.CounterName);
                             break;
+
                         case CounterOperationType.None:
                             break;
+
                         case CounterOperationType.Get:
                             GetCounterValue(context, _database, docId, operation.CounterName, _replyWithAllNodesValues, CountersDetail);
                             break;
+
                         default:
                             ThrowInvalidBatchOperationType(operation);
                             break;
@@ -586,7 +591,7 @@ namespace Raven.Server.Documents.Handlers
             }
         }
 
-        [RavenAction("/databases/*/counters", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/counters", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task Get()
         {
             var docId = GetStringValuesQueryString("docId");
@@ -626,7 +631,7 @@ namespace Raven.Server.Documents.Handlers
             return result;
         }
 
-        [RavenAction("/databases/*/counters", "POST", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/counters", "POST", AuthorizationStatus.ValidUser, EndpointType.Write)]
         public async Task Batch()
         {
             using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))

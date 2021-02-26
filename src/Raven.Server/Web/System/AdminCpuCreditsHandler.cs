@@ -4,7 +4,6 @@
 //  </copyright>
 // -----------------------------------------------------------------------
 
-using System;
 using System.Threading.Tasks;
 using Raven.Server.Json;
 using Raven.Server.Routing;
@@ -16,7 +15,7 @@ namespace Raven.Server.Web.System
 {
     public class AdminCpuCreditsHandler : RequestHandler
     {
-        [RavenAction("/admin/cpu-credits", "POST", AuthorizationStatus.ClusterAdmin)]
+        [RavenAction("/admin/cpu-credits", "POST", AuthorizationStatus.ClusterAdmin, EndpointType.Write)]
         public Task UpdateCpuCredits()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext ctx))
@@ -28,14 +27,14 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/admin/cpu-credits/sync", "POST", AuthorizationStatus.ClusterAdmin)]
+        [RavenAction("/admin/cpu-credits/sync", "POST", AuthorizationStatus.ClusterAdmin, EndpointType.Write)]
         public Task SyncCpuCredits()
         {
             Server.ForceSyncCpuCredits();
             return Task.CompletedTask;
         }
 
-        [RavenAction("/debug/cpu-credits", "GET", AuthorizationStatus.ValidUser, IsDebugInformationEndpoint = true)]
+        [RavenAction("/debug/cpu-credits", "GET", AuthorizationStatus.ValidUser, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public Task GetCpuCredits()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
@@ -50,7 +49,7 @@ namespace Raven.Server.Web.System
         public class CpuCredits
         {
             public double RemainingCredits;
-            
+
             public DynamicJsonValue ToJson()
             {
                 return new DynamicJsonValue

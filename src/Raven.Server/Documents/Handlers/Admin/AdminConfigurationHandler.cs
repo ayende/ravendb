@@ -18,7 +18,7 @@ namespace Raven.Server.Documents.Handlers.Admin
 {
     public class AdminConfigurationHandler : DatabaseRequestHandler
     {
-        [RavenAction("/databases/*/admin/configuration/settings", "GET", AuthorizationStatus.DatabaseAdmin, IsDebugInformationEndpoint = true)]
+        [RavenAction("/databases/*/admin/configuration/settings", "GET", AuthorizationStatus.DatabaseAdmin, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public Task GetSettings()
         {
             ConfigurationEntryScope? scope = null;
@@ -74,7 +74,7 @@ namespace Raven.Server.Documents.Handlers.Admin
             return Task.CompletedTask;
         }
 
-        [RavenAction("/databases/*/admin/configuration/settings", "PUT", AuthorizationStatus.DatabaseAdmin)]
+        [RavenAction("/databases/*/admin/configuration/settings", "PUT", AuthorizationStatus.DatabaseAdmin, EndpointType.Write)]
         public async Task PutSettings()
         {
             await ServerStore.EnsureNotPassiveAsync();
@@ -102,7 +102,7 @@ namespace Raven.Server.Documents.Handlers.Admin
             HttpContext.Response.StatusCode = (int)HttpStatusCode.Created;
         }
 
-        [RavenAction("/databases/*/admin/configuration/studio", "PUT", AuthorizationStatus.DatabaseAdmin)]
+        [RavenAction("/databases/*/admin/configuration/studio", "PUT", AuthorizationStatus.DatabaseAdmin, EndpointType.Write)]
         public async Task PutStudioConfiguration()
         {
             await ServerStore.EnsureNotPassiveAsync();
@@ -122,7 +122,7 @@ namespace Raven.Server.Documents.Handlers.Admin
             HttpContext.Response.StatusCode = (int)HttpStatusCode.Created;
         }
 
-        [RavenAction("/databases/*/admin/configuration/client", "PUT", AuthorizationStatus.DatabaseAdmin)]
+        [RavenAction("/databases/*/admin/configuration/client", "PUT", AuthorizationStatus.DatabaseAdmin, EndpointType.Write)]
         public async Task PutClientConfiguration()
         {
             await ServerStore.EnsureNotPassiveAsync();

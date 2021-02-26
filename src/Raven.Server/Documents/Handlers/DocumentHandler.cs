@@ -44,7 +44,7 @@ namespace Raven.Server.Documents.Handlers
 {
     public class DocumentHandler : DatabaseRequestHandler
     {
-        [RavenAction("/databases/*/docs", "HEAD", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/docs", "HEAD", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task Head()
         {
             var id = GetQueryStringValueAndAssertIfSingleAndNotEmpty("id");
@@ -68,7 +68,7 @@ namespace Raven.Server.Documents.Handlers
             }
         }
 
-        [RavenAction("/databases/*/docs/size", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/docs/size", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task GetDocSize()
         {
             var id = GetQueryStringValueAndAssertIfSingleAndNotEmpty("id");
@@ -104,7 +104,7 @@ namespace Raven.Server.Documents.Handlers
             }
         }
 
-        [RavenAction("/databases/*/docs", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/docs", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public async Task Get()
         {
             var ids = GetStringValuesQueryString("id", required: false);
@@ -123,7 +123,7 @@ namespace Raven.Server.Documents.Handlers
             }
         }
 
-        [RavenAction("/databases/*/docs", "POST", AuthorizationStatus.ValidUser, DisableOnCpuCreditsExhaustion = true)]
+        [RavenAction("/databases/*/docs", "POST", AuthorizationStatus.ValidUser, EndpointType.Read, DisableOnCpuCreditsExhaustion = true)]
         public async Task PostGet()
         {
             var metadataOnly = GetBoolValueQueryString("metadataOnly", required: false) ?? false;
@@ -430,7 +430,7 @@ namespace Raven.Server.Documents.Handlers
             return numberOfResults;
         }
 
-        [RavenAction("/databases/*/docs", "DELETE", AuthorizationStatus.ValidUser, DisableOnCpuCreditsExhaustion = true)]
+        [RavenAction("/databases/*/docs", "DELETE", AuthorizationStatus.ValidUser, EndpointType.Write, DisableOnCpuCreditsExhaustion = true)]
         public async Task Delete()
         {
             var id = GetQueryStringValueAndAssertIfSingleAndNotEmpty("id");
@@ -446,7 +446,7 @@ namespace Raven.Server.Documents.Handlers
             NoContentStatus();
         }
 
-        [RavenAction("/databases/*/docs", "PUT", AuthorizationStatus.ValidUser, DisableOnCpuCreditsExhaustion = true)]
+        [RavenAction("/databases/*/docs", "PUT", AuthorizationStatus.ValidUser, EndpointType.Write, DisableOnCpuCreditsExhaustion = true)]
         public async Task Put()
         {
             using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
@@ -491,7 +491,7 @@ namespace Raven.Server.Documents.Handlers
             }
         }
 
-        [RavenAction("/databases/*/docs", "PATCH", AuthorizationStatus.ValidUser, DisableOnCpuCreditsExhaustion = true)]
+        [RavenAction("/databases/*/docs", "PATCH", AuthorizationStatus.ValidUser, EndpointType.Write, DisableOnCpuCreditsExhaustion = true)]
         public async Task Patch()
         {
             var id = GetQueryStringValueAndAssertIfSingleAndNotEmpty("id");
@@ -547,16 +547,20 @@ namespace Raven.Server.Documents.Handlers
                     case PatchStatus.DocumentDoesNotExist:
                         HttpContext.Response.StatusCode = (int)HttpStatusCode.NotFound;
                         return;
+
                     case PatchStatus.Created:
                         HttpContext.Response.StatusCode = (int)HttpStatusCode.Created;
                         break;
+
                     case PatchStatus.Skipped:
                         HttpContext.Response.StatusCode = (int)HttpStatusCode.NotModified;
                         return;
+
                     case PatchStatus.Patched:
                     case PatchStatus.NotModified:
                         HttpContext.Response.StatusCode = (int)HttpStatusCode.OK;
                         break;
+
                     default:
                         throw new ArgumentOutOfRangeException();
                 }
@@ -617,7 +621,7 @@ namespace Raven.Server.Documents.Handlers
             }
         }
 
-        [RavenAction("/databases/*/docs/class", "GET", AuthorizationStatus.ValidUser, DisableOnCpuCreditsExhaustion = true)]
+        [RavenAction("/databases/*/docs/class", "GET", AuthorizationStatus.ValidUser, EndpointType.Read, DisableOnCpuCreditsExhaustion = true)]
         public Task GenerateClassFromDocument()
         {
             var id = GetStringQueryString("id");
@@ -638,6 +642,7 @@ namespace Raven.Server.Documents.Handlers
                 {
                     case "csharp":
                         break;
+
                     default:
                         throw new NotImplementedException($"Document code generator isn't implemented for {lang}");
                 }

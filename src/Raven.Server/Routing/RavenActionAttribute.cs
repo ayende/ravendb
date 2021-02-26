@@ -23,16 +23,31 @@ namespace Raven.Server.Routing
 
         public bool IsPosixSpecificEndpoint { get; set; }
 
-        public RavenActionAttribute(string path, string method, AuthorizationStatus requireAuth, bool isDebugInformationEndpoint = false,
-            bool isPosixSpecificEndpoint = false, CorsMode corsMode = CorsMode.None)
+        public bool IsReadOnlyEndpoint { get; }
+
+        public RavenActionAttribute(
+            string path,
+            string method,
+            AuthorizationStatus requireAuth,
+            EndpointType endpointType,
+            bool isDebugInformationEndpoint = false,
+            bool isPosixSpecificEndpoint = false,
+            CorsMode corsMode = CorsMode.None)
         {
             Path = path;
             Method = method;
+            IsReadOnlyEndpoint = endpointType == EndpointType.Read;
             IsDebugInformationEndpoint = isDebugInformationEndpoint;
             RequiredAuthorization = requireAuth;
             IsPosixSpecificEndpoint = isPosixSpecificEndpoint;
             CorsMode = corsMode;
         }
+    }
+
+    public enum EndpointType
+    {
+        Read,
+        Write
     }
 
     public enum AuthorizationStatus

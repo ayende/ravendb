@@ -13,7 +13,7 @@ namespace Raven.Server.Web.System
 {
     public class AdminIoMetricsHandler : RequestHandler
     {
-        [RavenAction("/admin/debug/io-metrics", "GET", AuthorizationStatus.Operator, IsDebugInformationEndpoint = true)]
+        [RavenAction("/admin/debug/io-metrics", "GET", AuthorizationStatus.Operator, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public Task IoMetrics()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out JsonOperationContext context))
@@ -25,7 +25,7 @@ namespace Raven.Server.Web.System
             return Task.CompletedTask;
         }
 
-        [RavenAction("/admin/debug/io-metrics/live", "GET", AuthorizationStatus.Operator, SkipUsagesCount = true)]
+        [RavenAction("/admin/debug/io-metrics/live", "GET", AuthorizationStatus.Operator, EndpointType.Read, SkipUsagesCount = true)]
         public async Task IoMetricsLive()
         {
             using (var webSocket = await HttpContext.WebSockets.AcceptWebSocketAsync())

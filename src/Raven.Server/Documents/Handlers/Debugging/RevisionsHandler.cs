@@ -7,12 +7,12 @@ namespace Raven.Server.Documents.Handlers.Debugging
 {
     public class RevisionsHandler : DatabaseRequestHandler
     {
-        [RavenAction("/databases/*/debug/documents/get-revisions", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/debug/documents/get-revisions", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task GetRevisions()
         {
             var etag = GetLongQueryString("etag", false) ?? 0;
             var pageSize = GetPageSize();
-            
+
             using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
             using (context.OpenReadTransaction())
             using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
@@ -20,7 +20,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
                 writer.WriteStartObject();
                 writer.WritePropertyName("Revisions");
                 writer.WriteStartArray();
-                
+
                 var first = true;
                 foreach (var revision in Database.DocumentsStorage.RevisionsStorage.GetRevisionsFrom(context, etag, pageSize))
                 {
@@ -29,25 +29,25 @@ namespace Raven.Server.Documents.Handlers.Debugging
                     first = false;
 
                     writer.WriteStartObject();
-                    
+
                     writer.WritePropertyName(nameof(Document.Id));
                     writer.WriteString(revision.Id);
                     writer.WriteComma();
-                    
+
                     writer.WritePropertyName(nameof(Document.Etag));
                     writer.WriteInteger(revision.Etag);
                     writer.WriteComma();
-                    
+
                     writer.WritePropertyName(nameof(Document.LastModified));
                     writer.WriteDateTime(revision.LastModified, true);
                     writer.WriteComma();
-                                        
+
                     writer.WritePropertyName(nameof(Document.ChangeVector));
                     writer.WriteString(revision.ChangeVector);
-                    
+
                     writer.WriteEndObject();
                 }
-                
+
                 writer.WriteEndArray();
                 writer.WriteEndObject();
             }

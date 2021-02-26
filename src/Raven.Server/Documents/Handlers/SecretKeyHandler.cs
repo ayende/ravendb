@@ -17,7 +17,7 @@ namespace Raven.Server.Documents.Handlers
 {
     public class SecretKeyHandler : RequestHandler
     {
-        [RavenAction("/admin/secrets", "GET", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/secrets", "GET", AuthorizationStatus.Operator, EndpointType.Read)]
         public Task GetKeys()
         {
             using (Server.ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext ctx))
@@ -36,13 +36,13 @@ namespace Raven.Server.Documents.Handlers
             return Task.CompletedTask;
         }
 
-        [RavenAction("/admin/secrets/generate", "GET", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/secrets/generate", "GET", AuthorizationStatus.Operator, EndpointType.Read)]
         public Task LegacyGenerate()
         {
             return Generate();
         }
 
-        [RavenAction("/secrets/generate", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/secrets/generate", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public unsafe Task Generate()
         {
             HttpContext.Response.ContentType = "application/base64";
@@ -64,7 +64,7 @@ namespace Raven.Server.Documents.Handlers
             return Task.CompletedTask;
         }
 
-        [RavenAction("/admin/secrets", "POST", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/secrets", "POST", AuthorizationStatus.Operator, EndpointType.Write)]
         public Task PutKey()
         {
             var name = GetStringQueryString("name");
@@ -81,7 +81,7 @@ namespace Raven.Server.Documents.Handlers
             return Task.CompletedTask;
         }
 
-        [RavenAction("/admin/secrets/distribute", "POST", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/secrets/distribute", "POST", AuthorizationStatus.Operator, EndpointType.Write)]
         public async Task DistributeKeyInCluster()
         {
             await ServerStore.EnsureNotPassiveAsync();

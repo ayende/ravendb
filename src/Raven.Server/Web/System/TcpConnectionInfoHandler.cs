@@ -17,7 +17,7 @@ namespace Raven.Server.Web.System
 {
     public class TcpConnectionInfoHandler : RequestHandler
     {
-        [RavenAction("/info/tcp", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/info/tcp", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task Get()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out JsonOperationContext context))
@@ -30,7 +30,7 @@ namespace Raven.Server.Web.System
             return Task.CompletedTask;
         }
 
-        [RavenAction("/info/remote-task/topology", "GET", AuthorizationStatus.RestrictedAccess)]
+        [RavenAction("/info/remote-task/topology", "GET", AuthorizationStatus.RestrictedAccess, EndpointType.Read)]
         public Task GetRemoteTaskTopology()
         {
             var database = GetStringQueryString("database");
@@ -69,7 +69,7 @@ namespace Raven.Server.Web.System
             return Task.CompletedTask;
         }
 
-        [RavenAction("/info/remote-task/tcp", "GET", AuthorizationStatus.RestrictedAccess)]
+        [RavenAction("/info/remote-task/tcp", "GET", AuthorizationStatus.RestrictedAccess, EndpointType.Read)]
         public async Task GetRemoteTaskTcp()
         {
             var remoteTask = GetStringQueryString("remote-task");
@@ -113,14 +113,16 @@ namespace Raven.Server.Web.System
 
                 case RavenServer.AuthenticationStatus.Allowed:
                     // check that the certificate is allowed for this database.
-                    if (feature.CanAccess(database, requireAdmin: false))
+                    if (feature.CanAccess(database, requireAdmin: false, requireWrite: false))
                         return true;
 
                     RequestRouter.UnlikelyFailAuthorization(httpContext, database, feature, AuthorizationStatus.RestrictedAccess);
                     return false;
+
                 case RavenServer.AuthenticationStatus.UnfamiliarIssuer:
                     RequestRouter.UnlikelyFailAuthorization(httpContext, database, feature, AuthorizationStatus.RestrictedAccess);
                     return false;
+
                 case RavenServer.AuthenticationStatus.UnfamiliarCertificate:
                     using (serverStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
                     using (context.OpenReadTransaction())

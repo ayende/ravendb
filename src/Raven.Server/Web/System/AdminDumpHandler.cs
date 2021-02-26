@@ -16,7 +16,7 @@ namespace Raven.Server.Web.System
 {
     public class AdminDumpHandler : ServerRequestHandler
     {
-        [RavenAction("/admin/debug/dump", "GET", AuthorizationStatus.ClusterAdmin)]
+        [RavenAction("/admin/debug/dump", "GET", AuthorizationStatus.ClusterAdmin, EndpointType.Read)]
         public async Task Dump()
         {
             var typeAsString = GetStringQueryString("type");
@@ -45,7 +45,7 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/admin/debug/gcdump", "GET", AuthorizationStatus.ClusterAdmin)]
+        [RavenAction("/admin/debug/gcdump", "GET", AuthorizationStatus.ClusterAdmin, EndpointType.Read)]
         public async Task GcDump()
         {
             var timeout = GetIntValueQueryString("timeout", required: false) ?? 30;

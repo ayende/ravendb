@@ -187,7 +187,7 @@ namespace Raven.Server.Routing
 
                             if (database == null)
                                 return true;
-                            if (feature.CanAccess(database.Name, route.AuthorizationStatus == AuthorizationStatus.DatabaseAdmin))
+                            if (feature.CanAccess(database.Name, route.AuthorizationStatus == AuthorizationStatus.DatabaseAdmin, route.IsReadOnlyEndpoint == false))
                                 return true;
 
                             goto case RavenServer.AuthenticationStatus.None;

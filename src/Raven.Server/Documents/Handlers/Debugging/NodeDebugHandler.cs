@@ -18,7 +18,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
 {
     public class NodeDebugHandler : RequestHandler
     {
-        [RavenAction("/admin/debug/node/remote-connections", "GET", AuthorizationStatus.Operator, IsDebugInformationEndpoint = true)]
+        [RavenAction("/admin/debug/node/remote-connections", "GET", AuthorizationStatus.Operator, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public Task ListRemoteConnections()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out JsonOperationContext context))
@@ -43,7 +43,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
             return Task.CompletedTask;
         }
 
-        [RavenAction("/admin/debug/node/engine-logs", "GET", AuthorizationStatus.Operator, IsDebugInformationEndpoint = true)]
+        [RavenAction("/admin/debug/node/engine-logs", "GET", AuthorizationStatus.Operator, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public Task ListRecentEngineLogs()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out JsonOperationContext context))
@@ -55,7 +55,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
             return Task.CompletedTask;
         }
 
-        [RavenAction("/admin/debug/node/state-change-history", "GET", AuthorizationStatus.Operator, IsDebugInformationEndpoint = true)]
+        [RavenAction("/admin/debug/node/state-change-history", "GET", AuthorizationStatus.Operator, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public Task GetStateChangeHistory()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out JsonOperationContext context))
@@ -69,7 +69,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
             return Task.CompletedTask;
         }
 
-        [RavenAction("/admin/debug/node/ping", "GET", AuthorizationStatus.Operator, IsDebugInformationEndpoint = true)]
+        [RavenAction("/admin/debug/node/ping", "GET", AuthorizationStatus.Operator, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public async Task PingTest()
         {
             var dest = GetStringQueryString("url", false) ?? GetStringQueryString("node", false);

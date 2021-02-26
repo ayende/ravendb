@@ -11,28 +11,28 @@ using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
 using Raven.Client.Documents.Operations.OngoingTasks;
-using Raven.Server.Routing;
-using Raven.Server.ServerWide;
-using Raven.Server.ServerWide.Context;
-using Sparrow.Json;
-using Sparrow.Json.Parsing;
-using Raven.Server.Rachis;
 using Raven.Client.ServerWide.Operations.Configuration;
 using Raven.Client.ServerWide.Operations.OngoingTasks;
 using Raven.Server.Documents.PeriodicBackup;
+using Raven.Server.Rachis;
+using Raven.Server.Routing;
+using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Commands;
+using Raven.Server.ServerWide.Context;
+using Sparrow.Json;
+using Sparrow.Json.Parsing;
 
 namespace Raven.Server.Web.System
 {
     public class AdminServerWideHandler : ServerRequestHandler
     {
-        [RavenAction("/admin/configuration/server-wide", "GET", AuthorizationStatus.ClusterAdmin)]
+        [RavenAction("/admin/configuration/server-wide", "GET", AuthorizationStatus.ClusterAdmin, EndpointType.Read)]
         public Task GetConfigurationServerWide()
         {
             // FullPath removes the trailing '/' so adding it back for the studio
             var localRootPath = ServerStore.Configuration.Backup.LocalRootPath;
             var localRootFullPath = localRootPath != null ? localRootPath.FullPath + Path.DirectorySeparatorChar : null;
-            
+
             var result = new DynamicJsonValue
             {
                 [nameof(ServerStore.Configuration.Backup.LocalRootPath)] = localRootFullPath,
@@ -50,7 +50,7 @@ namespace Raven.Server.Web.System
         }
 
         // Used for Create, Edit
-        [RavenAction("/admin/configuration/server-wide/backup", "PUT", AuthorizationStatus.ClusterAdmin)]
+        [RavenAction("/admin/configuration/server-wide/backup", "PUT", AuthorizationStatus.ClusterAdmin, EndpointType.Write)]
         public async Task PutServerWideBackupConfigurationCommand()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
@@ -65,18 +65,18 @@ namespace Raven.Server.Web.System
 
                 var (newIndex, _) = await ServerStore.PutServerWideBackupConfigurationAsync(configuration, GetRaftRequestIdFromQuery());
                 await ServerStore.WaitForCommitIndexChange(RachisConsensus.CommitIndexModification.GreaterOrEqual, newIndex);
-               
+
                 using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
                 using (context.OpenReadTransaction())
                 {
                     var backupName = ServerStore.Cluster.GetServerWideTaskNameByTaskId(context, ClusterStateMachine.ServerWideConfigurationKey.Backup, newIndex);
                     if (backupName == null)
                         throw new InvalidOperationException($"Backup name is null for server-wide backup with task id: {newIndex}");
-                    
+
                     var putResponse = new PutServerWideBackupConfigurationResponse
                     {
                         Name = backupName,
-                        RaftCommandIndex = newIndex 
+                        RaftCommandIndex = newIndex
                     };
 
                     HttpContext.Response.StatusCode = (int)HttpStatusCode.Created;
@@ -86,7 +86,7 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/admin/configuration/server-wide/external-replication", "PUT", AuthorizationStatus.ClusterAdmin)]
+        [RavenAction("/admin/configuration/server-wide/external-replication", "PUT", AuthorizationStatus.ClusterAdmin, EndpointType.Write)]
         public async Task PutServerWideExternalReplicationCommand()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
@@ -119,14 +119,14 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/admin/configuration/server-wide/backup", "DELETE", AuthorizationStatus.ClusterAdmin)]
+        [RavenAction("/admin/configuration/server-wide/backup", "DELETE", AuthorizationStatus.ClusterAdmin, EndpointType.Write)]
         public async Task DeleteServerWideBackupConfigurationCommand()
         {
             // backward compatibility
             await DeleteServerWideTaskCommand(OngoingTaskType.Backup);
         }
 
-        [RavenAction("/admin/configuration/server-wide/task", "DELETE", AuthorizationStatus.ClusterAdmin)]
+        [RavenAction("/admin/configuration/server-wide/task", "DELETE", AuthorizationStatus.ClusterAdmin, EndpointType.Write)]
         public async Task DeleteServerWideTaskCommand()
         {
             var typeAsString = GetStringQueryString("type", required: true);
@@ -137,7 +137,7 @@ namespace Raven.Server.Web.System
             await DeleteServerWideTaskCommand(type);
         }
 
-        [RavenAction("/admin/configuration/server-wide/backup", "GET", AuthorizationStatus.ClusterAdmin)]
+        [RavenAction("/admin/configuration/server-wide/backup", "GET", AuthorizationStatus.ClusterAdmin, EndpointType.Read)]
         public Task GetServerWideBackupConfigurations()
         {
             // backward compatibility
@@ -145,22 +145,24 @@ namespace Raven.Server.Web.System
             return Task.CompletedTask;
         }
 
-        [RavenAction("/admin/configuration/server-wide/tasks", "GET", AuthorizationStatus.ClusterAdmin)]
+        [RavenAction("/admin/configuration/server-wide/tasks", "GET", AuthorizationStatus.ClusterAdmin, EndpointType.Read)]
         public Task GetServerWideTasks()
         {
             var typeAsString = GetStringQueryString("type", required: true);
             if (Enum.TryParse(typeAsString, out OngoingTaskType type) == false)
                 throw new ArgumentException($"{typeAsString} is unknown task type.");
-            
+
             Func<BlittableJsonReaderObject, IDynamicJsonValueConvertible> converter;
             switch (type)
             {
                 case OngoingTaskType.Backup:
                     converter = JsonDeserializationCluster.ServerWideBackupConfiguration;
                     break;
+
                 case OngoingTaskType.Replication:
                     converter = JsonDeserializationCluster.ServerWideExternalReplication;
                     break;
+
                 default:
                     throw new ArgumentOutOfRangeException($"Task type '{type} isn't suppported");
             }
@@ -169,7 +171,7 @@ namespace Raven.Server.Web.System
             return Task.CompletedTask;
         }
 
-        [RavenAction("/admin/configuration/server-wide/state", "POST", AuthorizationStatus.ClusterAdmin)]
+        [RavenAction("/admin/configuration/server-wide/state", "POST", AuthorizationStatus.ClusterAdmin, EndpointType.Write)]
         public async Task ToggleServerWideTaskState()
         {
             var typeAsString = GetStringQueryString("type", required: true);
@@ -196,7 +198,7 @@ namespace Raven.Server.Web.System
                     var toggleResponse = new ServerWideTaskResponse
                     {
                         Name = taskName,
-                        RaftCommandIndex = newIndex 
+                        RaftCommandIndex = newIndex
                     };
 
                     context.Write(writer, toggleResponse.ToJson());
@@ -204,7 +206,7 @@ namespace Raven.Server.Web.System
                 }
             }
         }
-        
+
         private async Task DeleteServerWideTaskCommand(OngoingTaskType taskType)
         {
             var name = GetStringQueryString("name", required: true);

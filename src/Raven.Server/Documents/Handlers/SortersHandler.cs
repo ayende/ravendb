@@ -9,7 +9,7 @@ namespace Raven.Server.Documents.Handlers
 {
     public class SortersHandler : DatabaseRequestHandler
     {
-        [RavenAction("/databases/*/sorters", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/sorters", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task Get()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
@@ -28,7 +28,6 @@ namespace Raven.Server.Documents.Handlers
 
                 using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
                 {
-
                     writer.WriteStartObject();
 
                     writer.WriteArray(context, "Sorters", sorters.Values, (w, c, sorter) =>
@@ -51,6 +50,5 @@ namespace Raven.Server.Documents.Handlers
 
             return Task.CompletedTask;
         }
-
     }
 }

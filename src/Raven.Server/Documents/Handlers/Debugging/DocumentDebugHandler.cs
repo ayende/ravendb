@@ -8,8 +8,8 @@ using Sparrow.Json;
 namespace Raven.Server.Documents.Handlers.Debugging
 {
     public class DocumentDebugHandler : DatabaseRequestHandler
-    {       
-        [RavenAction("/databases/*/debug/documents/huge", "GET", AuthorizationStatus.ValidUser, IsDebugInformationEndpoint = true)]
+    {
+        [RavenAction("/databases/*/debug/documents/huge", "GET", AuthorizationStatus.ValidUser, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public Task HugeDocuments()
         {
             using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))

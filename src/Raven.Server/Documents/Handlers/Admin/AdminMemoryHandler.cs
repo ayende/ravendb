@@ -8,7 +8,7 @@ namespace Raven.Server.Documents.Handlers.Admin
 {
     public class AdminMemoryHandler : RequestHandler
     {
-        [RavenAction("/admin/memory/gc", "GET", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/memory/gc", "GET", AuthorizationStatus.Operator, EndpointType.Write)]
         public Task CollectGarbage()
         {
             var loh = GetBoolValueQueryString("loh", required: false) ?? false;

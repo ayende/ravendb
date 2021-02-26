@@ -9,7 +9,7 @@ namespace Raven.Server.Web.System
 {
     public class AdminStorageHandler : RequestHandler
     {
-        [RavenAction("/admin/debug/storage/environment/report", "GET", AuthorizationStatus.Operator, IsDebugInformationEndpoint = false)]
+        [RavenAction("/admin/debug/storage/environment/report", "GET", AuthorizationStatus.Operator, EndpointType.Read, IsDebugInformationEndpoint = false)]
         public Task SystemEnvironmentReport()
         {
             var details = GetBoolValueQueryString("details", required: false) ?? false;

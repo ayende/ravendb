@@ -33,13 +33,13 @@ namespace Raven.Server.Web.System
 {
     public class SetupHandler : RequestHandler
     {
-        [RavenAction("/setup/alive", "GET", AuthorizationStatus.UnauthenticatedClients, CorsMode = CorsMode.Public)]
+        [RavenAction("/setup/alive", "GET", AuthorizationStatus.UnauthenticatedClients, EndpointType.Read, CorsMode = CorsMode.Public)]
         public Task ServerAlive()
         {
             return NoContent();
         }
 
-        [RavenAction("/setup/dns-n-cert", "POST", AuthorizationStatus.UnauthenticatedClients)]
+        [RavenAction("/setup/dns-n-cert", "POST", AuthorizationStatus.UnauthenticatedClients, EndpointType.Read)]
         public async Task DnsCertBridge()
         {
             AssertOnlyInSetupMode();
@@ -119,7 +119,7 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/setup/user-domains", "POST", AuthorizationStatus.UnauthenticatedClients)]
+        [RavenAction("/setup/user-domains", "POST", AuthorizationStatus.UnauthenticatedClients, EndpointType.Read)]
         public async Task UserDomains()
         {
             AssertOnlyInSetupMode();
@@ -242,7 +242,7 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/setup/populate-ips", "POST", AuthorizationStatus.UnauthenticatedClients)]
+        [RavenAction("/setup/populate-ips", "POST", AuthorizationStatus.UnauthenticatedClients, EndpointType.Read)]
         public Task PopulateIps()
         {
             AssertOnlyInSetupMode();
@@ -278,7 +278,7 @@ namespace Raven.Server.Web.System
             return Task.CompletedTask;
         }
 
-        [RavenAction("/setup/parameters", "GET", AuthorizationStatus.UnauthenticatedClients)]
+        [RavenAction("/setup/parameters", "GET", AuthorizationStatus.UnauthenticatedClients, EndpointType.Read)]
         public async Task GetSetupParameters()
         {
             AssertOnlyInSetupMode();
@@ -323,7 +323,7 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/setup/ips", "GET", AuthorizationStatus.UnauthenticatedClients)]
+        [RavenAction("/setup/ips", "GET", AuthorizationStatus.UnauthenticatedClients, EndpointType.Read)]
         public async Task GetIps()
         {
             AssertOnlyInSetupMode();
@@ -417,7 +417,7 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/setup/hosts", "POST", AuthorizationStatus.UnauthenticatedClients)]
+        [RavenAction("/setup/hosts", "POST", AuthorizationStatus.UnauthenticatedClients, EndpointType.Read)]
         public Task GetHosts()
         {
             AssertOnlyInSetupMode();
@@ -490,7 +490,7 @@ namespace Raven.Server.Web.System
             return Task.CompletedTask;
         }
 
-        [RavenAction("/setup/unsecured", "POST", AuthorizationStatus.UnauthenticatedClients)]
+        [RavenAction("/setup/unsecured", "POST", AuthorizationStatus.UnauthenticatedClients, EndpointType.Read)]
         public async Task SetupUnsecured()
         {
             AssertOnlyInSetupMode();
@@ -564,7 +564,7 @@ namespace Raven.Server.Web.System
             NoContentStatus();
         }
 
-        [RavenAction("/setup/secured", "POST", AuthorizationStatus.UnauthenticatedClients)]
+        [RavenAction("/setup/secured", "POST", AuthorizationStatus.UnauthenticatedClients, EndpointType.Read)]
         public async Task SetupSecured()
         {
             AssertOnlyInSetupMode();
@@ -604,7 +604,7 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/setup/letsencrypt/agreement", "GET", AuthorizationStatus.UnauthenticatedClients)]
+        [RavenAction("/setup/letsencrypt/agreement", "GET", AuthorizationStatus.UnauthenticatedClients, EndpointType.Read)]
         public async Task SetupAgreement()
         {
             AssertOnlyInSetupMode();
@@ -626,7 +626,7 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/setup/letsencrypt", "POST", AuthorizationStatus.UnauthenticatedClients)]
+        [RavenAction("/setup/letsencrypt", "POST", AuthorizationStatus.UnauthenticatedClients, EndpointType.Read)]
         public async Task SetupLetsEncrypt()
         {
             AssertOnlyInSetupMode();
@@ -660,7 +660,7 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/setup/continue/extract", "POST", AuthorizationStatus.UnauthenticatedClients)]
+        [RavenAction("/setup/continue/extract", "POST", AuthorizationStatus.UnauthenticatedClients, EndpointType.Read)]
         public Task ExtractInfoFromZip()
         {
             AssertOnlyInSetupMode();
@@ -732,7 +732,7 @@ namespace Raven.Server.Web.System
             return Task.CompletedTask;
         }
 
-        [RavenAction("/setup/continue", "POST", AuthorizationStatus.UnauthenticatedClients)]
+        [RavenAction("/setup/continue", "POST", AuthorizationStatus.UnauthenticatedClients, EndpointType.Read)]
         public async Task ContinueClusterSetup()
         {
             AssertOnlyInSetupMode();
@@ -758,7 +758,7 @@ namespace Raven.Server.Web.System
             NoContentStatus();
         }
 
-        [RavenAction("/setup/finish", "POST", AuthorizationStatus.UnauthenticatedClients)]
+        [RavenAction("/setup/finish", "POST", AuthorizationStatus.UnauthenticatedClients, EndpointType.Read)]
         public Task SetupFinish()
         {
             AssertOnlyInSetupMode();

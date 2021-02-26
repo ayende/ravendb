@@ -25,7 +25,7 @@ namespace Raven.Server.Web.Studio
         private const string ArrayStubsKey = "$a";
         private const string TrimmedValueKey = "$t";
 
-        [RavenAction("/databases/*/studio/collections/preview", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/studio/collections/preview", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task PreviewCollection()
         {
             var start = GetStart();
@@ -159,12 +159,15 @@ namespace Raven.Server.Web.Studio
                                 writer.WritePropertyName(prop.Name);
                                 writer.WriteValue(prop.Token & BlittableJsonReaderBase.TypesMask, prop.Value);
                                 break;
+
                             case ValueWriteStrategy.SubstituteWithArrayStub:
                                 arrayStubsJson[prop.Name] = ((BlittableJsonReaderArray)prop.Value).Length;
                                 break;
+
                             case ValueWriteStrategy.SubstituteWithObjectStub:
                                 objectStubsJson[prop.Name] = ((BlittableJsonReaderObject)prop.Value).Count;
                                 break;
+
                             case ValueWriteStrategy.Trim:
                                 writer.WritePropertyName(prop.Name);
                                 WriteTrimmedValue(writer, prop.Token & BlittableJsonReaderBase.TypesMask, prop.Value);
@@ -219,6 +222,7 @@ namespace Raven.Server.Web.Studio
                     writer.WriteString(lazyString?.Substring(0,
                         Math.Min(lazyString.Length, StringLengthLimit)));
                     break;
+
                 case BlittableJsonToken.CompressedString:
                     var lazyCompressedString = (LazyCompressedStringValue)val;
                     string actualString = lazyCompressedString.ToString();
@@ -238,20 +242,26 @@ namespace Raven.Server.Web.Studio
                 case BlittableJsonToken.String:
                     var lazyString = (LazyStringValue)val;
                     return lazyString.Length > StringLengthLimit ? ValueWriteStrategy.Trim : ValueWriteStrategy.Passthrough;
+
                 case BlittableJsonToken.Integer:
                     return ValueWriteStrategy.Passthrough;
+
                 case BlittableJsonToken.StartArray:
                     return ValueWriteStrategy.SubstituteWithArrayStub;
+
                 case BlittableJsonToken.EmbeddedBlittable:
                 case BlittableJsonToken.StartObject:
                     return ValueWriteStrategy.SubstituteWithObjectStub;
+
                 case BlittableJsonToken.CompressedString:
                     var lazyCompressedString = (LazyCompressedStringValue)val;
                     return lazyCompressedString.UncompressedSize > StringLengthLimit ? ValueWriteStrategy.Trim : ValueWriteStrategy.Passthrough;
+
                 case BlittableJsonToken.LazyNumber:
                 case BlittableJsonToken.Boolean:
                 case BlittableJsonToken.Null:
                     return ValueWriteStrategy.Passthrough;
+
                 default:
                     throw new DataMisalignedException($"Unidentified Type {token}");
             }
@@ -295,7 +305,7 @@ namespace Raven.Server.Web.Studio
             columns.Remove(metadataField);
         }
 
-        [RavenAction("/databases/*/studio/collections/docs", "DELETE", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/studio/collections/docs", "DELETE", AuthorizationStatus.ValidUser, EndpointType.Write)]
         public Task Delete()
         {
             var returnContextToPool = ContextPool.AllocateOperationContext(out DocumentsOperationContext context);

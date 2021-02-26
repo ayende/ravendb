@@ -2,7 +2,6 @@
 using System.Threading.Tasks;
 using Raven.Client.Documents.Conventions;
 using Raven.Client.Documents.Operations;
-using Raven.Client.Json;
 using Raven.Client.Json.Serialization.NewtonsoftJson.Internal;
 using Raven.Server.Documents;
 using Raven.Server.Json;
@@ -16,7 +15,7 @@ namespace Raven.Server.Web.Studio
 {
     public class SqlMigrationHandler : DatabaseRequestHandler
     {
-         [RavenAction("/databases/*/admin/sql-migration/schema", "POST", AuthorizationStatus.DatabaseAdmin)]
+        [RavenAction("/databases/*/admin/sql-migration/schema", "POST", AuthorizationStatus.DatabaseAdmin, EndpointType.Write)]
         public Task SqlSchema()
         {
             using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
@@ -35,8 +34,8 @@ namespace Raven.Server.Web.Studio
 
             return Task.CompletedTask;
         }
-        
-        [RavenAction("/databases/*/admin/sql-migration/import", "POST", AuthorizationStatus.DatabaseAdmin)]
+
+        [RavenAction("/databases/*/admin/sql-migration/import", "POST", AuthorizationStatus.DatabaseAdmin, EndpointType.Write)]
         public Task ImportSql()
         {
             using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
@@ -44,7 +43,7 @@ namespace Raven.Server.Web.Studio
                 using (var sqlImportDoc = context.ReadForMemory(RequestBodyStream(), "sql-migration-request"))
                 {
                     MigrationRequest migrationRequest;
-                    
+
                     // we can't use JsonDeserializationServer here as it doesn't support recursive processing
                     var serializer = DocumentConventions.DefaultForServer.Serialization.CreateDeserializer();
                     using (var blittableJsonReader = new BlittableJsonReader())
@@ -52,20 +51,20 @@ namespace Raven.Server.Web.Studio
                         blittableJsonReader.Initialize(sqlImportDoc);
                         migrationRequest = serializer.Deserialize<MigrationRequest>(blittableJsonReader);
                     }
-                    
+
                     var operationId = Database.Operations.GetNextOperationId();
-                    
+
                     var sourceSqlDatabase = migrationRequest.Source;
-                    
+
                     var dbDriver = DatabaseDriverDispatcher.CreateDriver(sourceSqlDatabase.Provider, sourceSqlDatabase.ConnectionString);
                     var schema = dbDriver.FindSchema();
                     var token = CreateOperationToken();
-                    
+
                     var result = new MigrationResult(migrationRequest.Settings);
-                    
+
                     var collectionsCount = migrationRequest.Settings.Collections.Count;
                     var operationDescription = "Importing " + collectionsCount + " " + (collectionsCount == 1 ? "collection" : "collections") + " from SQL database: " + schema.CatalogName;
-                    
+
                     Database.Operations.AddOperation(Database, operationDescription, Documents.Operations.Operations.OperationType.MigrationFromSql, onProgress =>
                     {
                         return Task.Run(async () =>
@@ -75,7 +74,7 @@ namespace Raven.Server.Web.Studio
                                 // allocate new context as we executed this async
                                 using (ContextPool.AllocateOperationContext(out DocumentsOperationContext migrationContext))
                                 {
-                                    await dbDriver.Migrate(migrationRequest.Settings, schema, Database, migrationContext, result, onProgress, token.Token);    
+                                    await dbDriver.Migrate(migrationRequest.Settings, schema, Database, migrationContext, result, onProgress, token.Token);
                                 }
                             }
                             catch (Exception e)
@@ -85,21 +84,21 @@ namespace Raven.Server.Web.Studio
                                 throw;
                             }
 
-                            return (IOperationResult) result;
+                            return (IOperationResult)result;
                         });
                     }, operationId, token: token);
-                    
+
                     using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
                     {
                         writer.WriteOperationIdAndNodeTag(context, operationId, ServerStore.NodeTag);
                     }
-                    
+
                     return Task.CompletedTask;
                 }
             }
         }
-        
-        [RavenAction("/databases/*/admin/sql-migration/test", "POST", AuthorizationStatus.DatabaseAdmin)]
+
+        [RavenAction("/databases/*/admin/sql-migration/test", "POST", AuthorizationStatus.DatabaseAdmin, EndpointType.Write)]
         public Task TestSql()
         {
             using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
@@ -107,7 +106,7 @@ namespace Raven.Server.Web.Studio
                 using (var sqlImportTestDoc = context.ReadForMemory(RequestBodyStream(), "sql-migration-test-request"))
                 {
                     MigrationTestRequest testRequest;
-                    
+
                     // we can't use JsonDeserializationServer here as it doesn't support recursive processing
                     var serializer = DocumentConventions.DefaultForServer.Serialization.CreateDeserializer();
                     using (var blittableJsonReader = new BlittableJsonReader())
@@ -115,29 +114,29 @@ namespace Raven.Server.Web.Studio
                         blittableJsonReader.Initialize(sqlImportTestDoc);
                         testRequest = serializer.Deserialize<MigrationTestRequest>(blittableJsonReader);
                     }
-                    
+
                     var sourceSqlDatabase = testRequest.Source;
-                    
+
                     var dbDriver = DatabaseDriverDispatcher.CreateDriver(sourceSqlDatabase.Provider, sourceSqlDatabase.ConnectionString);
                     var schema = dbDriver.FindSchema();
-                    
+
                     var (testResultDocument, documentId) = dbDriver.Test(testRequest.Settings, schema, context);
-                    
+
                     using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
                     {
                         writer.WriteStartObject();
-                        
+
                         writer.WritePropertyName("DocumentId");
                         writer.WriteString(documentId);
-                        
+
                         writer.WriteComma();
-                        
+
                         writer.WritePropertyName("Document");
                         writer.WriteObject(testResultDocument);
-                        
+
                         writer.WriteEndObject();
                     }
-                    
+
                     return Task.CompletedTask;
                 }
             }

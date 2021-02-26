@@ -1,10 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Net;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading.Tasks;
-using Raven.Client;
 using Raven.Client.Exceptions;
 using Raven.Client.Exceptions.Cluster;
 using Raven.Client.Http;
@@ -24,17 +22,14 @@ using Raven.Server.Storage.Schema;
 using Raven.Server.Utils;
 using Raven.Server.Web;
 using Raven.Server.Web.System;
-using Sparrow;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
-using Sparrow.LowMemory;
-using Sparrow.Utils;
 
 namespace Raven.Server.Documents.Handlers.Admin
 {
     public class RachisAdminHandler : RequestHandler
     {
-        [RavenAction("/admin/rachis/send", "POST", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/rachis/send", "POST", AuthorizationStatus.Operator, EndpointType.Write)]
         public async Task ApplyCommand()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
@@ -55,6 +50,7 @@ namespace Raven.Server.Documents.Handlers.Admin
                         case AddOrUpdateCompareExchangeBatchCommand batchCmpExchangeCommand:
                             batchCmpExchangeCommand.ContextToWriteResult = context;
                             break;
+
                         case CompareExchangeCommandBase cmpExchange:
                             cmpExchange.ContextToWriteResult = context;
                             break;
@@ -100,14 +96,14 @@ namespace Raven.Server.Documents.Handlers.Admin
             }
         }
 
-        [RavenAction("/rachis/waitfor", "Get", AuthorizationStatus.ValidUser)]
+        [RavenAction("/rachis/waitfor", "Get", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public async Task WaitForIndex()
         {
             var index = GetLongQueryString("index");
             await ServerStore.Cluster.WaitForIndexNotification(index);
         }
 
-        [RavenAction("/admin/cluster/observer/suspend", "POST", AuthorizationStatus.Operator, CorsMode = CorsMode.Cluster)]
+        [RavenAction("/admin/cluster/observer/suspend", "POST", AuthorizationStatus.Operator, EndpointType.Write, CorsMode = CorsMode.Cluster)]
         public Task SuspendObserver()
         {
             if (ServerStore.IsLeader())
@@ -127,7 +123,7 @@ namespace Raven.Server.Documents.Handlers.Admin
             return Task.CompletedTask;
         }
 
-        [RavenAction("/admin/cluster/observer/decisions", "GET", AuthorizationStatus.Operator, CorsMode = CorsMode.Cluster)]
+        [RavenAction("/admin/cluster/observer/decisions", "GET", AuthorizationStatus.Operator, EndpointType.Read, CorsMode = CorsMode.Cluster)]
         public Task GetObserverDecisions()
         {
             if (ServerStore.IsLeader())
@@ -154,7 +150,7 @@ namespace Raven.Server.Documents.Handlers.Admin
             return Task.CompletedTask;
         }
 
-        [RavenAction("/admin/cluster/log", "GET", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/cluster/log", "GET", AuthorizationStatus.Operator, EndpointType.Read)]
         public Task GetLogs()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
@@ -167,7 +163,7 @@ namespace Raven.Server.Documents.Handlers.Admin
             return Task.CompletedTask;
         }
 
-        [RavenAction("/admin/debug/cluster/history-logs", "GET", AuthorizationStatus.Operator, IsDebugInformationEndpoint = true)]
+        [RavenAction("/admin/debug/cluster/history-logs", "GET", AuthorizationStatus.Operator, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public Task GetHistoryLogs()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
@@ -183,8 +179,7 @@ namespace Raven.Server.Documents.Handlers.Admin
             return Task.CompletedTask;
         }
 
-
-        [RavenAction("/cluster/node-info", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/cluster/node-info", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task GetNodeInfo()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
@@ -201,7 +196,7 @@ namespace Raven.Server.Documents.Handlers.Admin
             return Task.CompletedTask;
         }
 
-        [RavenAction("/cluster/topology", "GET", AuthorizationStatus.ValidUser, IsDebugInformationEndpoint = true)]
+        [RavenAction("/cluster/topology", "GET", AuthorizationStatus.ValidUser, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public Task GetClusterTopology()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
@@ -269,7 +264,7 @@ namespace Raven.Server.Documents.Handlers.Admin
             return Task.CompletedTask;
         }
 
-        [RavenAction("/admin/cluster/maintenance-stats", "GET", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/cluster/maintenance-stats", "GET", AuthorizationStatus.Operator, EndpointType.Read)]
         public Task ClusterMaintenanceStats()
         {
             if (ServerStore.LeaderTag == null)
@@ -290,14 +285,14 @@ namespace Raven.Server.Documents.Handlers.Admin
             return Task.CompletedTask;
         }
 
-        [RavenAction("/admin/cluster/bootstrap", "POST", AuthorizationStatus.ClusterAdmin)]
+        [RavenAction("/admin/cluster/bootstrap", "POST", AuthorizationStatus.ClusterAdmin, EndpointType.Write)]
         public async Task Bootstrap()
         {
             await ServerStore.EnsureNotPassiveAsync();
             NoContentStatus();
         }
 
-        [RavenAction("/admin/cluster/node", "PUT", AuthorizationStatus.ClusterAdmin, CorsMode = CorsMode.Cluster)]
+        [RavenAction("/admin/cluster/node", "PUT", AuthorizationStatus.ClusterAdmin, EndpointType.Write, CorsMode = CorsMode.Cluster)]
         public async Task AddNode()
         {
             var nodeUrl = GetQueryStringValueAndAssertIfSingleAndNotEmpty("url");
@@ -411,8 +406,8 @@ namespace Raven.Server.Documents.Handlers.Admin
                         var now = DateTime.UtcNow;
                         if (certificate.NotBefore.ToUniversalTime() > now)
                         {
-                            // Because of time zone and time drift issues, we can't assume that the certificate generation will be 
-                            // proper. Because of that, we allow tolerance of the NotBefore to be a bit earlier / later than the 
+                            // Because of time zone and time drift issues, we can't assume that the certificate generation will be
+                            // proper. Because of that, we allow tolerance of the NotBefore to be a bit earlier / later than the
                             // current time. Clients may still fail to work with our certificate because of timing issues,
                             // but the admin needs to setup time sync properly and there isn't much we can do at that point
                             if ((certificate.NotBefore.ToUniversalTime() - now).TotalDays > 1)
@@ -457,7 +452,6 @@ namespace Raven.Server.Documents.Handlers.Admin
                                 await ServerStore.Cluster.WaitForIndexNotification(res.Index);
                             }
                         }
-
                     }
 
                     await ServerStore.AddNodeToClusterAsync(nodeUrl, nodeTag, validateNotInTopology: true, asWatcher: watcher ?? false);
@@ -504,7 +498,7 @@ namespace Raven.Server.Documents.Handlers.Admin
 
                         try
                         {
-                            await ServerStore.PutNodeLicenseLimitsAsync(nodeTag, detailsPerNode, maxCores,$"{raftRequestId}/put-license-limits");
+                            await ServerStore.PutNodeLicenseLimitsAsync(nodeTag, detailsPerNode, maxCores, $"{raftRequestId}/put-license-limits");
                         }
                         catch
                         {
@@ -542,7 +536,7 @@ namespace Raven.Server.Documents.Handlers.Admin
             }
         }
 
-        [RavenAction("/admin/cluster/node", "DELETE", AuthorizationStatus.ClusterAdmin, CorsMode = CorsMode.Cluster)]
+        [RavenAction("/admin/cluster/node", "DELETE", AuthorizationStatus.ClusterAdmin, EndpointType.Write, CorsMode = CorsMode.Cluster)]
         public async Task DeleteNode()
         {
             var nodeTag = GetStringQueryString("nodeTag");
@@ -567,7 +561,7 @@ namespace Raven.Server.Documents.Handlers.Admin
             RedirectToLeader();
         }
 
-        [RavenAction("/admin/license/set-limit", "POST", AuthorizationStatus.ClusterAdmin, CorsMode = CorsMode.Cluster)]
+        [RavenAction("/admin/license/set-limit", "POST", AuthorizationStatus.ClusterAdmin, EndpointType.Write, CorsMode = CorsMode.Cluster)]
         public async Task SetLicenseLimit()
         {
             var nodeTag = GetStringQueryString("nodeTag");
@@ -579,7 +573,7 @@ namespace Raven.Server.Documents.Handlers.Admin
             NoContentStatus();
         }
 
-        [RavenAction("/admin/cluster/timeout", "POST", AuthorizationStatus.Operator, CorsMode = CorsMode.Cluster)]
+        [RavenAction("/admin/cluster/timeout", "POST", AuthorizationStatus.Operator, EndpointType.Write, CorsMode = CorsMode.Cluster)]
         public Task TimeoutNow()
         {
             Server.ServerStore.Engine.Timeout.ExecuteTimeoutBehavior();
@@ -587,8 +581,7 @@ namespace Raven.Server.Documents.Handlers.Admin
             return Task.CompletedTask;
         }
 
-
-        [RavenAction("/admin/cluster/reelect", "POST", AuthorizationStatus.Operator, CorsMode = CorsMode.Cluster)]
+        [RavenAction("/admin/cluster/reelect", "POST", AuthorizationStatus.Operator, EndpointType.Write, CorsMode = CorsMode.Cluster)]
         public Task EnforceReelection()
         {
             if (ServerStore.IsLeader())
@@ -602,7 +595,8 @@ namespace Raven.Server.Documents.Handlers.Admin
         }
 
         /* Promote a non-voter to a promotable */
-        [RavenAction("/admin/cluster/promote", "POST", AuthorizationStatus.ClusterAdmin, CorsMode = CorsMode.Cluster)]
+
+        [RavenAction("/admin/cluster/promote", "POST", AuthorizationStatus.ClusterAdmin, EndpointType.Write, CorsMode = CorsMode.Cluster)]
         public async Task PromoteNode()
         {
             if (ServerStore.LeaderTag == null)
@@ -635,7 +629,8 @@ namespace Raven.Server.Documents.Handlers.Admin
         }
 
         /* Demote a voter (member/promotable) node to a non-voter  */
-        [RavenAction("/admin/cluster/demote", "POST", AuthorizationStatus.ClusterAdmin, CorsMode = CorsMode.Cluster)]
+
+        [RavenAction("/admin/cluster/demote", "POST", AuthorizationStatus.ClusterAdmin, EndpointType.Write, CorsMode = CorsMode.Cluster)]
         public async Task DemoteNode()
         {
             if (ServerStore.LeaderTag == null)

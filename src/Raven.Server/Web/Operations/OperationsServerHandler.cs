@@ -7,7 +7,7 @@ namespace Raven.Server.Web.Operations
 {
     public class OperationsServerHandler : ServerRequestHandler
     {
-        [RavenAction("/admin/operations/next-operation-id", "GET", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/operations/next-operation-id", "GET", AuthorizationStatus.Operator, EndpointType.Read)]
         public Task GetNextOperationId()
         {
             var nextId = ServerStore.Operations.GetNextOperationId();
@@ -26,7 +26,7 @@ namespace Raven.Server.Web.Operations
             return Task.CompletedTask;
         }
 
-        [RavenAction("/admin/operations/kill", "POST", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/operations/kill", "POST", AuthorizationStatus.Operator, EndpointType.Write)]
         public Task Kill()
         {
             var id = GetLongQueryString("id");
@@ -36,7 +36,7 @@ namespace Raven.Server.Web.Operations
             return NoContent();
         }
 
-        [RavenAction("/operations/state", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/operations/state", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task State()
         {
             var id = GetLongQueryString("id");
@@ -59,8 +59,6 @@ namespace Raven.Server.Web.Operations
             }
 
             var state = operation.State;
-
-
 
             using (ServerStore.ContextPool.AllocateOperationContext(out JsonOperationContext context))
             {

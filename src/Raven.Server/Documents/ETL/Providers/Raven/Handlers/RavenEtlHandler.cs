@@ -12,7 +12,7 @@ namespace Raven.Server.Documents.ETL.Providers.Raven.Handlers
 {
     public class RavenEtlHandler : DatabaseRequestHandler
     {
-        [RavenAction("/databases/*/admin/etl/raven/test", "POST", AuthorizationStatus.Operator)]
+        [RavenAction("/databases/*/admin/etl/raven/test", "POST", AuthorizationStatus.Operator, EndpointType.Write)]
         public Task PostScriptTest()
         {
             using (Database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))

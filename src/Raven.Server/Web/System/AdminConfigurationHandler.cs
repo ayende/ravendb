@@ -16,7 +16,7 @@ namespace Raven.Server.Web.System
 {
     public class AdminConfigurationHandler : ServerRequestHandler
     {
-        [RavenAction("/admin/configuration/settings", "GET", AuthorizationStatus.ClusterAdmin)]
+        [RavenAction("/admin/configuration/settings", "GET", AuthorizationStatus.ClusterAdmin, EndpointType.Read)]
         public Task GetSettings()
         {
             ConfigurationEntryScope? scope = null;
@@ -54,7 +54,7 @@ namespace Raven.Server.Web.System
             return Task.CompletedTask;
         }
 
-        [RavenAction("/admin/configuration/studio", "PUT", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/configuration/studio", "PUT", AuthorizationStatus.Operator, EndpointType.Write)]
         public async Task PutStudioConfiguration()
         {
             await ServerStore.EnsureNotPassiveAsync();
@@ -74,7 +74,7 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/configuration/studio", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/configuration/studio", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task GetStudioConfiguration()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
@@ -98,7 +98,7 @@ namespace Raven.Server.Web.System
             return Task.CompletedTask;
         }
 
-        [RavenAction("/admin/configuration/client", "PUT", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/configuration/client", "PUT", AuthorizationStatus.Operator, EndpointType.Write)]
         public async Task PutClientConfiguration()
         {
             await ServerStore.EnsureNotPassiveAsync();
@@ -117,7 +117,7 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/configuration/client", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/configuration/client", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task GetClientConfiguration()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))

@@ -18,7 +18,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
 {
     public class StorageHandler : DatabaseRequestHandler
     {
-        [RavenAction("/databases/*/debug/storage/trees", "GET", AuthorizationStatus.ValidUser, IsDebugInformationEndpoint = false)]
+        [RavenAction("/databases/*/debug/storage/trees", "GET", AuthorizationStatus.ValidUser, EndpointType.Read, IsDebugInformationEndpoint = false)]
         public Task Trees()
         {
             using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
@@ -26,7 +26,6 @@ namespace Raven.Server.Documents.Handlers.Debugging
             {
                 using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
                 {
-
                     writer.WriteStartObject();
 
                     writer.WritePropertyName("Results");
@@ -64,13 +63,13 @@ namespace Raven.Server.Documents.Handlers.Debugging
             return Task.CompletedTask;
         }
 
-        [RavenAction("/databases/*/debug/storage/btree-structure", "GET", AuthorizationStatus.ValidUser, IsDebugInformationEndpoint = false)]
+        [RavenAction("/databases/*/debug/storage/btree-structure", "GET", AuthorizationStatus.ValidUser, EndpointType.Read, IsDebugInformationEndpoint = false)]
         public Task BTreeStructure()
         {
             var treeName = GetStringQueryString("name", required: true);
 
             using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
-            using(var tx = context.OpenReadTransaction())
+            using (var tx = context.OpenReadTransaction())
             {
                 var tree = tx.InnerTransaction.ReadTree(treeName)
                     ?? throw new InvalidOperationException("Tree name '" + treeName + "' was not found. Existing trees: " +
@@ -84,7 +83,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
             return Task.CompletedTask;
         }
 
-        [RavenAction("/databases/*/debug/storage/fst-structure", "GET", AuthorizationStatus.ValidUser, IsDebugInformationEndpoint = false)]
+        [RavenAction("/databases/*/debug/storage/fst-structure", "GET", AuthorizationStatus.ValidUser, EndpointType.Read, IsDebugInformationEndpoint = false)]
         public Task FixedSizeTreeStructure()
         {
             var treeName = GetStringQueryString("name", required: true);
@@ -103,7 +102,6 @@ namespace Raven.Server.Documents.Handlers.Debugging
                             string.Join(", ", GetTreeNames(tx.InnerTransaction, RootObjectType.FixedSizeTree))
                         , e);
                 }
-                
 
                 HttpContext.Response.ContentType = "text/html";
                 DebugStuff.DumpFixedSizedTreeToStream(tx.InnerTransaction.LowLevelTransaction, tree, ResponseBodyStream());
@@ -111,7 +109,6 @@ namespace Raven.Server.Documents.Handlers.Debugging
 
             return Task.CompletedTask;
         }
-
 
         private IEnumerable<string> GetTreeNames(Transaction tx, RootObjectType type)
         {
@@ -126,12 +123,11 @@ namespace Raven.Server.Documents.Handlers.Debugging
                         continue;
 
                     yield return rootIterator.CurrentKey.ToString();
-
                 } while (rootIterator.MoveNext());
             }
         }
 
-        [RavenAction("/databases/*/debug/storage/report", "GET", AuthorizationStatus.ValidUser, IsDebugInformationEndpoint = true)]
+        [RavenAction("/databases/*/debug/storage/report", "GET", AuthorizationStatus.ValidUser, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public Task Report()
         {
             using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
@@ -180,7 +176,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
             return Task.CompletedTask;
         }
 
-        [RavenAction("/databases/*/debug/storage/all-environments/report", "GET", AuthorizationStatus.ValidUser, IsDebugInformationEndpoint = true)]
+        [RavenAction("/databases/*/debug/storage/all-environments/report", "GET", AuthorizationStatus.ValidUser, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public Task AllEnvironmentsReport()
         {
             var name = GetStringQueryString("database");
@@ -238,7 +234,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
             }
         }
 
-        [RavenAction("/databases/*/debug/storage/environment/report", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/debug/storage/environment/report", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task EnvironmentReport()
         {
             var name = GetStringQueryString("name");

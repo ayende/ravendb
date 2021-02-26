@@ -55,7 +55,7 @@ namespace Raven.Server.NotificationCenter
             BackgroundWorkers = new List<BackgroundWorkBase>();
         }
 
-        public IDisposable TrackActions(AsyncQueue<DynamicJsonValue> notificationsQueue, IWebsocketWriter webSocketWriter, Func<string, bool> shouldWriteByDb = null)
+        public IDisposable TrackActions(AsyncQueue<DynamicJsonValue> notificationsQueue, IWebsocketWriter webSocketWriter, Func<string, bool, bool> shouldWriteByDb = null)
         {
             var watcher = new ConnectedWatcher
             {

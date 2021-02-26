@@ -21,7 +21,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
             public List<LowLevelTransaction> Information;
         }
 
-        [RavenAction("/databases/*/admin/debug/txinfo", "GET", AuthorizationStatus.DatabaseAdmin, IsDebugInformationEndpoint = true)]
+        [RavenAction("/databases/*/admin/debug/txinfo", "GET", AuthorizationStatus.DatabaseAdmin, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public Task TxInfo()
         {
             var results = new List<TransactionInfo>();
@@ -47,7 +47,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
             return Task.CompletedTask;
         }
 
-        [RavenAction("/databases/*/admin/debug/cluster/txinfo", "GET", AuthorizationStatus.DatabaseAdmin, IsDebugInformationEndpoint = true)]
+        [RavenAction("/databases/*/admin/debug/cluster/txinfo", "GET", AuthorizationStatus.DatabaseAdmin, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public Task ClusterTxInfo()
         {
             var from = GetLongQueryString("from", false);

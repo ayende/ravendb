@@ -1,5 +1,4 @@
 ﻿using System.Net;
-using System.Reflection;
 using System.Threading.Tasks;
 using Raven.Server.Commercial;
 using Raven.Server.Config.Categories;
@@ -13,7 +12,7 @@ namespace Raven.Server.Web.Studio
 {
     public class LicenseHandler : RequestHandler
     {
-        [RavenAction("/license/eula", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/license/eula", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public async Task Eula()
         {
             HttpContext.Response.ContentType = "text/plain; charset=utf-8";
@@ -27,7 +26,7 @@ namespace Raven.Server.Web.Studio
             }
         }
 
-        [RavenAction("/admin/license/eula/accept", "POST", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/license/eula/accept", "POST", AuthorizationStatus.Operator, EndpointType.Write)]
         public Task AcceptEula()
         {
             if (ServerStore.LicenseManager.IsEulaAccepted)
@@ -40,7 +39,7 @@ namespace Raven.Server.Web.Studio
             return NoContent();
         }
 
-        [RavenAction("/license/status", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/license/status", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task Status()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
@@ -51,8 +50,8 @@ namespace Raven.Server.Web.Studio
 
             return Task.CompletedTask;
         }
-        
-        [RavenAction("/license/configuration", "GET", AuthorizationStatus.ValidUser)]
+
+        [RavenAction("/license/configuration", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task GetLicenseConfigurationSettings()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
@@ -64,14 +63,14 @@ namespace Raven.Server.Web.Studio
                     [nameof(LicenseConfiguration.CanActivate)] = ServerStore.Configuration.Licensing.CanActivate,
                     [nameof(LicenseConfiguration.CanForceUpdate)] = ServerStore.Configuration.Licensing.CanForceUpdate
                 };
-                
+
                 context.Write(writer, djv);
             }
 
             return Task.CompletedTask;
         }
 
-        [RavenAction("/admin/license/activate", "POST", AuthorizationStatus.ClusterAdmin)]
+        [RavenAction("/admin/license/activate", "POST", AuthorizationStatus.ClusterAdmin, EndpointType.Write)]
         public async Task Activate()
         {
             if (ServerStore.Configuration.Licensing.CanActivate == false)
@@ -93,7 +92,7 @@ namespace Raven.Server.Web.Studio
             NoContentStatus();
         }
 
-        [RavenAction("/admin/license/forceUpdate", "POST", AuthorizationStatus.ClusterAdmin)]
+        [RavenAction("/admin/license/forceUpdate", "POST", AuthorizationStatus.ClusterAdmin, EndpointType.Write)]
         public async Task ForceUpdate()
         {
             if (ServerStore.Configuration.Licensing.CanForceUpdate == false)
@@ -107,7 +106,7 @@ namespace Raven.Server.Web.Studio
             NoContentStatus();
         }
 
-        [RavenAction("/license/support", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/license/support", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public async Task LicenseSupport()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
@@ -118,7 +117,7 @@ namespace Raven.Server.Web.Studio
             }
         }
 
-        [RavenAction("/admin/license/renew", "POST", AuthorizationStatus.ClusterAdmin)]
+        [RavenAction("/admin/license/renew", "POST", AuthorizationStatus.ClusterAdmin, EndpointType.Write)]
         public async Task RenewLicense()
         {
             if (ServerStore.Configuration.Licensing.CanRenew == false)

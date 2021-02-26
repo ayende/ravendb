@@ -143,13 +143,13 @@ namespace Raven.Server.Web.System
             {".appcache", "text/cache-manifest; charset=utf-8"}
         };
 
-        [RavenAction("/favicon.ico", "GET", AuthorizationStatus.UnauthenticatedClients, SkipLastRequestTimeUpdate = true)]
+        [RavenAction("/favicon.ico", "GET", AuthorizationStatus.UnauthenticatedClients, EndpointType.Read, SkipLastRequestTimeUpdate = true)]
         public Task FavIcon()
         {
             return GetStudioFileInternal("favicon.ico");
         }
 
-        [RavenAction("/auth-error.html", "GET", AuthorizationStatus.UnauthenticatedClients)]
+        [RavenAction("/auth-error.html", "GET", AuthorizationStatus.UnauthenticatedClients, EndpointType.Read)]
         public Task StudioAuthError()
         {
             var error = GetStringQueryString("err");
@@ -157,7 +157,7 @@ namespace Raven.Server.Web.System
             return HttpContext.Response.WriteAsync(HtmlUtil.RenderStudioAuthErrorPage(error));
         }
 
-        [RavenAction("/eula/index.html", "GET", AuthorizationStatus.UnauthenticatedClients)]
+        [RavenAction("/eula/index.html", "GET", AuthorizationStatus.UnauthenticatedClients, EndpointType.Read)]
         public Task GetEulaIndexFile()
         {
             if (ServerStore.LicenseManager.IsEulaAccepted)
@@ -172,7 +172,7 @@ namespace Raven.Server.Web.System
             return GetStudioFileInternal("index.html");
         }
 
-        [RavenAction("/eula/$", "GET", AuthorizationStatus.UnauthenticatedClients)]
+        [RavenAction("/eula/$", "GET", AuthorizationStatus.UnauthenticatedClients, EndpointType.Read)]
         public Task GetEulaFile()
         {
             if (ServerStore.LicenseManager.IsEulaAccepted)
@@ -191,7 +191,7 @@ namespace Raven.Server.Web.System
             return GetStudioFileInternal(serverRelativeFileName);
         }
 
-        [RavenAction("/wizard/index.html", "GET", AuthorizationStatus.UnauthenticatedClients)]
+        [RavenAction("/wizard/index.html", "GET", AuthorizationStatus.UnauthenticatedClients, EndpointType.Read)]
         public Task GetSetupIndexFile()
         {
             if (ServerStore.LicenseManager.IsEulaAccepted == false)
@@ -214,7 +214,7 @@ namespace Raven.Server.Web.System
             return GetStudioFileInternal("index.html");
         }
 
-        [RavenAction("/wizard/$", "GET", AuthorizationStatus.UnauthenticatedClients)]
+        [RavenAction("/wizard/$", "GET", AuthorizationStatus.UnauthenticatedClients, EndpointType.Read)]
         public Task GetSetupFile()
         {
             var serverRelativeFileName = RouteMatch.Url.Substring(
@@ -231,7 +231,7 @@ namespace Raven.Server.Web.System
             return GetStudioFileInternal(serverRelativeFileName);
         }
 
-        [RavenAction("/studio/index.html", "GET", AuthorizationStatus.UnauthenticatedClients)]
+        [RavenAction("/studio/index.html", "GET", AuthorizationStatus.UnauthenticatedClients, EndpointType.Read)]
         public Task GetStudioIndexFile()
         {
             if (ServerStore.LicenseManager.IsEulaAccepted == false)
@@ -252,7 +252,7 @@ namespace Raven.Server.Web.System
             return GetStudioFileInternal("index.html");
         }
 
-        [RavenAction("/studio/$", "GET", AuthorizationStatus.UnauthenticatedClients)]
+        [RavenAction("/studio/$", "GET", AuthorizationStatus.UnauthenticatedClients, EndpointType.Read)]
         public Task GetStudioFile()
         {
             string serverRelativeFileName = RouteMatch.Url.Substring(
@@ -693,7 +693,7 @@ namespace Raven.Server.Web.System
             _zipFileLastChangeTicks = new FileInfo(_zipFilePath).LastWriteTimeUtc.Ticks;
         }
 
-        [RavenAction("/", "GET", AuthorizationStatus.UnauthenticatedClients)]
+        [RavenAction("/", "GET", AuthorizationStatus.UnauthenticatedClients, EndpointType.Read)]
         public Task RavenRoot()
         {
             HttpContext.Response.Headers["Location"] = "/studio/index.html";

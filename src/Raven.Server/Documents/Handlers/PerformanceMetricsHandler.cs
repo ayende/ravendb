@@ -28,7 +28,7 @@ namespace Raven.Server.Documents.Handlers
             }
         }
 
-        [RavenAction("/databases/*/debug/perf-metrics", "GET", AuthorizationStatus.ValidUser, IsDebugInformationEndpoint = true)]
+        [RavenAction("/databases/*/debug/perf-metrics", "GET", AuthorizationStatus.ValidUser, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public Task IoMetrics()
         {
             using (ContextPool.AllocateOperationContext(out JsonOperationContext context))
@@ -39,8 +39,6 @@ namespace Raven.Server.Documents.Handlers
             }
             return Task.CompletedTask;
         }
-
-
 
         public static PerformanceMetricsResponse GetPerformanceMetricsResponse(DocumentDatabase documentDatabase)
         {
@@ -53,6 +51,5 @@ namespace Raven.Server.Documents.Handlers
 
             return result;
         }
-
     }
 }

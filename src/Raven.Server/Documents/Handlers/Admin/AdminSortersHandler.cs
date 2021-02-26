@@ -14,7 +14,7 @@ namespace Raven.Server.Documents.Handlers.Admin
 {
     public class AdminSortersHandler : DatabaseRequestHandler
     {
-        [RavenAction("/databases/*/admin/sorters", "PUT", AuthorizationStatus.DatabaseAdmin)]
+        [RavenAction("/databases/*/admin/sorters", "PUT", AuthorizationStatus.DatabaseAdmin, EndpointType.Write)]
         public async Task Put()
         {
             using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
@@ -54,12 +54,12 @@ namespace Raven.Server.Documents.Handlers.Admin
                 await Database.RachisLogIndexNotifications.WaitForIndexNotification(index, ServerStore.Engine.OperationTimeout);
 
                 NoContentStatus();
-                
+
                 HttpContext.Response.StatusCode = (int)HttpStatusCode.Created;
             }
         }
 
-        [RavenAction("/databases/*/admin/sorters", "DELETE", AuthorizationStatus.DatabaseAdmin)]
+        [RavenAction("/databases/*/admin/sorters", "DELETE", AuthorizationStatus.DatabaseAdmin, EndpointType.Write)]
         public async Task Delete()
         {
             var name = GetQueryStringValueAndAssertIfSingleAndNotEmpty("name");

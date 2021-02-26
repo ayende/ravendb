@@ -13,7 +13,7 @@ namespace Raven.Server.Monitoring.Snmp
 {
     public class SnmpHandler : RequestHandler
     {
-        [RavenAction("/monitoring/snmp", "GET", AuthorizationStatus.Operator)]
+        [RavenAction("/monitoring/snmp", "GET", AuthorizationStatus.Operator, EndpointType.Read)]
         public Task Get()
         {
             AssertSnmp();
@@ -41,7 +41,7 @@ namespace Raven.Server.Monitoring.Snmp
             return Task.CompletedTask;
         }
 
-        [RavenAction("/monitoring/snmp/bulk", "GET", AuthorizationStatus.Operator)]
+        [RavenAction("/monitoring/snmp/bulk", "GET", AuthorizationStatus.Operator, EndpointType.Read)]
         public Task GetBulk()
         {
             AssertSnmp();
@@ -56,7 +56,7 @@ namespace Raven.Server.Monitoring.Snmp
             return Task.CompletedTask;
         }
 
-        [RavenAction("/monitoring/snmp/bulk", "POST", AuthorizationStatus.Operator)]
+        [RavenAction("/monitoring/snmp/bulk", "POST", AuthorizationStatus.Operator, EndpointType.Read)]
         public async Task PostBulk()
         {
             AssertSnmp();
@@ -76,7 +76,7 @@ namespace Raven.Server.Monitoring.Snmp
             }
         }
 
-        [RavenAction("/monitoring/snmp/oids", "GET", AuthorizationStatus.Operator)]
+        [RavenAction("/monitoring/snmp/oids", "GET", AuthorizationStatus.Operator, EndpointType.Read)]
         public Task GetOids()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))

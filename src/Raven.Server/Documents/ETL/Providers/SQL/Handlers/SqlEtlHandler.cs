@@ -21,7 +21,7 @@ namespace Raven.Server.Documents.ETL.Providers.SQL.Handlers
 {
     public class SqlEtlHandler : DatabaseRequestHandler
     {
-        [RavenAction("/databases/*/admin/etl/sql/test-connection", "POST", AuthorizationStatus.Operator)]
+        [RavenAction("/databases/*/admin/etl/sql/test-connection", "POST", AuthorizationStatus.Operator, EndpointType.Write)]
         public Task GetTestSqlConnection()
         {
             try
@@ -29,18 +29,17 @@ namespace Raven.Server.Documents.ETL.Providers.SQL.Handlers
                 var factoryName = GetStringQueryString("factoryName");
                 var connectionString = new StreamReader(HttpContext.Request.Body).ReadToEnd();
                 RelationalDatabaseWriter.TestConnection(factoryName, connectionString);
-                
+
                 DynamicJsonValue result = new DynamicJsonValue
-                    {
-                        [nameof(NodeConnectionTestResult.Success)] = true,
-                    };
-                
+                {
+                    [nameof(NodeConnectionTestResult.Success)] = true,
+                };
+
                 using (ContextPool.AllocateOperationContext(out JsonOperationContext context))
                 using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
                 {
                     context.Write(writer, result);
                 }
-                
             }
             catch (Exception ex)
             {
@@ -63,7 +62,7 @@ namespace Raven.Server.Documents.ETL.Providers.SQL.Handlers
             return Task.CompletedTask;
         }
 
-        [RavenAction("/databases/*/admin/etl/sql/test", "POST", AuthorizationStatus.Operator)]
+        [RavenAction("/databases/*/admin/etl/sql/test", "POST", AuthorizationStatus.Operator, EndpointType.Write)]
         public Task PostScriptTest()
         {
             using (Database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))

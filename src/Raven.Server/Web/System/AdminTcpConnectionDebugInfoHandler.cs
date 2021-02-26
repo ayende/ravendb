@@ -11,7 +11,7 @@ namespace Raven.Server.Web.System
 {
     public class AdminTcpConnectionDebugInfoHandler : RequestHandler
     {
-        [RavenAction("/admin/debug/info/tcp/stats", "GET", AuthorizationStatus.Operator, IsDebugInformationEndpoint = true)]
+        [RavenAction("/admin/debug/info/tcp/stats", "GET", AuthorizationStatus.Operator, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public Task Statistics()
         {
             var properties = TcpExtensions.GetIPGlobalPropertiesSafely();
@@ -57,7 +57,7 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/admin/debug/info/tcp/active-connections", "GET", AuthorizationStatus.Operator, IsDebugInformationEndpoint = true)]
+        [RavenAction("/admin/debug/info/tcp/active-connections", "GET", AuthorizationStatus.Operator, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public Task ActiveConnections()
         {
             var properties = TcpExtensions.GetIPGlobalPropertiesSafely();

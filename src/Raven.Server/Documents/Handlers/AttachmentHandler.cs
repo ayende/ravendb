@@ -23,7 +23,7 @@ namespace Raven.Server.Documents.Handlers
 {
     public class AttachmentHandler : DatabaseRequestHandler
     {
-        [RavenAction("/databases/*/attachments", "HEAD", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/attachments", "HEAD", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task Head()
         {
             var documentId = GetQueryStringValueAndAssertIfSingleAndNotEmpty("id");
@@ -52,19 +52,19 @@ namespace Raven.Server.Documents.Handlers
             }
         }
 
-        [RavenAction("/databases/*/attachments", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/attachments", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task Get()
         {
             return GetAttachment(true);
         }
 
-        [RavenAction("/databases/*/attachments", "POST", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/attachments", "POST", AuthorizationStatus.ValidUser, EndpointType.Write)]
         public Task GetPost()
         {
             return GetAttachment(false);
         }
 
-        [RavenAction("/databases/*/attachments/bulk", "POST", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/attachments/bulk", "POST", AuthorizationStatus.ValidUser, EndpointType.Write)]
         public async Task GetAttachments()
         {
             using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
@@ -151,7 +151,7 @@ namespace Raven.Server.Documents.Handlers
             writer.WriteEndObject();
         }
 
-        [RavenAction("/databases/*/debug/attachments/hash", "GET", AuthorizationStatus.ValidUser, DisableOnCpuCreditsExhaustion = true)]
+        [RavenAction("/databases/*/debug/attachments/hash", "GET", AuthorizationStatus.ValidUser, EndpointType.Read, DisableOnCpuCreditsExhaustion = true)]
         public Task Exists()
         {
             var hash = GetStringQueryString("hash");
@@ -175,7 +175,7 @@ namespace Raven.Server.Documents.Handlers
             return Task.CompletedTask;
         }
 
-        [RavenAction("/databases/*/debug/attachments/metadata", "GET", AuthorizationStatus.ValidUser, DisableOnCpuCreditsExhaustion = true)]
+        [RavenAction("/databases/*/debug/attachments/metadata", "GET", AuthorizationStatus.ValidUser, EndpointType.Read, DisableOnCpuCreditsExhaustion = true)]
         public Task GetDocumentsAttachmentMetadataWithCounts()
         {
             var id = GetStringQueryString("id", false);
@@ -274,7 +274,7 @@ namespace Raven.Server.Documents.Handlers
             }
         }
 
-        [RavenAction("/databases/*/attachments", "PUT", AuthorizationStatus.ValidUser, DisableOnCpuCreditsExhaustion = true)]
+        [RavenAction("/databases/*/attachments", "PUT", AuthorizationStatus.ValidUser, EndpointType.Write, DisableOnCpuCreditsExhaustion = true)]
         public async Task Put()
         {
             using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
@@ -363,7 +363,7 @@ namespace Raven.Server.Documents.Handlers
             }
         }
 
-        [RavenAction("/databases/*/attachments", "DELETE", AuthorizationStatus.ValidUser, DisableOnCpuCreditsExhaustion = true)]
+        [RavenAction("/databases/*/attachments", "DELETE", AuthorizationStatus.ValidUser, EndpointType.Write, DisableOnCpuCreditsExhaustion = true)]
         public async Task Delete()
         {
             using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))

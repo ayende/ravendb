@@ -23,7 +23,7 @@ namespace Raven.Server.Documents.Handlers
 {
     public class SubscriptionsHandler : DatabaseRequestHandler
     {
-        [RavenAction("/databases/*/subscriptions/try", "POST", AuthorizationStatus.ValidUser, DisableOnCpuCreditsExhaustion = true)]
+        [RavenAction("/databases/*/subscriptions/try", "POST", AuthorizationStatus.ValidUser, EndpointType.Write, DisableOnCpuCreditsExhaustion = true)]
         public async Task Try()
         {
             using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
@@ -67,6 +67,7 @@ namespace Raven.Server.Documents.Handlers
                         case Constants.Documents.SubscriptionChangeVectorSpecialStates.DoNotChange:
                             state.ChangeVectorForNextBatchStartingPoint = null;
                             break;
+
                         case Constants.Documents.SubscriptionChangeVectorSpecialStates.LastDocument:
                             using (context.OpenReadTransaction())
                             {
@@ -155,7 +156,7 @@ namespace Raven.Server.Documents.Handlers
             }
         }
 
-        [RavenAction("/databases/*/subscriptions", "PUT", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/subscriptions", "PUT", AuthorizationStatus.ValidUser, EndpointType.Write)]
         public async Task Create()
         {
             using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
@@ -170,7 +171,7 @@ namespace Raven.Server.Documents.Handlers
             }
         }
 
-        [RavenAction("/databases/*/subscriptions", "DELETE", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/subscriptions", "DELETE", AuthorizationStatus.ValidUser, EndpointType.Write)]
         public async Task Delete()
         {
             var subscriptionName = GetQueryStringValueAndAssertIfSingleAndNotEmpty("taskName");
@@ -180,7 +181,7 @@ namespace Raven.Server.Documents.Handlers
             await NoContent();
         }
 
-        [RavenAction("/databases/*/subscriptions/state", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/subscriptions/state", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task GetSubscriptionState()
         {
             var subscriptionName = GetStringQueryString("name", false);
@@ -211,7 +212,7 @@ namespace Raven.Server.Documents.Handlers
             }
         }
 
-        [RavenAction("/databases/*/subscriptions/connection-details", "GET", AuthorizationStatus.ValidUser, CorsMode = CorsMode.Cluster)]
+        [RavenAction("/databases/*/subscriptions/connection-details", "GET", AuthorizationStatus.ValidUser, EndpointType.Read, CorsMode = CorsMode.Cluster)]
         public Task GetSubscriptionConnectionDetails()
         {
             var subscriptionName = GetStringQueryString("name", false);
@@ -239,7 +240,7 @@ namespace Raven.Server.Documents.Handlers
             }
         }
 
-        [RavenAction("/databases/*/subscriptions", "GET", AuthorizationStatus.ValidUser, IsDebugInformationEndpoint = true)]
+        [RavenAction("/databases/*/subscriptions", "GET", AuthorizationStatus.ValidUser, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public Task GetAll()
         {
             var start = GetStart();
@@ -353,7 +354,7 @@ namespace Raven.Server.Documents.Handlers
             };
         }
 
-        [RavenAction("/databases/*/subscriptions/drop", "POST", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/subscriptions/drop", "POST", AuthorizationStatus.ValidUser, EndpointType.Write)]
         public Task DropSubscriptionConnection()
         {
             var subscriptionId = GetLongQueryString("id", required: false);
@@ -380,7 +381,7 @@ namespace Raven.Server.Documents.Handlers
             return NoContent();
         }
 
-        [RavenAction("/databases/*/subscriptions/update", "POST", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/subscriptions/update", "POST", AuthorizationStatus.ValidUser, EndpointType.Write)]
         public async Task Update()
         {
             using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
@@ -490,6 +491,7 @@ namespace Raven.Server.Documents.Handlers
 
                         options.ChangeVector = null;
                         break;
+
                     case Constants.Documents.SubscriptionChangeVectorSpecialStates.LastDocument:
                         options.ChangeVector = Database.DocumentsStorage.GetLastDocumentChangeVector(context.Transaction.InnerTransaction, context, sub.Collection);
                         break;

@@ -15,10 +15,9 @@ namespace Raven.Server.Documents.Handlers.Debugging
 {
     public class DatabaseDebugInfoPackageHandler : DatabaseRequestHandler
     {
-        [RavenAction("/databases/*/debug/info-package", "GET", AuthorizationStatus.ValidUser, IsDebugInformationEndpoint = true)]
+        [RavenAction("/databases/*/debug/info-package", "GET", AuthorizationStatus.ValidUser, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public async Task GetInfoPackage()
         {
-           
             var contentDisposition = $"attachment; filename={DateTime.UtcNow:yyyy-MM-dd H:mm:ss} - Database [{Database.Name}].zip";
             HttpContext.Response.Headers["Content-Disposition"] = contentDisposition;
             using (ServerStore.ContextPool.AllocateOperationContext(out JsonOperationContext context))
@@ -36,7 +35,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
                         Debug.Assert(feature != null);
                         var routes = DebugInfoPackageUtils.GetAuthorizedRoutes(feature, Database.Name)
                             .Where(x => x.TypeOfRoute == RouteInformation.RouteType.Databases);
-                        
+
                         foreach (RouteInformation route in routes)
                         {
                             var entryName = DebugInfoPackageUtils.GetOutputPathFromRouteInformation(route, null);
@@ -58,7 +57,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
                             }
                             catch (Exception e)
                             {
-                                DebugInfoPackageUtils.WriteExceptionAsZipEntry(e,archive,entryName.Replace(".json", string.Empty));
+                                DebugInfoPackageUtils.WriteExceptionAsZipEntry(e, archive, entryName.Replace(".json", string.Empty));
                             }
                         }
                     }

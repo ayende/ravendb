@@ -2,12 +2,10 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography.X509Certificates;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Bson;
 using Raven.Client.Documents.Conventions;
-using Raven.Client.Documents.Session;
 using Raven.Client.Documents.Smuggler;
 using Raven.Server.Json;
 using Raven.Server.Routing;
@@ -23,7 +21,7 @@ namespace Raven.Server.Documents.Handlers
 {
     public class LegacyReplicationHandler : DatabaseRequestHandler
     {
-        [RavenAction("/databases/*/replication/lastEtag", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/replication/lastEtag", "GET", AuthorizationStatus.ValidUser, EndpointType.Write)]
         public Task LastEtag()
         {
             using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
@@ -38,7 +36,7 @@ namespace Raven.Server.Documents.Handlers
             return Task.CompletedTask;
         }
 
-        [RavenAction("/databases/*/replication/replicateDocs", "POST", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/replication/replicateDocs", "POST", AuthorizationStatus.ValidUser, EndpointType.Write)]
         public async Task Documents()
         {
             using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
@@ -67,7 +65,7 @@ namespace Raven.Server.Documents.Handlers
             }
         }
 
-        [RavenAction("/databases/*/replication/replicateAttachments", "POST", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/replication/replicateAttachments", "POST", AuthorizationStatus.ValidUser, EndpointType.Write)]
         public async Task Attachments()
         {
             var destination = new DatabaseDestination(Database);
@@ -129,7 +127,7 @@ namespace Raven.Server.Documents.Handlers
                     foreach (var keyValue in metadata)
                     {
                         var key = keyValue.Key;
-                        if (key.Equals("Raven-Replication-Source") || 
+                        if (key.Equals("Raven-Replication-Source") ||
                             key.Equals("Raven-Replication-Version") ||
                             key.Equals("Raven-Replication-History"))
                             continue;
@@ -186,22 +184,22 @@ namespace Raven.Server.Documents.Handlers
                 }
             }
         }
-        
-        [RavenAction("/databases/*/replication/heartbeat", "POST", AuthorizationStatus.ValidUser)]
+
+        [RavenAction("/databases/*/replication/heartbeat", "POST", AuthorizationStatus.ValidUser, EndpointType.Write)]
         public Task Heartbeat()
         {
             // nothing to do here
             return Task.CompletedTask;
         }
-        
-        [RavenAction("/databases/*/indexes/last-queried", "POST", AuthorizationStatus.ValidUser)]
+
+        [RavenAction("/databases/*/indexes/last-queried", "POST", AuthorizationStatus.ValidUser, EndpointType.Write)]
         public Task LastQueried()
         {
             // nothing to do here
             return Task.CompletedTask;
         }
 
-        [RavenAction("/databases/*/side-by-side-indexes", "PUT", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/side-by-side-indexes", "PUT", AuthorizationStatus.ValidUser, EndpointType.Write)]
         public Task SideBySideIndexes()
         {
             // nothing to do here
@@ -281,13 +279,16 @@ namespace Raven.Server.Documents.Handlers
                         case JsonToken.Comment:
                             // ignore comments
                             break;
+
                         case JsonToken.PropertyName:
                             propName = reader.Value.ToString();
                             if (string.Equals(propName, string.Empty))
                                 throw new InvalidDataException("Deserializing JSON object with empty string as property name is not supported.");
                             break;
+
                         case JsonToken.EndObject:
                             return result;
+
                         case JsonToken.StartObject:
                             if (string.IsNullOrEmpty(propName) == false)
                             {
@@ -300,6 +301,7 @@ namespace Raven.Server.Documents.Handlers
                                 throw new InvalidOperationException($"The JsonReader should not be on a token of type {reader.TokenType}.");
                             }
                             break;
+
                         case JsonToken.StartArray:
                             if (string.IsNullOrEmpty(propName) == false)
                             {
@@ -312,6 +314,7 @@ namespace Raven.Server.Documents.Handlers
                                 throw new InvalidOperationException($"The JsonReader should not be on a token of type {reader.TokenType}.");
                             }
                             break;
+
                         default:
                             if (string.IsNullOrEmpty(propName) == false)
                             {
@@ -343,12 +346,15 @@ namespace Raven.Server.Documents.Handlers
                     case JsonToken.Bytes:
                         v = reader.Value;
                         break;
+
                     case JsonToken.Null:
                         v = null;
                         break;
+
                     case JsonToken.Undefined:
                         v = null;
                         break;
+
                     default:
                         throw new InvalidOperationException($"The JsonReader should not be on a token of type {reader.TokenType}.");
                 }
@@ -377,14 +383,18 @@ namespace Raven.Server.Documents.Handlers
                         case JsonToken.Comment:
                             // ignore comments
                             break;
+
                         case JsonToken.EndArray:
                             return ar;
+
                         case JsonToken.StartObject:
                             ar.Add(GetObject(reader));
                             break;
+
                         case JsonToken.StartArray:
                             ar.Add(GetArray(reader));
                             break;
+
                         default:
                             ar.Add(GetValue(reader));
                             break;
@@ -466,18 +476,25 @@ namespace Raven.Server.Documents.Handlers
 
                 [FieldOffset(0)]
                 public byte Byte0;
+
                 [FieldOffset(1)]
                 public byte Byte1;
+
                 [FieldOffset(2)]
                 public byte Byte2;
+
                 [FieldOffset(3)]
                 public byte Byte3;
+
                 [FieldOffset(4)]
                 public byte Byte4;
+
                 [FieldOffset(5)]
                 public byte Byte5;
+
                 [FieldOffset(6)]
                 public byte Byte6;
+
                 [FieldOffset(7)]
                 public byte Byte7;
             }

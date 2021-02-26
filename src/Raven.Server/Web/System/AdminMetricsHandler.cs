@@ -11,7 +11,7 @@ namespace Raven.Server.Web.System
 {
     public class AdminMetricsHandler : RequestHandler
     {
-        [RavenAction("/admin/metrics", "GET", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/metrics", "GET", AuthorizationStatus.Operator, EndpointType.Read)]
         public Task GetRootStats()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out JsonOperationContext context))

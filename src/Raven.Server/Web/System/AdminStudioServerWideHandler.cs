@@ -16,7 +16,7 @@ namespace Raven.Server.Web.System
 {
     public class AdminStudioServerWideHandler : ServerRequestHandler
     {
-        [RavenAction("/admin/server-wide/tasks", "GET", AuthorizationStatus.ClusterAdmin)]
+        [RavenAction("/admin/server-wide/tasks", "GET", AuthorizationStatus.ClusterAdmin, EndpointType.Read)]
         public Task GetServerWideTasksForStudio()
         {
             var taskName = GetStringQueryString("name", required: false);
@@ -36,8 +36,8 @@ namespace Raven.Server.Web.System
                 foreach (var blittable in blittables)
                 {
                     var configuration = JsonDeserializationCluster.ServerWideBackupConfiguration(blittable);
-                    
-                    if (taskName != null && type == OngoingTaskType.Backup && 
+
+                    if (taskName != null && type == OngoingTaskType.Backup &&
                         string.Equals(taskName, configuration.Name) == false)
                         continue;
 
@@ -82,7 +82,7 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/admin/server-wide/backup-data-directory", "GET", AuthorizationStatus.ClusterAdmin)]
+        [RavenAction("/admin/server-wide/backup-data-directory", "GET", AuthorizationStatus.ClusterAdmin, EndpointType.Read)]
         public async Task FullBackupDataDirectory()
         {
             var path = GetStringQueryString("path", required: true);
@@ -116,7 +116,7 @@ namespace Raven.Server.Web.System
 
                 public override DynamicJsonValue ToJson()
                 {
-                    var json =  base.ToJson();
+                    var json = base.ToJson();
                     json[nameof(ExcludedDatabases)] = ExcludedDatabases;
                     return json;
                 }

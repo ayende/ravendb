@@ -14,9 +14,8 @@ namespace Raven.Server.Web.Studio
     public class StudioCollectionFieldsHandler : DatabaseRequestHandler
     {
         private const int MaxArrayItemsToFetch = 16;
-        
 
-        [RavenAction("/databases/*/studio/collections/fields", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/studio/collections/fields", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task GetCollectionFields()
         {
             var collection = GetStringQueryString("collection", required: false);
@@ -95,9 +94,11 @@ namespace Raven.Server.Web.Studio
                 case BlittableJsonToken.String:
                 case BlittableJsonToken.CompressedString:
                     return FieldType.String;
+
                 case BlittableJsonToken.Integer:
                 case BlittableJsonToken.LazyNumber:
                     return FieldType.Number;
+
                 case BlittableJsonToken.StartArray:
                     if (value == null)
                         return FieldType.Array;
@@ -111,24 +112,32 @@ namespace Raven.Server.Web.Studio
                     {
                         case FieldType.Object:
                             return FieldType.ArrayObject;
+
                         case FieldType.Array:
                             return FieldType.ArrayArray;
+
                         case FieldType.String:
                             return FieldType.ArrayString;
+
                         case FieldType.Number:
                             return FieldType.ArrayNumber;
+
                         case FieldType.Boolean:
                             return FieldType.ArrayBoolean;
                     }
 
                     return FieldType.Array;
+
                 case BlittableJsonToken.EmbeddedBlittable:
                 case BlittableJsonToken.StartObject:
                     return FieldType.Object;
+
                 case BlittableJsonToken.Boolean:
                     return FieldType.Boolean;
+
                 case BlittableJsonToken.Null:
                     return FieldType.Null;
+
                 default:
                     throw new DataMisalignedException($"Unidentified Type {token}");
             }
@@ -166,6 +175,7 @@ namespace Raven.Server.Web.Studio
                                 case BlittableJsonToken.StartObject:
                                     FetchFields((BlittableJsonReaderObject)prop.Value, fields);
                                     break;
+
                                 case BlittableJsonToken.StartArray:
                                     var array = (BlittableJsonReaderArray)prop.Value;
                                     for (int j = 0; j < Math.Min(array.Length, MaxArrayItemsToFetch); j++)

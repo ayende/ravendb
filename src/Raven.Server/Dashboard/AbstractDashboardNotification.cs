@@ -23,6 +23,6 @@ namespace Raven.Server.Dashboard
         /// Convert object to DynamicJsonValue but using provided filter
         /// Return null when filter matches nothing - such message will be skipped
         /// </summary>
-        public abstract DynamicJsonValue ToJsonWithFilter(Func<string, bool> filter);
+        public abstract DynamicJsonValue ToJsonWithFilter(Func<string, bool, bool> filter);
     }
 }

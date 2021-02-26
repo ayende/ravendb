@@ -9,7 +9,7 @@ namespace Raven.Server.Documents.Handlers.Admin
 {
     public class TransactionsModeHandler : DatabaseRequestHandler
     {
-        [RavenAction("/databases/*/admin/transactions-mode", "GET", AuthorizationStatus.Operator)]
+        [RavenAction("/databases/*/admin/transactions-mode", "GET", AuthorizationStatus.Operator, EndpointType.Write)]
         public Task CommitNonLazyTx()
         {
             var modeStr = GetQueryStringValueAndAssertIfSingleAndNotEmpty("mode");
@@ -50,9 +50,11 @@ namespace Raven.Server.Documents.Handlers.Admin
                         case TransactionsModeResult.ModeAlreadySet:
                             djv["Result"] = "Mode Already Set";
                             break;
+
                         case TransactionsModeResult.SetModeSuccessfully:
                             djv["Result"] = "Mode Set Successfully";
                             break;
+
                         default:
                             throw new ArgumentOutOfRangeException("Result is unexpected value: " + result);
                     }

@@ -20,7 +20,6 @@ using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.Smuggler.Migration;
 using Raven.Server.Utils;
-using Raven.Server.Utils.Metrics;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using Sparrow.Logging;
@@ -32,7 +31,7 @@ namespace Raven.Server.Web.System
     {
         private static readonly Logger Logger = LoggingSource.Instance.GetLogger<DatabasesHandler>("Server");
 
-        [RavenAction("/databases", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task Databases()
         {
             // if Studio requested information about single resource - handle it
@@ -77,7 +76,7 @@ namespace Raven.Server.Web.System
             return Task.CompletedTask;
         }
 
-        [RavenAction("/topology", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/topology", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task GetTopology()
         {
             var name = GetQueryStringValueAndAssertIfSingleAndNotEmpty("name");
@@ -184,7 +183,7 @@ namespace Raven.Server.Web.System
 
         // we can't use '/database/is-loaded` because that conflict with the `/databases/<db-name>`
         // route prefix
-        [RavenAction("/debug/is-loaded", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/debug/is-loaded", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task IsDatabaseLoaded()
         {
             var name = GetQueryStringValueAndAssertIfSingleAndNotEmpty("name");
@@ -210,7 +209,7 @@ namespace Raven.Server.Web.System
             return Task.CompletedTask;
         }
 
-        [RavenAction("/admin/remote-server/build/version", "GET", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/remote-server/build/version", "GET", AuthorizationStatus.Operator, EndpointType.Write)]
         public async Task GetRemoteServerBuildInfoWithDatabases()
         {
             var serverUrl = GetQueryStringValueAndAssertIfSingleAndNotEmpty("serverUrl");
@@ -230,13 +229,13 @@ namespace Raven.Server.Web.System
                 EnableBasicAuthenticationOverUnsecuredHttp = enableBasicAuthenticationOverUnsecuredHttp ?? false,
                 SkipServerCertificateValidation = skipServerCertificateValidation ?? false
             }, ServerStore);
-            
+
             var buildInfo = await migrator.GetBuildInfo();
             var authorized = new Reference<bool>();
             var isLegacyOAuthToken = new Reference<bool>();
             var databaseNames = await migrator.GetDatabaseNames(buildInfo.MajorVersion, authorized, isLegacyOAuthToken);
             var fileSystemNames = await migrator.GetFileSystemNames(buildInfo.MajorVersion);
-        
+
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
             using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
             {
@@ -363,14 +362,14 @@ namespace Raven.Server.Web.System
                     WriteFaultedDatabaseInfo(databaseName, nodesTopology, exception, context, writer);
                     return;
                 }
-                
+
                 var db = online ? dbTask.Result : null;
 
                 var indexingStatus = db?.IndexStore?.Status;
                 if (indexingStatus == null)
                 {
                     // Looking for disabled indexing flag inside the database settings for offline database status
-                    if (dbRecord.Settings.TryGetValue(RavenConfiguration.GetKey(x => x.Indexing.Disabled), out var val) && 
+                    if (dbRecord.Settings.TryGetValue(RavenConfiguration.GetKey(x => x.Indexing.Disabled), out var val) &&
                         bool.TryParse(val, out var indexingDisabled) && indexingDisabled)
                         indexingStatus = IndexRunningStatus.Disabled;
                 }
@@ -393,7 +392,7 @@ namespace Raven.Server.Web.System
                             [nameof(DatabaseInfo.Disabled)] = disabled,
                             [nameof(DatabaseInfo.IndexingStatus)] = indexingStatus,
                             [nameof(DatabaseInfo.NodesTopology)] = nodesTopology.ToJson(),
-                            [nameof(DatabaseInfo.DeletionInProgress)] = DynamicJsonValue.Convert(dbRecord.DeletionInProgress), 
+                            [nameof(DatabaseInfo.DeletionInProgress)] = DynamicJsonValue.Convert(dbRecord.DeletionInProgress),
                             [nameof(DatabaseInfo.Environment)] = studioEnvironment
                         };
 
@@ -403,7 +402,7 @@ namespace Raven.Server.Web.System
                         return;
                     }
 
-                    // we won't find it if it is a new database or after a dirty shutdown, 
+                    // we won't find it if it is a new database or after a dirty shutdown,
                     // so just report empty values then
                 }
 
@@ -416,7 +415,7 @@ namespace Raven.Server.Web.System
                     TotalSize = size.Data,
                     TempBuffersSize = size.TempBuffers,
 
-                    IsAdmin = true, 
+                    IsAdmin = true,
                     IsEncrypted = dbRecord.Encrypted,
                     UpTime = online ? (TimeSpan?)GetUptime(db) : null,
                     BackupInfo = GetBackupInfo(db, context),
@@ -429,7 +428,7 @@ namespace Raven.Server.Web.System
 
                     DocumentsCount = db?.DocumentsStorage.GetNumberOfDocuments() ?? 0,
                     HasRevisionsConfiguration = db?.DocumentsStorage.RevisionsStorage.Configuration != null,
-                    HasExpirationConfiguration = (db?.ExpiredDocumentsCleaner?.ExpirationConfiguration?.Disabled ?? true) == false, 
+                    HasExpirationConfiguration = (db?.ExpiredDocumentsCleaner?.ExpirationConfiguration?.Disabled ?? true) == false,
                     HasRefreshConfiguration = (db?.ExpiredDocumentsCleaner?.RefreshConfiguration?.Disabled ?? true) == false,
                     IndexesCount = db?.IndexStore?.GetIndexes()?.Count() ?? 0,
                     IndexingStatus = indexingStatus ?? IndexRunningStatus.Running,
@@ -454,9 +453,9 @@ namespace Raven.Server.Web.System
         }
 
         private static void SetNodeStatus(
-            DatabaseTopology topology, 
-            string nodeTag, 
-            NodesTopology nodesTopology, 
+            DatabaseTopology topology,
+            string nodeTag,
+            NodesTopology nodesTopology,
             Dictionary<string, NodeStatus> nodeStatuses)
         {
             var nodeStatus = new DatabaseGroupNodeStatus

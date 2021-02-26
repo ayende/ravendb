@@ -33,7 +33,7 @@ namespace Raven.Server.Web.Studio
     public class StudioTasksHandler : RequestHandler
     {
         // return the calculated full data directory for the database before it is created according to the name & path supplied
-        [RavenAction("/admin/studio-tasks/full-data-directory", "GET", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/studio-tasks/full-data-directory", "GET", AuthorizationStatus.Operator, EndpointType.Read)]
         public async Task FullDataDirectory()
         {
             var path = GetStringQueryString("path", required: false);
@@ -81,7 +81,7 @@ namespace Raven.Server.Web.Studio
             await info.UpdateDirectoryResult(databaseName: null, error: error);
         }
 
-        [RavenAction("/admin/studio-tasks/folder-path-options", "POST", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/studio-tasks/folder-path-options", "POST", AuthorizationStatus.Operator, EndpointType.Read)]
         public async Task GetFolderPathOptions()
         {
             PeriodicBackupConnectionType connectionType;
@@ -221,7 +221,7 @@ namespace Raven.Server.Web.Studio
             }
         }
 
-        [RavenAction("/admin/studio-tasks/offline-migration-test", "GET", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/studio-tasks/offline-migration-test", "GET", AuthorizationStatus.Operator, EndpointType.Read)]
         public Task OfflineMigrationTest()
         {
             var mode = GetStringQueryString("mode");
@@ -272,7 +272,7 @@ namespace Raven.Server.Web.Studio
             public string ErrorMessage { get; set; }
         }
 
-        [RavenAction("/studio-tasks/periodic-backup/test-credentials", "POST", AuthorizationStatus.ValidUser)]
+        [RavenAction("/studio-tasks/periodic-backup/test-credentials", "POST", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public async Task TestPeriodicBackupCredentials()
         {
             var type = GetQueryStringValueAndAssertIfSingleAndNotEmpty("type");
@@ -355,7 +355,7 @@ namespace Raven.Server.Web.Studio
             }
         }
 
-        [RavenAction("/studio-tasks/is-valid-name", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/studio-tasks/is-valid-name", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task IsValidName()
         {
             if (Enum.TryParse(GetQueryStringValueAndAssertIfSingleAndNotEmpty("type").Trim(), out ItemType elementType) == false)
@@ -397,7 +397,7 @@ namespace Raven.Server.Web.Studio
             return Task.CompletedTask;
         }
 
-        [RavenAction("/studio-tasks/admin/migrator-path", "GET", AuthorizationStatus.Operator)]
+        [RavenAction("/studio-tasks/admin/migrator-path", "GET", AuthorizationStatus.Operator, EndpointType.Read)]
         public Task HasMigratorPathInConfiguration()
         {
             // If the path from the configuration is defined, the Studio will block the option to set the path in the import view
@@ -417,7 +417,7 @@ namespace Raven.Server.Web.Studio
             return Task.CompletedTask;
         }
 
-        [RavenAction("/studio-tasks/format", "POST", AuthorizationStatus.ValidUser)]
+        [RavenAction("/studio-tasks/format", "POST", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task Format()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out JsonOperationContext context))
@@ -478,7 +478,7 @@ namespace Raven.Server.Web.Studio
             return Task.CompletedTask;
         }
 
-        [RavenAction("/studio-tasks/next-cron-expression-occurrence", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/studio-tasks/next-cron-expression-occurrence", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task GetNextCronExpressionOccurrence()
         {
             var expression = GetQueryStringValueAndAssertIfSingleAndNotEmpty("expression");

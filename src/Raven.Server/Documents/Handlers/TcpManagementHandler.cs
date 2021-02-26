@@ -11,7 +11,7 @@ namespace Raven.Server.Documents.Handlers
 {
     public class TcpManagementHandler : DatabaseRequestHandler
     {
-        [RavenAction("/databases/*/tcp", "GET", AuthorizationStatus.ValidUser, IsDebugInformationEndpoint = true)]
+        [RavenAction("/databases/*/tcp", "GET", AuthorizationStatus.ValidUser, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public Task GetAll()
         {
             var start = GetStart();
@@ -48,7 +48,7 @@ namespace Raven.Server.Documents.Handlers
             return Task.CompletedTask;
         }
 
-        [RavenAction("/databases/*/tcp", "DELETE", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/tcp", "DELETE", AuthorizationStatus.ValidUser, EndpointType.Write)]
         public Task Delete()
         {
             var id = GetLongQueryString("id");

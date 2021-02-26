@@ -1,5 +1,4 @@
-﻿using System;
-using System.Threading.Tasks;
+﻿using System.Threading.Tasks;
 using Raven.Client.ServerWide.Operations.Logs;
 using Raven.Server.Json;
 using Raven.Server.Routing;
@@ -13,7 +12,7 @@ namespace Raven.Server.Documents.Handlers.Admin
 {
     public class AdminLogsHandler : ServerRequestHandler
     {
-        [RavenAction("/admin/logs/configuration", "GET", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/logs/configuration", "GET", AuthorizationStatus.Operator, EndpointType.Read)]
         public Task GetConfiguration()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out JsonOperationContext context))
@@ -38,7 +37,7 @@ namespace Raven.Server.Documents.Handlers.Admin
             return Task.CompletedTask;
         }
 
-        [RavenAction("/admin/logs/configuration", "POST", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/logs/configuration", "POST", AuthorizationStatus.Operator, EndpointType.Write)]
         public async Task SetConfiguration()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out JsonOperationContext context))
@@ -51,8 +50,8 @@ namespace Raven.Server.Documents.Handlers.Admin
                     configuration.RetentionTime = ServerStore.Configuration.Logs.RetentionTime?.AsTimeSpan;
 
                 LoggingSource.Instance.SetupLogMode(
-                    configuration.Mode, 
-                    Server.Configuration.Logs.Path.FullPath, 
+                    configuration.Mode,
+                    Server.Configuration.Logs.Path.FullPath,
                     configuration.RetentionTime,
                     configuration.RetentionSize?.GetValue(SizeUnit.Bytes),
                     configuration.Compress);
@@ -61,7 +60,7 @@ namespace Raven.Server.Documents.Handlers.Admin
             NoContentStatus();
         }
 
-        [RavenAction("/admin/logs/watch", "GET", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/logs/watch", "GET", AuthorizationStatus.Operator, EndpointType.Read)]
         public async Task RegisterForLogs()
         {
             using (var socket = await HttpContext.WebSockets.AcceptWebSocketAsync())

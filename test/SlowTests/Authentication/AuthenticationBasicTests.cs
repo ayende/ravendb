@@ -7,11 +7,13 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading.Tasks;
 using FastTests;
 using Raven.Client.Documents;
+using Raven.Client.Documents.Commands.MultiGet;
 using Raven.Client.Documents.Operations.ConnectionStrings;
 using Raven.Client.Documents.Operations.ETL;
 using Raven.Client.Exceptions;
@@ -548,6 +550,120 @@ namespace SlowTests.Authentication
                 response.EnsureSuccessStatusCode();
                 var content = await response.Content.ReadAsStreamAsync();
                 return await context.ReadForMemoryAsync(content, "response/object").ConfigureAwait(false);
+            }
+        }
+
+        [Fact]
+        public void CanGetDocWith_Read_Permission()
+        {
+            var certificates = SetupServerAuthentication();
+            var dbName = GetDatabaseName();
+            var adminCert = RegisterClientCertificate(certificates.ServerCertificate.Value, certificates.ClientCertificate1.Value, new Dictionary<string, DatabaseAccess>(), SecurityClearance.ClusterAdmin);
+            var userCert = RegisterClientCertificate(certificates.ServerCertificate.Value, certificates.ClientCertificate2.Value, new Dictionary<string, DatabaseAccess>
+            {
+                [dbName] = DatabaseAccess.Read
+            });
+
+            using (var store = GetDocumentStore(new Options
+            {
+                AdminCertificate = adminCert,
+                ClientCertificate = adminCert,
+                ModifyDatabaseName = s => dbName,
+                DeleteDatabaseOnDispose = false
+            }))
+            {
+                StoreSampleDoc(store, "test/1");
+            }
+
+            using (var store = GetDocumentStore(new Options
+            {
+                AdminCertificate = adminCert,
+                ClientCertificate = userCert,
+                ModifyDatabaseName = s => dbName,
+                CreateDatabase = false
+            }))
+            {
+                using (var session = store.OpenSession())
+                {
+                    var test1Doc = session.Load<dynamic>("test/1");
+
+                    Assert.NotNull(test1Doc);
+                }
+
+                using (var session = store.OpenSession())
+                {
+                    var test1Doc = session.Advanced.Lazily.Load<dynamic>("test/1").Value; // multi-get
+
+                    Assert.NotNull(test1Doc);
+                }
+            }
+        }
+
+        [Fact]
+        public void CannotPutDocWith_Read_Permission_MultiGet()
+        {
+            var certificates = SetupServerAuthentication();
+            var dbName = GetDatabaseName();
+            var adminCert = RegisterClientCertificate(certificates.ServerCertificate.Value, certificates.ClientCertificate1.Value, new Dictionary<string, DatabaseAccess>(), SecurityClearance.ClusterAdmin);
+            var userCert = RegisterClientCertificate(certificates.ServerCertificate.Value, certificates.ClientCertificate2.Value, new Dictionary<string, DatabaseAccess>
+            {
+                [dbName] = DatabaseAccess.Read
+            });
+
+            using (var store = GetDocumentStore(new Options
+            {
+                AdminCertificate = adminCert,
+                ClientCertificate = userCert,
+                ModifyDatabaseName = s => dbName
+            }))
+            {
+                using (var commands = store.Commands())
+                {
+                    var command = new MultiGetCommand(commands.RequestExecutor, new List<GetRequest>
+                    {
+                        new GetRequest
+                        {
+                            Url = "/docs",
+                            Method = HttpMethod.Get,
+                            Query = "?id=samples/1"
+                        },
+                        new GetRequest
+                        {
+                            Url = "/admin/configuration/settings",
+                            Method = HttpMethod.Get
+                        }
+                    });
+
+                    commands.RequestExecutor.Execute(command, commands.Context);
+
+                    var results = command.Result;
+                    Assert.Equal(2, results.Count);
+                    Assert.Equal(HttpStatusCode.NotFound, results[0].StatusCode);
+                    Assert.Equal(HttpStatusCode.Forbidden, results[1].StatusCode);
+                }
+            }
+        }
+
+        [Fact]
+        public void CannotPutDocWith_Read_Permission()
+        {
+            var certificates = SetupServerAuthentication();
+            var dbName = GetDatabaseName();
+            var adminCert = RegisterClientCertificate(certificates.ServerCertificate.Value, certificates.ClientCertificate1.Value, new Dictionary<string, DatabaseAccess>(), SecurityClearance.ClusterAdmin);
+            var userCert = RegisterClientCertificate(certificates.ServerCertificate.Value, certificates.ClientCertificate2.Value, new Dictionary<string, DatabaseAccess>
+            {
+                [dbName] = DatabaseAccess.Read
+            });
+
+            using (var store = GetDocumentStore(new Options
+            {
+                AdminCertificate = adminCert,
+                ClientCertificate = userCert,
+                ModifyDatabaseName = s => dbName,
+                DeleteDatabaseOnDispose = false
+            }))
+            {
+                Assert.Throws<AuthorizationException>(() => StoreSampleDoc(store, "test/1"));
             }
         }
 

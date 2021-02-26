@@ -1,12 +1,9 @@
 ﻿using System;
-using System.Buffers;
 using System.Threading;
 using System.Threading.Tasks;
 using Raven.Server.Dashboard;
 using Raven.Server.Routing;
 using Sparrow.Logging;
-using Sparrow.Platform;
-using Sparrow.Platform.Posix;
 using Sparrow.Server.LowMemory;
 
 namespace Raven.Server.NotificationCenter.Handlers
@@ -15,7 +12,7 @@ namespace Raven.Server.NotificationCenter.Handlers
     {
         private static readonly Logger Logger = LoggingSource.Instance.GetLogger<ServerDashboardHandler>("Server");
 
-        [RavenAction("/server-dashboard/watch", "GET", AuthorizationStatus.ValidUser, SkipUsagesCount = true)]
+        [RavenAction("/server-dashboard/watch", "GET", AuthorizationStatus.ValidUser, EndpointType.Read, SkipUsagesCount = true)]
         public async Task Get()
         {
             using (var webSocket = await HttpContext.WebSockets.AcceptWebSocketAsync())

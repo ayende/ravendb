@@ -12,7 +12,7 @@ namespace Raven.Server.Documents.Handlers
 {
     public class CollectionsHandler : DatabaseRequestHandler
     {
-        [RavenAction("/databases/*/collections/stats", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/collections/stats", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task GetCollectionStats()
         {
             using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
@@ -27,7 +27,7 @@ namespace Raven.Server.Documents.Handlers
             return Task.CompletedTask;
         }
 
-        [RavenAction("/databases/*/collections/stats/detailed", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/collections/stats/detailed", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task GetDetailedCollectionStats()
         {
             using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
@@ -68,7 +68,7 @@ namespace Raven.Server.Documents.Handlers
             return stats;
         }
 
-        [RavenAction("/databases/*/collections/docs", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/collections/docs", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task GetCollectionDocuments()
         {
             using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
@@ -81,7 +81,6 @@ namespace Raven.Server.Documents.Handlers
                 long numberOfResults;
                 using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
                 {
-
                     writer.WriteStartObject();
                     writer.WritePropertyName("Results");
                     writer.WriteDocuments(context, documents, metadataOnly: false, numberOfResults: out numberOfResults);

@@ -5,14 +5,13 @@ using Raven.Client.Documents.Operations.Configuration;
 using Raven.Server.Json;
 using Raven.Server.Routing;
 using Raven.Server.ServerWide.Context;
-using Sparrow;
 using Sparrow.Json;
 
 namespace Raven.Server.Documents.Handlers
 {
     public class ConfigurationHandler : DatabaseRequestHandler
     {
-        [RavenAction("/databases/*/configuration/studio", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/configuration/studio", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task GetStudioConfiguration()
         {
             var configuration = Database.StudioConfiguration;
@@ -37,14 +36,14 @@ namespace Raven.Server.Documents.Handlers
             return Task.CompletedTask;
         }
 
-        [RavenAction("/databases/*/configuration/client", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/configuration/client", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task GetClientConfiguration()
         {
             var inherit = GetBoolValueQueryString("inherit", required: false) ?? true;
 
             var configuration = Database.ClientConfiguration;
             var serverConfiguration = GetServerClientConfiguration();
-            
+
             if (inherit && (configuration == null || configuration.Disabled) && serverConfiguration != null)
             {
                 configuration = serverConfiguration;
@@ -91,7 +90,7 @@ namespace Raven.Server.Documents.Handlers
                 using (context.OpenReadTransaction())
                 {
                     var clientConfigurationJson = ServerStore.Cluster.Read(context, Constants.Configuration.ClientId, out _);
-                    var config =  clientConfigurationJson != null
+                    var config = clientConfigurationJson != null
                         ? JsonDeserializationServer.ClientConfiguration(clientConfigurationJson)
                         : null;
 

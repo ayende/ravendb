@@ -31,7 +31,7 @@ namespace Raven.Server.NotificationCenter
             _resourceShutdown = resourceShutdown;
         }
 
-        public async Task WriteNotifications(Func<string, bool> shouldWriteByDb)
+        public async Task WriteNotifications(Func<string, bool, bool> shouldWriteByDb)
         {
             var receiveBuffer = new ArraySegment<byte>(new byte[1024]);
             var receive = _webSocket.ReceiveAsync(receiveBuffer, _resourceShutdown);

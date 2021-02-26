@@ -16,11 +16,11 @@ using Sparrow.Logging;
 
 namespace Raven.Server.TrafficWatch
 {
-   public class TrafficWatchHandler : RequestHandler
+    public class TrafficWatchHandler : RequestHandler
     {
         private static readonly Logger _logger = LoggingSource.Instance.GetLogger<TrafficWatchHandler>("Server");
 
-        [RavenAction("/admin/traffic-watch", "GET", AuthorizationStatus.Operator)]
+        [RavenAction("/admin/traffic-watch", "GET", AuthorizationStatus.Operator, EndpointType.Read)]
         public async Task TrafficWatchWebsockets()
         {
             using (var webSocket = await HttpContext.WebSockets.AcceptWebSocketAsync())

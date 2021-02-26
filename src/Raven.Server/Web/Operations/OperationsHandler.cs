@@ -3,7 +3,6 @@ using System.Net;
 using System.Threading.Tasks;
 using Raven.Client.Documents.Changes;
 using Raven.Client.Documents.Commands;
-using Raven.Client.Documents.Operations;
 using Raven.Server.Documents;
 using Raven.Server.Routing;
 using Raven.Server.ServerWide.Context;
@@ -14,7 +13,7 @@ namespace Raven.Server.Web.Operations
 {
     public class OperationsHandler : DatabaseRequestHandler
     {
-        [RavenAction("/databases/*/operations/next-operation-id", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/operations/next-operation-id", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task GetNextOperationId()
         {
             var nextId = Database.Operations.GetNextOperationId();
@@ -36,7 +35,7 @@ namespace Raven.Server.Web.Operations
             return Task.CompletedTask;
         }
 
-        [RavenAction("/databases/*/operations/kill", "POST", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/operations/kill", "POST", AuthorizationStatus.ValidUser, EndpointType.Write)]
         public Task Kill()
         {
             var id = GetLongQueryString("id");
@@ -46,7 +45,7 @@ namespace Raven.Server.Web.Operations
             return NoContent();
         }
 
-        [RavenAction("/databases/*/operations", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/operations", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task GetAll()
         {
             var id = GetLongQueryString("id", required: false);
@@ -82,7 +81,7 @@ namespace Raven.Server.Web.Operations
             return Task.CompletedTask;
         }
 
-        [RavenAction("/databases/*/operations/state", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/operations/state", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task State()
         {
             var id = GetLongQueryString("id");

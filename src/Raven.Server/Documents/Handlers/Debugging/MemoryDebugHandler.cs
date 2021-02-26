@@ -16,14 +16,14 @@ using Sparrow.Platform;
 using Sparrow.Platform.Posix;
 using Sparrow.Server.Platform.Win32;
 using Sparrow.Utils;
-using Size = Raven.Client.Util.Size;
 using Voron.Impl;
+using Size = Raven.Client.Util.Size;
 
 namespace Raven.Server.Documents.Handlers.Debugging
 {
     public class MemoryDebugHandler : RequestHandler
     {
-        [RavenAction("/admin/debug/memory/low-mem-log", "GET", AuthorizationStatus.Operator, IsDebugInformationEndpoint = true)]
+        [RavenAction("/admin/debug/memory/low-mem-log", "GET", AuthorizationStatus.Operator, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public Task LowMemLog()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out JsonOperationContext context))
@@ -38,13 +38,13 @@ namespace Raven.Server.Documents.Handlers.Debugging
             }
         }
 
-        [RavenAction("/admin/debug/proc/status", "GET", AuthorizationStatus.Operator, IsDebugInformationEndpoint = true, IsPosixSpecificEndpoint = true)]
+        [RavenAction("/admin/debug/proc/status", "GET", AuthorizationStatus.Operator, EndpointType.Read, IsDebugInformationEndpoint = true, IsPosixSpecificEndpoint = true)]
         public async Task PosixMemStatus()
         {
             await WriteFile("/proc/self/status");
         }
 
-        [RavenAction("/admin/debug/proc/meminfo", "GET", AuthorizationStatus.Operator, IsDebugInformationEndpoint = true, IsPosixSpecificEndpoint = true)]
+        [RavenAction("/admin/debug/proc/meminfo", "GET", AuthorizationStatus.Operator, EndpointType.Read, IsDebugInformationEndpoint = true, IsPosixSpecificEndpoint = true)]
         public async Task PosixMemInfo()
         {
             await WriteFile("/proc/meminfo");
@@ -107,7 +107,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
             return djv;
         }
 
-        [RavenAction("/admin/debug/memory/smaps", "GET", AuthorizationStatus.Operator, IsDebugInformationEndpoint = true)]
+        [RavenAction("/admin/debug/memory/smaps", "GET", AuthorizationStatus.Operator, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public Task MemorySmaps()
         {
             if (PlatformDetails.RunningOnLinux == false)
@@ -187,7 +187,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
             }
         }
 
-        [RavenAction("/admin/debug/memory/stats", "GET", AuthorizationStatus.Operator, IsDebugInformationEndpoint = true)]
+        [RavenAction("/admin/debug/memory/stats", "GET", AuthorizationStatus.Operator, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public Task MemoryStats()
         {
             var includeThreads = GetBoolValueQueryString("includeThreads", required: false) ?? true;
@@ -204,7 +204,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
             }
         }
 
-        [RavenAction("/admin/debug/memory/encryption-buffer-pool", "GET", AuthorizationStatus.Operator, IsDebugInformationEndpoint = true)]
+        [RavenAction("/admin/debug/memory/encryption-buffer-pool", "GET", AuthorizationStatus.Operator, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public Task EncryptionBufferPoolStats()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out JsonOperationContext context))
@@ -371,7 +371,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
 
                     foreach (var maps in dic)
                     {
-                        dja.Add(new DynamicJsonValue {[nameof(MemoryInfoMappingDetails.Size)] = maps.Key, [nameof(MemoryInfoMappingDetails.Count)] = maps.Value});
+                        dja.Add(new DynamicJsonValue { [nameof(MemoryInfoMappingDetails.Size)] = maps.Key, [nameof(MemoryInfoMappingDetails.Count)] = maps.Value });
                     }
 
                     var fileSize = GetFileSize(file.Key);
@@ -452,7 +452,6 @@ namespace Raven.Server.Documents.Handlers.Debugging
 
             return prefixLength;
         }
-
 
         internal class MemoryInfo
         {

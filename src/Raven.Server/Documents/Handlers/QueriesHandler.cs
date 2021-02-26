@@ -31,13 +31,13 @@ namespace Raven.Server.Documents.Handlers
 {
     public class QueriesHandler : DatabaseRequestHandler
     {
-        [RavenAction("/databases/*/queries", "POST", AuthorizationStatus.ValidUser, DisableOnCpuCreditsExhaustion = true)]
+        [RavenAction("/databases/*/queries", "POST", AuthorizationStatus.ValidUser, EndpointType.Read, DisableOnCpuCreditsExhaustion = true)]
         public Task Post()
         {
             return HandleQuery(HttpMethod.Post);
         }
 
-        [RavenAction("/databases/*/queries", "GET", AuthorizationStatus.ValidUser, DisableOnCpuCreditsExhaustion = true)]
+        [RavenAction("/databases/*/queries", "GET", AuthorizationStatus.ValidUser, EndpointType.Read, DisableOnCpuCreditsExhaustion = true)]
         public Task Get()
         {
             return HandleQuery(HttpMethod.Get);
@@ -287,7 +287,7 @@ namespace Raven.Server.Documents.Handlers
                         {
                             edgeVal = d.Id?.ToString() ?? "anonymous/" + Guid.NewGuid();
                         }
-                        if(added.Add((item.Source, item.Destination, edgeVal)) == false)
+                        if (added.Add((item.Source, item.Destination, edgeVal)) == false)
                             continue;
                         array.Add(new DynamicJsonValue
                         {
@@ -342,7 +342,7 @@ namespace Raven.Server.Documents.Handlers
             }
         }
 
-        [RavenAction("/databases/*/queries", "DELETE", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/queries", "DELETE", AuthorizationStatus.ValidUser, EndpointType.Write)]
         public Task Delete()
         {
             var queryContext = QueryOperationContext.Allocate(Database); // we don't dispose this as operation is async
@@ -371,7 +371,7 @@ namespace Raven.Server.Documents.Handlers
             }
         }
 
-        [RavenAction("/databases/*/queries/test", "PATCH", AuthorizationStatus.ValidUser, DisableOnCpuCreditsExhaustion = true)]
+        [RavenAction("/databases/*/queries/test", "PATCH", AuthorizationStatus.ValidUser, EndpointType.Write, DisableOnCpuCreditsExhaustion = true)]
         public Task PatchTest()
         {
             using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
@@ -412,16 +412,20 @@ namespace Raven.Server.Documents.Handlers
                     case PatchStatus.DocumentDoesNotExist:
                         HttpContext.Response.StatusCode = (int)HttpStatusCode.NotFound;
                         return Task.CompletedTask;
+
                     case PatchStatus.Created:
                         HttpContext.Response.StatusCode = (int)HttpStatusCode.Created;
                         break;
+
                     case PatchStatus.Skipped:
                         HttpContext.Response.StatusCode = (int)HttpStatusCode.NotModified;
                         return Task.CompletedTask;
+
                     case PatchStatus.Patched:
                     case PatchStatus.NotModified:
                         HttpContext.Response.StatusCode = (int)HttpStatusCode.OK;
                         break;
+
                     default:
                         throw new ArgumentOutOfRangeException();
                 }
@@ -463,7 +467,7 @@ namespace Raven.Server.Documents.Handlers
             }
         }
 
-        [RavenAction("/databases/*/queries", "PATCH", AuthorizationStatus.ValidUser, DisableOnCpuCreditsExhaustion = true)]
+        [RavenAction("/databases/*/queries", "PATCH", AuthorizationStatus.ValidUser, EndpointType.Write, DisableOnCpuCreditsExhaustion = true)]
         public Task Patch()
         {
             var queryContext = QueryOperationContext.Allocate(Database); // we don't dispose this as operation is async

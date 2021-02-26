@@ -15,7 +15,7 @@ namespace Raven.Server.Documents.Handlers
 {
     public class DocumentsCompressionHandler : DatabaseRequestHandler
     {
-        [RavenAction("/databases/*/documents-compression/config", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/documents-compression/config", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task GetDocumentsCompressionConfig()
         {
             using (Server.ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
@@ -42,7 +42,7 @@ namespace Raven.Server.Documents.Handlers
             return Task.CompletedTask;
         }
 
-        [RavenAction("/databases/*/admin/documents-compression/config", "POST", AuthorizationStatus.DatabaseAdmin)]
+        [RavenAction("/databases/*/admin/documents-compression/config", "POST", AuthorizationStatus.DatabaseAdmin, EndpointType.Write)]
         public async Task ConfigDocumentsCompression()
         {
             await DatabaseConfigurations(ServerStore.ModifyDocumentsCompression, "write-compression-config", GetRaftRequestIdFromQuery());

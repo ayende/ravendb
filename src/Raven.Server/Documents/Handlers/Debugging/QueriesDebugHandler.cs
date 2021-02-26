@@ -11,7 +11,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
 {
     public class QueriesDebugHandler : DatabaseRequestHandler
     {
-        [RavenAction("/databases/*/debug/queries/kill", "POST", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/debug/queries/kill", "POST", AuthorizationStatus.ValidUser, EndpointType.Write)]
         public Task KillQuery()
         {
             var name = GetQueryStringValueAndAssertIfSingleAndNotEmpty("indexName");
@@ -31,7 +31,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
             return NoContent();
         }
 
-        [RavenAction("/databases/*/debug/queries/running", "GET", AuthorizationStatus.ValidUser, IsDebugInformationEndpoint = true)]
+        [RavenAction("/databases/*/debug/queries/running", "GET", AuthorizationStatus.ValidUser, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public Task RunningQueries()
         {
             using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
@@ -69,7 +69,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
             return Task.CompletedTask;
         }
 
-        [RavenAction("/databases/*/debug/queries/cache/list", "GET", AuthorizationStatus.ValidUser, IsDebugInformationEndpoint = true)]
+        [RavenAction("/databases/*/debug/queries/cache/list", "GET", AuthorizationStatus.ValidUser, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public Task QueriesCacheList()
         {
             using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))

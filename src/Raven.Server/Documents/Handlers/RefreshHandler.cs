@@ -6,7 +6,6 @@
 
 using System.Net;
 using System.Threading.Tasks;
-using Raven.Client.Documents.Operations.Expiration;
 using Raven.Client.Documents.Operations.Refresh;
 using Raven.Server.Routing;
 using Raven.Server.ServerWide.Context;
@@ -16,7 +15,7 @@ namespace Raven.Server.Documents.Handlers
 {
     public class RefreshHandler : DatabaseRequestHandler
     {
-        [RavenAction("/databases/*/refresh/config", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/refresh/config", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task GetRefreshConfig()
         {
             using (Server.ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
@@ -42,8 +41,8 @@ namespace Raven.Server.Documents.Handlers
             }
             return Task.CompletedTask;
         }
-        
-        [RavenAction("/databases/*/admin/refresh/config", "POST", AuthorizationStatus.DatabaseAdmin)]
+
+        [RavenAction("/databases/*/admin/refresh/config", "POST", AuthorizationStatus.DatabaseAdmin, EndpointType.Write)]
         public async Task ConfigRefresh()
         {
             await DatabaseConfigurations(ServerStore.ModifyDatabaseRefresh, "read-refresh-config", GetRaftRequestIdFromQuery());

@@ -21,7 +21,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
 {
     public class ThreadsHandler : RequestHandler
     {
-        [RavenAction("/admin/debug/threads/stack-trace", "GET", AuthorizationStatus.Operator, IsDebugInformationEndpoint = true)]
+        [RavenAction("/admin/debug/threads/stack-trace", "GET", AuthorizationStatus.Operator, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public async Task StackTrace()
         {
             if (PlatformDetails.RunningOnMacOsx)
@@ -59,7 +59,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
             }
         }
 
-        [RavenAction("/admin/debug/threads/runaway", "GET", AuthorizationStatus.Operator, IsDebugInformationEndpoint = true)]
+        [RavenAction("/admin/debug/threads/runaway", "GET", AuthorizationStatus.Operator, EndpointType.Read, IsDebugInformationEndpoint = true)]
         public async Task RunawayThreads()
         {
             using (ServerStore.ContextPool.AllocateOperationContext(out JsonOperationContext context))

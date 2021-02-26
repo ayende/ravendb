@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Net;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
@@ -8,7 +7,6 @@ using Raven.Client;
 using Raven.Client.Documents.Changes;
 using Raven.Client.Documents.Indexes;
 using Raven.Client.Documents.Operations;
-using Raven.Client.Documents.Operations.Backups;
 using Raven.Client.Documents.Smuggler;
 using Raven.Client.Exceptions.Documents.Indexes;
 using Raven.Server.Json;
@@ -27,13 +25,13 @@ namespace Raven.Server.Documents.Handlers.Admin
 {
     public class AdminIndexHandler : DatabaseRequestHandler
     {
-        [RavenAction("/databases/*/admin/indexes", "PUT", AuthorizationStatus.DatabaseAdmin, DisableOnCpuCreditsExhaustion = true)]
+        [RavenAction("/databases/*/admin/indexes", "PUT", AuthorizationStatus.DatabaseAdmin, EndpointType.Write, DisableOnCpuCreditsExhaustion = true)]
         public async Task Put()
         {
             await PutInternal(validatedAsAdmin: true);
         }
 
-        [RavenAction("/databases/*/indexes", "PUT", AuthorizationStatus.ValidUser, DisableOnCpuCreditsExhaustion = true)]
+        [RavenAction("/databases/*/indexes", "PUT", AuthorizationStatus.ValidUser, EndpointType.Write, DisableOnCpuCreditsExhaustion = true)]
         public async Task PutJavaScript()
         {
             await PutInternal(validatedAsAdmin: false);
@@ -95,7 +93,6 @@ namespace Raven.Server.Documents.Handlers.Admin
                 if (TrafficWatchManager.HasRegisteredClients)
                     AddStringToHttpContext(indexes.ToString(), TrafficWatchChangeType.Index);
 
-
                 HttpContext.Response.StatusCode = (int)HttpStatusCode.Created;
 
                 using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
@@ -152,7 +149,7 @@ namespace Raven.Server.Documents.Handlers.Admin
             return false;
         }
 
-        [RavenAction("/databases/*/admin/indexes/stop", "POST", AuthorizationStatus.DatabaseAdmin)]
+        [RavenAction("/databases/*/admin/indexes/stop", "POST", AuthorizationStatus.DatabaseAdmin, EndpointType.Write)]
         public Task Stop()
         {
             var types = HttpContext.Request.Query["type"];
@@ -199,7 +196,7 @@ namespace Raven.Server.Documents.Handlers.Admin
             return NoContent();
         }
 
-        [RavenAction("/databases/*/admin/indexes/start", "POST", AuthorizationStatus.DatabaseAdmin)]
+        [RavenAction("/databases/*/admin/indexes/start", "POST", AuthorizationStatus.DatabaseAdmin, EndpointType.Write)]
         public Task Start()
         {
             var types = HttpContext.Request.Query["type"];
@@ -243,7 +240,7 @@ namespace Raven.Server.Documents.Handlers.Admin
             return NoContent();
         }
 
-        [RavenAction("/databases/*/admin/indexes/enable", "POST", AuthorizationStatus.DatabaseAdmin)]
+        [RavenAction("/databases/*/admin/indexes/enable", "POST", AuthorizationStatus.DatabaseAdmin, EndpointType.Write)]
         public Task Enable()
         {
             var name = GetStringQueryString("name");
@@ -256,7 +253,7 @@ namespace Raven.Server.Documents.Handlers.Admin
             return NoContent();
         }
 
-        [RavenAction("/databases/*/admin/indexes/disable", "POST", AuthorizationStatus.DatabaseAdmin)]
+        [RavenAction("/databases/*/admin/indexes/disable", "POST", AuthorizationStatus.DatabaseAdmin, EndpointType.Write)]
         public Task Disable()
         {
             var name = GetStringQueryString("name");
@@ -269,7 +266,7 @@ namespace Raven.Server.Documents.Handlers.Admin
             return NoContent();
         }
 
-        [RavenAction("/databases/*/admin/indexes/dump", "POST", AuthorizationStatus.DatabaseAdmin)]
+        [RavenAction("/databases/*/admin/indexes/dump", "POST", AuthorizationStatus.DatabaseAdmin, EndpointType.Write)]
         public Task Dump()
         {
             var name = GetStringQueryString("name");
@@ -309,6 +306,7 @@ namespace Raven.Server.Documents.Handlers.Admin
         public class DumpIndexResult : IOperationResult
         {
             public string Message { get; set; }
+
             public DynamicJsonValue ToJson()
             {
                 return new DynamicJsonValue(GetType())

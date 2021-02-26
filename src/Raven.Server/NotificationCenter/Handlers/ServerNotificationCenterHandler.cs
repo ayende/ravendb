@@ -14,7 +14,7 @@ namespace Raven.Server.NotificationCenter.Handlers
 {
     public class ServerNotificationCenterHandler : ServerNotificationHandlerBase
     {
-        [RavenAction("/server/notification-center/watch", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/server/notification-center/watch", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public async Task Get()
         {
             using (var webSocket = await HttpContext.WebSockets.AcceptWebSocketAsync())
@@ -29,14 +29,14 @@ namespace Raven.Server.NotificationCenter.Handlers
                             if (isValidFor != null)
                             {
                                 if (action.Json.TryGet("Database", out string db) == false ||
-                                    isValidFor(db) == false)
+                                    isValidFor(db, false) == false)
                                     continue; // not valid for this, skipping
                             }
 
                             await writer.WriteToWebSocket(action.Json);
                         }
                     }
-                    
+
                     foreach (var operation in ServerStore.Operations.GetActive().OrderBy(x => x.Description.StartTime))
                     {
                         var action = OperationChanged.Create(null, operation.Id, operation.Description, operation.State, operation.Killable);
@@ -51,8 +51,8 @@ namespace Raven.Server.NotificationCenter.Handlers
                 }
             }
         }
-     
-        [RavenAction("/server/notification-center/dismiss", "POST", AuthorizationStatus.ValidUser)]
+
+        [RavenAction("/server/notification-center/dismiss", "POST", AuthorizationStatus.ValidUser, EndpointType.Write)]
         public Task DismissPost()
         {
             var id = GetStringQueryString("id");
@@ -60,7 +60,7 @@ namespace Raven.Server.NotificationCenter.Handlers
             var forever = GetBoolValueQueryString("forever", required: false);
             var dbForId = ServerStore.NotificationCenter.GetDatabaseFor(id);
             var isValidFor = GetDatabaseAccessValidationFunc();
-            if (isValidFor != null && isValidFor(dbForId) == false)
+            if (isValidFor != null && isValidFor(dbForId, true) == false)
             {
                 HttpContext.Response.StatusCode = (int)HttpStatusCode.Forbidden;
                 return HttpContext.Response
@@ -74,14 +74,14 @@ namespace Raven.Server.NotificationCenter.Handlers
             return NoContent();
         }
 
-        [RavenAction("/server/notification-center/postpone", "POST", AuthorizationStatus.ValidUser)]
+        [RavenAction("/server/notification-center/postpone", "POST", AuthorizationStatus.ValidUser, EndpointType.Write)]
         public Task PostponePost()
         {
             var id = GetStringQueryString("id");
             var timeInSec = GetLongQueryString("timeInSec");
             var dbForId = ServerStore.NotificationCenter.GetDatabaseFor(id);
             var isValidFor = GetDatabaseAccessValidationFunc();
-            if (isValidFor != null && isValidFor(dbForId) == false)
+            if (isValidFor != null && isValidFor(dbForId, true) == false)
             {
                 HttpContext.Response.StatusCode = (int)HttpStatusCode.Forbidden;
                 return HttpContext.Response
@@ -90,15 +90,14 @@ namespace Raven.Server.NotificationCenter.Handlers
 
             var until = timeInSec == 0 ? DateTime.MaxValue : SystemTime.UtcNow.Add(TimeSpan.FromSeconds(timeInSec));
             ServerStore.NotificationCenter.Postpone(id, until);
-            
+
             return NoContent();
         }
-
     }
 
     public abstract class ServerNotificationHandlerBase : RequestHandler
     {
-        protected Func<string, bool> GetDatabaseAccessValidationFunc()
+        protected Func<string, bool, bool> GetDatabaseAccessValidationFunc()
         {
             var feature = HttpContext.Features.Get<IHttpAuthenticationFeature>() as RavenServer.AuthenticateConnection;
             var status = feature?.Status;
@@ -113,23 +112,25 @@ namespace Raven.Server.NotificationCenter.Handlers
                 case RavenServer.AuthenticationStatus.NotYetValid:
                     if (Server.Configuration.Security.AuthenticationEnabled == false)
                         return null;
-                    return s => false; // deny everything
+                    return (_, __) => false; // deny everything
 
                 case RavenServer.AuthenticationStatus.Operator:
                 case RavenServer.AuthenticationStatus.ClusterAdmin:
                     return null;
 
                 case RavenServer.AuthenticationStatus.Allowed:
-                    return database =>
+                    return (database, requireWrite) =>
                     {
                         switch (database)
                         {
                             case null:
                                 return false;
+
                             case "*":
                                 return true;
+
                             default:
-                                return feature.CanAccess(database, false);
+                                return feature.CanAccess(database, requireAdmin: false, requireWrite: requireWrite);
                         }
                     };
                 default:
@@ -142,6 +143,5 @@ namespace Raven.Server.NotificationCenter.Handlers
         {
             throw new ArgumentOutOfRangeException("Unknown feature status: " + status);
         }
-
     }
 }
