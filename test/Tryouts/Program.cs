@@ -1,4 +1,6 @@
 using System;
+using System.Linq;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading.Tasks;
 using FastTests.Blittable;
@@ -7,6 +9,9 @@ using SlowTests.Issues;
 using SlowTests.MailingList;
 using SlowTests.Server.Documents.ETL.Raven;
 using Tests.Infrastructure;
+using Voron;
+using Voron.Data.CompactTrees;
+using Voron.Debugging;
 
 namespace Tryouts
 {
@@ -17,25 +22,66 @@ namespace Tryouts
             XunitLogging.RedirectStreams = false;
         }
 
-        public static async Task Main(string[] args)
+        public static void Main(string[] args)
         {
-            Console.WriteLine(Process.GetCurrentProcess().Id);
-            for (int i = 0; i < 10_000; i++)
+            var env = new StorageEnvironment(StorageEnvironmentOptions.CreateMemoryOnly());
+            using (var tx = env.WriteTransaction())
             {
-                 Console.WriteLine($"Starting to run {i}");
-                try
+                var ct = CompactTree.Create(tx.LowLevelTransaction, "test");
+                for (int i = 0; i < 400000; i++)
                 {
-                    using (var testOutputHelper = new ConsoleTestOutputHelper())
-                    using (var test = new FirstClassPatch(testOutputHelper))
+                    ct.Add("hi" + i, i);
+                }
+                for (int i = 0; i < 40000; i++)
+                {
+                    if(ct.Remove("hi" + i, out var l) == false || l != i)
                     {
-                         test.PatchNullField_ExpectFieldSetToNull();
+                        Console.WriteLine("Opps: " + i);
                     }
                 }
-                catch (Exception e)
+                Validate(ct);
+                Console.WriteLine("Done!");
+            }
+        }
+
+        private static void Validate(CompactTree ct)
+        {
+            ct.Seek("");
+            {
+                ct.Render();
+                int index = 0;
+                var set = new Dictionary<long, int>();
+                while (ct.Next(out _, out var l))
                 {
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine(e);
-                    Console.ForegroundColor = ConsoleColor.White;
+                    if (set.TryAdd(l, index++) == false)
+                    {
+                        Console.WriteLine("Duplicate");
+                    }
+                    if (87581 == index || 87861 == index)
+                    {
+                        Console.WriteLine();
+                    }
+                }
+                var list = set.Keys.ToList();
+                list.Sort();
+                for (int i = 0; i < 400000; i++)
+                {
+                    if (list[i] != i)
+                    {
+                        Console.WriteLine("err @ " + i);
+                    }
+                }
+                if (list.Count != 400000)
+                {
+                    Console.WriteLine("Missing");
+                }
+            }
+            {
+                for (int i = 0; i < 400000; i++)
+                {
+                    ct.Seek("hi" + i);
+                    if (ct.Next(out _, out var val2) == false || val2 != i)
+                        Console.WriteLine("failed at: " + i);
                 }
             }
         }
