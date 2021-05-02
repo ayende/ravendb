@@ -37,11 +37,13 @@ namespace Voron.Data.CompactTrees
             public string DumpPageDebug()
             {
                 var sb = new StringBuilder();
+                int total = 0;
                 for (int i = 0; i < Header->NumberOfEntries; i++)
                 {
-                    GetEntry(Page, i, out var key, out var l);
+                    total += GetEntry(Page, i, out var key, out var l);
                     sb.AppendLine($" - {Encoding.UTF8.GetString(key)} - {l}");
                 }
+                sb.AppendLine($"---- size:{total} ----");
                 return sb.ToString();
             }
             public override string ToString()
@@ -167,6 +169,27 @@ namespace Voron.Data.CompactTrees
             }
         }
 
+        public bool TryGetValue(string key, out long value)
+        {
+            using var _ = Slice.From(_llt.Allocator, key, out var slice);
+            var span = slice.AsReadOnlySpan();
+            return TryGetValue(span, out value);
+
+        }
+
+        public bool TryGetValue(ReadOnlySpan<byte> key, out long value)
+        {
+            FindPageFor(key);
+            ref var state = ref _stk[_pos];
+            if (state.LastMatch != 0)
+            {
+                value = default;
+                return false;
+            }
+            value = GetValue(ref state, state.LastSearchPosition);
+            return true;
+        }
+
         public bool Remove(string key, out long oldValue)
         {
             using var _ = Slice.From(_llt.Allocator, key, out var slice);
@@ -177,10 +200,17 @@ namespace Voron.Data.CompactTrees
         public bool Remove(ReadOnlySpan<byte> key, out long oldValue)
         {
             FindPageFor(key);
-            return RemoveFromPage(out oldValue);
+            return RemoveFromPage(allowRecurse: true, out oldValue);
         }
 
-        private bool RemoveFromPage(out long oldValue)
+        private void RemoveFromPage(bool allowRecurse, int pos)
+        {
+            ref var state = ref _stk[_pos];
+            state.LastSearchPosition = pos;
+            state.LastMatch = 0;
+            RemoveFromPage(allowRecurse, oldValue: out _);
+        }
+        private bool RemoveFromPage(bool allowRecurse, out long oldValue)
         {
             ref var state = ref _stk[_pos];
             if (state.LastMatch != 0)
@@ -201,14 +231,17 @@ namespace Voron.Data.CompactTrees
             Memory.Copy(&l, entry, valLen);
             oldValue = l;
             var totalEntrySize = 1 + keyLen + 1 + valLen;
-            Memory.Move((byte*)(entriesOffsets + state.LastSearchPosition - 1),
-                (byte*)(entriesOffsets + state.LastSearchPosition),
-                (state.Header->NumberOfEntries - state.LastSearchPosition) * sizeof(ushort));
-            state.Header->Lower -= sizeof(short);
-            // the upper will be fixed on defrag
             state.Header->FreeSpace += (ushort)(sizeof(ushort) + totalEntrySize);
-
-            if (_pos > 0 && // nothing to do for a single leaf node
+            state.Header->Lower -= sizeof(short);// the upper will be fixed on defrag
+            Memory.Move((byte*)(entriesOffsets + state.LastSearchPosition),
+                (byte*)(entriesOffsets + state.LastSearchPosition + 1),
+                (state.Header->NumberOfEntries - state.LastSearchPosition) * sizeof(ushort));
+            if (state.Header->PageFlags.HasFlag(CompactPageFlags.Leaf))
+            {
+                _state.NumberOfEntries--;
+            }
+            if (allowRecurse &&
+                _pos > 0 && // nothing to do for a single leaf node
                 state.Header->FreeSpace > Constants.Storage.PageSize / 3)
             {
                 MaybeMergeEntries(ref state);
@@ -218,6 +251,7 @@ namespace Voron.Data.CompactTrees
 
         private void MaybeMergeEntries(ref CursorState state)
         {
+            CursorState siblingState;
             ref var parent = ref _stk[_pos - 1];
             // optimization: not merging right most / left most pages
             // that allows to delete in up / down order without doing any
@@ -227,62 +261,102 @@ namespace Voron.Data.CompactTrees
             {
                 if (state.Header->NumberOfEntries == 0) // just remove the whole thing
                 {
-                    _llt.FreePage(state.Page.PageNumber);
-                    PopPage();
-                    state = default; // just to be safe
-                    RemoveFromPage(out _);
+                    var sibling = GetValue(ref parent, parent.LastSearchPosition == 0 ? 1 : parent.LastSearchPosition - 1);
+                    siblingState = new CursorState
+                    {
+                        Page = _llt.GetPage(sibling)
+                    };
+                    FreePageFor(ref siblingState, ref state);
                 }
+                return;
+            }
+            var siblingPage = GetValue(ref parent, parent.LastSearchPosition + 1);
+            siblingState = new CursorState
+            {
+                Page = _llt.ModifyPage(siblingPage)
+            };
+            if (siblingState.Header->PageFlags != state.Header->PageFlags)
+                return; // cannot merge leaf & branch pages
+            ushort* entriesOffsets = GetEntriesOffsets(state.Page.Pointer);
+            int entriesCopied = 0;
+            for (; entriesCopied < siblingState.Header->NumberOfEntries; entriesCopied++)
+            {
+                GetEntryBuffer(siblingState.Page, entriesCopied, out var entryBuffer, out var len);
+                var requiredSize = len + sizeof(ushort);
+                if (requiredSize > state.Header->FreeSpace)
+                    break; // done moving entries
+               if (requiredSize > state.Header->Upper - state.Header->Lower)
+                    DefragPage();
+                Debug.Assert(state.Header->Upper >= len);
+                state.Header->Upper -= (ushort)len;
+                entriesOffsets[state.Header->NumberOfEntries] = state.Header->Upper;
+                Memory.Copy(state.Page.Pointer + state.Header->Upper, entryBuffer, len);
+                Debug.Assert(state.Header->FreeSpace >= requiredSize);
+                state.Header->FreeSpace -= (ushort)requiredSize;
+                Debug.Assert(siblingState.Header->FreeSpace + requiredSize <= 
+                    Constants.Storage.PageSize - PageHeader.SizeOf - DictionarySize);
+                siblingState.Header->FreeSpace += (ushort)requiredSize;
+                state.Header->Lower += sizeof(ushort);
+            }
+            Memory.Move(siblingState.Page.Pointer + PageHeader.SizeOf + DictionarySize,
+                siblingState.Page.Pointer + PageHeader.SizeOf + DictionarySize + (entriesCopied * sizeof(ushort)),
+                (siblingState.Header->NumberOfEntries - entriesCopied) * sizeof(ushort)
+                );
+            var oldLower = siblingState.Header->Lower;
+            siblingState.Header->Lower -= (ushort)(entriesCopied * sizeof(ushort));
+            if (siblingState.Header->NumberOfEntries == 0) // emptied the sibling entriely
+            {
+                parent.LastSearchPosition++;
+                FreePageFor(ref state, ref siblingState);
+                return;
+            }
+            Memory.Set(siblingState.Page.Pointer + siblingState.Header->Lower,
+                0, (oldLower - siblingState.Header->Lower));
+            // now re-wire the new splitted page key
+            var newKey = GetKey(siblingState.Page, 0);
+            PopPage();
+            // we aren't _really_ removing, so preventing merging of parents
+            RemoveFromPage(allowRecurse: false, parent.LastSearchPosition + 1);
+            SearchInPage(newKey);// positions changed, re-search
+            AddToPage(newKey, siblingPage);
+        }
+
+        private void FreePageFor(ref CursorState stateToKeep, ref CursorState stateToDelete)
+        {
+            ref var parent = ref _stk[_pos - 1];
+            DecrementPageNumbers(ref stateToKeep);
+            _llt.FreePage(stateToDelete.Page.PageNumber);
+            if (parent.Header->NumberOfEntries == 2)
+            {   // let's reduce the height of the tree entirely...
+                var parentPageNumber = parent.Page.PageNumber;
+                Memory.Copy(parent.Page.Pointer, stateToKeep.Page.Pointer, Constants.Storage.PageSize);
+                parent.Page.PageNumber = parentPageNumber; // we overwrote it...
+                DecrementPageNumbers(ref stateToKeep);
+                if (_pos == 1)
+                {
+                    if (parent.Header->PageFlags.HasFlag(CompactPageFlags.Leaf))
+                    {
+                        _state.LeafPages++;
+                        _state.BranchPages--;
+                    }
+                    _state.Depth--;
+                }
+                _llt.FreePage(stateToKeep.Page.PageNumber);
+                return;
+            }
+            PopPage();
+            RemoveFromPage(allowRecurse: true, parent.LastSearchPosition);
+        }
+
+        private void DecrementPageNumbers(ref CursorState state)
+        {
+            if (state.Header->PageFlags.HasFlag(CompactPageFlags.Leaf))
+            {
+                _state.LeafPages--;
             }
             else
             {
-                var siblingPage = GetValue(ref state, state.LastSearchPosition + 1);
-                var sibling = _llt.ModifyPage(siblingPage);
-                var siblingHeader = (CompactPageHeader*)sibling.Pointer;
-                if (siblingHeader->PageFlags != state.Header->PageFlags)
-                    return; // cannot merge leaf & branch pages
-                ushort* entriesOffsets = GetEntriesOffsets(state.Page.Pointer);
-                int entriesCopied = 0;
-                for (; entriesCopied < siblingHeader->NumberOfEntries; entriesCopied++)
-                {
-                    GetEntryBuffer(sibling, entriesCopied, out var entryBuffer, out var len);
-                    var requiredSize = len + sizeof(ushort);
-                    if (requiredSize  > state.Header->FreeSpace)
-                        break; // done moving entries
-                    if (requiredSize > state.Header->Upper - state.Header->Lower)
-                        DefragPage();
-                    if (requiredSize > state.Header->FreeSpace)
-                        break; // done moving entries
-                    Debug.Assert(state.Header->Upper >= len);
-                    state.Header->Upper -= (ushort)len;
-                    entriesOffsets[state.Header->NumberOfEntries] = state.Header->Upper;
-                    Memory.Copy(state.Page.Pointer + state.Header->Upper, entryBuffer, len);
-                    Debug.Assert(state.Header->FreeSpace >= requiredSize);
-                    state.Header->FreeSpace -= (ushort)requiredSize;
-                    state.Header->Lower += sizeof(ushort);
-                }
-                Memory.Move(sibling.Pointer + PageHeader.SizeOf + DictionarySize,
-                    sibling.Pointer + PageHeader.SizeOf + DictionarySize + entriesCopied * sizeof(ushort),
-                    siblingHeader->NumberOfEntries - entriesCopied
-                    );
-                var oldLower = siblingHeader->Lower;
-                siblingHeader->Lower -= (ushort)(entriesCopied * sizeof(ushort));
-                if(siblingHeader->NumberOfEntries == 0) // emptied the sibling entriely
-                {
-                    _llt.FreePage(siblingPage);
-                    PopPage();
-                    parent.LastSearchPosition++; // remove the sibling
-                    RemoveFromPage(out _);
-                    return;
-                }
-                Memory.Set(sibling.Pointer + PageHeader.SizeOf + DictionarySize + entriesCopied * sizeof(ushort),
-                    0, oldLower - siblingHeader->Lower);
-                // now re-wire the new splitted page key
-                var newKey = GetKey(sibling, 0);
-                PopPage();
-                parent.LastSearchPosition++;
-                RemoveFromPage(out _); // may borrow entires from _parents_ siblings
-                SearchInPage(newKey);// positions may have changed, re-search
-                AddToPage(newKey, siblingPage);
+                _state.BranchPages--;
             }
         }
 
@@ -401,6 +475,7 @@ namespace Voron.Data.CompactTrees
             }
             // non sequential write, let's just split in middle
             int entriesCopied = 0;
+            int sizeCopied = 0;
             ushort* offsets = (ushort*)(page.Pointer + header->Lower);
             for (int i = numberOfEntries / 2; i < numberOfEntries; i++)
             {
@@ -408,10 +483,12 @@ namespace Voron.Data.CompactTrees
                 GetEntryBuffer(state.Page, i, out var b, out var len);
                 header->Upper -= (ushort)len;
                 header->FreeSpace -= (ushort)(len + sizeof(ushort));
+                sizeCopied += len + sizeof(ushort);
                 offsets[entriesCopied++] = header->Upper;
                 Memory.Copy(page.Pointer + header->Upper, b, len);
             }
             state.Header->Lower -= (ushort)(sizeof(ushort) * entriesCopied);
+            state.Header->FreeSpace += (ushort)(sizeCopied);
             GetEntry(page, 0, out var splitKey, out _);
             return splitKey;
         }
@@ -469,17 +546,18 @@ namespace Voron.Data.CompactTrees
 
         private void DefragPage()
         {
+            ref var state = ref _stk[_pos];
+    
             using (_llt.Environment.GetTemporaryPage(_llt, out var tmp))
             {
-                ref var state = ref _stk[_pos];
                 Memory.Copy(tmp.TempPagePointer, state.Page.Pointer, Constants.Storage.PageSize);
                 var tmpHeader = (CompactPageHeader*)tmp.TempPagePointer;
                 tmpHeader->Upper = Constants.Storage.PageSize;
                 ushort* entriesOffsets = GetEntriesOffsets(tmp.TempPagePointer);
                 for (int i = 0; i < state.Header->NumberOfEntries; i++)
                 {
-                    GetEntryBuffer(state.Page,i, out var b, out var len);
-                    Debug.Assert((tmpHeader->Upper - len) > 0); 
+                    GetEntryBuffer(state.Page, i, out var b, out var len);
+                    Debug.Assert((tmpHeader->Upper - len) > 0);
                     tmpHeader->Upper -= (ushort)len;
                     // Note: FreeSpace doesn't change here
                     Memory.Copy(tmp.TempPagePointer + tmpHeader->Upper, b, len);
@@ -488,6 +566,7 @@ namespace Voron.Data.CompactTrees
                 Memory.Copy(state.Page.Pointer, tmp.TempPagePointer, Constants.Storage.PageSize);
                 Memory.Set(state.Page.Pointer + tmpHeader->Lower, 0,
                     tmpHeader->Upper - tmpHeader->Lower);
+                Debug.Assert(state.Header->FreeSpace == (state.Header->Upper - state.Header->Lower));
             }
         }
 
@@ -584,7 +663,7 @@ namespace Voron.Data.CompactTrees
                 throw new ArgumentOutOfRangeException();
         }
 
-        internal static void GetEntry(Page page, int pos, out Span<byte> key, out long value)
+        internal static int GetEntry(Page page, int pos, out Span<byte> key, out long value)
         {
             ushort entryOffset = GetEntriesOffsets(page.Pointer)[pos];
             byte* entryPos = page.Pointer + entryOffset;
@@ -596,6 +675,8 @@ namespace Voron.Data.CompactTrees
             Debug.Assert(valLen <= sizeof(long));
             Memory.Copy((byte*)&l, entryPos, valLen);
             value = l;
+            entryPos += valLen;
+            return (int)(entryPos - page.Pointer - entryOffset);
         }
 
         private static void GetEntryBuffer(Page page, int pos, out byte* b, out int len)

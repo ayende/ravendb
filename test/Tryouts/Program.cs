@@ -32,14 +32,21 @@ namespace Tryouts
                 {
                     ct.Add("hi" + i, i);
                 }
-                for (int i = 0; i < 40000; i++)
+                Validate(ct);
+                for (int i = 0; i < 400000; i++)
                 {
+                    if(i == 230)
+                    {
+                        ct.Render();
+                        Console.WriteLine(9);
+                    }
                     if(ct.Remove("hi" + i, out var l) == false || l != i)
                     {
                         Console.WriteLine("Opps: " + i);
                     }
                 }
-                Validate(ct);
+                ct.Render();
+
                 Console.WriteLine("Done!");
             }
         }
@@ -48,7 +55,6 @@ namespace Tryouts
         {
             ct.Seek("");
             {
-                ct.Render();
                 int index = 0;
                 var set = new Dictionary<long, int>();
                 while (ct.Next(out _, out var l))
@@ -56,10 +62,6 @@ namespace Tryouts
                     if (set.TryAdd(l, index++) == false)
                     {
                         Console.WriteLine("Duplicate");
-                    }
-                    if (87581 == index || 87861 == index)
-                    {
-                        Console.WriteLine();
                     }
                 }
                 var list = set.Keys.ToList();
