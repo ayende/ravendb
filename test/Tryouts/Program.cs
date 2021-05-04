@@ -12,6 +12,7 @@ using Tests.Infrastructure;
 using Voron;
 using Voron.Data.CompactTrees;
 using Voron.Debugging;
+using FastTests.Voron;
 
 namespace Tryouts
 {
@@ -24,31 +25,8 @@ namespace Tryouts
 
         public static void Main(string[] args)
         {
-            var env = new StorageEnvironment(StorageEnvironmentOptions.CreateMemoryOnly());
-            using (var tx = env.WriteTransaction())
-            {
-                var ct = CompactTree.Create(tx.LowLevelTransaction, "test");
-                for (int i = 0; i < 400000; i++)
-                {
-                    ct.Add("hi" + i, i);
-                }
-                Validate(ct);
-                for (int i = 0; i < 400000; i++)
-                {
-                    if(i == 230)
-                    {
-                        ct.Render();
-                        Console.WriteLine(9);
-                    }
-                    if(ct.TryRemove("hi" + i, out var l) == false || l != i)
-                    {
-                        Console.WriteLine("Opps: " + i);
-                    }
-                }
-                ct.Render();
-
-                Console.WriteLine("Done!");
-            }
+            new CompactTreeTests(new ConsoleTestOutputHelper())
+                .CanStoreLargeNumberOfItemsInRandomlyOrder();
         }
 
         private static void Validate(CompactTree ct)
