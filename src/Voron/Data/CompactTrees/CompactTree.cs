@@ -190,14 +190,14 @@ namespace Voron.Data.CompactTrees
             return true;
         }
 
-        public bool Remove(string key, out long oldValue)
+        public bool TryRemove(string key, out long oldValue)
         {
             using var _ = Slice.From(_llt.Allocator, key, out var slice);
             var span = slice.AsReadOnlySpan();
-            return Remove(span, out oldValue);
+            return TryRemove(span, out oldValue);
         }
 
-        public bool Remove(ReadOnlySpan<byte> key, out long oldValue)
+        public bool TryRemove(ReadOnlySpan<byte> key, out long oldValue)
         {
             FindPageFor(key);
             return RemoveFromPage(allowRecurse: true, out oldValue);

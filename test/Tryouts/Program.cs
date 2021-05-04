@@ -40,7 +40,7 @@ namespace Tryouts
                         ct.Render();
                         Console.WriteLine(9);
                     }
-                    if(ct.Remove("hi" + i, out var l) == false || l != i)
+                    if(ct.TryRemove("hi" + i, out var l) == false || l != i)
                     {
                         Console.WriteLine("Opps: " + i);
                     }
