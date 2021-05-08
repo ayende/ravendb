@@ -163,6 +163,7 @@ namespace Raven.Server.Documents
                         case ClusterDatabaseChangeType.PendingClusterTransactions:
                         case ClusterDatabaseChangeType.ClusterTransactionCompleted:
                             database.DatabaseGroupId = topology.DatabaseTopologyIdBase64;
+                            database.ClusterTransactionId = topology.ClusterTransactionIdBase64;
                             database.NotifyOnPendingClusterTransaction(index, changeType);
                             break;
 
@@ -811,7 +812,7 @@ namespace Raven.Server.Documents
             {
                 if (databaseRecord == null)
                     return null;
-
+                
                 var record = databaseRecord.MaterializedRecord;
                 if (record.Encrypted)
                 {
