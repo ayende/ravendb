@@ -51,9 +51,11 @@ namespace Micro.Benchmark.Benchmarks
 
         private HopeEncoder<Encoder3Gram> _encoder;
 
-        private State _trainedState = new(64000);
+        private const int StateSize = 64 * 1024 - 64; // actual usable space in 8 pages
+        
+        private readonly State _trainedState = new (StateSize);
 
-        private State _state = new(64000);
+        private State _state = new (StateSize);
         private StringKeys _sequentialKeys;
         private StringKeys _outputBuffers;
         private StringKeys _encodedBuffers;
@@ -61,13 +63,13 @@ namespace Micro.Benchmark.Benchmarks
         private int[] _outputBuffersSize;
         private int[] _encodedBuffersSize;
 
-        public const int Keys = 10000;
+        private const int Keys = 10000;
 
         [GlobalSetup]
         public void Setup()
         {
             _encoder = new HopeEncoder<Encoder3Gram>();
-            _state = new(64000);
+            _state = new (StateSize);
 
             string[] keysAsStrings = new string[Keys];
             byte[][] outputBuffers = new byte[Keys][];
