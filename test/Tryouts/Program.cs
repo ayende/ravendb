@@ -6,9 +6,13 @@ using System.Linq;
 using System.Threading.Tasks;
 using Corax;
 using FastTests.Sparrow;
+using FastTests.Voron;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
+using Sparrow.Server.Compression;
+using Tests.Infrastructure;
 using Voron;
+using Voron.Data.CompactTrees;
 
 namespace Tryouts
 {
@@ -21,8 +25,11 @@ namespace Tryouts
 
         public static async Task Main(string[] args)
         {
-            var tests = new Encoder3GramTests();
-            tests.VerifyOrderPreservation();
+            new CompactTreeTests(new ConsoleTestOutputHelper()).CanStoreLargeNumberOfItemsInRandomlyOrder();
+
+
+            // var tests = new Encoder3GramTests();
+            // tests.VerifyOrderPreservation();
 
             //CoraxEnron.Index(true, "Z:\\corax");
             //LuceneEnron.IndexInLucene(true);
@@ -73,7 +80,7 @@ namespace Tryouts
             //}
 
             Console.WriteLine("Done");
-            Console.ReadLine();
+            //Console.ReadLine();
         }
     }
 }
