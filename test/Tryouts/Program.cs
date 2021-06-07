@@ -20,6 +20,8 @@ namespace Tryouts
 
         public static unsafe void Main()
         {
+            using var env = new StorageEnvironment(StorageEnvironmentOptions.CreateMemoryOnly());
+            using var wtc = env.WriteTransaction();
             byte* buf = stackalloc byte[8192];
             var page = new Page(buf);
             var leaf = new SetLeafPage(page);
@@ -27,7 +29,7 @@ namespace Tryouts
             for (int i = 0; i < 512; i++)
             {
                 var a = 812 + (i%5 * 7) + i;
-                leaf.Add(a);
+                leaf.Add(wtc.LowLevelTransaction, a);
             }
         }
     }
