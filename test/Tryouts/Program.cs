@@ -7,6 +7,7 @@ using SlowTests.Issues;
 using SlowTests.MailingList;
 using SlowTests.Server.Documents.ETL.Raven;
 using Tests.Infrastructure;
+using Voron;
 
 namespace Tryouts
 {
@@ -17,26 +18,16 @@ namespace Tryouts
             XunitLogging.RedirectStreams = false;
         }
 
-        public static async Task Main(string[] args)
+        public static unsafe void Main()
         {
-            Console.WriteLine(Process.GetCurrentProcess().Id);
-            for (int i = 0; i < 10_000; i++)
+            byte* buf = stackalloc byte[8192];
+            var page = new Page(buf);
+            var leaf = new SetLeafPage(page);
+            leaf.Init(512);
+            for (int i = 0; i < 512; i++)
             {
-                 Console.WriteLine($"Starting to run {i}");
-                try
-                {
-                    using (var testOutputHelper = new ConsoleTestOutputHelper())
-                    using (var test = new FirstClassPatch(testOutputHelper))
-                    {
-                         test.PatchNullField_ExpectFieldSetToNull();
-                    }
-                }
-                catch (Exception e)
-                {
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine(e);
-                    Console.ForegroundColor = ConsoleColor.White;
-                }
+                var a = 812 + (i%5 * 7) + i;
+                leaf.Add(a);
             }
         }
     }
