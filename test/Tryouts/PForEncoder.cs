@@ -1,6 +1,9 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Numerics;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace Tryouts
 {
@@ -31,10 +34,15 @@ namespace Tryouts
         private readonly int _maxNumOfBits;
         private readonly Span<uint> _deltasBuffer;
         private int _prev;
-        private bool _first;
 
+        public int NumberOfAdditions;
         public int SizeInBytes;
 
+        public List<int> GetDebugOutput()
+        {
+            return PForDecoder.GetDebugOutput(_output);
+        }
+        
         public PForEncoder(Span<byte> output, Span<uint> scratchBuffer)
         {
             _output = output;
@@ -42,8 +50,8 @@ namespace Tryouts
             _bitPos = 0;
             _maxNumOfBits = output.Length * 8;
             _prev = 0;
-            _first = true;
             SizeInBytes = -1;
+            NumberOfAdditions = 0;
             _deltasBuffer = scratchBuffer.Slice(0, BufferLen);
         }
 
@@ -51,14 +59,13 @@ namespace Tryouts
         {
             if (value < 0)
                 throw new ArgumentOutOfRangeException();
-            if (!_first && _prev > value)
+            if (NumberOfAdditions > 0 && _prev > value)
                 throw new ArgumentOutOfRangeException();
 
-            if (_first)
+            if (NumberOfAdditions++==0)
             {
                 _deltasBuffer[_bufPos++] = (uint)value;
                 _prev = value;
-                _first = false;
                 return TryFlush();
             }
 
@@ -69,6 +76,7 @@ namespace Tryouts
                 _deltasBuffer[_bufPos++] = (uint)diff;
                 return true;
             }
+
             if (TryFlush() == false)
                 return false;
             return TryAdd(value);
@@ -78,11 +86,15 @@ namespace Tryouts
         {
             var result = TryFlush() &&
                          TryPushBits(0b11, 2) &&
-                         // last value in the compressed range, aligned to the last 4 bytes
-                         TryPushBits((ulong)_prev, 32 + (_bitPos % 8));
+                         TryPushBits(0, BitsAvailableInCurrentByte); // align to byte boundary
             
-            
-            SizeInBytes = (_bitPos + 7) / 8;
+            var pos = _bitPos / 8;
+            if (pos + sizeof(int) > _output.Length)
+                return false;
+            // now write last value...
+            MemoryMarshal.Cast<byte, int>(_output.Slice(pos))[0] = _prev;
+
+            SizeInBytes = pos + sizeof(int);
             _bitPos = int.MaxValue;
             return result;
         }
@@ -98,6 +110,7 @@ namespace Tryouts
                 ulong header = 0b00_00_00000ul | (uint)bits;
                 return TryPushBits(header, 9) && TryPushBits(buffer[0], bits);
             }
+
             var (maxBits, identicalPrefix) = Analyze(buffer);
             Debug.Assert(identicalPrefix <= 256);
             if (identicalPrefix > 5) // enough to warrant a repeating header to save space
@@ -108,6 +121,7 @@ namespace Tryouts
                     return false;
                 return TryFlush(buffer.Slice(identicalPrefix));
             }
+
             ulong fixedSizeMarker = buffer.Length switch
             {
                 32 => 0b01,
@@ -128,6 +142,7 @@ namespace Tryouts
                     return TryFlush(buffer.Slice(0, half)) &&
                            TryFlush(buffer.Slice(half));
                 }
+
                 ulong header = 0b00_00_00000ul | fixedSizeMarker << 5 | (uint)maxBits;
                 if (TryPushBits(header, 9) == false)
                     return false;
@@ -151,6 +166,7 @@ namespace Tryouts
                     return false;
                 }
             }
+
             return true;
         }
 
@@ -168,6 +184,7 @@ namespace Tryouts
             {
                 mask |= buffer[i];
             }
+
             var maxBits = 32 - BitOperations.LeadingZeroCount(mask);
             Debug.Assert(maxBits < 32); // we never encode 0
             return maxBits;
@@ -193,6 +210,7 @@ namespace Tryouts
                     }
                 }
             }
+
             var maxBits = 32 - BitOperations.LeadingZeroCount(mask);
             Debug.Assert(maxBits < 32); // we never encode 0
             return (maxBits, identicalPrefix);
@@ -207,7 +225,7 @@ namespace Tryouts
                 return false;
             }
 
-            int bitsAvailable = (_bitPos & 0x7) != 0 ? 8 - (_bitPos & 0x7) : 0;
+            int bitsAvailable = BitsAvailableInCurrentByte;
             var bytePos = _bitPos / 8;
             _bitPos += bitsInValue;
             if (bitsInValue <= bitsAvailable)
@@ -239,7 +257,15 @@ namespace Tryouts
                 // Start a new byte with the rest of the bits
                 _output[bytePos] += (byte)((value & (1U << bitsLeft) - 1) << 8 - bitsLeft);
             }
+
             return true;
+        }
+
+
+        private int BitsAvailableInCurrentByte
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => (_bitPos & 0x7) != 0 ? 8 - (_bitPos & 0x7) : 0;
         }
     }
 }

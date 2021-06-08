@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading.Tasks;
 using FastTests.Blittable;
@@ -26,10 +27,46 @@ namespace Tryouts
             var page = new Page(buf);
             var leaf = new SetLeafPage(page);
             leaf.Init(512);
-            for (int i = 0; i < 512; i++)
+
+           var list = new SortedList<int,int>();
+            
+            for (int i = 0; i < 1024*16; i++)
             {
                 var a = 812 + (i%5 * 7) + i;
-                leaf.Add(wtc.LowLevelTransaction, a);
+                list.Add(a,a);
+                if (i == 512)
+                {
+                    Console.WriteLine();
+                }
+
+                if (leaf.Add(wtc.LowLevelTransaction, a) == false)
+                {
+                    Console.WriteLine("Hey");
+                }
+                Validate(ref leaf, list.Keys);
+            }
+        }
+
+        private static void Validate(ref SetLeafPage p, IList<int> expected)
+        {
+            Span<int> scratch = stackalloc int[128];
+            var it = p.GetIterator(scratch);
+            for (int i = 0; i < expected.Count; i++)
+            {
+                if (i == 269 && expected.Count == 513)
+                {
+                    Console.WriteLine();
+                }
+                if (it.MoveNext(out var cur) == false ||
+                    cur != expected[i])
+                {
+                    Console.WriteLine("Opps");
+                }
+            }
+
+            if (it.MoveNext(out var a))
+            {
+                Console.WriteLine("Um...");
             }
         }
     }

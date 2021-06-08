@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
 
 namespace Tryouts
@@ -6,9 +7,12 @@ namespace Tryouts
     public ref struct PForDecoder
     {
         private readonly Span<byte> _input;
-        private int _bitPos, _maxBits;
+        private int _bitPos;
+        private readonly int _maxBits;
         private int _prevValue;
         private readonly Span<int> _nums;
+        
+        public int NumberOfReads;
 
         public PForDecoder(Span<byte> input, Span<int> scratch)
         {
@@ -16,10 +20,11 @@ namespace Tryouts
             _bitPos = 0;
             _maxBits = input.Length * 8;
             _prevValue = 0;
+            NumberOfReads = 0;
             _nums = scratch.Slice(0, PForEncoder.BufferLen);
         }
 
-        public Span<int> TryDecode()
+        public Span<int> Decode()
         {
             var bits = Read(2);
             switch (bits)
@@ -48,6 +53,8 @@ namespace Tryouts
                         _prevValue += repeatedDelta;
                         _nums[i] = _prevValue;
                     }
+
+                    NumberOfReads += numOfRepeatedValues;
                     return _nums.Slice(0, numOfRepeatedValues);
                 case 0b11:
                     return Span<int>.Empty;
@@ -66,6 +73,8 @@ namespace Tryouts
                 _prevValue += (int)v;
                 _nums[i] = _prevValue;
             }
+
+            NumberOfReads += numOfValues;
             return _nums.Slice(0, numOfValues);
         }
 
@@ -84,6 +93,29 @@ namespace Tryouts
                 _bitPos++;
             }
             return value;
+        }
+
+        public List<int> GetDebugOutput()
+        {
+            return GetDebugOutput(_input);
+        }
+
+        public static List<int> GetDebugOutput(Span<byte> buf)
+        {
+            Span<int> scratch = stackalloc int[128];
+            var decoder = new PForDecoder(buf, scratch);
+
+            var list = new List<int>();
+            while (true)
+            {
+                var d = decoder.Decode();
+                if (d.IsEmpty) break;
+                foreach (var t in d)
+                {
+                    list.Add(t);
+                }
+            }
+            return list;
         }
     }
 }

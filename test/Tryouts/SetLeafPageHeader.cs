@@ -24,21 +24,21 @@ namespace Tryouts
         public long PageNumber;
 
         [FieldOffset(8)]
-        public int NumberOfEntries;
+        public ushort CompressedValuesCeiling; 
+
+        [FieldOffset(10)]
+        public ushort NumberOfRawValues;
 
         [FieldOffset(12)]
         public PageFlags Flags;
 
         [FieldOffset(13)]
-        public byte NumberOfCompressedEntries;
+        public byte NumberOfCompressedPositions;
 
         [FieldOffset(14)]
-        public ushort CompressedValuesCeiling; 
-
-        [FieldOffset(16)]
-        public ushort NumberOfRawValues;
+        public ushort Reserved;
         
-        [FieldOffset(18)]
+        [FieldOffset(16)]
         public long Baseline;
     }
 }
