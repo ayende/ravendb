@@ -46,6 +46,7 @@ namespace Tryouts
         public PForEncoder(Span<byte> output, Span<uint> scratchBuffer)
         {
             _output = output;
+            _output[0] = 0; // do not assume the buffer is clean
             _bufPos = 0;
             _bitPos = 0;
             _maxNumOfBits = output.Length * 8;
@@ -255,7 +256,7 @@ namespace Tryouts
             if (bitsLeft != 0)
             {
                 // Start a new byte with the rest of the bits
-                _output[bytePos] += (byte)((value & (1U << bitsLeft) - 1) << 8 - bitsLeft);
+                _output[bytePos] = (byte)((value & (1U << bitsLeft) - 1) << 8 - bitsLeft);
             }
 
             return true;

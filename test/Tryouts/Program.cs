@@ -30,20 +30,23 @@ namespace Tryouts
 
            var list = new SortedList<int,int>();
             
-            for (int i = 0; i < 1024*16; i++)
+            for (int i = 0; i < 1024*16*100; i++)
             {
                 var a = 812 + (i%5 * 7) + i;
-                list.Add(a,a);
-                if (i == 512)
+                if (i == 256)
                 {
                     Console.WriteLine();
                 }
-
                 if (leaf.Add(wtc.LowLevelTransaction, a) == false)
                 {
+                    Validate(ref leaf, list.Keys);
                     Console.WriteLine("Hey");
+                    return;
                 }
-                Validate(ref leaf, list.Keys);
+                list.Add(a,a);
+
+                if (i % 256 == 0)
+                    Validate(ref leaf, list.Keys);
             }
         }
 
