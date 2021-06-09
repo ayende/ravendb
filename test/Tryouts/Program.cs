@@ -29,23 +29,22 @@ namespace Tryouts
             leaf.Init(512);
 
            var list = new SortedList<int,int>();
-            
+           var indexes = new int[] {23, 37, 12, 28};
+           var a = 812;
             for (int i = 0; i < 1024*16*100; i++)
             {
-                var a = 812 + (i%5 * 7) + i;
-                if (i == 256)
-                {
-                    Console.WriteLine();
-                }
+                //var a = 812 + (i%5 * 7) + i;
+                a += indexes[i % indexes.Length];
+   
                 if (leaf.Add(wtc.LowLevelTransaction, a) == false)
                 {
                     Validate(ref leaf, list.Keys);
-                    Console.WriteLine("Hey");
+                    Console.WriteLine("Hey: " + i);
                     return;
                 }
-                list.Add(a,a);
 
-                if (i % 256 == 0)
+                list[a] = a;
+                if(i % 1024 == 0)
                     Validate(ref leaf, list.Keys);
             }
         }
@@ -56,20 +55,17 @@ namespace Tryouts
             var it = p.GetIterator(scratch);
             for (int i = 0; i < expected.Count; i++)
             {
-                if (i == 269 && expected.Count == 513)
-                {
-                    Console.WriteLine();
-                }
+           
                 if (it.MoveNext(out var cur) == false ||
                     cur != expected[i])
                 {
-                    Console.WriteLine("Opps");
+                    Console.WriteLine("Opps " + expected.Count);
                 }
             }
 
             if (it.MoveNext(out var a))
             {
-                Console.WriteLine("Um...");
+                Console.WriteLine("Um... " + expected.Count);
             }
         }
     }

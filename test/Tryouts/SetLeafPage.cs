@@ -20,6 +20,7 @@ namespace Tryouts
     {
         private readonly Page _page;
         private const int MaxNumberOfRawValues = 256;
+        private const int MinNumberOfRawValues = 64;
         private const int MaxNumberOfCompressedEntries = 16;
         private SetLeafPageHeader* Header => ((SetLeafPageHeader*)_page.Pointer);
 
@@ -150,8 +151,7 @@ namespace Tryouts
 
         public bool Add(LowLevelTransaction tx, long value)
         {
-            var header = (SetLeafPageHeader*)_page.Pointer;
-            Debug.Assert((value & ~int.MaxValue) == header->Baseline);
+            Debug.Assert((value & ~int.MaxValue) == Header->Baseline);
 
             int iVal = (int)value & int.MaxValue;
             var oldRawValues = RawValues;
@@ -168,10 +168,16 @@ namespace Tryouts
             }
             // need to add a value, let's check if we can...
             if (Header->NumberOfRawValues == MaxNumberOfRawValues || // the raw values range is full
-                header->CompressedValuesCeiling > OffsetOfRawValuesStart - sizeof(int)) // run into the compressed, cannot proceed
+                Header->CompressedValuesCeiling > OffsetOfRawValuesStart - sizeof(int)) // run into the compressed, cannot proceed
             {
                 using var cmp = new Compressor(this, tx);
-                return cmp.TryCompressRawValues() && Add(tx, value);
+                if(cmp.TryCompressRawValues() == false)
+                    return false;
+                
+                // we didn't free enough space
+                if (Header->CompressedValuesCeiling  > Constants.Storage.PageSize - MinNumberOfRawValues * sizeof(int))
+                    return false;
+                return Add(tx, value);
             }
             Header->NumberOfRawValues++; // increase the size of the buffer _downward_
             var newRawValues = RawValues;
@@ -278,33 +284,58 @@ namespace Tryouts
             {
                 // we can now try to merge different entries to a single compressed entry
                 _currentValMasked = _valIndex >= 0 ? _rawValues[_valIndex] & int.MaxValue : int.MinValue;
-                int i = 0, estimatedSize = 0;
-                while (i < _parent.Header->NumberOfCompressedPositions)
+                int index = 0, estimatedSize = 0;
+                _tempHeader->NumberOfCompressedPositions = 0;
+                while (index < _parent.Header->NumberOfCompressedPositions)
                 {
-                    if (_parent.Positions[i].Length < MaxPreferredEntrySize)
+                    ref var pos = ref _parent.Positions[index];
+                    int end = _parent.GetCompressRangeEnd(ref pos);
+                    if (_currentValMasked >= 0 && _currentValMasked < end)
+                    {
+                        break; // need to merge it, overlapping values
+                    }
+
+                    if (pos.Length + pos.Length / 4 < MaxPreferredEntrySize)
                         break; // skip all the entries that are too big...
+
+                    index++;
+                    // can copy as is...
+                    _parent._page.AsSpan().Slice(pos.Position, pos.Length)
+                        .CopyTo(_tmpPage.AsSpan().Slice(_tempHeader->CompressedValuesCeiling));
+                    _tempPositions[_tempHeader->NumberOfCompressedPositions++] = new CompressedHeader
+                    {
+                        Length =  pos.Length,
+                        Position = _tempHeader->CompressedValuesCeiling
+                    };
+                    _tempHeader->CompressedValuesCeiling += pos.Length;
                 }
+                
+                if ( _tempHeader->NumberOfCompressedPositions >= MaxNumberOfCompressedEntries)
+                    return false; // not enough room for more compressed positions
 
                 var encoder = new PForEncoder(_output, _scratchEncoder);
-                _tempHeader->NumberOfCompressedPositions = (byte)i;
-                for (; i < _parent.Header->NumberOfCompressedPositions; i++)
+                _tempHeader->NumberOfCompressedPositions = (byte)index;
+                for (; index < _parent.Header->NumberOfCompressedPositions; index++)
                 {
-                    ref var pos = ref _parent.Positions[i];
-                    estimatedSize += pos.Length;
+                    ref var pos = ref _parent.Positions[index];
+
                     // here we assume that we don't care if we merge two entries into a bigger one
                     // we have an absolute limit of 1KB for an entry, but we'll try to keep it under
                     // 512 bytes if we can
-                    if (estimatedSize> MaxPreferredEntrySize)
+                    if (estimatedSize + pos.Length> MaxPreferredEntrySize)
                     {
                         if (EncoderToNewCompressEntry(ref encoder) == false)
                             return false;
                         estimatedSize = 0;
-                        continue;
                     }
+                    estimatedSize += pos.Length;
 
                     if (EncodeWithRawValues(ref pos, ref encoder) == false)
                         return false;
                 }
+                
+                if ( _tempHeader->NumberOfCompressedPositions >= MaxNumberOfCompressedEntries)
+                    return false; // not enough room for more compressed positions
 
                 return TryFlushRawValuesToNewCompressedEntry(ref encoder);
             }
