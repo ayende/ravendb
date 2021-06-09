@@ -23,7 +23,7 @@ namespace Tryouts
         {
             using (var t = new SetLeafPageTests())
             {
-                t.CanHandleDuplicateValues(4096+257);
+                t.CanAddAndRemove(513);
             }
             
            //  using var env = new StorageEnvironment(StorageEnvironmentOptions.CreateMemoryOnly());

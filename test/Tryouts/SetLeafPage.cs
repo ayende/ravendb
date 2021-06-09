@@ -93,24 +93,25 @@ namespace Tryouts
                 }
                 
                 
-                if (_rawValuesIndex >= 0)
+                while (_rawValuesIndex >= 0)
                 {
                     // note, reading in reverse!
                     int rawValue = _parent.RawValues[_rawValuesIndex];
                     int rawValueMasked = rawValue & int.MaxValue;
-                    while (_current.IsEmpty || rawValueMasked <= _current[0])
+                    if (_current.IsEmpty == false)
                     {
-                        _rawValuesIndex--;
-                        if (_current.IsEmpty == false &&
-                            rawValueMasked == _current[0])
+                        if(rawValueMasked > _current[0])
+                            break; // need to read from the compressed first
+                        if (rawValueMasked == _current[0])
                         {
-                            _current = _current.Slice(1);
+                            _current = _current.Slice(1); // skip this one
                         }
-                        if (rawValue < 0)
-                            continue; // removed, ignore
-                        i = rawValue;
-                        return true;
                     }
+                    _rawValuesIndex--;
+                    if (rawValue < 0) // removed, ignore
+                        continue; 
+                    i = rawValue;
+                    return true;
                 }
 
                 if (_current.IsEmpty)
@@ -142,38 +143,49 @@ namespace Tryouts
         public bool Add(LowLevelTransaction tx, long value)
         {
             Debug.Assert((value & ~int.MaxValue) == Header->Baseline);
+            return AddInternal(tx, (int)value & int.MaxValue);
+        }
 
-            int iVal = (int)value & int.MaxValue;
+        public bool Remove(LowLevelTransaction tx, long value)
+        {
+            Debug.Assert((value & ~int.MaxValue) == Header->Baseline);
+            return AddInternal(tx, int.MinValue | ((int)value & int.MaxValue));
+        }
+
+        private bool AddInternal(LowLevelTransaction tx, int value)
+        {
             var oldRawValues = RawValues;
 
-            var index= oldRawValues.BinarySearch(iVal, 
+            var index = oldRawValues.BinarySearch(value,
                 // using descending values to ensure that adding new values in order
                 // will do a minimum number of memcpy()s
                 new CompareIntsWithoutSignDescending());
             if (index >= 0)
             {
                 // overwrite it (maybe add on removed value.
-                oldRawValues[index] = iVal;
+                oldRawValues[index] = value;
                 return true;
             }
+
             // need to add a value, let's check if we can...
             if (Header->NumberOfRawValues == MaxNumberOfRawValues || // the raw values range is full
                 Header->CompressedValuesCeiling > OffsetOfRawValuesStart - sizeof(int)) // run into the compressed, cannot proceed
             {
                 using var cmp = new Compressor(this, tx);
-                if(cmp.TryCompressRawValues() == false)
+                if (cmp.TryCompressRawValues() == false)
                     return false;
-                
+
                 // we didn't free enough space
-                if (Header->CompressedValuesCeiling  > Constants.Storage.PageSize - MinNumberOfRawValues * sizeof(int))
+                if (Header->CompressedValuesCeiling > Constants.Storage.PageSize - MinNumberOfRawValues * sizeof(int))
                     return false;
-                return Add(tx, value);
+                return AddInternal(tx, value);
             }
+
             Header->NumberOfRawValues++; // increase the size of the buffer _downward_
             var newRawValues = RawValues;
             index = ~index;
             oldRawValues.Slice(0, index).CopyTo(newRawValues);
-            newRawValues[index] = iVal;
+            newRawValues[index] = value;
             return true;
         }
 
@@ -238,6 +250,7 @@ namespace Tryouts
                 // here we are trying to merge only the compressed entries that overlap 
                 // with the raw values
                 _currentValMasked = _valIndex >= 0 ? _rawValues[_valIndex] & int.MaxValue : -1;
+                _tempHeader->NumberOfCompressedPositions = 0;
                 for (int i = 0; i < _parent.Header->NumberOfCompressedPositions; i++)
                 {
                     ref var pos = ref _parent.Positions[i];
@@ -246,7 +259,11 @@ namespace Tryouts
                     {
                         _parent._page.AsSpan().Slice(pos.Position, pos.Length)
                             .CopyTo(_tmpPage.AsSpan().Slice(_tempHeader->CompressedValuesCeiling));
-                        _tempPositions[i] = new CompressedHeader {Length = pos.Length, Position = _tempHeader->CompressedValuesCeiling};
+                        _tempPositions[ _tempHeader->NumberOfCompressedPositions ++] = new CompressedHeader
+                        {
+                            Length = pos.Length, 
+                            Position = _tempHeader->CompressedValuesCeiling
+                        };
                         _tempHeader->CompressedValuesCeiling += pos.Length;
                         continue; // not in range, copy as is
                     }
@@ -256,13 +273,20 @@ namespace Tryouts
                         encoder.TryClose() == false) 
                         return false;
                     
+                    if(encoder.NumberOfAdditions == 0)
+                        continue; // all items were removed...
+
                     if (_tempHeader->CompressedValuesCeiling + encoder.SizeInBytes > Constants.Storage.PageSize)
                     {
                         return false; // cannot fit any more...
                     }
 
                     _output.Slice(0, encoder.SizeInBytes).CopyTo(_tmpPage.AsSpan().Slice(_tempHeader->CompressedValuesCeiling));
-                    _tempPositions[i] = new CompressedHeader {Length = (ushort)encoder.SizeInBytes, Position = _tempHeader->CompressedValuesCeiling};
+                    _tempPositions[_tempHeader->NumberOfCompressedPositions++] = new CompressedHeader
+                    {
+                        Length = (ushort)encoder.SizeInBytes, 
+                        Position = _tempHeader->CompressedValuesCeiling
+                    };
                     _tempHeader->CompressedValuesCeiling += (ushort)encoder.SizeInBytes;
                 }
 
@@ -350,30 +374,33 @@ namespace Tryouts
 
             private bool TryFlushRawValuesToNewCompressedEntry(ref PForEncoder encoder)
             {
-                if (_valIndex < 0)
-                    return true; // nothing to do here
-                
                 for (; _valIndex >= 0; _valIndex--)
                 {
-                    if (encoder.TryAdd(_rawValues[_valIndex]) == false)
-                        return false;
+                    if (_rawValues[_valIndex] >= 0)
+                    {
+                        if (encoder.TryAdd(_rawValues[_valIndex]) == false)
+                            return false;
+                    }
                 }
-                
-                if (encoder.TryClose() == false)
-                    return false;
 
-                if (_tempHeader->CompressedValuesCeiling + encoder.SizeInBytes >= _tmpPage.PageSize)
-                    return false;
-
-                _output.Slice(0, encoder.SizeInBytes).CopyTo(
-                    _tmpPage.AsSpan().Slice(_tempHeader->CompressedValuesCeiling)
-                );
-                _tempPositions[_tempHeader->NumberOfCompressedPositions++] = new CompressedHeader
+                if (encoder.NumberOfAdditions > 0)
                 {
-                    Length = (ushort)encoder.SizeInBytes, 
-                    Position = _tempHeader->CompressedValuesCeiling
-                };
-                _tempHeader->CompressedValuesCeiling += (ushort)encoder.SizeInBytes;
+                    if (encoder.TryClose() == false)
+                        return false;
+
+                    if (_tempHeader->CompressedValuesCeiling + encoder.SizeInBytes >= _tmpPage.PageSize)
+                        return false;
+
+                    _output.Slice(0, encoder.SizeInBytes).CopyTo(
+                        _tmpPage.AsSpan().Slice(_tempHeader->CompressedValuesCeiling)
+                    );
+                    _tempPositions[_tempHeader->NumberOfCompressedPositions++] = new CompressedHeader
+                    {
+                        Length = (ushort)encoder.SizeInBytes, Position = _tempHeader->CompressedValuesCeiling
+                    };
+                    _tempHeader->CompressedValuesCeiling += (ushort)encoder.SizeInBytes;
+                }
+
                 _tmpPage.AsSpan().Slice(_tempHeader->CompressedValuesCeiling).Clear();
                 _tmpPage.AsSpan().CopyTo(_parent._page.AsSpan());
                 return true;
@@ -399,9 +426,11 @@ namespace Tryouts
                         }
                         while (currentDecoded > _currentValMasked && _valIndex >= 0)
                         {
-                            Debug.Assert(_rawValues[_valIndex] >= 0);
-                            if (encoder.TryAdd(_rawValues[_valIndex]) == false)
-                                return false;
+                            if (_rawValues[_valIndex] >= 0)
+                            {
+                                if (encoder.TryAdd(_rawValues[_valIndex]) == false)
+                                    return false;
+                            }
                             MoveToNextRawValue();
                         }
                         if (encoder.TryAdd(currentDecoded) == false)

@@ -47,6 +47,34 @@ namespace Tryouts
             Assert.Equal(list, leaf.GetDebugOutput());
         }
         
+        [Theory]
+        [InlineData(1)]
+        [InlineData(100)]
+        [InlineData(257)] // with compressed
+        [InlineData(513)] // with compressed x 2 
+        [InlineData(4096 + 257)] // with compressed x 16 (so will recompress) 
+        public void CanAddAndRemove(int size)
+        {
+            var leaf = new SetLeafPage(new Page(_pagePtr));
+            leaf.Init(0);
+            var buf = new int[] {12, 18};
+            var start = 24;
+            for (int i = 0; i < size; i++)
+            {
+                start += buf[i % buf.Length];
+                Assert.True(leaf.Add(_llt, start));
+            }
+            
+            start = 24;
+            for (int i = 0; i < size; i++)
+            {
+                start += buf[i % buf.Length];
+                Assert.True(leaf.Remove(_llt, start));
+            }
+            Assert.Empty(leaf.GetDebugOutput());
+        }
+
+        
         [Fact]
         [InlineData(1)]
         [InlineData(257)] // with compressed
