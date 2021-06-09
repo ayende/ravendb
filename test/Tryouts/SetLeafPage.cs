@@ -1,10 +1,7 @@
 ﻿using System;
-using System.Buffers;
 using System.Collections.Generic;
-using System.Configuration;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using Lucene.Net.Search.Spans;
 using Sparrow.Server;
 using Voron;
 using Voron.Data;
@@ -14,8 +11,6 @@ using Constants = Voron.Global.Constants;
 
 namespace Tryouts
 {
-    
-
     public readonly unsafe struct SetLeafPage
     {
         private readonly Page _page;
@@ -46,31 +41,6 @@ namespace Tryouts
             header->CompressedValuesCeiling = (ushort)(PageHeader.SizeOf + MaxNumberOfCompressedEntries  * sizeof(CompressedHeader));
             header->NumberOfCompressedPositions = 0;
             header->NumberOfRawValues = 0;
-        }
-
-        public int TotalNumberOfEntries
-        {
-            get
-            {
-                int total = Header->NumberOfRawValues;
-                var positions = Positions;
-                Span<int> scratch = stackalloc int[128];
-                Span<byte> page = _page.AsSpan();
-                for (int i = 0; i < Header->NumberOfCompressedPositions; i++)
-                {
-                    var decoder = new PForDecoder(
-                        page.Slice(positions[i].Position, positions[i].Length),
-                        scratch
-                    );
-                    while (true)
-                    {
-                        var decoded = decoder.Decode();
-                        if (decoded.IsEmpty) break;
-                        total += decoded.Length;
-                    }
-                }
-                return total;
-            }
         }
 
         public ref struct Iterator
@@ -127,9 +97,17 @@ namespace Tryouts
                 {
                     // note, reading in reverse!
                     int rawValue = _parent.RawValues[_rawValuesIndex];
-                    if (_current.IsEmpty || rawValue < _current[0])
+                    int rawValueMasked = rawValue & int.MaxValue;
+                    while (_current.IsEmpty || rawValueMasked <= _current[0])
                     {
                         _rawValuesIndex--;
+                        if (_current.IsEmpty == false &&
+                            rawValueMasked == _current[0])
+                        {
+                            _current = _current.Slice(1);
+                        }
+                        if (rawValue < 0)
+                            continue; // removed, ignore
                         i = rawValue;
                         return true;
                     }
@@ -145,6 +123,18 @@ namespace Tryouts
                 _current = _current.Slice(1);
                 return true;
             }
+        }
+
+        public List<int> GetDebugOutput()
+        {
+            var list = new List<int>();
+            Span<int> scratch = stackalloc int[128];
+            var it = GetIterator(scratch);
+            while (it.MoveNext(out var cur))
+            {
+                list.Add(cur);
+            }
+            return list;
         }
 
         public Iterator GetIterator(Span<int> scratch) => new Iterator(this, scratch);
@@ -207,8 +197,8 @@ namespace Tryouts
             private int _valIndex;
             private readonly Span<int> _rawValues;
             private int _currentValMasked;
-            private SetLeafPageHeader* _tempHeader;
-            private Span<CompressedHeader> _tempPositions;
+            private readonly SetLeafPageHeader* _tempHeader;
+            private readonly Span<CompressedHeader> _tempPositions;
 
             public void Dispose()
             {
@@ -247,12 +237,12 @@ namespace Tryouts
 
                 // here we are trying to merge only the compressed entries that overlap 
                 // with the raw values
+                _currentValMasked = _valIndex >= 0 ? _rawValues[_valIndex] & int.MaxValue : -1;
                 for (int i = 0; i < _parent.Header->NumberOfCompressedPositions; i++)
                 {
-                    _currentValMasked = _valIndex >= 0 ? _rawValues[_valIndex] & int.MaxValue : int.MinValue;
                     ref var pos = ref _parent.Positions[i];
                     var end = _parent.GetCompressRangeEnd(ref pos);
-                    if (end < _currentValMasked)
+                    if (end < _currentValMasked || _valIndex < 0)
                     {
                         _parent._page.AsSpan().Slice(pos.Position, pos.Length)
                             .CopyTo(_tmpPage.AsSpan().Slice(_tempHeader->CompressedValuesCeiling));
@@ -283,14 +273,15 @@ namespace Tryouts
             private bool CompactCompressedEntries()
             {
                 // we can now try to merge different entries to a single compressed entry
-                _currentValMasked = _valIndex >= 0 ? _rawValues[_valIndex] & int.MaxValue : int.MinValue;
+                _currentValMasked = _valIndex >= 0 ? _rawValues[_valIndex] & int.MaxValue : -1;
                 int index = 0, estimatedSize = 0;
                 _tempHeader->NumberOfCompressedPositions = 0;
+                
                 while (index < _parent.Header->NumberOfCompressedPositions)
                 {
                     ref var pos = ref _parent.Positions[index];
                     int end = _parent.GetCompressRangeEnd(ref pos);
-                    if (_currentValMasked >= 0 && _currentValMasked < end)
+                    if (_valIndex >= 0 && _currentValMasked < end)
                     {
                         break; // need to merge it, overlapping values
                     }
@@ -361,13 +352,13 @@ namespace Tryouts
             {
                 if (_valIndex < 0)
                     return true; // nothing to do here
-
+                
                 for (; _valIndex >= 0; _valIndex--)
                 {
                     if (encoder.TryAdd(_rawValues[_valIndex]) == false)
                         return false;
                 }
-
+                
                 if (encoder.TryClose() == false)
                     return false;
 
@@ -379,7 +370,8 @@ namespace Tryouts
                 );
                 _tempPositions[_tempHeader->NumberOfCompressedPositions++] = new CompressedHeader
                 {
-                    Length = (ushort)encoder.SizeInBytes, Position = _tempHeader->CompressedValuesCeiling
+                    Length = (ushort)encoder.SizeInBytes, 
+                    Position = _tempHeader->CompressedValuesCeiling
                 };
                 _tempHeader->CompressedValuesCeiling += (ushort)encoder.SizeInBytes;
                 _tmpPage.AsSpan().Slice(_tempHeader->CompressedValuesCeiling).Clear();
@@ -401,34 +393,29 @@ namespace Tryouts
                         {
                             if (_rawValues[_valIndex] < 0) // deletion
                             {
-                                FindNextRawValue();
+                                MoveToNextRawValue();
                                 continue; // just skip the write, then
                             }
                         }
-
                         while (currentDecoded > _currentValMasked && _valIndex >= 0)
                         {
                             Debug.Assert(_rawValues[_valIndex] >= 0);
                             if (encoder.TryAdd(_rawValues[_valIndex]) == false)
                                 return false;
-                            FindNextRawValue();
+                            MoveToNextRawValue();
                         }
-
                         if (encoder.TryAdd(currentDecoded) == false)
                             return false;
                     }
                 }
-
                 return true;
             }
             
-            private void FindNextRawValue()
+            private void MoveToNextRawValue()
             {
                 _currentValMasked = --_valIndex >= 0 ? _rawValues[_valIndex] & int.MaxValue : -1;
             }
-
         }
-
         
         private struct CompareIntsWithoutSignDescending : IComparer<int>
         {

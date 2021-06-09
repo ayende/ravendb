@@ -21,32 +21,37 @@ namespace Tryouts
 
         public static unsafe void Main()
         {
-            using var env = new StorageEnvironment(StorageEnvironmentOptions.CreateMemoryOnly());
-            using var wtc = env.WriteTransaction();
-            byte* buf = stackalloc byte[8192];
-            var page = new Page(buf);
-            var leaf = new SetLeafPage(page);
-            leaf.Init(512);
-
-           var list = new SortedList<int,int>();
-           var indexes = new int[] {23, 37, 12, 28};
-           var a = 812;
-            for (int i = 0; i < 1024*16*100; i++)
+            using (var t = new SetLeafPageTests())
             {
-                //var a = 812 + (i%5 * 7) + i;
-                a += indexes[i % indexes.Length];
-   
-                if (leaf.Add(wtc.LowLevelTransaction, a) == false)
-                {
-                    Validate(ref leaf, list.Keys);
-                    Console.WriteLine("Hey: " + i);
-                    return;
-                }
-
-                list[a] = a;
-                if(i % 1024 == 0)
-                    Validate(ref leaf, list.Keys);
+                t.CanHandleDuplicateValues(4096+257);
             }
+            
+           //  using var env = new StorageEnvironment(StorageEnvironmentOptions.CreateMemoryOnly());
+           //  using var wtc = env.WriteTransaction();
+           //  byte* buf = stackalloc byte[8192];
+           //  var page = new Page(buf);
+           //  var leaf = new SetLeafPage(page);
+           //  leaf.Init(512);
+           //
+           // var list = new SortedList<int,int>();
+           // var indexes = new int[] {23, 37, 12, 28};
+           // var a = 812;
+           //  for (int i = 0; i < 1024*16*100; i++)
+           //  {
+           //      //var a = 812 + (i%5 * 7) + i;
+           //      a += indexes[i % indexes.Length];
+           //
+           //      if (leaf.Add(wtc.LowLevelTransaction, a) == false)
+           //      {
+           //          Validate(ref leaf, list.Keys);
+           //          Console.WriteLine("Hey: " + i);
+           //          return;
+           //      }
+           //
+           //      list[a] = a;
+           //      if(i % 1024 == 0)
+           //          Validate(ref leaf, list.Keys);
+           //  }
         }
 
         private static void Validate(ref SetLeafPage p, IList<int> expected)
