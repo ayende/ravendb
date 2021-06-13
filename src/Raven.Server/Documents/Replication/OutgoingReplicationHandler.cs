@@ -50,7 +50,7 @@ namespace Raven.Server.Documents.Replication
 
         internal readonly DocumentDatabase _database;
         private readonly Logger _log;
-        private readonly AsyncManualResetEvent _waitForChanges = new AsyncManualResetEvent();
+        private readonly AsyncManualResetEvent _waitForChanges;
         private readonly CancellationTokenSource _cts;
         private PoolOfThreads.LongRunningWork _longRunningSendingWork;
         internal readonly ReplicationLoader _parent;
@@ -62,7 +62,7 @@ namespace Raven.Server.Documents.Replication
 
         private TcpClient _tcpClient;
 
-        private readonly AsyncManualResetEvent _connectionDisposed = new AsyncManualResetEvent();
+        private readonly AsyncManualResetEvent _connectionDisposed;
         public bool IsConnectionDisposed => _connectionDisposed.IsSet;
         private JsonOperationContext.MemoryBuffer _buffer;
 
@@ -97,6 +97,10 @@ namespace Raven.Server.Documents.Replication
         {
             _parent = parent;
             _database = database;
+
+            _connectionDisposed = new AsyncManualResetEvent(_database.DatabaseShutdown);
+            _waitForChanges = new AsyncManualResetEvent(_database.DatabaseShutdown);
+
             Destination = node;
             _external = external;
             _log = LoggingSource.Instance.GetLogger<OutgoingReplicationHandler>(_database.Name);
@@ -1149,6 +1153,9 @@ namespace Raven.Server.Documents.Replication
             {
                 //was already disposed? we don't care, we are disposing
             }
+
+            _connectionDisposed.Dispose();
+            _waitForChanges.Dispose();
         }
 
         private void DisposeTcpClient()
