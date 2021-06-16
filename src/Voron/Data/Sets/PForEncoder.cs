@@ -5,7 +5,7 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
-namespace Tryouts
+namespace Voron.Data.Sets
 {
     
     /*

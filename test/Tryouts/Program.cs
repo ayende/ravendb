@@ -9,6 +9,7 @@ using SlowTests.MailingList;
 using SlowTests.Server.Documents.ETL.Raven;
 using Tests.Infrastructure;
 using Voron;
+using Voron.Data.Sets;
 
 namespace Tryouts
 {
@@ -19,7 +20,7 @@ namespace Tryouts
             XunitLogging.RedirectStreams = false;
         }
 
-        public static unsafe void Main()
+        public static unsafe void Main2()
         {
             using (var t = new SetLeafPageTests())
             {

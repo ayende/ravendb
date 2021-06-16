@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using Sparrow.Server;
 using Voron;
+using Voron.Data.Sets;
 using Voron.Global;
 using Voron.Impl;
 using Xunit;
@@ -10,8 +11,8 @@ namespace Tryouts
 {
     public unsafe class SetLeafPageTests : IDisposable
     {
-        private Transaction _tx;
-        private StorageEnvironment _env;
+        private readonly Transaction _tx;
+        private readonly StorageEnvironment _env;
         private ByteStringContext<ByteStringMemoryCache>.InternalScope _releaseStr;
         private readonly byte* _pagePtr;
         private readonly LowLevelTransaction _llt;
@@ -75,9 +76,12 @@ namespace Tryouts
         }
 
         
-        [Fact]
+        [Theory]
         [InlineData(1)]
+        [InlineData(100)]
         [InlineData(257)] // with compressed
+        [InlineData(513)] // with compressed x 2 
+        [InlineData(4096 + 257)] // with compressed x 16 (so will recompress) 
         public void CanHandleDuplicateValues(int size)
         {
             var leaf = new SetLeafPage(new Page(_pagePtr));

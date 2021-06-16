@@ -2,7 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 
-namespace Tryouts
+namespace Voron.Data.Sets
 {
     public ref struct PForDecoder
     {

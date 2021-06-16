@@ -2,11 +2,13 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Threading.Tasks;
 using Sparrow.Platform;
 using Voron.Data;
 using Voron.Data.BTrees;
 using Voron.Data.Fixed;
+using Voron.Data.Sets;
 using Voron.Global;
 using Voron.Impl;
 
@@ -283,6 +285,56 @@ namespace Voron.Debugging
         private static unsafe FixedSizeTreePage CreateFixedSizeTreePage(Page page, FixedSizeTreeSafe.LargeFixedSizeTreeSafe tree)
         {
             return new FixedSizeTreePage(page.Pointer, tree.ValueSize + sizeof(long), Constants.Storage.PageSize);
+        }
+        
+        [Conditional("DEBUG")]
+        public static void RenderAndShow(Set tree)
+        {
+            var headerData = $"<p>{tree.State}</p>";
+            RenderAndShowTCompactTree(tree, tree.State.RootPage, headerData);
+        }
+        
+        [Conditional("DEBUG")]
+        public static void RenderAndShowTCompactTree(Set tree, long startPageNumber, string headerData = null)
+        {
+            RenderHtmlTreeView(writer =>
+            {
+                if (headerData != null)
+                    writer.WriteLine(headerData);
+                writer.WriteLine("<div class='css-treeview'><ul>");
+
+                RenderPageInternal(tree, tree.Llt.GetPage(startPageNumber), writer, "Root", true);
+
+                writer.WriteLine("</ul></div>");
+            });
+        }
+        
+        private static unsafe void RenderPageInternal(Set tree, Page page, TextWriter sw, string text, bool open)
+        {
+            var header = (SetPageHeader*)page.Pointer;
+            sw.WriteLine(
+                string.Format("<ul><li><input type='checkbox' id='page-{0}' {3} /><label for='page-{0}'>{4}: Page {0:#,#;;0} - {1} - {2:#,#;;0} entries</label><ul>",
+                    page.PageNumber, header->PageFlags, header->NumberOfEntries, open ? "checked" : "", text));
+
+            for (int i = 0; i < header->NumberOfEntries; i++)
+            {
+                Set.GetEntry(page, i, out var key, out var val);
+                string keyText = Encoding.UTF8.GetString(key);
+
+                if (header->PageFlags.HasFlag(PageFlags.SetLeafPage))
+                {
+                    sw.Write($"<li>{keyText} {val}</li>");
+                }
+                else
+                {
+                    if (key.Length == 0)
+                        keyText = "[smallest]";
+
+                    RenderPageInternal(tree, tree.Llt.GetPage(val), sw, keyText, false);
+                }
+            }
+
+            sw.WriteLine("</ul></li></ul>");
         }
 
         [Conditional("DEBUG")]

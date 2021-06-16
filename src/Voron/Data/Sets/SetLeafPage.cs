@@ -3,13 +3,11 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Sparrow.Server;
-using Voron;
-using Voron.Data;
 using Voron.Impl;
 using Voron.Impl.Paging;
 using Constants = Voron.Global.Constants;
 
-namespace Tryouts
+namespace Voron.Data.Sets
 {
     public readonly unsafe struct SetLeafPage
     {
@@ -37,7 +35,8 @@ namespace Tryouts
         {
             var header = (SetLeafPageHeader*)_page.Pointer;
             header->Baseline = baseline & ~int.MaxValue;
-            header->Flags = PageFlags.Single | PageFlags.SetLeafPage;
+            header->Flags = PageFlags.Single | PageFlags.SetPage;
+            header->SetFlags = SetPageFlags.Leaf;
             header->CompressedValuesCeiling = (ushort)(PageHeader.SizeOf + MaxNumberOfCompressedEntries  * sizeof(CompressedHeader));
             header->NumberOfCompressedPositions = 0;
             header->NumberOfRawValues = 0;
