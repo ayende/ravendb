@@ -148,18 +148,18 @@ namespace Voron.Data.Sets
                 if (_rawValuesIndex < 0)
                     _rawValuesIndex = ~_rawValuesIndex - 1; // we are _after_ the value, so let's go back one step
 
-                SkipToCompressedEntryFor(iVal);
+                SkipToCompressedEntryFor(iVal, int.MaxValue);
             }
 
             public int CompressedEntryIndex => _compressedEntryIndex;
 
-            internal void SkipToCompressedEntryFor(int value)
+            internal void SkipToCompressedEntryFor(int value, int sizeLimit)
             {
                 _compressedEntryIndex = 0;
                 for (; _compressedEntryIndex < _parent.Header->NumberOfCompressedPositions; _compressedEntryIndex++)
                 {
                     var end = _parent.GetCompressRangeEnd(ref _parent.Positions[_compressedEntryIndex]);
-                    if (end >= value)
+                    if (end >= value || _parent.Positions[_compressedEntryIndex].Length > sizeLimit)
                         break;
                 }
                 if (_compressedEntryIndex < _parent.Header->NumberOfCompressedPositions)
@@ -223,7 +223,7 @@ namespace Voron.Data.Sets
 
             // need to add a value, let's check if we can...
             if (Header->NumberOfRawValues == MaxNumberOfRawValues || // the raw values range is full
-                Header->CompressedValuesCeiling > OffsetOfRawValuesStart - sizeof(int)) // run into the compressed, cannot proceed
+                RunOutOfFreeSpace) // run into the compressed, cannot proceed
             {
                 using var cmp = new Compressor(this, tx);
                 if (cmp.TryCompressRawValues() == false)
@@ -242,6 +242,8 @@ namespace Voron.Data.Sets
             newRawValues[index] = value;
             return true;
         }
+
+        private bool RunOutOfFreeSpace => Header->CompressedValuesCeiling > OffsetOfRawValuesStart - sizeof(int);
 
         public int SpaceUsed
         {
@@ -314,8 +316,11 @@ namespace Voron.Data.Sets
                 if (_parent.Header->NumberOfCompressedPositions != MaxNumberOfCompressedEntries &&
                     _parent.Header->NumberOfRawValues != 0)
                 {
+                    var sizeConstrained = (Constants.Storage.PageSize - _parent.Header->CompressedValuesCeiling) < 1024;
                     // optimize the compaction by merging just the relevant values
-                    it.SkipToCompressedEntryFor(_rawValues[^1] & int.MaxValue);
+                    it.SkipToCompressedEntryFor(_rawValues[^1] & int.MaxValue,
+                        // This determine when we should recompress the whole page to save more space
+                        sizeConstrained ? _output.Length / 2 : int.MaxValue);
                     if(it.CompressedEntryIndex != 0) // we can skip some values, so let's do that
                     {
                         compressedEntryIndex = it.CompressedEntryIndex;

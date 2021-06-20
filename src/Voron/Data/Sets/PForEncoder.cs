@@ -132,17 +132,8 @@ namespace Voron.Data.Sets
             };
             if (fixedSizeMarker != 0)
             {
-                var half = buffer.Length / 2;
-                // now need to figure out optimal partitioning scheme
-                int first = MaxBits(buffer.Slice(0, half)),
-                    second = MaxBits(buffer.Slice(half));
-
-                if (first != second) // better to output them as two segments, then
-                {
-
-                    return TryFlush(buffer.Slice(0, half)) &&
-                           TryFlush(buffer.Slice(half));
-                }
+                if (TryPartialCompression(buffer))
+                    return true;
 
                 ulong header = 0b00_00_00000ul | fixedSizeMarker << 5 | (uint)maxBits;
                 if (TryPushBits(header, 9) == false)
@@ -151,12 +142,32 @@ namespace Voron.Data.Sets
             }
             else
             {
+                if (TryPartialCompression(buffer))
+                    return true;
                 ulong header = 0b01_0000_0000_00000ul | (ulong)buffer.Length << 5 | (uint)maxBits;
                 if (TryPushBits(header, 15) == false)
                     return false;
                 return TryPushValues(buffer, maxBits);
             }
         }
+
+        private bool TryPartialCompression(Span<uint> buffer)
+        {
+            var half = buffer.Length / 2;
+            if (half < 32)
+                return false;
+
+            // now need to figure out optimal partitioning scheme
+            int first = MaxBits(buffer.Slice(0, half)), second = MaxBits(buffer.Slice(half));
+
+            if (first != second) // better to output them as two segments, then
+            {
+                return TryFlush(buffer.Slice(0, half)) &&
+                       TryFlush(buffer.Slice(half));
+            }
+            return false;
+        }
+
 
         private bool TryPushValues(Span<uint> buffer, int maxBits)
         {

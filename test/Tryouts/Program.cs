@@ -23,7 +23,7 @@ namespace Tryouts
 
         public static unsafe void Main()
         {
-            using (var t = new CompactTreeTests(new ConsoleTestOutputHelper()))
+            using (var t = new SetTests(new ConsoleTestOutputHelper()))
             {
                 t.CanStoreLargeNumberOfItemsInRandomlyOrder();
             }

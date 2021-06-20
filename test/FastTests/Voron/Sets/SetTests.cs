@@ -7,12 +7,12 @@ using Xunit.Abstractions;
 
 namespace FastTests.Voron.Sets
 {
-    public class CompactTreeTests : StorageTest
+    public class SetTests : StorageTest
     {
         private readonly List<long> _data;
         private readonly List<long> _random;
 
-        public CompactTreeTests(ITestOutputHelper output) : base(output)
+        public SetTests(ITestOutputHelper output) : base(output)
         {
             const int Size = 400_000;
             var diff = new[] { 17, 250, 4828, 28, 12, 3 };
@@ -118,13 +118,13 @@ namespace FastTests.Voron.Sets
                 {
                     tree.Add(i);
                 }
+                tree.Render();
                 wtx.Commit();
             }
 
             using (var wtx = Env.WriteTransaction())
             {
                 var tree = Set.Create(wtx.LowLevelTransaction, "test");
-                int index = 0;
                 foreach (long i in _random)
                 {
                     tree.Remove(i);
@@ -175,13 +175,13 @@ namespace FastTests.Voron.Sets
         }
 
         [Fact]
-        public void CanAddPredictableOffsets()
+        public void CanAddPredictableOffsets_Large()
         {
             using (var wtx = Env.WriteTransaction())
             {
                 var tree = Set.Create(wtx.LowLevelTransaction, "test");
 
-                for (int i = 0; i < 100_000; i++)
+                for (int i = 0; i < 10_000; i++)
                 {
                     var offset = (i + 100) * 8192;
                     for (int j = 0; j < 128; j++)
@@ -199,7 +199,7 @@ namespace FastTests.Voron.Sets
                 using var it = tree.Iterate();
                 Assert.True(it.Seek(0));
                 bool movedNext = true;
-                for (int i = 0; i < 100_000; i++)
+                for (int i = 0; i < 10_000; i++)
                 {
                     var offset = (i + 100) * 8192;
                     for (int j = 0; j < 128; j++)
