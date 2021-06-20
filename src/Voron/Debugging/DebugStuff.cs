@@ -211,8 +211,8 @@ namespace Voron.Debugging
             {
                 var exec = new[]
                 {
-                    @"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
                      @"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                     @"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
                 }.First(f => File.Exists(f));
 
                 var process = new Process
@@ -326,11 +326,24 @@ namespace Voron.Debugging
             if (header.IsLeaf)
                 leafEntries = leaf.GetDebugOutput();
             sw.WriteLine(
-                string.Format("<ul><li><input type='checkbox' id='page-{0}' {3} /><label for='page-{0}'>{4}: Page {0:#,#;;0} - {1} - {2:#,#;;0} entries</label><ul>",
-                    page.PageNumber, header.IsLeaf ? "leaf" : "branch", header.IsLeaf ? leafEntries!.Count : branch.Header->NumberOfEntries, open ? "checked" : "", text));
+                string.Format("<ul><li><input type='checkbox' id='page-{0}' {3} /><label for='page-{0}'>{4}: Page {0:#,#;;0} - {1} - {2:#,#;;0} entries - {5}</label><ul>",
+                    page.PageNumber, header.IsLeaf ? "leaf" : "branch", header.IsLeaf ? leafEntries!.Count : branch.Header->NumberOfEntries, open ? "checked" : "", text, 
+                    header.IsLeaf ? leaf.SpaceUsed + " used" : ""));
 
             if (header.IsLeaf)
             {
+                sw.WriteLine(
+                    string.Format("<ul><li><input type='checkbox' id='page-{0}-details'/><label for='page-{0}-details'>Compression details</label><ul>",
+                        page.PageNumber));
+                for (int i = 0; i < leaf.Header->NumberOfCompressedPositions; i++)
+                {
+                    var entry = leaf.Positions[i];
+                    sw.Write($"<li>Compressed with {entry.Length:#,#;;0} bytes</li>");
+                }
+                sw.Write($"<li>Raw with {leaf.Header->NumberOfRawValues:#,#;;0} values</li>");
+
+                sw.WriteLine("</ul></li></ul>");
+
                 foreach (long val in leafEntries!)
                 {
                     sw.Write($"<li>{val:#,#;;0}</li>");

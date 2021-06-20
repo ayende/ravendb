@@ -6,7 +6,7 @@ namespace Voron.Data.Sets
      * Format of a set leaf page:
      *
      * PageHeader       - 64 bytes
-     * 0 - 64 bytes    -  short[32] PositionsOfCompressedEntries; (sorted by value)
+     * 0 - 64 bytes    -  short[16] PositionsOfCompressedEntries; (sorted by value)
      * 
      * actual compressed entries
      *

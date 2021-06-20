@@ -91,12 +91,10 @@ namespace FastTests.Voron.Sets
             {
                 var tree = Set.Create(wtx.LowLevelTransaction, "test");
 
+                var l = new List<long>();
                 foreach (long i in _random)
                 {
-                    if (i == 256194701)
-                    {
-                        tree.Render();
-                    }
+
                     tree.Add(i);
 
                 }
@@ -111,7 +109,7 @@ namespace FastTests.Voron.Sets
 
 
         [Fact]
-        public void CanDeleteLargeNumberOfItems()
+        public unsafe void CanDeleteLargeNumberOfItems()
         {
 
             using (var wtx = Env.WriteTransaction())
@@ -122,6 +120,40 @@ namespace FastTests.Voron.Sets
                     tree.Add(i);
                 }
 
+                wtx.Commit();
+            }
+
+            using (var wtx = Env.WriteTransaction())
+            {
+                var tree = Set.Create(wtx.LowLevelTransaction, "test");
+                int index = 0;
+                foreach (long i in _random)
+                {
+                    tree.Remove(i);
+                }
+                wtx.Commit();
+            }
+            using (var rtx = Env.ReadTransaction())
+            {
+                var tree = Set.Create(rtx.LowLevelTransaction, "test");
+                Assert.Equal(0, tree.State.NumberOfEntries);
+                Assert.Equal(0, tree.State.BranchPages);
+                Assert.Equal(1, tree.State.LeafPages);
+                Assert.Equal(1, tree.State.Depth);
+            }
+        }
+
+
+        [Fact]
+        public void CanDeleteRandomLargeNumberOfItemsFromStart()
+        {
+            using (var wtx = Env.WriteTransaction())
+            {
+                var tree = Set.Create(wtx.LowLevelTransaction, "test");
+                foreach (long i in _data)
+                {
+                    tree.Add(i);
+                }
                 wtx.Commit();
             }
 
@@ -163,6 +195,10 @@ namespace FastTests.Voron.Sets
                 var tree = Set.Create(wtx.LowLevelTransaction, "test");
                 foreach (long i in _data)
                 {
+                    if(i == 12205045)
+                    {
+                        tree.Render();
+                    }
                     tree.Remove(i);
                 }
                 wtx.Commit();

@@ -63,14 +63,14 @@ namespace Tryouts
             for (int i = 0; i < expected.Count; i++)
             {
            
-                if (it.MoveNext(out var cur) == false ||
+                if (it.MoveNext(out long cur) == false ||
                     cur != expected[i])
                 {
                     Console.WriteLine("Opps " + expected.Count);
                 }
             }
 
-            if (it.MoveNext(out var a))
+            if (it.MoveNext(out long a))
             {
                 Console.WriteLine("Um... " + expected.Count);
             }

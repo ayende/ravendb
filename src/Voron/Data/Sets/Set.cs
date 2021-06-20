@@ -2,6 +2,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using Sparrow;
 using Sparrow.Server;
@@ -67,22 +68,31 @@ namespace Voron.Data.Sets
             };
         }
 
-        public void Remove(long val)
+        public void Remove(long value)
         {
-            FindPageFor(val);
+            FindPageFor(value);
             ref var state = ref _stk[_pos];
             state.Page = _llt.ModifyPage(state.Page.PageNumber);
             var leaf = new SetLeafPage(state.Page.Pointer);
-            if (leaf.IsValidValue(val))
-                leaf.Remove(_llt, val);
+            if (leaf.IsValidValue(value) == false)
+                return; // value does not exists in tree
+            
+            if(leaf.Remove(_llt, value)) // removed value properly
+            {
+                if (_pos == 0)
+                    return;  // this is the root page
 
-            if (_pos == 0)
-                return;  // this is the root page
+                if (leaf.SpaceUsed > Constants.Storage.PageSize / 4)
+                    return; // don't merge too eagerly
 
-            if (leaf.SpaceUsed > Constants.Storage.PageSize / 4)
-                return; // don't merge too eagerly
-
-            MaybeMergeLeafPage(in leaf);
+                MaybeMergeLeafPage(in leaf);
+                return;
+            }
+            // could not store the new value (rare, but can happen)
+            // need to split on remove :-(
+            var (separator, newPage) = SplitLeafPageInHalf(value, leaf, state);
+            AddToParentPage(separator, newPage);
+            Remove(value); // now we can properly store the new value
         }
         
         private void MaybeMergeLeafPage(in SetLeafPage leaf)
@@ -104,7 +114,7 @@ namespace Voron.Data.Sets
                 return;
             Span<int> scratch = stackalloc int[PForEncoder.BufferLen];
             var it = sibling.GetIterator(scratch);
-            while (it.MoveNext(out var v))
+            while (it.MoveNext(out long v))
             {
                 var success = leaf.Add(_llt, v);
                 Debug.Assert(success);
@@ -206,6 +216,7 @@ namespace Voron.Data.Sets
 
             var (separator, newPage) = SplitLeafPage(value);
             AddToParentPage(separator, newPage);
+            Add(value); // now add the value after the split
         }
 
         private void AddToParentPage(long separator, long newPage)
@@ -293,7 +304,6 @@ namespace Voron.Data.Sets
                 return SplitLeafPageInHalf(value, curPage, state);
             }
 
-            bool success;
             Page page;
             if (value > last)
             {
@@ -301,11 +311,9 @@ namespace Voron.Data.Sets
                 page = _llt.AllocatePage(1);
                 var newPage = new SetLeafPage(page.Pointer);
                 newPage.Init(value);
-                success = newPage.Add(_llt, value);
-                Debug.Assert(success);
                 return (value, page.PageNumber);
             }
-            Debug.Assert((first < value));
+            Debug.Assert(first > value);
             // smaller than current, we'll move the higher values to the new location
             // instead of update the entry position
             page = _llt.AllocatePage(1);
@@ -318,60 +326,20 @@ namespace Voron.Data.Sets
             state.Page.PageNumber = cpy;
 
             curPage.Init(value);
-            success = curPage.Add(_llt, value);
-            Debug.Assert(success);
             return (first, page.PageNumber);
         }
 
-        private (long Separator, long NewPage) SplitLeafPageInHalf(long value, SetLeafPage curPage, SetCursorState state)
+        private (long Separator, long NewPage) SplitLeafPageInHalf(long value, SetLeafPage curPage, in SetCursorState state)
         {
             // we have to split this in the middle page
             var page = _llt.AllocatePage(1);
             var newPage = new SetLeafPage(page.Pointer);
             long baseline = curPage.Header->Baseline;
-            newPage.Init(baseline);
 
-            using var _ = _llt.Environment.GetTemporaryPage(_llt, out var tmpPage);
-            state.Page.AsSpan().CopyTo(tmpPage.AsSpan());
-            var cpy = state.Page.PageNumber;
-            state.Page.AsSpan().Clear();
-            state.Page.PageNumber = cpy;
-            curPage.Init(baseline); // empty current page
+            curPage.SplitHalfInto(ref newPage);
 
-            var originalPageCopy = new SetLeafPage(tmpPage.TempPagePointer);
-            Span<int> scratch = stackalloc int[PForEncoder.BufferLen];
-            var it = originalPageCopy.GetIterator(scratch);
-
-
-            bool success;
-            var midway = long.MinValue;
-            var left = true;
-            var dest = curPage;
-            while (it.MoveNext(out var v))
-            {
-                success = dest.Add(_llt, v);
-                Debug.Assert(success);
-                if (!left) continue;
-                // we want to fill about half the page
-                if (Constants.Storage.PageSize / 2 > dest.Header->CompressedValuesCeiling)
-                    continue;
-
-                // now write the entries to the other side
-                left = false;
-                dest = newPage;
-                midway = baseline | v;
-            }
-            if (value > midway)
-            {
-                success =  newPage.Add(_llt, value);
-            }
-            else
-            {
-                success= curPage.Add(_llt, value);
-            }
-            Debug.Assert(success);
-
-            return (midway, page.PageNumber);
+            var (start, _) = newPage.GetRange();
+            return (start, page.PageNumber);
         }
 
 
@@ -490,7 +458,7 @@ namespace Voron.Data.Sets
                 var leafPage = new SetLeafPage(state.Page.Pointer);
                 _it = leafPage.GetIterator(_scratch);
                 _it.SkipTo(from);
-                while (_it.MoveNext(out var v))
+                while (_it.MoveNext(out long v))
                 {
                     if (v < from) 
                         continue;
@@ -528,7 +496,6 @@ namespace Voron.Data.Sets
                         _parent._stk[_parent._pos].LastSearchPosition = -1;
                         continue;
                     }
-                    _parent.PushPage(pageNum);
                     _it = new SetLeafPage(page.Pointer).GetIterator(_scratch);
                     if (_it.MoveNext(out Current))
                         return true;
