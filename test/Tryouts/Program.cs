@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Threading.Tasks;
 using FastTests.Blittable;
 using FastTests.Client;
+using FastTests.Voron.Sets;
 using SlowTests.Issues;
 using SlowTests.MailingList;
 using SlowTests.Server.Documents.ETL.Raven;
@@ -20,11 +21,11 @@ namespace Tryouts
             XunitLogging.RedirectStreams = false;
         }
 
-        public static unsafe void Main2()
+        public static unsafe void Main()
         {
-            using (var t = new SetLeafPageTests())
+            using (var t = new CompactTreeTests(new ConsoleTestOutputHelper()))
             {
-                t.CanAddAndRemove(513);
+                t.CanStoreLargeNumberOfItemsInRandomlyOrder();
             }
             
            //  using var env = new StorageEnvironment(StorageEnvironmentOptions.CreateMemoryOnly());

@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using Sparrow.Platform;
@@ -208,11 +209,17 @@ namespace Voron.Debugging
 
             if (PlatformDetails.RunningOnPosix == false)
             {
+                var exec = new[]
+                {
+                    @"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+                     @"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                }.First(f => File.Exists(f));
+
                 var process = new Process
                 {
                     StartInfo =
                     {
-                        FileName = @"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                        FileName = exec,
                         Arguments = output,
                         UseShellExecute = false,
                         CreateNoWindow = true,
@@ -286,14 +293,14 @@ namespace Voron.Debugging
         {
             return new FixedSizeTreePage(page.Pointer, tree.ValueSize + sizeof(long), Constants.Storage.PageSize);
         }
-        
+
         [Conditional("DEBUG")]
         public static void RenderAndShow(Set tree)
         {
             var headerData = $"<p>{tree.State}</p>";
             RenderAndShowTCompactTree(tree, tree.State.RootPage, headerData);
         }
-        
+
         [Conditional("DEBUG")]
         public static void RenderAndShowTCompactTree(Set tree, long startPageNumber, string headerData = null)
         {
@@ -308,29 +315,33 @@ namespace Voron.Debugging
                 writer.WriteLine("</ul></div>");
             });
         }
-        
+
         private static unsafe void RenderPageInternal(Set tree, Page page, TextWriter sw, string text, bool open)
         {
-            var header = (SetPageHeader*)page.Pointer;
+            var header = new SetCursorState { Page = page };
+            var leaf = new SetLeafPage(page.Pointer);
+            var branch = new SetBranchPage(page.Pointer);
+
+            List<long> leafEntries = null;
+            if (header.IsLeaf)
+                leafEntries = leaf.GetDebugOutput();
             sw.WriteLine(
                 string.Format("<ul><li><input type='checkbox' id='page-{0}' {3} /><label for='page-{0}'>{4}: Page {0:#,#;;0} - {1} - {2:#,#;;0} entries</label><ul>",
-                    page.PageNumber, header->PageFlags, header->NumberOfEntries, open ? "checked" : "", text));
+                    page.PageNumber, header.IsLeaf ? "leaf" : "branch", header.IsLeaf ? leafEntries!.Count : branch.Header->NumberOfEntries, open ? "checked" : "", text));
 
-            for (int i = 0; i < header->NumberOfEntries; i++)
+            if (header.IsLeaf)
             {
-                Set.GetEntry(page, i, out var key, out var val);
-                string keyText = Encoding.UTF8.GetString(key);
-
-                if (header->PageFlags.HasFlag(PageFlags.SetLeafPage))
+                foreach (long val in leafEntries!)
                 {
-                    sw.Write($"<li>{keyText} {val}</li>");
+                    sw.Write($"<li>{val:#,#;;0}</li>");
                 }
-                else
+            }
+            else
+            {
+                for (int i = 0; i < branch.Header->NumberOfEntries; i++)
                 {
-                    if (key.Length == 0)
-                        keyText = "[smallest]";
-
-                    RenderPageInternal(tree, tree.Llt.GetPage(val), sw, keyText, false);
+                    (long key, long pageNum) = branch.GetByIndex(i);
+                    RenderPageInternal(tree, tree.Llt.GetPage(pageNum), sw, key.ToString("#,#;;0"), false);
                 }
             }
 

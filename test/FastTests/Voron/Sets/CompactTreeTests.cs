@@ -1,18 +1,45 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using Voron.Data.Sets;
 using Xunit;
 using Xunit.Abstractions;
 
-namespace FastTests.Voron
+namespace FastTests.Voron.Sets
 {
     public class CompactTreeTests : StorageTest
     {
+        private readonly List<long> _data;
+        private readonly List<long> _random;
+
         public CompactTreeTests(ITestOutputHelper output) : base(output)
         {
+            const int Size = 400_000;
+            var diff = new[] { 17, 250, 4828, 28, 12, 3 };
+            var random = new Random(231);
+            _data = new List<long>();
+            long s = 0;
+            for (int i = 0; i < Size; i++)
+            {
+                s += diff[random.Next(diff.Length)];
+                _data.Add(s);
+            }
+
+            _random = _data.OrderBy(x => random.Next()).ToList();
+        }
+
+        private List<long> AllValues(Set set)
+        {
+            using var it = set.Iterate();
+            var l = new List<long>();
+            if (it.Seek(0) == false)
+                return l;
+            do
+            {
+                l.Add(it.Current);
+            } while (it.MoveNext());
+
+            return l;
         }
 
         [Fact]
@@ -21,106 +48,89 @@ namespace FastTests.Voron
             using (var wtx = Env.WriteTransaction())
             {
                 var tree = Set.Create(wtx.LowLevelTransaction, "test");
-                tree.Add("hi", 5);
+                tree.Add(5);
                 wtx.Commit();
             }
             using (var rtx = Env.ReadTransaction())
             {
                 var tree = Set.Create(rtx.LowLevelTransaction, "test");
-                Assert.True(tree.TryGetValue("hi", out var r));
-                Assert.Equal(5, r);
+                var values = AllValues(tree);
+                Assert.Equal(new[] { 5L }, values);
             }
         }
-        
-        
-        [Fact]
-        public void CanHandleVeryLargeKey()
-        {
-            using (var wtx = Env.WriteTransaction())
-            {
-                var tree = Set.Create(wtx.LowLevelTransaction, "test");
-                tree.Add(new string('a', 577), 5);
-                wtx.Commit();
-            }
-            using (var rtx = Env.ReadTransaction())
-            {
-                var tree = Set.Create(rtx.LowLevelTransaction, "test");
-                Assert.True(tree.TryGetValue(new string('a', 577), out var r));
-                Assert.Equal(5, r);
-            }
-        }
-        
+
+
         [Fact]
         public void CanDeleteItem()
         {
             using (var wtx = Env.WriteTransaction())
             {
                 var tree = Set.Create(wtx.LowLevelTransaction, "test");
-                tree.Add("hi", 5);
+                tree.Add(5);
                 wtx.Commit();
             }
-            
+
             using (var wtx = Env.WriteTransaction())
             {
                 var tree = Set.Create(wtx.LowLevelTransaction, "test");
-                Assert.True(tree.TryRemove("hi", out var r));
-                Assert.Equal(5, r);
+                tree.Remove(5);
                 wtx.Commit();
             }
             using (var rtx = Env.ReadTransaction())
             {
                 var tree = Set.Create(rtx.LowLevelTransaction, "test");
-                Assert.False(tree.TryGetValue("hi", out var r));
+                Assert.Empty(AllValues(tree));
             }
         }
-        
-        
+
+
         [Fact]
         public void CanStoreLargeNumberOfItemsInRandomlyOrder()
         {
-            const int Size = 400000;
             using (var wtx = Env.WriteTransaction())
             {
                 var tree = Set.Create(wtx.LowLevelTransaction, "test");
-                for (int i = 0; i < Size; i++)
+
+                foreach (long i in _random)
                 {
-                    tree.Add("hi" + i, i);
+                    if (i == 256194701)
+                    {
+                        tree.Render();
+                    }
+                    tree.Add(i);
+
                 }
                 wtx.Commit();
             }
             using (var rtx = Env.ReadTransaction())
             {
                 var tree = Set.Create(rtx.LowLevelTransaction, "test");
-                for (int i = 0; i < Size; i++)
-                {
-                    Assert.True(tree.TryGetValue("hi"+ i, out var r));
-                    Assert.Equal(i, r);
-                }
+                Assert.Equal(_data, AllValues(tree));
             }
         }
-        
-        
+
+
         [Fact]
         public void CanDeleteLargeNumberOfItems()
         {
-            const int Size = 400000;
+
             using (var wtx = Env.WriteTransaction())
             {
                 var tree = Set.Create(wtx.LowLevelTransaction, "test");
-                for (int i = 0; i < Size; i++)
+                foreach (long i in _random)
                 {
-                    tree.Add("hi" + i, i);
+                    tree.Add(i);
                 }
+
                 wtx.Commit();
             }
-            
+
             using (var wtx = Env.WriteTransaction())
             {
                 var tree = Set.Create(wtx.LowLevelTransaction, "test");
-                for (int i = 0; i < Size; i++)
+                foreach (long i in _random)
                 {
-                   Assert.True(tree.TryRemove("hi" + i, out var v));
-                   Assert.Equal(i, v);
+                    tree.Remove(i);
                 }
                 wtx.Commit();
             }
@@ -133,29 +143,27 @@ namespace FastTests.Voron
                 Assert.Equal(1, tree.State.Depth);
             }
         }
-        
-        
+
+
         [Fact]
         public void CanDeleteLargeNumberOfItemsFromStart()
         {
-            const int Size = 400000;
             using (var wtx = Env.WriteTransaction())
             {
                 var tree = Set.Create(wtx.LowLevelTransaction, "test");
-                for (int i = 0; i < Size; i++)
+                foreach (long i in _data)
                 {
-                    tree.Add($"hi{i:00000000}", i);
+                    tree.Add(i);
                 }
                 wtx.Commit();
             }
-            
+
             using (var wtx = Env.WriteTransaction())
             {
                 var tree = Set.Create(wtx.LowLevelTransaction, "test");
-                for (int i = 0; i < Size; i++)
+                foreach (long i in _data)
                 {
-                    Assert.True(tree.TryRemove($"hi{i:00000000}", out var v));
-                    Assert.Equal(i, v);
+                    tree.Remove(i);
                 }
                 wtx.Commit();
             }
@@ -168,29 +176,27 @@ namespace FastTests.Voron
                 Assert.Equal(1, tree.State.Depth);
             }
         }
-        
-              
+
+
         [Fact]
         public void CanDeleteLargeNumberOfItemsFromEnd()
         {
-            const int Size = 400000;
             using (var wtx = Env.WriteTransaction())
             {
                 var tree = Set.Create(wtx.LowLevelTransaction, "test");
-                for (int i = 0; i < Size; i++)
+                foreach (long i in _data)
                 {
-                    tree.Add($"hi{i:00000000}", i);
+                    tree.Add(i);
                 }
                 wtx.Commit();
             }
-            
+
             using (var wtx = Env.WriteTransaction())
             {
                 var tree = Set.Create(wtx.LowLevelTransaction, "test");
-                for (int i = Size - 1; i >= 0; i--)
+                for (int i = _data.Count - 1; i >= 0; i--)
                 {
-                    Assert.True(tree.TryRemove($"hi{i:00000000}", out var v));
-                    Assert.Equal(i, v);
+                    tree.Remove(_data[i]);
                 }
                 wtx.Commit();
             }
@@ -208,24 +214,19 @@ namespace FastTests.Voron
         [Fact]
         public void CanStoreLargeNumberOfItemsInSequentialOrder()
         {
-            const int Size = 400000;
             using (var wtx = Env.WriteTransaction())
             {
                 var tree = Set.Create(wtx.LowLevelTransaction, "test");
-                for (int i = 0; i < Size; i++)
+                foreach (long i in _data)
                 {
-                    tree.Add($"hi{i:00000000}", i);
+                    tree.Add(i);
                 }
                 wtx.Commit();
             }
             using (var rtx = Env.ReadTransaction())
             {
                 var tree = Set.Create(rtx.LowLevelTransaction, "test");
-                for (int i = 0; i < Size; i++)
-                {
-                    Assert.True(tree.TryGetValue($"hi{i:00000000}", out var r));
-                    Assert.Equal(i, r);
-                }
+                Assert.Equal(_data, AllValues(tree));
             }
         }
     }

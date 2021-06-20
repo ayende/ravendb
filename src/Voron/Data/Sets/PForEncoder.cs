@@ -34,9 +34,9 @@ namespace Voron.Data.Sets
         private readonly int _maxNumOfBits;
         private readonly Span<uint> _deltasBuffer;
         private int _prev;
-
         public int NumberOfAdditions;
         public int SizeInBytes;
+        public int ConsumedBits => _bitPos;
 
         public List<int> GetDebugOutput()
         {

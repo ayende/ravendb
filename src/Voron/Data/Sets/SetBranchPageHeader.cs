@@ -18,7 +18,7 @@ namespace Voron.Data.Sets
         public SetPageFlags SetFlags;
         
         [FieldOffset(14)]
-        public ushort Lower;
+        public ushort NumberOfEntries;
 
         [FieldOffset(16)]
         public ushort Upper;

@@ -1,8 +1,11 @@
 ﻿using System;
+using System.Collections;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Sparrow;
 using Sparrow.Server;
+using Sparrow.Server.Platform.Posix.macOS;
 using Voron.Debugging;
 using Voron.Global;
 using Voron.Impl;
@@ -18,13 +21,6 @@ namespace Voron.Data.Sets
         
         internal SetState State => _state;
         internal LowLevelTransaction Llt => _llt;
-
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static ushort* GetEntriesOffsets(byte* pagePtr)
-        {
-            return (ushort*)(pagePtr + PageHeader.SizeOf);
-        }
 
         private Set()
         {
@@ -42,11 +38,7 @@ namespace Voron.Data.Sets
             if (existing == null)
             {
                 var newPage = llt.AllocatePage(1);
-                var pageHeader = (SetPageHeader*)newPage.Pointer;
-                pageHeader->PageFlags = SetFlags.Leaf;
-                pageHeader->Lower = PageHeader.SizeOf;
-                pageHeader->Upper = Constants.Storage.PageSize;
-                pageHeader->FreeSpace = Constants.Storage.PageSize - (PageHeader.SizeOf);
+                new SetLeafPage(newPage.Pointer).Init(0);
                 using var _ = llt.RootObjects.DirectAdd(name, sizeof(SetState), out var p);
                 header = (SetState*)p;
                 *header = new SetState
@@ -75,248 +67,121 @@ namespace Voron.Data.Sets
             };
         }
 
-        public void Seek(string key)
+        public void Remove(long val)
         {
-            using var _ = Slice.From(_llt.Allocator, key, out var slice);
-            var span = slice.AsReadOnlySpan();
-            Seek(span);
-        }
-        public void Seek(ReadOnlySpan<byte> key)
-        {
-            FindPageFor(key);
+            FindPageFor(val);
             ref var state = ref _stk[_pos];
-            if (state.LastSearchPosition < 0)
-                state.LastSearchPosition = ~state.LastSearchPosition;
-        }
-
-        public bool Next(out Span<byte> key, out long value)
-        {
-            ref var state = ref _stk[_pos];
-            while (true)
-            {
-                Debug.Assert(state.Header->PageFlags.HasFlag(SetFlags.Leaf));
-                if (state.LastSearchPosition < state.Header->NumberOfEntries) // same page
-                {
-                    GetEntry(state.Page, state.LastSearchPosition, out key, out value);
-                    state.LastSearchPosition++;
-                    return true;
-                }
-                if (GoToNextPage() == false)
-                {
-                    key = default;
-                    value = default;
-                    return false;
-                }
-            }
-        }
-
-        private bool GoToNextPage()
-        {
-            while (true)
-            {
-                PopPage(); // go to parent
-                if (_pos < 0)
-                    return false;
-
-                ref var state = ref _stk[_pos];
-                Debug.Assert(state.Header->PageFlags.HasFlag(SetFlags.Branch));
-                if (++state.LastSearchPosition >= state.Header->NumberOfEntries)
-                    continue; // go up
-                do
-                {
-                    var next = GetValue(ref state, state.LastSearchPosition);
-                    PushPage(next);
-                    state = ref _stk[_pos];
-                } while (state.Header->PageFlags.HasFlag(SetFlags.Branch));
-                return true;
-            }
-        }
-
-        public bool TryGetValue(string key, out long value)
-        {
-            using var _ = Slice.From(_llt.Allocator, key, out var slice);
-            var span = slice.AsReadOnlySpan();
-            return TryGetValue(span, out value);
-
-        }
-
-        public bool TryGetValue(ReadOnlySpan<byte> key, out long value)
-        {
-            FindPageFor(key);
-            ref var state = ref _stk[_pos];
-            if (state.LastMatch != 0)
-            {
-                value = default;
-                return false;
-            }
-            value = GetValue(ref state, state.LastSearchPosition);
-            return true;
-        }
-
-        public bool TryRemove(string key, out long oldValue)
-        {
-            using var _ = Slice.From(_llt.Allocator, key, out var slice);
-            var span = slice.AsReadOnlySpan();
-            return TryRemove(span, out oldValue);
-        }
-
-        public bool TryRemove(ReadOnlySpan<byte> key, out long oldValue)
-        {
-            FindPageFor(key);
-            return RemoveFromPage(allowRecurse: true, out oldValue);
-        }
-
-        private void RemoveFromPage(bool allowRecurse, int pos)
-        {
-            ref var state = ref _stk[_pos];
-            state.LastSearchPosition = pos;
-            state.LastMatch = 0;
-            RemoveFromPage(allowRecurse, oldValue: out _);
-        }
-        private bool RemoveFromPage(bool allowRecurse, out long oldValue)
-        {
-            ref var state = ref _stk[_pos];
-            if (state.LastMatch != 0)
-            {
-                oldValue = default;
-                return false;
-            }
             state.Page = _llt.ModifyPage(state.Page.PageNumber);
+            var leaf = new SetLeafPage(state.Page.Pointer);
+            if (leaf.IsValidValue(val))
+                leaf.Remove(_llt, val);
 
-            var entriesOffsets = GetEntriesOffsets(state.Page.Pointer);
-            EnsureValidPosition(ref state, state.LastSearchPosition);
-            var entry = state.Page.Pointer + entriesOffsets[state.LastSearchPosition];
-            var keyLen = (int)ZigZag.Decode7Bits(entry, out var lenOfKeyLen);
-            entry += keyLen + lenOfKeyLen;
-            oldValue = ZigZag.Decode(entry, out var valLen);
-            var totalEntrySize = lenOfKeyLen + keyLen + valLen;
-            state.Header->FreeSpace += (ushort)(sizeof(ushort) + totalEntrySize);
-            state.Header->Lower -= sizeof(short);// the upper will be fixed on defrag
-            Memory.Move((byte*)(entriesOffsets + state.LastSearchPosition),
-                (byte*)(entriesOffsets + state.LastSearchPosition + 1),
-                (state.Header->NumberOfEntries - state.LastSearchPosition) * sizeof(ushort));
-            if (state.Header->PageFlags.HasFlag(SetFlags.Leaf))
-            {
-                _state.NumberOfEntries--;
-            }
-            if (allowRecurse &&
-                _pos > 0 && // nothing to do for a single leaf node
-                state.Header->FreeSpace > Constants.Storage.PageSize / 3)
-            {
-                MaybeMergeEntries(ref state);
-            }
-            return true;
+            if (_pos == 0)
+                return;  // this is the root page
+
+            if (leaf.SpaceUsed > Constants.Storage.PageSize / 4)
+                return; // don't merge too eagerly
+
+            MaybeMergeLeafPage(in leaf);
         }
-
-        private void MaybeMergeEntries(ref SetCursorState state)
+        
+        private void MaybeMergeLeafPage(in SetLeafPage leaf)
         {
-            SetCursorState siblingState;
-            ref var parent = ref _stk[_pos - 1];
-            // optimization: not merging right most / left most pages
-            // that allows to delete in up / down order without doing any
-            // merges, for FIFO / LIFO scenarios
-            if (parent.LastSearchPosition == 0 ||
-                parent.LastSearchPosition == parent.Header->NumberOfEntries - 1)
-            {
-                if (state.Header->NumberOfEntries == 0) // just remove the whole thing
-                {
-                    var sibling = GetValue(ref parent, parent.LastSearchPosition == 0 ? 1 : parent.LastSearchPosition - 1);
-                    siblingState = new SetCursorState
-                    {
-                        Page = _llt.GetPage(sibling)
-                    };
-                    FreePageFor(ref siblingState, ref state);
-                }
-                return;
-            }
-            var siblingPage = GetValue(ref parent, parent.LastSearchPosition + 1);
-            siblingState = new SetCursorState
-            {
-                Page = _llt.ModifyPage(siblingPage)
-            };
-            if (siblingState.Header->PageFlags != state.Header->PageFlags)
-                return; // cannot merge leaf & branch pages
-            ushort* entriesOffsets = GetEntriesOffsets(state.Page.Pointer);
-            int entriesCopied = 0;
-            for (; entriesCopied < siblingState.Header->NumberOfEntries; entriesCopied++)
-            {
-                GetEntryBuffer(siblingState.Page, entriesCopied, out var entryBuffer, out var len);
-                var requiredSize = len + sizeof(ushort);
-                if (requiredSize > state.Header->FreeSpace)
-                    break; // done moving entries
-                if (requiredSize > state.Header->Upper - state.Header->Lower)
-                    DefragPage();
-                Debug.Assert(state.Header->Upper >= len);
-                state.Header->Upper -= (ushort)len;
-                entriesOffsets[state.Header->NumberOfEntries] = state.Header->Upper;
-                Memory.Copy(state.Page.Pointer + state.Header->Upper, entryBuffer, len);
-                Debug.Assert(state.Header->FreeSpace >= requiredSize);
-                state.Header->FreeSpace -= (ushort)requiredSize;
-                Debug.Assert(siblingState.Header->FreeSpace + requiredSize <= 
-                             Constants.Storage.PageSize - PageHeader.SizeOf);
-                siblingState.Header->FreeSpace += (ushort)requiredSize;
-                state.Header->Lower += sizeof(ushort);
-            }
-            Memory.Move(siblingState.Page.Pointer + PageHeader.SizeOf ,
-                siblingState.Page.Pointer + PageHeader.SizeOf+ (entriesCopied * sizeof(ushort)),
-                (siblingState.Header->NumberOfEntries - entriesCopied) * sizeof(ushort)
-            );
-            var oldLower = siblingState.Header->Lower;
-            siblingState.Header->Lower -= (ushort)(entriesCopied * sizeof(ushort));
-            if (siblingState.Header->NumberOfEntries == 0) // emptied the sibling entriely
-            {
-                parent.LastSearchPosition++;
-                FreePageFor(ref state, ref siblingState);
-                return;
-            }
-            Memory.Set(siblingState.Page.Pointer + siblingState.Header->Lower,
-                0, (oldLower - siblingState.Header->Lower));
-            // now re-wire the new splitted page key
-            var newKey = GetKey(siblingState.Page, 0);
             PopPage();
-            // we aren't _really_ removing, so preventing merging of parents
-            RemoveFromPage(allowRecurse: false, parent.LastSearchPosition + 1);
-            SearchInPage(newKey);// positions changed, re-search
-            AddToPage(newKey, siblingPage);
-        }
-
-        private void FreePageFor(ref SetCursorState stateToKeep, ref SetCursorState stateToDelete)
-        {
-            ref var parent = ref _stk[_pos - 1];
-            DecrementPageNumbers(ref stateToKeep);
-            _llt.FreePage(stateToDelete.Page.PageNumber);
-            if (parent.Header->NumberOfEntries == 2)
-            {   // let's reduce the height of the tree entirely...
-                var parentPageNumber = parent.Page.PageNumber;
-                Memory.Copy(parent.Page.Pointer, stateToKeep.Page.Pointer, Constants.Storage.PageSize);
-                parent.Page.PageNumber = parentPageNumber; // we overwrote it...
-                DecrementPageNumbers(ref stateToKeep);
-                if (_pos == 1)
-                {
-                    if (parent.Header->PageFlags.HasFlag(SetFlags.Leaf))
-                    {
-                        _state.LeafPages++;
-                        _state.BranchPages--;
-                    }
-                    _state.Depth--;
-                }
-                _llt.FreePage(stateToKeep.Page.PageNumber);
+            
+            ref var parent = ref _stk[_pos];
+            var siblingIdx = parent.LastSearchPosition == 0 ? 1 : parent.LastSearchPosition - 1;
+            var branch = new SetBranchPage(parent.Page.Pointer);
+            Debug.Assert(branch.Header->NumberOfEntries >= 2);
+            var (_, siblingPageNum) = branch.GetByIndex(siblingIdx);
+            var siblingPage = _llt.GetPage(siblingPageNum);
+            var siblingHeader = (SetLeafPageHeader*)siblingPage.Pointer;
+            if (siblingHeader->SetFlags != SetPageFlags.Leaf)
                 return;
+            var sibling = new SetLeafPage(siblingPage.Pointer);
+            // if the two pages together will be bigger than 75%, can skip merging
+            if (sibling.SpaceUsed + leaf.SpaceUsed > Constants.Storage.PageSize / 2 + Constants.Storage.PageSize / 4)
+                return;
+            Span<int> scratch = stackalloc int[PForEncoder.BufferLen];
+            var it = sibling.GetIterator(scratch);
+            while (it.MoveNext(out var v))
+            {
+                var success = leaf.Add(_llt, v);
+                Debug.Assert(success);
             }
-            PopPage();
-            RemoveFromPage(allowRecurse: true, parent.LastSearchPosition);
+
+            _state.LeafPages--;
+            
+            MergeSiblingsAtParent();
         }
 
-        private void DecrementPageNumbers(ref SetCursorState state)
+        private void MergeSiblingsAtParent()
         {
-            if (state.Header->PageFlags.HasFlag(SetFlags.Leaf))
-            {
-                _state.LeafPages--;
-            }
-            else
-            {
+            ref var state = ref _stk[_pos];
+            var current = new SetBranchPage(state.Page.Pointer);
+            Debug.Assert(current.Header->SetFlags == SetPageFlags.Branch);
+            var (leafKey, leafPageNum) = current.GetByIndex(state.LastSearchPosition);
+            var (siblingKey, siblingPageNum) = current.GetByIndex(GetSiblingIndex(in state));
+
+            state.Page = _llt.ModifyPage(state.Page.PageNumber);
+            var siblingPageHeader = (SetLeafPageHeader*)_llt.GetPage(siblingPageNum).Pointer;
+            if (siblingPageHeader->SetFlags == SetPageFlags.Branch)
                 _state.BranchPages--;
+            else
+                _state.LeafPages--;
+
+            _llt.FreePage(siblingPageNum);
+            current.Remove(siblingKey);
+            current.Remove(leafKey);
+
+            // if it is empty, can just replace with the child
+            if (current.Header->NumberOfEntries == 0)
+            {
+                var leafPage = _llt.GetPage(leafPageNum);
+                long cpy = state.Page.PageNumber;
+                leafPage.AsSpan().CopyTo(state.Page.AsSpan());
+                state.Page.PageNumber = cpy;
+                _state.BranchPages--;
+                _llt.FreePage(leafPageNum);
+                return;
             }
+
+            var newKey = Math.Min(siblingKey, leafKey);
+            var success = current.TryAdd(_llt, newKey, leafPageNum);
+            Debug.Assert(success);
+
+            if (_pos == 0)
+                return; // root has no siblings
+
+            if (current.Header->NumberOfEntries > SetBranchPage.MinNumberOfValuesBeforeMerge)
+                return;
+
+            PopPage();
+            ref var parent = ref _stk[_pos];
+            var siblingIdx = GetSiblingIndex(parent);
+            var gp = new SetBranchPage(parent.Page.Pointer);
+            (_, siblingPageNum) = gp.GetByIndex(siblingIdx);
+            var siblingPage = _llt.GetPage(siblingPageNum);
+            var siblingHeader = (SetLeafPageHeader*)siblingPage.Pointer;
+            if (siblingHeader->SetFlags != SetPageFlags.Branch)
+                return;// cannot merge leaf & branch
+            var sibling = new SetBranchPage(siblingPage.Pointer);
+            if (sibling.Header->NumberOfEntries + current.Header->NumberOfEntries > SetBranchPage.MinNumberOfValuesBeforeMerge * 2)
+                return; // not enough space to _ensure_ that we can merge
+
+            for (int i = 0; i < sibling.Header->NumberOfEntries; i++)
+            {
+                (long key, long page) = sibling.GetByIndex(i);
+                success = current.TryAdd(_llt, key, page);
+                Debug.Assert(success);
+            }
+
+            MergeSiblingsAtParent();
+        }
+
+        private static int GetSiblingIndex(in SetCursorState parent)
+        {
+            return parent.LastSearchPosition == 0 ? 1 : parent.LastSearchPosition - 1;
         }
 
         public void Add(long value)
@@ -324,133 +189,192 @@ namespace Voron.Data.Sets
             if (value < 0)
                 throw new ArgumentOutOfRangeException(nameof(value), "Only positive values are allowed");
             
-            var encodedKey = FindPageFor(value);
-            AddToPage(encodedKey, value);
+            FindPageFor(value);
+            AddToPage(value);
         }
 
-        private void AddToPage(ReadOnlySpan<byte> encodedKey, long value)
+        private void AddToPage(long value)
         {
             ref var state = ref _stk[_pos];
             
             state.Page = _llt.ModifyPage(state.Page.PageNumber);
+            
+            var leafPage = new SetLeafPage(state.Page.Pointer);
+            if (leafPage.IsValidValue(value) && // may have enough space, but too far out to fit 
+                leafPage.Add(_llt, value))
+                return; // successfully added
 
-            var valueEncoder = new ZigZag();
-            valueEncoder.Encode(value);
-            ushort* entriesOffsets = GetEntriesOffsets(state.Page.Pointer);
-            if (state.LastSearchPosition >= 0) // update
-            {
-                GetValuePointer(ref state, state.LastSearchPosition, out var b);
-                ZigZag.Decode(b, out var len);
-                if (len == valueEncoder.Length)
-                {
-                    Debug.Assert(valueEncoder.Length <= sizeof(long));
-                    Memory.Copy(b, valueEncoder.Buffer, valueEncoder.Length);
-                    return;
-                }
-
-                // remove the entry, we'll need to add it as new
-                Memory.Move((byte*)(entriesOffsets + state.LastSearchPosition - 1),
-                    (byte*)(entriesOffsets + state.LastSearchPosition),
-                    (state.Header->NumberOfEntries - state.LastSearchPosition) * sizeof(ushort));
-                state.Header->Lower -= sizeof(short);
-                state.Header->FreeSpace += sizeof(short);
-            }
-            else
-            {
-                state.LastSearchPosition = ~state.LastSearchPosition;
-            }
-            var keySizeEncoder = new ZigZag();
-            keySizeEncoder.Encode7Bits((ulong)encodedKey.Length);
-            var requiredSize = encodedKey.Length + keySizeEncoder.Length + valueEncoder.Length;
-            Debug.Assert(state.Header->FreeSpace >= (state.Header->Upper - state.Header->Lower));
-            if (state.Header->Upper - state.Header->Lower < requiredSize + sizeof(short))
-            {
-                if (state.Header->FreeSpace >= requiredSize + sizeof(short))
-                    DefragPage(); // has enough free space, but not available try to defrag?
-                if (state.Header->Upper - state.Header->Lower < requiredSize + sizeof(short))
-                {
-                    SplitPage(encodedKey, value); // still can't do that, need to split the page
-                    return;
-                }
-            }
-            Memory.Move((byte*)(entriesOffsets + state.LastSearchPosition + 1),
-                (byte*)(entriesOffsets + state.LastSearchPosition),
-                (state.Header->NumberOfEntries - state.LastSearchPosition) * sizeof(ushort));
-            state.Header->Lower += sizeof(short);
-            if (state.Header->PageFlags.HasFlag(SetFlags.Leaf))
-                _state.NumberOfEntries++; // we aren't counting branch entries
-            Debug.Assert(state.Header->FreeSpace >= requiredSize + sizeof(ushort));
-            state.Header->FreeSpace -= (ushort)(requiredSize + sizeof(ushort));
-            state.Header->Upper -= (ushort)requiredSize;
-            byte* writePos = state.Page.Pointer + state.Header->Upper;
-            Memory.Copy(writePos, keySizeEncoder.Buffer, keySizeEncoder.Length);
-            writePos += keySizeEncoder.Length;
-            encodedKey.CopyTo(new Span<byte>(writePos, encodedKey.Length));
-            writePos += encodedKey.Length;
-            Memory.Copy(writePos, valueEncoder.Buffer, valueEncoder.Length);
-            entriesOffsets[state.LastSearchPosition] = state.Header->Upper;
+            var (separator, newPage) = SplitLeafPage(value);
+            AddToParentPage(separator, newPage);
         }
 
-        private void SplitPage(ReadOnlySpan<byte> causeForSplit, long value)
+        private void AddToParentPage(long separator, long newPage)
         {
             if (_pos == 0) // need to create a root page
             {
                 CreateRootPage();
             }
-            var page = _llt.AllocatePage(1);
-            var header = (SetPageHeader*)page.Pointer;
+
+            PopPage();
             ref var state = ref _stk[_pos];
-            header->PageFlags = state.Header->PageFlags;
-            header->Lower = PageHeader.SizeOf;
-            header->Upper = Constants.Storage.PageSize;
-            header->FreeSpace = Constants.Storage.PageSize - (PageHeader.SizeOf );
-            if (header->PageFlags.HasFlag(SetFlags.Branch))
+            var parent = new SetBranchPage(state.Page.Pointer);
+            if (parent.TryAdd(_llt, separator, newPage))
+                return;
+
+            SplitBranchPage(separator, newPage);
+        }
+
+        private void SplitBranchPage(long key,  long value)
+        {
+            ref var state = ref _stk[_pos];
+
+            var pageToSplit = new SetBranchPage(state.Page.Pointer);
+            var page = _llt.AllocatePage(1);
+            var branch = new SetBranchPage(page.Pointer);
+            branch.Init();
+            _state.BranchPages++;
+            bool success;
+
+            // grow rightward
+            if (key > pageToSplit.Last)
             {
-                _state.BranchPages++;
+                 success = branch.TryAdd(_llt, key, value);
+                Debug.Assert(success);
+                AddToParentPage(key, value);
+                return;
+            }
+
+            // grow leftward
+            if (key < pageToSplit.First)
+            {
+                long oldFirst = pageToSplit.First;
+                var cpy = page.PageNumber;
+                state.Page.AsSpan().CopyTo(page.AsSpan());
+                page.PageNumber = cpy;
+
+                cpy = state.Page.PageNumber;
+                state.Page.AsSpan().Clear();
+                state.Page.PageNumber = cpy;
+                
+                var curPage = new SetBranchPage(state.Page.Pointer);
+                curPage.Init();
+                 success = curPage.TryAdd(_llt, key, value);
+                Debug.Assert(success);
+                AddToParentPage(oldFirst, page.PageNumber);
+                return;
+            }
+            
+            // split in half
+            for (int i = pageToSplit.Header->NumberOfEntries/2; i < pageToSplit.Header->NumberOfEntries; i++)
+            {
+                var (k, v) = pageToSplit.GetByIndex(i);
+                 success = branch.TryAdd(_llt, k, v);
+                Debug.Assert(success);
+            }
+
+            pageToSplit.Header->NumberOfEntries /= 2;// truncate entries
+            success = pageToSplit.Last > key ?
+                branch.TryAdd(_llt, key, value) :
+                pageToSplit.TryAdd(_llt, key, value);
+            Debug.Assert(success);
+            
+            AddToParentPage(branch.First, page.PageNumber);
+        }
+
+        private (long Separator, long NewPage) SplitLeafPage(long value)
+        {
+            ref var state = ref _stk[_pos];
+            var curPage = new SetLeafPage(state.Page.Pointer);
+            var (first, last) = curPage.GetRange();
+            _state.LeafPages++;
+
+            if (value  >=  first && value <= last)
+            {
+                return SplitLeafPageInHalf(value, curPage, state);
+            }
+
+            bool success;
+            Page page;
+            if (value > last)
+            {
+                // optimize sequential writes, can create a new page directly
+                page = _llt.AllocatePage(1);
+                var newPage = new SetLeafPage(page.Pointer);
+                newPage.Init(value);
+                success = newPage.Add(_llt, value);
+                Debug.Assert(success);
+                return (value, page.PageNumber);
+            }
+            Debug.Assert((first < value));
+            // smaller than current, we'll move the higher values to the new location
+            // instead of update the entry position
+            page = _llt.AllocatePage(1);
+            var cpy = page.PageNumber;
+            curPage.Span.CopyTo(page.AsSpan());
+            page.PageNumber = cpy;
+
+            cpy = state.Page.PageNumber;
+            curPage.Span.Clear();
+            state.Page.PageNumber = cpy;
+
+            curPage.Init(value);
+            success = curPage.Add(_llt, value);
+            Debug.Assert(success);
+            return (first, page.PageNumber);
+        }
+
+        private (long Separator, long NewPage) SplitLeafPageInHalf(long value, SetLeafPage curPage, SetCursorState state)
+        {
+            // we have to split this in the middle page
+            var page = _llt.AllocatePage(1);
+            var newPage = new SetLeafPage(page.Pointer);
+            long baseline = curPage.Header->Baseline;
+            newPage.Init(baseline);
+
+            using var _ = _llt.Environment.GetTemporaryPage(_llt, out var tmpPage);
+            state.Page.AsSpan().CopyTo(tmpPage.AsSpan());
+            var cpy = state.Page.PageNumber;
+            state.Page.AsSpan().Clear();
+            state.Page.PageNumber = cpy;
+            curPage.Init(baseline); // empty current page
+
+            var originalPageCopy = new SetLeafPage(tmpPage.TempPagePointer);
+            Span<int> scratch = stackalloc int[PForEncoder.BufferLen];
+            var it = originalPageCopy.GetIterator(scratch);
+
+
+            bool success;
+            var midway = long.MinValue;
+            var left = true;
+            var dest = curPage;
+            while (it.MoveNext(out var v))
+            {
+                success = dest.Add(_llt, v);
+                Debug.Assert(success);
+                if (!left) continue;
+                // we want to fill about half the page
+                if (Constants.Storage.PageSize / 2 > dest.Header->CompressedValuesCeiling)
+                    continue;
+
+                // now write the entries to the other side
+                left = false;
+                dest = newPage;
+                midway = baseline | v;
+            }
+            if (value > midway)
+            {
+                success =  newPage.Add(_llt, value);
             }
             else
             {
-                _state.LeafPages++;
+                success= curPage.Add(_llt, value);
             }
+            Debug.Assert(success);
 
-            var splitKey = SplitPageEntries(causeForSplit, page, header, ref state);
-            PopPage(); // add to parent
-            SearchInPage(splitKey);
-            AddToPage(splitKey, page.PageNumber);
-            // now actually add the value to the location
-            SearchPageAndPushNext(causeForSplit);
-            SearchInPage(causeForSplit);
-            AddToPage(causeForSplit, value);
+            return (midway, page.PageNumber);
         }
 
-        private ReadOnlySpan<byte> SplitPageEntries(ReadOnlySpan<byte> causeForSplit, Page page,
-            SetPageHeader* header, ref SetCursorState state)
-        {
-            // sequential write up, no need to actually split
-            int numberOfEntries = state.Header->NumberOfEntries;
-            if (numberOfEntries == state.LastSearchPosition && state.LastMatch > 0)
-            {
-                return causeForSplit;
-            }
-            // non sequential write, let's just split in middle
-            int entriesCopied = 0;
-            int sizeCopied = 0;
-            ushort* offsets = (ushort*)(page.Pointer + header->Lower);
-            for (int i = numberOfEntries / 2; i < numberOfEntries; i++)
-            {
-                header->Lower += sizeof(ushort);
-                GetEntryBuffer(state.Page, i, out var b, out var len);
-                header->Upper -= (ushort)len;
-                header->FreeSpace -= (ushort)(len + sizeof(ushort));
-                sizeCopied += len + sizeof(ushort);
-                offsets[entriesCopied++] = header->Upper;
-                Memory.Copy(page.Pointer + header->Upper, b, len);
-            }
-            state.Header->Lower -= (ushort)(sizeof(ushort) * entriesCopied);
-            state.Header->FreeSpace += (ushort)(sizeCopied);
-            GetEntry(page, 0, out var splitKey, out _);
-            return splitKey;
-        }
+
 
         [Conditional("DEBUG")]
         public void Render()
@@ -469,19 +393,10 @@ namespace Voron.Data.Sets
             Memory.Copy(page.Pointer, state.Page.Pointer, Constants.Storage.PageSize);
             page.PageNumber = cpy;
             Memory.Set(state.Page.DataPointer, 0, Constants.Storage.PageSize - PageHeader.SizeOf);
-            state.Header->PageFlags = SetFlags.Branch;
-            state.Header->Lower = PageHeader.SizeOf + sizeof(ushort);
-            state.Header->FreeSpace = Constants.Storage.PageSize - (PageHeader.SizeOf);
-
-            var encoder = new ZigZag();
-            encoder.Encode(cpy);
-            var size = 1 + encoder.Length;
-            state.Header->Upper = (ushort)(Constants.Storage.PageSize - size);
-            state.Header->FreeSpace -= (ushort)(size + sizeof(ushort));
-            GetEntriesOffsets(state.Page.Pointer)[0] = state.Header->Upper;
-            byte* entryPos = state.Page.Pointer + state.Header->Upper;
-            *entryPos++ = 0; // zero len key
-            Memory.Copy(entryPos, encoder.Buffer, encoder.Length);
+            var rootPage = new SetBranchPage(state.Page.Pointer);
+            rootPage.Init();
+            rootPage.TryAdd(_llt, long.MinValue, cpy);
+            _state.BranchPages++;
             InsertToStack(new SetCursorState
             {
                 Page = page,
@@ -503,60 +418,28 @@ namespace Voron.Data.Sets
             _pos++;
         }
 
-        private void DefragPage()
-        {
-            ref var state = ref _stk[_pos];
-    
-            using (_llt.Environment.GetTemporaryPage(_llt, out var tmp))
-            {
-                Memory.Copy(tmp.TempPagePointer, state.Page.Pointer, Constants.Storage.PageSize);
-                var tmpHeader = (SetPageHeader*)tmp.TempPagePointer;
-                tmpHeader->Upper = Constants.Storage.PageSize;
-                ushort* entriesOffsets = GetEntriesOffsets(tmp.TempPagePointer);
-                for (int i = 0; i < state.Header->NumberOfEntries; i++)
-                {
-                    GetEntryBuffer(state.Page, i, out var b, out var len);
-                    Debug.Assert((tmpHeader->Upper - len) > 0);
-                    tmpHeader->Upper -= (ushort)len;
-                    // Note: FreeSpace doesn't change here
-                    Memory.Copy(tmp.TempPagePointer + tmpHeader->Upper, b, len);
-                    entriesOffsets[i] = tmpHeader->Upper;
-                }
-                Memory.Copy(state.Page.Pointer, tmp.TempPagePointer, Constants.Storage.PageSize);
-                Memory.Set(state.Page.Pointer + tmpHeader->Lower, 0,
-                    tmpHeader->Upper - tmpHeader->Lower);
-                Debug.Assert(state.Header->FreeSpace == (state.Header->Upper - state.Header->Lower));
-            }
-        }
-
-        private Span<Byte> FindPageFor(long value)
+        private void FindPageFor(long value)
         {
             _pos = -1;
             _len = 0;
             PushPage(_state.RootPage);
             ref var state = ref _stk[_pos];
 
-            while (state.Header->PageFlags.HasFlag(SetFlags.Branch))
+            while (state.IsLeaf == false)
             {
-                SearchPageAndPushNext(encodedKey);
+                SearchPageAndPushNext(value);
                 state = ref _stk[_pos];
             }
-
-            SearchInPage(encodedKey);
-            return encodedKey;
         }
 
-        private void SearchPageAndPushNext(ReadOnlySpan<byte> encodedKey)
+        private void SearchPageAndPushNext(long value)
         {
-            SearchInPage(encodedKey);
             ref var state = ref _stk[_pos];
-            if (state.LastSearchPosition < 0)
-                state.LastSearchPosition = ~state.LastSearchPosition;
-            if (state.LastMatch != 0 && state.LastSearchPosition > 0)
-                state.LastSearchPosition--; // went too far
 
-            int actualPos = Math.Min(state.Header->NumberOfEntries - 1, state.LastSearchPosition);
-            var nextPage = GetValue(ref state, actualPos);
+            var branch = new SetBranchPage(state.Page.Pointer);
+            long nextPage;
+            (nextPage, state.LastSearchPosition, state.LastMatch) = branch.SearchPage(value);
+
             PushPage(nextPage);
         }
 
@@ -578,102 +461,89 @@ namespace Voron.Data.Sets
             _len++;
         }
 
-        private ReadOnlySpan<byte> GetKey(Page page, int pos)
+        public Iterator Iterate()
         {
-            EnsureValidPosition(page, pos);
-            ushort entryOffset = GetEntriesOffsets(page.Pointer)[pos];
-            var entryPos = page.Pointer + entryOffset;
-            var keyLen = ZigZag.Decode7Bits(entryPos, out var lenOfKeyLen);
-            return new ReadOnlySpan<byte>(page.Pointer + entryOffset + lenOfKeyLen,  (int)keyLen);
+            return new Iterator(this);
         }
 
-        private long GetValue(ref SetCursorState state, int pos)
+        public ref  struct Iterator 
         {
-            GetValuePointer(ref state, pos, out var p);
-            return ZigZag.Decode(p, out _);
-        }
+            private readonly Set _parent;
+            private readonly Span<int> _scratch;
+            private ByteStringContext<ByteStringMemoryCache>.InternalScope _scope;
+            private SetLeafPage.Iterator _it;
+            
+            public long Current;
 
-        private void GetValuePointer(ref SetCursorState state, int pos, out byte* p)
-        {
-            EnsureValidPosition(ref state, pos);
-            ushort entryOffset = GetEntriesOffsets(state.Page.Pointer)[pos];
-            p = state.Page.Pointer + entryOffset;
-            var keyLen = (int)ZigZag.Decode7Bits(p, out var lenKeyLen);
-            p += keyLen + lenKeyLen;
-        }
-
-        [Conditional("DEBUG")]
-        private static void EnsureValidPosition(ref SetCursorState state, int pos)
-        {
-            if (pos < 0 || pos >= state.Header->NumberOfEntries)
-                throw new ArgumentOutOfRangeException();
-        }
-
-        internal static int GetEntry(Page page, int pos, out Span<byte> key, out long value)
-        {
-            ushort entryOffset = GetEntriesOffsets(page.Pointer)[pos];
-            byte* entryPos = page.Pointer + entryOffset;
-            var keyLen = (int)ZigZag.Decode7Bits(entryPos, out var lenKeyLen);
-            key = new Span<byte>(entryPos + lenKeyLen, keyLen);
-            entryPos += keyLen + lenKeyLen;
-            value = ZigZag.Decode(entryPos, out var valLen);
-            entryPos += valLen;
-            return (int)(entryPos - page.Pointer - entryOffset);
-        }
-
-        private static void GetEntryBuffer(Page page, int pos, out byte* b, out int len)
-        {
-            EnsureValidPosition(page, pos);
-            ushort entryOffset = GetEntriesOffsets(page.Pointer)[pos];
-            byte* entryPos = b = page.Pointer + entryOffset;
-            var keyLen = (int)ZigZag.Decode7Bits(entryPos, out var lenKeyLen);
-            ZigZag.Decode(entryPos + keyLen + lenKeyLen, out var valLen);
-            len = lenKeyLen + keyLen + valLen;
-        }
-
-        [Conditional("DEBUG")]
-        private static void EnsureValidPosition(Page page, int pos)
-        {
-            SetPageHeader* header = (SetPageHeader*)page.Pointer;
-            if (pos < 0 || pos >= header->NumberOfEntries)
-                throw new ArgumentOutOfRangeException();
-        }
-
-        private void SearchInPage(ReadOnlySpan<byte> encodedKey)
-        {
-            ref var state = ref _stk[_pos];
-
-            int high = state.Header->NumberOfEntries - 1, low = 0;
-            int match = -1;
-            int mid = 0;
-            while (low <= high)
+            public Iterator(Set parent)
             {
-                mid = (high + low) / 2;
-                var cur = GetKey(state.Page, mid);
-                match = encodedKey.SequenceCompareTo(cur);
-
-                if (match == 0)
-                {
-                    state.LastMatch = 0;
-                    state.LastSearchPosition = mid;
-                    return;
-                }
-
-                if (match > 0)
-                {
-                    low = mid + 1;
-                    match = 1;
-                }
-                else
-                {
-                    high = mid - 1;
-                    match = -1;
-                }
+                _parent = parent;
+                _scope = _parent._llt.Allocator.Allocate(PForEncoder.BufferLen, out _scratch);
+                Current = default;
+                _it = default;
             }
-            state.LastMatch = match > 0 ? 1 : -1;
-            if (match > 0)
-                mid++;
-            state.LastSearchPosition = ~mid;
+
+            public bool Seek(long from)
+            {
+                _parent.FindPageFor(from);
+                ref var state = ref _parent._stk[_parent._pos];
+                var leafPage = new SetLeafPage(state.Page.Pointer);
+                _it = leafPage.GetIterator(_scratch);
+                _it.SkipTo(from);
+                while (_it.MoveNext(out var v))
+                {
+                    if (v < from) 
+                        continue;
+                    Current = v;
+                    return true;
+                }
+                return false;
+            }
+
+            public bool MoveNext()
+            {
+                if (_it.MoveNext(out Current))
+                    return true;
+
+                while (true)
+                {
+                    if (_parent._pos == 0)
+                        return false;
+                    
+                    _parent.PopPage();
+                    ref var state = ref _parent._stk[_parent._pos];
+                    state.LastSearchPosition++;
+                    Debug.Assert(state.IsLeaf == false);
+                    if (state.LastSearchPosition >= state.BranchHeader->NumberOfEntries) 
+                        continue;
+                    
+                    var branch = new SetBranchPage(state.Page.Pointer);
+                    (_, long pageNum) = branch.GetByIndex(state.LastSearchPosition);
+                    var page = _parent._llt.GetPage(pageNum);
+                    var header = (SetLeafPageHeader*)page.Pointer;
+                    _parent.PushPage(pageNum);
+                    if (header->SetFlags == SetPageFlags.Branch)
+                    {
+                        // we'll increment on the next
+                        _parent._stk[_parent._pos].LastSearchPosition = -1;
+                        continue;
+                    }
+                    _parent.PushPage(pageNum);
+                    _it = new SetLeafPage(page.Pointer).GetIterator(_scratch);
+                    if (_it.MoveNext(out Current))
+                        return true;
+                }                
+            }
+
+            public void Reset()
+            {
+                throw new NotSupportedException();
+            }
+
+            public void Dispose()
+            {
+                _scope.Dispose();
+            }
         }
     }
 }
