@@ -111,7 +111,6 @@ namespace FastTests.Voron.Sets
         [Fact]
         public unsafe void CanDeleteLargeNumberOfItems()
         {
-
             using (var wtx = Env.WriteTransaction())
             {
                 var tree = Set.Create(wtx.LowLevelTransaction, "test");
@@ -119,7 +118,6 @@ namespace FastTests.Voron.Sets
                 {
                     tree.Add(i);
                 }
-
                 wtx.Commit();
             }
 
@@ -176,6 +174,46 @@ namespace FastTests.Voron.Sets
             }
         }
 
+        [Fact]
+        public void CanAddPredictableOffsets()
+        {
+            using (var wtx = Env.WriteTransaction())
+            {
+                var tree = Set.Create(wtx.LowLevelTransaction, "test");
+
+                for (int i = 0; i < 100_000; i++)
+                {
+                    var offset = (i + 100) * 8192;
+                    for (int j = 0; j < 128; j++)
+                    {
+                        offset += 2;
+                        tree.Add(offset);
+                    }
+                }
+                wtx.Commit();
+            }
+
+            using (var rtx = Env.ReadTransaction())
+            {
+                var tree = Set.Create(rtx.LowLevelTransaction, "test");
+                using var it = tree.Iterate();
+                Assert.True(it.Seek(0));
+                bool movedNext = true;
+                for (int i = 0; i < 100_000; i++)
+                {
+                    var offset = (i + 100) * 8192;
+                    for (int j = 0; j < 128; j++)
+                    {
+                        offset += 2;
+                        Assert.True(movedNext);
+                        Assert.Equal(offset, it.Current);
+                        movedNext = it.MoveNext();
+                    }
+                }
+                Assert.False(movedNext);
+            }
+        }
+
 
         [Fact]
         public void CanDeleteLargeNumberOfItemsFromStart()
@@ -195,7 +233,7 @@ namespace FastTests.Voron.Sets
                 var tree = Set.Create(wtx.LowLevelTransaction, "test");
                 foreach (long i in _data)
                 {
-                    if(i == 12205045)
+                    if (i == 12205045)
                     {
                         tree.Render();
                     }

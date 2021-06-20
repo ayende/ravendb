@@ -19,7 +19,7 @@ namespace Voron.Data.Sets
         private SetState _state;
         private SetCursorState[] _stk = new SetCursorState[8];
         private int _pos = -1, _len;
-        
+
         internal SetState State => _state;
         internal LowLevelTransaction Llt => _llt;
 
@@ -76,8 +76,8 @@ namespace Voron.Data.Sets
             var leaf = new SetLeafPage(state.Page.Pointer);
             if (leaf.IsValidValue(value) == false)
                 return; // value does not exists in tree
-            
-            if(leaf.Remove(_llt, value)) // removed value properly
+
+            if (leaf.Remove(_llt, value)) // removed value properly
             {
                 if (_pos == 0)
                     return;  // this is the root page
@@ -94,11 +94,11 @@ namespace Voron.Data.Sets
             AddToParentPage(separator, newPage);
             Remove(value); // now we can properly store the new value
         }
-        
+
         private void MaybeMergeLeafPage(in SetLeafPage leaf)
         {
             PopPage();
-            
+
             ref var parent = ref _stk[_pos];
             var siblingIdx = parent.LastSearchPosition == 0 ? 1 : parent.LastSearchPosition - 1;
             var branch = new SetBranchPage(parent.Page.Pointer);
@@ -121,7 +121,7 @@ namespace Voron.Data.Sets
             }
 
             _state.LeafPages--;
-            
+
             MergeSiblingsAtParent();
         }
 
@@ -198,7 +198,7 @@ namespace Voron.Data.Sets
         {
             if (value < 0)
                 throw new ArgumentOutOfRangeException(nameof(value), "Only positive values are allowed");
-            
+
             FindPageFor(value);
             AddToPage(value);
         }
@@ -206,9 +206,9 @@ namespace Voron.Data.Sets
         private void AddToPage(long value)
         {
             ref var state = ref _stk[_pos];
-            
+
             state.Page = _llt.ModifyPage(state.Page.PageNumber);
-            
+
             var leafPage = new SetLeafPage(state.Page.Pointer);
             if (leafPage.IsValidValue(value) && // may have enough space, but too far out to fit 
                 leafPage.Add(_llt, value))
@@ -235,7 +235,7 @@ namespace Voron.Data.Sets
             SplitBranchPage(separator, newPage);
         }
 
-        private void SplitBranchPage(long key,  long value)
+        private void SplitBranchPage(long key, long value)
         {
             ref var state = ref _stk[_pos];
 
@@ -249,9 +249,9 @@ namespace Voron.Data.Sets
             // grow rightward
             if (key > pageToSplit.Last)
             {
-                 success = branch.TryAdd(_llt, key, value);
+                success = branch.TryAdd(_llt, key, value);
                 Debug.Assert(success);
-                AddToParentPage(key, value);
+                AddToParentPage(key, page.PageNumber);
                 return;
             }
 
@@ -266,20 +266,20 @@ namespace Voron.Data.Sets
                 cpy = state.Page.PageNumber;
                 state.Page.AsSpan().Clear();
                 state.Page.PageNumber = cpy;
-                
+
                 var curPage = new SetBranchPage(state.Page.Pointer);
                 curPage.Init();
-                 success = curPage.TryAdd(_llt, key, value);
+                success = curPage.TryAdd(_llt, key, value);
                 Debug.Assert(success);
                 AddToParentPage(oldFirst, page.PageNumber);
                 return;
             }
-            
+
             // split in half
-            for (int i = pageToSplit.Header->NumberOfEntries/2; i < pageToSplit.Header->NumberOfEntries; i++)
+            for (int i = pageToSplit.Header->NumberOfEntries / 2; i < pageToSplit.Header->NumberOfEntries; i++)
             {
                 var (k, v) = pageToSplit.GetByIndex(i);
-                 success = branch.TryAdd(_llt, k, v);
+                success = branch.TryAdd(_llt, k, v);
                 Debug.Assert(success);
             }
 
@@ -288,7 +288,7 @@ namespace Voron.Data.Sets
                 branch.TryAdd(_llt, key, value) :
                 pageToSplit.TryAdd(_llt, key, value);
             Debug.Assert(success);
-            
+
             AddToParentPage(branch.First, page.PageNumber);
         }
 
@@ -299,7 +299,7 @@ namespace Voron.Data.Sets
             var (first, last) = curPage.GetRange();
             _state.LeafPages++;
 
-            if (value  >=  first && value <= last)
+            if (value >= first && value <= last)
             {
                 return SplitLeafPageInHalf(value, curPage, state);
             }
@@ -364,7 +364,7 @@ namespace Voron.Data.Sets
             var rootPage = new SetBranchPage(state.Page.Pointer);
             rootPage.Init();
             rootPage.TryAdd(_llt, long.MinValue, cpy);
-            _state.BranchPages++;
+
             InsertToStack(new SetCursorState
             {
                 Page = page,
@@ -434,13 +434,13 @@ namespace Voron.Data.Sets
             return new Iterator(this);
         }
 
-        public ref  struct Iterator 
+        public ref struct Iterator
         {
             private readonly Set _parent;
             private readonly Span<int> _scratch;
             private ByteStringContext<ByteStringMemoryCache>.InternalScope _scope;
             private SetLeafPage.Iterator _it;
-            
+
             public long Current;
 
             public Iterator(Set parent)
@@ -460,7 +460,7 @@ namespace Voron.Data.Sets
                 _it.SkipTo(from);
                 while (_it.MoveNext(out long v))
                 {
-                    if (v < from) 
+                    if (v < from)
                         continue;
                     Current = v;
                     return true;
@@ -473,23 +473,30 @@ namespace Voron.Data.Sets
                 if (_it.MoveNext(out Current))
                     return true;
 
+                if (_parent._pos == 0)
+                    return false;
+
+                _parent.PopPage();
                 while (true)
                 {
-                    if (_parent._pos == 0)
-                        return false;
-                    
-                    _parent.PopPage();
                     ref var state = ref _parent._stk[_parent._pos];
                     state.LastSearchPosition++;
                     Debug.Assert(state.IsLeaf == false);
-                    if (state.LastSearchPosition >= state.BranchHeader->NumberOfEntries) 
+                    if (state.LastSearchPosition >= state.BranchHeader->NumberOfEntries)
+                    {
+                        if (_parent._pos == 0)
+                            return false;
+                        _parent.PopPage();
                         continue;
-                    
+                    }
+
                     var branch = new SetBranchPage(state.Page.Pointer);
                     (_, long pageNum) = branch.GetByIndex(state.LastSearchPosition);
                     var page = _parent._llt.GetPage(pageNum);
                     var header = (SetLeafPageHeader*)page.Pointer;
+
                     _parent.PushPage(pageNum);
+
                     if (header->SetFlags == SetPageFlags.Branch)
                     {
                         // we'll increment on the next
@@ -499,7 +506,7 @@ namespace Voron.Data.Sets
                     _it = new SetLeafPage(page.Pointer).GetIterator(_scratch);
                     if (_it.MoveNext(out Current))
                         return true;
-                }                
+                }
             }
 
             public void Reset()

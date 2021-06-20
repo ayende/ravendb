@@ -332,22 +332,24 @@ namespace Voron.Debugging
 
             if (header.IsLeaf)
             {
-                sw.WriteLine(
-                    string.Format("<ul><li><input type='checkbox' id='page-{0}-details'/><label for='page-{0}-details'>Compression details</label><ul>",
-                        page.PageNumber));
+                //sw.WriteLine(
+                //    string.Format("<ul><li><input type='checkbox' id='page-{0}-details'/><label for='page-{0}-details'>Compression details</label><ul>",
+                //        page.PageNumber));
                 for (int i = 0; i < leaf.Header->NumberOfCompressedPositions; i++)
                 {
                     var entry = leaf.Positions[i];
                     sw.Write($"<li>Compressed with {entry.Length:#,#;;0} bytes</li>");
                 }
                 sw.Write($"<li>Raw with {leaf.Header->NumberOfRawValues:#,#;;0} values</li>");
+                var range = leaf.GetRange();
+                sw.WriteLine($"<li>Range {range.First} ... {range.Last}</li>");
 
-                sw.WriteLine("</ul></li></ul>");
+                //sw.WriteLine("</ul></li></ul>");
 
-                foreach (long val in leafEntries!)
-                {
-                    sw.Write($"<li>{val:#,#;;0}</li>");
-                }
+                //foreach (long val in leafEntries!)
+                //{
+                //    sw.Write($"<li>{val:#,#;;0}</li>");
+                //}
             }
             else
             {
