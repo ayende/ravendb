@@ -940,5 +940,38 @@ namespace Sparrow.Compression
             ThrowNotSupportedException<T>();
             return -1;
         }
+
+        [SkipLocalsInit]
+        public static int ReadReverse<T>(Span<byte> buffer, out T value) 
+            where T : unmanaged
+        {
+            Span<byte> tempBuf = stackalloc byte[10];
+            int size = 0;
+            for (int i = buffer.Length - 1; i >= 0; i--)
+            {
+                byte b = buffer[i];
+                tempBuf[size++] = b;
+                if ((b & 0x80) == 0)
+                    break;
+            }
+
+            Span<byte> buf = tempBuf[..size];
+            buf.Reverse();
+            value = Read<T>(buf, out var read);
+            PortableExceptions.ThrowIfOnDebug<InvalidOperationException>(read == size);
+            return size;
+        }
+        
+        [SkipLocalsInit]
+        public static int WriteReverse<T>(Span<byte> buffer, T v)
+            where T : unmanaged
+        {
+            Span<byte> tempBuf = stackalloc byte[10];
+            var size = Write(tempBuf, v);
+            var span = tempBuf[..size];
+            span.Reverse();
+            span.CopyTo(buffer);
+            return size;
+        }
     }
 }
