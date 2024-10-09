@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Numerics;
 using FastTests.Voron.FixedSize;
 using Xunit;
 using Voron.Impl.FreeSpace;
@@ -15,6 +16,87 @@ namespace FastTests.Voron.Trees
     {
         public FreeSpaceTest(ITestOutputHelper output) : base(output)
         {
+        }
+
+        [Fact]
+        public unsafe void VerifyStreamBitArray()
+        {
+            int[] ints =
+            [   0, // SetCount, computed below
+                2093240632, -1243951356, 739820471, 1555669439, 939477223, 1880595579, -536108760, 892375223, -1732710338, -1608964932, -572161137, -717344490,
+                -1071609025, 1907387484, 138689852, 870963820, -2021980580, -1106357198, -22941, 161063661, -1379929860, 51056153, 1049348358, -1274419677, -2106642555,
+                -1636879239, 1908988000, -1349688014, 1919879089, -1833643920, 2025285115, -350889565, 431837909, -1227369798, 410013704, -1109952490, 392884026,
+                -219901717, -1215417777, 1182181052, -492803895, -313660558, -2135442867, -2042686807, 2098207064, 1672735676, 1301026236, 1276883108, 1438581336,
+                444251554, 64605462, -568670453, -1474189568, 1933490269, 1103936529, 1442860267, 147543584, 317436472, -1746361267, 1211809821, 1322872459, -1905761723,
+                -2008037102, -1975738618
+            ];
+            var setCount = 0;
+            for (int i = 0; i < ints.Length; i++)
+            {
+                setCount += BitOperations.PopCount((uint)ints[i]);
+            }
+            ints[0] = setCount;
+
+            StreamBitArray sba;
+
+            fixed (int* p = ints)
+            {
+                sba = new StreamBitArray((byte*)p);
+            }
+
+            var actual = sba.FindRange(18);
+            var expected = GetContinuousRangeSlow(sba, 18);
+            
+            Assert.Equal(expected, actual);
+        }
+
+        [RavenTheory(RavenTestCategory.Voron)]
+        [InlineDataWithRandomSeed]
+        public void VerifyBehaviorOfStreamBitArray(int seed)
+        {
+            var random = new Random();
+            var sba = new StreamBitArray();
+            for (int j = 0; j < 2048; j += 1)
+            {
+                sba.Set(j, random.Next(2) == 1);
+            }
+
+            for (int i = 0; i < 1024; i++)
+            {
+                var size = random.Next(2, 32);
+                int range = sba.FindRange(size);
+                var expected = GetContinuousRangeSlow(sba, size);
+                
+                Assert.Equal(expected, range);
+            }
+           
+        }
+        
+         
+        int GetContinuousRangeSlow(StreamBitArray current, int num)
+        {
+            var start = -1;
+            var count = 0;
+
+            for (int i = 0; i < 2048; i++)
+            {
+                if (current.Get(i))
+                {
+                    if (start == -1)
+                        start = i;
+                    count++;
+
+                    if (count == num)
+                        return start;
+                }
+                else
+                {
+                    start = -1;
+                    count = 0;
+                }
+            }
+
+            return -1;
         }
 
         [RavenFact(RavenTestCategory.Voron)]
