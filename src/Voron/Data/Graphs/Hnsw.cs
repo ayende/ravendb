@@ -21,7 +21,7 @@ using Container = Voron.Data.Containers.Container;
 
 namespace Voron.Data.Graphs;
 
-public unsafe class Hnsw
+public unsafe partial class Hnsw
 {
     public const long EntryPointId = 1;
 
@@ -111,7 +111,7 @@ public unsafe class Hnsw
         }
         
         [SkipLocalsInit]
-        public Span<byte> Encode(ByteStringContext bsc, ref ContextBoundNativeList<byte> buffer)
+        public Span<byte> Encode(ref ContextBoundNativeList<byte> buffer)
         {
             int countOfLevels = NeighborsPerLevel.Count;
 
@@ -251,7 +251,7 @@ public unsafe class Hnsw
             return distance;
         }
 
-        private float Distance(long from, long to)
+        public float Distance(long from, long to)
         {
             // we assume that the distance(from,to) == distance(to,from) and normalize the cache key
             var key = (Math.Min(from, to), Math.Max(from, to));
@@ -299,7 +299,7 @@ public unsafe class Hnsw
 
             candidates.Clear();
             
-            while (candidates.Count < Options.NumberOfNeighbors &&
+            while (candidates.Count <= Options.NumberOfNeighbors &&
                    _candidatesQ.TryDequeue(out var cur, out var distance))
             {
                 bool match = true;
@@ -323,6 +323,8 @@ public unsafe class Hnsw
                     candidates.AddUnsafe(cur);
                 }
             }
+            
+            _candidatesQ.Clear();
         }
 
 
@@ -375,6 +377,7 @@ public unsafe class Hnsw
             {
                 levelNeighbors.AddUnsafe(neighborId);
             }
+            levelNeighbors.Reverse();
         }
 
         
@@ -430,6 +433,7 @@ public unsafe class Hnsw
         private readonly long _rangeStart;
         
         private SearchState _searchState;
+        public Random Random = Random.Shared;
 
         public Registration(LowLevelTransaction llt, long graphId)
         {
@@ -480,7 +484,7 @@ public unsafe class Hnsw
         private int GetLevelForNewNode(int maxLevel)
         {
             int level = 0;
-            while ((Random.Shared.Next() & 1) == 0 && // 50% chance 
+            while ((Random.Next() & 1) == 0 && // 50% chance 
                    level < maxLevel)
             {
                 level++;
@@ -508,13 +512,6 @@ public unsafe class Hnsw
             foreach (var nodeId in _searchState.Keys)
             {
                 ref var node = ref _searchState.GetNode(nodeId);
-                for (int i = 0; i < node.NeighborsPerLevel.Count; i++)
-                {
-                    ref var list = ref node.NeighborsPerLevel[i];
-                    if(list.Count < _searchState.Options.NumberOfNeighbors)
-                        continue;
-                    _searchState.FilterNeighborsHeuristic(ref node, ref list);
-                }
                 PersistNode(ref node, nodeId);
             }
 
@@ -526,7 +523,7 @@ public unsafe class Hnsw
 
             void PersistNode(ref Node node, long nodeId)
             {
-                var encoded = node.Encode(_searchState.Llt.Allocator, ref byteBuffer);
+                var encoded = node.Encode(ref byteBuffer);
                 if (_searchState.TryGetLocationForNode(nodeId, out var locationId))
                 {
                     var existing = Container.GetMutable(_searchState.Llt, locationId);
@@ -625,8 +622,11 @@ public unsafe class Hnsw
             {
                 if (_searchState.TryGetLocationForNode(EntryPointId, out var entryPointNode) is false)
                 {
+                    if (_searchState.CreatedNodesCount == 0)
+                        return;
+                    
                     ref Node startingNode = ref _searchState.GetNode(EntryPointId);
-                    Span<byte> span = startingNode.Encode(_searchState.Llt.Allocator, ref byteBuffer);
+                    Span<byte> span = startingNode.Encode(ref byteBuffer);
                     entryPointNode = Container.Allocate(_searchState.Llt, _searchState.Options.Container, span.Length, out Span<byte> allocated);
                     span.CopyTo(allocated);
                     _searchState.RegisterNodeLocation(EntryPointId, entryPointNode);
@@ -660,6 +660,9 @@ public unsafe class Hnsw
                             vector, 
                             ref node.NeighborsPerLevel[level],
                             startingPointAsNeibhbor: nodeId != startingPointPerLevel);
+                        
+                        if( node.NeighborsPerLevel[level].Count > _searchState.Options.NumberOfNeighbors)
+                            _searchState.FilterNeighborsHeuristic(ref node, ref node.NeighborsPerLevel[level]);
 
                         ref var list = ref node.NeighborsPerLevel[level];
                         var startingCount = list.Count;
@@ -670,8 +673,15 @@ public unsafe class Hnsw
                             Debug.Assert(neighborId != nodeId, "neighbor.NodeId != node.NodeId");
                             ref var neighborList = ref neighbor.NeighborsPerLevel[level];
                             neighborList.Add(_searchState.Llt.Allocator, nodeId);
+                            
+                            if(neighborList.Count <= _searchState.Options.NumberOfNeighbors)
+                                continue;
+                            _searchState.FilterNeighborsHeuristic(ref neighbor, ref neighborList);
                         }
+                        
+                      
                     }
+                    
                 }
             }
         }
@@ -702,7 +712,6 @@ public unsafe class Hnsw
         nearestNodesByLevel.Clear();
 
         searchState.NearestNeighbors(nearest, level: 0, numberOfCandidates, vector, ref nearestNodesByLevel.Inner, startingPointAsNeibhbor: true);
-        nearestNodesByLevel.Inner.Reverse();
         return new NearestSearch(searchState, nearestNodesByLevel);
     }
 
