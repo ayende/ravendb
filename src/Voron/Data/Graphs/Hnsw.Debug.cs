@@ -15,31 +15,6 @@ namespace Voron.Data.Graphs;
 
 public unsafe partial class Hnsw
 {
-    private static string[] Templates =
-    [
-        @"<html>
-<head>
-    <script type=""text/javascript"" src=""https://unpkg.com/vis-network/standalone/umd/vis-network.min.js""></script>
-</head>
-<body>
-    <h1>",
-        @" </h1>
-    <div id=""graph""></div>
-    <script type=""text/javascript"">
-        var nodes = [ ",
-        @" ];
-        var edges = [ ",
-        @" ];
-        var network = new vis.Network(
-            document.getElementById(""graph""),
-            { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) },
-            {physics: false});
-    </script>
-</body>
-
-</html>"
-    ];
-
     private static long GetPostingListCount(LowLevelTransaction llt,long postingListId)
     {
         switch (postingListId & 0b11)
@@ -57,75 +32,122 @@ public unsafe partial class Hnsw
 
         throw new NotSupportedException();
     }
-
-    public static void RenderAndShow(LowLevelTransaction llt, long graphId)
+    
+    private static long GetEntryId(LowLevelTransaction llt,long postingListId)
     {
-        var searchState = new SearchState(llt, graphId);
-        for (int level = 0; level <= searchState.Options.MaxLevel; level++)
+        switch (postingListId & 0b11)
         {
-            RenderAndShowLevel(llt, level, searchState);
+            case 0:
+                return 0;
+            case 0b01:
+                return postingListId & ~0b11;
+            case 0b10:
+                return -1;
+            case 0b11:
+                return -2;
         }
+
+        throw new NotSupportedException();
     }
 
-    public static void RenderAndShowLevel(LowLevelTransaction llt, int level, SearchState searchState)
+
+    public static void RenderAndShow(LowLevelTransaction llt, long graphId, Span<byte> vector)
     {
-        if (Debugger.IsAttached is false)
-            return;
-        string fileName = Path.GetTempFileName() + "-" + level + ".html";
+        var searchState = new SearchState(llt, graphId);
+        string fileName = Path.GetTempFileName() + ".html";
         using (var f = File.CreateText(fileName))
         {
-            f.Write(Templates[0]);
-            f.Write(level);
-            f.Write(Templates[1]);
+            f.WriteLine(@"<html><style>
+/* Basic table styling */
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+/* Style for table headers */
+th {
+    background-color: #f2f2f2;
+    color: #333;
+    padding: 10px;
+    text-align: left;
+    border-bottom: 2px solid #ddd;
+}
+th.result {
+    background-color: Violet;
+}
+th.path {
+    background-color: aqua;
+}
+/* Style for table cells */
+td {
+    padding: 10px;
+    border-bottom: 1px solid #ddd;
+}
+/* Alternate row colors for better readability */
+tr:nth-child(even) {
+    background-color: #f9f9f9;
+}
+/* Add some padding and border to the table */
+table, th, td {
+    border: 1px solid #ddd;
+}
 
-            var edges = new HashSet<(long, long)>();
+</style><body>");
+
+            var path = new NativeList<long>();
+            path.EnsureCapacityFor(llt.Allocator, searchState.Options.MaxLevel +1);
+            var neighbors = new NativeList<long>();
+            neighbors.EnsureCapacityFor(llt.Allocator, 16);
+            searchState.SearchNearestAcrossLevels(vector, -1, searchState.Options.MaxLevel, ref path);
+            searchState.NearestNeighbors(path[0], 0, 8, vector, -1, ref neighbors, true);
             
-            for (long j = 1; j <= searchState.Options.CountOfVectors; j++)
+            for (int level = searchState.Options.MaxLevel - 1; level >= 0; level--)
             {
-                ref var n = ref searchState.GetNodeById(j);
-                if (level >= n.NeighborsPerLevel.Count)
-                    continue;
-
-                var postingListCount = GetPostingListCount(llt, n.PostingListId);
-                var item = Container.Get(llt, n.VectorId);
-                var vec = MemoryMarshal.Cast<byte, float>(item.ToSpan());
-                f.Write($"{{ id: {j}, label: '#{j:##,###}', title: '{postingListCount} - [ ");
-                for (int k = 0; k < Math.Min(8, vec.Length); k++)
+                f.WriteLine($"<h1>Level: {level}</h1>");
+                f.WriteLine("<table><tr>");
+                int cols = 0;
+                for (long j = 1; j <= searchState.Options.CountOfVectors; j++)
                 {
-                    if (k > 0)
-                        f.Write(',');
-                    f.Write(vec[k]);
-                }
+                    ref var n = ref searchState.GetNodeById(j);
+                    if (level >= n.NeighborsPerLevel.Count)
+                        continue;
 
-                if (vec.Length > 8)
-                {
-                    f.Write(", ...");
-                }
-
-                f.WriteLine("]' }, ");
-            }
-
-            f.WriteLine(Templates[2]);
-
-            for (long j = 1; j <= searchState.Options.CountOfVectors; j++)
-            {
-                ref var n = ref searchState.GetNodeById(j);
-                if (level >= n.NeighborsPerLevel.Count)
-                    continue;
-
-                foreach (var to in n.NeighborsPerLevel[level])
-                {
-                    var key = (Math.Min(j, to), Math.Max(j, to));
-                    if (edges.Add(key))
+                    var dist = searchState.Distance(vector, -1, n.VectorId);
+                    var isPath = path[level] == j ? "path" : "";
+                    var isResult =  level == 0 && neighbors.Items.Contains(j) ? "result": "";
+                    var nextId = level == 0 ? (neighbors.Items.Contains(j) ?"***": "") : $"N_{path[level - 1]}_{level - 1}";
+                    f.WriteLine($"<td> <table id='N_{j}_{level}'><tr><th class='{isPath} {isResult}'>N_{j}_{level} - {GetEntryId(llt,n.PostingListId)}</th>" +
+                                $"<th>{n.NeighborsPerLevel[level].Count}</th><th>{dist} (<a href='#{nextId}'>{nextId}</a>)</th></tr><tr>");
+                    foreach (var to in n.NeighborsPerLevel[level])
                     {
-                        var dist = searchState.Distance(n.VectorId, searchState.GetNodeById(to).VectorId);
-                        f.WriteLine($"{{ from: {j}, to: {to}, title: '{dist}' }},");
+                        dist = searchState.Distance(Span<byte>.Empty, n.VectorId, searchState.GetNodeById(to).VectorId);
+                        var srcDist = searchState.Distance(vector, -1, searchState.GetNodeById(to).VectorId);
+                        var id = $"N_{to}_{Math.Max(0, level-1)}";
+                     
+                        f.WriteLine($"<tr><td><a href='#{id}'>{id}</a></td><td>{dist}</td><td>{srcDist}</td></tr>");
+                    }
+                    f.WriteLine("</table></td>");
+                    if (++cols == 8)
+                    {
+                        f.WriteLine("</tr><tr>");
+                        cols = 0;
                     }
                 }
+
+                f.WriteLine("</tr></table>");
             }
 
-            f.WriteLine(Templates[3]);
+            // for (long j = 1; j <= searchState.Options.CountOfVectors; j++)
+            // {
+            //     ref var n = ref searchState.GetNodeById(j);
+            //     for (int i = 1; i < n.NeighborsPerLevel.Count; i++)
+            //     {
+            //         f.WriteLine($"\tN_{j}_{i - 1} -- N_{j}_{i};");
+            //     }
+            // }
+
+            f.WriteLine("</body></html>");
         }
+
         DebugStuff.OpenBrowser(fileName);
     }
 }
