@@ -92,6 +92,14 @@ public unsafe struct NativeList<T>()
         Unsafe.CopyBlock(RawItems + Count, items, (uint)(count * sizeof(T)));
         Count += count;
     }
+    
+    public void SetRangeUnsafe(T item, int count)
+    {
+        Debug.Assert(Count + count <= Capacity);
+        Debug.Assert((uint)(count * sizeof(T)) > (uint)count || count == 0);
+        new Span<T>(RawItems + Count, count).Fill(item);
+        Count += count;
+    }
 
     public void AddUnsafe(in T l)
     {

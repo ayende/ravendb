@@ -214,7 +214,7 @@ public unsafe partial class Hnsw
             _nodeIdToLocations.Add(nodeId, locationId);
 
 
-        public ref Node GetNodeById(long nodeId)
+        public ref Node GetNodeById(long nodeId)    
         {
             ref var node = ref CollectionsMarshal.GetValueRefOrAddDefault(_nodesById, nodeId, out var exists);
             if (exists)
@@ -237,6 +237,7 @@ public unsafe partial class Hnsw
 
         public float Distance(Span<byte> vector, long from, long to)
         {
+            DistanceCount++;
             // we assume that the distance(from,to) == distance(to,from) and normalize the cache key
             var key = (Math.Min(from, to), Math.Max(from, to));
             
@@ -321,18 +322,22 @@ public unsafe partial class Hnsw
             Debug.Assert(_candidatesQ.Count is 0 && _nearestNeighborsQ.Count is 0);
 
             ref var startingPointNode = ref GetNodeById(startingPoint);
-            float negatedDist = -Distance(vector, vectorId, startingPointNode.VectorId);
+            float lowerBound = -Distance(vector, vectorId, startingPointNode.VectorId);
             var visitedCounter = ++_visitsCounter;
             startingPointNode.Visited = visitedCounter;
-            _candidatesQ.Enqueue(startingPoint, negatedDist);
+            _candidatesQ.Enqueue(startingPoint, lowerBound);
             if (startingPointAsNeibhbor)
             {
-                _nearestNeighborsQ.Enqueue(startingPoint, negatedDist);
+                _nearestNeighborsQ.Enqueue(startingPoint, lowerBound);
             }
 
-
-            while (_candidatesQ.TryDequeue(out var cur, out _))
+            while (_candidatesQ.TryDequeue(out var cur, out var curDistance))
             {
+                if (_nearestNeighborsQ.Count == numberOfCandidates && curDistance > lowerBound)
+                {
+                    break;
+                }
+                
                 ref var candidate = ref GetNodeById(cur);
                 ref var neighbors = ref candidate.NeighborsPerLevel[level];
                 for (int i = 0; i < neighbors.Count; i++)
@@ -345,18 +350,25 @@ public unsafe partial class Hnsw
                     next.Visited = visitedCounter;
                     
                     float nextDist = -Distance(vector,vectorId, next.VectorId);
+                    if (nextDist > lowerBound)
+                        continue;
 
                     if (_nearestNeighborsQ.Count < numberOfCandidates)
                     {
                         _candidatesQ.Enqueue(nextId, nextDist);
                         _nearestNeighborsQ.Enqueue(nextId, nextDist);
-                        continue;
                     }
-
-                    if (_nearestNeighborsQ.EnqueueDequeue(nextId, nextDist) != nextId)
+                    else if (_nearestNeighborsQ.EnqueueDequeue(nextId, nextDist) != nextId)
                     {
                         _candidatesQ.Enqueue(nextId, nextDist);
                     }
+                    else
+                    {
+                        continue;
+                    }
+                    
+                    Debug.Assert(_candidatesQ.Count > 0);
+                    _candidatesQ.TryPeek(out _, out lowerBound);
                 }
             }
 
@@ -368,9 +380,10 @@ public unsafe partial class Hnsw
             levelNeighbors.Reverse();
         }
 
-        
+        public int DistanceCount;
         public void SearchNearestAcrossLevels(Span<byte> vector, long vectorId, int maxLevel, ref NativeList<long> nearest)
         {
+            DistanceCount = 0;
             var visitCounter = ++_visitsCounter;
             var currentNodeId = EntryPointId;
             ref var currentNode = ref GetNodeById(EntryPointId);
@@ -482,6 +495,8 @@ public unsafe partial class Hnsw
 
         public void Dispose()
         {
+            PortableExceptions.ThrowIfOnDebug<InvalidOperationException>(_searchState.Llt.Committed);
+            
             using var pforDecoder = new FastPForDecoder(_searchState.Llt.Allocator);
             using var pforEncoder = new FastPForEncoder(_searchState.Llt.Allocator);
             
@@ -629,17 +644,20 @@ public unsafe partial class Hnsw
                     nearestNodesByLevel.Clear();
 
                     long nodeId = _rangeStart + j;
-                    ref var node = ref _searchState.GetNode(nodeId);
-
-                    var currentMaxLevel = _searchState.Options.CurrentMaxLevel(createdNodesCount - j);
                     
+                    ref var node = ref _searchState.GetNode(nodeId);
+                    
+                    // Important - we need to modify this _before_ we call SearchNearestAcrossLevels or NearestNeighbors
+                    // Those add nodes to the search state, and may call re-hash of the dictionary, meaning that the node
+                    // reference we have will point to the _old_ array. By allocating the neighbors first, we avoid the issue
+                    var currentMaxLevel = _searchState.Options.CurrentMaxLevel(createdNodesCount - j);
+                    int nodeRandomLevel = GetLevelForNewNode(currentMaxLevel );
+                    node.NeighborsPerLevel.SetCapacity(_searchState.Llt.Allocator, nodeRandomLevel + 1);
+
                     var vector = Container.Get(_searchState.Llt, node.VectorId).ToSpan();
 
                     _searchState.SearchNearestAcrossLevels(vector, node.VectorId, currentMaxLevel , ref nearestNodesByLevel);
 
-                    int nodeRandomLevel = GetLevelForNewNode(currentMaxLevel );
-                    node.NeighborsPerLevel.SetCapacity(_searchState.Llt.Allocator, nodeRandomLevel + 1);
-                
                     for (int level = nodeRandomLevel; level >= 0; level--)
                     {
                         long startingPointPerLevel = nearestNodesByLevel[level];
@@ -666,10 +684,7 @@ public unsafe partial class Hnsw
                                 continue;
                             _searchState.FilterNeighborsHeuristic(ref neighbor, ref neighborList);
                         }
-                        
-                      
                     }
-                    
                 }
             }
         }
