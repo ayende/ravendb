@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Net;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using Sparrow.Compression;
@@ -97,8 +98,8 @@ table, th, td {
             path.EnsureCapacityFor(llt.Allocator, searchState.Options.MaxLevel +1);
             var edges = new NativeList<int>();
             edges.EnsureCapacityFor(llt.Allocator, 16);
-            searchState.SearchNearestAcrossLevels(vector, -1, searchState.Options.MaxLevel,  ref path);
-            searchState.NearestEdges(path[0], 0, 8, vector, -1, ref edges, true);
+            searchState.SearchNearestAcrossLevels(vector, ref Unsafe.NullRef<Node>(), searchState.Options.MaxLevel,  ref path);
+            searchState.NearestEdges(path[0], 0, 8, vector, ref Unsafe.NullRef<Node>(), ref edges, true);
             
             for (int level = searchState.Options.MaxLevel - 1; level >= 0; level--)
             {
@@ -111,7 +112,7 @@ table, th, td {
                     if (level >= n.EdgesPerLevel.Count)
                         continue;
 
-                    var dist = searchState.Distance(vector, -1, n.VectorId);
+                    var dist = searchState.Distance(vector, ref Unsafe.NullRef<Node>(), ref n);
                     var isPath = path[level] == j ? "path" : "";
                     var isResult =  level == 0 && edges.Items.Contains(j) ? "result": "";
                     var nextId = level == 0 ? (edges.Items.Contains(j) ?"***": "") : $"N_{path[level - 1]}_{level - 1}";
@@ -119,8 +120,8 @@ table, th, td {
                                 $"<th>{n.EdgesPerLevel[level].Count}</th><th>{dist} (<a href='#{nextId}'>{nextId}</a>)</th></tr><tr>");
                     foreach (var to in n.EdgesPerLevel[level])
                     {
-                        dist = searchState.Distance(Span<byte>.Empty, n.VectorId, searchState.GetNodeById(to).VectorId);
-                        var srcDist = searchState.Distance(vector, -1, searchState.GetNodeById(to).VectorId);
+                        dist = searchState.Distance(Span<byte>.Empty, ref n, ref searchState.GetNodeById(to));
+                        var srcDist = searchState.Distance(vector, ref Unsafe.NullRef<Node>(), ref searchState.GetNodeById(to));
                         var id = $"N_{to}_{Math.Max(0, level-1)}";
                      
                         f.WriteLine($"<tr><td><a href='#{id}'>{id}</a></td><td>{dist}</td><td>{srcDist}</td></tr>");

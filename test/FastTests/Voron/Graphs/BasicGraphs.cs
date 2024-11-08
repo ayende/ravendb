@@ -75,7 +75,7 @@ public class BasicGraphs(ITestOutputHelper output) : StorageTest(output)
         using (var txr = Env.ReadTransaction())
         {
             Span<long> matches = stackalloc long[8];
-            using var nearest = Hnsw.Nearest(txr.LowLevelTransaction, id,
+            using var nearest = Hnsw.ApproximateNearest(txr.LowLevelTransaction, id,
                 numberOfCandidates: 32,
                 MemoryMarshal.Cast<float, byte>(v3));
             int read = nearest.Fill(matches);
@@ -153,7 +153,7 @@ public class BasicGraphs(ITestOutputHelper output) : StorageTest(output)
             var found = 0;
             foreach(var (wikiId, vector) in expected)
             {
-                using var nearest = Hnsw.Nearest(txr.LowLevelTransaction, id, 32,
+                using var nearest = Hnsw.ApproximateNearest(txr.LowLevelTransaction, id, 32,
                     MemoryMarshal.Cast<float, byte>(vector));
 
                 // we have to read 4 items, because this is *approximate*
