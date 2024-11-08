@@ -4,21 +4,20 @@ using Parquet;
 using Voron;
 using Voron.Data.Graphs;
 
-var options = StorageEnvironmentOptions.ForPathForTests("vectors");
-options.ManualFlushing = true;
+var options = StorageEnvironmentOptions.CreateMemoryOnlyForTests("vectors");
 using var env = new StorageEnvironment(options);
 
-// long id = 16416;
+long id = 16416;
 // using (var txr = env.ReadTransaction())
 // {
 //     var options = Hnsw.ReadOptions(txr.LowLevelTransaction, id);
 //     Console.WriteLine(options.CountOfVectors);
 // }
 var sp = Stopwatch.StartNew();
-await ImportData(env, @"C:\Users\ayende\Downloads");
+await ImportData(env);
 Console.WriteLine(sp.Elapsed);
 
-static async Task ImportData(StorageEnvironment env, string basePath)
+static async Task ImportData(StorageEnvironment env)
 {
     long id;
     using (var txw = env.WriteTransaction())
@@ -35,8 +34,28 @@ static async Task ImportData(StorageEnvironment env, string basePath)
                  "train-00003-of-00004-85b3dbbc960e92ec.parquet"
              ])
     {
-        Console.WriteLine(file);
-        await foreach (var (ids, vectors) in YieldVectors(Path.Combine(basePath, file)))
+        const string url = "https://huggingface.co/datasets/Cohere/wikipedia-22-12-simple-embeddings/resolve/main/data/";
+        var fullPath = Path.Combine(Path.GetTempPath(), "Vector.Benchmark", file);
+        if (File.Exists(fullPath) is false)
+        {
+            using (HttpClient client = new())
+            {
+                client.Timeout = TimeSpan.FromHours(1); // Set timeout to a reasonable value for large files
+
+                using (var response = await client.GetAsync(url + file, HttpCompletionOption.ResponseHeadersRead))
+                {
+                    response.EnsureSuccessStatusCode();
+
+                    await using (var contentStream = await response.Content.ReadAsStreamAsync())
+                    await using (var fileStream = File.Create(fullPath))
+                    {
+                        await contentStream.CopyToAsync(fileStream);
+                    }
+                }
+            }
+        }
+        
+        await foreach (var (ids, vectors) in YieldVectors(fullPath))
         {
             var batch = Stopwatch.StartNew();
             {
@@ -44,6 +63,7 @@ static async Task ImportData(StorageEnvironment env, string basePath)
                 {
                     using (var registration = Hnsw.RegistrationFor(txw.LowLevelTransaction, id))
                     {
+                        registration.Random = new Random(123);
                         for (int i = 0; i < ids.Length; i++)
                         {
                             var vector = new Memory<float>(vectors, i * 768, 768);
@@ -53,8 +73,6 @@ static async Task ImportData(StorageEnvironment env, string basePath)
                     txw.Commit();
                 }
             }
-            
-            env.FlushLogToDataFile();
             
             Console.WriteLine($" * {ids.Length:N0} - {batch.Elapsed}");
         }

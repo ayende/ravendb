@@ -50,7 +50,7 @@ public static class Program
                 {
                     DebuggerAttachedTimeout.DisableLongTimespan = true;
 
-                    test.MoreNodesThanNeighbors();
+                    test.BasicSearch();
                 }
             }
             catch (Exception e)

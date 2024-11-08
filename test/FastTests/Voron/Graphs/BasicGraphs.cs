@@ -34,7 +34,7 @@ public class BasicGraphs(ITestOutputHelper output) : StorageTest(output)
         {
             var options = Hnsw.ReadOptions(txr.LowLevelTransaction, id);
             Assert.Equal(12, options.NumberOfCandidates);
-            Assert.Equal(3, options.NumberOfNeighbors);
+            Assert.Equal(3, options.NumberOfEdges);
             Assert.Equal(0, options.CountOfVectors);
         }
     }
@@ -68,7 +68,7 @@ public class BasicGraphs(ITestOutputHelper output) : StorageTest(output)
         {
             var options = Hnsw.ReadOptions(txr.LowLevelTransaction, id);
             Assert.Equal(12, options.NumberOfCandidates);
-            Assert.Equal(3, options.NumberOfNeighbors);
+            Assert.Equal(3, options.NumberOfEdges);
             Assert.Equal(2, options.CountOfVectors);
         }
 

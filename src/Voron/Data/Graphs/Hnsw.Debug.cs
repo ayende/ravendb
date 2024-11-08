@@ -93,31 +93,31 @@ table, th, td {
 
 </style><body>");
 
-            var path = new NativeList<long>();
+            var path = new NativeList<int>();
             path.EnsureCapacityFor(llt.Allocator, searchState.Options.MaxLevel +1);
-            var neighbors = new NativeList<long>();
-            neighbors.EnsureCapacityFor(llt.Allocator, 16);
-            searchState.SearchNearestAcrossLevels(vector, -1, searchState.Options.MaxLevel, ref path);
-            searchState.NearestNeighbors(path[0], 0, 8, vector, -1, ref neighbors, true);
+            var edges = new NativeList<int>();
+            edges.EnsureCapacityFor(llt.Allocator, 16);
+            searchState.SearchNearestAcrossLevels(vector, -1, searchState.Options.MaxLevel,  ref path);
+            searchState.NearestEdges(path[0], 0, 8, vector, -1, ref edges, true);
             
             for (int level = searchState.Options.MaxLevel - 1; level >= 0; level--)
             {
                 f.WriteLine($"<h1>Level: {level}</h1>");
                 f.WriteLine("<table><tr>");
                 int cols = 0;
-                for (long j = 1; j <= searchState.Options.CountOfVectors; j++)
+                for (int j = 1; j <= searchState.Options.CountOfVectors; j++)
                 {
                     ref var n = ref searchState.GetNodeById(j);
-                    if (level >= n.NeighborsPerLevel.Count)
+                    if (level >= n.EdgesPerLevel.Count)
                         continue;
 
                     var dist = searchState.Distance(vector, -1, n.VectorId);
                     var isPath = path[level] == j ? "path" : "";
-                    var isResult =  level == 0 && neighbors.Items.Contains(j) ? "result": "";
-                    var nextId = level == 0 ? (neighbors.Items.Contains(j) ?"***": "") : $"N_{path[level - 1]}_{level - 1}";
+                    var isResult =  level == 0 && edges.Items.Contains(j) ? "result": "";
+                    var nextId = level == 0 ? (edges.Items.Contains(j) ?"***": "") : $"N_{path[level - 1]}_{level - 1}";
                     f.WriteLine($"<td> <table id='N_{j}_{level}'><tr><th class='{isPath} {isResult}'>N_{j}_{level} - {GetEntryId(llt,n.PostingListId)}</th>" +
-                                $"<th>{n.NeighborsPerLevel[level].Count}</th><th>{dist} (<a href='#{nextId}'>{nextId}</a>)</th></tr><tr>");
-                    foreach (var to in n.NeighborsPerLevel[level])
+                                $"<th>{n.EdgesPerLevel[level].Count}</th><th>{dist} (<a href='#{nextId}'>{nextId}</a>)</th></tr><tr>");
+                    foreach (var to in n.EdgesPerLevel[level])
                     {
                         dist = searchState.Distance(Span<byte>.Empty, n.VectorId, searchState.GetNodeById(to).VectorId);
                         var srcDist = searchState.Distance(vector, -1, searchState.GetNodeById(to).VectorId);
