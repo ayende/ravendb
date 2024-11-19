@@ -1299,6 +1299,8 @@ namespace Voron.Impl.Journal
                 {
                     var pagesBuffer = ArrayPool<Page>.Shared.Rent(record.ScratchPagesTable.Count);
                     Pager.PagerTransactionState txState = default;
+                    byte* ptr = null;
+                    long bufferSize = 0;
                     try
                     {
                         if (state.SparseRegions?.Count > 0)
@@ -1330,15 +1332,33 @@ namespace Voron.Impl.Journal
                                 Debug.Assert(pages[i].PageNumber + numberOfPages <= dataPagerState.NumberOfAllocatedPages,
                                     "pages[i].PageNumber + pages[i].GetNumberOfPagesUpdateStateOnCommit() <= dataPagerState.NumberOfAllocatedPages");
 
-                                var span = new Span<byte>(pages[i].Pointer, numberOfPages * Constants.Storage.PageSize);
-                                RandomAccess.Write(fileHandle, span, pages[i].PageNumber * Constants.Storage.PageSize);
+                                long nextPageNumber = pages[i].PageNumber + numberOfPages;
+                                int nextPageIndex = 1;
+                                int startIndex = i;
+                                while (i + nextPageIndex < pages.Length)
+                                {
+                                    var nextPage = pages[i + nextPageIndex];
+                                    if (pages[i + nextPageIndex].PageNumber != nextPageNumber ||
+                                        numberOfPages + nextPage.GetNumberOfPages() > 512)
+                                        break;
 
-                                written += numberOfPages * Constants.Storage.PageSize;
+                                    i++;
+                                    nextPageIndex++;
+                                    nextPageNumber += nextPage.GetNumberOfPages();
+                                    numberOfPages += nextPage.GetNumberOfPages();
+                                }
+
+                                written += WriteToFile(fileHandle, pages, startIndex, nextPageIndex, numberOfPages, ref ptr, ref bufferSize);
                             }
                         }
                     }
                     finally
                     {
+                        if (ptr != null)
+                        {
+                            NativeMemory.Free(ptr, bufferSize);
+                        }
+
                         ArrayPool<Page>.Shared.Return(pagesBuffer);
                         txState.InvokeDispose(_waj._env, ref dataPagerState, ref txState);
                     }
@@ -1355,6 +1375,36 @@ namespace Voron.Impl.Journal
                 Interlocked.Add(ref _totalWrittenButUnsyncedBytes, written);
 
                 return dataPagerState;
+            }
+
+            private long WriteToFile(SafeFileHandle fileHandle, Span<Page> pages, int start, int count, int numberOfPages, ref byte* buffer, ref long bufferSize)
+            {
+                if(count is 1)
+                {
+                    var span = new Span<byte>(pages[start].Pointer, numberOfPages * Constants.Storage.PageSize);
+                    RandomAccess.Write(fileHandle, span, pages[start].PageNumber * Constants.Storage.PageSize);
+                    return numberOfPages * Constants.Storage.PageSize;
+                }
+
+                if (numberOfPages * Constants.Storage.PageSize > bufferSize)
+                {
+                    if(buffer != null)
+                        NativeMemory.Free(buffer, bufferSize);
+                    bufferSize = numberOfPages * Constants.Storage.PageSize;
+                    buffer =   NativeMemory.AllocateMemory(numberOfPages * Constants.Storage.PageSize);
+                }
+
+                var ptr = buffer;
+                for(int i = start; i < count; i++)
+                {
+                    var size = pages[i].GetNumberOfPages() * Constants.Storage.PageSize;
+                    Memory.Copy(ptr, pages[i].Pointer, size);
+                    ptr += size;
+                }
+                
+                RandomAccess.Write(fileHandle, new Span<byte>(buffer, numberOfPages * Constants.Storage.PageSize), pages[start].PageNumber * Constants.Storage.PageSize);
+
+                return numberOfPages * Constants.Storage.PageSize; ;
             }
 
             private void MarkSparseRegionsInDataFile(Pager.State dataPagerState, Span<long> sparseRegions)
