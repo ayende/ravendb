@@ -548,6 +548,11 @@ rvn_sync_pager(void *handle,
                int32_t *detailed_error_code)
 {
     struct handle *handle_ptr = handle;
+    if(!FlushViewOfFile(handle_ptr->write_address, handle_ptr->allocation_size))
+    {
+        *detailed_error_code = GetLastError();
+        return FAIL_SYNC_FILE;
+    }
     if (!FlushFileBuffers(handle_ptr->file_handle))
     {
         *detailed_error_code = GetLastError();

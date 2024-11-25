@@ -517,7 +517,7 @@ namespace Voron
 
             public override (Pager Pager, Pager.State State) InitializeDataPager()
             {
-                var flags = Pal.OpenFileFlags.None;
+                var flags = Pal.OpenFileFlags.WritableMap;
                 if(Encryption.IsEnabled)
                     flags |= Pal.OpenFileFlags.Encrypted;
                 if (ForceUsing32BitsPager || PlatformDetails.Is32Bits)
@@ -879,7 +879,7 @@ namespace Voron
                 if (ForceUsing32BitsPager || PlatformDetails.Is32Bits)
                     flags |= Pal.OpenFileFlags.DoNotMap;
                 return Pager.Create(this, filename, 0, flags);
-                    }
+            }
 
             private FileInfo GetJournalFileInfo(long journalNumber, JournalInfo journalInfo)
             {
@@ -941,7 +941,7 @@ namespace Voron
 
             public override unsafe (Pager Pager, Pager.State State) InitializeDataPager()
             {
-                var flags = Pal.OpenFileFlags.Temporary;
+                var flags = Pal.OpenFileFlags.Temporary | Pal.OpenFileFlags.WritableMap;
                 if(Encryption.IsEnabled)
                     flags |= Pal.OpenFileFlags.Encrypted;
                 if (ForceUsing32BitsPager || PlatformDetails.Is32Bits)

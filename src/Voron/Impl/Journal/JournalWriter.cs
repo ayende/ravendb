@@ -72,7 +72,7 @@ namespace Voron.Impl.Journal
 
         public (Pager Pager, Pager.State State) CreatePager()
         {
-            var flags = Pal.OpenFileFlags.None;
+            var flags = Pal.OpenFileFlags.WritableMap;
             if(_options.ForceUsing32BitsPager || PlatformDetails.Is32Bits)
                 flags |= Pal.OpenFileFlags.DoNotMap;
             return Pager.Create(_options, FileName.FullPath, 0, flags);

@@ -1313,28 +1313,15 @@ namespace Voron.Impl.Journal
 
                         Page lastPage = pages[^1];
                         dataPager.EnsureContinuous(ref dataPagerState, lastPage.PageNumber, lastPage.GetNumberOfPages());
-                        var rc = Pal.rvn_pager_get_file_handle(dataPagerState.Handle, out var fileHandle, out var errorCode);
-                        if (rc != PalFlags.FailCodes.Success)
-                        {
-                            PalHelper.ThrowLastError(rc, errorCode, $"Failed to get file handle for {dataPager.FileName}");
-                        }
-
                         (dataPagerState.TotalFileSize, dataPagerState.TotalDiskSpace) = dataPager.GetFileSize(dataPagerState);
-                        
-                        using (fileHandle)
+
+                        if (dataPagerState.WriteAddress != null)
                         {
-                            for (int i = 0; i < pages.Length; i++)
-                            {
-                                int numberOfPages = pages[i].GetNumberOfPages();
-
-                                Debug.Assert(pages[i].PageNumber + numberOfPages <= dataPagerState.NumberOfAllocatedPages,
-                                    "pages[i].PageNumber + pages[i].GetNumberOfPagesUpdateStateOnCommit() <= dataPagerState.NumberOfAllocatedPages");
-
-                                var span = new Span<byte>(pages[i].Pointer, numberOfPages * Constants.Storage.PageSize);
-                                RandomAccess.Write(fileHandle, span, pages[i].PageNumber * Constants.Storage.PageSize);
-
-                                written += numberOfPages * Constants.Storage.PageSize;
-                            }
+                            written += WriteUsingMmapWrites(pages, ref dataPagerState);
+                        }
+                        else
+                        {
+                            written += WriteUsingFileIO(dataPagerState, dataPager, pages);
                         }
                     }
                     finally
@@ -1355,6 +1342,56 @@ namespace Voron.Impl.Journal
                 Interlocked.Add(ref _totalWrittenButUnsyncedBytes, written);
 
                 return dataPagerState;
+            }
+
+            private static long WriteUsingFileIO(Pager.State dataPagerState, Pager dataPager, Span<Page> pages)
+            {
+                var rc = Pal.rvn_pager_get_file_handle(dataPagerState.Handle, out var fileHandle, out var errorCode);
+                if (rc != PalFlags.FailCodes.Success)
+                {
+                    PalHelper.ThrowLastError(rc, errorCode, $"Failed to get file handle for {dataPager.FileName}");
+                }
+
+                long written = 0;
+                using (fileHandle)
+                {
+                    for (int i = 0; i < pages.Length; i++)
+                    {
+                        int numberOfPages = pages[i].GetNumberOfPages();
+
+                        Debug.Assert(pages[i].PageNumber + numberOfPages <= dataPagerState.NumberOfAllocatedPages,
+                            "pages[i].PageNumber + pages[i].GetNumberOfPagesUpdateStateOnCommit() <= dataPagerState.NumberOfAllocatedPages");
+
+                        var span = new Span<byte>(pages[i].Pointer, numberOfPages * Constants.Storage.PageSize);
+                        RandomAccess.Write(fileHandle, span, pages[i].PageNumber * Constants.Storage.PageSize);
+
+                        written += numberOfPages * Constants.Storage.PageSize;
+                    }
+                }
+
+                return written;
+            }
+
+            private static long WriteUsingMmapWrites(Span<Page> pages, ref Pager.State dataPagerState)
+            {
+                long written = 0;
+                for (int i = 0; i < pages.Length; i++)
+                {
+                    int numberOfPages = pages[i].GetNumberOfPages();
+
+                    Debug.Assert(pages[i].PageNumber + numberOfPages <= dataPagerState.NumberOfAllocatedPages,
+                        "pages[i].PageNumber + pages[i].GetNumberOfPagesUpdateStateOnCommit() <= dataPagerState.NumberOfAllocatedPages");
+
+                    Memory.Copy(
+                        dataPagerState.WriteAddress + pages[i].PageNumber * Constants.Storage.PageSize,
+                        pages[i].Pointer,
+                        numberOfPages * Constants.Storage.PageSize
+                    );
+
+                    written += numberOfPages * Constants.Storage.PageSize;
+                }
+
+                return written;
             }
 
             private void MarkSparseRegionsInDataFile(Pager.State dataPagerState, Span<long> sparseRegions)
