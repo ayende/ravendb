@@ -1313,11 +1313,13 @@ namespace Voron.Impl.Journal
                 var record = state.Record;
                 using (var meter = options.IoMetrics.MeterIoRate(dataPager.FileName, IoMetrics.MeterType.DataFlush, 0))
                 {
-                    var pagesBuffer = ArrayPool<Page>.Shared.Rent(record.ScratchPagesTable.Count);
+                    var pagesBuffer = ArrayPool<Pal.page_to_write>.Shared.Rent(record.ScratchPagesTable.Count);
                     Pager.PagerTransactionState txState = default;
                     try
                     {
-                        Span<Page> pages = GetSortedPages(ref txState, record, pagesBuffer);
+
+                        Span<Pal.page_to_write> pages = GetSortedPages(ref txState, record, pagesBuffer, out written);
+
 
                         if (pages.IsEmpty)
                             return dataPagerState;
@@ -1330,26 +1332,20 @@ namespace Voron.Impl.Journal
                             PalHelper.ThrowLastError(rc, errorCode, $"Failed to get file handle for {dataPager.FileName}");
                         }
                         
-                        using (fileHandle)
+
+                        (dataPagerState.TotalFileSize, dataPagerState.TotalDiskSpace) = dataPager.GetFileSize(dataPagerState);
+                        fixed (Pal.page_to_write* ptr = pages)
                         {
-                            (dataPagerState.TotalFileSize, dataPagerState.TotalDiskSpace) = dataPager.GetFileSize(dataPagerState);
-                            for (int i = 0; i < pages.Length; i++)
+                            var rc = dataPager.Writer(dataPagerState.Handle, pages.Length, ptr, out var errorCode);
+                            if (rc != PalFlags.FailCodes.Success)
                             {
-                                int numberOfPages = pages[i].GetNumberOfPages();
-
-                                Debug.Assert(pages[i].PageNumber + numberOfPages <= dataPagerState.NumberOfAllocatedPages,
-                                    "pages[i].PageNumber + pages[i].GetNumberOfPagesUpdateStateOnCommit() <= dataPagerState.NumberOfAllocatedPages");
-
-                                var span = new Span<byte>(pages[i].Pointer, numberOfPages * Constants.Storage.PageSize);
-                                RandomAccess.Write(fileHandle, span, pages[i].PageNumber * Constants.Storage.PageSize);
-
-                                written += numberOfPages * Constants.Storage.PageSize;
+                                Pager.RaiseError(dataPager.FileName, errorCode, rc, dataPagerState.TotalAllocatedSize);
                             }
                         }
                     }
                     finally
                     {
-                        ArrayPool<Page>.Shared.Return(pagesBuffer);
+                        ArrayPool<Pal.page_to_write>.Shared.Return(pagesBuffer);
                         txState.InvokeDispose(_waj._env, ref dataPagerState, ref txState);
                     }
 
@@ -1410,10 +1406,11 @@ namespace Voron.Impl.Journal
                 }
             }
 
-            private Span<Page> GetSortedPages(ref Pager.PagerTransactionState txState, EnvironmentStateRecord record, Page[] pagesBuffer)
+            private Span<Pal.page_to_write> GetSortedPages(ref Pager.PagerTransactionState txState, EnvironmentStateRecord record,
+                Pal.page_to_write[] pagesBuffer, out long written)
             {
                 int index = 0;
-                var pageNumsBuffer = ArrayPool<long>.Shared.Rent(record.ScratchPagesTable.Count);
+                written = 0;
                 var lastFlushedTx = _lastFlushed.TransactionId;
                 foreach (var (pageNum, pageValue) in record.ScratchPagesTable)
                 {
@@ -1422,17 +1419,19 @@ namespace Voron.Impl.Journal
 
                     Debug.Assert(pageValue.AllocatedInTransaction <= record.TransactionId, "pageValue.AllocatedInTransaction <= record.TransactionId");
                     
-                    pageNumsBuffer[index] = pageNum;
                     var page = PreparePage(ref txState, pageValue);
-                    pagesBuffer[index] = page;
+                    int countOfPages = page.GetNumberOfPages();
+                    written += countOfPages * Constants.Storage.PageSize;
+                    pagesBuffer[index++] = new Pal.page_to_write
+                    {
+                        page_num = page.PageNumber,
+                        ptr = page.Pointer,
+                        count_of_pages = countOfPages
+                    };
                     Debug.Assert(pageNum == page.PageNumber, "pageNum == page.PageNumber");
-                    index++;
-
                 }
-                var pagesNums = new Span<long>(pageNumsBuffer, 0, index);
-                var pages = new Span<Page>(pagesBuffer, 0, index);
-                pagesNums.Sort(pages);
-                ArrayPool<long>.Shared.Return(pageNumsBuffer);
+                var pages = new Span<Pal.page_to_write>(pagesBuffer, 0, index);
+                pages.Sort();
                 return pages;
             }
 
