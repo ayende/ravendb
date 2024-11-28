@@ -150,7 +150,6 @@ src/Sparrow.Server/Utils/VxSort/codegen/__pycache__/
 /bench/Vector.Benchmark/vectors
 /src/Raven.Pal/MacOSX12.3.sdk
 /src/Raven.Pal/runtimes/
-
+src/Raven.Pal/test-runner
 /.cache
-
 .cursorignore
