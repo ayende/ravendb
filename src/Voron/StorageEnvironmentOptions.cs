@@ -50,7 +50,7 @@ namespace Voron
         private readonly CatastrophicFailureNotification _catastrophicFailureNotification;
 
         public abstract (Pager Pager, Pager.State State) InitializeDataPager();
-
+        
         public readonly LoggingResource LoggingResource;
 
         public readonly LoggingComponent LoggingComponent;
@@ -188,7 +188,7 @@ namespace Voron
         public int SchemaVersion { get; set; }
 
         public UpgraderDelegate SchemaUpgrader { get; set; }
-
+        
         public Action<Transaction> OnVersionReadingTransaction { get; set; }
 
         public Action<StorageEnvironment> BeforeSchemaUpgrade { get; set; }
@@ -236,6 +236,8 @@ namespace Voron
         /// </summary>
         internal bool CopyOnWriteMode { get; set; }
 
+        public abstract void LinkFiles(long journalNumber, string fileName);
+        
         public abstract JournalWriter CreateJournalWriter(long journalNumber, long journalSize);
 
         public abstract VoronPathSetting GetJournalPath(long journalNumber);
@@ -267,7 +269,7 @@ namespace Voron
                 ForceUsing32BitsPager = result;
 
             bool shouldConfigPagersRunInLimitedMemoryEnvironment = PlatformDetails.Is32Bits || ForceUsing32BitsPager;
-            MaxLogFileSize = ((shouldConfigPagersRunInLimitedMemoryEnvironment ? 4 : 256) * Constants.Size.Megabyte);
+            MaxLogFileSize = ((shouldConfigPagersRunInLimitedMemoryEnvironment ? 4 : 256) * Constants.Size.Megabyte);            
 
             InitialLogFileSize = 64 * Constants.Size.Kilobyte;
 
@@ -282,7 +284,7 @@ namespace Voron
 
             IncrementalBackupEnabled = false;
 
-            IoMetrics = ioChangesNotifications?.DisableIoMetrics == true ?
+            IoMetrics = ioChangesNotifications?.DisableIoMetrics == true ? 
                 new IoMetrics(0, 0) : // disabled
                 new IoMetrics(256, 256, ioChangesNotifications);
 
@@ -295,7 +297,7 @@ namespace Voron
             });
 
             PrefetchSegmentSize = 4 * Constants.Size.Megabyte;
-            PrefetchResetThreshold = shouldConfigPagersRunInLimitedMemoryEnvironment ? 256 * (long)Constants.Size.Megabyte : 8 * (long)Constants.Size.Gigabyte;
+            PrefetchResetThreshold = shouldConfigPagersRunInLimitedMemoryEnvironment?256*(long)Constants.Size.Megabyte: 8 * (long)Constants.Size.Gigabyte;
             SyncJournalsCountThreshold = 2;
 
             ScratchSpaceUsage = new ScratchSpaceUsageMonitor();
@@ -445,7 +447,7 @@ namespace Voron
                 if (Equals(JournalPath, TempPath) == false && Directory.Exists(JournalPath.FullPath) == false)
                     Directory.CreateDirectory(JournalPath.FullPath);
 
-                FilePath = _basePath.Combine(Constants.DatabaseFilename);
+                    FilePath = _basePath.Combine(Constants.DatabaseFilename);
 
                 // have to be before the journal check, so we'll fail on files in use
                 DeleteAllTempFiles();
@@ -518,7 +520,7 @@ namespace Voron
             public override (Pager Pager, Pager.State State) InitializeDataPager()
             {
                 var flags = Pal.OpenFileFlags.None;
-                if (Encryption.IsEnabled)
+                if(Encryption.IsEnabled)
                     flags |= Pal.OpenFileFlags.Encrypted;
                 if (ForceUsing32BitsPager || PlatformDetails.Is32Bits)
                     flags |= Pal.OpenFileFlags.DoNotMap;
@@ -533,6 +535,18 @@ namespace Voron
             }
 
             public override VoronPathSetting BasePath => _basePath;
+
+            public override void LinkFiles(long journalNumber, string fileName)
+            {
+                var name = JournalName(journalNumber);
+                var path = JournalPath.Combine(name);
+                if (File.Exists(path.FullPath)) // TODO: this is wrong
+                    throw new InvalidOperationException("Unable to link file " + fileName + " to " + path + " because it already exists");
+
+                var rc = Pal.rvn_hard_link(fileName, path.FullPath, out var errorCode);
+                if (rc != PalFlags.FailCodes.Success)
+                    PalHelper.ThrowLastError(rc, errorCode, "Failed to link files " + fileName + " to " + path.FullPath);
+            }
 
             public override JournalWriter CreateJournalWriter(long journalNumber, long journalSize)
             {
@@ -576,7 +590,7 @@ namespace Voron
                     var fileModifiedDate = new FileInfo(filename.FullPath).LastWriteTimeUtc;
                     var counter = Interlocked.Increment(ref _reuseCounter);
                     var newName = Path.Combine(Path.GetDirectoryName(filename.FullPath), RecyclableJournalName(counter));
-
+                    
                     File.Move(filename.FullPath, newName);
                     lock (_journalsForReuse)
                     {
@@ -595,7 +609,7 @@ namespace Voron
                             ticks++;
 
                         _journalsForReuse[ticks] = newName;
-
+                        
                     }
                 }
                 catch (Exception ex)
@@ -712,7 +726,7 @@ namespace Voron
                     return;
 
                 Disposed = true;
-
+                
                 foreach (var journal in _journals)
                 {
                     if (journal.Value.IsValueCreated)
@@ -751,31 +765,38 @@ namespace Voron
                 return true;
             }
 
-            public override unsafe bool ReadHeader(string filename, FileHeader* header)
+            public override Span<byte> ReadHeader(string filename, Span<byte> buffer)
             {
                 var path = _basePath.Combine(filename);
                 if (File.Exists(path.FullPath) == false)
                 {
-                    return false;
+                    return Span<byte>.Empty;
                 }
 
-                var success = RunningOnPosix ?
-                    PosixHelper.TryReadFileHeader(header, path) :
-                    Win32Helper.TryReadFileHeader(header, path);
+                using (var fs = SafeFileStream.Create(path.FullPath, FileMode.Open, FileAccess.ReadWrite, FileShare.Read, 4096, FileOptions.None))
+                {
+                    var totalRead = 0;
+                    while (totalRead < buffer.Length)
+                    {
+                        var read = fs.Read(buffer[totalRead..]);
+                        if (read == 0)
+                            break;
+                        totalRead += read;
+                    }
 
-                if (!success)
-                    return false;
-
-                return header->Hash == HeaderAccessor.CalculateFileHeaderHash(header);
+                    return buffer[..totalRead];
+                }
             }
 
-
-            public override unsafe void WriteHeader(string filename, FileHeader* header)
+            public override unsafe void WriteHeader(string filename, Span<byte> header)
             {
                 var path = _basePath.Combine(filename);
-                var rc = Pal.rvn_write_header(path.FullPath, header, sizeof(FileHeader), out var errorCode);
-                if (rc != PalFlags.FailCodes.Success)
-                    PalHelper.ThrowLastError(rc, errorCode, $"Failed to rvn_write_header '{filename}', reason : {((PalFlags.FailCodes)rc).ToString()}");
+                fixed (byte* p = header)
+                {
+                    var rc = Pal.rvn_write_header(path.FullPath, p, header.Length, out var errorCode);
+                    if (rc != PalFlags.FailCodes.Success)
+                        PalHelper.ThrowLastError(rc, errorCode, $"Failed to rvn_write_header '{filename}', reason : {((PalFlags.FailCodes)rc).ToString()}");
+                }
             }
 
             public void DeleteAllTempFiles()
@@ -834,8 +855,9 @@ namespace Voron
                                 // and we still need to ensure that this isn't paged to disk
                                 flags |= Pal.OpenFileFlags.LockMemory;
                             }
-                            if (DoNotConsiderMemoryLockFailureAsCatastrophicError)
-                                flags |= Pal.OpenFileFlags.DoNotConsiderMemoryLockFailureAsCatastrophicError;
+
+                            if(DoNotConsiderMemoryLockFailureAsCatastrophicError)
+                                flags|=Pal.OpenFileFlags.DoNotConsiderMemoryLockFailureAsCatastrophicError;
                         }
 
                         return Pager.Create(this, tempFile.FullPath, initialSize, flags);
@@ -878,7 +900,7 @@ namespace Voron
                 if (ForceUsing32BitsPager || PlatformDetails.Is32Bits)
                     flags |= Pal.OpenFileFlags.DoNotMap;
                 return Pager.Create(this, filename, 0, flags);
-            }
+                    }
 
             private FileInfo GetJournalFileInfo(long journalNumber, JournalInfo journalInfo)
             {
@@ -888,10 +910,10 @@ namespace Voron
                 if (fileInfo.Exists == false)
                     throw new InvalidJournalException(journalNumber, path.FullPath, journalInfo);
                 return fileInfo;
-            }
+                }
 
             private void EnsureMinimumSize(FileInfo fileInfo)
-            {
+                {
                 try
                 {
                     using (var stream = fileInfo.Open(FileMode.OpenOrCreate))
@@ -915,9 +937,9 @@ namespace Voron
 
             private readonly Dictionary<string, JournalWriter> _logs = new(StringComparer.OrdinalIgnoreCase);
             private readonly HashSet<SafeFileHandle> _handles = [];
-            private readonly Dictionary<string, (IntPtr Pointer, NativeMemory.ThreadStats Stats)> _headers =
-                new Dictionary<string, (IntPtr, NativeMemory.ThreadStats stats)>(StringComparer.OrdinalIgnoreCase);
+            private readonly Dictionary<string, byte[]> _headers = new(StringComparer.OrdinalIgnoreCase);
             private readonly int _instanceId;
+
 
             private readonly string _filename;
 
@@ -959,6 +981,7 @@ namespace Voron
                     pager.Dispose();
                     throw;
                 }
+
                 return (pager, state);
             }
 
@@ -968,6 +991,17 @@ namespace Voron
             }
 
             public override VoronPathSetting BasePath { get; } = new MemoryVoronPathSetting();
+            
+            public override void LinkFiles(long journalNumber, string fileName)
+            {
+                var path = GetJournalPath(journalNumber);
+                if (File.Exists(path.FullPath)) // TODO: this is wrong
+                    throw new InvalidOperationException("Unable to link file " + fileName + " to " + path + " because it already exists");
+
+                var rc = Pal.rvn_hard_link(fileName, path.FullPath, out var errorCode);
+                if (rc != PalFlags.FailCodes.Success)
+                    PalHelper.ThrowLastError(rc, errorCode, "Failed to link files " + fileName + " to " + path.FullPath);
+            }
 
             public override JournalWriter CreateJournalWriter(long journalNumber, long journalSize)
             {
@@ -1003,7 +1037,7 @@ namespace Voron
                 return 0;
             }
 
-            protected override unsafe void Disposing()
+            protected override void Disposing()
             {
                 if (Disposed)
                     return;
@@ -1016,11 +1050,6 @@ namespace Voron
                 foreach (var virtualPager in _logs)
                 {
                     virtualPager.Value.Dispose();
-                }
-
-                foreach (var headerSpace in _headers)
-                {
-                    NativeMemory.Free((byte*)headerSpace.Value.Pointer, sizeof(FileHeader), headerSpace.Value.Stats);
                 }
 
                 _headers.Clear();
@@ -1041,30 +1070,29 @@ namespace Voron
                 return true;
             }
 
-            public override unsafe bool ReadHeader(string filename, FileHeader* header)
+            public override Span<byte> ReadHeader(string filename, Span<byte> buffer)
             {
                 if (Disposed)
                     throw new ObjectDisposedException("PureMemoryStorageEnvironmentOptions");
-                if (_headers.TryGetValue(filename, out var tuple) == false)
+                if (_headers.TryGetValue(filename, out var existingBuf) == false)
                 {
-                    return false;
+                    return Span<byte>.Empty;
                 }
-                *header = *((FileHeader*)tuple.Pointer);
 
-                return header->Hash == HeaderAccessor.CalculateFileHeaderHash(header);
+                existingBuf.CopyTo(buffer);
+                return buffer[..existingBuf.Length];
             }
 
-            public override unsafe void WriteHeader(string filename, FileHeader* header)
+            public override void WriteHeader(string filename, Span<byte> header)
             {
                 if (Disposed)
                     throw new ObjectDisposedException("PureMemoryStorageEnvironmentOptions");
 
-                if (_headers.TryGetValue(filename, out var tuple) == false)
+                if (_headers.TryGetValue(filename, out var buf) == false)
                 {
-                    var ptr = (IntPtr)NativeMemory.AllocateMemory(sizeof(FileHeader), out NativeMemory.ThreadStats stats);
-                    _headers[filename] = tuple = (ptr, stats);
+                    _headers[filename] = buf = new byte[header.Length];
                 }
-                Memory.Copy((byte*)tuple.Pointer, (byte*)header, sizeof(FileHeader));
+                header.CopyTo(buf);
             }
 
             public override (Pager Pager, Pager.State State) CreateTemporaryBufferPager(string name, long initialSize, bool encrypted)
@@ -1077,7 +1105,7 @@ namespace Voron
                     var flags = Pal.OpenFileFlags.Temporary | Pal.OpenFileFlags.WritableMap;
                     if (ForceUsing32BitsPager || PlatformDetails.Is32Bits)
                         flags |= Pal.OpenFileFlags.DoNotMap;
-                    if (encrypted)
+                    if(encrypted) 
                         flags |= Pal.OpenFileFlags.Encrypted;
                     return Pager.Create(this, TempPath.Combine(filename).FullPath, initialSize, flags);
                 }
@@ -1089,7 +1117,7 @@ namespace Voron
                 if (_logs.TryGetValue(name, out JournalWriter value))
                     return value.CreatePager();
                 throw new InvalidJournalException(journalNumber, journalInfo);
-            }
+                }
 
             public override (Pager Pager, Pager.State State) OpenJournalPager(string name)
             {
@@ -1153,9 +1181,9 @@ namespace Voron
 
         public abstract bool TryDeleteJournal(long number);
 
-        public abstract unsafe bool ReadHeader(string filename, FileHeader* header);
+        public abstract Span<byte> ReadHeader(string filename, Span<byte> buffer);
 
-        public abstract unsafe void WriteHeader(string filename, FileHeader* header);
+        public abstract void WriteHeader(string filename, Span<byte> header);
 
         public abstract (Pager Pager, Pager.State State) CreateTemporaryBufferPager(string name, long initialSize, bool encrypted);
 
@@ -1325,7 +1353,7 @@ namespace Voron
                 {
                     if (HasExternalJournalCompressionBufferHandlerRegistration == false)
                         throw new InvalidOperationException($"You have to {nameof(RegisterForJournalCompressionHandler)} before you try to access {nameof(WriteAheadJournal)}");
-
+                    
                     return _journalCompressionBufferHandler;
                 }
                 private set => _journalCompressionBufferHandler = value;
