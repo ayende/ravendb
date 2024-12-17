@@ -932,7 +932,6 @@ namespace Voron
             }
 
             long tempBuffers = 0;
-            long tempRecyclableJournals = 0;
 
             if (includeTempBuffers)
             {
@@ -959,7 +958,6 @@ namespace Voron
                 DataFileInBytes = _currentStateRecord.DataPagerState.TotalDiskSpace,
                 JournalsInBytes = journalsSize,
                 TempBuffersInBytes = tempBuffers,
-                TempRecyclableJournalsInBytes = tempRecyclableJournals
             };
         }
 

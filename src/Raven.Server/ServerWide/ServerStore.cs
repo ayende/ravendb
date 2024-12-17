@@ -3661,7 +3661,6 @@ namespace Raven.Server.ServerWide
             if (diskSpaceResult.DriveName == driveInfo?.JournalPath.DriveName)
             {
                 usage.UsedSpace += sizeOnDisk.JournalsInBytes;
-                usage.UsedSpaceByTempBuffers += includeTempBuffers ? sizeOnDisk.TempRecyclableJournalsInBytes : 0;
             }
             else
             {
@@ -3673,7 +3672,6 @@ namespace Raven.Server.ServerWide
                         Name = environment.Name,
                         Type = environment.Type.ToString(),
                         DiskSpaceResult = FillDiskSpaceResult(journalDiskSpaceResult),
-                        UsedSpaceByTempBuffers = includeTempBuffers ? sizeOnDisk.TempRecyclableJournalsInBytes : 0
                     };
                     var journalIoStatsResult = Server.DiskStatsGetter.Get(driveInfo?.JournalPath.DriveName);
                     if (journalIoStatsResult != null)
