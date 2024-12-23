@@ -374,6 +374,11 @@ namespace Voron.Impl.Backup
                                     lastTxHeader = reader.LastTransactionHeader;
                                 }
 
+                                if (reader.DatabaseId != databaseId)
+                                {
+                                    env.FillBase64Id(reader.DatabaseId);
+                                }
+
                                 reader.ZeroRecoveryBufferIfNeeded(recoverPagerState, ref txw.PagerTransactionState, env.Options);
                                 if (lastTxHeader != null)
                                 {
@@ -410,7 +415,7 @@ namespace Voron.Impl.Backup
                 {
                     header.TransactionId = lastTxHeader->TransactionId;
                     header.LastPageNumber = lastTxHeader->LastPageNumber;
-                    
+                    header.DatabaseId = env.DbId;
                     header.Journal.LastSyncedTransactionId = lastTxHeader->TransactionId;
                 
                     header.Root = lastTxHeader->Root;
