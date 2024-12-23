@@ -263,6 +263,17 @@ namespace Voron.Impl.Backup
                 options.ManualFlushing = true;
                 using (var env = new StorageEnvironment(options))
                 {
+                    // We create a completely new environment... 
+                    if (env.CurrentReadTransactionId is 1)
+                    {
+                        env.HeaderAccessor.Modify((ref FileHeader header) =>
+                        {
+                            // The journal id should come from the first
+                            // real transaction that is being applies here
+                            header.JournalId = Guid.Empty;
+                        });
+                    }
+
                     foreach (var backupPath in backupPaths)
                     {
                         Restore(env, backupPath);
@@ -327,7 +338,9 @@ namespace Voron.Impl.Backup
             {
                 TransactionHeader* lastTxHeader = null;
                 var lastTxHeaderStackLocation = stackalloc TransactionHeader[1];
-                long lastTxId = env.HeaderAccessor.Get((in FileHeader header) => header.TransactionId);
+                var envHeader = env.HeaderAccessor.CopyHeader();
+                var lastTxId = envHeader.TransactionId;
+                var journalId = envHeader.JournalId;
 
                 long journalNumber = -1;
                 var rc = Pal.rvn_pager_get_file_handle(txw.DataPagerState.Handle, out var fileHandle, out int errorCode);
@@ -365,8 +378,8 @@ namespace Voron.Impl.Backup
                             toDispose.Add(recoveryPager);
 
                             var reader = new JournalReader(env, journalPager, journalPagerState, txw.DataPager, recoveryPager, new HashSet<long>(),
-                                new JournalInfo { LastSyncedTransactionId = lastTxId }, new FileHeader { HeaderRevision = -1 }, lastTxHeader);
-                            try
+                                       new JournalInfo { LastSyncedTransactionId = lastTxId }, new FileHeader { HeaderRevision = -1, JournalId = journalId},
+                                       lastTxHeader);
                             {
                                 while (reader.ReadOneTransactionToDataFile(ref txw.DataPagerState, ref recoverPagerState, ref txw.PagerTransactionState, fileHandle,
                                            env.Options))
@@ -374,10 +387,7 @@ namespace Voron.Impl.Backup
                                     lastTxHeader = reader.LastTransactionHeader;
                                 }
 
-                                if (reader.DatabaseId != databaseId)
-                                {
-                                    env.FillBase64Id(reader.DatabaseId);
-                                }
+                                journalId = reader.JournalId;
 
                                 reader.ZeroRecoveryBufferIfNeeded(recoverPagerState, ref txw.PagerTransactionState, env.Options);
                                 if (lastTxHeader != null)
@@ -415,7 +425,7 @@ namespace Voron.Impl.Backup
                 {
                     header.TransactionId = lastTxHeader->TransactionId;
                     header.LastPageNumber = lastTxHeader->LastPageNumber;
-                    header.DatabaseId = env.DbId;
+                    header.JournalId = journalId;
                     header.Journal.LastSyncedTransactionId = lastTxHeader->TransactionId;
                 
                     header.Root = lastTxHeader->Root;
