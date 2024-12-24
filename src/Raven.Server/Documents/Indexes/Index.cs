@@ -424,8 +424,6 @@ namespace Raven.Server.Documents.Indexes
             {
                 InitializeOptions(options, documentDatabase, name);
 
-                AttemptToLinkDatabaseAndIndexJournals(name, options, documentDatabase);
-
                 DirectoryExecUtils.SubscribeToOnDirectoryInitializeExec(options, documentDatabase.Configuration.Storage, documentDatabase.Name, DirectoryExecUtils.EnvironmentType.Index, logger);
 
                 environment = StorageLoader.OpenEnvironment(options, StorageEnvironmentWithType.StorageEnvironmentType.Index);
@@ -810,6 +808,8 @@ namespace Raven.Server.Documents.Indexes
                     options.SchemaUpgrader = SchemaUpgrader.Upgrader(currentVersion.Type, null, null, null);
                 };
             }
+            
+            AttemptToLinkDatabaseAndIndexJournals(name, options, documentDatabase);
 
             if (options is not StorageEnvironmentOptions.DirectoryStorageEnvironmentOptions)
                 return;
