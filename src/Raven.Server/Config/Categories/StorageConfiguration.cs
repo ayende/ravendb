@@ -152,5 +152,10 @@ namespace Raven.Server.Config.Categories
         [DefaultValue(false)]
         [ConfigurationEntry("Storage.DisableSparseRegions", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]
         public bool DisableSparseRegions { get; set; }
+
+        [Description("EXPERT: Avoid shared journals between database & indexes.")]
+        [DefaultValue(false)]
+        [ConfigurationEntry("Storage.AvoidSharedJournals", ConfigurationEntryScope.ServerWideOrPerDatabase)]
+        public bool AvoidSharedJournals { get; set; }
     }
 }
