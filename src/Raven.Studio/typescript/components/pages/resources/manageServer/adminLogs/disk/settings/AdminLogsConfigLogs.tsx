@@ -28,6 +28,7 @@ import {
 import { useAppDispatch, useAppSelector } from "components/store";
 import { licenseSelectors } from "components/common/shell/licenseSlice";
 import AdminLogsPersistInfoIcon from "components/pages/resources/manageServer/adminLogs/bits/AdminLogsPersistInfoIcon";
+import { adminLogsUtils } from "components/pages/resources/manageServer/adminLogs/common/adminLogsUtils";
 
 export default function AdminLogsConfigLogs({ targetId }: { targetId: string }) {
     const dispatch = useAppDispatch();
@@ -103,14 +104,7 @@ export default function AdminLogsConfigLogs({ targetId }: { targetId: string }) 
                             type="button"
                             color="info"
                             className="w-fit-content"
-                            onClick={() =>
-                                filterFieldArray.append({
-                                    minLevel: null,
-                                    maxLevel: null,
-                                    condition: null,
-                                    action: null,
-                                })
-                            }
+                            onClick={() => filterFieldArray.append(adminLogsUtils.initialFilter)}
                         >
                             <Icon icon="plus" />
                             Add Filter
@@ -179,14 +173,7 @@ const schema = yup.object({
     minLevel: yup.string<Sparrow.Logging.LogLevel>().nullable().required(),
     isPersist: yup.boolean(),
     logFilterDefaultAction: yup.string<Sparrow.Logging.LogFilterAction>().nullable().required(),
-    filters: yup.array().of(
-        yup.object({
-            minLevel: yup.string<Sparrow.Logging.LogLevel>().nullable().required(),
-            maxLevel: yup.string<Sparrow.Logging.LogLevel>().nullable().required(),
-            condition: yup.string().nullable().required(),
-            action: yup.string<Sparrow.Logging.LogFilterAction>().nullable().required(),
-        })
-    ),
+    filters: adminLogsUtils.filtersSchema,
 });
 
 export type AdminLogsConfigLogsFormData = yup.InferType<typeof schema>;

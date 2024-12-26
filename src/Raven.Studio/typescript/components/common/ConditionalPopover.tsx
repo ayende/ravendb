@@ -2,19 +2,21 @@ import React, { ReactNode, PropsWithChildren } from "react";
 import { PopoverBody, UncontrolledPopover } from "reactstrap";
 import useUniqueId from "components/hooks/useUniqueId";
 import { Placement } from "@popperjs/core";
+import { ClassNameProps } from "components/models/common";
+import classNames from "classnames";
 
 interface Condition {
     isActive: boolean;
     message?: ReactNode | ReactNode[];
 }
 
-interface ConditionalPopoverProps extends Required<PropsWithChildren> {
+interface ConditionalPopoverProps extends Required<PropsWithChildren>, ClassNameProps {
     conditions: Condition | Condition[];
     popoverPlacement?: Placement;
 }
 
 export function ConditionalPopover(props: ConditionalPopoverProps) {
-    const { children, popoverPlacement } = props;
+    const { children, popoverPlacement, className } = props;
 
     const containerId = useUniqueId("conditional-popover-");
 
@@ -23,7 +25,7 @@ export function ConditionalPopover(props: ConditionalPopoverProps) {
 
     return (
         <>
-            <div id={containerId} className="d-flex w-fit-content">
+            <div id={containerId} className={classNames("d-flex w-fit-content", className)}>
                 {children}
             </div>
 

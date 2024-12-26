@@ -137,6 +137,16 @@ export const allLogLevels = exhaustiveStringTuple<Sparrow.Logging.LogLevel>()(
     "Fatal"
 );
 
+export const logLevelRelevances: Record<Sparrow.Logging.LogLevel, number> = {
+    Off: 0,
+    Trace: 1,
+    Debug: 2,
+    Info: 3,
+    Warn: 4,
+    Error: 5,
+    Fatal: 6,
+};
+
 export const allLogFilterActions = exhaustiveStringTuple<Sparrow.Logging.LogFilterAction>()(
     "Ignore",
     "IgnoreFinal",

@@ -12,6 +12,7 @@ using Raven.Client.Documents.Operations.Indexes;
 using Raven.Client.Documents.Queries;
 using Raven.Client.Documents.Queries.Vector;
 using Raven.Client.ServerWide.Operations;
+using Raven.Server.Config;
 using Tests.Infrastructure;
 using Xunit;
 using Xunit.Abstractions;
@@ -403,7 +404,7 @@ public class RavenDB_22076 : RavenTestBase
     {
         Assert.Equal(VectorEmbeddingType.Single, default(VectorEmbeddingType));
     }
-
+    
     private class Dto
     {
         public string EmbeddingBase64 { get; set; }

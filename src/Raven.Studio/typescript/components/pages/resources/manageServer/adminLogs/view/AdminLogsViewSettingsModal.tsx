@@ -5,6 +5,7 @@ import { Icon } from "components/common/Icon";
 import { useDirtyFlag } from "components/hooks/useDirtyFlag";
 import { useServices } from "components/hooks/useServices";
 import AdminLogsFilterField from "components/pages/resources/manageServer/adminLogs/bits/AdminLogsFilterField";
+import { adminLogsUtils } from "components/pages/resources/manageServer/adminLogs/common/adminLogsUtils";
 import {
     adminLogsActions,
     adminLogsSelectors,
@@ -79,14 +80,7 @@ export default function AdminLogsViewSettingsModal() {
                             type="button"
                             color="info"
                             className="w-fit-content"
-                            onClick={() =>
-                                filterFieldArray.append({
-                                    minLevel: null,
-                                    maxLevel: null,
-                                    condition: null,
-                                    action: null,
-                                })
-                            }
+                            onClick={() => filterFieldArray.append(adminLogsUtils.initialFilter)}
                         >
                             <Icon icon="plus" />
                             Add Filter
@@ -115,14 +109,7 @@ export default function AdminLogsViewSettingsModal() {
 
 const schema = yup.object({
     logFilterDefaultAction: yup.string<Sparrow.Logging.LogFilterAction>().required(),
-    filters: yup.array().of(
-        yup.object({
-            minLevel: yup.string<Sparrow.Logging.LogLevel>().nullable().required(),
-            maxLevel: yup.string<Sparrow.Logging.LogLevel>().nullable().required(),
-            condition: yup.string().nullable().required(),
-            action: yup.string<Sparrow.Logging.LogFilterAction>().nullable().required(),
-        })
-    ),
+    filters: adminLogsUtils.filtersSchema,
 });
 
 export type AdminLogsViewSettingsFormData = yup.InferType<typeof schema>;

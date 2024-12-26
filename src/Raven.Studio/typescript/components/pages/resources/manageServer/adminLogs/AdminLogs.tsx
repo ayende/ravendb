@@ -69,6 +69,8 @@ export default function AdminLogs() {
         await dispatch(adminLogsActions.fetchConfigs());
     };
 
+    const enabledLogLevelOptions = logLevelOptions.filter((x) => x.value !== "Off");
+
     return (
         <div className="content-padding vstack gap-3 h-100">
             <div className="hstack flex-wrap gap-1">
@@ -83,11 +85,11 @@ export default function AdminLogs() {
                                 <Icon icon="logs" addon="arrow-filled-up" />
                                 Min level:{" "}
                                 <Select
-                                    value={logLevelOptions.find(
+                                    value={enabledLogLevelOptions.find(
                                         (x) => x.value === configs?.adminLogsConfig?.AdminLogs?.CurrentMinLevel
                                     )}
                                     onChange={handlePageMinLevelChange}
-                                    options={logLevelOptions}
+                                    options={enabledLogLevelOptions}
                                     isLoading={configsLoadStatus === "loading"}
                                     isDisabled={configsLoadStatus !== "success"}
                                     className="ms-1"

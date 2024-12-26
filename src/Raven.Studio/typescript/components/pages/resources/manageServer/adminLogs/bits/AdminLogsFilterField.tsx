@@ -1,31 +1,80 @@
+import { ConditionalPopover } from "components/common/ConditionalPopover";
 import { FormSelect, FormInput } from "components/common/Form";
 import { Icon } from "components/common/Icon";
+import { SelectOption } from "components/common/select/Select";
 import { AdminLogsConfigLogsFormData } from "components/pages/resources/manageServer/adminLogs/disk/settings/AdminLogsConfigLogs";
 import { AdminLogsViewSettingsFormData } from "components/pages/resources/manageServer/adminLogs/view/AdminLogsViewSettingsModal";
-import { logLevelOptions, logFilterActionOptions } from "components/utils/common";
-import { Control } from "react-hook-form";
+import { logLevelOptions, logFilterActionOptions, logLevelRelevances } from "components/utils/common";
+import { Control, useWatch } from "react-hook-form";
+import { components, OptionProps } from "react-select";
 import { Row, Col, FormGroup, Label, Button, UncontrolledPopover, Card, InputGroup } from "reactstrap";
 
+type FormData = AdminLogsViewSettingsFormData | AdminLogsConfigLogsFormData;
+
+interface LevelOptionProps extends SelectOption {
+    isDisabled?: boolean;
+    level?: "max" | "min";
+}
+
 interface AdminLogsFilterFieldProps {
-    control: Control<AdminLogsViewSettingsFormData | AdminLogsConfigLogsFormData>;
+    control: Control<FormData>;
     idx: number;
     remove: () => void;
 }
 
 export default function AdminLogsFilterField({ control, idx, remove }: AdminLogsFilterFieldProps) {
+    const formValues = useWatch({ control });
+
+    const maxLevel = formValues.filters[idx].maxLevel;
+    const minLevel = formValues.filters[idx].minLevel;
+
+    const getMinLevelOptions = (): LevelOptionProps[] => {
+        if (maxLevel) {
+            return logLevelOptions.map((option) => ({
+                ...option,
+                level: "min",
+                isDisabled: logLevelRelevances[option.value] > logLevelRelevances[maxLevel],
+            }));
+        }
+
+        return logLevelOptions;
+    };
+
+    const getMaxLevelOptions = (): LevelOptionProps[] => {
+        if (minLevel) {
+            return logLevelOptions.map((option) => ({
+                ...option,
+                level: "max",
+                isDisabled: logLevelRelevances[option.value] < logLevelRelevances[minLevel],
+            }));
+        }
+
+        return logLevelOptions;
+    };
+
     return (
         <Card color="faded-info" className="p-3 rounded">
             <Row>
                 <Col md={4}>
                     <FormGroup className="flex-grow-1">
                         <Label>Minimum level</Label>
-                        <FormSelect control={control} name={`filters.${idx}.minLevel`} options={logLevelOptions} />
+                        <FormSelect
+                            control={control}
+                            name={`filters.${idx}.minLevel`}
+                            options={getMinLevelOptions()}
+                            components={{ Option: LevelOption }}
+                        />
                     </FormGroup>
                 </Col>
                 <Col md={4}>
                     <FormGroup className="flex-grow-1">
                         <Label>Maximum level</Label>
-                        <FormSelect control={control} name={`filters.${idx}.maxLevel`} options={logLevelOptions} />
+                        <FormSelect
+                            control={control}
+                            name={`filters.${idx}.maxLevel`}
+                            options={getMaxLevelOptions()}
+                            components={{ Option: LevelOption }}
+                        />
                     </FormGroup>
                 </Col>
                 <Col md={4}>
@@ -64,5 +113,34 @@ export default function AdminLogsFilterField({ control, idx, remove }: AdminLogs
                 </InputGroup>
             </div>
         </Card>
+    );
+}
+
+export function LevelOption(props: OptionProps<LevelOptionProps>) {
+    const { data } = props;
+
+    const getDisabledReason = (): string => {
+        if (!data.isDisabled) {
+            return null;
+        }
+        if (data.level === "min") {
+            return "The minimum level cannot be higher than the maximum level";
+        }
+        if (data.level === "max") {
+            return "The maximum level cannot be lower than the minimum level";
+        }
+    };
+
+    return (
+        <ConditionalPopover
+            conditions={{
+                isActive: data.isDisabled,
+                message: getDisabledReason(),
+            }}
+            popoverPlacement="top"
+            className="w-100"
+        >
+            <components.Option {...props}>{data.label}</components.Option>
+        </ConditionalPopover>
     );
 }
