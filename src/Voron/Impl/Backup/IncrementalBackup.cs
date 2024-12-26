@@ -381,6 +381,7 @@ namespace Voron.Impl.Backup
                             var reader = new JournalReader(env, journalPager, journalPagerState, txw.DataPager, recoveryPager, new HashSet<long>(),
                                        new JournalInfo { LastSyncedTransactionId = lastTxId }, new FileHeader { HeaderRevision = -1, JournalId = journalId},
                                        lastTxHeader);
+                            try
                             {
                                 while (reader.ReadOneTransactionToDataFile(ref txw.DataPagerState, ref recoverPagerState, ref txw.PagerTransactionState, fileHandle,
                                            env.Options))

@@ -162,6 +162,7 @@ namespace Voron
                     default(TreeRootHeader), 
                     -1,
                     (-1, -1),
+                    null,
                     null);
                 
                 _lastValidPageAfterLoad = dataPagerState.NumberOfAllocatedPages;
@@ -1795,11 +1796,11 @@ namespace Voron
 
         }
 
-        internal void UpdateJournal(JournalFile file, long last4KWrite)
+        internal void UpdateJournal(long journalNumber, long last4KWrite)
         {
             // this should only happen during recovery, never during active operations
             Debug.Assert(ActiveTransactions.AllTransactions.Count == 0 , "ActiveTransactions.AllTransactions.Count == 0");
-            _currentStateRecord = _currentStateRecord with { Journal = (jounalNumber, last4KWrite) };
+            _currentStateRecord = _currentStateRecord with { Journal = (journalNumber, last4KWrite) };
         }
 
         internal void UpdateDataPagerState(Pager.State dataPagerState)

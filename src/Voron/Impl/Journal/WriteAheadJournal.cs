@@ -1343,22 +1343,10 @@ namespace Voron.Impl.Journal
                     Pager.PagerTransactionState txState = default;
                     try
                     {
-
                         Span<Pal.page_to_write> pages = GetSortedPages(ref txState, record, pagesBuffer, out written);
-
-
                         if (pages.IsEmpty)
                             return dataPagerState;
-
-                        Page lastPage = pages[^1];
-                        dataPager.EnsureContinuous(ref dataPagerState, lastPage.PageNumber, lastPage.GetNumberOfPages());
-                        var rc = Pal.rvn_pager_get_file_handle(dataPagerState.Handle, out var fileHandle, out var errorCode);
-                        if (rc != PalFlags.FailCodes.Success)
-                        {
-                            PalHelper.ThrowLastError(rc, errorCode, $"Failed to get file handle for {dataPager.FileName}");
-                        }
-                        
-
+                        dataPager.EnsureContinuous(ref dataPagerState, pages[^1].page_num, pages[^1].count_of_pages);
                         (dataPagerState.TotalFileSize, dataPagerState.TotalDiskSpace) = dataPager.GetFileSize(dataPagerState);
                         fixed (Pal.page_to_write* ptr = pages)
                         {

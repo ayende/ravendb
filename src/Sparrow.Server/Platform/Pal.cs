@@ -69,7 +69,10 @@ namespace Sparrow.Server.Platform
             CopyOnWrite = 1 << 8,
             DoNotMap = 1 << 9,
         }
-        
+
+        [DllImport(LIBRVNPAL, SetLastError = true)]
+        public static extern PalFlags.ErrnoSpecialCodes rvn_get_error_meaning(Int32 error);
+
         [DllImport(LIBRVNPAL, SetLastError = true)]
         public static extern PalFlags.FailCodes rvn_mmap_anonymous(out void* mem,
             UInt64 size,

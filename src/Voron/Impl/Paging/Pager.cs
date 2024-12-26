@@ -65,7 +65,12 @@ public unsafe partial class Pager : IDisposable
         return (pager, state);
     }
 
-    public Pal.WriterFunc Writer;
+    public Pal.WriterFunc Writer = WriterNotSetupYet;
+
+    private static PalFlags.FailCodes WriterNotSetupYet(void* handle, int count, Pal.page_to_write* buffers, out int errorCode)
+    {
+        throw new InvalidOperationException("The Writing function is setup at this point in time, this should never happen");
+    }
 
     private static Functions GetFunctions(StorageEnvironmentOptions options, Pal.OpenFileFlags flags)
     {
