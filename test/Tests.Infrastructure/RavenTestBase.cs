@@ -235,6 +235,7 @@ namespace FastTests
                         doc.Settings.Add(RavenConfiguration.GetKey(x => x.Core.DataDirectory), pathToUse);
                     }
 
+                    OnCreatingNewDatabase(doc);
                     options.ModifyDatabaseRecord?.Invoke(doc);
                     var sharded = doc.IsSharded;
 
@@ -382,6 +383,11 @@ namespace FastTests
             {
                 throw new TimeoutException($"{te.Message} {Environment.NewLine} {te.StackTrace}{Environment.NewLine}Servers states:{Environment.NewLine}{Cluster.GetLastStatesFromAllServersOrderedByTime()}");
             }
+        }
+
+        protected virtual void OnCreatingNewDatabase(DatabaseRecord databaseRecord)
+        {
+            
         }
 
         private static void CheckIfDatabaseExists(RavenServer server, string name)

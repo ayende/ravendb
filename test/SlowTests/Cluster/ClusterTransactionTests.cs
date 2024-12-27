@@ -58,16 +58,18 @@ namespace SlowTests.Cluster
             if (options.CustomSettings.ContainsKey(RavenConfiguration.GetKey(x => x.Cluster.TcpConnectionTimeout)) == false)
                 options.CustomSettings[RavenConfiguration.GetKey(x => x.Cluster.TcpConnectionTimeout)] = "30000";
 
-
+            return base.GetNewServer(options, caller);
+        }
+        
+        protected override void OnCreatingNewDatabase(DatabaseRecord databaseRecord)
+        {
             // In this test we are intentionally injecting a slow command to the transaction merger
             // then we want to do things for indexes, but with shared journals, this going to lead to
             // a deadlock, because the indexes are waiting for the tx merge command to complete, but that
             // is waiting for the indexes to complete.
             // As we don't have an actual need for testing shared journals, it is easiest to simply 
             // skip this behavior for this test
-            options.CustomSettings[RavenConfiguration.GetKey(x => x.Storage.AvoidSharedJournals)] = "true"; 
-
-            return base.GetNewServer(options, caller);
+            databaseRecord.Settings[RavenConfiguration.GetKey(x => x.Storage.AvoidSharedJournals)] = "true"; 
         }
 
         [RavenMultiplatformTheory(RavenTestCategory.ClusterTransactions | RavenTestCategory.Cluster, RavenArchitecture.X64)]
