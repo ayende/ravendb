@@ -73,6 +73,7 @@ namespace Raven.Client.Http
         private static readonly IRavenLogger Logger = RavenLogManager.Instance.GetLoggerForClient<RequestExecutor>();
 
         public readonly JsonContextPool ContextPool;
+        private bool _inFinalizer;
 
         public readonly AsyncLocal<AggressiveCacheOptions> AggressiveCaching = new AsyncLocal<AggressiveCacheOptions>();
 
@@ -300,7 +301,8 @@ namespace Raven.Client.Http
             _disposeOnceRunner = new DisposeOnce<ExceptionRetry>(() =>
             {
                 GC.SuppressFinalize(this);
-                Cache.Dispose();
+                if(_inFinalizer is false) // HttpCache has its own finalizer, which may have already run...
+                    Cache.Dispose();
                 ContextPool.Dispose();
                 _updateTopologyTimer?.Dispose();
                 _nodeSelector?.Dispose();
@@ -335,6 +337,7 @@ namespace Raven.Client.Http
         {
             try
             {
+                _inFinalizer = true;
                 Dispose();
             }
 #pragma warning disable CS0168

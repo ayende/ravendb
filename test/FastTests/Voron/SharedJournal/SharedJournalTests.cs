@@ -63,15 +63,10 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             rootOptions.ManualFlushing = true;
             rootOptions.ManualSyncing = true;
 
-            using var branchOptions = StorageEnvironmentOptions.ForPathForTests(branchPath);
-            branchOptions.ManualFlushing = true;
-            branchOptions.ManualSyncing = true;
-
             using var root = new StorageEnvironment(rootOptions);
-            branchOptions.RootJournal = root.Journal;
             using var _ = root.Journal.SharedJournalsScope(CancellationToken.None);
-        
-            using var branch = new StorageEnvironment(branchOptions);
+
+            using var branch = CreateBranchEnv(branchPath, root);
 
             using (var rootTx = root.ReadTransaction())
             {
@@ -95,7 +90,6 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             // Now do another write
             var task = Task.Run(() =>
             {
-                using var branch = CreateBranchEnv(branchPath, root);
                 using (var branchTx = branch.WriteTransaction())
                 {
                     Tree tree = branchTx.CreateTree("branchTree");
@@ -198,14 +192,9 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             rootOptions.ManualFlushing = true;
             rootOptions.ManualSyncing = true;
 
-            using var branchOptions = StorageEnvironmentOptions.ForPathForTests(branchPath);
-            branchOptions.ManualFlushing = true;
-            branchOptions.ManualSyncing = true;
 
             using var root = new StorageEnvironment(rootOptions);
             using var _ = root.Journal.SharedJournalsScope(CancellationToken.None);
-            branchOptions.RootJournal = root.Journal;
-            using var branch = new StorageEnvironment(branchOptions);
             
             using (var rootTx = root.ReadTransaction())
             {
@@ -213,6 +202,7 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
                 Assert.Equal("no", rootTx.ReadTree("rootTree").Read("branch").Reader.ToString());
                 Assert.Null(rootTx.ReadTree("branchTree"));
             }
+            using var branch = CreateBranchEnv(branchPath, root);
 
             using (var branchTx = branch.ReadTransaction())
             {
@@ -229,8 +219,7 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             // Now do another write
             var task = Task.Run(() =>
             {
-                using var branch = CreateBranchEnv(branchPath, root);
-                using (var branchTx = branch.WriteTransaction())
+                using (var branchTx = branch.WriteTransaction())    
                 {
                     Tree tree = branchTx.CreateTree("branchTree");
                     tree.Add("try", "2");
