@@ -31,7 +31,7 @@ public unsafe partial class Pager
 
             Pager = pager;
             WeakSelf = new WeakReference<State>(this);
-            NativeMemory.RegisterFileMapping(pager.FileName, new IntPtr(ReadAddress), TotalDiskSpace, null);
+            NativeMemory.RegisterFileMapping(pager.FileName, new IntPtr(ReadAddress), TotalAllocatedSize, null);
         }
 
 
