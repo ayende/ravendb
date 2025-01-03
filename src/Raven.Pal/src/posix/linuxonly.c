@@ -204,7 +204,7 @@ int32_t _submit_writes_to_ring(
             return SUCCESS;
         
         int32_t rc = io_uring_submit_and_wait(ring, submitted);
-        if(rc != 0)
+        if(rc < 0)
         {
             *detailed_error_code = -rc;
             return FAIL_IO_RING_SUBMIT;
