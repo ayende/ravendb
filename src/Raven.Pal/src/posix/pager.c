@@ -178,17 +178,14 @@ Error:
 void delete_global_state(struct handle_global_state* global_state)
 {
     if(global_state == NULL)
-    {
         return;
-    }
+
     if (global_state->ring.ring_fd != -1)
     {
         _close_io_ring(global_state);
     }
-    if (global_state->file_path != NULL)
-    {
-        free(global_state->file_path);
-    }
+    free(global_state->offsets);
+    free(global_state->file_path);
     pthread_mutex_destroy(&global_state->lock);
     free(global_state);
 }

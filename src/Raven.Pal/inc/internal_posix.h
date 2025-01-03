@@ -65,6 +65,9 @@ struct handle_global_state
     int32_t open_flags;
     int32_t status_flags;
     char* file_path;
+
+    off_t* offsets;
+    size_t offsets_count;
 };
 
 struct handle

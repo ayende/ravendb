@@ -159,34 +159,111 @@ void _close_io_ring(struct handle_global_state *global_state)
     io_uring_queue_exit(&global_state->ring);
 }
 
-
-int32_t _submit_and_wait(
-    struct io_uring* ring,
+/*
+* The idea here that we will submit the writes in a batch, and then wait for them to complete.
+* However, we need to deal with partial writes, as well as batches that are greater than the capacity
+* of the ring. To handle that, we keep track of all the offsets that we wrote right now, and scan through
+* both the offsets and the submitted pages, then we can adjust the writes offsets to retry again if there
+* is a partial write.
+* This process also handles the case where the ring is full, and we need to flush it, using the same logic.
+*/
+int32_t _submit_writes_to_ring(
+    struct handle *handle,
     int32_t count,
+    struct page_to_write *buffers,
     int32_t* detailed_error_code)
 {
-    int32_t rc = io_uring_submit_and_wait(ring, count);
-    if(rc < 0)
-    {
-        *detailed_error_code = -rc;
-        return FAIL_IO_RING_SUBMIT;
-    }
+    struct io_uring *ring = &handle->global_state->ring;
+    off_t *offsets = handle->global_state->offsets;
+    memset(offsets, 0, count * sizeof(off_t));   
 
-    struct io_uring_cqe* cqe;
-    for(int i = 0; i < count; i++)
+    while(true)
     {
-        rc = io_uring_wait_cqe(ring, &cqe);
-        if (rc < 0)
+        int32_t submitted = 0;
+
+        for (size_t i = 0; i < count; i++)
+        {
+            off_t offset =  offsets[i];
+            if(offset == buffers[i].count_of_pages * VORON_PAGE_SIZE)
+                continue;
+
+            struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+            if (sqe == NULL) // the ring is full, flush it...
+                break;
+
+            io_uring_sqe_set_data64(sqe, i);
+            io_uring_prep_write(sqe, handle->file_fd, 
+                buffers[i].ptr + offset,
+                buffers[i].count_of_pages * VORON_PAGE_SIZE - offset,
+                buffers[i].page_num * VORON_PAGE_SIZE + offset);
+
+            submitted++;
+        }
+
+        if(submitted == 0)
+            return SUCCESS;
+        
+        int32_t rc = io_uring_submit_and_wait(ring, submitted);
+        if(rc != 0)
         {
             *detailed_error_code = -rc;
-            return FAIL_IO_RING_NO_RESULT;
+            return FAIL_IO_RING_SUBMIT;
         }
-        if(cqe->res < 0)
-        {
-            *detailed_error_code = -cqe->res;
+
+        struct io_uring_cqe *cqe;
+        uint32_t head = 0;
+        uint32_t i = 0;
+        bool has_errors = false;
+
+        io_uring_for_each_cqe(ring, head, cqe) {
+            i++;
+            uint64_t index = io_uring_cqe_get_data64(cqe);
+            int result = cqe->res;
+            if(result < 0)
+            {
+                has_errors = true;
+                *detailed_error_code = -result;
+            }
+            else
+            {
+                offsets[index] += result;
+                if(result == 0)
+                {
+                    // there shouldn't be a scenario where we return 0 
+                    // for a write operation, we may want to retry here
+                    // but figuring out if this is a single happening, of if 
+                    // we need to retry this operation (or _have_ retried it) is 
+                    // complex enough to treat this as an error for now.
+                    has_errors = true;
+                    *detailed_error_code = EIO;   
+                }
+            }
+        }
+        io_uring_cq_advance(ring, i);
+
+        if(has_errors)
             return FAIL_IO_RING_WRITE_RESULT;
+    }
+}
+
+int32_t _ensure_offsets_size(struct handle *handle_ptr, size_t count, int32_t *detailed_error_code)
+{
+    if(count > handle_ptr->global_state->offsets_count)
+    {
+        size_t total_size = count * sizeof(off_t);
+        if (total_size / sizeof(off_t) != count) {
+            *detailed_error_code = EOVERFLOW;
+            return FAIL_MATH_OVERFLOW;
+            
+        } 
+        void* buf = realloc(handle_ptr->global_state->offsets, total_size);
+        if(!buf){
+            *detailed_error_code = ENOMEM;
+            return FAIL_NOMEM;
         }
-        io_uring_cqe_seen(ring, cqe);
+        handle_ptr->global_state->offsets_count = count;
+        handle_ptr->global_state->offsets = buf;
+
     }
     return SUCCESS;
 }
@@ -199,44 +276,15 @@ int32_t rvn_write_io_ring(
 {
     int32_t rc = SUCCESS;
     struct handle *handle_ptr = handle;
-    int32_t submitted = 0;
 
     pthread_mutex_lock(&handle_ptr->global_state->lock);
 
-    for (size_t i = 0; i < count; i++)
+    rc = _ensure_offsets_size(handle_ptr, count, detailed_error_code);
+    if(rc == SUCCESS)
     {
-        struct io_uring_sqe *sqe = io_uring_get_sqe(&handle_ptr->global_state->ring);
-        if (sqe == NULL)
-        {
-            rc = _submit_and_wait(&handle_ptr->global_state->ring, submitted, detailed_error_code);
-            if (rc != SUCCESS)
-            {
-                goto Exit;
-            }
-            submitted = 0;
-            sqe = io_uring_get_sqe(&handle_ptr->global_state->ring);
-            if (sqe == NULL)
-            {
-                // *after* we submitted, we have no entry? No recovery from this...
-                *detailed_error_code = ENOENT;
-                rc = FAIL_IO_RING_WRITE;
-                goto Exit;
-            }
-        }
-        io_uring_prep_write(sqe,
-            handle_ptr->file_fd, 
-            buffers[i].ptr, 
-            buffers[i].count_of_pages * VORON_PAGE_SIZE, 
-            buffers[i].page_num * VORON_PAGE_SIZE
-        );
+        rc = _submit_writes_to_ring(handle_ptr, count, buffers, detailed_error_code);
+    }
 
-        submitted++;
-    }
-    if(rc == SUCCESS && submitted)
-    {
-        rc = _submit_and_wait(&handle_ptr->global_state->ring, submitted, detailed_error_code);
-    }
-Exit:
     pthread_mutex_unlock(&handle_ptr->global_state->lock);
     return rc;
 }
