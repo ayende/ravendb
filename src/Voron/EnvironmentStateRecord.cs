@@ -15,7 +15,6 @@ public record EnvironmentStateRecord(
     TreeRootHeader Root,
     long NextPageNumber,
     (long Number, long Last4KWritePosition) Journal,
-    List<long> SparsePageRanges,
     object ClientState);
 
 public record SparseRegionsRecord(

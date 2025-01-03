@@ -162,7 +162,6 @@ namespace Voron
                     default(TreeRootHeader), 
                     -1,
                     (-1, -1),
-                    null,
                     null);
                 
                 _lastValidPageAfterLoad = dataPagerState.NumberOfAllocatedPages;
