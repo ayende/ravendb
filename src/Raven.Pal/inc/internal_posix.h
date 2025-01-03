@@ -3,6 +3,7 @@
 #ifndef INTERNALPOSIX_H
 #define INTERNALPOSIX_H
 
+#include <sys/uio.h>
 #include <pthread.h>
 
 #ifdef __APPLE__
@@ -142,7 +143,10 @@ _rvn_fallocate(int32_t fd, int64_t offset, int64_t size);
 PRIVATE char*   /* different impl for linux and mac */
 _get_strerror_r(int32_t error, char* tmp_buff, int32_t buf_size);
 
-PRIVATE int64_t
+PRIVATE int32_t
+_pwritev(int fd, struct iovec *iov, int iovcnt, off_t offset, int32_t* detailed_error_code);
+
+PRIVATE int32_t
 _pwrite(int32_t fd, void *buffer, uint64_t count, uint64_t offset, int32_t *detailed_error_code);
 
 PRIVATE int32_t

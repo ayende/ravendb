@@ -18,7 +18,56 @@
 #include "status_codes.h"
 #include "internal_posix.h"
 
-PRIVATE int64_t
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/uio.h>
+#include <errno.h>
+
+PRIVATE int32_t
+_pwritev(int fd, struct iovec *iov, int iovcnt, off_t offset, int32_t* detailed_error_code) {
+    off_t current_offset = offset;
+
+    while (iovcnt > 0) {
+        ssize_t written = rvn_pwritev(fd, iov, iovcnt, current_offset);
+
+        if (written < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            *detailed_error_code = errno;
+            return FAIL_PWRITE;
+        }
+
+        // this should _not_ really be happening, but let's be safe
+        if(written == 0)
+        {
+            *detailed_error_code = ENOBUFS;
+            return FAIL_PWRITE;
+        }
+
+        current_offset += written;
+
+        // Adjust iov to skip over already written data
+        while (written > 0) {
+            if (written >= (ssize_t)iov->iov_len) {
+                written -= iov->iov_len;
+                iov++;
+                iovcnt--;
+            } else {
+                // Partial vector written, adjust the current vector
+                iov->iov_base = (char *)iov->iov_base + written;
+                iov->iov_len -= written;
+                break;
+            }
+        }
+    }
+
+    return SUCCESS;
+}
+
+PRIVATE int32_t
 _pwrite(int32_t fd, void *buffer, uint64_t count, uint64_t offset, int32_t *detailed_error_code)
 {
     uint64_t actually_written = 0;
@@ -66,10 +115,7 @@ _allocate_file_space(int32_t fd, int64_t size, int32_t *detailed_error_code)
             /* fallocate is not supported, we'll use lseek instead */
             {
                 char b = 0;
-                int64_t rc = _pwrite(fd, &b, 1UL, (uint64_t)size - 1UL, detailed_error_code);
-                if (rc != SUCCESS)
-                    *detailed_error_code = errno;
-                return rc;
+                return _pwrite(fd, &b, 1UL, (uint64_t)size - 1UL, detailed_error_code);
             }
             break;
         case EINTR:

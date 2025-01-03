@@ -552,11 +552,9 @@ int32_t rvn_write_file_io(
     {
         int64_t offset = buffers[i].page_num * VORON_PAGE_SIZE;
         int64_t size = (int64_t)buffers[i].count_of_pages * VORON_PAGE_SIZE;
-        if(rvn_pwrite(handle_ptr->file_fd, buffers[i].ptr, size, offset) > 0)
-            continue;
-
-        *detailed_error_code = errno;
-        return FAIL_WRITE_FILE;
+        int32_t rc = _pwrite(handle_ptr->file_fd, buffers[i].ptr, size, offset, detailed_error_code);
+        if( rc != SUCCESS)
+            return rc;
     }
     return SUCCESS;
 }
@@ -574,6 +572,11 @@ int32_t rvn_write_mmap(
         int64_t offset = buffers[i].page_num * VORON_PAGE_SIZE;
         int64_t size = (int64_t)buffers[i].count_of_pages * VORON_PAGE_SIZE;
         memcpy((char*)handle_ptr->write_address + offset, buffers[i].ptr, (size_t)size);
+    }
+    if(msync(handle_ptr->write_address, handle_ptr->allocation_size, MS_SYNC))
+    {
+        *detailed_error_code = errno;
+        return FAIL_SYNC_FILE;
     }
     return SUCCESS;
 }

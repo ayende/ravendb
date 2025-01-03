@@ -564,7 +564,7 @@ rvn_init_pager(const char *filename,
         goto Error;
     }
 
-    IoRingFunctions* funcs = IoRing;
+    IoRingFunctions* funcs = InterlockedCompareExchangePointer(&IoRing, NULL, NULL);
     if (funcs == NULL)
     {
         funcs = _AllocateIoRingFunctions();

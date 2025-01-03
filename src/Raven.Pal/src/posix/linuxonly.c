@@ -277,11 +277,9 @@ int32_t rvn_write_vectored_file_io(
             curIdx++;
         }
 
-        if(rvn_pwritev(handle_ptr->file_fd, iovs, used, offset) <= 0)
-        {
-            *detailed_error_code = errno;
-            return FAIL_WRITE_FILE;
-        }
+        int32_t rc = _pwritev(handle_ptr->file_fd, iovs, used, offset, detailed_error_code);
+        if (rc != SUCCESS)
+            return rc;
     }
     return SUCCESS;
 }
@@ -331,22 +329,18 @@ rvn_write_journal(void* handle, struct journal_entry* buffer, int64_t count_of_e
         index++;
         if(index == IOV_MAX)
         {
-            if(rvn_pwritev(jfh->fd, elements, index, offset) == -1)
-            {
-                *detailed_error_code = errno;
-                return FAIL_WRITE_FILE;
-            }
+            int32_t rc = _pwritev(jfh->fd, elements, index, offset, detailed_error_code);
+            if(rc != SUCCESS)
+                return rc;
             offset += index * SYS_PAGE_SIZE;
             index = 0;
         }
     }
     if(index > 0)
     {
-        if(rvn_pwritev(jfh->fd, elements, index, offset) == -1)
-        {
-            *detailed_error_code = errno;
-            return FAIL_WRITE_FILE;
-        }
+        int32_t rc = _pwritev(jfh->fd, elements, index, offset, detailed_error_code);
+        if(rc != SUCCESS)
+            return rc;
     }
     return SUCCESS;
 }
