@@ -63,6 +63,23 @@ namespace Voron.Impl.Journal
             _journalWriter = null;
         }
 
+        public (long FirstTransactionId, long LastTransactionId, int Count)  GetTransactionStatsFor(Guid journalId)
+        {
+            int count = 0;
+            long first = long.MaxValue;
+            long last = -1;
+            for (int i = 0; i < _transactionHeaders.Count; i++)
+            {
+                if(_transactionHeaders[i].JournalId != journalId)
+                    continue;
+                count++;
+                first = Math.Min(_transactionHeaders[i].TransactionId, first);
+                last = _transactionHeaders[i].TransactionId;
+            }
+
+            return (first, last, count);
+        }
+
         public TransactionHeader GetLastReadTxHeader(long maxTransactionId)
         {
             int low = 0;

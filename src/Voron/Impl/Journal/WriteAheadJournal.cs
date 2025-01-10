@@ -1208,7 +1208,17 @@ namespace Voron.Impl.Journal
                     var message =
                         $"Error syncing the data file. The last sync tx is {lastFlushed.TransactionId}, " +
                         $"but the journal's last tx id is {lastFlushed.FlushedTransactionId}, possible file corruption?";
-
+                    Guid journalId = env.HeaderAccessor.JournalId;
+                    var (firstTx, lastTx, count) = lastFlushed.Journal.GetTransactionStatsFor(journalId);
+                    
+                    if (count is not 0)
+                    {
+                        message += $" Debug details - transaction headers count: {count}, first tx: {firstTx}, last tx: {lastTx} for: {journalId}.";
+                    }
+                    else
+                    {
+                        message += $" Debug details - journal doesn't have transaction headers for: {journalId}.";
+                    }
                     VoronUnrecoverableErrorException.Raise(env, message);
                 }
             }
