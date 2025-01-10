@@ -71,6 +71,7 @@ namespace Raven.Server.Documents
             options.IgnoreDataIntegrityErrorsOfAlreadySyncedTransactions = _db.Configuration.Storage.IgnoreDataIntegrityErrorsOfAlreadySyncedTransactions;
 
             options.DisableSparseRegions = _db.Configuration.Storage.DisableSparseRegions;
+            options.JournalsCompressionAcceleration = _db.Configuration.Storage.JournalsCompressionAcceleration;
             try
             {
                 DirectoryExecUtils.SubscribeToOnDirectoryInitializeExec(options, _db.Configuration.Storage, _db.Name, DirectoryExecUtils.EnvironmentType.Configuration, _logger);

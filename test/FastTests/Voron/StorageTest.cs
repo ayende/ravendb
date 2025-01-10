@@ -35,7 +35,6 @@ namespace FastTests.Voron
         {
             IOExtensions.DeleteDirectory(DataDir);
             Options = StorageEnvironmentOptions.CreateMemoryOnlyForTests();
-            ForceConstantCompressionAcceleration(Options);
 
             Configure(Options);
             _storageEnvironment = new Lazy<StorageEnvironment>(() => new StorageEnvironment(Options), LazyThreadSafetyMode.ExecutionAndPublication);
@@ -57,7 +56,6 @@ namespace FastTests.Voron
                 Options = StorageEnvironmentOptions.ForPathForTests(DataDir);
                 Options.ManualSyncing = manualSync;
                 Options.ManualFlushing = manualFlush;
-                ForceConstantCompressionAcceleration(Options);
                 Configure(Options);
             }
 
@@ -73,7 +71,6 @@ namespace FastTests.Voron
 
             IOExtensions.DeleteDirectory(DataDir);
             Options = StorageEnvironmentOptions.ForPathForTests(DataDir);
-            ForceConstantCompressionAcceleration(Options);
             Configure(Options);
         }
 
@@ -170,11 +167,6 @@ namespace FastTests.Voron
 
             Slice.External(txh.Allocator, (byte*)node + node->KeySize + Constants.Tree.NodeHeaderSize, (ushort)node->DataSize, ByteStringType.Immutable, out var item2);
             return Tuple.Create(item1, item2);
-        }
-
-        protected void ForceConstantCompressionAcceleration(StorageEnvironmentOptions options)
-        {
-            options.ForTestingPurposesOnly().WriteToJournalCompressionAcceleration = 1;
         }
     }
 }

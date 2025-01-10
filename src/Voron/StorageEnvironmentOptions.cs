@@ -1084,6 +1084,7 @@ namespace Voron
         public bool SkipChecksumValidationOnDatabaseLoading { get; set; }
         public bool DiscardVirtualMemory { get; set; } = true;
         public bool DisableSparseRegions { get; set; }
+        public int JournalsCompressionAcceleration { get; set; } = 1;
 
         private readonly RavenLogger _log;
 
@@ -1201,26 +1202,11 @@ namespace Voron
             }
         }
 
-        internal TestingStuff ForTestingPurposes;
-        
         /// <summary>
         /// This is used when we have a branch environment, whose journal
         /// is actually managed by a root environment
         /// </summary>
         public WriteAheadJournal RootJournal;
-
-        internal TestingStuff ForTestingPurposesOnly()
-        {
-            if (ForTestingPurposes != null)
-                return ForTestingPurposes;
-
-            return ForTestingPurposes = new TestingStuff();
-        }
-
-        internal sealed class TestingStuff
-        {
-            public int? WriteToJournalCompressionAcceleration = null;
-        }
 
         public abstract bool CanJournalsBeLinkedWith(StorageEnvironmentOptions other);
         

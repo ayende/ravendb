@@ -205,7 +205,7 @@ namespace Raven.Server.Documents
             options.SkipChecksumValidationOnDatabaseLoading = DocumentDatabase.Configuration.Storage.SkipChecksumValidationOnDatabaseLoading;
             options.IgnoreDataIntegrityErrorsOfAlreadySyncedTransactions = DocumentDatabase.Configuration.Storage.IgnoreDataIntegrityErrorsOfAlreadySyncedTransactions;
             options.DisableSparseRegions = DocumentDatabase.Configuration.Storage.DisableSparseRegions;
-
+            options.JournalsCompressionAcceleration = DocumentDatabase.Configuration.Storage.JournalsCompressionAcceleration;
             try
             {
                 Initialize(options);

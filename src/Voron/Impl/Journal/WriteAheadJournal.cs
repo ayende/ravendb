@@ -111,7 +111,6 @@ namespace Voron.Impl.Journal
 
             (_compressionPager, _compressionPagerState) = CreateCompressionPager(_env.Options.InitialFileSize ?? _env.Options.InitialLogFileSize);
             _journalApplicator = new JournalApplicator(this);
-            _lastCompressionAccelerationInfo = new CompressionAccelerationStats(env.Options);
 
             _disposeRunner = new DisposeOnce<SingleAttempt>(() =>
             {
@@ -1820,9 +1819,6 @@ namespace Voron.Impl.Journal
                     rec.Tcs.TrySetResult();
                 }
 
-                _lastCompressionAccelerationInfo.WriteDuration = elapsed;
-                _lastCompressionAccelerationInfo.CalculateOptimalAcceleration();
-
                 if (_logger.IsDebugEnabled)
                     _logger.Debug(
                         $"Writing {new Size(4 * requiredSizeIn4Kbs, SizeUnit.Kilobytes)} to journal {CurrentFile.Number:D19} took {elapsed} with journal entries from {_mergedEntriesBuffer.Count:D19} environments");
@@ -2051,14 +2047,10 @@ namespace Voron.Impl.Journal
                 );
                 var compressionBuffer = txHeaderPtr + sizeof(TransactionHeader);
 
-                var compressionDuration = Stopwatch.StartNew();
                 var path = CurrentFile?.JournalWriter?.FileName?.FullPath ?? _env.Options.GetJournalPath(Math.Max(0, _journalIndex))?.FullPath;
                 using (var metrics = _env.Options.IoMetrics.MeterIoRate(path, IoMetrics.MeterType.Compression, 0)) // Note that the last journal may be replaced if we switch journals, however it doesn't affect web graph
                 {
-                    var compressionAcceleration =
-                        _env.Options.RootJournal?._lastCompressionAccelerationInfo.LastAcceleration ??
-                        _lastCompressionAccelerationInfo.LastAcceleration;
-
+                    int compressionAcceleration = _env.Options.JournalsCompressionAcceleration;
                     compressedLen = LZ4.Encode64LongBuffer(
                         txPageInfoPtr,
                         compressionBuffer,
@@ -2068,9 +2060,6 @@ namespace Voron.Impl.Journal
 
                     metrics.SetCompressionResults(totalSizeWritten, compressedLen, compressionAcceleration);
                 }
-                compressionDuration.Stop();
-
-                _lastCompressionAccelerationInfo.CompressionDuration = compressionDuration.Elapsed;
             }
             else
             {
@@ -2193,63 +2182,6 @@ namespace Voron.Impl.Journal
                 throw new InvalidOperationException("Failed to call crypto_aead_xchacha20poly1305_ietf_encrypt, rc = " + rc);
         }
 
-        private sealed class CompressionAccelerationStats
-        {
-            private readonly StorageEnvironmentOptions _options;
-            public TimeSpan CompressionDuration;
-            public TimeSpan WriteDuration;
-
-            private int _lastAcceleration = 1;
-            private int _flux; // allow us to ignore fluctuations by requiring several consecutive operations to change 
-
-            public CompressionAccelerationStats(StorageEnvironmentOptions options)
-            {
-                _options = options;
-            }
-
-            public int LastAcceleration => _lastAcceleration;
-
-            public void CalculateOptimalAcceleration()
-            {
-                if (_options.ForTestingPurposes?.WriteToJournalCompressionAcceleration.HasValue == true)
-                {
-                    _lastAcceleration = _options.ForTestingPurposes.WriteToJournalCompressionAcceleration.Value;
-                    return;
-                }
-
-                // if comression is _much_ higher than write time, increase acceleration
-                if (CompressionDuration > WriteDuration.Add(WriteDuration))
-                {
-                    if (_lastAcceleration < 99)
-                    {
-                        _lastAcceleration = Math.Min(99, _lastAcceleration + 2);
-                        _flux = -4;
-                    }
-                    return;
-                }
-
-                if (CompressionDuration <= WriteDuration)
-                {
-                    // write time is higher than compression time, so compression is worth it
-                    if (++_flux > 5)
-                    {
-                        _lastAcceleration = Math.Max(1, _lastAcceleration - 1);
-                        _flux = 3;
-                    }
-
-                    return;
-                }
-
-                // compression time is _higher_ than write time. Probably fast I/O system, so we can 
-                // afford to reduce the compression rate and try to get higher speeds
-                if (--_flux < -5)
-                {
-                    _lastAcceleration = Math.Min(99, _lastAcceleration + 1);
-                    _flux = -2;
-                }
-            }
-        }
-
         private (Pager Pager, Pager.State State) CreateCompressionPager(long initialSize)
         {
             return _env.Options.CreateTemporaryBufferPager(
@@ -2258,7 +2190,6 @@ namespace Voron.Impl.Journal
         }
 
         private DateTime _lastCompressionBufferReduceCheck = DateTime.UtcNow;
-        private readonly CompressionAccelerationStats _lastCompressionAccelerationInfo;
         private readonly bool _is32Bit;
 
         private void ReduceSizeOfCompressionBufferIfNeeded(bool forceReduce = false)

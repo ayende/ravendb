@@ -49,7 +49,9 @@ class configurationItem {
         "Indexing.Corax.VectorSearch.DefaultNumberOfEdges",
         "Indexing.Corax.VectorSearch.DefaultNumberOfCandidatesForIndexing",
         "Indexing.Corax.VectorSearch.DefaultNumberOfCandidatesForQuerying",
-        "Indexing.Corax.VectorSearch.OrderByScoreAutomatically"
+        "Indexing.Corax.VectorSearch.OrderByScoreAutomatically",
+        "Storage.DisableSparseRegions",
+        "Storage.JournalsCompressionAcceleration"
         // "Indexing.Static.SearchEngineType" - ignoring as we have dedicated widget to set that
         /*
             Obsolete keys:

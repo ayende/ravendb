@@ -776,6 +776,7 @@ namespace Raven.Server.Documents.Indexes
             options.SkipChecksumValidationOnDatabaseLoading = documentDatabase.Configuration.Storage.SkipChecksumValidationOnDatabaseLoading;
             options.IgnoreDataIntegrityErrorsOfAlreadySyncedTransactions = documentDatabase.Configuration.Storage.IgnoreDataIntegrityErrorsOfAlreadySyncedTransactions;
             options.DisableSparseRegions = documentDatabase.Configuration.Storage.DisableSparseRegions;
+            options.JournalsCompressionAcceleration = documentDatabase.Configuration.Storage.JournalsCompressionAcceleration;
 
             if (documentDatabase.ServerStore.GlobalIndexingScratchSpaceMonitor != null)
                 options.ScratchSpaceUsage.AddMonitor(documentDatabase.ServerStore.GlobalIndexingScratchSpaceMonitor);

@@ -90,6 +90,7 @@ namespace FastTests.Issues
                 "Indexing.Corax.Static.ComplexFieldIndexingBehavior",
                 
                 "Storage.DisableSparseRegions",
+                "Storage.JournalsCompressionAcceleration",
 
                 "Indexing.Corax.VectorSearch.DefaultMinimumSimilarity",
                 "Indexing.Corax.VectorSearch.DefaultNumberOfEdges",

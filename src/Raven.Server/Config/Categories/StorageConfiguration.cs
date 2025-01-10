@@ -98,6 +98,11 @@ namespace Raven.Server.Config.Categories
         [DefaultValue(2)]
         [ConfigurationEntry("Storage.SyncJournalsCountThreshold", ConfigurationEntryScope.ServerWideOrPerDatabase)]
         public int SyncJournalsCountThreshold { get; set; }
+        
+        [Description("EXPERT: Determine the acceleration level that Voron will use when compressing journals.")]
+        [DefaultValue(1)]
+        [ConfigurationEntry("Storage.JournalsCompressionAcceleration", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]
+        public int JournalsCompressionAcceleration { get; set; }
 
         /// <summary>
         /// Specifies the time interval between each IoMetrics Cleaner run
