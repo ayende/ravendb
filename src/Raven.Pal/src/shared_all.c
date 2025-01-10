@@ -35,7 +35,7 @@ _nearest_size_to_page_size(int64_t orig_size, int64_t sys_page_size)
 
 rvn_write_mode _get_writer_mode()
 {
-    const char* env_var_name = "RAVEN_WRITER_MODE";
+    const char* env_var_name = "RAVEN_VORON_WRITER_MODE";
 #if defined(_WIN32)
     char buffer[32];
     memset(buffer, 0, sizeof(buffer));

@@ -2,6 +2,7 @@
 #include "rvn.h"
 #include "status_codes.h"
 
+//  The command to build and run this is:
 //  /home/ayende/zig/zig-linux-x86_64-0.14.0-dev.2316+68b3f5086/zig cc -Wall -O0 -g -fPIC -Iinc -target x86_64-linux-gnu ../../libs/liburing/liburing-2.8.1-x64.a -o test src/shared_all.c src/rvngetpalver.c src/posix/fileutils.c src/posix/geterrorstring.c src/posix/getsysteminformation.c src/posix/journal.c src/posix/mapping.c src/posix/pager.c src/posix/sync.c src/posix/virtualmemory.c src/posix/writefileheader.c src/posix/linuxonly.c test-linux.c
 int main()
 {
