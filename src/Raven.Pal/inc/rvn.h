@@ -84,8 +84,8 @@ struct journal_entry
 
 typedef int32_t (*rvn_writer)(
     void* handle,
-    int32_t count,
     struct page_to_write *buffers,
+    int32_t count,
     int32_t *detailed_error_code
 );
 

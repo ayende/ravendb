@@ -1349,7 +1349,7 @@ namespace Voron.Impl.Journal
                         (dataPagerState.TotalFileSize, dataPagerState.TotalDiskSpace) = dataPager.GetFileSize(dataPagerState);
                         fixed (Pal.page_to_write* ptr = pages)
                         {
-                            var rc = dataPager.Writer(dataPagerState.Handle, pages.Length, ptr, out var errorCode);
+                            var rc = dataPager.Write(dataPagerState.Handle, ptr, pages.Length,  out var errorCode);
                             if (rc != PalFlags.FailCodes.Success)
                             {
                                 Pager.RaiseError(dataPager.FileName, errorCode, rc, dataPagerState.TotalAllocatedSize);

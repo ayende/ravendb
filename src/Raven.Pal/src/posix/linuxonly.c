@@ -270,8 +270,8 @@ int32_t _ensure_offsets_size(struct handle *handle_ptr, size_t count, int32_t *d
 
 int32_t rvn_write_io_ring(
     void *handle,
-    int32_t count,
     struct page_to_write *buffers,
+    int32_t count,
     int32_t *detailed_error_code)
 {
     int32_t rc = SUCCESS;
@@ -293,8 +293,8 @@ int32_t rvn_write_io_ring(
 PRIVATE
 int32_t rvn_write_vectored_file_io(
     void* handle,
-    int32_t count,
     struct page_to_write *buffers,
+    int32_t count,
     int32_t *detailed_error_code
 )
 {

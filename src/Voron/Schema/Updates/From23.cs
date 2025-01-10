@@ -10,7 +10,15 @@ public class From23  : IVoronSchemaUpdate
     {
         foreach (var unusedFile in Directory.GetFiles(options.JournalPath.FullPath, "recyclable-journal.*"))
         {
-            File.Delete(unusedFile);
+            try
+            {
+                File.Delete(unusedFile);
+            }
+            catch
+            {
+                // it is safe to ignore this, since we are just trying 
+                // to recover some disk space, and everything will still functions fine with this
+            }
         }
         
         headerAccessor.Modify((ref FileHeader header) =>

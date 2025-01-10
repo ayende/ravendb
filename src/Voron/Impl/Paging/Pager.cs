@@ -57,7 +57,7 @@ public unsafe partial class Pager : IDisposable
             out var handle, out var readOnlyMemory, out var writeMemory, out var memorySize, out var error);
         if (result != PalFlags.FailCodes.Success)
             RaiseError(filename, error, result, initialFileSize);
-        pager.Writer = Pal.rvn_get_writer(handle);
+        pager.Write = Pal.rvn_get_writer(handle);
         var state = new State(pager, readOnlyMemory, writeMemory, memorySize, handle);
         (state.TotalFileSize, state.TotalDiskSpace) = pager.GetFileSize(state);
         pager.InstallState(state);
@@ -65,9 +65,9 @@ public unsafe partial class Pager : IDisposable
         return (pager, state);
     }
 
-    public Pal.WriterFunc Writer = WriterNotSetupYet;
+    public Pal.WriterFunc Write = WriterNotSetupYet;
 
-    private static PalFlags.FailCodes WriterNotSetupYet(void* handle, int count, Pal.page_to_write* buffers, out int errorCode)
+    private static PalFlags.FailCodes WriterNotSetupYet(void* handle, Pal.page_to_write* buffers, int count, out int errorCode)
     {
         throw new InvalidOperationException("The Writing function is setup at this point in time, this should never happen");
     }

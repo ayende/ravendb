@@ -11,7 +11,8 @@ namespace Sparrow.Server.Platform
     public static unsafe class Pal
     {
         
-        public const int PAL_VER = 69049; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
+        
+        public const int PAL_VER = 70113; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
 
         static Pal()
         {
@@ -213,8 +214,9 @@ namespace Sparrow.Server.Platform
         [UnmanagedFunctionPointer(CallingConvention.StdCall)]
         public delegate PalFlags.FailCodes WriterFunc(
             void* handle,
-            Int32 count,
+            
             page_to_write* buffers,
+            Int32 count,
             out Int32 errorCode);
 
         [DllImport(LIBRVNPAL, SetLastError = true)]

@@ -199,11 +199,6 @@ namespace Raven.Server.Documents.TransactionMerger
                 }
                 catch (OperationCanceledException)
                 {
-                    if (_shutdown.IsCancellationRequested is false)
-                    {
-                        Debugger.Launch();
-                        Console.WriteLine();
-                    }
                     // clean shutdown, nothing to do
                 }
                 catch (Exception e) when (e is EarlyOutOfMemoryException || e is OutOfMemoryException)

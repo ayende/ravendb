@@ -539,8 +539,8 @@ Error:
 
 int32_t rvn_write_file_io(
     void* handle,
-    int32_t count,
     struct page_to_write *buffers,
+    int32_t count,
     int32_t *detailed_error_code
 )
 {
@@ -558,8 +558,8 @@ int32_t rvn_write_file_io(
 
 int32_t rvn_write_mmap(
     void* handle,
-    int32_t count,
     struct page_to_write *buffers,
+    int32_t count,
     int32_t *detailed_error_code
 )
 {
@@ -580,8 +580,8 @@ int32_t rvn_write_mmap(
 
 int32_t rvn_write_invalid_setup(
     void* handle,
-    int32_t count,
     struct page_to_write *buffers,
+    int32_t count,
     int32_t *detailed_error_code
 )
 {

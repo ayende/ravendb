@@ -773,8 +773,8 @@ int32_t rvn_pager_get_file_handle(
 
 int32_t rvn_write_file_io(
     void* handle,
-    int32_t count,
     struct page_to_write *buffers,
+    int32_t count,
     int32_t *detailed_error_code
 )
 {
@@ -834,8 +834,8 @@ static int32_t _submit_and_wait(
 
 int32_t rvn_write_io_ring(
     void* handle,
-    int32_t count,
     struct page_to_write *buffers,
+    int32_t count,
     int32_t *detailed_error_code
 )
 {
@@ -888,8 +888,8 @@ int32_t rvn_write_io_ring(
 
 int32_t rvn_write_mmap(
     void* handle,
-    int32_t count,
     struct page_to_write *buffers,
+    int32_t count,
     int32_t *detailed_error_code
 )
 {
@@ -911,8 +911,8 @@ int32_t rvn_write_mmap(
 
 int32_t rvn_write_invalid_setup(
     void* handle,
-    int32_t count,
     struct page_to_write *buffers,
+    int32_t count,
     int32_t *detailed_error_code
 )
 {
