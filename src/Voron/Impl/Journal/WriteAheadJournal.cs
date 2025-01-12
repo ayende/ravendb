@@ -417,9 +417,16 @@ namespace Voron.Impl.Journal
                         throw new InvalidOperationException(
                             $"Could not find expected transaction id {lastFlushedTxId} in journal file {instanceOfLastFlushedJournal.Number}");
                     }
-                    _journalApplicator.SetLastFlushed(new JournalApplicator.LastFlushState(lastFlushedTxId, 
-                            instanceOfLastFlushedJournal, toDelete, lastFlushedTxHeader.TransactionId, 
-                            lastFlushedTxHeader.Root, lastFlushedTxHeader.LastPageNumber));
+
+                    if (lastFlushedTxHeader.TransactionId != lastFlushedTxId)
+                    {
+                        throw new InvalidOperationException(
+                            $"Mismatch of flushed transaction {lastFlushedTxId} vs. last header: {lastFlushedTxHeader.TransactionId} in journal file {instanceOfLastFlushedJournal.Number}");
+
+                    }
+
+                    _journalApplicator.SetLastFlushed(lastFlushedTxId, instanceOfLastFlushedJournal, 
+                        toDelete, ref lastFlushedTxHeader);
                 }
             }
 
@@ -550,7 +557,6 @@ namespace Voron.Impl.Journal
             public sealed record LastFlushState(long TransactionId, 
                 JournalFile Journal, 
                 List<JournalFile> JournalsToDelete,
-                long FlushedTransactionId,
                 TreeRootHeader Root,
                 long LastPageNumber)
             {
@@ -559,7 +565,7 @@ namespace Voron.Impl.Journal
                 public long JournalId => Journal?.Number ?? -1;
                 public bool IsValid => Journal != null && JournalsToDelete != null;
 
-                public static LastFlushState Empty => new(0, null, null, -1, default, -1);
+                public static LastFlushState Empty => new(-1, null, null, default, -1);
             }
 
             private LastFlushState _lastFlushed = LastFlushState.Empty;
@@ -570,13 +576,6 @@ namespace Voron.Impl.Journal
             private DateTime _lastSyncTime;
 
             public bool HasUpdateJournalStateAfterFlush => _updateJournalStateAfterFlush != null;
-
-            public void SetLastFlushed(LastFlushState state)
-            {
-                Interlocked.Exchange(ref _lastFlushed, state);
-
-                _lastFlushTime = DateTime.UtcNow;
-            }
 
             public void AddJournalToDelete(JournalFile journal)
             {
@@ -939,14 +938,15 @@ namespace Voron.Impl.Journal
                 }
 
                 var txHeader = journalFile.GetLastReadTxHeader(flushedRecord.TransactionId);
-                SetLastFlushed(new LastFlushState(
-                    flushedRecord.TransactionId,
-                    journalFile,
-                    _journalsToDelete.Values.ToList(),
-                    txHeader.TransactionId,
-                    txHeader.Root,
-                    txHeader.LastPageNumber));
+                if (txHeader.TransactionId != flushedRecord.TransactionId)
+                {
+                    throw new InvalidOperationException(
+                        $"Mismatch between flushed transaction id {flushedRecord.TransactionId} and transaction header: {txHeader.TransactionId} in journal: {journalFile.Number}");
 
+                }
+
+                SetLastFlushed(flushedRecord.TransactionId, journalFile,
+                    _journalsToDelete.Values.ToList(), ref txHeader);
 
                 if (_waj._files.Count == 0)
                 {
@@ -1186,11 +1186,6 @@ namespace Voron.Impl.Journal
                     if (_lastFlushed.Journal.LastTransactionId == -1)
                         return false;
 
-                    if (_lastFlushed.TransactionId != _lastFlushed.FlushedTransactionId)
-                    {
-                        ThrowErrorWhenSyncingDataFile(_lastFlushed, parent._waj._env);
-                    }
-
                     _lastFlushed.DoneFlag.Raise();
 
                     return true;
@@ -1200,26 +1195,6 @@ namespace Voron.Impl.Journal
                 {
                     if (_fsyncLockTaken)
                         parent._fsyncLock.Release();
-                }
-
-                [DoesNotReturn]
-                private static void ThrowErrorWhenSyncingDataFile(LastFlushState lastFlushed, StorageEnvironment env)
-                {
-                    var message =
-                        $"Error syncing the data file. The last sync tx is {lastFlushed.TransactionId}, " +
-                        $"but the journal's last tx id is {lastFlushed.FlushedTransactionId}, possible file corruption?";
-                    Guid journalId = env.HeaderAccessor.JournalId;
-                    var (firstTx, lastTx, count) = lastFlushed.Journal.GetTransactionStatsFor(journalId);
-                    
-                    if (count is not 0)
-                    {
-                        message += $" Debug details - transaction headers count: {count}, first tx: {firstTx}, last tx: {lastTx} for: {journalId}.";
-                    }
-                    else
-                    {
-                        message += $" Debug details - journal doesn't have transaction headers for: {journalId}.";
-                    }
-                    VoronUnrecoverableErrorException.Raise(env, message);
                 }
             }
 
@@ -1637,6 +1612,43 @@ namespace Voron.Impl.Journal
 
                 current.ShouldDelete = true;
                 current.Release();
+            }
+
+            public void SetLastFlushed(long lastTransactionId, JournalFile journalFile, List<JournalFile> journalFiles, ref TransactionHeader lastFlushedTxHeader)
+            {
+                var newState = new LastFlushState(lastTransactionId, 
+                    journalFile, journalFiles,
+                    lastFlushedTxHeader.Root, lastFlushedTxHeader.LastPageNumber);
+
+                if (lastTransactionId != lastFlushedTxHeader.TransactionId)
+                {
+                    ThrowErrorWhenSyncingDataFile(newState, lastFlushedTxHeader.TransactionId, _waj._env);
+                }
+                
+                Interlocked.Exchange(ref _lastFlushed, newState);
+
+                _lastFlushTime = DateTime.UtcNow;
+            }
+            
+            
+            [DoesNotReturn]
+            public static void ThrowErrorWhenSyncingDataFile(LastFlushState lastFlushed, long flushedTransactionId, StorageEnvironment env)
+            {
+                var message =
+                    $"Error syncing the data file. The last sync tx is {lastFlushed.TransactionId}, " +
+                    $"but the journal's last tx id is {flushedTransactionId}, possible file corruption?";
+                Guid journalId = env.HeaderAccessor.JournalId;
+                var (firstTx, lastTx, count) = lastFlushed.Journal.GetTransactionStatsFor(journalId);
+                    
+                if (count is not 0)
+                {
+                    message += $" Debug details - transaction headers count: {count}, first tx: {firstTx}, last tx: {lastTx} for: {journalId}.";
+                }
+                else
+                {
+                    message += $" Debug details - journal doesn't have transaction headers for: {journalId}.";
+                }
+                VoronUnrecoverableErrorException.Raise(env, message);
             }
         }
 

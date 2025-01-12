@@ -175,7 +175,7 @@ namespace SlowTests.Issues
         
         
         [RavenFact(RavenTestCategory.Voron)]
-        public async Task IndexesJouranlsUseHardLinksToDatabaseJournal()
+        public async Task IndexesJournalsUseHardLinksToDatabaseJournal()
         {
             var serverPath = NewDataPath();
             var databasePath = NewDataPath();
