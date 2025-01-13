@@ -1658,7 +1658,8 @@ namespace Voron.Impl.Journal
                     {
                         throw new InvalidOperationException("Unable to commit as a branch if the root journal I'm associated with is not within a shared journal scope");
                     }
-                    
+
+                    PendingJournalStateRecord journalStateRecord = null;
                     if (tx.ShouldWriteTransactionChangesToJournal)
                     {
                         var start = Stopwatch.GetTimestamp();
@@ -1666,7 +1667,11 @@ namespace Voron.Impl.Journal
                         var tcs = new TaskCompletionSource();
                         branchCommit = tcs.Task;
                         numberOf4Kbs = entry.NumberOf4Kbs;
-                        rootJournal._mergedCommitsQueue.Enqueue(new PendingJournalStateRecord(tx, tcs, entry));
+                        journalStateRecord = new PendingJournalStateRecord(tx, tcs, entry);
+                        if (this != rootJournal)
+                        {
+                            rootJournal._mergedCommitsQueue.Enqueue(journalStateRecord);
+                        }
                         if (_logger.IsDebugEnabled)
                         {
                             var elapsed = Stopwatch.GetElapsedTime(start);
@@ -1677,7 +1682,7 @@ namespace Voron.Impl.Journal
 
                     if (this == rootJournal)
                     {
-                        WriteBuffersToJournal(tx);
+                        WriteBuffersToJournal(tx, journalStateRecord);
                     }
                     else
                     {
@@ -1723,15 +1728,22 @@ namespace Voron.Impl.Journal
             commitCompleted.Wait();
         }
 
-        private void WriteBuffersToJournal(LowLevelTransaction tx)
+        private void WriteBuffersToJournal(LowLevelTransaction tx, PendingJournalStateRecord rootEntry)
         {
             try
             {
-                Debug.Assert(_mergedEntriesBuffer.Count is 0);
+                Debug.Assert(_mergedEntriesBuffer.Count is 0 && _mergedJournalRecordsBuffer.Count is 0);
 
                 _forTestingPurposes?.OnWriteBuffersToJournal?.Invoke(_mergedCommitsQueue);
-                
+
                 long requiredSizeIn4Kbs = 0;
+                if (rootEntry != null)
+                {
+                    _mergedJournalRecordsBuffer.Add(rootEntry);
+                    _mergedEntriesBuffer.Add(rootEntry.Entry);
+                    requiredSizeIn4Kbs = rootEntry.Entry.NumberOf4Kbs;
+                }
+                
                 while (true)
                 {
                     if (_mergedCommitsQueue.TryDequeue(out var cur) is false)
