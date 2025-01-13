@@ -583,7 +583,8 @@ rvn_init_pager(const char *filename,
     }
 
     IORING_CAPABILITIES io_ring_capabilities = { 0 };
-    if (SUCCEEDED(funcs->QueryIoRingCapabilities(&io_ring_capabilities)) &&
+    if ((write_mode == rvn_write_mode_io_ring || write_mode == rvn_mode_default) &&
+        SUCCEEDED(funcs->QueryIoRingCapabilities(&io_ring_capabilities)) &&
         io_ring_capabilities.MaxVersion != IORING_VERSION_INVALID) {
         // For writable maps, we don't need to create an io ring
         if((open_flags & OPEN_FILE_WRITABLE_MAP) == 0)

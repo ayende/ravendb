@@ -226,7 +226,8 @@ rvn_init_pager(const char *filename,
         rc = FAIL_MUTEX_INIT;
         goto Error;
     }
-    if (_io_ring_supported())
+    if ((writer_mode == rvn_write_mode_io_ring || writer_mode == rvn_mode_default) &&
+        _io_ring_supported())
     {
         // we only setup the io ring if we are going to use it, we won't
         // use it for writable maps
