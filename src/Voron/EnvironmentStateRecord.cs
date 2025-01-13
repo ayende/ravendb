@@ -11,9 +11,12 @@ namespace Voron;
 public record EnvironmentStateRecord(
     Pager.State DataPagerState, 
     long TransactionId,
+    long FlushedToJournal,
     ImmutableDictionary<long, PageFromScratchBuffer> ScratchPagesTable,
     TreeRootHeader Root,
     long NextPageNumber,
+    // This represent the *current* journal state, which may involve
+    // writes from _other_ envs due to shared journals
     (long Number, long Last4KWritePosition) Journal,
     object ClientState);
 

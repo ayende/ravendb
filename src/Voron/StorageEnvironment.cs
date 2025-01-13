@@ -158,6 +158,7 @@ namespace Voron
                 _currentStateRecord = new EnvironmentStateRecord(
                     dataPagerState,
                     0,
+                    -1,
                     ImmutableDictionary<long, PageFromScratchBuffer>.Empty, 
                     default(TreeRootHeader), 
                     -1,
@@ -309,7 +310,7 @@ namespace Voron
             var txHeader = stackalloc TransactionHeader[1];
 
             Options.AddToInitLog?.Invoke(LogLevel.Debug, "Starting Recovery");
-            bool hadIntegrityIssues = _journal.RecoverDatabase(txHeader, Options.AddToInitLog);
+            bool hadIntegrityIssues = _journal.RecoverDatabase(txHeader, out var lastJournalNumber, Options.AddToInitLog);
             var successString = hadIntegrityIssues ? "(with integrity issues)" : "(successfully)";
             Options.AddToInitLog?.Invoke(LogLevel.Debug, $"Recovery Ended {successString}");
 
@@ -326,7 +327,8 @@ namespace Voron
             _currentStateRecord = _currentStateRecord with
             {
                 TransactionId = txHeader->TransactionId == 0 ? fileHeader.TransactionId : txHeader->TransactionId,
-                NextPageNumber = nextPageNumber
+                NextPageNumber = nextPageNumber,
+                FlushedToJournal = lastJournalNumber
             };
             var transactionPersistentContext = new TransactionPersistentContext(true);
             using (var tx = NewLowLevelTransaction(transactionPersistentContext, TransactionFlags.ReadWrite))
@@ -1343,7 +1345,7 @@ namespace Voron
                     TransactionId = envStateRecord.TransactionId,
                     ScratchPagesTable = GetScratchTableSummary(envStateRecord.ScratchPagesTable),
                     NextPageNumber = envStateRecord.NextPageNumber,
-                    WrittenToJournalNumber = envStateRecord.Journal.Number,
+                    WrittenToJournalNumber = envStateRecord.FlushedToJournal,
                     ClientStateType = envStateRecord.ClientState?.GetType().ToString()
                 },
                 TransactionsToFlush = _transactionsToFlush.ToList().Select(x =>
@@ -1355,7 +1357,7 @@ namespace Voron
                         TransactionId = record.TransactionId,
                         ScratchPagesTable = GetScratchTableSummary(record.ScratchPagesTable),
                         NextPageNumber = record.NextPageNumber,
-                        WrittenToJournalNumber = record.Journal.Number,
+                        WrittenToJournalNumber = record.FlushedToJournal,
                         ClientStateType = record.ClientState?.GetType().ToString()
                     };
                 }).ToList(),
@@ -1658,6 +1660,7 @@ namespace Voron
                 // we may want to update the state of the transaction (scratch table, data pager state, etc)
                 // without incrementing the transaction id, since we didn't commit a transaction to the journal
                 TransactionId = tx.WrittenToJournalNumber == -1 ? currentStateRecord.TransactionId-1 : currentStateRecord.TransactionId,
+                FlushedToJournal = tx.WrittenToJournalNumber == -1 ? currentStateRecord.FlushedToJournal : tx.WrittenToJournalNumber,
                 ScratchPagesTable = tx.ModifiedPagesInTransaction,
                 NextPageNumber = tx.GetNextPageNumber(),
                 Root = tx.RootObjects.ReadHeader(),

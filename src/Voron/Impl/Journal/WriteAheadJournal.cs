@@ -53,7 +53,7 @@ namespace Voron.Impl.Journal
         private readonly List<Pal.journal_entry> _mergedEntriesBuffer = new();
         private readonly List<PendingJournalStateRecord> _mergedJournalRecordsBuffer = new();
 
-        private record PendingJournalStateRecord(
+        internal record PendingJournalStateRecord(
             LowLevelTransaction Transaction,
             TaskCompletionSource Tcs,
             Pal.journal_entry Entry);
@@ -178,7 +178,7 @@ namespace Voron.Impl.Journal
             return journal;
         }
 
-        public bool RecoverDatabase(TransactionHeader* txHeader, Action<LogLevel, string> addToInitLog)
+        public bool RecoverDatabase(TransactionHeader* txHeader, out long lastJournalNumber, Action<LogLevel, string> addToInitLog)
         {
             // note, we don't need to do any concurrency here, happens as a single threaded
             // fashion on db startup
@@ -218,7 +218,7 @@ namespace Voron.Impl.Journal
             var dataPager = _env.DataPager;
             var currentState = _env.CurrentStateRecord;
             var dataPagerState = currentState.DataPagerState;
-
+            lastJournalNumber = -1;
             var deleteLastJournal = false;
             for (var journalNumber = journalToStartReadingFrom; journalNumber <= logInfo.CurrentJournal; journalNumber++)
             {
@@ -247,6 +247,7 @@ namespace Voron.Impl.Journal
        
                         if (transactionHeaders.Count > 0)
                         {
+                            lastJournalNumber = journalNumber;
                             *txHeader = transactionHeaders[^1];
 
                             if (lastFlushedJournal != -1 && txHeader->TransactionId < lastFlushedTxId)
@@ -407,26 +408,10 @@ namespace Voron.Impl.Journal
                 }
 
                 var instanceOfLastFlushedJournal = journalFiles.FirstOrDefault(x => x.Number == lastFlushedJournal);
-
+                // last flushed journal might not exist because it could be already deleted and the only journal we have is empty
                 if (instanceOfLastFlushedJournal != null)
                 {
-                    // last flushed journal might not exist because it could be already deleted and the only journal we have is empty
-                    TransactionHeader lastFlushedTxHeader = instanceOfLastFlushedJournal.GetLastReadTxHeader(lastFlushedTxId);
-                    if (lastFlushedTxHeader.TransactionId is -1)
-                    {
-                        throw new InvalidOperationException(
-                            $"Could not find expected transaction id {lastFlushedTxId} in journal file {instanceOfLastFlushedJournal.Number}");
-                    }
-
-                    if (lastFlushedTxHeader.TransactionId != lastFlushedTxId)
-                    {
-                        throw new InvalidOperationException(
-                            $"Mismatch of flushed transaction {lastFlushedTxId} vs. last header: {lastFlushedTxHeader.TransactionId} in journal file {instanceOfLastFlushedJournal.Number}");
-
-                    }
-
-                    _journalApplicator.SetLastFlushed(lastFlushedTxId, instanceOfLastFlushedJournal, 
-                        toDelete, ref lastFlushedTxHeader);
+                    _journalApplicator.SetLastFlushed(lastFlushedTxId, instanceOfLastFlushedJournal, toDelete);
                 }
             }
 
@@ -814,7 +799,7 @@ namespace Voron.Impl.Journal
                 if (edi != null)
                     edi.Throw();
                 else if (applied && executedSuccessfully == false)
-                    throw new InvalidOperationException($"Journal state was not applied successfully after the flush (waited - {sp.Elapsed}, last flushed tx: id - {record.TransactionId}, written to journal - {record.Journal.Number})");
+                    throw new InvalidOperationException($"Journal state was not applied successfully after the flush (waited - {sp.Elapsed}, last flushed tx: id - {record.TransactionId}, written to journal - {record.FlushedToJournal})");
             }
 
             private bool WaitForJournalStateToBeUpdated(CancellationToken token, TransactionPersistentContext transactionPersistentContext,
@@ -896,10 +881,10 @@ namespace Voron.Impl.Journal
             {
                 _forTestingPurposes?.OnUpdateJournalStateUnderWriteTransactionLock?.Invoke();
 
-                JournalFile journalFile = _waj._files.FirstOrDefault(x => x.Number == flushedRecord.Journal.Number);
+                JournalFile journalFile = _waj._files.FirstOrDefault(x => x.Number == flushedRecord.FlushedToJournal);
                 if (journalFile is null)
                 {
-                    throw new InvalidOperationException($"Unable to find journal file {flushedRecord.Journal.Number} in {_waj._env.DataPager.FileName}");
+                    throw new InvalidOperationException($"Unable to find journal file {flushedRecord.FlushedToJournal} in {_waj._env.DataPager.FileName}");
                 }
 
                 var unusedJournals = new List<JournalFile>();
@@ -907,9 +892,9 @@ namespace Voron.Impl.Journal
                 {
                     _waj._files = _waj._files.RemoveWhile(x =>
                     {
-                        if (x.Number < flushedRecord.Journal.Number)
+                        if (x.Number < flushedRecord.FlushedToJournal)
                             return true;
-                        return x.Number == flushedRecord.Journal.Number && x.GetAvailable4Kbs(flushedRecord) == 0;
+                        return x.Number == flushedRecord.FlushedToJournal && x.GetAvailable4Kbs(flushedRecord) == 0;
                     }, unusedJournals);
                 }
                 else
@@ -937,16 +922,9 @@ namespace Voron.Impl.Journal
                     AddJournalToDelete(unused);
                 }
 
-                var txHeader = journalFile.GetLastReadTxHeader(flushedRecord.TransactionId);
-                if (txHeader.TransactionId != flushedRecord.TransactionId)
-                {
-                    throw new InvalidOperationException(
-                        $"Mismatch between flushed transaction id {flushedRecord.TransactionId} and transaction header: {txHeader.TransactionId} in journal: {journalFile.Number}");
-
-                }
-
+   
                 SetLastFlushed(flushedRecord.TransactionId, journalFile,
-                    _journalsToDelete.Values.ToList(), ref txHeader);
+                    _journalsToDelete.Values.ToList());
 
                 if (_waj._files.Count == 0)
                 {
@@ -1614,8 +1592,10 @@ namespace Voron.Impl.Journal
                 current.Release();
             }
 
-            public void SetLastFlushed(long lastTransactionId, JournalFile journalFile, List<JournalFile> journalFiles, ref TransactionHeader lastFlushedTxHeader)
+            public void SetLastFlushed(long lastTransactionId, JournalFile journalFile, List<JournalFile> journalFiles)
             {
+                var lastFlushedTxHeader = journalFile.GetLastReadTxHeader(lastTransactionId);
+         
                 var newState = new LastFlushState(lastTransactionId, 
                     journalFile, journalFiles,
                     lastFlushedTxHeader.Root, lastFlushedTxHeader.LastPageNumber);
@@ -1747,9 +1727,10 @@ namespace Voron.Impl.Journal
         {
             try
             {
-                Debug.Assert(_mergedEntriesBuffer.Count is 0 && _mergedEntriesBuffer.Count is 0,
-                    "_mergedEntriesBuffer.Count is 0 && _mergedEntriesBuffer.Count is 0");
+                Debug.Assert(_mergedEntriesBuffer.Count is 0);
 
+                _forTestingPurposes?.OnWriteBuffersToJournal?.Invoke(_mergedCommitsQueue);
+                
                 long requiredSizeIn4Kbs = 0;
                 while (true)
                 {
@@ -2321,6 +2302,7 @@ namespace Voron.Impl.Journal
         internal sealed class TestingStuff
         {
             internal Action OnReduceSizeOfCompressionBufferIfNeeded_RightAfterDisposingCompressionPager;
+            internal Action<ConcurrentQueue<PendingJournalStateRecord>> OnWriteBuffersToJournal;
         }
 
         private void RejectCommitsToMerge()

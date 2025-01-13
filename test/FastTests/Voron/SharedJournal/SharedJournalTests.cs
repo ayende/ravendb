@@ -1,4 +1,5 @@
-﻿using System.IO;
+﻿using System;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Raven.Server.Utils;
@@ -12,6 +13,67 @@ namespace FastTests.Voron.SharedJournal;
 
 public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output)
 {
+    [RavenFact(RavenTestCategory.Voron)]
+    public void CanFlushRootEnvAfterJournalsFilledWithOnlyBranchCommits()
+    {
+        string rootPath = NewDataPath(suffix: "root");
+        IOExtensions.DeleteDirectory(rootPath);
+     
+        {
+            using var rootOptions = StorageEnvironmentOptions.ForPathForTests(rootPath);
+            rootOptions.ManualFlushing = true;
+            rootOptions.ManualSyncing = true;
+            rootOptions.MaxLogFileSize = 3 * 4096; // only two transactions per journal
+
+            using var root = new StorageEnvironment(rootOptions);
+            using var _ = root.Journal.SharedJournalsScope(CancellationToken.None);
+
+            var mre = new ManualResetEventSlim(false);
+            root.Journal.OnBranchJournalEntrySubmitted += () =>
+            {
+                mre.Set();
+            };
+            var task = Task.Run(() =>
+            {
+                string path = NewDataPath("branch");
+                IOExtensions.DeleteDirectory(path);
+                return CreateBranchEnv(path, root);
+            });
+            task.ContinueWith(_ => mre.Set());
+            
+            WaitForTaskAndExecuteBranchTransactions(task, mre, root);
+
+            using var branchEnv = task.Result;
+            Task secondBranchCommit = Task.CompletedTask;
+            root.Journal.ForTestingPurposesOnly().OnWriteBuffersToJournal += q =>
+            {
+                int before = q.Count;
+                secondBranchCommit = Task.Run(() =>
+                {
+                    using (var tx = branchEnv.WriteTransaction())
+                    {
+                        tx.CreateTree(Guid.NewGuid().ToString());
+                        tx.Commit();
+                    }
+                });
+                WaitForValue(() => q.Count, 1 + before);
+            };
+            
+            using (var rootTx = root.WriteTransaction())
+            {
+                Tree tree = rootTx.CreateTree("rootTree");
+                tree.Add("root", "yes");
+                rootTx.Commit();
+            }
+            
+            secondBranchCommit.Wait();
+
+            root.FlushLogToDataFile();
+
+            root.SyncDataFileImmediately();
+        }
+    }
+    
     [RavenFact(RavenTestCategory.Voron)]
     public void CanCreateRootAndBranchEnvironments()
     {
