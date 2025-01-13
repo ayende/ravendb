@@ -421,9 +421,9 @@ namespace Raven.Server.Documents
                 _addToInitLog(LogLevel.Debug, "Initializing DocumentStorage");
                 DocumentsStorage.Initialize((options & InitializeOptions.GenerateNewDatabaseId) == InitializeOptions.GenerateNewDatabaseId);
                 _addToInitLog(LogLevel.Debug, "Starting Transaction Merger");
+                DocumentsStorage.Environment.Journal.BranchJournalMerger = TxMerger;
                 TxMerger.Initialize(DocumentsStorage.ContextPool, IsEncrypted, Is32Bits);
                 TxMerger.Start();
-                DocumentsStorage.Environment.Journal.OnBranchJournalEntrySubmitted += TxMerger.Wake;
 
                 _addToInitLog(LogLevel.Debug, "Initializing ConfigurationStorage");
                 ConfigurationStorage.Initialize();

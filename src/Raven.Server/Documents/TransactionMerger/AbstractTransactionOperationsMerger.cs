@@ -24,6 +24,7 @@ using Sparrow.Utils;
 using Voron;
 using Voron.Global;
 using Voron.Impl;
+using Voron.Impl.Journal;
 using Size = Sparrow.Size;
 
 namespace Raven.Server.Documents.TransactionMerger
@@ -32,7 +33,7 @@ namespace Raven.Server.Documents.TransactionMerger
     /// Merges multiple commands into a single transaction. Any commands that implement IDisposable
     /// will be disposed after the command is executed and transaction is committed
     /// </summary>
-    public abstract partial class AbstractTransactionOperationsMerger<TOperationContext, TTransaction> : IDisposable
+    public abstract partial class AbstractTransactionOperationsMerger<TOperationContext, TTransaction> : IDisposable, IJournalMerger
         where TOperationContext : TransactionOperationContext<TTransaction>
         where TTransaction : RavenTransaction
     {
@@ -80,7 +81,7 @@ namespace Raven.Server.Documents.TransactionMerger
             _timeToCheckHighDirtyMemory = configuration.Memory.TemporaryDirtyMemoryChecksPeriod;
             _lastHighDirtyMemCheck = time.GetUtcNow();
         }
-
+        
         public void Initialize([NotNull] JsonContextPoolBase<TOperationContext> contextPool, bool isEncrypted, bool is32Bits)
         {
             _contextPool = contextPool ?? throw new ArgumentNullException(nameof(contextPool));
@@ -988,12 +989,12 @@ namespace Raven.Server.Documents.TransactionMerger
 
         private DateTime _lastHighDirtyMemCheck;
         private readonly TimeSetting _timeToCheckHighDirtyMemory;
-        
-        
 
-        public void Wake()
+        public void JournalMergeSubmitted()
         {
             _waitHandle.Set();
         }
+        
+        public bool IsIdle => _operations.IsEmpty;
     }
 }

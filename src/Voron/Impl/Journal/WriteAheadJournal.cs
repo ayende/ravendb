@@ -105,6 +105,7 @@ namespace Voron.Impl.Journal
         {
             _env = env;
             _is32Bit = env.Options.ForceUsing32BitsPager || PlatformDetails.Is32Bits;
+            _minimumSharedJournalsMergeCount = _env.Options.MinimumSharedJournalsMergeCount;
             _logger = RavenLogManager.Instance.GetLoggerForVoron<WriteAheadJournal>(_env.Options, env.ToString());
             _currentJournalFileSize = env.Options.InitialLogFileSize;
             _headerAccessor = env.HeaderAccessor;
@@ -1706,7 +1707,7 @@ namespace Voron.Impl.Journal
             }
         }
 
-        public event Action OnBranchJournalEntrySubmitted; 
+        public IJournalMerger BranchJournalMerger; 
         private void SubmitBranchJournalEntry(Task commitCompleted)
         {
             Debug.Assert(_env.Options.RootJournal is null, "_env.Options.RootJournal is null");
@@ -1714,11 +1715,11 @@ namespace Voron.Impl.Journal
                 var token = _rootJournalMergedCommitsCts.Token;
                 token.ThrowIfCancellationRequested();
             }
-            var handler = OnBranchJournalEntrySubmitted;
+            var handler = BranchJournalMerger;
             if(handler == null)
-                throw new InvalidOperationException($"Call to {nameof(SubmitBranchJournalEntry)} when there is no handler registered for the journal {nameof(OnBranchJournalEntrySubmitted)}");
+                throw new InvalidOperationException($"Call to {nameof(SubmitBranchJournalEntry)} when there is no handler registered for the {nameof(BranchJournalMerger)}");
            
-            handler();
+            handler.JournalMergeSubmitted();
             
             // here we are going to wait for the root to do the actual write to disk
             // note that we *explicitly* do NOT use the cancellation token, since 
@@ -1743,8 +1744,11 @@ namespace Voron.Impl.Journal
                     _mergedEntriesBuffer.Add(rootEntry.Entry);
                     requiredSizeIn4Kbs = rootEntry.Entry.NumberOf4Kbs;
                 }
-                
-                while (true)
+
+                var journalMerger = BranchJournalMerger;
+
+                while (_mergedEntriesBuffer.Count < _minimumSharedJournalsMergeCount && 
+                       journalMerger?.IsIdle is not false)
                 {
                     if (_mergedCommitsQueue.TryDequeue(out var cur) is false)
                         break;
@@ -1775,6 +1779,9 @@ namespace Voron.Impl.Journal
                 }
 
                 FlushBuffersToFile(tx, ref requiredSizeIn4Kbs);
+                
+                if(_mergedCommitsQueue.IsEmpty is false)
+                    journalMerger?.JournalMergeSubmitted();
             }
             catch (Exception e)
             {
@@ -2303,6 +2310,7 @@ namespace Voron.Impl.Journal
 
         private TestingStuff _forTestingPurposes;
         private CancellationTokenSource _rootJournalMergedCommitsCts;
+        private readonly int _minimumSharedJournalsMergeCount;
 
         internal TestingStuff ForTestingPurposesOnly()
         {

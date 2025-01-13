@@ -150,10 +150,7 @@ public class LegacyHandling(ITestOutputHelper output) : RavenTestBase(output)
                 }
             }
             var mre = new ManualResetEventSlim(false);
-            root.Journal.OnBranchJournalEntrySubmitted += () =>
-            {
-                mre.Set();
-            };
+            root.Journal.BranchJournalMerger = new SharedJournalTests.MyJournalMerger(mre);
             // Now do another write
             var task = Task.Run(() =>
             {

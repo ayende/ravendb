@@ -162,5 +162,10 @@ namespace Raven.Server.Config.Categories
         [DefaultValue(false)]
         [ConfigurationEntry("Storage.AvoidSharedJournals", ConfigurationEntryScope.ServerWideOrPerDatabase)]
         public bool AvoidSharedJournals { get; set; }
+        
+        [Description("EXPERT: The minimum amount of shared journals that we'll merge before checking if there are additional transactional operations to merge.")]
+        [DefaultValue(8)]
+        [ConfigurationEntry("Storage.MinimumSharedJournalsMergeCount", ConfigurationEntryScope.ServerWideOrPerDatabase)]
+        public int MinimumSharedJournalsMergeCount { get; set; }
     }
 }

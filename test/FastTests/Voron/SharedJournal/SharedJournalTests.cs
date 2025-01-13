@@ -6,6 +6,7 @@ using Raven.Server.Utils;
 using Tests.Infrastructure;
 using Voron;
 using Voron.Data.BTrees;
+using Voron.Impl.Journal;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -13,6 +14,15 @@ namespace FastTests.Voron.SharedJournal;
 
 public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output)
 {
+    public class MyJournalMerger(ManualResetEventSlim e) : IJournalMerger
+    {
+        public bool IsIdle => true;
+        public void JournalMergeSubmitted()
+        {
+            e.Set();
+        }
+    }
+
     [RavenFact(RavenTestCategory.Voron)]
     public void CanFlushRootEnvAfterJournalsFilledWithOnlyBranchCommits()
     {
@@ -29,10 +39,7 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             using var _ = root.Journal.SharedJournalsScope(CancellationToken.None);
 
             var mre = new ManualResetEventSlim(false);
-            root.Journal.OnBranchJournalEntrySubmitted += () =>
-            {
-                mre.Set();
-            };
+            root.Journal.BranchJournalMerger = new MyJournalMerger(mre);
             var task = Task.Run(() =>
             {
                 string path = NewDataPath("branch");
@@ -98,10 +105,7 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             }
 
             var mre = new ManualResetEventSlim(false);
-            root.Journal.OnBranchJournalEntrySubmitted += () =>
-            {
-                mre.Set();
-            };
+            root.Journal.BranchJournalMerger = new MyJournalMerger(mre);
             var task = Task.Run(() =>
             {
                 using var branch = CreateBranchEnv(branchPath, root);
@@ -145,10 +149,7 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             }
 
             var mre = new ManualResetEventSlim(false);
-            root.Journal.OnBranchJournalEntrySubmitted += () =>
-            {
-                mre.Set();
-            };
+            root.Journal.BranchJournalMerger = new MyJournalMerger(mre);
             // Now do another write
             var task = Task.Run(() =>
             {
@@ -222,10 +223,7 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             }
 
             var mre = new ManualResetEventSlim(false);
-            root.Journal.OnBranchJournalEntrySubmitted += () =>
-            {
-                mre.Set();
-            };
+            root.Journal.BranchJournalMerger = new MyJournalMerger(mre);
             
             var task = Task.Run(() =>
             {
@@ -274,10 +272,7 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             }
             
             var mre = new ManualResetEventSlim(false);
-            root.Journal.OnBranchJournalEntrySubmitted += () =>
-            {
-                mre.Set();
-            };
+            root.Journal.BranchJournalMerger = new MyJournalMerger(mre);
             // Now do another write
             var task = Task.Run(() =>
             {
@@ -330,11 +325,7 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             }
 
             var mre = new ManualResetEventSlim(false);
-            root.Journal.OnBranchJournalEntrySubmitted += () =>
-            {
-                mre.Set();
-            };
-
+            root.Journal.BranchJournalMerger = new MyJournalMerger(mre);
             var task = Task.Run(() =>
             {
                 // journal 0 - 2
@@ -416,11 +407,7 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             }
 
             var mre = new ManualResetEventSlim(false);
-            root.Journal.OnBranchJournalEntrySubmitted += () =>
-            {
-                mre.Set();
-            };
-
+            root.Journal.BranchJournalMerger = new MyJournalMerger(mre);
             var task = Task.Run(() =>
             {
                 using var branch = CreateBranchEnv(branchPath, root);
@@ -558,11 +545,7 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             root.FlushLogToDataFile();
 
             var mre = new ManualResetEventSlim(false);
-            root.Journal.OnBranchJournalEntrySubmitted += () =>
-            {
-                mre.Set();
-            };
-
+            root.Journal.BranchJournalMerger = new MyJournalMerger(mre);
             var task = Task.Run(() =>
             {
                 using var branch = CreateBranchEnv(branchPath, root);
@@ -628,10 +611,7 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             Assert.Empty(rootJournals);
 
             var mre = new ManualResetEventSlim(false);
-            root.Journal.OnBranchJournalEntrySubmitted += () =>
-            {
-                mre.Set();
-            };
+            root.Journal.BranchJournalMerger = new MyJournalMerger(mre);
 
             var task = Task.Run(() =>
             {

@@ -206,6 +206,8 @@ namespace Raven.Server.Documents
             options.IgnoreDataIntegrityErrorsOfAlreadySyncedTransactions = DocumentDatabase.Configuration.Storage.IgnoreDataIntegrityErrorsOfAlreadySyncedTransactions;
             options.DisableSparseRegions = DocumentDatabase.Configuration.Storage.DisableSparseRegions;
             options.JournalsCompressionAcceleration = DocumentDatabase.Configuration.Storage.JournalsCompressionAcceleration;
+            options.MinimumSharedJournalsMergeCount = DocumentDatabase.Configuration.Storage.MinimumSharedJournalsMergeCount;
+
             try
             {
                 Initialize(options);

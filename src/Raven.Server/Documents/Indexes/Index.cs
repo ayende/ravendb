@@ -777,6 +777,8 @@ namespace Raven.Server.Documents.Indexes
             options.IgnoreDataIntegrityErrorsOfAlreadySyncedTransactions = documentDatabase.Configuration.Storage.IgnoreDataIntegrityErrorsOfAlreadySyncedTransactions;
             options.DisableSparseRegions = documentDatabase.Configuration.Storage.DisableSparseRegions;
             options.JournalsCompressionAcceleration = documentDatabase.Configuration.Storage.JournalsCompressionAcceleration;
+            options.MinimumSharedJournalsMergeCount = documentDatabase.Configuration.Storage.MinimumSharedJournalsMergeCount;
+
 
             if (documentDatabase.ServerStore.GlobalIndexingScratchSpaceMonitor != null)
                 options.ScratchSpaceUsage.AddMonitor(documentDatabase.ServerStore.GlobalIndexingScratchSpaceMonitor);
