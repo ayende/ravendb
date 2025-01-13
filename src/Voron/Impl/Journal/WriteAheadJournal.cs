@@ -1794,6 +1794,7 @@ namespace Voron.Impl.Journal
                     _logger.Debug($"New journal file created {CurrentFile.Number:D19} with size {CurrentFile.JournalSize}");
             }
 
+            var previousRequiredSizeIn4Kbs = requiredSizeIn4Kbs;
             requiredSizeIn4Kbs = 0;
 
             foreach (var rec in _mergedJournalRecordsBuffer)
@@ -1824,7 +1825,7 @@ namespace Voron.Impl.Journal
 
                 if (_logger.IsDebugEnabled)
                     _logger.Debug(
-                        $"Writing {new Size(4 * requiredSizeIn4Kbs, SizeUnit.Kilobytes)} to journal {CurrentFile.Number:D19} took {elapsed} with journal entries from {_mergedEntriesBuffer.Count:D19} environments");
+                        $"Writing {new Size(4 * previousRequiredSizeIn4Kbs, SizeUnit.Kilobytes)} to journal {CurrentFile.Number:D19} took {elapsed} with journal entries from {_mergedEntriesBuffer.Count:##,###} environments");
 
                 if (CurrentFile.GetAvailable4Kbs(tx.CurrentStateRecord) == 0)
                 {
