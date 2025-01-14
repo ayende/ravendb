@@ -207,7 +207,7 @@ namespace Raven.Server.Documents
             options.DisableSparseRegions = DocumentDatabase.Configuration.Storage.DisableSparseRegions;
             options.JournalsCompressionAcceleration = DocumentDatabase.Configuration.Storage.JournalsCompressionAcceleration;
             options.MinimumSharedJournalsMergeCount = DocumentDatabase.Configuration.Storage.MinimumSharedJournalsMergeCount;
-
+            options.MaxLogFileSize = DocumentDatabase.Configuration.Storage.MaxJournalFileSize.GetValue(SizeUnit.Bytes);
             try
             {
                 Initialize(options);

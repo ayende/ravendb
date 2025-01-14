@@ -70,6 +70,12 @@ namespace Raven.Server.Config.Categories
         [SizeUnit(SizeUnit.Megabytes)]
         [ConfigurationEntry("Storage.MaxScratchBufferSizeInMb", ConfigurationEntryScope.ServerWideOrPerDatabase)]
         public Size? MaxScratchBufferSize { get; set; }
+        
+        [Description("Max size of write ahead journals that Voron will use.")]
+        [DefaultValue(256)]
+        [SizeUnit(SizeUnit.Megabytes)]
+        [ConfigurationEntry("Storage.MaxJournalFileSizeInMb", ConfigurationEntryScope.ServerWideOrPerDatabase)]
+        public Size MaxJournalFileSize { get; set; }
 
         [Description("Size of the batch that will be requested to the OS from disk when prefetching (value in powers of 2). Some OSs may not honor certain values. Experts only.")]
         [DefaultValue(1024)]

@@ -73,6 +73,7 @@ namespace Raven.Server.Documents
             options.DisableSparseRegions = _db.Configuration.Storage.DisableSparseRegions;
             options.JournalsCompressionAcceleration = _db.Configuration.Storage.JournalsCompressionAcceleration;
             options.MinimumSharedJournalsMergeCount = _db.Configuration.Storage.MinimumSharedJournalsMergeCount;
+            options.MaxLogFileSize = _db.Configuration.Storage.MaxJournalFileSize.GetValue(SizeUnit.Bytes);
             try
             {
                 DirectoryExecUtils.SubscribeToOnDirectoryInitializeExec(options, _db.Configuration.Storage, _db.Name, DirectoryExecUtils.EnvironmentType.Configuration, _logger);
