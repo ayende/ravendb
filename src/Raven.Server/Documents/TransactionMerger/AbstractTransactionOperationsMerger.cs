@@ -104,6 +104,7 @@ namespace Raven.Server.Documents.TransactionMerger
 
         public void Start()
         {
+            _sharedJournalsScope = _env.Journal.SharedJournalsScope(_shutdown);
             _txLongRunningOperation = PoolOfThreads.GlobalRavenThreadPool.LongRunning(o => MergeOperationThreadProc(), null, ThreadNames.ForTransactionMerging(TransactionMergerThreadName, _resourceName));
         }
 
@@ -155,12 +156,12 @@ namespace Raven.Server.Documents.TransactionMerger
 
         private void MergeOperationThreadProc()
         {
+            using var _ = _sharedJournalsScope;
+
             ThreadHelper.TrySetThreadPriority(ThreadPriority.AboveNormal, TransactionMergerThreadName, _log);
 
             var oomTimer = new Stopwatch();// this is allocated here to avoid OOM when using it
             
-            using var _ = _env.Journal.SharedJournalsScope(_shutdown);
-
             while (true) // this is actually only executed once, except if we are trying to recover from OOM errors
             {
                 NativeMemory.EnsureRegistered();
@@ -989,6 +990,7 @@ namespace Raven.Server.Documents.TransactionMerger
 
         private DateTime _lastHighDirtyMemCheck;
         private readonly TimeSetting _timeToCheckHighDirtyMemory;
+        private WriteAheadJournal.ScopeForSharedJournals _sharedJournalsScope;
 
         public void JournalMergeSubmitted()
         {
