@@ -105,7 +105,8 @@ namespace Voron.Impl.Journal
         {
             _env = env;
             _is32Bit = env.Options.ForceUsing32BitsPager || PlatformDetails.Is32Bits;
-            _minimumSharedJournalsMergeCount = _env.Options.MinimumSharedJournalsMergeCount;
+            // this must be at least 1 to ensure that we can always make forward progress
+            _minimumSharedJournalsMergeCount = Math.Max(1, _env.Options.MinimumSharedJournalsMergeCount);
             _logger = RavenLogManager.Instance.GetLoggerForVoron<WriteAheadJournal>(_env.Options, env.ToString());
             _currentJournalFileSize = env.Options.InitialLogFileSize;
             _headerAccessor = env.HeaderAccessor;
@@ -1747,8 +1748,8 @@ namespace Voron.Impl.Journal
 
                 var journalMerger = BranchJournalMerger;
 
-                while (_mergedEntriesBuffer.Count < _minimumSharedJournalsMergeCount && 
-                       journalMerger?.IsIdle is not false)
+                while (_mergedEntriesBuffer.Count < _minimumSharedJournalsMergeCount || 
+                       journalMerger is null || journalMerger.IsIdle)
                 {
                     if (_mergedCommitsQueue.TryDequeue(out var cur) is false)
                         break;
@@ -1761,7 +1762,7 @@ namespace Voron.Impl.Journal
                             // This file may not be valid for this environment, so we need to create a fresh one
                             CurrentFile.IsValidFileFor(cur.Transaction.Environment) is false)
                         {
-                            FlushBuffersToFile(tx, ref requiredSizeIn4Kbs);
+                            FlushMergedJournalEntries(tx, ref requiredSizeIn4Kbs);
                             CurrentFileIsDone();
                         }
                     }
@@ -1769,7 +1770,7 @@ namespace Voron.Impl.Journal
                     // the maximum log file size by batching entries
                     else if (requiredSizeIn4Kbs + cur.Entry.NumberOf4Kbs >= _env.Options.MaxLogFileSize)
                     {
-                        FlushBuffersToFile(tx, ref requiredSizeIn4Kbs);
+                        FlushMergedJournalEntries(tx, ref requiredSizeIn4Kbs);
                         CurrentFileIsDone();
                     }
 
@@ -1778,10 +1779,14 @@ namespace Voron.Impl.Journal
                     _mergedJournalRecordsBuffer.Add(cur);
                 }
 
-                FlushBuffersToFile(tx, ref requiredSizeIn4Kbs);
-                
-                if(_mergedCommitsQueue.IsEmpty is false)
+                FlushMergedJournalEntries(tx, ref requiredSizeIn4Kbs);
+
+                if (_mergedCommitsQueue.IsEmpty is false)
+                {
+                    // we may have bailed early to ensure low latency for
+                    // the root env, so we tell the merger it has more work still...
                     journalMerger?.JournalMergeSubmitted();
+                }
             }
             catch (Exception e)
             {
@@ -1797,7 +1802,7 @@ namespace Voron.Impl.Journal
             }
         }
 
-        private void FlushBuffersToFile(LowLevelTransaction tx, ref long requiredSizeIn4Kbs)
+        private void FlushMergedJournalEntries(LowLevelTransaction tx, ref long requiredSizeIn4Kbs)
         {
             var entries = CollectionsMarshal.AsSpan(_mergedEntriesBuffer);
             if (entries.IsEmpty)

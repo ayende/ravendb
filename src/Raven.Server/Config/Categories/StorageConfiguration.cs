@@ -46,7 +46,7 @@ namespace Raven.Server.Config.Categories
         [ConfigurationEntry("Storage.MaxConcurrentFlushes", ConfigurationEntryScope.ServerWideOrPerDatabase)]
         public int MaxConcurrentFlushes { get; set; }
 
-        [Description("Time to sync after flash in seconds")]
+        [Description("Time to sync after flush in seconds")]
         [DefaultValue(30)]
         [TimeUnit(TimeUnit.Seconds)]
         [ConfigurationEntry("Storage.TimeToSyncAfterFlushInSec", ConfigurationEntryScope.ServerWideOrPerDatabase)]
@@ -163,7 +163,7 @@ namespace Raven.Server.Config.Categories
         [ConfigurationEntry("Storage.AvoidSharedJournals", ConfigurationEntryScope.ServerWideOrPerDatabase)]
         public bool AvoidSharedJournals { get; set; }
         
-        [Description("EXPERT: The minimum amount of shared journals that we'll merge before checking if there are additional transactional operations to merge.")]
+        [Description("EXPERT: Minimum amount of additional journals writes from indexes that we will merge before we'll let the transaction merger run database transactions. Higher values here means higher latency but throughput")]
         [DefaultValue(8)]
         [ConfigurationEntry("Storage.MinimumSharedJournalsMergeCount", ConfigurationEntryScope.ServerWideOrPerDatabase)]
         public int MinimumSharedJournalsMergeCount { get; set; }
