@@ -59,6 +59,7 @@ namespace Voron.Impl.Journal
             Pal.journal_entry Entry);
 
         private long _currentJournalFileSize;
+        private int _currentNumberOfRegisteredEnvironments;
         private DateTime _lastFile;
 
         private long _journalIndex = -1;
@@ -139,20 +140,38 @@ namespace Voron.Impl.Journal
         
         public bool HasBranchCommits => _mergedCommitsQueue.IsEmpty is false;
 
-        private JournalFile NextFile(long numberOf4Kbs = 1)
+        private JournalFile NextFile(long numberOf4Kbs, int numberOfRegisteredEnvironments)
         {
             var now = DateTime.UtcNow;
+            
+            numberOfRegisteredEnvironments = Math.Max(numberOfRegisteredEnvironments,
+                // if we have a decrease in the number of registered environments when creating a new
+                // file from the previous one, we'll average the two values to ensure more graceful 
+                // decay of journal file size
+                (_currentNumberOfRegisteredEnvironments + numberOfRegisteredEnvironments) / 2);
+
+            long maxLogFileSize = _env.Options.MaxLogFileSize;
+            if (numberOfRegisteredEnvironments > 1)
+            {
+                // If the previous log had multiple registered envs (root/branch model)
+                // we'll increase the max file size of the journals to accomodate that. With
+                // the more environments we have, the bigger the file is going to be.
+                maxLogFileSize *= (int)Math.Ceiling(Math.Log2(numberOfRegisteredEnvironments));
+            } 
+
+            _currentNumberOfRegisteredEnvironments = numberOfRegisteredEnvironments;    
+
             if ((now - _lastFile).TotalSeconds < 90)
             {
-                _currentJournalFileSize = Math.Min(_env.Options.MaxLogFileSize, _currentJournalFileSize * 2);
+                _currentJournalFileSize = Math.Min(maxLogFileSize, _currentJournalFileSize * 2);
             }
             var actualLogSize = _currentJournalFileSize;
             long minRequiredSize = numberOf4Kbs * 4 * Constants.Size.Kilobyte;
             if (_currentJournalFileSize < minRequiredSize)
             {
                 _currentJournalFileSize = Bits.PowerOf2(minRequiredSize);
-                if (_currentJournalFileSize > _env.Options.MaxLogFileSize)
-                    _currentJournalFileSize = Math.Max(_env.Options.MaxLogFileSize, minRequiredSize);
+                if (_currentJournalFileSize > maxLogFileSize)
+                    _currentJournalFileSize = Math.Max(maxLogFileSize, minRequiredSize);
 
                 actualLogSize = _currentJournalFileSize;
             }
@@ -1811,9 +1830,10 @@ namespace Voron.Impl.Journal
             if (CurrentFile == null ||
                 CurrentFile.GetAvailable4Kbs(tx.CurrentStateRecord) < requiredSizeIn4Kbs)
             {
+                int numberOfRegisteredEnvironments = CurrentFile?.RegisteredEnvironments.Count ?? 1;
                 CurrentFileIsDone();
 
-                CurrentFile = NextFile(requiredSizeIn4Kbs);
+                CurrentFile = NextFile(requiredSizeIn4Kbs, numberOfRegisteredEnvironments);
                 if (_logger.IsDebugEnabled)
                     _logger.Debug($"New journal file created {CurrentFile.Number:D19} with size {CurrentFile.JournalSize}");
             }
