@@ -37,6 +37,7 @@ namespace Voron.Impl.Journal
 
         public SingleUseFlag DoneWriting;
         private JournalWriter _journalWriter = journalWriter;
+        public bool NewlyCreatedFile;
 
         public long GetAvailable4Kbs(EnvironmentStateRecord record) => (_journalWriter?.NumberOfAllocated4Kb - GetWritePosIn4KbPosition(record)) ?? 0;
 
@@ -218,6 +219,12 @@ namespace Voron.Impl.Journal
             // if it isn't here, we can safely use it for the other env, because there
             // are no existing transactions to this environment in the file
             if (RecoveredJournalIds.Contains(other.HeaderAccessor.JournalId) is false)
+                return true;
+
+            // If this is a newly created file, we don't need to check if there is a link to
+            // the file which is the same, important since it saves us two system calls
+            // per file per each journal file
+            if (NewlyCreatedFile)
                 return true;
             
             // there _are_ transactions for the other env in this file, so we now need to 

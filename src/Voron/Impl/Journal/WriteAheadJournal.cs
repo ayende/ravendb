@@ -185,6 +185,7 @@ namespace Voron.Impl.Journal
             _lastFile = now;
 
             var journal = new JournalFile(_env, journalPager, _journalIndex, FrozenSet<Guid>.Empty);
+            journal.NewlyCreatedFile = true;
             journal.DoneWriting = new SingleUseFlag();
             journal.AddRef(); // one reference added by a creator - write ahead log
             journal.RegisteredEnvironments[_env] = journal;
@@ -1934,6 +1935,7 @@ namespace Voron.Impl.Journal
             {
                 var journalWriter = _env.Options.CreateJournalWriterForBranchEnvironment(index, existingJournalFileName, journalFile);
                 var journal = new JournalFile(_env, journalWriter, index, FrozenSet<Guid>.Empty);
+                journal.NewlyCreatedFile = true;
                 journal.DoneWriting = journalFile.DoneWriting;
                 journal.AddRef();
                 _files = _files.Append(journal);
