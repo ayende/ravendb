@@ -6,6 +6,7 @@
 
 using System;
 using Sparrow.Server;
+using Voron.Data.BTrees;
 
 namespace Voron.Data.Fixed
 {
@@ -71,21 +72,22 @@ namespace Voron.Data.Fixed
             }
         }
 
-        public class EmbeddedIterator : IFixedSizeIterator
+        public class EmbeddedIterator : IFixedSizeIterator, INotifyOnPageDefragOrSplit
         {
             private readonly FixedSizeTree<TVal> _fst;
             private readonly ByteStringContext _allocator;
             private long _pos;
-            private readonly FixedSizeTreeHeader.Embedded* _header;
+            private FixedSizeTreeHeader.Embedded* _header;
             private readonly byte* _dataStart;
             private readonly int _changesAtStart;
+            private Tree.NotifyOnPageChangesScope _pageChangesNotifyOnScope;
 
             public EmbeddedIterator(FixedSizeTree<TVal> fst)
             {
                 _fst = fst;
                 _allocator = fst._tx.Allocator;
                 _changesAtStart = _fst._changes;
-                var ptr = _fst._parent.DirectRead(_fst._treeName);
+                 _pageChangesNotifyOnScope = _fst._parent.ReadAndNotifyOnPageChanges(_fst._treeName, this, out var ptr);
                 _header = (FixedSizeTreeHeader.Embedded*)ptr;
                 _dataStart = ptr + sizeof(FixedSizeTreeHeader.Embedded);
             }
@@ -145,6 +147,12 @@ namespace Voron.Data.Fixed
 
             private void AssertNoChanges()
             {
+                if(_header == null)
+                {
+                    // this means that the page was split, so we need to re-read it
+                    _pageChangesNotifyOnScope.Dispose();
+                    _pageChangesNotifyOnScope = _fst._parent.ReadAndNotifyOnPageChanges(_fst._treeName, this, out var ptr);
+                }
                 if (_changesAtStart != _fst._changes)
                     throw new InvalidOperationException("You cannot perform modifications to tree when iterator is opened.");
             }
@@ -173,6 +181,12 @@ namespace Voron.Data.Fixed
 
             public void Dispose()
             {
+                _pageChangesNotifyOnScope.Dispose();
+            }
+
+            public void PageDefragOrSplit(long p)
+            {
+                _header = null;
             }
         }
 
@@ -181,7 +195,7 @@ namespace Voron.Data.Fixed
             private readonly FixedSizeTree<TVal> _parent;
             private readonly ByteStringContext _allocator;
             private FixedSizeTreePage<TVal> _currentPage;
-            private int _changesAtStart;
+            private readonly int _changesAtStart;
 
             public LargeIterator(FixedSizeTree<TVal> parent)
             {

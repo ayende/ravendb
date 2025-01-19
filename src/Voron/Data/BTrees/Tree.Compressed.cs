@@ -166,7 +166,7 @@ namespace Voron.Data.BTrees
                         continue;
                     }
 
-                    if (decompressedPage.HasSpaceFor(_llt, TreeSizeOf.NodeEntry(uncompressedNode)) == false)
+                    if (decompressedPage.HasSpaceFor(_llt, this, TreeSizeOf.NodeEntry(uncompressedNode)) == false)
                         throw new InvalidOperationException("Could not add uncompressed node to decompressed page");
 
                     int index;
@@ -263,7 +263,7 @@ namespace Voron.Data.BTrees
 
             page = ModifyPage(page);
 
-            if (page.HasSpaceFor(_llt, tombstoneNodeSize))
+            if (page.HasSpaceFor(_llt, this, tombstoneNodeSize))
             {
                 if (page.LastMatch == 0)
                     RemoveLeafNode(page);

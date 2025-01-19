@@ -502,13 +502,16 @@ namespace Voron.Data.BTrees
             return sb.ToString();
         }
 
-        public bool HasSpaceFor(LowLevelTransaction tx, int len)
+        public bool HasSpaceFor(LowLevelTransaction tx, Tree parent, int len)
         {
             if (len <= SizeLeft)
                 return true;
+            
+            parent.PageDefragOrSplitImminent(len);
+            
             if (len > CalcSizeLeft())
                 return false;
-
+            
             Defrag(tx);
 
             Debug.Assert(len <= SizeLeft);
@@ -556,10 +559,10 @@ namespace Voron.Data.BTrees
             return len <= SizeLeft;
         }
 
-        public bool HasSpaceFor(LowLevelTransaction tx, Slice key, int len)
+        public bool HasSpaceFor(LowLevelTransaction tx, Tree parent, Slice key, int len)
         {
             var requiredSpace = GetRequiredSpace(key, len);
-            return HasSpaceFor(tx, requiredSpace);
+            return HasSpaceFor(tx, parent, requiredSpace);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -718,9 +721,9 @@ namespace Voron.Data.BTrees
             return sl;
         }
 
-        public void EnsureHasSpaceFor(LowLevelTransaction tx, Slice key, int len)
+        public void EnsureHasSpaceFor(LowLevelTransaction tx, Tree parent, Slice key, int len)
         {
-            if (HasSpaceFor(tx, key, len) == false)
+            if (HasSpaceFor(tx, parent, key, len) == false)
                 throw new InvalidOperationException("Could not ensure that we have enough space, this is probably a bug");
         }
 

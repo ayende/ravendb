@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using Sparrow;
 using Voron.Data.Compression;
 using Voron.Data.Fixed;
@@ -45,6 +46,7 @@ namespace Voron.Data.BTrees
         private readonly Transaction _tx;
         public readonly bool IsIndexTree;
         private NewPageAllocator _newPageAllocator;
+        private Dictionary<long, HashSet<INotifyOnPageDefragOrSplit>> _preventDefragForPages;
 
         public LowLevelTransaction Llt => _llt;
 
@@ -376,7 +378,7 @@ namespace Voron.Data.BTrees
             }
 
             byte* dataPos;
-            if (page.HasSpaceFor(_llt, key, len) == false)
+            if (page.HasSpaceFor(_llt, this, key, len) == false)
             {
                 if (IsLeafCompressionSupported == false || TryCompressPageNodes(key, len, page) == false)
                 {
@@ -1202,6 +1204,50 @@ namespace Voron.Data.BTrees
 
             return (byte*)node + node->KeySize + Constants.Tree.NodeHeaderSize;
         }
+        
+        public readonly struct NotifyOnPageChangesScope(Tree parent, INotifyOnPageDefragOrSplit it, long page) : IDisposable
+        {
+            public void Dispose()
+            {
+                if (parent?._preventDefragForPages.TryGetValue(page, out var iterators) is true)
+                {
+                    iterators.Remove(it);
+                }
+            }
+        }
+
+
+        internal NotifyOnPageChangesScope ReadAndNotifyOnPageChanges(Slice key, INotifyOnPageDefragOrSplit it, out byte* ptr)
+        {
+            var p = FindPageFor(key, out TreeNodeHeader* node);
+
+            if (p is not { LastMatch: 0 })
+            {
+                ptr = null;
+                return default;
+            }
+            
+            Debug.Assert(node != null);
+
+            if (node->Flags == TreeNodeFlags.PageRef)
+            {
+                var overFlowPage = GetReadOnlyTreePage(node->PageNumber);
+                ptr = overFlowPage.Base + Constants.Tree.PageHeaderSize;
+                return default;
+            }
+
+            ptr =  (byte*)node + node->KeySize + Constants.Tree.NodeHeaderSize;
+            if(_llt.Flags is not TransactionFlags.ReadWrite)
+                return default;
+            
+            // We only care about this for write transactions...
+            _preventDefragForPages ??= [];
+            ref var iterators = ref CollectionsMarshal.GetValueRefOrAddDefault(_preventDefragForPages, p.PageNumber, out var exists);
+            if (exists is false)
+                iterators = [];
+            iterators.Add(it);
+            return new NotifyOnPageChangesScope(this, it, p.PageNumber);
+        }
 
         public List<long> AllPages()
         {
@@ -1607,6 +1653,18 @@ namespace Voron.Data.BTrees
                         }
                     }
                 }
+            }
+        }
+
+        public void PageDefragOrSplitImminent(long pageNumber)
+        {
+            if (_preventDefragForPages == null ||
+                _preventDefragForPages.TryGetValue(pageNumber, out var iterators) is false)
+                return;
+
+            foreach (var it in iterators)
+            {
+                it.PageDefragOrSplit(pageNumber);
             }
         }
     }

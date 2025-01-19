@@ -166,7 +166,7 @@ namespace Voron.Data.BTrees
 
                         var node = right.GetNode(i);
 
-                        if (mergedPage.HasSpaceFor(_tx, TreeSizeOf.NodeEntryWithAnotherKey(node, key) + Constants.Tree.NodeOffsetSize) == false)
+                        if (mergedPage.HasSpaceFor(_tx, _tree, TreeSizeOf.NodeEntryWithAnotherKey(node, key) + Constants.Tree.NodeOffsetSize) == false)
                         {
                             right.LastSearchPosition = previousSearchPosition;
                             //previous position --> prevent mutation of parameter
@@ -228,15 +228,15 @@ namespace Voron.Data.BTrees
                 switch (fromNode->Flags)
                 {
                     case TreeNodeFlags.PageRef:
-                        to.EnsureHasSpaceFor(_tx, originalFromKeyStart, -1);
+                        to.EnsureHasSpaceFor(_tx, _tree, originalFromKeyStart, -1);
                         dataPos = to.AddPageRefNode(to.LastSearchPosition, originalFromKeyStart, fromNode->PageNumber);
                         break;
                     case TreeNodeFlags.Data:
-                        to.EnsureHasSpaceFor(_tx, originalFromKeyStart, fromDataSize);
+                        to.EnsureHasSpaceFor(_tx, _tree, originalFromKeyStart, fromDataSize);
                         dataPos = to.AddDataNode(to.LastSearchPosition, originalFromKeyStart, fromDataSize);
                         break;
                     case TreeNodeFlags.MultiValuePageRef:
-                        to.EnsureHasSpaceFor(_tx, originalFromKeyStart, fromDataSize);
+                        to.EnsureHasSpaceFor(_tx, _tree, originalFromKeyStart, fromDataSize);
                         dataPos = to.AddMultiValueNode(to.LastSearchPosition, originalFromKeyStart, fromDataSize);
                         break;
                     default:
@@ -286,7 +286,7 @@ namespace Voron.Data.BTrees
             Slice originalFromKey;
             using (GetActualKey(from, from.LastSearchPositionOrLastEntry, out originalFromKey))
             {
-                to.EnsureHasSpaceFor(_tx, originalFromKey, -1);
+                to.EnsureHasSpaceFor(_tx, _tree, originalFromKey, -1);
 
                 var fromNode = from.GetNode(from.LastSearchPosition);
                 long pageNum = fromNode->PageNumber;
@@ -316,7 +316,7 @@ namespace Voron.Data.BTrees
                             externalScope = null;
                         }
 
-                        to.EnsureHasSpaceFor(_tx, implicitLeftKeyToInsert, -1);
+                        to.EnsureHasSpaceFor(_tx, _tree, implicitLeftKeyToInsert, -1);
                         to.AddPageRefNode(1, implicitLeftKeyToInsert, leftPageNumber);
                         externalScope?.Dispose();
 

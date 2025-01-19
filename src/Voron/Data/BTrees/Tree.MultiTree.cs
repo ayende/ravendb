@@ -93,14 +93,14 @@ namespace Voron.Data.BTrees
                 nestedPage.RemoveNode(nestedPage.LastSearchPosition);
             }
 
-            if (nestedPage.HasSpaceFor(_llt, value, 0))
+            if (nestedPage.HasSpaceFor(_llt, this, value, 0))
             {
                 // we are now working on top of the modified root page, we can just modify the memory directly
                 nestedPage.AddDataNode(nestedPage.LastSearchPosition, value, 0);
                 return;
             }
 
-            if (page.HasSpaceFor(_llt, value, 0))
+            if (page.HasSpaceFor(_llt, this, value, 0))
             {
                 // page has space for an additional node in nested page ...
 
