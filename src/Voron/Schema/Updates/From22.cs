@@ -12,7 +12,7 @@ namespace Voron.Schema.Updates
             {
                 for (int i = 0; i < 3; i++)
                 {
-                    header.Journal.Reserved[i] = 0;
+                    header.Journal.Reserved2[i] = 0;
                 }
                 
                 if (options.JournalExists(header.Journal.LastSyncedJournal))

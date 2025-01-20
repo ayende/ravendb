@@ -168,5 +168,44 @@ namespace FastTests.Voron
             Slice.External(txh.Allocator, (byte*)node + node->KeySize + Constants.Tree.NodeHeaderSize, (ushort)node->DataSize, ByteStringType.Immutable, out var item2);
             return Tuple.Create(item1, item2);
         }
+
+        protected long LatestJournalNumber()
+        {
+            long start = -1;
+            long step = 1;
+            long current = start;
+
+            while (true)
+            {
+                if (Env.Options.JournalExists(current + 1) is false)
+                {
+                    // we've found our highest existing journal number
+                    return current;
+                }
+
+                current += 1;
+
+                // Increase step size for galloping
+                step = (step == 0) ? 1 : step * 2;
+
+                // Check if jumping by 'step' would skip existing journals
+                while (Env.Options.JournalExists(current + step))
+                {
+                    current += step;
+                    step = (step == 0) ? 1 : step * 2;
+                }
+
+                // If we've jumped too far, reduce step size to find the exact point
+                while (step > 1)
+                {
+                    step /= 2;
+                    if (Env.Options.JournalExists(current + step) is false)
+                    {
+                        current -= step;
+                    }
+                }
+            }
+        }
+
     }
 }

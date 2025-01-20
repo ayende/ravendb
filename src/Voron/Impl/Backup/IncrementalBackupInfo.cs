@@ -17,7 +17,11 @@ namespace Voron.Impl.Backup
         [FieldOffset(8)] 
         public long LastBackedUpJournalPage;
 
+        /// <summary>
+        /// Up until version 7.1 - used to hold LastCreatedJournal, but we now
+        /// use the existence of the journal file instead to mark this
+        /// </summary>
         [FieldOffset(16)]
-        public long LastCreatedJournal;
+        public long Reserved;
     }
 }

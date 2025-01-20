@@ -62,13 +62,11 @@ namespace FastTests.Voron
             ptr->Root.RootObjectType = RootObjectType.VariableSizeTree;
             ptr->Root.RootPageNumber = (long)rnd.NextDouble();
 
-            ptr->Journal.CurrentJournal = (long)rnd.NextDouble();
             ptr->Journal.LastSyncedJournal = (long)rnd.NextDouble();
             ptr->Journal.LastSyncedTransactionId = (long)rnd.NextDouble();
 
             ptr->IncrementalBackup.LastBackedUpJournal = (long)rnd.NextDouble();
             ptr->IncrementalBackup.LastBackedUpJournalPage = (long)rnd.NextDouble();
-            ptr->IncrementalBackup.LastCreatedJournal = (long)rnd.NextDouble();
 
             ptr->LastPageNumber = (long)rnd.NextDouble();
             ptr->MagicMarker = Constants.MagicMarker;
@@ -92,13 +90,11 @@ namespace FastTests.Voron
             Assert.Equal(ptr->Root.RootObjectType, RootObjectType.VariableSizeTree);
             Assert.Equal(ptr->Root.RootPageNumber, (long)rnd.NextDouble());
 
-            Assert.Equal(ptr->Journal.CurrentJournal, (long)rnd.NextDouble());
             Assert.Equal(ptr->Journal.LastSyncedJournal, (long)rnd.NextDouble());
             Assert.Equal(ptr->Journal.LastSyncedTransactionId, (long)rnd.NextDouble());
 
             Assert.Equal(ptr->IncrementalBackup.LastBackedUpJournal, (long)rnd.NextDouble());
             Assert.Equal(ptr->IncrementalBackup.LastBackedUpJournalPage, (long)rnd.NextDouble());
-            Assert.Equal(ptr->IncrementalBackup.LastCreatedJournal, (long)rnd.NextDouble());
 
             Assert.Equal(ptr->LastPageNumber, (long)rnd.NextDouble());
             Assert.Equal(ptr->MagicMarker, Constants.MagicMarker);

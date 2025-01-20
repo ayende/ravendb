@@ -178,17 +178,16 @@ namespace Voron.Impl.FileHeaders
             header.TransactionId = 0;
             header.LastPageNumber = 1;
             header.Root.RootPageNumber = -1;
-            header.Journal.CurrentJournal = -1;
+            header.Journal.Reserved1 = 0;
             for (int i = 0; i < JournalInfo.NumberOfReservedBytes; i++)
             {
-                header.Journal.Reserved[i] = 0;
+                header.Journal.Reserved2[i] = 0;
             }
             header.Journal.Flags = Journal.JournalInfoFlags.None;
             header.Journal.LastSyncedJournal = -1;
             header.Journal.LastSyncedTransactionId = -1;
             header.IncrementalBackup.LastBackedUpJournal = -1;
             header.IncrementalBackup.LastBackedUpJournalPage = -1;
-            header.IncrementalBackup.LastCreatedJournal = -1;
             header.PageSize = env.Options.PageSize;
             header.JournalId = Guid.NewGuid();
             var buffer = MemoryMarshal.AsBytes(new Span<FileHeader>(ref header));
@@ -202,13 +201,14 @@ namespace Voron.Impl.FileHeaders
                 header.HeaderRevision != -1 ||
                 header.TransactionId != 0) 
                 return false;
-            return header is { LastPageNumber: 1, Root.RootPageNumber: -1, Journal: { CurrentJournal: -1, Flags: JournalInfoFlags.None } } &&
-                   header.Journal.Reserved[0] == 0 && 
-                   header.Journal.Reserved[1] == 0 && 
-                   header.Journal.Reserved[2] == 0 &&
+            return header is { LastPageNumber: 1, Root.RootPageNumber: -1, Journal: { Flags: JournalInfoFlags.None } } &&
+                   header.Journal.Reserved1 == 0 &&
+                   header.Journal.Reserved2[0] == 0 && 
+                   header.Journal.Reserved2[1] == 0 && 
+                   header.Journal.Reserved2[2] == 0 &&
                    header.Journal is { LastSyncedJournal: -1, LastSyncedTransactionId: -1 } &&
                    header.IncrementalBackup.LastBackedUpJournal == -1 &&
-                   header.IncrementalBackup is { LastBackedUpJournalPage: -1, LastCreatedJournal: -1 };
+                   header.IncrementalBackup is { LastBackedUpJournalPage: -1,  };
         }
 
         public JournalInfo CopyHeaders(BackupZipArchive package, DataCopier copier, StorageEnvironmentOptions envOptions, string basePath)

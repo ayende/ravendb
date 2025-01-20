@@ -24,6 +24,7 @@ namespace Voron.Impl.Journal
     public sealed unsafe class JournalReader
     {
         private readonly StorageEnvironment _environment;
+        private readonly long _journalNumber;
         private readonly Pager _journalPager;
         private readonly Pager.State _journalPagerState;
         private readonly Pager _dataPager;
@@ -45,11 +46,12 @@ namespace Voron.Impl.Journal
 
         public long Next4Kb => _next4Kb;
 
-        public JournalReader(StorageEnvironment environment, Pager journalPager, Pager.State journalPagerState, Pager dataPager, Pager recoveryPager,
+        public JournalReader(StorageEnvironment environment, long journalNumber, Pager journalPager, Pager.State journalPagerState, Pager dataPager, Pager recoveryPager,
             HashSet<long> modifiedPages, JournalInfo journalInfo, FileHeader currentFileHeader, TransactionHeader* previous)
         {
             RequireHeaderUpdate = false;
             _environment = environment;
+            _journalNumber = journalNumber;
             _journalPager = journalPager;
             _journalPagerState = journalPagerState;
             _dataPager = dataPager;
@@ -395,7 +397,7 @@ namespace Voron.Impl.Journal
                 if (hashIsValid == false && CanIgnoreDataIntegrityErrorBecauseTxWasSynced(current->TransactionId, options))
                 {
                     options.InvokeIntegrityErrorOfAlreadySyncedData(this,
-                        $"Invalid hash of data of first transaction which has been already synced (tx id: {current->TransactionId}, last synced tx: {_journalInfo.LastSyncedTransactionId}, journal: {_journalInfo.CurrentJournal}). " +
+                        $"Invalid hash of data of first transaction which has been already synced (tx id: {current->TransactionId}, last synced tx: {_journalInfo.LastSyncedTransactionId}, journal: {_journalNumber}). " +
                         "Safely continuing the startup recovery process.", null);
 
                     return true;
@@ -424,7 +426,7 @@ namespace Voron.Impl.Journal
                 if (CanIgnoreDataIntegrityErrorBecauseTxWasSynced(current->TransactionId, options))
                 {
                     options.InvokeIntegrityErrorOfAlreadySyncedData(this,
-                        $"Unable to decrypt data of transaction which has been already synced (tx id: {current->TransactionId}, last synced tx: {_journalInfo.LastSyncedTransactionId}, journal: {_journalInfo.CurrentJournal}). " +
+                        $"Unable to decrypt data of transaction which has been already synced (tx id: {current->TransactionId}, last synced tx: {_journalInfo.LastSyncedTransactionId}, journal: {_journalNumber}). " +
                         "Safely continuing the startup recovery process.",
                         ex);
 
@@ -474,7 +476,7 @@ namespace Voron.Impl.Journal
                         // when running in ignore data integrity errors mode then we could skip corrupted but already sync data
                         // so it's expected in this case that txIdDiff > 1, let it continue to work then
                         options.InvokeIntegrityErrorOfAlreadySyncedData(this,
-                            $"Encountered integrity error of transaction data which has been already synced (tx id: {current->TransactionId}, last synced tx: {_journalInfo.LastSyncedTransactionId}, journal: {_journalInfo.CurrentJournal}). Tx diff is: {txIdDiff}. " +
+                            $"Encountered integrity error of transaction data which has been already synced (tx id: {current->TransactionId}, last synced tx: {_journalInfo.LastSyncedTransactionId}, journal: {_journalNumber}). Tx diff is: {txIdDiff}. " +
                             $"Safely continuing the startup recovery process. Debug details - file header {_currentFileHeader}", null);
 
                         return;
@@ -509,7 +511,7 @@ namespace Voron.Impl.Journal
                     if (CanIgnoreDataIntegrityErrorBecauseTxWasSynced(transactionHeader->TransactionId, options))
                     {
                         options.InvokeIntegrityErrorOfAlreadySyncedData(this,
-                            $"Invalid last page number ({transactionHeader->LastPageNumber}) in the header of transaction which has been already synced (tx id: {transactionHeader->TransactionId}, last synced tx: {_journalInfo.LastSyncedTransactionId}, journal: {_journalInfo.CurrentJournal}). " +
+                            $"Invalid last page number ({transactionHeader->LastPageNumber}) in the header of transaction which has been already synced (tx id: {transactionHeader->TransactionId}, last synced tx: {_journalInfo.LastSyncedTransactionId}, journal: {_journalNumber}). " +
                             $"Safely continuing the startup recovery process. Debug details - file header {_currentFileHeader}", null);
                     }
                     else

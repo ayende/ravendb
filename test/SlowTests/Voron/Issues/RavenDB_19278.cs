@@ -87,7 +87,7 @@ public class RavenDB_19278 : StorageTest
             }
         }
 
-        var journalToCorrupt = Env.Journal.GetCurrentJournalInfo().CurrentJournal - 3;
+        var journalToCorrupt = LatestJournalNumber() - 3;
 
         StopDatabase();
 
@@ -205,7 +205,7 @@ public class RavenDB_19278 : StorageTest
             }
         }
 
-        var journalToCorrupt = Env.Journal.GetCurrentJournalInfo().CurrentJournal - 1;
+        var journalToCorrupt = LatestJournalNumber() - 1;
 
         StopDatabase();
 

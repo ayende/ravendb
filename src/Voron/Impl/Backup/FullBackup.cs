@@ -139,7 +139,7 @@ namespace Voron.Impl.Backup
                     }
 
                     for (var journalNum = startingJournal;
-                         journalNum <= journalInfo.CurrentJournal;
+                         env.Options.JournalExists(journalNum);
                          journalNum++)
                     {
                         cancellationToken.ThrowIfCancellationRequested();

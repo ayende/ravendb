@@ -501,6 +501,13 @@ namespace Voron
 
                     tx.Commit();
                 }
+                // we *must* modify the header after the first transaction is committed
+                // since that is the marker that tells us that this is an existing database...
+                _headerAccessor.Modify((ref FileHeader header) =>
+                {
+                    header.Journal.LastSyncedTransactionId = 0;
+                    header.Journal.LastSyncedJournal = 0;
+                });
             }
 
             Options.AfterDatabaseCreation?.Invoke(this);

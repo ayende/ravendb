@@ -13,7 +13,6 @@ namespace Voron.Exceptions
         }
 
         public InvalidJournalException(string message, JournalInfo journalInfo) : base($"{message}. Journal details: " +
-                                                                                                 $"{nameof(journalInfo.CurrentJournal)} - {journalInfo.CurrentJournal}, " +
                                                                                                  $"{nameof(journalInfo.LastSyncedJournal)} - {journalInfo.LastSyncedJournal}, " +
                                                                                                  $"{nameof(journalInfo.LastSyncedTransactionId)} - {journalInfo.LastSyncedTransactionId}, " +
                                                                                                  $"{nameof(journalInfo.Flags)} - {journalInfo.Flags}")
@@ -22,7 +21,6 @@ namespace Voron.Exceptions
         }
 
         public InvalidJournalException(long number, string path, JournalInfo journalInfo) : base($"No such journal '{path}'. Journal details: " +
-                                                                                                 $"{nameof(journalInfo.CurrentJournal)} - {journalInfo.CurrentJournal}, " +
                                                                                                  $"{nameof(journalInfo.LastSyncedJournal)} - {journalInfo.LastSyncedJournal}, " +
                                                                                                  $"{nameof(journalInfo.LastSyncedTransactionId)} - {journalInfo.LastSyncedTransactionId}, " +
                                                                                                  $"{nameof(journalInfo.Flags)} - {journalInfo.Flags}")
@@ -31,7 +29,6 @@ namespace Voron.Exceptions
         }
 
         public InvalidJournalException(long number, JournalInfo journalInfo) : base($"No such journal '{number}'. Journal details: " +
-                                                                                    $"{nameof(journalInfo.CurrentJournal)} - {journalInfo.CurrentJournal}, " +
                                                                                     $"{nameof(journalInfo.LastSyncedJournal)} - {journalInfo.LastSyncedJournal}, " +
                                                                                     $"{nameof(journalInfo.LastSyncedTransactionId)} - {journalInfo.LastSyncedTransactionId}, " +
                                                                                     $"{nameof(journalInfo.Flags)} - {journalInfo.Flags}")

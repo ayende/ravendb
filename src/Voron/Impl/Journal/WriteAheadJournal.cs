@@ -191,12 +191,6 @@ namespace Voron.Impl.Journal
             journal.RegisteredEnvironments[_env] = journal;
             _files = _files.Append(journal);
 
-            _headerAccessor.Modify((ref FileHeader header) =>
-            {
-                header.Journal.CurrentJournal = journal.Number;
-                header.IncrementalBackup.LastCreatedJournal = journal.Number;
-            });
-
             return journal;
         }
 
@@ -211,13 +205,13 @@ namespace Voron.Impl.Journal
             
             if (_env.Options.IncrementalBackupEnabled == false && _env.Options.CopyOnWriteMode == false)
             {
-                // we want to check that we cleanup old log files if they aren't needed
+                // we want to check that we clean up old log files if they aren't needed
                 // this is more just to be safe than anything else, they shouldn't be there.
-                var unusedfiles = logInfo.LastSyncedJournal;
+                var unusedFiles = logInfo.LastSyncedJournal;
                 while (true)
                 {
-                    unusedfiles--;
-                    if (_env.Options.TryDeleteJournal(unusedfiles) == false)
+                    unusedFiles--;
+                    if (_env.Options.TryDeleteJournal(unusedFiles) == false)
                         break;
                 }
             }
@@ -242,9 +236,9 @@ namespace Voron.Impl.Journal
             var dataPagerState = currentState.DataPagerState;
             lastJournalNumber = -1;
             var deleteLastJournal = false;
-            for (var journalNumber = journalToStartReadingFrom; journalNumber <= logInfo.CurrentJournal; journalNumber++)
+            for (var journalNumber = journalToStartReadingFrom; _env.Options.JournalExists(journalNumber); journalNumber++)
             {
-                addToInitLog?.Invoke(LogLevel.Debug, $"Recovering journal {journalNumber:#,#;;0} (up to last journal {logInfo.CurrentJournal:#,#;;0})");
+                addToInitLog?.Invoke(LogLevel.Debug, $"Recovering journal {journalNumber:#,#;;0}...");
                 var initialSize = _env.Options.InitialFileSize ?? _env.Options.InitialLogFileSize;
                 var journalRecoveryName = StorageEnvironmentOptions.JournalRecoveryName(journalNumber);
                 try
@@ -255,13 +249,13 @@ namespace Voron.Impl.Journal
                     using var __ = recoveryPager;
 
                     RecoverCurrentJournalSize(journalPagerState, out var isMoreThanMaxFileSize);
-                    if (journalNumber == logInfo.CurrentJournal)
+                    if (_env.Options.JournalExists(journalNumber + 1) is false)
                         deleteLastJournal = isMoreThanMaxFileSize;
 
                     Pager.PagerTransactionState txState = default;
                     var transactionHeader = txHeader->TransactionId == 0 ? null : txHeader;
 
-                    var journalReader = new JournalReader(_env, journalPager, journalPagerState, dataPager, recoveryPager, modifiedPages, logInfo, currentFileHeader,
+                    var journalReader = new JournalReader(_env, journalNumber, journalPager, journalPagerState, dataPager, recoveryPager, modifiedPages, logInfo, currentFileHeader,
                         transactionHeader);
                     try
                     {
@@ -418,7 +412,9 @@ namespace Voron.Impl.Journal
                     }
                     else if (deleteLastJournal)
                     {
-                        Debug.Assert(journalFile.Number == logInfo.CurrentJournal, "journalFile.Number == logInfo.CurrentJournal");
+                        Debug.Assert(_env.Options.JournalExists(journalFile.Number) && 
+                                     _env.Options.JournalExists(journalFile.Number +1) is false);
+                        
                         _journalApplicator.AddJournalToDelete(journalFile);
                         toDelete.Add(journalFile);
                     }
@@ -463,14 +459,12 @@ namespace Voron.Impl.Journal
             if (requireHeaderUpdate)
             {
                 // we didn't process all journals due to encountered errors
-                // we must update the header and set current journal to the last processed one
+                // we must delete all the journals after the last processed one
 
-                _headerAccessor.Modify((ref FileHeader header) =>
-                    {
-                        header.Journal.CurrentJournal = lastProcessedJournal;
-                        header.IncrementalBackup.LastCreatedJournal = lastProcessedJournal;
-                    });
-
+                var nextJournalsToDelete = lastProcessedJournal +1;
+                while (_env.Options.TryDeleteJournal(nextJournalsToDelete))
+                    nextJournalsToDelete++;
+                
                 if (CurrentFile != null)
                 {
                     // we're gonna have further writes to a partially recovered journal
@@ -1484,10 +1478,10 @@ namespace Voron.Impl.Journal
 
                     header.Journal.LastSyncedJournal = lastSyncedJournal;
                     header.Journal.LastSyncedTransactionId = lastSyncedTransactionId;
-
+                    header.Journal.Reserved1 = 0;
                     for (int i = 0; i < JournalInfo.NumberOfReservedBytes; i++)
                     {
-                        header.Journal.Reserved[i] = 0;
+                        header.Journal.Reserved2[i] = 0;
                     }
 
                     if (ignoreLastSyncJournalMissing)
@@ -1596,16 +1590,14 @@ namespace Voron.Impl.Journal
 
                 _waj._headerAccessor.Modify((ref FileHeader header) =>
                 {
-                    header.Journal.CurrentJournal = -1;
-
                     if (current.Number != header.Journal.LastSyncedJournal)
                     {
                         throw new InvalidOperationException($"Attempted to remove a journal ({current.Number}) that hasn't been synced yet (last synced journal: {header.Journal.LastSyncedJournal})");
                     }
-
+                    header.Journal.Reserved1 = 0;
                     for (int i = 0; i < JournalInfo.NumberOfReservedBytes; i++)
                     {
-                        header.Journal.Reserved[i] = 0;
+                        header.Journal.Reserved2[i] = 0;
                     }
                     header.Journal.Flags |= JournalInfoFlags.IgnoreMissingLastSyncJournal;
                 });
@@ -1922,12 +1914,6 @@ namespace Voron.Impl.Journal
             // we modify the in memory state _after_ we created the file, because we have to make sure that 
             // we have created it successfully first. 
             _journalIndex++;
-
-            _headerAccessor.Modify((ref FileHeader header) =>
-            {
-                header.Journal.CurrentJournal = journalIndex;
-                header.IncrementalBackup.LastCreatedJournal = journalIndex;
-            });
             
             return matchingJournal;
 

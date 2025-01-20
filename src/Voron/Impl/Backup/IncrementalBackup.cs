@@ -137,7 +137,7 @@ namespace Voron.Impl.Backup
                         firstJournalToBackup = 0; // first time that we do incremental backup
 
                     for (var journalNum = firstJournalToBackup;
-                        journalNum <= backupInfo.LastCreatedJournal;
+                        env.Options.JournalExists(journalNum);
                         journalNum++)
                     {
                         var num = journalNum;
@@ -175,7 +175,7 @@ namespace Voron.Impl.Backup
                         }
 
                         lastBackedUpFile = journalFile.Number;
-                        if (journalFile.Number == backupInfo.LastCreatedJournal)
+                        if (env.Options.JournalExists(journalFile.Number + 1)) // this is the last file, no more after it...
                         {
                             lastBackedUpPage = startBackupAt + numberOf4KbsToCopy - 1;
                             // we used all of this file, so the next backup should start in the next file
@@ -378,7 +378,7 @@ namespace Voron.Impl.Backup
                                     env.Options.Encryption.IsEnabled);
                             toDispose.Add(recoveryPager);
 
-                            var reader = new JournalReader(env, journalPager, journalPagerState, txw.DataPager, recoveryPager, new HashSet<long>(),
+                            var reader = new JournalReader(env, journalNumber, journalPager, journalPagerState, txw.DataPager, recoveryPager, new HashSet<long>(),
                                        new JournalInfo { LastSyncedTransactionId = lastTxId }, new FileHeader { HeaderRevision = -1, JournalId = journalId},
                                        lastTxHeader);
                             try
@@ -432,9 +432,10 @@ namespace Voron.Impl.Backup
                 
                     header.Root = lastTxHeader->Root;
 
+                    header.Journal.Reserved1 = 0;
                     for (int i = 0; i < JournalInfo.NumberOfReservedBytes; i++)
                     {
-                        header.Journal.Reserved[i] = 0;
+                        header.Journal.Reserved2[i] = 0;
                     }
                     header.Journal.Flags = JournalInfoFlags.None;
                 });

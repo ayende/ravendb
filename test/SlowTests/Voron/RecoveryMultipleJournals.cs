@@ -67,7 +67,7 @@ namespace SlowTests.Voron
                 tx.Commit();
             }
         }
-
+        
         [Fact]
         public void CanResetLogInfoAfterBigUncommitedTransaction()
         {
@@ -78,7 +78,7 @@ namespace SlowTests.Voron
                 tx.Commit();
             }
 
-            var currentJournalInfo = Env.Journal.GetCurrentJournalInfo();
+            var currentJournalNumber = LatestJournalNumber();
 
             using (var tx = Env.WriteTransaction())
             {
@@ -89,7 +89,7 @@ namespace SlowTests.Voron
                 //tx.Commit(); - not committing here
             }
 
-            Assert.Equal(currentJournalInfo.CurrentJournal, Env.Journal.GetCurrentJournalInfo().CurrentJournal);
+            Assert.Equal(currentJournalNumber, LatestJournalNumber());
 
             using (var tx = Env.WriteTransaction())
             {
@@ -97,7 +97,7 @@ namespace SlowTests.Voron
                 tx.Commit();
             }
 
-            Assert.Equal(currentJournalInfo.CurrentJournal, Env.Journal.GetCurrentJournalInfo().CurrentJournal);
+            Assert.Equal(currentJournalNumber, LatestJournalNumber());
         }
 
         [RavenMultiplatformFact(RavenTestCategory.Voron, RavenArchitecture.AllX64)]
@@ -119,7 +119,7 @@ namespace SlowTests.Voron
                 tx.Commit();
             }
 
-            var currentJournalInfo = Env.Journal.GetCurrentJournalInfo();
+            var currentJournalNumber = LatestJournalNumber();
 
             var random = new Random();
             var buffer = new byte[1000000];
@@ -134,15 +134,15 @@ namespace SlowTests.Voron
                 //tx.Commit(); - not committing here
             }
 
-            Assert.Equal(currentJournalInfo.CurrentJournal, Env.Journal.GetCurrentJournalInfo().CurrentJournal);
+            Assert.Equal(currentJournalNumber, LatestJournalNumber());
 
             using (var tx = Env.WriteTransaction())
             {
                 tx.CreateTree("tree").Add("b", new MemoryStream(buffer));
                 tx.Commit();
             }
-
-            Assert.Equal(currentJournalInfo.CurrentJournal + 1, Env.Journal.GetCurrentJournalInfo().CurrentJournal);
+            
+            Assert.Equal(currentJournalNumber + 1, LatestJournalNumber());
         }
 
         [Fact]
@@ -168,7 +168,7 @@ namespace SlowTests.Voron
                 tx.Commit();
             }
 
-            var lastJournal = Env.Journal.GetCurrentJournalInfo().CurrentJournal;
+            var lastJournal = LatestJournalNumber();
 
             StopDatabase();
 
@@ -211,7 +211,7 @@ namespace SlowTests.Voron
                 }
             }
 
-            var lastJournal = Env.Journal.GetCurrentJournalInfo().CurrentJournal;
+            var lastJournal = LatestJournalNumber();
             var lastJournalPosition = Env.Journal.CurrentFile.GetWritePosIn4KbPosition(Env.CurrentStateRecord);
 
             StopDatabase();
@@ -244,7 +244,7 @@ namespace SlowTests.Voron
                 }
             }
 
-            var lastJournal = Env.Journal.GetCurrentJournalInfo().CurrentJournal;
+            var lastJournal = LatestJournalNumber();
             var lastJournalPosition = Env.Journal.CurrentFile.GetWritePosIn4KbPosition(Env.CurrentStateRecord);
 
 
@@ -298,7 +298,7 @@ namespace SlowTests.Voron
                 }
             }
 
-            var middleJournal = Env.Journal.GetCurrentJournalInfo().CurrentJournal/2;
+            var middleJournal = LatestJournalNumber()/2;
             var lastJournalPosition = Env.Journal.CurrentFile.GetWritePosIn4KbPosition(Env.CurrentStateRecord);
 
 
@@ -353,7 +353,7 @@ namespace SlowTests.Voron
         {
             RequireFileBasedPager();
 
-            var currentJournal = Env.Journal.GetCurrentJournalInfo().CurrentJournal;
+            var currentJournal = LatestJournalNumber();
 
             StopDatabase();
 

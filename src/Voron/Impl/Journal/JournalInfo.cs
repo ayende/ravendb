@@ -14,8 +14,13 @@ namespace Voron.Impl.Journal
     {
         public const int NumberOfReservedBytes = 3;
 
+        /// <summary>
+        /// Up until version 7.1 - this used to be CurrentJournal,
+        /// this is no longer needed since we are using the existence
+        /// of the actual journal file instead...
+        /// </summary>
         [FieldOffset(0)]
-        public long CurrentJournal;
+        public long Reserved1;
 
         [FieldOffset(8)]
         public long LastSyncedJournal;
@@ -24,7 +29,7 @@ namespace Voron.Impl.Journal
         public long LastSyncedTransactionId;
 
         [FieldOffset(24)]
-        public fixed byte Reserved[NumberOfReservedBytes];
+        public fixed byte Reserved2[NumberOfReservedBytes];
 
         [FieldOffset(27)]
         public JournalInfoFlags Flags;

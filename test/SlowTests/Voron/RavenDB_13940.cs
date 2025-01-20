@@ -63,7 +63,7 @@ namespace SlowTests.Voron
                 }
             }
 
-            var lastJournal = Env.Journal.GetCurrentJournalInfo().CurrentJournal;
+            var lastJournal = LatestJournalNumber();
 
             // let's flush and sync
             Env.FlushLogToDataFile();
@@ -145,7 +145,7 @@ namespace SlowTests.Voron
                 }
             }
 
-            var lastJournal = Env.Journal.GetCurrentJournalInfo().CurrentJournal;
+            var lastJournal = LatestJournalNumber();
 
             // let's flush and sync
             Env.FlushLogToDataFile();
@@ -227,7 +227,7 @@ namespace SlowTests.Voron
                 }
             }
 
-            var lastJournal = Env.Journal.GetCurrentJournalInfo().CurrentJournal;
+            var lastJournal = LatestJournalNumber();
 
             // let's flush and sync
             Env.FlushLogToDataFile();
@@ -309,7 +309,7 @@ namespace SlowTests.Voron
                 }
             }
 
-            var lastJournal = Env.Journal.GetCurrentJournalInfo().CurrentJournal;
+            var lastJournal = LatestJournalNumber();
 
             // let's flush and sync
             Env.FlushLogToDataFile();
@@ -391,7 +391,7 @@ namespace SlowTests.Voron
                 }
             }
 
-            var lastJournal = Env.Journal.GetCurrentJournalInfo().CurrentJournal;
+            var lastJournal = LatestJournalNumber();
 
             // let's flush and sync
             Env.FlushLogToDataFile();
@@ -455,7 +455,7 @@ namespace SlowTests.Voron
                 }
             }
 
-            var lastJournal = Env.Journal.GetCurrentJournalInfo().CurrentJournal;
+            var lastJournal = LatestJournalNumber();
 
             // let's flush and sync
             Env.FlushLogToDataFile();

@@ -259,7 +259,6 @@ public class LegacyHandling(ITestOutputHelper output) : RavenTestBase(output)
         int revisionOffset = Marshal.OffsetOf<FileHeader>(nameof(FileHeader.HeaderRevision)).ToInt32();
         int transactionIdOffset = Marshal.OffsetOf<FileHeader>(nameof(FileHeader.TransactionId)).ToInt32();
         var journalInfo = MemoryMarshal.Read<JournalInfo>(headerOne[journalOffset..]);
-        journalInfo.CurrentJournal = 1;
         MemoryMarshal.Write(headerOne[journalOffset..], journalInfo);
         long revision = MemoryMarshal.Read<long>(headerOne[revisionOffset..]);
         MemoryMarshal.Write(headerOne[revisionOffset..], revision + 10);
