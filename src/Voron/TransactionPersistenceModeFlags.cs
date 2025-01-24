@@ -5,6 +5,7 @@ namespace Voron
     [Flags]
     public enum TransactionPersistenceModeFlags
     {
-        Encrypted = 1
+        Encrypted = 1,
+        LinkedJournalsRecord = 16
     }
 }

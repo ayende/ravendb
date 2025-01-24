@@ -310,7 +310,7 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             using var rootOptions = StorageEnvironmentOptions.ForPathForTests(rootPath);
             rootOptions.ManualFlushing = true;
             rootOptions.ManualSyncing = true;
-            rootOptions.MaxLogFileSize = 4096 * 3;
+            rootOptions.MaxLogFileSize = 4096 * 4;
 
             // journal 0 - 0
             using var root = new StorageEnvironment(rootOptions);
@@ -329,6 +329,7 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             var task = Task.Run(() =>
             {
                 // journal 0 - 2
+                // journal 0 - 3 - register link journals
                 using var branch = CreateBranchEnv(branchPath, root);
                 // journal 1 - 0
                 using (var rootTx = root.WriteTransaction())
@@ -339,20 +340,21 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
                 }
                 
                 // journal 1 - 1
+                using (var rootTx = root.WriteTransaction())
+                {
+                    Tree tree = rootTx.CreateTree("rootTree");
+                    tree.Add("try", "two");
+                    rootTx.Commit();
+                }
+                
+                // journal 1 - 2
+                // journal 1 - 3 - register link journals
                 using (var branchTx = branch.WriteTransaction())
                 {
                     Tree tree = branchTx.CreateTree("branchTree");
                     tree.Add("root", "no");
                     tree.Add("branch", "yes");
                     branchTx.Commit();
-                }
-                
-                // journal 1 - 2
-                using (var rootTx = root.WriteTransaction())
-                {
-                    Tree tree = rootTx.CreateTree("rootTree");
-                    tree.Add("try", "two");
-                    rootTx.Commit();
                 }
 
                 int filesCountBefore = Directory.GetFiles(branch.Options.JournalPath.FullPath).Length;

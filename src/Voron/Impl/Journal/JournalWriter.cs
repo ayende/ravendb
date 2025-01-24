@@ -32,7 +32,7 @@ namespace Voron.Impl.Journal
         private int _refs;
         private bool _workingSetQuotaLogged = false;
 
-        public int NumberOfAllocated4Kb { get; }
+        public int NumberOfAllocated4Kb { get; private set; }
         public bool Disposed => _disposed.IsRaised();
         public VoronPathSetting FileName { get; }
         public bool ShouldDelete { get; set; }
@@ -130,7 +130,8 @@ namespace Voron.Impl.Journal
         {
             var result = Pal.rvn_truncate_journal(_writeHandle, size, out var error);
             if (result != PalFlags.FailCodes.Success)
-                PalHelper.ThrowLastError(result, error, $"Attempted to write to journal file - Path: {FileName.FullPath} Size: {size}");
+                PalHelper.ThrowLastError(result, error, $"Attempted to truncate journal file - Path: {FileName.FullPath} Size: {size}");
+            NumberOfAllocated4Kb = checked((int)(size / (4 * Constants.Size.Kilobyte)));
         }
 
         public void AddRef()

@@ -59,14 +59,13 @@ namespace Voron.Impl.Journal
             Pal.journal_entry Entry);
 
         private long _currentJournalFileSize;
-        private int _currentNumberOfRegisteredEnvironments;
         private DateTime _lastFile;
 
         private long _journalIndex = -1;
 
         public long CurrentJournalIndex => _journalIndex;
         
-        private readonly JournalApplicator _journalApplicator;
+        private readonly WriteAheadJournal.JournalApplicator _journalApplicator;
 
         private ImmutableAppendOnlyList<JournalFile> _files = ImmutableAppendOnlyList<JournalFile>.Empty;
         internal JournalFile CurrentFile;
@@ -84,6 +83,81 @@ namespace Voron.Impl.Journal
 
         private readonly DisposeOnce<SingleAttempt> _disposeRunner;
 
+        private class LinkedJournalsRecord : IDisposable
+        {
+            public static readonly Guid LinkedJournalId = new("66d2ff9c-6251-462c-bde5-e05ba50110cf");
+            
+            private byte* _buffer;
+            private int _bufferSize;
+            private NativeMemory.ThreadStats _threadStats;
+            private List<string> _paths = new();
+            private int _pathsSize;
+
+            public void Add(string path)
+            {
+                _paths.Add(path);
+                _pathsSize += path.Length;
+            }
+            
+            public bool HasEntries => _paths.Count > 0;
+
+            public Pal.journal_entry CreateEntry()
+            {
+                int reqSize = checked(
+                    Encoding.UTF8.GetMaxByteCount(_pathsSize) + _paths.Count + sizeof(TransactionHeader)
+                );
+                if (reqSize > _bufferSize)
+                {
+                    if(_buffer is not null)
+                        PlatformSpecific.NativeMemory.Free4KbAlignedMemory(_buffer, _bufferSize, _threadStats);
+
+                    _bufferSize = ((reqSize - 1) / 4096 + 1) * 4096;
+                    _buffer = PlatformSpecific.NativeMemory.Allocate4KbAlignedMemory(_bufferSize, out _threadStats);
+                }
+
+                Memory.Set(_buffer, 0, sizeof(TransactionHeader));
+                var header = (TransactionHeader*)_buffer;
+                header->JournalId = LinkedJournalId;
+                header->Flags = TransactionPersistenceModeFlags.LinkedJournalsRecord;
+                header->HeaderMarker = Constants.TransactionHeaderMarker;
+                header->TransactionId = MemoryMarshal.Read<long>("LinkJrnl"u8);
+                header->PageCount = _paths.Count;
+                header->TxMarker = TransactionMarker.Commit;
+                header->CompressedSize = -1;
+
+                var data = _buffer + sizeof(TransactionHeader);
+                int usableBufferSize = _bufferSize - sizeof(TransactionHeader);
+                var span = new Span<byte>(data, usableBufferSize);
+                foreach (var path in _paths)
+                {
+                    int written = Encoding.UTF8.GetBytes(path, span);
+                    span[written] = 0;
+                    span = span[(written + 1)..];
+                }
+                var dataSize = usableBufferSize - span.Length;
+                header->UncompressedSize = dataSize;
+                header->Hash = Hashing.XXHash64.Calculate(data, dataSize, (ulong)header->TransactionId);
+                
+                _paths.Clear();
+                _pathsSize = 0;
+                
+                var actualSize = header->UncompressedSize + sizeof(TransactionHeader);
+                return new Pal.journal_entry
+                {
+                    Base = header,
+                    NumberOf4Kbs = ((actualSize - 1) / 4096 + 1) 
+                };
+            }
+
+            public void Dispose()
+            {
+                if(_buffer is not null)
+                    PlatformSpecific.NativeMemory.Free4KbAlignedMemory(_buffer, _bufferSize, _threadStats);
+                _buffer = null;
+            }
+        }
+
+        
         public ScopeForSharedJournals SharedJournalsScope(CancellationToken mergedCommits)
         {
             if (_rootJournalMergedCommitsCts != null) 
@@ -113,7 +187,7 @@ namespace Voron.Impl.Journal
             _headerAccessor = env.HeaderAccessor;
 
             (_compressionPager, _compressionPagerState) = CreateCompressionPager(_env.Options.InitialFileSize ?? _env.Options.InitialLogFileSize);
-            _journalApplicator = new JournalApplicator(this);
+            _journalApplicator = new WriteAheadJournal.JournalApplicator(this);
 
             _disposeRunner = new DisposeOnce<SingleAttempt>(() =>
             {
@@ -131,35 +205,21 @@ namespace Voron.Impl.Journal
                 }
 
                 _files = ImmutableAppendOnlyList<JournalFile>.Empty;
+                _linkedJournalsRecord.Dispose();
             });
         }
 
         public ImmutableAppendOnlyList<JournalFile> Files => _files;
 
-        public JournalApplicator Applicator => _journalApplicator;
+        public WriteAheadJournal.JournalApplicator Applicator => _journalApplicator;
         
         public bool HasBranchCommits => _mergedCommitsQueue.IsEmpty is false;
 
-        private JournalFile NextFile(long numberOf4Kbs, int numberOfRegisteredEnvironments)
+        private JournalFile NextFile(long numberOf4Kbs)
         {
             var now = DateTime.UtcNow;
             
-            numberOfRegisteredEnvironments = Math.Max(numberOfRegisteredEnvironments,
-                // if we have a decrease in the number of registered environments when creating a new
-                // file from the previous one, we'll average the two values to ensure more graceful 
-                // decay of journal file size
-                (_currentNumberOfRegisteredEnvironments + numberOfRegisteredEnvironments) / 2);
-
             long maxLogFileSize = _env.Options.MaxLogFileSize;
-            if (numberOfRegisteredEnvironments > 1)
-            {
-                // If the previous log had multiple registered envs (root/branch model)
-                // we'll increase the max file size of the journals to accomodate that. With
-                // the more environments we have, the bigger the file is going to be.
-                maxLogFileSize *= (int)Math.Ceiling(Math.Log2(numberOfRegisteredEnvironments));
-            } 
-
-            _currentNumberOfRegisteredEnvironments = numberOfRegisteredEnvironments;    
 
             if ((now - _lastFile).TotalSeconds < 90)
             {
@@ -1058,7 +1118,7 @@ namespace Voron.Impl.Journal
             // 2) Take a snapshot of the current status of this env flushing status
             // 3) Release the lock & sync the file (take a long time)
             // 4) Re-take the lock, update the sync status in the header with the values we snapshotted
-            public sealed class SyncOperation(JournalApplicator parent) : IDisposable
+            public sealed class SyncOperation(WriteAheadJournal.JournalApplicator parent) : IDisposable
             {
                 bool _fsyncLockTaken;
                 private LastFlushState _lastFlushed;
@@ -1673,7 +1733,7 @@ namespace Voron.Impl.Journal
                         throw new InvalidOperationException("Unable to commit as a branch if the root journal I'm associated with is not within a shared journal scope");
                     }
 
-                    PendingJournalStateRecord journalStateRecord = null;
+                    WriteAheadJournal.PendingJournalStateRecord journalStateRecord = null;
                     if (tx.ShouldWriteTransactionChangesToJournal)
                     {
                         var start = Stopwatch.GetTimestamp();
@@ -1681,7 +1741,7 @@ namespace Voron.Impl.Journal
                         var tcs = new TaskCompletionSource();
                         branchCommit = tcs.Task;
                         numberOf4Kbs = entry.NumberOf4Kbs;
-                        journalStateRecord = new PendingJournalStateRecord(tx, tcs, entry);
+                        journalStateRecord = new WriteAheadJournal.PendingJournalStateRecord(tx, tcs, entry);
                         if (this != rootJournal)
                         {
                             rootJournal._mergedCommitsQueue.Enqueue(journalStateRecord);
@@ -1742,7 +1802,7 @@ namespace Voron.Impl.Journal
             commitCompleted.Wait();
         }
 
-        private void WriteBuffersToJournal(LowLevelTransaction tx, PendingJournalStateRecord rootEntry)
+        private void WriteBuffersToJournal(LowLevelTransaction tx, WriteAheadJournal.PendingJournalStateRecord rootEntry)
         {
             try
             {
@@ -1774,7 +1834,8 @@ namespace Voron.Impl.Journal
                             // This file may not be valid for this environment, so we need to create a fresh one
                             CurrentFile.IsValidFileFor(cur.Transaction.Environment) is false)
                         {
-                            FlushMergedJournalEntries(tx, ref requiredSizeIn4Kbs);
+                            FlushMergedJournalEntries(tx, requiredSizeIn4Kbs);
+                            requiredSizeIn4Kbs = 0;
                             CurrentFileIsDone();
                         }
                     }
@@ -1782,7 +1843,8 @@ namespace Voron.Impl.Journal
                     // the maximum log file size by batching entries
                     else if (requiredSizeIn4Kbs + cur.Entry.NumberOf4Kbs >= _env.Options.MaxLogFileSize)
                     {
-                        FlushMergedJournalEntries(tx, ref requiredSizeIn4Kbs);
+                        FlushMergedJournalEntries(tx, requiredSizeIn4Kbs);
+                        requiredSizeIn4Kbs = 0;
                         CurrentFileIsDone();
                     }
 
@@ -1791,7 +1853,7 @@ namespace Voron.Impl.Journal
                     _mergedJournalRecordsBuffer.Add(cur);
                 }
 
-                FlushMergedJournalEntries(tx, ref requiredSizeIn4Kbs);
+                FlushMergedJournalEntries(tx, requiredSizeIn4Kbs);
 
                 if (_mergedCommitsQueue.IsEmpty is false)
                 {
@@ -1814,33 +1876,56 @@ namespace Voron.Impl.Journal
             }
         }
 
-        private void FlushMergedJournalEntries(LowLevelTransaction tx, ref long requiredSizeIn4Kbs)
+        private void FlushMergedJournalEntries(LowLevelTransaction tx, long requiredSizeIn4Kbs)
         {
-            var entries = CollectionsMarshal.AsSpan(_mergedEntriesBuffer);
-            if (entries.IsEmpty)
+            if (_mergedEntriesBuffer.Count is 0)
                 return;
-            
+
             if (CurrentFile == null ||
                 CurrentFile.GetAvailable4Kbs(tx.CurrentStateRecord) < requiredSizeIn4Kbs)
             {
-                int numberOfRegisteredEnvironments = CurrentFile?.RegisteredEnvironments.Count ?? 1;
                 CurrentFileIsDone();
-
-                CurrentFile = NextFile(requiredSizeIn4Kbs, numberOfRegisteredEnvironments);
+                CurrentFile = NextFile(requiredSizeIn4Kbs);
                 if (_logger.IsDebugEnabled)
                     _logger.Debug($"New journal file created {CurrentFile.Number:D19} with size {CurrentFile.JournalSize}");
             }
 
-            var previousRequiredSizeIn4Kbs = requiredSizeIn4Kbs;
-            requiredSizeIn4Kbs = 0;
-
             foreach (var rec in _mergedJournalRecordsBuffer)
             {
-                JournalFile journalFile = rec.Transaction.Environment.Journal.EnsureRegistered(CurrentFile);
+                JournalFile journalFile = rec.Transaction.Environment.Journal.EnsureRegistered(CurrentFile, out var alreadyExists);
                 rec.Transaction.WrittenToJournalNumber = journalFile.Number;
                 journalFile.SetTransactionFrom(rec.Entry);
+                if (alreadyExists) 
+                    continue;
+                
+                // here we need to register the new journal file link as a journal entry so on recovery, we'll
+                // know to restore any dropped hard links that may have been lost (since we are *not* calling fsync()
+                // on the directory during the creation of the link)
+                string relativePath = Path.GetRelativePath(
+                    CurrentFile.JournalWriter.FileName.FullPath, 
+                    journalFile.JournalWriter.FileName.FullPath);
+                _linkedJournalsRecord.Add(relativePath);
+            }
+
+            if (_linkedJournalsRecord.HasEntries)
+            {
+                var entry = _linkedJournalsRecord.CreateEntry();
+                requiredSizeIn4Kbs += entry.NumberOf4Kbs;
+                _mergedEntriesBuffer.Add(entry);
+                long available4Kbs = CurrentFile.GetAvailable4Kbs(tx.CurrentStateRecord);
+                // This should be rare, we have a full journal, and we _had_ enough space, but not enough after we 
+                // included the linked journal record. So we have to extend the file size directly before issuing the 
+                // actual write.
+                if (available4Kbs < requiredSizeIn4Kbs)
+                {
+                    long newSize = (CurrentFile.JournalWriter.NumberOfAllocated4Kb - available4Kbs + requiredSizeIn4Kbs) * 4 * Constants.Size.Kilobyte;
+                    CurrentFile.JournalWriter.Truncate(newSize);
+                    if (_logger.IsDebugEnabled)
+                        _logger.Debug($"Journal file {CurrentFile.Number:D19} was extended to size {CurrentFile.JournalSize} to allow the linked journals entry");
+                }
             }
             
+            var entries = CollectionsMarshal.AsSpan(_mergedEntriesBuffer);
             var start = Stopwatch.GetTimestamp();
             try
             {
@@ -1862,7 +1947,7 @@ namespace Voron.Impl.Journal
 
                 if (_logger.IsDebugEnabled)
                     _logger.Debug(
-                        $"Writing {new Size(4 * previousRequiredSizeIn4Kbs, SizeUnit.Kilobytes)} to journal {CurrentFile.Number:D19} took {elapsed} with journal entries from {_mergedEntriesBuffer.Count:##,###} environments");
+                        $"Writing {new Size(4 * requiredSizeIn4Kbs, SizeUnit.Kilobytes)} to journal {CurrentFile.Number:D19} took {elapsed} with journal entries from {_mergedEntriesBuffer.Count:##,###} environments");
 
                 if (CurrentFile.GetAvailable4Kbs(tx.CurrentStateRecord) == 0)
                 {
@@ -1891,10 +1976,10 @@ namespace Voron.Impl.Journal
         /// Across environments, this is only called from the _root_ environment, across all branches,
         /// so this is safe to use without worrying about concurrency
         /// </summary>
-        private JournalFile EnsureRegistered(JournalFile journalFile)
+        private JournalFile EnsureRegistered(JournalFile journalFile, out bool alreadyExists)
         {
-            ref var matchingJournal = ref CollectionsMarshal.GetValueRefOrAddDefault(journalFile.RegisteredEnvironments, _env, out var exists);
-            if (exists)
+            ref var matchingJournal = ref CollectionsMarshal.GetValueRefOrAddDefault(journalFile.RegisteredEnvironments, _env, out alreadyExists);
+            if (alreadyExists)
             {
                 return matchingJournal;
             }
@@ -2321,27 +2406,29 @@ namespace Voron.Impl.Journal
             }
         }
 
-        private TestingStuff _forTestingPurposes;
+        private WriteAheadJournal.TestingStuff _forTestingPurposes;
         private CancellationTokenSource _rootJournalMergedCommitsCts;
         private readonly int _minimumSharedJournalsMergeCount;
 
-        internal TestingStuff ForTestingPurposesOnly()
+        private readonly LinkedJournalsRecord _linkedJournalsRecord = new();
+
+        internal WriteAheadJournal.TestingStuff ForTestingPurposesOnly()
         {
             if (_forTestingPurposes != null)
                 return _forTestingPurposes;
 
-            return _forTestingPurposes = new TestingStuff();
+            return _forTestingPurposes = new WriteAheadJournal.TestingStuff();
         }
 
         internal sealed class TestingStuff
         {
             internal Action OnReduceSizeOfCompressionBufferIfNeeded_RightAfterDisposingCompressionPager;
-            internal Action<ConcurrentQueue<PendingJournalStateRecord>> OnWriteBuffersToJournal;
+            internal Action<ConcurrentQueue<WriteAheadJournal.PendingJournalStateRecord>> OnWriteBuffersToJournal;
         }
 
         private void RejectCommitsToMerge()
         {
-            while (_mergedCommitsQueue.TryDequeue(out PendingJournalStateRecord result))
+            while (_mergedCommitsQueue.TryDequeue(out WriteAheadJournal.PendingJournalStateRecord result))
             {
                 result.Tcs.TrySetCanceled();
             }
