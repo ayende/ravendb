@@ -6,11 +6,10 @@
 
 void main() {
     int32_t err;
-    bool is_same;
-    int rc = rvn_is_same_hard_link(
-        L"C:\\Work\\ravendb-7.0\\test\\FastTests\\bin\\Debug\\net8.0\\Databases\\CanCreateRootAndBranchEnvironmentsbranch.0-3\\Journals\\0000000000000000000.journal",
-        L"C:\\Work\\ravendb-7.0\\test\\FastTests\\bin\\Debug\\net8.0\\Databases\\CanCreateRootAndBranchEnvironmentsroot.0-2\\Journals\\0000000000000000000.journal",
-        &is_same,
+    char is_same;
+    int rc = rvn_ensure_hard_link_non_durable(
+        L"C:\\Work\\ravendb-7.0\\test\\FastTests\\bin\\Debug\\net9.0\\Databases\\CanPersist.0-2\\Journals\\0000000000000000001.journal",
+        L"C:\\Work\\ravendb-7.0\\test\\FastTests\\bin\\Debug\\net9.0\\Databases\\CanPersist.0-2\\Indexes\\Users_ByCount_GroupByLocation\\Journals\\0000000000000000000.journal",
         &err
     );
 
@@ -30,7 +29,7 @@ void main() {
 //    WCHAR data[20];
 //    WCHAR journal[20];
 //    int i = (int)Parameter;
-//    printf("Task %d\n", i);
+//    printf("Task %d\\n", i);
 //    swprintf(data, 10, L"%d.data", i);
 //    swprintf(journal, 10, L"%d.jrnl", i);
 //
@@ -50,7 +49,7 @@ void main() {
 //    // Create a thread pool
 //    PTP_POOL pool = CreateThreadpool(NULL);
 //    if (pool == NULL) {
-//        printf("Failed to create thread pool\n");
+//        printf("Failed to create thread pool\\n");
 //        return 1;
 //    }
 //
@@ -60,7 +59,7 @@ void main() {
 //    // Create a cleanup group
 //    PTP_CLEANUP_GROUP cleanupGroup = CreateThreadpoolCleanupGroup();
 //    if (cleanupGroup == NULL) {
-//        printf("Failed to create cleanup group\n");
+//        printf("Failed to create cleanup group\\n");
 //        CloseThreadpool(pool);
 //        return 1;
 //    }
@@ -75,7 +74,7 @@ void main() {
 //    for (int i = 0; i < 1000; i++) {
 //        PTP_WORK work = CreateThreadpoolWork(MyTask, i, &env);
 //        if (work == NULL) {
-//            printf("Failed to create work for task %d\n", i);
+//            printf("Failed to create work for task %d\\n", i);
 //            continue;
 //        }
 //        SubmitThreadpoolWork(work);

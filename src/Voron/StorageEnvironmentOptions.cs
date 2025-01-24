@@ -483,7 +483,7 @@ namespace Voron
                 var name = JournalName(journalNumber);
                 var path = JournalPath.Combine(name);
                 finalFileName = path.FullPath;
-                var rc = Pal.rvn_hard_link(fileName, path.FullPath, out var errorCode);
+                var rc = Pal.rvn_hard_link_non_durable(fileName, path.FullPath, out var errorCode);
                 if (rc != PalFlags.FailCodes.Success)
                     PalHelper.ThrowLastError(rc, errorCode, $"Failed to link files {fileName} to {path.FullPath}");
             }
@@ -862,7 +862,7 @@ namespace Voron
             {
                 var path = GetJournalPath(journalNumber);
                 finalFileName = path.FullPath; 
-                var rc = Pal.rvn_hard_link(fileName, path.FullPath, out var errorCode);
+                var rc = Pal.rvn_hard_link_non_durable(fileName, path.FullPath, out var errorCode);
                 if (rc != PalFlags.FailCodes.Success)
                     PalHelper.ThrowLastError(rc, errorCode, $"Failed to link files {fileName} to {path.FullPath}");
             }
@@ -1217,7 +1217,7 @@ namespace Voron
             string src = otherPath.Combine(fileName).FullPath;
             string dst = selfPath.Combine(fileName).FullPath;
             File.WriteAllText(src, "This file was created to see if hard links between document database & index work");
-            var rc = Pal.rvn_hard_link(src,dst,out _);
+            var rc = Pal.rvn_hard_link_non_durable(src,dst,out _);
               
             File.Delete(src);
             if (rc != PalFlags.FailCodes.Success)

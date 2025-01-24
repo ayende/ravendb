@@ -230,22 +230,34 @@ error_cleanup:
 }
 
 EXPORT int32_t 
-rvn_hard_link(const char *src, const char *dst, int32_t *detailed_error_code)
+rvn_hard_link_non_durable(const char *src, const char *dst, int32_t *detailed_error_code)
 {
     if (link(src, dst))
     {    
         *detailed_error_code = errno;
         return FAIL_HARD_LINK;
     }
-    // we need to persist the new file in the new directory
-    return _sync_directory_for(dst, detailed_error_code);
+    // Note: we do not sync the directory here, so a hard reset may cause the directory to be "lose"
+    // the file. The caller is responsible for handling that, see linked journals handling
+    return SUCCESS;
 }
 
 EXPORT int32_t
-rvn_is_same_hard_link(const char *src, const char *dst, bool *is_same, int32_t *detailed_error_code) {
+rvn_is_same_hard_link(const char *src, const char *dst, char *is_same, int32_t *detailed_error_code) {
     struct stat src_stat, dst_stat;
     
-    if (lstat(src, &src_stat) == -1 || lstat(dst, &dst_stat) == -1) {
+    if (lstat(src, &src_stat) == -1) {
+        *detailed_error_code = errno;
+        return FAIL_STAT_FILE;
+    }
+    if(lstat(dst, &dst_stat) == -1)
+    {
+        if(errno == ENOENT)
+        {
+            *is_same = false;
+            *detailed_error_code = 0;
+            return SUCCESS;
+        }
         *detailed_error_code = errno;
         return FAIL_STAT_FILE;
     }

@@ -14,6 +14,18 @@ bool noop_bool(int64_t size, char* filename){ return false; }
 MemoryLockCallback g_locked_memory_callback = noop_void;
 RecoveryMemoryLockFailureCallback g_recovery_memory_lock_failure_callback = noop_bool;
 
+EXPORT int32_t 
+rvn_ensure_hard_link_non_durable(const char *src, const char *dst, int32_t *detailed_error_code)
+{
+    char is_same = false;
+    int32_t rc = rvn_is_same_hard_link(src, dst, &is_same, detailed_error_code);
+    if(rc != SUCCESS)
+        return rc;
+    if(is_same)
+        return SUCCESS;
+    return rvn_hard_link_non_durable(src, dst, detailed_error_code);
+}
+
 EXPORT
 void rvn_register_callbacks(MemoryLockCallback memoryLockCallback, 
     RecoveryMemoryLockFailureCallback recoveryMemoryLockFailureCallback)

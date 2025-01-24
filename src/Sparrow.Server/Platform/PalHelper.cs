@@ -15,22 +15,7 @@ namespace Sparrow.Server.Platform
         [DoesNotReturn]
         public static void ThrowLastError(PalFlags.FailCodes rc, int lastError, string msg)
         {
-            string txt;
-            PalFlags.ErrnoSpecialCodes specialErrnoCodes;
-
-            try
-            {
-                txt = $"{GetNativeErrorString(lastError, msg, out specialErrnoCodes)}. FailCode={rc}.";
-            }
-            catch (OutOfMemoryException)
-            {
-                throw; // we can't assume anything is safe here, just re-throw
-            }
-            catch (Exception ex)
-            {
-                txt = $"{lastError}:=(Failed to rvn_get_error_string - {ex.Message}): {msg}";
-                throw new InvalidOperationException(txt);
-            }
+            string txt = CreateErrorMessage(rc, lastError, msg, out PalFlags.ErrnoSpecialCodes specialErrnoCodes);
 
             if ((specialErrnoCodes & PalFlags.ErrnoSpecialCodes.NoMem) != 0)
                 throw new OutOfMemoryException(txt);
@@ -45,6 +30,22 @@ namespace Sparrow.Server.Platform
                 txt += $"{Environment.NewLine}{ErrorMediaIsWriteProtectedHintMessage}";
 
             throw new InvalidOperationException(txt);
+        }
+
+        public static string CreateErrorMessage(PalFlags.FailCodes rc, int lastError, string msg, out PalFlags.ErrnoSpecialCodes specialErrnoCodes)
+        {
+            try
+            {
+                return $"{GetNativeErrorString(lastError, msg, out specialErrnoCodes)}. FailCode={rc}.";
+            }
+            catch (OutOfMemoryException)
+            {
+                throw; // we can't assume anything is safe here, just re-throw
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"{lastError}:=(Failed to rvn_get_error_string - {ex.Message}): {msg}");
+            }
         }
 
         public static unsafe string GetNativeErrorString(int lastError, string msg, out PalFlags.ErrnoSpecialCodes errnoSpecialCodes)

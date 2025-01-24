@@ -187,7 +187,13 @@ EXPORT int32_t
 rvn_write_journal(void* handle, struct journal_entry* buffer, int64_t count_of_entries, int64_t offset, int32_t* detailed_error_code);
 
 EXPORT int32_t 
-rvn_hard_link(const char *src, const char *dst, int32_t *detailed_error_code);
+rvn_hard_link_non_durable(const char *src, const char *dst, int32_t *detailed_error_code);
+
+EXPORT int32_t 
+rvn_ensure_hard_link_non_durable(const char *src, const char *dst, int32_t *detailed_error_code);
+
+EXPORT int32_t
+rvn_is_same_hard_link(const char *src, const char *dst, char *is_same, int32_t *detailed_error_code);
 
 EXPORT int32_t
 rvn_open_journal_for_reads(const char *file_name, void **handle, int32_t *detailed_error_code);

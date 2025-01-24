@@ -11,8 +11,7 @@ namespace Sparrow.Server.Platform
     public static unsafe class Pal
     {
         
-        
-        public const int PAL_VER = 70113; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
+        public const int PAL_VER = 70122; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
 
         static Pal()
         {
@@ -214,7 +213,6 @@ namespace Sparrow.Server.Platform
         [UnmanagedFunctionPointer(CallingConvention.StdCall)]
         public delegate PalFlags.FailCodes WriterFunc(
             void* handle,
-            
             page_to_write* buffers,
             Int32 count,
             out Int32 errorCode);
@@ -282,22 +280,31 @@ namespace Sparrow.Server.Platform
 
             return isSame;
         }
-
         
         [DllImport(LIBRVNPAL, SetLastError = true)]
-        private static extern PalFlags.FailCodes
-            rvn_is_same_hard_link(byte* src, byte* dst, out bool isSame, out Int32 errorCode);
+        private static extern PalFlags.FailCodes rvn_is_same_hard_link(
+            byte* src, byte* dst, out bool isSame, out Int32 errorCode);
 
-        public static PalFlags.FailCodes rvn_hard_link(string src, string dst, out Int32 errorCode)
+        public static PalFlags.FailCodes rvn_ensure_hard_link_non_durable(string src, string dst, out Int32 errorCode)
         {
             using var convertSrc = new Converter(src);
             using var convertDst = new Converter(dst);
-            return rvn_hard_link(convertSrc.Pointer, convertDst.Pointer, out errorCode);
+            return rvn_ensure_hard_link_non_durable(convertSrc.Pointer, convertDst.Pointer, out errorCode);
+        }
+        
+        [DllImport(LIBRVNPAL, SetLastError = true)]
+        private static extern PalFlags.FailCodes rvn_ensure_hard_link_non_durable(byte* src, byte* dst, out Int32 errorCode);
+
+        public static PalFlags.FailCodes rvn_hard_link_non_durable(string src, string dst, out Int32 errorCode)
+        {
+            using var convertSrc = new Converter(src);
+            using var convertDst = new Converter(dst);
+            return rvn_hard_link_non_durable(convertSrc.Pointer, convertDst.Pointer, out errorCode);
         }
 
+
         [DllImport(LIBRVNPAL, SetLastError = true)]
-        private static extern PalFlags.FailCodes
-            rvn_hard_link(byte* src, byte* dst, out Int32 errorCode);
+        private static extern PalFlags.FailCodes rvn_hard_link_non_durable(byte* src, byte* dst, out Int32 errorCode);
 
         [StructLayout(LayoutKind.Sequential)]
         public struct journal_entry

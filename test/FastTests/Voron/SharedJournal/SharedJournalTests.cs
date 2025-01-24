@@ -201,6 +201,134 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
         }
     }
     
+    
+    [RavenFact(RavenTestCategory.Voron)]
+    public void WillRestoreMissingHardLinksOnRootRecovery()
+    {
+        string rootPath = NewDataPath(suffix: "root");
+        IOExtensions.DeleteDirectory(rootPath);
+        string branchPath = NewDataPath(suffix: "branch");
+        IOExtensions.DeleteDirectory(branchPath);
+        {
+            using var rootOptions = StorageEnvironmentOptions.ForPathForTests(rootPath);
+            rootOptions.ManualFlushing = true;
+            rootOptions.ManualSyncing = true;
+
+            using var root = new StorageEnvironment(rootOptions);
+            using var _ = root.Journal.SharedJournalsScope(CancellationToken.None);
+            
+            using (var rootTx = root.WriteTransaction())
+            {
+                Tree tree = rootTx.CreateTree("rootTree");
+                tree.Add("root", "yes");
+                tree.Add("branch", "no");
+                rootTx.Commit();
+            }
+
+            var mre = new ManualResetEventSlim(false);
+            root.Journal.BranchJournalMerger = new MyJournalMerger(mre);
+            var task = Task.Run(() =>
+            {
+                using var branch = CreateBranchEnv(branchPath, root);
+                using (var branchTx = branch.WriteTransaction())
+                {
+                    Tree tree = branchTx.CreateTree("branchTree");
+                    tree.Add("root", "no");
+                    tree.Add("branch", "yes");
+                    branchTx.Commit();
+                }
+            });
+            task.ContinueWith(_ => mre.Set());
+            
+            WaitForTaskAndExecuteBranchTransactions(task, mre, root);
+        }
+        
+        // here we restart the environments, but we'll pretend that we had a hard crash
+        // and the links for the journal files for the branch were removed, so we'll need
+        // to recover them during root recovery
+        foreach (string journal in Directory.GetFiles(Path.Combine(branchPath,"Journals")))
+        {
+            File.Delete(journal);
+        }
+        
+        {
+            using var rootOptions = StorageEnvironmentOptions.ForPathForTests(rootPath);
+            rootOptions.ManualFlushing = true;
+            rootOptions.ManualSyncing = true;
+
+            using var root = new StorageEnvironment(rootOptions);
+            using var _ = root.Journal.SharedJournalsScope(CancellationToken.None);
+            
+            using var branch = CreateBranchEnv(branchPath, root);
+
+            using (var rootTx = root.ReadTransaction())
+            {
+                Assert.Equal("yes", rootTx.ReadTree("rootTree").Read("root").Reader.ToString());
+                Assert.Equal("no", rootTx.ReadTree("rootTree").Read("branch").Reader.ToString());
+                Assert.Null(rootTx.ReadTree("branchTree"));
+            }
+
+            using (var branchTx = branch.ReadTransaction())
+            {
+                Assert.Null(branchTx.ReadTree("rootTree"));
+                Assert.Equal("no", branchTx.ReadTree("branchTree").Read("root").Reader.ToString());
+                Assert.Equal("yes", branchTx.ReadTree("branchTree").Read("branch").Reader.ToString());
+            }
+
+            var mre = new ManualResetEventSlim(false);
+            root.Journal.BranchJournalMerger = new MyJournalMerger(mre);
+            // Now do another write
+            var task = Task.Run(() =>
+            {
+                using (var branchTx = branch.WriteTransaction())
+                {
+                    Tree tree = branchTx.CreateTree("branchTree");
+                    tree.Add("try", "2");
+                    branchTx.Commit();
+                }
+            }).ContinueWith(t =>
+            {
+                mre.Set();
+                return t;
+            } ).Unwrap();
+
+            WaitForTaskAndExecuteBranchTransactions(task, mre, root);
+        }
+        
+        // here we restart the environments again
+        
+        {
+            using var rootOptions = StorageEnvironmentOptions.ForPathForTests(rootPath);
+            rootOptions.ManualFlushing = true;
+            rootOptions.ManualSyncing = true;
+
+            using var branchOptions = StorageEnvironmentOptions.ForPathForTests(branchPath);
+            branchOptions.ManualFlushing = true;
+            branchOptions.ManualSyncing = true;
+
+            using var root = new StorageEnvironment(rootOptions);
+            using var _ = root.Journal.SharedJournalsScope(CancellationToken.None);
+            branchOptions.RootJournal = root.Journal;
+            using var branch = new StorageEnvironment(branchOptions);
+
+            using (var rootTx = root.ReadTransaction())
+            {
+                Assert.Equal("yes", rootTx.ReadTree("rootTree").Read("root").Reader.ToString());
+                Assert.Equal("no", rootTx.ReadTree("rootTree").Read("branch").Reader.ToString());
+                Assert.Null(rootTx.ReadTree("branchTree"));
+            }
+
+            using (var branchTx = branch.ReadTransaction())
+            {
+                Assert.Null(branchTx.ReadTree("rootTree"));
+                Assert.Equal("no", branchTx.ReadTree("branchTree").Read("root").Reader.ToString());
+                Assert.Equal("yes", branchTx.ReadTree("branchTree").Read("branch").Reader.ToString());
+                Assert.Equal("2", branchTx.ReadTree("branchTree").Read("try").Reader.ToString());
+            }
+        }
+    }
+    
+    
     [RavenFact(RavenTestCategory.Voron)]
     public void CanFlushWithSharedJournals()
     {

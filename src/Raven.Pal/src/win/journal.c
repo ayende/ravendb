@@ -269,7 +269,7 @@ rvn_truncate_journal(void* handle, int64_t size, int32_t* detailed_error_code)
 }
 
 EXPORT int32_t 
-rvn_hard_link(const char *src, const char *dst, int32_t *detailed_error_code)
+rvn_hard_link_non_durable(const char *src, const char *dst, int32_t *detailed_error_code)
 {
     if(CreateHardLinkW((LPCWSTR)dst, (LPCWSTR)src, NULL))
         return SUCCESS;
@@ -299,7 +299,7 @@ rvn_write_journal_file(void* handle, struct journal_entry* buffer, int64_t count
 }
 
 EXPORT int32_t
-rvn_is_same_hard_link(const char *src, const char *dst, bool *is_same, int32_t *detailed_error_code) {
+rvn_is_same_hard_link(const char *src, const char *dst, char *is_same, int32_t *detailed_error_code) {
     BY_HANDLE_FILE_INFORMATION src_info, dst_info;
     HANDLE src_handle = INVALID_HANDLE_VALUE;
     HANDLE dst_handle = INVALID_HANDLE_VALUE;
@@ -313,7 +313,14 @@ rvn_is_same_hard_link(const char *src, const char *dst, bool *is_same, int32_t *
 
     dst_handle = CreateFileW(dst, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (dst_handle == INVALID_HANDLE_VALUE) {
-        *detailed_error_code = GetLastError();
+        int32_t error = GetLastError();
+        if(error == ERROR_FILE_NOT_FOUND)
+        {
+            *is_same = false;
+            rc = SUCCESS;
+            goto End;
+        }
+        *detailed_error_code = error;
         rc = FAIL_OPEN_FILE;
         goto End;
     }

@@ -15,9 +15,13 @@ using Sparrow.Platform;
 using Voron.Impl.FileHeaders;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading.Tasks;
 using Microsoft.Win32.SafeHandles;
 using Sparrow.Json;
+using Sparrow.Logging;
+using Sparrow.Server.Logging;
+using Voron.Logging;
 
 namespace Voron.Impl.Journal
 {
@@ -65,6 +69,7 @@ namespace Voron.Impl.Journal
             JournalId = _currentFileHeader.JournalId;
             if (journalPager.Options.Encryption.IsEnabled)
                 _encryptionBuffers = new List<Pager.EncryptionBuffer>();
+            _log = RavenLogManager.Instance.GetLoggerForVoron<StorageEnvironment>(_environment.Options, _journalPager.FileName);
         }
 
         public TransactionHeader* LastTransactionHeader { get; private set; }
@@ -553,6 +558,14 @@ namespace Voron.Impl.Journal
                 {
                     JournalId = current->JournalId;
                 }
+
+                if (current->JournalId == WriteAheadJournal.LinkedJournalsRecord.LinkedJournalId &&
+                    _environment.Options.RootJournal is null) // this only applies to the _root_, not to branches
+                {
+                    ProcessLinkedJournalsRecord(current);
+                    _readAt4Kb += GetTransactionSizeIn4Kb(current) - 1;
+                    continue;
+                }
                 
                 if ((current->JournalId == JournalId) is false &&
                     current->JournalId != Guid.Empty) // this may be legacy
@@ -582,6 +595,44 @@ namespace Voron.Impl.Journal
 
             current = null;
             return false;
+        }
+
+        private void ProcessLinkedJournalsRecord(TransactionHeader* current)
+        {
+            if (current->TransactionId != WriteAheadJournal.LinkedJournalsRecord.TransactionIdMarker)
+            {
+                throw new InvalidOperationException(
+                    $"LinkedJournal record was expected to have proper TransactionId marker ({WriteAheadJournal.LinkedJournalsRecord.TransactionIdMarker}) " +
+                    $"but was: {current->TransactionId}, file corruption?");
+            }
+
+            ReadOnlySpan<byte> buffer = new(current + 1, checked((int)current->UncompressedSize));
+            int numberOfLinks = current->PageCount;
+            for (int i = 0; i < numberOfLinks; i++)
+            {
+                var nextSep = buffer.IndexOf((byte)0);
+                if (nextSep == -1)
+                    throw new InvalidOperationException("Unable to find null terminator for the linked journal path, got: " + Encoding.UTF8.GetString(buffer));
+                
+                var link = buffer[..nextSep];
+                buffer = buffer[(nextSep + 1)..];
+                var relativePath = Encoding.UTF8.GetString(link);
+                string dest = Path.GetFullPath(relativePath, _journalPager.FileName);
+                var rc = Pal.rvn_ensure_hard_link_non_durable(_journalPager.FileName, dest, out var errorCode);
+                if (rc == PalFlags.FailCodes.Success) 
+                    continue;
+                
+                // error handling here is complex, because we need to account for users manually removing / copying / moving the 
+                // branch directory directly. That may break the existing links, but we cannot assume much about this. So we'll 
+                // be optimistic about it and move on. This code is only meant to apply if we had a machine level failures and need
+                // to re-wire the hard links that may have been dropped because it is too expensive to make them durable at the
+                // link creation time
+                if (_log.IsWarnEnabled is false) 
+                    continue;
+                    
+                var msg = PalHelper.CreateErrorMessage(rc, errorCode, $"Failed to ensure hard link from '{_journalPager.FileName}' to: '{dest}', this can be because of manual manipulation of the storage environment directories.", out _);
+                _log.Warn(msg);
+            }
         }
 
         private bool VerifyNoUnexpectedValidTransactionsAfter(StorageEnvironmentOptions options, ref Pager.PagerTransactionState txState)
@@ -633,6 +684,7 @@ namespace Voron.Impl.Journal
         }
 
         public Guid JournalId;
+        private RavenLogger _log;
 
         private bool CanIgnoreDataIntegrityErrorBecauseTxWasSynced(long transactionId, StorageEnvironmentOptions options)
         {

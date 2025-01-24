@@ -83,9 +83,10 @@ namespace Voron.Impl.Journal
 
         private readonly DisposeOnce<SingleAttempt> _disposeRunner;
 
-        private class LinkedJournalsRecord : IDisposable
+        public class LinkedJournalsRecord : IDisposable
         {
             public static readonly Guid LinkedJournalId = new("66d2ff9c-6251-462c-bde5-e05ba50110cf");
+            public static readonly long TransactionIdMarker = MemoryMarshal.Read<long>("LinkJrnl"u8);
             
             private byte* _buffer;
             private int _bufferSize;
@@ -120,7 +121,7 @@ namespace Voron.Impl.Journal
                 header->JournalId = LinkedJournalId;
                 header->Flags = TransactionPersistenceModeFlags.LinkedJournalsRecord;
                 header->HeaderMarker = Constants.TransactionHeaderMarker;
-                header->TransactionId = MemoryMarshal.Read<long>("LinkJrnl"u8);
+                header->TransactionId = TransactionIdMarker;
                 header->PageCount = _paths.Count;
                 header->TxMarker = TransactionMarker.Commit;
                 header->CompressedSize = -1;
