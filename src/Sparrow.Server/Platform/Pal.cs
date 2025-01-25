@@ -11,7 +11,7 @@ namespace Sparrow.Server.Platform
     public static unsafe class Pal
     {
         
-        public const int PAL_VER = 70122; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
+        public const int PAL_VER = 70128; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
 
         static Pal()
         {
@@ -20,14 +20,25 @@ namespace Sparrow.Server.Platform
             PalDefinitions.SystemInformation sysInfo; 
             try
             {
-                var palVer = rvn_get_pal_ver();
-                if (palVer != 0 && palVer != PAL_VER)
+                var cfg = new rvn_configuration
+                {
+                    io_ring_queue_size = 16,
+                    low_priority_io = false,
+                    pal_version = -1, // loaded by the call
+                    version = rvn_configuration_version.current,
+                    write_mode = rvn_write_mode.rvn_mode_default,
+                    memoryLockCallback = &MemoryLockUsage.UpdateLockedMemory,
+                    recoveryMemoryLockFailureCallback = &MemoryLockUsage.RecoverLockedMemoryFailure
+                };
+                rc = rvn_startup_configure(ref cfg, out errorCode);
+                if(rc != PalFlags.FailCodes.Success)
+                    PalHelper.ThrowLastError(rc, errorCode, "Failed to configure PAL library.");
+                
+                if (cfg.pal_version != PAL_VER)
                 {
                     throw new IncorrectDllException(
-                        $"{LIBRVNPAL} version '{palVer}' mismatches this RavenDB instance version (set to '{PAL_VER}'). Did you forget to set new value in 'rvn_get_pal_ver()'");
+                        $"{LIBRVNPAL} version '{cfg.pal_version}' mismatches this RavenDB instance version (set to '{PAL_VER}'). Did you forget to set new value in 'rvn_get_pal_ver()'");
                 }
-
-                rvn_register_callbacks(&MemoryLockUsage.UpdateLockedMemory, &MemoryLockUsage.RecoverLockedMemoryFailure);
 
                 rc = rvn_get_system_information(out sysInfo, out errorCode);
             }
@@ -83,11 +94,6 @@ namespace Sparrow.Server.Platform
             UInt64 size,
             out Int32 errorCode);
 
-        [DllImport(LIBRVNPAL, SetLastError = true)]
-        public static extern void rvn_register_callbacks(
-            delegate*<Int64, char*, void> memoryLockCallback,
-            delegate*<Int64, char*, bool> recoverMemoryLockFailureCallback);
-        
         [DllImport(LIBRVNPAL, SetLastError = true)]
         public static extern PalFlags.FailCodes rvn_unmap_memory(void* handle,
             void* mem,
@@ -404,7 +410,38 @@ namespace Sparrow.Server.Platform
             byte* tempFilename,
             out Int32 errorCode);
 
+        public enum rvn_configuration_version
+        {
+            none,
+            current
+        }
+        
+        public enum rvn_write_mode
+        {
+            rvn_mode_default,
+            rvn_write_mode_vectored_file_io,
+            rvn_write_mode_file_io,
+            rvn_write_mode_io_ring,
+            rvn_write_mode_mmap,
+        }
+        
+        [StructLayout(LayoutKind.Sequential)]
+        public struct rvn_configuration
+        {
+            public rvn_configuration_version version;
+            public Int32 pal_version;
+            public Int32 io_ring_queue_size;
+            public rvn_write_mode write_mode;
+            public bool low_priority_io;
+
+            public delegate*<Int64, char*, void> memoryLockCallback;
+            public delegate*<Int64, char*, bool> recoveryMemoryLockFailureCallback;
+        };
+        
         [DllImport(LIBRVNPAL, SetLastError = true)]
+        public static extern PalFlags.FailCodes rvn_startup_configure(ref rvn_configuration cfg, out Int32 errorCode);
+        
+		[DllImport(LIBRVNPAL, SetLastError = true)]
         public static extern Int32 rvn_get_pal_ver();
 
         [DllImport(LIBRVNPAL, SetLastError = true)]

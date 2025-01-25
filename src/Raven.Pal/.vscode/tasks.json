@@ -4,7 +4,7 @@
         {
             "label": "build",
             "type": "shell",
-            "command": "/home/ayende/zig/zig-linux-x86_64-0.14.0-dev.2316+68b3f5086/zig",
+            "command": "/home/ayende/zig-linux-x86_64-0.14.0-dev.2851+b074fb7dd/zig",
             "args": [
                 "cc",
                 "-Wall",
@@ -26,6 +26,7 @@
                 "src/posix/mapping.c",
                 "src/posix/pager.c",
                 "src/posix/sync.c",
+                "src/posix/ioring.c",
                 "src/posix/virtualmemory.c",
                 "src/posix/writefileheader.c",
                 "src/posix/linuxonly.c",

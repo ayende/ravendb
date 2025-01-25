@@ -61,13 +61,13 @@ struct handle_global_state
     pthread_mutex_t lock;
 
     uint32_t ref_count;
-    struct io_uring ring;
     int32_t open_flags;
     int32_t status_flags;
     char* file_path;
+    int eventfd;
 
-    off_t* offsets;
-    size_t offsets_count;
+    void *arena;
+    size_t arena_size;
 };
 
 struct handle

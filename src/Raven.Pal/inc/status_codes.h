@@ -64,6 +64,12 @@ enum
     FAIL_CREATE_EVENT           =      54,
     FAIL_WRITE_COMPLETION       =      55,
     FAIL_MATH_OVERFLOW          =      56,
+    FAIL_INVALID_CONFIGURATION  =      57,
+    FAIL_ALREADY_CONFIGURED     =      58,
+    FAIL_CREATE_EVENTFD         =      59,
+    FAIL_IO_RING_REG_EVENTFD    =      60,
+    FAIL_POLL_EVENTFD 			=	   61,
+    FAIL_CREATE_THREAD 			= 	   62,
 };
 
 #define ERRNO_SPECIAL_CODES_NONE        0

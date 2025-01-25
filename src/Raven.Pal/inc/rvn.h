@@ -65,9 +65,6 @@ struct RVN_RANGE_LIST
 typedef void (*MemoryLockCallback)(int64_t size, char* filename);
 typedef bool (*RecoveryMemoryLockFailureCallback)(int64_t size, char* filename);
 
-EXPORT
-void rvn_register_callbacks(MemoryLockCallback memoryLockCallback, 
-    RecoveryMemoryLockFailureCallback recoveryMemoryLockFailureCallback);
 
 struct page_to_write
 {
@@ -88,6 +85,36 @@ typedef int32_t (*rvn_writer)(
     int32_t count,
     int32_t *detailed_error_code
 );
+
+typedef enum rvn_write_mode
+{
+    rvn_mode_default,
+    rvn_write_mode_vectored_file_io,
+    rvn_write_mode_file_io,
+    rvn_write_mode_io_ring,
+    rvn_write_mode_mmap,
+} rvn_write_mode;
+
+typedef enum rvn_configuration_version
+{
+    none,
+    current
+} rvn_configuration_version;
+
+struct rvn_configuration
+{
+    rvn_configuration_version version;
+    int32_t pal_version;
+    int32_t io_ring_queue_size;
+    rvn_write_mode write_mode;
+    bool low_priority_io;
+
+    MemoryLockCallback memoryLockCallback;
+    RecoveryMemoryLockFailureCallback recoveryMemoryLockFailureCallback;
+};
+
+EXPORT
+int32_t rvn_startup_configure(struct rvn_configuration *cfg, int32_t *detailed_error_code);
 
 EXPORT
 rvn_writer rvn_get_writer(void* handle);
@@ -168,9 +195,6 @@ rvn_get_error_meaning(int32_t error);
 
 EXPORT int32_t
 rvn_get_system_information(struct SYSTEM_INFORMATION *sys_info, int32_t *detailed_error_code);
-
-EXPORT int32_t
-rvn_mmap_dispose_handle(void *handle, int32_t *detailed_error_code);
 
 
 EXPORT int32_t

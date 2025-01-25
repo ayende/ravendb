@@ -33,6 +33,7 @@ $win_files = `
 "src/win/getsysteminformation.c",
 "src/win/journal.c",
 "src/win/mapping.c",
+"src/win/ioring.c",
 "src/win/pager.c",
 "src/win/virtualmemory.c",
 "src/win/writefileheader.c"
@@ -47,6 +48,10 @@ $posix_files = `
 "src/posix/sync.c",
 "src/posix/virtualmemory.c",
 "src/posix/writefileheader.c"
+
+$linux_only = `
+    "src/posix/linuxonly.c",
+    "src/posix/ioring.c"
 
 $vcbin = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build"
 $clbin = (gci "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\" | sort Name -Descending | select -First 1).FullName
@@ -82,6 +87,11 @@ else {
     Remove-Item *.nativecodeanalysis.xml        
 }
 
+Write-Output "Building Linux x64"
+
+zig cc -Wall -O3 -g -shared  -fPIC -Iinc -target x86_64-linux-gnu ../../libs/liburing/liburing-2.8.1-x64.a -o runtimes/linux-x64/native/librvnpal.so $shared $posix_files $linux_only
+
+
 Write-Output "Building Windows x64"
 if ($clang_only) {
     zig cc -Wall -O3 -g -shared -fPIC -Iinc -target x86_64-windows -o runtimes/win-x64/native/librvnpal.dll  $shared $win_files 
@@ -93,14 +103,11 @@ else {
     Remove-Item *.nativecodeanalysis.xml
 }
 
-Write-Output "Building Linux x64"
-zig cc -Wall -O3 -g -shared  -fPIC -Iinc -target x86_64-linux-gnu ../../libs/liburing/liburing-2.8.1-x64.a -o runtimes/linux-x64/native/librvnpal.so $shared $posix_files "src/posix/linuxonly.c" 
-
 Write-Output "Building Linux ARM32 (Rasbperry Pi)"
-zig cc -Wall -O3 -g -shared  -fPIC -Iinc -target arm-linux-gnueabihf -o runtimes/linux-arm/native/librvnpal.so $shared $posix_files "src/posix/linuxonly.c" 
+zig cc -Wall -O3 -g -shared  -fPIC -Iinc -target arm-linux-gnueabihf -o runtimes/linux-arm/native/librvnpal.so $shared $posix_files $linux_only 
 
 Write-Output "Building Linux ARM64"
-zig cc -Wall -O3 -g -shared  -fPIC -Iinc -target aarch64-linux-gnu ../../libs/liburing/liburing-2.8.1-aarch64.a -o runtimes/linux-arm64/native/librvnpal.so $shared $posix_files "src/posix/linuxonly.c" 
+zig cc -Wall -O3 -g -shared  -fPIC -Iinc -target aarch64-linux-gnu ../../libs/liburing/liburing-2.8.1-aarch64.a -o runtimes/linux-arm64/native/librvnpal.so $shared $posix_files $linux_only 
 
 Write-Output "Building Linux Mac x64"
 zig cc -Wall -O3 -g -shared -fPIC -Iinc -target x86_64-macos-none -o runtimes/osx-x64/native/librvnpal.dylib $shared $posix_files "src/posix/maconly.c" 

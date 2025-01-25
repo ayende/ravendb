@@ -15,7 +15,6 @@
 #include "internal_posix.h"
 #include "status_codes.h"
 
-
 bool _io_ring_supported()
 {
     return false;
@@ -29,7 +28,6 @@ int32_t _setup_io_ring(struct handle_global_state *global_state, int32_t *detail
 void _close_io_ring(struct handle_global_state *global_state)
 {
 }
-
 
 EXPORT uint64_t
 rvn_get_current_thread_id()
@@ -66,13 +64,13 @@ _rvn_fallocate(int32_t fd, int64_t offset, int64_t size)
     return EINVAL;
 }
 
-PRIVATE char*
-_get_strerror_r(int32_t error, char* tmp_buff, int32_t buf_size)
+PRIVATE char *
+_get_strerror_r(int32_t error, char *tmp_buff, int32_t buf_size)
 {
-  int32_t non_gnu_compliant_rc = strerror_r(error, tmp_buff, buf_size);
-  if (non_gnu_compliant_rc != 0)
-	  return tmp_buff;
-  return NULL;
+    int32_t non_gnu_compliant_rc = strerror_r(error, tmp_buff, buf_size);
+    if (non_gnu_compliant_rc != 0)
+        return tmp_buff;
+    return NULL;
 }
 
 EXPORT int32_t
@@ -84,23 +82,34 @@ rvn_test_storage_durability(
     return SUCCESS; /* windows and mac are always true */
 }
 
+int32_t
+rvn_one_time_init(int32_t *detailed_error_code)
+{
+    return SUCCESS;
+}
+
+int io_ring_setup_successful(void)
+{
+    return 0;
+}
+
 EXPORT
-rvn_writer rvn_get_writer(void* handle)
+rvn_writer rvn_get_writer(void *handle)
 {
     struct handle *handle_ptr = handle;
-     if(handle_ptr->write_address)
+    if (handle_ptr->write_address)
         return rvn_write_mmap;
     return rvn_write_file_io;
 }
 
 EXPORT int32_t
-rvn_write_journal(void* handle, struct journal_entry* buffer, int64_t count_of_entries, int64_t offset, int32_t* detailed_error_code)
+rvn_write_journal(void *handle, struct journal_entry *buffer, int64_t count_of_entries, int64_t offset, int32_t *detailed_error_code)
 {
     struct journal_handle *jfh = (struct journal_handle *)handle;
     for (size_t i = 0; i < count_of_entries; i++)
     {
         int32_t size = buffer[i].number_of_4kbs * SYS_PAGE_SIZE;
-        if(size / SYS_PAGE_SIZE != buffer[i].number_of_4kbs)
+        if (size / SYS_PAGE_SIZE != buffer[i].number_of_4kbs)
         {
             *detailed_error_code = EOVERFLOW;
             return FAIL_MATH_OVERFLOW;
@@ -110,7 +119,7 @@ rvn_write_journal(void* handle, struct journal_entry* buffer, int64_t count_of_e
             return rc;
         offset += size;
     }
-    
+
     return SUCCESS;
 }
 
