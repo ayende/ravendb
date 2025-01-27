@@ -441,7 +441,7 @@ namespace Sparrow.Server.Platform
         [DllImport(LIBRVNPAL, SetLastError = true)]
         public static extern PalFlags.FailCodes rvn_startup_configure(ref rvn_configuration cfg, out Int32 errorCode);
         
-		[DllImport(LIBRVNPAL, SetLastError = true)]
+        [DllImport(LIBRVNPAL, SetLastError = true)]
         public static extern Int32 rvn_get_pal_ver();
 
         [DllImport(LIBRVNPAL, SetLastError = true)]
