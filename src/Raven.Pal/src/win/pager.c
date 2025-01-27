@@ -461,7 +461,7 @@ rvn_init_pager(const char *filename,
         rc = FAIL_CREATE_EVENTFD;
         goto Error;
     }
-    
+
     if (write_mode == rvn_write_mode_io_ring && !io_ring_setup_successful())
     {
         // For writable maps, we don't need to create an io ring
@@ -709,7 +709,7 @@ rvn_writer rvn_get_writer(void *handle)
     struct handle *handle_ptr = handle;
     if (handle_ptr->write_address)
         return rvn_write_mmap;
-    
+
     rvn_write_mode mode = g_cfg.write_mode;
     switch (mode)
     {
@@ -721,7 +721,8 @@ rvn_writer rvn_get_writer(void *handle)
 
     case rvn_write_mode_vectored_file_io:
     case rvn_write_mode_file_io:
-    default:
         return rvn_write_file_io;
+    default:
+        return io_ring_setup_successful() ? rvn_write_io_ring : rvn_write_file_io;
     }
 }

@@ -74,7 +74,7 @@ namespace Voron.Impl.FileHeaders
         /// <summary>
         /// The journal id for all the transactions in shared journals
         /// for this environment that allows to tell which transactions
-        /// belong to this envionment or to others
+        /// belong to this environment or to others
         /// </summary>
         [FieldOffset(154)]
         public Guid JournalId;

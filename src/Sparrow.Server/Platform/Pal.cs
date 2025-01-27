@@ -8,15 +8,9 @@ using Sparrow.Utils;
 
 namespace Sparrow.Server.Platform
 {
-    public static class PalConfiguration
-    {
-        public static int IoRingQueueSize = 32;
-        public static bool LowPriorityIo = false;
-        public static Pal.RvnWriteMode WriteMode = Pal.RvnWriteMode.Auto;
-    }
     public static unsafe class Pal
     {
-        public const int PAL_VER = 70132; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
+        public const int PAL_VER = 70130; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
 
         static Pal()
         {

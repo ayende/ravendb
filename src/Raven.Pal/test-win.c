@@ -15,15 +15,23 @@ int main()
 
     struct rvn_configuration cfg = {
         .io_ring_queue_size = 16,
-        .low_priority_io = true,
+        .low_priority_io = false,
         .write_mode = rvn_write_mode_io_ring };
     int32_t ec;
     int32_t rc = rvn_startup_configure(&cfg, &ec);
 
-    rc = rvn_init_pager("test.db", 1024 * 64, OPEN_FILE_WRITABLE_MAP, &handle, &mem, &wmem, &size, &err);
+    rc = rvn_init_pager(L"test.db", 1024 * 64, OPEN_FILE_WRITABLE_MAP, &handle, &mem, &wmem, &size, &err);
     char buf[8192] = { 0 };
     buf[1] = 'a';
-    struct page_to_write p = { .count_of_pages = 1, .page_num = 0, .ptr = buf };
-    rc = rvn_write_io_ring(handle, &p, 1, &err);
+    struct page_to_write* p = calloc(34, sizeof(struct page_to_write));
+    for (size_t i = 0; i < 34; i++)
+    {
+        p[i].count_of_pages = 1;
+        p[i].ptr = buf;
+        p[i].page_num = i;
+    }
+    rc = rvn_write_io_ring(handle, p, 34, &err);
+    char b[24];
+    gets(b, 24);
     return 0;
 }

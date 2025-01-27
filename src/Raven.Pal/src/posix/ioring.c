@@ -143,6 +143,10 @@ void *do_ring_work(void *arg)
             rc = errno;
             goto error;
         }
+
+        uint64_t ignored;//consume the events so far
+        eventfd_read(g_worker.eventfd, &ignored);
+
         bool has_work = true;
         bool must_wait = false;
         while (has_work)

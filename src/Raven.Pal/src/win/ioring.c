@@ -140,10 +140,10 @@ DWORD WINAPI do_ring_work(LPVOID lpThreadParameter)
         }
         ResetEvent(IoRing.event);
         bool has_work = true;
-        bool must_wait = false;
         while (has_work)
         {
             has_work = false;
+            bool must_wait = false;
             if (!work) // we may have _previous_ work to run through
             {
                 work = InterlockedExchangePointer(&IoRing.head, 0);
@@ -168,7 +168,9 @@ DWORD WINAPI do_ring_work(LPVOID lpThreadParameter)
 
                 work = work->next;
             }
-            hr = must_wait ? IoRing.SubmitIoRing(ring, 1, INFINITE, NULL) : IoRing.SubmitIoRing(ring, 0, 0, NULL);
+            hr = must_wait ? 
+                IoRing.SubmitIoRing(ring, 1, INFINITE, NULL) : 
+                IoRing.SubmitIoRing(ring, 0, 0, NULL);
             if (FAILED(hr))
                 goto error;
             IORING_CQE cqe;
@@ -264,7 +266,7 @@ int32_t rvn_write_io_ring(
     }
     ResetEvent(handle_ptr->global_state->notify);
 
-    void *buf = handle_ptr->global_state->arena;
+    char *buf = handle_ptr->global_state->arena;
     struct workitem *prev = NULL;
     for (int32_t curIdx = 0; curIdx < count; curIdx++)
     {
@@ -272,6 +274,7 @@ int32_t rvn_write_io_ring(
         uint64_t size = (uint64_t)buffers[curIdx].count_of_pages * VORON_PAGE_SIZE;
 
         struct workitem *work = buf;
+        buf += sizeof(struct workitem);
         *work = (struct workitem){
             .buffer = buffers[curIdx].ptr,
             .size = size,
