@@ -291,6 +291,70 @@ bool _io_ring_supported()
     return curr_major > 5 || (curr_major == 5 && curr_minor >= 10);
 }
 
+bool wake_ring_worker(int32_t *detailed_error_code)
+{
+    if (eventfd_write(g_worker.eventfd, 1))
+    {
+        *detailed_error_code = errno;
+        // this means that the ring is probably dead, which is a catastrophic error
+        // need to wait for the relevant thread to complete, to ensure we aren't
+        // using the values we submitted to the ring
+        pthread_join(g_worker.thread, NULL);
+        return false;
+    }
+    return true;
+}
+
+EXPORT int32_t
+rvn_sync_pager(void *handle,
+               int32_t *detailed_error_code)
+{
+    struct handle *handle_ptr = handle;
+    if (!io_ring_setup_successful())
+    {
+        if (_flush_file(handle_ptr->file_fd))
+        {
+            *detailed_error_code = errno;
+            return FAIL_SYNC_FILE;
+        }
+        return SUCCESS;
+    }
+    struct workitem work =
+        {
+            .iovec_count = 0,
+            .iovecs = NULL,
+            .completed = 0,
+            .type = workitem_fsync,
+            .filefd = handle_ptr->file_fd,
+            .offset = 0,
+            .errored = false,
+            .result = 0,
+            .notifyfd = handle_ptr->global_state->eventfd,
+        };
+    queue_work(&work);
+    if (!wake_ring_worker(detailed_error_code))
+    {
+        return FAIL_IO_RING_WRITE;
+    }
+    struct pollfd pfd = {.fd = handle_ptr->global_state->eventfd, .events = POLLIN};
+    while (!atomic_load(&work.completed))
+    {
+        if (poll(&pfd, 1, -1) == -1)
+        {
+            if (errno == EINTR)
+                continue;
+            *detailed_error_code = errno;
+            return FAIL_POLL_EVENTFD;
+        }
+    }
+    if (work.errored)
+    {
+        *detailed_error_code = work.result;
+        return FAIL_IO_RING_WRITE_RESULT;
+    }
+    return SUCCESS;
+}
+
 int32_t rvn_write_io_ring(
     void *handle,
     struct page_to_write *buffers,
@@ -365,15 +429,9 @@ int32_t rvn_write_io_ring(
         queue_work(work);
     }
 
-    if (eventfd_write(g_worker.eventfd, 1))
+    if (!wake_ring_worker(detailed_error_code))
     {
-        // this means that the ring is probably dead, which is a catastrophic error
-        // need to wait for the relevant thread to complete, to ensure we aren't
-        // using the values we submitted to the ring
-        pthread_join(g_worker.thread, NULL);
-
         pthread_mutex_unlock(&handle_ptr->global_state->lock);
-        *detailed_error_code = errno;
         return FAIL_IO_RING_WRITE;
     }
 

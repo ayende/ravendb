@@ -82,6 +82,19 @@ rvn_test_storage_durability(
     return SUCCESS; /* windows and mac are always true */
 }
 
+EXPORT int32_t
+rvn_sync_pager(void *handle,
+               int32_t *detailed_error_code)
+{
+    struct handle *handle_ptr = handle;
+    if (_flush_file(handle_ptr->file_fd))
+    {
+        *detailed_error_code = errno;
+        return FAIL_SYNC_FILE;
+    }
+    return SUCCESS;
+}
+
 int32_t
 rvn_one_time_init(int32_t *detailed_error_code)
 {

@@ -371,19 +371,6 @@ rvn_close_pager(
     return rc;
 }
 
-EXPORT int32_t
-rvn_sync_pager(void *handle,
-               int32_t *detailed_error_code)
-{
-    struct handle *handle_ptr = handle;
-    if (_flush_file(handle_ptr->file_fd))
-    {
-        *detailed_error_code = errno;
-        return FAIL_SYNC_FILE;
-    }
-    return SUCCESS;
-}
-
 EXPORT
 int32_t rvn_pager_get_file_handle(
     void *handle,
