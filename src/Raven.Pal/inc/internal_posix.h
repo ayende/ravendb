@@ -38,9 +38,7 @@ struct journal_handle
     bool delete_on_close;
 };
 
-
 #if defined(__unix__) || defined(__APPLE__)
-
 
 // This state is shared across all instances of the pager for a particular file
 struct handle_global_state
@@ -49,7 +47,7 @@ struct handle_global_state
     // * Writing to the file
     // * Extending the file and creating new handle
     // * Closing the handle
-    // 
+    //
     // We explicitly want to deny concurrent writes to the file, because:
     // * Voron doesn't need that
     // * We want to use io_ring, which requires single threaded access to the ring
@@ -63,7 +61,7 @@ struct handle_global_state
     uint32_t ref_count;
     int32_t open_flags;
     int32_t status_flags;
-    char* file_path;
+    char *file_path;
     int eventfd;
 
     void *arena;
@@ -79,54 +77,46 @@ struct handle
     int file_fd;
 };
 
-
 PRIVATE
 int32_t _setup_io_ring(struct handle_global_state *global_state, int32_t *detailed_error_code);
 
-PRIVATE 
+PRIVATE
 void _close_io_ring(struct handle_global_state *global_state);
 
 PRIVATE
 int32_t rvn_write_io_ring(
-    void* handle,
+    void *handle,
     struct page_to_write *buffers,
     int32_t count,
-    int32_t *detailed_error_code
-);
+    int32_t *detailed_error_code);
 
 PRIVATE
 int32_t rvn_write_vectored_file_io(
-    void* handle,
+    void *handle,
     struct page_to_write *buffers,
     int32_t count,
-    int32_t *detailed_error_code
-);
+    int32_t *detailed_error_code);
 
 PRIVATE
 int32_t rvn_write_file_io(
-    void* handle,
+    void *handle,
     struct page_to_write *buffers,
     int32_t count,
-    int32_t *detailed_error_code
-);
+    int32_t *detailed_error_code);
 
 PRIVATE
 int32_t rvn_write_invalid_setup(
-    void* handle,
+    void *handle,
     struct page_to_write *buffers,
     int32_t count,
-    int32_t *detailed_error_code
-);
-
+    int32_t *detailed_error_code);
 
 PRIVATE
 int32_t rvn_write_mmap(
-    void* handle,
+    void *handle,
     struct page_to_write *buffers,
     int32_t count,
-    int32_t *detailed_error_code
-);
-
+    int32_t *detailed_error_code);
 
 PRIVATE
 bool _io_ring_supported();
@@ -143,11 +133,11 @@ _finish_open_file_with_odirect(int32_t fd);
 PRIVATE int32_t /* different impl for linux and mac */
 _rvn_fallocate(int32_t fd, int64_t offset, int64_t size);
 
-PRIVATE char*   /* different impl for linux and mac */
-_get_strerror_r(int32_t error, char* tmp_buff, int32_t buf_size);
+PRIVATE char * /* different impl for linux and mac */
+_get_strerror_r(int32_t error, char *tmp_buff, int32_t buf_size);
 
 PRIVATE int32_t
-_pwritev(int fd, struct iovec *iov, int iovcnt, off_t offset, int32_t* detailed_error_code);
+_pwritev(int fd, struct iovec *iov, int iovcnt, off_t offset, int32_t *detailed_error_code);
 
 PRIVATE int32_t
 _pwrite(int32_t fd, void *buffer, uint64_t count, uint64_t offset, int32_t *detailed_error_code);
@@ -165,13 +155,13 @@ PRIVATE int32_t
 _allocate_file_space(int32_t fd, int64_t size, int32_t *detailed_error_code);
 
 PRIVATE int32_t
-_open_file_to_read(const char* file_name, int32_t *fd, int32_t* detailed_error_code);
+_open_file_to_read(const char *file_name, int32_t *fd, int32_t *detailed_error_code);
 
 PRIVATE int32_t
-_resize_file(int32_t fd, int64_t size, int32_t *detailed_error_code);
+_resize_file(const char *file_name, int32_t fd, int64_t size, int32_t *detailed_error_code);
 
 PRIVATE int32_t
-_read_file(int32_t fd, void* buffer, int64_t required_size, int64_t offset, int64_t* actual_size, int32_t* detailed_error_code);
+_read_file(int32_t fd, void *buffer, int64_t required_size, int64_t offset, int64_t *actual_size, int32_t *detailed_error_code);
 
 int32_t
 _ensure_path_exists(const char *path, int32_t *detailed_error_code);

@@ -3,6 +3,7 @@ using Raven.Server.Config.Attributes;
 using Raven.Server.Config.Settings;
 using Sparrow;
 using Sparrow.Platform;
+using Sparrow.Server.Platform;
 
 namespace Raven.Server.Config.Categories
 {
@@ -173,5 +174,22 @@ namespace Raven.Server.Config.Categories
         [DefaultValue(8)]
         [ConfigurationEntry("Storage.MinimumSharedJournalsMergeCount", ConfigurationEntryScope.ServerWideOrPerDatabase)]
         public int MinimumSharedJournalsMergeCount { get; set; }
+        
+        [Description("EXPERT: I/O for flush and sync operation is issued for a low priority thread, giving transaction commits higher priority")]
+        [DefaultValue(false)]
+        [ConfigurationEntry("Storage.LowPriorityFlushAndSync", ConfigurationEntryScope.ServerWideOnly)]
+        public bool LowPriorityFlushAndSync { get; set; }
+        
+        
+        [Description("EXPERT: The queue size to use for I/O ring operations, using -1 will disable I/O ring entirely")]
+        [DefaultValue(1024)]
+        [ConfigurationEntry("Storage.IoRingQueueSize", ConfigurationEntryScope.ServerWideOnly)]
+        public int IoRingQueueSize { get; set; }
+        
+        
+        [Description("EXPERT: The write mode for writing to the data file (Auto/VectoredFileIo,FileIo,IoRing,Mmap).")]
+        [DefaultValue(Pal.RvnWriteMode.Auto)]
+        [ConfigurationEntry("Storage.WriteMode", ConfigurationEntryScope.ServerWideOnly)]
+        public Pal.RvnWriteMode WriteMode { get; set; }
     }
 }

@@ -1,6 +1,6 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
-#endif 
+#endif
 
 #include <unistd.h>
 #include <sys/types.h>
@@ -18,9 +18,8 @@
 #include "status_codes.h"
 #include "internal_posix.h"
 
-
-PRIVATE void 
-_free_journal_handle(struct journal_handle* handle)
+PRIVATE void
+_free_journal_handle(struct journal_handle *handle)
 {
     if (handle->path != NULL)
     {
@@ -28,7 +27,7 @@ _free_journal_handle(struct journal_handle* handle)
         (handle)->path = NULL;
     }
 
-    free((void*)handle);
+    free((void *)handle);
 }
 
 EXPORT int32_t
@@ -37,7 +36,7 @@ rvn_open_journal_for_writes(const char *file_name, int32_t transaction_mode, int
     assert(initial_file_size > 0);
 
     int32_t rc;
-    
+
     int32_t flags = O_DSYNC | O_DIRECT;
     if (durability_support == DURABILITY_NOT_SUPPORTED)
         flags = O_DSYNC;
@@ -48,7 +47,7 @@ rvn_open_journal_for_writes(const char *file_name, int32_t transaction_mode, int
         flags |= O_LARGEFILE;
 
     struct journal_handle *jfh = calloc(1, sizeof(struct journal_handle));
-    
+
     *handle = jfh;
     if (jfh == NULL)
     {
@@ -57,7 +56,6 @@ rvn_open_journal_for_writes(const char *file_name, int32_t transaction_mode, int
     }
 
     jfh->delete_on_close = transaction_mode == JOURNAL_MODE_PURE_MEMORY;
-
 
     jfh->path = strdup(file_name);
     if (jfh->path == NULL)
@@ -89,7 +87,7 @@ rvn_open_journal_for_writes(const char *file_name, int32_t transaction_mode, int
 
     if (fs.st_size < initial_file_size)
     {
-        rc = _resize_file(jfh->fd, initial_file_size, detailed_error_code);
+        rc = _resize_file(file_name, jfh->fd, initial_file_size, detailed_error_code);
         if (rc != SUCCESS)
             goto error_clean_With_error;
 
@@ -98,7 +96,7 @@ rvn_open_journal_for_writes(const char *file_name, int32_t transaction_mode, int
     else
     {
         *actual_size = fs.st_size;
-    }    
+    }
     return SUCCESS;
 
 error_cleanup:
@@ -132,7 +130,7 @@ EXPORT int32_t
 rvn_close_journal(void *handle, int32_t *detailed_error_code)
 {
     int32_t rc;
-    struct journal_handle* jfh = (struct journal_handle*)handle;
+    struct journal_handle *jfh = (struct journal_handle *)handle;
     if (jfh->delete_on_close == true)
     {
         int32_t unlink_rc = unlink(jfh->path);
@@ -153,13 +151,12 @@ rvn_close_journal(void *handle, int32_t *detailed_error_code)
     rc = SUCCESS;
     goto cleanup;
 
-error_cleanup :
+error_cleanup:
     *detailed_error_code = errno;
 cleanup:
     _free_journal_handle(jfh);
     return rc;
 }
-
 
 EXPORT int32_t
 rvn_open_journal_for_reads(const char *file_name, void **handle, int32_t *detailed_error_code)
@@ -175,7 +172,7 @@ rvn_open_journal_for_reads(const char *file_name, void **handle, int32_t *detail
 
     jfh->path = NULL;
     rc = _open_file_to_read(file_name, &(jfh->fd), detailed_error_code);
-    if(rc != SUCCESS)
+    if (rc != SUCCESS)
     {
         if (jfh->fd != -1)
         {
@@ -218,22 +215,18 @@ rvn_truncate_journal(void *handle, int64_t size, int32_t *detailed_error_code)
         goto error_cleanup;
     }
 
-    rc = _resize_file(jfh->fd, size, detailed_error_code);
-    if(rc != SUCCESS)
-        return rc;
-
-    return _sync_directory_for(jfh->path, detailed_error_code);
+    return _resize_file(jfh->path, jfh->fd, size, detailed_error_code);
 
 error_cleanup:
     *detailed_error_code = errno;
     return rc;
 }
 
-EXPORT int32_t 
+EXPORT int32_t
 rvn_hard_link_non_durable(const char *src, const char *dst, int32_t *detailed_error_code)
 {
     if (link(src, dst))
-    {    
+    {
         *detailed_error_code = errno;
         return FAIL_HARD_LINK;
     }
@@ -243,16 +236,18 @@ rvn_hard_link_non_durable(const char *src, const char *dst, int32_t *detailed_er
 }
 
 EXPORT int32_t
-rvn_is_same_hard_link(const char *src, const char *dst, char *is_same, int32_t *detailed_error_code) {
+rvn_is_same_hard_link(const char *src, const char *dst, char *is_same, int32_t *detailed_error_code)
+{
     struct stat src_stat, dst_stat;
-    
-    if (lstat(src, &src_stat) == -1) {
+
+    if (lstat(src, &src_stat) == -1)
+    {
         *detailed_error_code = errno;
         return FAIL_STAT_FILE;
     }
-    if(lstat(dst, &dst_stat) == -1)
+    if (lstat(dst, &dst_stat) == -1)
     {
-        if(errno == ENOENT)
+        if (errno == ENOENT)
         {
             *is_same = false;
             *detailed_error_code = 0;
@@ -261,10 +256,11 @@ rvn_is_same_hard_link(const char *src, const char *dst, char *is_same, int32_t *
         *detailed_error_code = errno;
         return FAIL_STAT_FILE;
     }
-    
-    if (!S_ISREG(src_stat.st_mode) || !S_ISREG(dst_stat.st_mode)) {
+
+    if (!S_ISREG(src_stat.st_mode) || !S_ISREG(dst_stat.st_mode))
+    {
         *is_same = false;
-        *detailed_error_code = 0;  
+        *detailed_error_code = 0;
         return SUCCESS;
     }
 

@@ -220,7 +220,7 @@ namespace Voron.Impl.Backup
                         jrnl.Release();
                     }
                 }
-                infoNotify(string.Format("Voron Incr Backup total {0} pages", numberOfBackedUpPages));
+                infoNotify($"Voron Incr Backup total {numberOfBackedUpPages} pages");
             }
             return numberOfBackedUpPages;
         }

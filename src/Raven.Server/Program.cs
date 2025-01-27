@@ -158,6 +158,10 @@ namespace Raven.Server
             configuration.Initialize();
             GenerateEmbeddings.Configure(configuration);
 
+            PalConfiguration.LowPriorityIo = configuration.Storage.LowPriorityFlushAndSync;
+            PalConfiguration.WriteMode = configuration.Storage.WriteMode;
+            PalConfiguration.IoRingQueueSize = configuration.Storage.IoRingQueueSize;
+
             GlobalFlushingBehavior.NumberOfConcurrentSyncs = configuration.Storage.NumberOfConcurrentSyncsPerPhysicalDrive;
 
             EncryptionBuffersPool.Instance.Disabled = configuration.Storage.DisableEncryptionBuffersPooling;

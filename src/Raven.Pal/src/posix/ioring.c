@@ -211,7 +211,7 @@ void *do_ring_work(void *arg)
                         cur->offset += result;
                         while (result)
                         {
-                            if (result == cur->iovecs->iov_len)
+                            if (result >= cur->iovecs->iov_len)
                             {
                                 result -= cur->iovecs->iov_len;
                                 cur->iovecs++;

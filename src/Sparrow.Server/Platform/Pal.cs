@@ -8,10 +8,15 @@ using Sparrow.Utils;
 
 namespace Sparrow.Server.Platform
 {
+    public static class PalConfiguration
+    {
+        public static int IoRingQueueSize = 32;
+        public static bool LowPriorityIo = false;
+        public static Pal.RvnWriteMode WriteMode = Pal.RvnWriteMode.Auto;
+    }
     public static unsafe class Pal
     {
-        
-        public const int PAL_VER = 70128; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
+        public const int PAL_VER = 70132; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
 
         static Pal()
         {
@@ -22,11 +27,11 @@ namespace Sparrow.Server.Platform
             {
                 var cfg = new rvn_configuration
                 {
-                    io_ring_queue_size = 16,
-                    low_priority_io = false,
+                    io_ring_queue_size = PalConfiguration.IoRingQueueSize,
+                    low_priority_io = PalConfiguration.LowPriorityIo,
                     pal_version = -1, // loaded by the call
-                    version = rvn_configuration_version.current,
-                    write_mode = rvn_write_mode.rvn_mode_default,
+                    version = RvnConfigurationVersion.Current,
+                    write_mode = PalConfiguration.WriteMode,
                     memoryLockCallback = &MemoryLockUsage.UpdateLockedMemory,
                     recoveryMemoryLockFailureCallback = &MemoryLockUsage.RecoverLockedMemoryFailure
                 };
@@ -410,28 +415,28 @@ namespace Sparrow.Server.Platform
             byte* tempFilename,
             out Int32 errorCode);
 
-        public enum rvn_configuration_version
+        public enum RvnConfigurationVersion
         {
-            none,
-            current
+            None,
+            Current
         }
         
-        public enum rvn_write_mode
+        public enum RvnWriteMode
         {
-            rvn_mode_default,
-            rvn_write_mode_vectored_file_io,
-            rvn_write_mode_file_io,
-            rvn_write_mode_io_ring,
-            rvn_write_mode_mmap,
+            Auto,
+            VectoredFileIo,
+            FileIo,
+            IoRing,
+            Mmap,
         }
         
         [StructLayout(LayoutKind.Sequential)]
         public struct rvn_configuration
         {
-            public rvn_configuration_version version;
+            public RvnConfigurationVersion version;
             public Int32 pal_version;
             public Int32 io_ring_queue_size;
-            public rvn_write_mode write_mode;
+            public RvnWriteMode write_mode;
             public bool low_priority_io;
 
             public delegate*<Int64, char*, void> memoryLockCallback;

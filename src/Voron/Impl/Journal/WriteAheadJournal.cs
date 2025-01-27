@@ -1803,7 +1803,7 @@ namespace Voron.Impl.Journal
             commitCompleted.Wait();
         }
 
-        private void WriteBuffersToJournal(LowLevelTransaction tx, WriteAheadJournal.PendingJournalStateRecord rootEntry)
+        private void WriteBuffersToJournal(LowLevelTransaction tx, PendingJournalStateRecord rootEntry)
         {
             try
             {
@@ -1821,8 +1821,11 @@ namespace Voron.Impl.Journal
 
                 var journalMerger = BranchJournalMerger;
 
-                while (_mergedEntriesBuffer.Count < _minimumSharedJournalsMergeCount || 
-                       journalMerger is null || journalMerger.IsIdle)
+                while (_mergedEntriesBuffer.Count < _minimumSharedJournalsMergeCount ||
+                       // we aren't committing a db transaction, so we can afford to have higher batches
+                       journalMerger is null || 
+                       // there aren't any pending operations that we are waiting for, so we can afford to batch more...
+                       journalMerger.IsIdle)
                 {
                     if (_mergedCommitsQueue.TryDequeue(out var cur) is false)
                         break;

@@ -18,7 +18,6 @@
 #include "status_codes.h"
 #include "internal_posix.h"
 
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -26,14 +25,18 @@
 #include <errno.h>
 
 PRIVATE int32_t
-_pwritev(int fd, struct iovec *iov, int iovcnt, off_t offset, int32_t* detailed_error_code) {
+_pwritev(int fd, struct iovec *iov, int iovcnt, off_t offset, int32_t *detailed_error_code)
+{
     off_t current_offset = offset;
 
-    while (iovcnt > 0) {
+    while (iovcnt > 0)
+    {
         ssize_t written = rvn_pwritev(fd, iov, iovcnt, current_offset);
 
-        if (written < 0) {
-            if (errno == EINTR) {
+        if (written < 0)
+        {
+            if (errno == EINTR)
+            {
                 continue;
             }
             *detailed_error_code = errno;
@@ -41,7 +44,7 @@ _pwritev(int fd, struct iovec *iov, int iovcnt, off_t offset, int32_t* detailed_
         }
 
         // this should _not_ really be happening, but let's be safe
-        if(written == 0)
+        if (written == 0)
         {
             *detailed_error_code = ENOBUFS;
             return FAIL_PWRITE;
@@ -50,12 +53,16 @@ _pwritev(int fd, struct iovec *iov, int iovcnt, off_t offset, int32_t* detailed_
         current_offset += written;
 
         // Adjust iov to skip over already written data
-        while (written > 0) {
-            if (written >= (ssize_t)iov->iov_len) {
+        while (written > 0)
+        {
+            if (written >= (ssize_t)iov->iov_len)
+            {
                 written -= iov->iov_len;
                 iov++;
                 iovcnt--;
-            } else {
+            }
+            else
+            {
                 // Partial vector written, adjust the current vector
                 iov->iov_base = (char *)iov->iov_base + written;
                 iov->iov_len -= written;
@@ -104,7 +111,7 @@ _allocate_file_space(int32_t fd, int64_t size, int32_t *detailed_error_code)
     int32_t result;
     int32_t retries;
     for (retries = 0; retries < 1024; retries++)
-    {        
+    {
         result = _rvn_fallocate(fd, 0, size);
 
         switch (result)
@@ -141,7 +148,7 @@ _ensure_path_exists(const char *path, int32_t *detailed_error_code)
     int32_t rc;
     /* An empty string should be dealt with as a 'current directory' like "." do (`stat()` fail in case of an empty string as parameter) */
     char *dup_path = path[0] == '\0' ? strdup(".") : strdup(path);
-    if(dup_path == NULL)
+    if (dup_path == NULL)
     {
         rc = FAIL_NOMEM;
         goto error_cleanup;
@@ -152,7 +159,7 @@ _ensure_path_exists(const char *path, int32_t *detailed_error_code)
     while (current_end != NULL)
     {
         current_end = strchr(current_end + 1, '/');
-        
+
         if (current_end != NULL)
             *current_end = '\0';
 
@@ -183,7 +190,7 @@ _ensure_path_exists(const char *path, int32_t *detailed_error_code)
             if (rc != SUCCESS)
                 goto cleanup;
         }
-        else if(S_ISDIR(sb.st_mode) == 0)
+        else if (S_ISDIR(sb.st_mode) == 0)
         {
             *detailed_error_code = ENOTDIR;
             rc = FAIL_NOT_DIRECTORY;
@@ -205,12 +212,12 @@ cleanup:
     return rc;
 }
 
-PRIVATE int32_t 
+PRIVATE int32_t
 _open_file_to_read(const char *file_name, int32_t *fd, int32_t *detailed_error_code)
 {
     *fd = open(file_name, O_RDONLY, S_IRUSR);
     if (*fd != -1)
-        return SUCCESS;    
+        return SUCCESS;
 
     *detailed_error_code = errno;
     return FAIL_OPEN_FILE;
@@ -223,7 +230,7 @@ _read_file(int32_t fd, void *buffer, int64_t required_size, int64_t offset, int6
     int64_t remain_size = required_size;
     int64_t already_read;
     *actual_size = 0;
-     while (remain_size > 0)
+    while (remain_size > 0)
     {
         already_read = rvn_pread(fd, buffer, remain_size, offset);
         if (already_read == -1)
@@ -247,12 +254,12 @@ _read_file(int32_t fd, void *buffer, int64_t required_size, int64_t offset, int6
 
 error_cleanup:
     *detailed_error_code = errno;
-    *actual_size = required_size - remain_size; 
+    *actual_size = required_size - remain_size;
     return rc;
 }
 
 PRIVATE int32_t
-_resize_file(int32_t fd, int64_t size, int32_t *detailed_error_code)
+_resize_file(const char *file_name, int32_t fd, int64_t size, int32_t *detailed_error_code)
 {
     assert(size % 4096 == 0);
 
@@ -263,23 +270,26 @@ _resize_file(int32_t fd, int64_t size, int32_t *detailed_error_code)
         rc = FAIL_STAT_FILE;
         goto error_cleanup;
     }
+    if (size == st.st_size)
+        return SUCCESS;
 
-    if(size > st.st_size)
+    if (size > st.st_size)
     {
         int32_t rc = _allocate_file_space(fd, size, detailed_error_code);
-        if(rc != SUCCESS)
+        if (rc != SUCCESS)
+        {
             return rc;
+        }
     }
     else
     {
-        if(rvn_ftruncate(fd, size) == -1)
+        if (rvn_ftruncate(fd, size) == -1)
         {
             rc = FAIL_TRUNCATE_FILE;
             goto error_cleanup;
         }
     }
-
-    return SUCCESS;
+    return _sync_directory_for(file_name, detailed_error_code);
 
 error_cleanup:
     *detailed_error_code = errno;
