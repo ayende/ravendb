@@ -23,7 +23,13 @@ int main()
     rc = rvn_init_pager("test.db", 1024 * 64, OPEN_FILE_WRITABLE_MAP, &handle, &mem, &wmem, &size, &err);
     char buf[8192] = {0};
     buf[1] = 'a';
-    struct page_to_write p = {.count_of_pages = 1, .page_num = 0, .ptr = buf};
-    rc = rvn_write_io_ring(handle, &p, 1, &err);
+    struct page_to_write p[] = {
+        {.count_of_pages = 1, .page_num = 0, .ptr = buf},
+        {.count_of_pages = 1, .page_num = 1, .ptr = buf},
+        {.count_of_pages = 1, .page_num = 4, .ptr = buf},
+    };
+    rc = rvn_write_io_ring(handle, &p, 3, &err);
+    fgetc(stdin);
+    rc = rvn_write_io_ring(handle, &p, 3, &err);
     return 0;
 }

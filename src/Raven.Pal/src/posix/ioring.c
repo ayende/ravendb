@@ -129,28 +129,25 @@ void *do_ring_work(void *arg)
     }
     pthread_setname_np(pthread_self(), "Rvn.Ring.Wrkr");
 
-    struct pollfd pfd = {.fd = g_worker.eventfd, .events = POLLIN};
-
     struct io_uring *ring = &g_worker.ring;
     struct workitem *work = NULL;
     while (true)
     {
-        // wait for any writes on the eventfd / completion on the ring (associated with the eventfd)
-        if (poll(&pfd, 1, -1) == -1)
+        do
         {
-            if (errno == EINTR)
-                continue;
+            // wait for any writes on the eventfd / completion on the ring (associated with the eventfd)
+            eventfd_t v;
+            rc = read(g_worker.eventfd, &v, sizeof(eventfd_t));
+        } while (rc < 0 && errno == EINTR);
+        if (rc < 0 || rc != sizeof(eventfd_t))
+        {
             rc = errno;
             goto error;
         }
-
-        uint64_t ignored;//consume the events so far
-        eventfd_read(g_worker.eventfd, &ignored);
-
         bool has_work = true;
-        bool must_wait = false;
         while (has_work)
         {
+            bool must_wait = false;
             has_work = false;
             if (!work) // we may have _previous_ work to run through
             {
@@ -340,16 +337,15 @@ rvn_sync_pager(void *handle,
     {
         return FAIL_IO_RING_WRITE;
     }
-    struct pollfd pfd = {.fd = handle_ptr->global_state->eventfd, .events = POLLIN};
     while (!atomic_load(&work.completed))
     {
-        if (poll(&pfd, 1, -1) == -1)
-        {
-            if (errno == EINTR)
-                continue;
-            *detailed_error_code = errno;
-            return FAIL_POLL_EVENTFD;
-        }
+        eventfd_t v;
+        int rc = read(handle_ptr->global_state->eventfd, &v, sizeof(eventfd_t));
+        if (rc == sizeof(eventfd_t) || errno == EINTR)
+            continue;
+
+        *detailed_error_code = errno;
+        return FAIL_POLL_EVENTFD;
     }
     if (work.errored)
     {
@@ -439,7 +435,6 @@ int32_t rvn_write_io_ring(
         return FAIL_IO_RING_WRITE;
     }
 
-    struct pollfd pfd = {.fd = handle_ptr->global_state->eventfd, .events = POLLIN};
     bool all_done = false;
     while (!all_done)
     {
@@ -447,10 +442,13 @@ int32_t rvn_write_io_ring(
         rc = SUCCESS;
         *detailed_error_code = 0;
 
-        if (poll(&pfd, 1, -1) == -1)
+        eventfd_t v;
+        int rc = read(handle_ptr->global_state->eventfd, &v, sizeof(eventfd_t));
+        if (rc != sizeof(eventfd_t))
         {
             if (errno == EINTR)
                 continue;
+
             *detailed_error_code = errno;
             rc = FAIL_POLL_EVENTFD;
             break;
