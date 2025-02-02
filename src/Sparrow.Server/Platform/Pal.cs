@@ -10,7 +10,7 @@ namespace Sparrow.Server.Platform
 {
     public static unsafe class Pal
     {
-        public const int PAL_VER = 70130; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
+        public const int PAL_VER = 70804; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
 
         static Pal()
         {
@@ -142,6 +142,14 @@ namespace Sparrow.Server.Platform
                 out handle, out readAddress, out writeAddress, out memorySize, out errorCode);
         }
 
+        [DllImport(LIBRVNPAL, SetLastError = true, CharSet = CharSet.Ansi)]
+        public static extern PalFlags.FailCodes rvn_sync_directories(
+            void* handle,
+            [MarshalAs(UnmanagedType.LPArray, ArraySubType = UnmanagedType.LPStr)] string[] folders,
+            Int32 count,
+            out Int32 errorCode);
+
+        
         [DllImport(LIBRVNPAL, SetLastError = true)]
         public static extern PalFlags.FailCodes rvn_increase_pager_size(
             void* handle,

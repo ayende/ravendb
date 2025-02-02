@@ -91,13 +91,33 @@ namespace Voron.Impl.Journal
             private byte* _buffer;
             private int _bufferSize;
             private NativeMemory.ThreadStats _threadStats;
-            private List<string> _paths = new();
+            private readonly List<string> _paths = new();
             private int _pathsSize;
+            private readonly Dictionary<string, long> _lastCreatedJournals = [];
+            private readonly Dictionary<string, long> _lastFlushedJournals = [];
 
-            public void Add(string path)
+            public void Add(string relativePath)
             {
-                _paths.Add(path);
-                _pathsSize += path.Length;
+                _paths.Add(relativePath);
+                _pathsSize += relativePath.Length;
+            }
+            
+            public void RegisterNewJournal(string journal, long number) => _lastCreatedJournals[journal] =  number;
+
+            public List<string> GetFoldersToSync(long lastJournal)
+            {
+                List<string> folders = null;
+                foreach (var (path, number) in _lastCreatedJournals)
+                {
+                    ref var index = ref CollectionsMarshal.GetValueRefOrAddDefault(_lastFlushedJournals, path, out _);
+                    if (index >= lastJournal)
+                        continue;
+
+                    folders ??= [];
+                    folders.Add(path);
+                    _lastCreatedJournals[path] = number;
+                }
+                return folders;
             }
             
             public bool HasEntries => _paths.Count > 0;
@@ -490,7 +510,7 @@ namespace Voron.Impl.Journal
                 // last flushed journal might not exist because it could be already deleted and the only journal we have is empty
                 if (instanceOfLastFlushedJournal != null)
                 {
-                    _journalApplicator.SetLastFlushed(lastFlushedTxId, instanceOfLastFlushedJournal, toDelete);
+                    _journalApplicator.SetLastFlushed(lastFlushedTxId, instanceOfLastFlushedJournal, toDelete, null);
                 }
             }
 
@@ -619,6 +639,7 @@ namespace Voron.Impl.Journal
             public sealed record LastFlushState(long TransactionId, 
                 JournalFile Journal, 
                 List<JournalFile> JournalsToDelete,
+                List<string> PathsToSync,
                 TreeRootHeader Root,
                 long LastPageNumber)
             {
@@ -627,7 +648,7 @@ namespace Voron.Impl.Journal
                 public long JournalId => Journal?.Number ?? -1;
                 public bool IsValid => Journal != null && JournalsToDelete != null;
 
-                public static LastFlushState Empty => new(-1, null, null, default, -1);
+                public static LastFlushState Empty => new(-1, null, null, null, default, -1);
             }
 
             private LastFlushState _lastFlushed = LastFlushState.Empty;
@@ -999,9 +1020,14 @@ namespace Voron.Impl.Journal
                     AddJournalToDelete(unused);
                 }
 
-   
+                List<string> pathsToSync = null;
+                if (unusedJournals.Count > 0)
+                {
+                    pathsToSync = _waj._linkedJournalsRecord.GetFoldersToSync(unusedJournals[^1].Number);
+                }
+
                 SetLastFlushed(flushedRecord.TransactionId, journalFile,
-                    _journalsToDelete.Values.ToList());
+                    _journalsToDelete.Values.ToList(), pathsToSync);
 
                 if (_waj._files.Count == 0)
                 {
@@ -1183,12 +1209,20 @@ namespace Voron.Impl.Journal
                     {
                         if (toDelete.Number > _lastFlushed.JournalId) // precaution
                             continue;
-
+                        
                         if (parent._waj._env.Options.IncrementalBackupEnabled == false)
                             toDelete.ShouldDelete = true;
 
                         parent._journalsToDelete.TryRemove(toDelete.Number, out _);
                         toDelete.Release();
+                    }
+
+                    if (_lastFlushed.PathsToSync is not null)
+                    {
+                        var record = parent._waj._env.CurrentStateRecord;
+                        var rc = Pal.rvn_sync_directories(record.DataPagerState.Handle, _lastFlushed.PathsToSync.ToArray(), _lastFlushed.PathsToSync.Count, out var err);
+                        if(rc != PalFlags.FailCodes.Success)
+                            PalHelper.ThrowLastError(rc, err, $"Failed to sync directories during flush: {string.Join(",", _lastFlushed.PathsToSync)}");
                     }
 
                     parent._lastSyncTime = DateTime.UtcNow;
@@ -1667,12 +1701,12 @@ namespace Voron.Impl.Journal
                 current.Release();
             }
 
-            public void SetLastFlushed(long lastTransactionId, JournalFile journalFile, List<JournalFile> journalFiles)
+            public void SetLastFlushed(long lastTransactionId, JournalFile journalFile, List<JournalFile> journalFiles, List<string> pathsToSync)
             {
                 var lastFlushedTxHeader = journalFile.GetLastReadTxHeader(lastTransactionId);
          
                 var newState = new LastFlushState(lastTransactionId, 
-                    journalFile, journalFiles,
+                    journalFile, journalFiles, pathsToSync,
                     lastFlushedTxHeader.Root, lastFlushedTxHeader.LastPageNumber);
 
                 if (lastTransactionId != lastFlushedTxHeader.TransactionId)
@@ -1896,7 +1930,8 @@ namespace Voron.Impl.Journal
 
             foreach (var rec in _mergedJournalRecordsBuffer)
             {
-                JournalFile journalFile = rec.Transaction.Environment.Journal.EnsureRegistered(CurrentFile, out var alreadyExists);
+                var environment = rec.Transaction.Environment;
+                JournalFile journalFile = environment.Journal.EnsureRegistered(CurrentFile, out var alreadyExists);
                 rec.Transaction.WrittenToJournalNumber = journalFile.Number;
                 journalFile.SetTransactionFrom(rec.Entry);
                 if (alreadyExists) 
@@ -1909,6 +1944,11 @@ namespace Voron.Impl.Journal
                     CurrentFile.JournalWriter.FileName.FullPath, 
                     journalFile.JournalWriter.FileName.FullPath);
                 _linkedJournalsRecord.Add(relativePath);
+                
+                _linkedJournalsRecord.RegisterNewJournal(
+                    environment.Options.JournalPath.ToFullPath(),
+                    CurrentFile.Number
+                    );
             }
 
             if (_linkedJournalsRecord.HasEntries)
