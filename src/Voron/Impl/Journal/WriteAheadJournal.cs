@@ -1944,11 +1944,14 @@ namespace Voron.Impl.Journal
                     CurrentFile.JournalWriter.FileName.FullPath, 
                     journalFile.JournalWriter.FileName.FullPath);
                 _linkedJournalsRecord.Add(relativePath);
-                
-                _linkedJournalsRecord.RegisterNewJournal(
-                    environment.Options.JournalPath.ToFullPath(),
-                    CurrentFile.Number
+
+                if (environment.Options is StorageEnvironmentOptions.DirectoryStorageEnvironmentOptions)
+                {
+                    _linkedJournalsRecord.RegisterNewJournal(
+                        environment.Options.JournalPath.ToFullPath(),
+                        CurrentFile.Number
                     );
+                }
             }
 
             if (_linkedJournalsRecord.HasEntries)
