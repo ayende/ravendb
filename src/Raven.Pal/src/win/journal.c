@@ -9,7 +9,7 @@
 
 
 EXPORT int32_t
-rvn_sync_directories(char** folders, int32_t count, int32_t *detailed_error_code)
+rvn_sync_directories(void* handle, char** folders, int32_t count, int32_t *detailed_error_code)
 {
     return SUCCESS;
 }
@@ -311,14 +311,14 @@ rvn_is_same_hard_link(const char *src, const char *dst, char *is_same, int32_t *
     HANDLE src_handle = INVALID_HANDLE_VALUE;
     HANDLE dst_handle = INVALID_HANDLE_VALUE;
     int32_t rc = SUCCESS;
-    src_handle = CreateFileW(src, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    src_handle = CreateFileW((LPCWSTR)src, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (src_handle == INVALID_HANDLE_VALUE) {
         *detailed_error_code = GetLastError();
         rc = FAIL_OPEN_FILE;
         goto End;
     }
 
-    dst_handle = CreateFileW(dst, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    dst_handle = CreateFileW((LPCWSTR)dst, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (dst_handle == INVALID_HANDLE_VALUE) {
         int32_t error = GetLastError();
         if(error == ERROR_FILE_NOT_FOUND)

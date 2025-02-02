@@ -694,7 +694,6 @@ rvn_sync_directories_ioring(void *handle, char **folders, int32_t count, int32_t
             .filefd = arr[i].filefd,
             .notifyfd = eventfd,
             .prev = prev};
-        };
         prev = &arr[i];
         queue_work(&arr[i]);
     }

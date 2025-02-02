@@ -273,7 +273,7 @@ int32_t rvn_write_io_ring(
         uint64_t offset = buffers[curIdx].page_num * VORON_PAGE_SIZE;
         uint64_t size = (uint64_t)buffers[curIdx].count_of_pages * VORON_PAGE_SIZE;
 
-        struct workitem *work = buf;
+        struct workitem *work = (struct workitem*)buf;
         buf += sizeof(struct workitem);
         *work = (struct workitem){
             .buffer = buffers[curIdx].ptr,
