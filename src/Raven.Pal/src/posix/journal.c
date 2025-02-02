@@ -278,8 +278,10 @@ rvn_sync_directories_sync(void* handle, char** folders, int32_t count, int32_t *
         int fd = open(folders[i], O_RDONLY);
         if(fd < 0)
         {
-            *detailed_error_code = errno;
-            return FAIL_OPEN_FILE;
+            // it is _fine_ if the directory does not exist
+            // we need to handle the case of an index being deleted
+            // before we had a chance to flush things
+            continue;
         }
         if(fsync(fd) == -1)
         {

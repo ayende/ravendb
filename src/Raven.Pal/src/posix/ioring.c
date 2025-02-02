@@ -238,15 +238,9 @@ void *do_ring_work(void *arg)
                 switch (cur->type)
                 {
                 case workitem_open_folders:
-                    if (result < 0)
-                    {
-                        cur->errored = true;
-                        cur->result = -result;
-                    }
-                    else
-                    {
-                        cur->filefd = result;
-                    }
+                    cur->filefd = result;
+                    cur->result = -result;
+                    cur->errored = result < 0;
                     notify_work_completed(ring, cur);
                     break;
                 case workitem_fsync_folders:
@@ -379,8 +373,7 @@ wait_for_work_completion(struct handle *handle_ptr, struct workitem *prev, int e
                 continue;
 
             *detailed_error_code = errno;
-            rc = FAIL_POLL_EVENTFD;
-            break;
+            return FAIL_POLL_EVENTFD;
         }
 
         struct workitem *work = prev;
@@ -390,7 +383,6 @@ wait_for_work_completion(struct handle *handle_ptr, struct workitem *prev, int e
             if (work->errored)
             {
                 *detailed_error_code = work->result;
-                rc = FAIL_IO_RING_WRITE_RESULT;
                 // note that we still need to wait for the whole
                 // set to complete before we can safely return...
             }
@@ -530,7 +522,10 @@ int32_t rvn_write_io_ring(
         }
         queue_work(work);
     }
+    *detailed_error_code = 0;
     rc = wait_for_work_completion(handle_ptr, prev, eventfd, detailed_error_code);
+    if (*detailed_error_code)
+        rc = FAIL_IO_RING_WRITE_RESULT;
 
     if (pthread_mutex_unlock(&handle_ptr->global_state->writes_arena.lock) &&
         rc != SUCCESS)
@@ -653,7 +648,7 @@ rvn_sync_directories_ioring(void *handle, char **folders, int32_t count, int32_t
     //      open folder
     //      fsync folder
     //      close folder
-    // 
+    //
     // we cannot open & fsync at the same time, because we have no way
     // to get the file descriptor for the folder, so we need to do it in two steps.
     // We still can do that in a batched manner, though...
@@ -673,6 +668,7 @@ rvn_sync_directories_ioring(void *handle, char **folders, int32_t count, int32_t
         queue_work(&arr[i]);
     }
 
+    *detailed_error_code = 0;
     rc = wait_for_work_completion(handle_ptr, prev, eventfd, detailed_error_code);
     if (rc != SUCCESS)
     {
@@ -681,8 +677,15 @@ rvn_sync_directories_ioring(void *handle, char **folders, int32_t count, int32_t
         return rc;
     }
 
+    // here we are *explicitly* ignoring wait_for_work_completion() detailed_error_code
+    // since it is _fine_ to have errors opening the folder, such as when we deleted an
+    // index before we had a chance to flush it
+    prev = NULL;
     for (size_t i = 0; i < count; i++)
     {
+        if (arr[i].errored)
+            continue;
+
         arr[i] = (struct workitem){
             .completed = 0,
             .type = workitem_fsync_folders,
@@ -690,12 +693,17 @@ rvn_sync_directories_ioring(void *handle, char **folders, int32_t count, int32_t
             .result = 0,
             .filefd = arr[i].filefd,
             .notifyfd = eventfd,
+            .prev = prev};
         };
         prev = &arr[i];
         queue_work(&arr[i]);
     }
 
+    *detailed_error_code = 0;
     rc = wait_for_work_completion(handle_ptr, prev, eventfd, detailed_error_code);
+    if(*detailed_error_code)
+        rc = FAIL_IO_RING_WRITE_RESULT;
+
     if (pthread_mutex_unlock(&handle_ptr->global_state->fsync_dir_arena.lock) &&
         rc != SUCCESS)
     {
