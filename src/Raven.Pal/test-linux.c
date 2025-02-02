@@ -21,15 +21,19 @@ int main()
     int32_t rc = rvn_startup_configure(&cfg, &ec);
 
     rc = rvn_init_pager("test.db", 1024 * 64, OPEN_FILE_WRITABLE_MAP, &handle, &mem, &wmem, &size, &err);
-    char buf[8192] = {0};
-    buf[1] = 'a';
-    struct page_to_write p[] = {
-        {.count_of_pages = 1, .page_num = 0, .ptr = buf},
-        {.count_of_pages = 1, .page_num = 1, .ptr = buf},
-        {.count_of_pages = 1, .page_num = 4, .ptr = buf},
-    };
-    rc = rvn_write_io_ring(handle, &p, 3, &err);
-    fgetc(stdin);
-    rc = rvn_write_io_ring(handle, &p, 3, &err);
+    // char buf[8192] = {0};
+    // buf[1] = 'a';
+    // struct page_to_write p[] = {
+    //     {.count_of_pages = 1, .page_num = 0, .ptr = buf},
+    //     {.count_of_pages = 1, .page_num = 1, .ptr = buf},
+    //     {.count_of_pages = 1, .page_num = 4, .ptr = buf},
+    // };
+    // rc = rvn_write_io_ring(handle, &p, 3, &err);
+    // rc = rvn_write_io_ring(handle, &p, 3, &err);
+
+    char*paths[] = {"/tmp", "/home/ayende/ravendb/src/Raven.Pal", "/home/ayende"};
+
+    rc = rvn_sync_directories(handle,paths, 3, &err);
     return 0;
 }
+

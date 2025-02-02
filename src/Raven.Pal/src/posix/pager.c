@@ -179,11 +179,15 @@ void delete_global_state(struct handle_global_state *global_state)
 {
     if (global_state == NULL)
         return;
-    if (global_state->eventfd != -1)
-        close(global_state->eventfd);
-    free(global_state->arena);
+    if (global_state->writes_arena.eventfd != -1)
+        close(global_state->writes_arena.eventfd);
+    if (global_state->fsync_dir_arena.eventfd != -1)
+        close(global_state->fsync_dir_arena.eventfd);
+    free(global_state->writes_arena.arena);
+    free(global_state->fsync_dir_arena.arena);
     free(global_state->file_path);
-    pthread_mutex_destroy(&global_state->lock);
+    pthread_mutex_destroy(&global_state->writes_arena.lock);
+    pthread_mutex_destroy(&global_state->fsync_dir_arena.lock);
     free(global_state);
 }
 
@@ -214,17 +218,20 @@ rvn_init_pager(const char *filename,
     }
     global_state->open_flags = open_flags;
     global_state->ref_count = 1;
-    if (pthread_mutex_init(&global_state->lock, NULL))
+    global_state->writes_arena.lock = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
+    global_state->fsync_dir_arena.lock = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
+    global_state->writes_arena = (struct arena){.eventfd = -1};
+    global_state->fsync_dir_arena = (struct arena){.eventfd = -1};
+#if !__APPLE__
+    global_state->writes_arena.eventfd = eventfd(0, EFD_CLOEXEC);
+    if (global_state->writes_arena.eventfd == -1)
     {
         *detailed_error_code = errno;
-        rc = FAIL_MUTEX_INIT;
+        rc = FAIL_CREATE_EVENTFD;
         goto Error;
     }
-#if __APPLE__
-    global_state->eventfd = -1;
-#else
-    global_state->eventfd = eventfd(0, EFD_CLOEXEC);
-    if (global_state->eventfd == -1)
+    global_state->fsync_dir_arena.eventfd = eventfd(0, EFD_CLOEXEC);
+    if (global_state->fsync_dir_arena.eventfd == -1)
     {
         *detailed_error_code = errno;
         rc = FAIL_CREATE_EVENTFD;
@@ -304,13 +311,25 @@ rvn_increase_pager_size(void *handle,
         *detailed_error_code = errno;
         return FAIL_DUPLICATE_HANDLE;
     }
-    pthread_mutex_lock(&handle_ptr->global_state->lock);
-    int32_t rc = _open_pager_file(new_fd, handle_ptr->global_state, new_length, new_handle, memory, writable_memory, memory_size, detailed_error_code);
+    int32_t rc = SUCCESS;
+    if (pthread_mutex_lock(&handle_ptr->global_state->writes_arena.lock))
+    {
+        *detailed_error_code = errno;
+        rc = FAIL_MUTEX_LOCK;
+        goto error;
+    }
+    rc = _open_pager_file(new_fd, handle_ptr->global_state, new_length, new_handle, memory, writable_memory, memory_size, detailed_error_code);
     if (rc == SUCCESS)
     {
         handle_ptr->global_state->ref_count++;
     }
-    pthread_mutex_unlock(&handle_ptr->global_state->lock);
+    if (pthread_mutex_unlock(&handle_ptr->global_state->writes_arena.lock))
+    {
+        *detailed_error_code = errno;
+        rc = FAIL_MUTEX_UNLOCK;
+        goto error;
+    }
+error:
     if (rc != SUCCESS)
     {
         close(new_fd);
@@ -360,9 +379,17 @@ rvn_close_pager(
             rc = FAIL_CLOSE;
     }
 
-    pthread_mutex_lock(&handle_ptr->global_state->lock);
+    if (pthread_mutex_lock(&handle_ptr->global_state->writes_arena.lock))
+    {
+        *detailed_error_code = errno;
+        rc = FAIL_MUTEX_LOCK;
+    }
     uint32_t refs = --handle_ptr->global_state->ref_count;
-    pthread_mutex_unlock(&handle_ptr->global_state->lock);
+    if (pthread_mutex_unlock(&handle_ptr->global_state->writes_arena.lock))
+    {
+        *detailed_error_code = errno;
+        rc = FAIL_MUTEX_UNLOCK;
+    }
     if (refs == 0)
     {
         delete_global_state(handle_ptr->global_state);

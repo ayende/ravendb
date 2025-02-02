@@ -7,6 +7,13 @@
 #include "internal_win.h"
 
 
+
+EXPORT int32_t
+rvn_sync_directories(char** folders, int32_t count, int32_t *detailed_error_code)
+{
+    return SUCCESS;
+}
+
 int32_t
 rvn_write_journal_gather(void* handle, struct journal_entry* buffer, int64_t count_of_entries, int64_t offset, int32_t* detailed_error_code);
 int32_t

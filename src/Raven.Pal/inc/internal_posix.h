@@ -40,10 +40,22 @@ struct journal_handle
 
 #if defined(__unix__) || defined(__APPLE__)
 
+struct arena
+{
+    pthread_mutex_t lock;
+    void *arena;
+    size_t arena_size;
+    int eventfd;
+};
+
 // This state is shared across all instances of the pager for a particular file
 struct handle_global_state
 {
-    // This lock handles:
+    uint32_t ref_count;
+    int32_t open_flags;
+    int32_t status_flags;
+    char *file_path;
+    // This arena & its lock handles:
     // * Writing to the file
     // * Extending the file and creating new handle
     // * Closing the handle
@@ -56,16 +68,13 @@ struct handle_global_state
     // Voron already ensures that you are either single threaded when writing or extending the file.
     // There is a potential race between writes & closing a file handle, but that is likely to be rare
     // and will usually only block the finalizer for a single write duration
-    pthread_mutex_t lock;
-
-    uint32_t ref_count;
-    int32_t open_flags;
-    int32_t status_flags;
-    char *file_path;
-    int eventfd;
-
-    void *arena;
-    size_t arena_size;
+    struct arena writes_arena;
+    
+    // This arena and its lock handles:
+    // * fsyncing multiple directories at once
+    // * we need to ensure no mixing of closing while fsyncing folders and no mixing of multiple
+    //   fsyncs at the same time.
+    struct arena fsync_dir_arena;
 };
 
 struct handle
@@ -165,6 +174,12 @@ _read_file(int32_t fd, void *buffer, int64_t required_size, int64_t offset, int6
 
 int32_t
 _ensure_path_exists(const char *path, int32_t *detailed_error_code);
+
+PRIVATE int32_t
+rvn_sync_directories_sync(void* handle, char** folders, int32_t count, int32_t *detailed_error_code);
+
+PRIVATE int32_t
+rvn_sync_directories_ioring(void* handle, char** folders, int32_t count, int32_t *detailed_error_code);
 
 #endif
 #endif

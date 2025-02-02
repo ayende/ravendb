@@ -136,4 +136,10 @@ rvn_write_journal(void *handle, struct journal_entry *buffer, int64_t count_of_e
     return SUCCESS;
 }
 
+PRIVATE int32_t
+rvn_sync_directories(char** folders, int32_t count, int32_t *detailed_error_code)
+{
+    return rvn_sync_directories_sync(folders, count, detailed_error_code);
+}
+
 #endif

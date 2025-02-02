@@ -70,6 +70,8 @@ enum
     FAIL_IO_RING_REG_EVENTFD    =      60,
     FAIL_POLL_EVENTFD 			=	   61,
     FAIL_CREATE_THREAD 			= 	   62,
+    FAIL_MUTEX_LOCK             =      63,
+    FAIL_MUTEX_UNLOCK           =      64,
 };
 
 #define ERRNO_SPECIAL_CODES_NONE        0

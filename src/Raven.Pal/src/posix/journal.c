@@ -268,3 +268,29 @@ rvn_is_same_hard_link(const char *src, const char *dst, char *is_same, int32_t *
     *is_same = (src_stat.st_ino == dst_stat.st_ino) && (src_stat.st_dev == dst_stat.st_dev);
     return SUCCESS;
 }
+
+
+PRIVATE int32_t
+rvn_sync_directories_sync(void* handle, char** folders, int32_t count, int32_t *detailed_error_code)
+{
+    for (size_t i = 0; i < count; i++)
+    {
+        int fd = open(folders[i], O_RDONLY);
+        if(fd < 0)
+        {
+            *detailed_error_code = errno;
+            return FAIL_OPEN_FILE;
+        }
+        if(fsync(fd) == -1)
+        {
+            *detailed_error_code = errno;
+            return FAIL_SYNC_FILE;
+        }
+        if(close(fd) == -1)
+        {
+            *detailed_error_code = errno;
+            return FAIL_CLOSE;
+        }
+    }
+    return SUCCESS;
+}
