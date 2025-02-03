@@ -1175,6 +1175,16 @@ namespace Voron.Impl.Journal
                         return false;
 
                     CallPagerSync();
+                    
+                    if (_lastFlushed.PathsToSync is not null)
+                    {
+                        var record = parent._waj._env.CurrentStateRecord;
+                        var rc = Pal.rvn_sync_directories(record.DataPagerState.Handle, 
+                            _lastFlushed.PathsToSync.ToArray(),
+                            _lastFlushed.PathsToSync.Count, out var err);
+                        if(rc != PalFlags.FailCodes.Success)
+                            PalHelper.ThrowLastError(rc, err, $"Failed to sync directories during flush: {string.Join(",", _lastFlushed.PathsToSync)}");
+                    }
 
                     // can take a long time, need to check again
                     if (parent._waj._env.Disposed)
@@ -1215,14 +1225,6 @@ namespace Voron.Impl.Journal
 
                         parent._journalsToDelete.TryRemove(toDelete.Number, out _);
                         toDelete.Release();
-                    }
-
-                    if (_lastFlushed.PathsToSync is not null)
-                    {
-                        var record = parent._waj._env.CurrentStateRecord;
-                        var rc = Pal.rvn_sync_directories(record.DataPagerState.Handle, _lastFlushed.PathsToSync.ToArray(), _lastFlushed.PathsToSync.Count, out var err);
-                        if(rc != PalFlags.FailCodes.Success)
-                            PalHelper.ThrowLastError(rc, err, $"Failed to sync directories during flush: {string.Join(",", _lastFlushed.PathsToSync)}");
                     }
 
                     parent._lastSyncTime = DateTime.UtcNow;
