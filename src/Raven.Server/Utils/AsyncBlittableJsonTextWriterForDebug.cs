@@ -148,6 +148,17 @@ namespace Raven.Server.Utils
             _inner.WritePropertyName(prop);
         }
 
+        public void WritePropertyName(LazyStringValue prop)
+        {
+            if (_isOnlyWrite)
+            {
+                _isOnlyWrite = false;
+                WriteComma();
+            }
+
+            _inner.WritePropertyName(prop);
+        }
+
         public void WritePropertyName(string prop)
         {
             if (_isOnlyWrite)

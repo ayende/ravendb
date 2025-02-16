@@ -24,6 +24,7 @@ public interface IBlittableJsonTextWriter
     void WriteBool(bool val);
     void WritePropertyName(ReadOnlySpan<byte> prop);
 
+    void WritePropertyName(LazyStringValue prop);
     void WritePropertyName(string prop);
     void WritePropertyName(StringSegment prop);
 
