@@ -761,12 +761,11 @@ namespace Raven.Server.Documents.TransactionMerger
                 break;
             } while (true);
 
-            var currentOperationsCount = _operations.Count;
-            var status = GetPendingOperationsStatus(context, currentOperationsCount == 0);
+            var status = GetPendingOperationsStatus(context, executedOps.Count is 0);
             if (_log.IsDebugEnabled)
             {
                 var opType = previousOperation == null ? string.Empty : "(async) ";
-                _log.Debug($"Merged {executedOps.Count:#,#;;0} operations in {sp.Elapsed} {opType}with {currentOperationsCount:#,#;;0} operations remaining. Status: {status}");
+                _log.Debug($"Merged {executedOps.Count:#,#;;0} operations in {sp.Elapsed} {opType}with {_operations.Count:#,#;;0} operations remaining. Status: {status}");
             }
             return status;
         }
