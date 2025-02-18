@@ -2019,6 +2019,8 @@ namespace Voron.Impl.Journal
             }
         }
 
+        private bool _alreadyCheckedIfLatestJournalFileIsLinked; 
+
         /// <summary>
         /// This is effectively single threaded, even though it is used _across_ environments.
         /// If we have a single root environment, then the write lock protect it, as usual.
@@ -2033,13 +2035,18 @@ namespace Voron.Impl.Journal
                 return matchingJournal;
             }
 
-            if (_env.Options.IsLinked(_journalIndex, journalFile.JournalWriter.FileName.FullPath, out var existingJournalFileName))
+            string existingJournalFileName;
+            if (_alreadyCheckedIfLatestJournalFileIsLinked is false)
             {
-                // The file is already linked, so we can reuse the file link
-                matchingJournal = AddJournal(_journalIndex);
-                return matchingJournal;
+                _alreadyCheckedIfLatestJournalFileIsLinked = true;
+                if (_env.Options.IsLinked(_journalIndex, journalFile.JournalWriter.FileName.FullPath, out existingJournalFileName))
+                {
+                    // The file is already linked, so we can reuse the file link
+                    matchingJournal = AddJournal(_journalIndex);
+                    return matchingJournal;
+                }
             }
-            
+
             long journalIndex = _journalIndex + 1;
 
             _env.Options.LinkFiles(journalIndex,journalFile.JournalWriter.FileName.FullPath, out existingJournalFileName);
