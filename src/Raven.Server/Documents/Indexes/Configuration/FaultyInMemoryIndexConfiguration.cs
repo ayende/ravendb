@@ -16,6 +16,9 @@ namespace Raven.Server.Documents.Indexes.Configuration
 
         public override bool RunInMemory => false;
 
-        public override PathSetting StoragePath => _storagePath; 
+        public override PathSetting StoragePath => _storagePath;
+
+
+        public override PathSetting SharedJournalsPath => _storagePath;
     }
 }

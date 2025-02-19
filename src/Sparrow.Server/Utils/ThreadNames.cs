@@ -48,6 +48,15 @@ public static class ThreadNames
             Details = new ThreadDetails.Index(idxName, dbName)
         };
     }
+    
+    
+    public static ThreadInfo ForIndexSharedJournals(string threadName, string dbName)
+    {
+        return new ThreadInfo(threadName)
+        {
+            Details = new ThreadDetails.IndexSharedJournals(dbName)
+        };
+    }
 
     public static ThreadInfo ForUploadBackupFile(string threadName, string dbName, string targetName, string taskName)
     {
@@ -286,6 +295,14 @@ public static class ThreadNames
             public string GetShortName()
             {
                 return $"Idx {_dbName} {_idxName}";
+            }
+        }
+        
+        public sealed class IndexSharedJournals(string dbName) : IThreadDetails
+        {
+            public string GetShortName()
+            {
+                return $"IdxJrnl {dbName}";
             }
         }
 

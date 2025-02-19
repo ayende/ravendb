@@ -29,8 +29,6 @@ namespace Raven.Server.Config.Categories
 
         private readonly RavenConfiguration _root;
 
-        private PathSetting _indexStoragePath;
-
         public static readonly Lazy<HashSet<string>> ValidIndexingConfigurationKeys = new Lazy<HashSet<string>>(GetValidIndexingConfigurationKeys);
 
         public IndexingConfiguration(RavenConfiguration root)
@@ -163,8 +161,11 @@ namespace Raven.Server.Config.Categories
         public virtual bool EnableMetrics { get; protected set; }
 
         [ReadOnlyPath]
-        public virtual PathSetting StoragePath => _indexStoragePath ??= _root.ResourceType == ResourceType.Server ? null : _root.Core.DataDirectory.Combine("Indexes");
+        public virtual PathSetting StoragePath => field ??= _root.ResourceType == ResourceType.Server ? null : _root.Core.DataDirectory.Combine("Indexes");
 
+        [ReadOnlyPath]
+        public virtual PathSetting SharedJournalsPath => field ??= _root.ResourceType == ResourceType.Server ? null : _root.Core.DataDirectory.Combine("JournalsForIndexing");
+        
         [Description("Use this setting to specify a different path for the indexes' temporary files. By default, temporary files are created under the Temp folder inside the index data directory.")]
         [DefaultValue(null)]
         [IndexUpdateType(IndexUpdateType.Reset)]

@@ -2,7 +2,5 @@
 
 public interface IJournalMerger
 {
-    bool IsIdle { get; }
-
     void JournalMergeSubmitted();
 }

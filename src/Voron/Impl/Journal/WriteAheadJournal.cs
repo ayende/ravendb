@@ -50,8 +50,8 @@ namespace Voron.Impl.Journal
     {
         private readonly StorageEnvironment _env;
         private readonly ConcurrentQueue<PendingJournalStateRecord> _mergedCommitsQueue = new();
-        private readonly List<Pal.journal_entry> _mergedEntriesBuffer = new();
-        private readonly List<PendingJournalStateRecord> _mergedJournalRecordsBuffer = new();
+        private readonly List<Pal.journal_entry> _mergedEntriesBuffer = [];
+        private readonly List<PendingJournalStateRecord> _mergedJournalRecordsBuffer = [];
 
         internal record PendingJournalStateRecord(
             LowLevelTransaction Transaction,
@@ -1770,7 +1770,7 @@ namespace Voron.Impl.Journal
                         throw new InvalidOperationException("Unable to commit as a branch if the root journal I'm associated with is not within a shared journal scope");
                     }
 
-                    WriteAheadJournal.PendingJournalStateRecord journalStateRecord = null;
+                    PendingJournalStateRecord journalStateRecord = null;
                     if (tx.ShouldWriteTransactionChangesToJournal)
                     {
                         var start = Stopwatch.GetTimestamp();
@@ -1778,7 +1778,7 @@ namespace Voron.Impl.Journal
                         var tcs = new TaskCompletionSource();
                         branchCommit = tcs.Task;
                         numberOf4Kbs = entry.NumberOf4Kbs;
-                        journalStateRecord = new WriteAheadJournal.PendingJournalStateRecord(tx, tcs, entry);
+                        journalStateRecord = new PendingJournalStateRecord(tx, tcs, entry);
                         if (this != rootJournal)
                         {
                             rootJournal._mergedCommitsQueue.Enqueue(journalStateRecord);
@@ -1855,13 +1855,7 @@ namespace Voron.Impl.Journal
                     requiredSizeIn4Kbs = rootEntry.Entry.NumberOf4Kbs;
                 }
 
-                var journalMerger = BranchJournalMerger;
-
-                while (_mergedEntriesBuffer.Count < _minimumSharedJournalsMergeCount ||
-                       // we aren't committing a db transaction, so we can afford to have higher batches
-                       journalMerger is null || 
-                       // there aren't any pending operations that we are waiting for, so we can afford to batch more...
-                       journalMerger.IsIdle)
+                while (_mergedEntriesBuffer.Count < _minimumSharedJournalsMergeCount)
                 {
                     if (_mergedCommitsQueue.TryDequeue(out var cur) is false)
                         break;
@@ -1899,7 +1893,7 @@ namespace Voron.Impl.Journal
                 {
                     // we may have bailed early to ensure low latency for
                     // the root env, so we tell the merger it has more work still...
-                    journalMerger?.JournalMergeSubmitted();
+                    BranchJournalMerger?.JournalMergeSubmitted();
                 }
             }
             catch (Exception e)
@@ -2462,18 +2456,18 @@ namespace Voron.Impl.Journal
             }
         }
 
-        private WriteAheadJournal.TestingStuff _forTestingPurposes;
+        private TestingStuff _forTestingPurposes;
         private CancellationTokenSource _rootJournalMergedCommitsCts;
         private readonly int _minimumSharedJournalsMergeCount;
 
         private readonly LinkedJournalsRecord _linkedJournalsRecord = new();
 
-        internal WriteAheadJournal.TestingStuff ForTestingPurposesOnly()
+        internal TestingStuff ForTestingPurposesOnly()
         {
             if (_forTestingPurposes != null)
                 return _forTestingPurposes;
 
-            return _forTestingPurposes = new WriteAheadJournal.TestingStuff();
+            return _forTestingPurposes = new TestingStuff();
         }
 
         internal sealed class TestingStuff

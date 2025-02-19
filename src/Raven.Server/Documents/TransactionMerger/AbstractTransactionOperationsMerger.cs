@@ -33,7 +33,7 @@ namespace Raven.Server.Documents.TransactionMerger
     /// Merges multiple commands into a single transaction. Any commands that implement IDisposable
     /// will be disposed after the command is executed and transaction is committed
     /// </summary>
-    public abstract partial class AbstractTransactionOperationsMerger<TOperationContext, TTransaction> : IDisposable, IJournalMerger
+    public abstract partial class AbstractTransactionOperationsMerger<TOperationContext, TTransaction> : IDisposable
         where TOperationContext : TransactionOperationContext<TTransaction>
         where TTransaction : RavenTransaction
     {
@@ -104,7 +104,6 @@ namespace Raven.Server.Documents.TransactionMerger
 
         public void Start()
         {
-            _sharedJournalsScope = _env.Journal.SharedJournalsScope(_shutdown);
             _txLongRunningOperation = PoolOfThreads.GlobalRavenThreadPool.LongRunning(o => MergeOperationThreadProc(), null, ThreadNames.ForTransactionMerging(TransactionMergerThreadName, _resourceName));
         }
 
@@ -156,8 +155,6 @@ namespace Raven.Server.Documents.TransactionMerger
 
         private void MergeOperationThreadProc()
         {
-            using var _ = _sharedJournalsScope;
-
             ThreadHelper.TrySetThreadPriority(ThreadPriority.AboveNormal, TransactionMergerThreadName, _log);
 
             var oomTimer = new Stopwatch();// this is allocated here to avoid OOM when using it
@@ -989,13 +986,5 @@ namespace Raven.Server.Documents.TransactionMerger
 
         private DateTime _lastHighDirtyMemCheck;
         private readonly TimeSetting _timeToCheckHighDirtyMemory;
-        private WriteAheadJournal.ScopeForSharedJournals _sharedJournalsScope;
-
-        public void JournalMergeSubmitted()
-        {
-            _waitHandle.Set();
-        }
-        
-        public bool IsIdle => _operations.IsEmpty;
     }
 }

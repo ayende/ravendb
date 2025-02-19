@@ -297,9 +297,9 @@ namespace Raven.Server.Documents
 
         public CancellationToken TransactionMergerShutdown => _txMergerShutdown.Token;
 
-        public AsyncManualResetEvent DatabaseShutdownCompleted { get; } = new AsyncManualResetEvent();
+        public AsyncManualResetEvent DatabaseShutdownCompleted { get; } = new();
 
-        public DocumentsStorage DocumentsStorage { get; private set; }
+        public DocumentsStorage DocumentsStorage { get; }
 
         public ExpiredDocumentsCleaner ExpiredDocumentsCleaner { get; private set; }
 
@@ -421,7 +421,7 @@ namespace Raven.Server.Documents
                 _addToInitLog(LogLevel.Debug, "Initializing DocumentStorage");
                 DocumentsStorage.Initialize((options & InitializeOptions.GenerateNewDatabaseId) == InitializeOptions.GenerateNewDatabaseId);
                 _addToInitLog(LogLevel.Debug, "Starting Transaction Merger");
-                DocumentsStorage.Environment.Journal.BranchJournalMerger = TxMerger;
+            
                 TxMerger.Initialize(DocumentsStorage.ContextPool, IsEncrypted, Is32Bits);
                 TxMerger.Start();
 

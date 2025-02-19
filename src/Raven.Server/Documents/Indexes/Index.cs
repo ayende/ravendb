@@ -611,7 +611,7 @@ namespace Raven.Server.Documents.Indexes
                 indexOptions.CanJournalsBeLinkedWith(documentDatabase.DocumentsStorage.Environment.Options))
             {
                 // here we enable the root / branch model for this index
-                indexOptions.RootJournal = documentDatabase.DocumentsStorage.Environment.Journal;
+                documentDatabase.IndexStore.RegisterSharedJournals(indexOptions);
                 return;
             }
 
@@ -753,7 +753,8 @@ namespace Raven.Server.Documents.Indexes
             return options;
         }
 
-        private static void InitializeOptions(StorageEnvironmentOptions options, DocumentDatabase documentDatabase, string name, bool schemaUpgrader = true, SearchEngineType searchEngineType = SearchEngineType.None)
+        private static void InitializeOptions(StorageEnvironmentOptions options, DocumentDatabase documentDatabase,
+            string name, bool schemaUpgrader = true, SearchEngineType searchEngineType = SearchEngineType.None)
         {
             options.OnNonDurableFileSystemError += documentDatabase.HandleNonDurableFileSystemError;
             options.OnRecoveryError += (s, e) => documentDatabase.HandleOnIndexRecoveryError(name, s, e);
