@@ -87,6 +87,8 @@ namespace Raven.Server.Documents
         private static readonly Slice GlobalChangeVectorSlice;
         private static readonly Slice GlobalFullChangeVectorSlice;
         private readonly Action<LogLevel, string> _addToInitLog;
+        
+        public Action<LogLevel, string> AddToInitLog => _addToInitLog;
 
         private readonly RavenLogger _logger;
         private readonly string _name;

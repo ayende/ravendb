@@ -1,7 +1,9 @@
 ﻿using System;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using Raven.Server.Utils;
+using Sparrow;
 using Sparrow.Server.Logging;
 using Sparrow.Server.Utils;
 using Voron;
@@ -25,7 +27,29 @@ public class SharedIndexJournals : IJournalMerger, IDisposable
             : StorageEnvironmentOptions.ForPath(sharedJournalsPath, Path.Combine(sharedJournalsPath, "Temp"), null,
                 documentDatabase.IoChanges, documentDatabase.CatastrophicFailureNotification, LoggingResource.Database(documentDatabaseName),
                 LoggingComponent.Name(documentDatabaseName));
-                
+        
+        options.CompressTxAboveSizeInBytes = documentDatabase.Configuration.Storage.CompressTxAboveSize.GetValue(SizeUnit.Bytes);
+        options.ForceUsing32BitsPager = documentDatabase.Configuration.Storage.ForceUsing32BitsPager;
+        options.EnablePrefetching = documentDatabase.Configuration.Storage.EnablePrefetching;
+        options.DiscardVirtualMemory = documentDatabase.Configuration.Storage.DiscardVirtualMemory;
+        options.TimeToSyncAfterFlushInSec = (int)documentDatabase.Configuration.Storage.TimeToSyncAfterFlush.AsTimeSpan.TotalSeconds;
+        options.AddToInitLog = documentDatabase.AddToInitLog;
+        options.Encryption.MasterKey = documentDatabase.MasterKey?.ToArray();
+        options.Encryption.RegisterForJournalCompressionHandler();
+        options.DoNotConsiderMemoryLockFailureAsCatastrophicError = documentDatabase.Configuration.Security.DoNotConsiderMemoryLockFailureAsCatastrophicError;
+        if (documentDatabase.Configuration.Storage.MaxScratchBufferSize.HasValue)
+            options.MaxScratchBufferSize = documentDatabase.Configuration.Storage.MaxScratchBufferSize.Value.GetValue(SizeUnit.Bytes);
+        options.PrefetchSegmentSize = documentDatabase.Configuration.Storage.PrefetchBatchSize.GetValue(SizeUnit.Bytes);
+        options.PrefetchResetThreshold = documentDatabase.Configuration.Storage.PrefetchResetThreshold.GetValue(SizeUnit.Bytes);
+        options.SyncJournalsCountThreshold = documentDatabase.Configuration.Storage.SyncJournalsCountThreshold;
+        options.IgnoreInvalidJournalErrors = documentDatabase.Configuration.Storage.IgnoreInvalidJournalErrors;
+        options.SkipChecksumValidationOnDatabaseLoading = documentDatabase.Configuration.Storage.SkipChecksumValidationOnDatabaseLoading;
+        options.IgnoreDataIntegrityErrorsOfAlreadySyncedTransactions = documentDatabase.Configuration.Storage.IgnoreDataIntegrityErrorsOfAlreadySyncedTransactions;
+        options.DisableSparseRegions = documentDatabase.Configuration.Storage.DisableSparseRegions;
+        options.JournalsCompressionAcceleration = documentDatabase.Configuration.Storage.JournalsCompressionAcceleration;
+        options.MinimumSharedJournalsMergeCount = documentDatabase.Configuration.Storage.MinimumSharedJournalsMergeCount;
+        options.MaxLogFileSize = documentDatabase.Configuration.Storage.MaxJournalFileSize.GetValue(SizeUnit.Bytes);
+     
         _env = new StorageEnvironment(options);
         _env.Journal.BranchJournalMerger = this;
 
@@ -44,6 +68,7 @@ public class SharedIndexJournals : IJournalMerger, IDisposable
     {
         using (_env.Journal.SharedJournalsScope(_documentDatabase.TransactionMergerShutdown))
         {
+            int i = 0;
             while (_disposed is false)
             {
                 _waitForJournals.Wait();
@@ -52,6 +77,13 @@ public class SharedIndexJournals : IJournalMerger, IDisposable
                 {
                     using (var txw = _env.WriteTransaction())
                     {
+                        if ((i % 16) == 0)
+                        {
+                            // this will force us to do an actual commit
+                            // to our own journal, and thus force us to 
+                            // flush the journals, etc...
+                            txw.LowLevelTransaction.ModifyPage(0);
+                        }
                         txw.Commit();
                     }
                 } while (_env.Journal.HasBranchCommits);
