@@ -46,7 +46,7 @@ namespace Raven.Server.Rachis.Commands
 
             context.Transaction.InnerTransaction.LowLevelTransaction.OnDispose += tx =>
             {
-                if (tx is LowLevelTransaction llt && llt.Committed)
+                if (tx is { Committed: true })
                 {
                     Committed = true;
                 }

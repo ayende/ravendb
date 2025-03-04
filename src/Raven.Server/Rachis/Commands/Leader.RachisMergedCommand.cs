@@ -158,8 +158,17 @@ namespace Raven.Server.Rachis
                     _leader._entries[index] = state;
                     context.Transaction.InnerTransaction.LowLevelTransaction.OnDispose += tx =>
                     {
-                        if (tx.Committed)
-                            AfterCommit();
+                        if (tx.Committed is false) 
+                            return;
+                        
+                        try
+                        {
+                            _leader._newEntry.Set();
+                        }
+                        catch (ObjectDisposedException)
+                        {
+                            // _newEntry is disposed because _leader is already disposed
+                        }
                     };
                 }
 
@@ -172,18 +181,6 @@ namespace Raven.Server.Rachis
                     //https://issues.hibernatingrhinos.com/issue/RavenDB-20762
                     state.WriteResultAction += BlittableResultWriter.CopyResult;
 
-            }
-
-            private void AfterCommit()
-            {
-                try
-                {
-                    _leader._newEntry.Set();
-                }
-                catch (ObjectDisposedException)
-                {
-                    // _newEntry is disposed because _leader is already disposed
-                }
             }
 
             public override IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, MergedTransactionCommand<ClusterOperationContext, ClusterTransaction>> ToDto(ClusterOperationContext context)

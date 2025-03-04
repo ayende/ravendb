@@ -2355,7 +2355,7 @@ namespace Raven.Server.Rachis
 
             context.Transaction.InnerTransaction.LowLevelTransaction.OnDispose += tx =>
             {
-                if (tx is LowLevelTransaction llt && llt.Committed)
+                if (tx is { Committed: true })
                 {
                     _tag = newTag;
                 }

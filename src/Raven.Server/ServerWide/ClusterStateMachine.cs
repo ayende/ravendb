@@ -4725,7 +4725,7 @@ namespace Raven.Server.ServerWide
             var tcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
             context.Transaction.InnerTransaction.LowLevelTransaction.OnDispose += tx =>
             {
-                if (tx is LowLevelTransaction llt && llt.Committed)
+                if (tx is { Committed: true })
                 {
                     var tasks = new Task[databases.Length + 2];
                     // there is potentially a lot of work to be done here so we are responding to the change on a separate task.

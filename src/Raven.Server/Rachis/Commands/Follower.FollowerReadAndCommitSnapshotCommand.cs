@@ -109,7 +109,7 @@ public sealed class FollowerReadAndCommitSnapshotCommand : MergedTransactionComm
 
         context.Transaction.InnerTransaction.LowLevelTransaction.OnDispose += t =>
         {
-            if (t is LowLevelTransaction llt && llt.Committed)
+            if (t is { Committed: true })
             {
                 // we might have moved from passive node, so we need to start the timeout clock
                 _engine.Timeout.Start(_engine.SwitchToCandidateStateOnTimeout);

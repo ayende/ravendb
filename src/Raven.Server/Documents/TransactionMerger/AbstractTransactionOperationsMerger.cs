@@ -520,7 +520,7 @@ namespace Raven.Server.Documents.TransactionMerger
                             try
                             {
                                 //already throwing, attempt to complete previous tx
-                                CompletePreviousTransaction(previous, previous.Transaction, ref previousPendingOps, throwOnError: false);
+                                CompletePreviousTransaction(previous, returnPreviousContext, ref previousPendingOps, throwOnError: false);
                             }
                             finally
                             {
@@ -595,11 +595,6 @@ namespace Raven.Server.Documents.TransactionMerger
                         return;
                     }
 
-                    _recording.State?.TryRecord(previous, TxInstruction.DisposePrevTx, previous.Transaction.Disposed == false);
-
-                    previous.Transaction.Dispose();
-                    returnPreviousContext.Dispose();
-
                     previous = current;
                     returnPreviousContext = currentReturnContext;
 
@@ -644,18 +639,24 @@ namespace Raven.Server.Documents.TransactionMerger
         }
 
         private void CompletePreviousTransaction(
-            TOperationContext context,
-            RavenTransaction previous,
+            TOperationContext previous,
+            IDisposable returnPreviousContext,
             ref List<MergedTransactionCommand<TOperationContext, TTransaction>> previousPendingOps,
             bool throwOnError)
         {
             try
             {
-                _recording.State?.TryRecord(context, TxInstruction.EndAsyncCommit);
-                previous.EndAsyncCommit();
+                _recording.State?.TryRecord(previous, TxInstruction.EndAsyncCommit);
+                previous.Transaction.EndAsyncCommit();
 
                 if (_log.IsDebugEnabled)
-                    _log.Debug($"EndAsyncCommit on {previous.InnerTransaction.LowLevelTransaction.Id}");
+                    _log.Debug($"EndAsyncCommit on {previous.Transaction.InnerTransaction.LowLevelTransaction.Id}");
+                
+                _recording.State?.TryRecord(previous, TxInstruction.DisposePrevTx, previous.Disposed == false);
+                
+                previous.Transaction.Dispose();
+                returnPreviousContext.Dispose();
+                
                 NotifyOnThreadPool(previousPendingOps);
             }
             catch (Exception e)
@@ -664,6 +665,11 @@ namespace Raven.Server.Documents.TransactionMerger
                 {
                     op.Exception = e;
                 }
+
+                // it's safe to call this twice
+                previous.Transaction.Dispose();
+                returnPreviousContext.Dispose();
+                
                 NotifyOnThreadPool(previousPendingOps);
                 previousPendingOps = null; // RavenDB-7417
                 if (throwOnError)

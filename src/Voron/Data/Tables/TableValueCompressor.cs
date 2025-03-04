@@ -239,10 +239,11 @@ namespace Voron.Data.Tables
                         }
 
                         tx.LowLevelTransaction.OnDispose += RecreateRecoveryDictionaries;
-                        tx.LowLevelTransaction.OnRollBack += state =>
+                        tx.LowLevelTransaction.OnRollBack += llt =>
                         {
-                            if (state is not LowLevelTransaction llt)
+                            if (llt is null)
                                 return;
+                            
                             // ***************************************
                             // RavenDB-17758  - This is *important* - if we aren't committing the transaction, we *have*
                             // to remove the in memory cache for the dictionary, since it wasn't written to disk. If we
