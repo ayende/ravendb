@@ -158,6 +158,7 @@ namespace Raven.Server.Documents.PeriodicBackup.Restore
         protected override async Task OnAfterRestoreAsync()
         {
             await base.OnAfterRestoreAsync();
+            await Database.IndexStore.InitializeSharedJournalsAsync();
             RegenerateDatabaseIdInIndexes(Database);
             using (Database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
             using (var tx = context.OpenWriteTransaction())

@@ -835,6 +835,15 @@ namespace Raven.Server.Documents.Indexes
             }
         }
 
+        public Task InitializeSharedJournalsAsync()
+        {
+            if (_sharedJournals != null)
+                return Task.CompletedTask;
+            return Task.Run(() =>
+            {
+                _sharedJournals ??= new SharedIndexJournals(_documentDatabase);
+            });
+        }
 
         public Task InitializeAsync(DatabaseRecord record, long raftIndex, Action<LogLevel, string> addToInitLog)
         {
@@ -846,16 +855,19 @@ namespace Raven.Server.Documents.Indexes
 
             _initialized = true;
 
-            return Task.Run(() =>
-            {
-                _sharedJournals = new SharedIndexJournals(_documentDatabase);
+            return InitializeSharedJournalsAsync()
+                .ContinueWith(t =>
+                {
+                    if (t.IsCompletedSuccessfully is false)
+                        return t;
+                    
+                    if (_documentDatabase.Configuration.Indexing.RunInMemory == false)
+                        OpenIndexesFromRecord(record, raftIndex, addToInitLog);
 
-                if (_documentDatabase.Configuration.Indexing.RunInMemory == false)
-                    OpenIndexesFromRecord(record, raftIndex, addToInitLog);
-
-                HandleSorters(record, raftIndex);
-                HandleAnalyzers(record, raftIndex);
-            });
+                    HandleSorters(record, raftIndex);
+                    HandleAnalyzers(record, raftIndex);
+                    return Task.CompletedTask;
+                }).Unwrap();
         }
 
         public Index GetIndex(string name)

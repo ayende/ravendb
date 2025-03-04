@@ -192,8 +192,8 @@ namespace Voron.Impl.Journal
         {
             public void Dispose()
             {
-                journal._rootJournalMergedCommitsCts.Cancel();
-                journal.RejectCommitsToMerge();
+                journal?._rootJournalMergedCommitsCts?.Cancel();
+                journal?.RejectCommitsToMerge();
             }
         }
         
