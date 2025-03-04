@@ -34,14 +34,6 @@ namespace Graphs
             Serializer serializer = new(outputFileName, this);
             serializer.Close();
         }
-        public static MemoryGraph ReadFromBinaryFile(string inputFileName)
-        {
-            Deserializer deserializer = new(inputFileName);
-            deserializer.TypeResolver = typeName => System.Type.GetType(typeName);  // resolve types in this assembly (and mscorlib)
-            deserializer.RegisterFactory(typeof(MemoryGraph), delegate { return new MemoryGraph(1); });
-            deserializer.RegisterFactory(typeof(Module), delegate { return new Module(0); });
-            return (MemoryGraph)deserializer.GetEntryObject();
-        }
 
         /// <summary>
         /// Indicates whether the memory addresses are 64 bit or not.   Note that this is not set

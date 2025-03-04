@@ -469,7 +469,7 @@ namespace Graphs
         {
             RootIndex = NodeIndex.Invalid;
             m_writer ??= new SegmentedMemoryStreamWriter(m_expectedNodeCount * 8,
-                    m_isVeryLargeGraph ? new SerializationConfiguration() { StreamLabelWidth = StreamLabelWidth.EightBytes } : null);
+                    m_isVeryLargeGraph ? SerializationSettings.Default.WithStreamLabelWidth(StreamLabelWidth.EightBytes) : null);
 
             m_totalSize = 0;
             m_totalRefs = 0;
@@ -597,7 +597,7 @@ namespace Graphs
             // TODO be lazy about reading in the blobs.
             int blobCount = deserializer.ReadInt();
             SegmentedMemoryStreamWriter writer = new(blobCount,
-                m_isVeryLargeGraph ? new SerializationConfiguration() { StreamLabelWidth = StreamLabelWidth.EightBytes } : null);
+                m_isVeryLargeGraph ? SerializationSettings.Default.WithStreamLabelWidth(StreamLabelWidth.EightBytes): null);
 
             while (8 <= blobCount)
             {

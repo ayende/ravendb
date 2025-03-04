@@ -185,7 +185,7 @@ public class DotNetHeapDumpGraphReader
             }
         };
 
-        source.Clr.GCGenAwareStart += delegate (GenAwareBeginTraceData data)
+        source.Clr.GCGenAwareBegin += delegate 
         {
             m_seenStart = true;
             m_ignoreEvents = false;
@@ -269,7 +269,7 @@ public class DotNetHeapDumpGraphReader
             }
         };
 
-        source.Clr.GCGenAwareEnd += delegate (GenAwareEndTraceData data)
+        source.Clr.GCGenAwareEnd += delegate 
         {
             m_ignoreEvents = true;
             if (m_nodeBlocks.Count == 0 && m_typeBlocks.Count == 0 && m_edgeBlocks.Count == 0)

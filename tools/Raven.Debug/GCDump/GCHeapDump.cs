@@ -19,11 +19,11 @@ using Address = System.UInt64;
 public class GCHeapDump : IFastSerializable, IFastSerializableVersion
 {
     public GCHeapDump(string inputFileName) :
-        this(new Deserializer(inputFileName, new SerializationConfiguration() { StreamLabelWidth = StreamLabelWidth.FourBytes }))
+        this(new Deserializer(inputFileName,SerializationSettings.Default.WithStreamLabelWidth(StreamLabelWidth.FourBytes)))
     { }
 
     public GCHeapDump(Stream inputStream, string streamName) :
-        this(new Deserializer(inputStream, streamName, new SerializationConfiguration() { StreamLabelWidth = StreamLabelWidth.FourBytes }))
+        this(new Deserializer(inputStream, streamName,SerializationSettings.Default.WithStreamLabelWidth(StreamLabelWidth.FourBytes)))
     { }
 
     /// <summary>
@@ -193,7 +193,7 @@ public class GCHeapDump : IFastSerializable, IFastSerializableVersion
     private void Write(string outputFileName)
     {
         Debug.Assert(MemoryGraph != null);
-        Serializer serializer = new(new IOStreamStreamWriter(outputFileName, config: new SerializationConfiguration() { StreamLabelWidth = StreamLabelWidth.FourBytes }), this);
+        Serializer serializer = new(new IOStreamStreamWriter(outputFileName, SerializationSettings.Default.WithStreamLabelWidth(StreamLabelWidth.FourBytes)), this);
         serializer.Close();
     }
 
