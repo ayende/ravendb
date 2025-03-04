@@ -103,7 +103,11 @@ void queue_work(struct workitem* work)
 
 void close_ring_with_error(HRESULT hr)
 {
-    IoRing.SubmitIoRing(IoRing.io_ring, 0, 0, NULL);
+    UINT32 events_submitted = 0;
+    // read the number of events submitted
+    IoRing.SubmitIoRing(IoRing.io_ring, 0, 0, &events_submitted);
+    // wait for all the submitted events to complete
+    IoRing.SubmitIoRing(IoRing.io_ring, events_submitted, INFINITE, NULL);
     IORING_CQE cqe;
     while (SUCCEEDED(IoRing.PopIoRingCompletion(IoRing.io_ring, &cqe)))
     {
@@ -176,7 +180,8 @@ DWORD WINAPI do_ring_work(LPVOID lpThreadParameter)
             IORING_CQE cqe;
             while (IoRing.PopIoRingCompletion(ring, &cqe) == S_OK)
             {
-                struct workitem *cur = (struct workitem*)cqe.UserData;
+                has_work = true;
+                struct workitem *cur = (struct workitem *)cqe.UserData;
                 switch (cur->type)
                 {
                 case workitem_write:
@@ -316,6 +321,7 @@ int32_t rvn_write_io_ring(
             rc = FAIL_POLL_EVENTFD;
             break;
         }
+        ResetEvent(handle_ptr->global_state->notify);
 
         struct workitem *work = prev;
         while (work)
