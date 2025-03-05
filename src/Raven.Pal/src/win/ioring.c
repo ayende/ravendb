@@ -55,6 +55,7 @@ struct IoRingSetup
     HIORING io_ring;
     HANDLE event;
     HANDLE thread;
+    HANDLE has_error;
     int errored;
     struct workitem *head;
 };
@@ -89,16 +90,16 @@ bool FillIoRingFunctions(struct IoRingSetup *s)
             s->BuildIoRingWriteFile);
 }
 
-void queue_work(struct workitem* work)
+void queue_work(struct workitem *work)
 {
     work->next = IoRing.head;
-    while(true)
+    while (true)
     {
-        struct workitem* cur_head = InterlockedCompareExchangePointer(&IoRing.head, work, work->next);
+        struct workitem *cur_head = InterlockedCompareExchangePointer(&IoRing.head, work, work->next);
         if (cur_head == work->next)
             break;
         work->next = cur_head;
-    } 
+    }
 }
 
 void close_ring_with_error(HRESULT hr)
@@ -111,7 +112,7 @@ void close_ring_with_error(HRESULT hr)
     IORING_CQE cqe;
     while (SUCCEEDED(IoRing.PopIoRingCompletion(IoRing.io_ring, &cqe)))
     {
-        struct workitem *work = (struct workitem*)cqe.UserData;
+        struct workitem *work = (struct workitem *)cqe.UserData;
         work->result = hr;
         work->errored = true;
         SetEvent(work->notify);
@@ -130,7 +131,7 @@ DWORD WINAPI do_ring_work(LPVOID lpThreadParameter)
         DWORD result = SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
         (void)result; // explicitly ignoring this error, it doesn't matter if we cannot do that
     }
-
+    SetThreadDescription(GetCurrentThread(), L"Rvn.Ring.Wrkr");
     HIORING ring = IoRing.io_ring;
     struct workitem *work = NULL;
     HRESULT hr = 0;
@@ -213,21 +214,19 @@ DWORD WINAPI do_ring_work(LPVOID lpThreadParameter)
     }
 error:
     InterlockedExchange(&IoRing.errored, hr);
-    CloseHandle(IoRing.event);
-    IoRing.event = NULL;
+    SetEvent(IoRing.has_error);
     close_ring_with_error(hr);
     IoRing.io_ring = NULL;
+    // here we are going to keep answering all future inquires
+    // with an immediate error
     while (true)
     {
-        if (!work) // fill from the global list if needed
-        {
-            work = InterlockedExchangePointer(&IoRing.head, 0);
-            if (!work)
-                break; // nothing remains to be done
-        }
+        WaitForSingleObject(IoRing.event, INFINITE);
+        ResetEvent(IoRing.event);
+        work = InterlockedExchangePointer(&IoRing.head, 0);
         while (work)
         {
-            work->result = hr;
+            work->result = ERROR_IO_INCOMPLETE;
             work->errored = true;
             SetEvent(work->notify);
             work = work->next;
@@ -247,7 +246,7 @@ int32_t rvn_write_io_ring(
     if (count == 0)
         return SUCCESS;
 
-    if (IoRing.errored)
+    if (WaitForSingleObject(IoRing.has_error, 0) == WAIT_OBJECT_0)
     {
         *detailed_error_code = ERROR_IO_INCOMPLETE;
         return FAIL_IO_RING_SUBMIT;
@@ -278,7 +277,7 @@ int32_t rvn_write_io_ring(
         uint64_t offset = buffers[curIdx].page_num * VORON_PAGE_SIZE;
         uint64_t size = (uint64_t)buffers[curIdx].count_of_pages * VORON_PAGE_SIZE;
 
-        struct workitem *work = (struct workitem*)buf;
+        struct workitem *work = (struct workitem *)buf;
         buf += sizeof(struct workitem);
         *work = (struct workitem){
             .buffer = buffers[curIdx].ptr,
@@ -296,17 +295,7 @@ int32_t rvn_write_io_ring(
         queue_work(work);
     }
 
-    if (SetEvent(IoRing.event) == 0)
-    {
-        // this means that the ring is probably dead, which is a catastrophic error
-        // need to wait for the relevant thread to complete, to ensure we aren't
-        // using the values we submitted to the ring
-        WaitForSingleObject(IoRing.thread, INFINITE);
-
-        LeaveCriticalSection(&handle_ptr->global_state->lock);
-        *detailed_error_code = errno;
-        return FAIL_IO_RING_WRITE;
-    }
+    SetEvent(IoRing.event);
 
     bool all_done = false;
     while (!all_done)
@@ -372,6 +361,13 @@ rvn_one_time_init(int32_t *detailed_error_code)
         rc = FAIL_CREATE_EVENTFD;
         goto error;
     }
+    IoRing.has_error = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (IoRing.has_error == NULL)
+    {
+        *detailed_error_code = GetLastError();
+        rc = FAIL_CREATE_EVENTFD;
+        goto error;
+    }
     hr = IoRing.SetIoRingCompletionEvent(IoRing.io_ring, IoRing.event);
     if (FAILED(hr))
     {
@@ -393,7 +389,10 @@ error:
     IoRing.io_ring = NULL;
     if (IoRing.event != NULL)
         CloseHandle(IoRing.event);
+    if (IoRing.has_error != NULL)
+        CloseHandle(IoRing.has_error);
     IoRing.event = NULL;
+    IoRing.has_error = NULL;
     IoRing.thread = NULL;
     return rc;
 }

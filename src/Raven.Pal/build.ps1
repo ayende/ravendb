@@ -81,7 +81,7 @@ if ($clang_only) {
     zig cc -Wall -O3 -g -shared -fPIC -Iinc -target x86-windows -o runtimes/win-x86/native/librvnpal.dll $shared $win_files 
 }
 else {
-    cmd /c """$vcbin\vcvars32.bat"" & ""$clbin\x86\cl"" /Fdruntimes/win-x86/native/librvnpal.pdb -Feruntimes/win-x86/native/librvnpal.dll -I inc /O2 /analyze /sdl /LD $shared $win_files /link"
+    cmd /c """$vcbin\vcvars32.bat"" & ""$clbin\x86\cl"" /Fdruntimes/win-x86/native/librvnpal.pdb /Zi -Feruntimes/win-x86/native/librvnpal.dll -I inc /O2 /analyze /sdl /LD $shared $win_files /link"
     Remove-Item *.obj
     Remove-Item  librvnpal.x*
     Remove-Item *.nativecodeanalysis.xml        
@@ -97,7 +97,7 @@ if ($clang_only) {
     zig cc -Wall -O3 -g -shared -fPIC -Iinc -target x86_64-windows -o runtimes/win-x64/native/librvnpal.dll  $shared $win_files 
 }
 else {
-    cmd /c """$vcbin\vcvars64.bat"" & ""$clbin\x64\cl"" /Fdruntimes/win-x64/native/librvnpal.pdb  -Feruntimes/win-x64/native/librvnpal.dll -I inc /O2 /analyze /sdl /LD $shared $win_files /link"
+    cmd /c """$vcbin\vcvars64.bat"" & ""$clbin\x64\cl"" /Fdruntimes/win-x64/native/librvnpal.pdb /Zi -Feruntimes/win-x64/native/librvnpal.dll -I inc /O2 /analyze /sdl /LD $shared $win_files /link"
     Remove-Item *.obj
     Remove-Item  librvnpal.x*
     Remove-Item *.nativecodeanalysis.xml
