@@ -40,6 +40,7 @@ struct handle_global_state
     HANDLE notify;
     char* file_path;
     void* arena;
+    DWORD last_arena_thread;
     size_t arena_size;
 };
 

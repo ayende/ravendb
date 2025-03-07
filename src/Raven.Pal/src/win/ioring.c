@@ -1,23 +1,56 @@
 // required to enable io ring support
 #define NTDDI_VERSION NTDDI_WIN10_NI
-
 #include <windows.h>
+#include <dbghelp.h>
 #include <VersionHelpers.h>
 #include <stdio.h>
 #include <ioringapi.h>
-
+#pragma comment(lib, "DbgHelp.lib")
 #include "rvn.h"
 #include "rvn_internal.h"
 #include "status_codes.h"
 #include "internal_win.h"
 
-typedef HRESULT(WINAPI *PFN_QueryIoRingCapabilities)(IORING_CAPABILITIES *);
-typedef HRESULT(WINAPI *PFN_CloseIoRing)(HIORING);
-typedef HRESULT(WINAPI *PFN_CreateIoRing)(IORING_VERSION, IORING_CREATE_FLAGS, UINT32, UINT32, HIORING *);
-typedef HRESULT(WINAPI *PFN_SubmitIoRing)(HIORING, UINT32, UINT32, UINT32 *);
-typedef HRESULT(WINAPI *PFN_PopIoRingCompletion)(HIORING, IORING_CQE *);
-typedef HRESULT(WINAPI *PFN_BuildIoRingWriteFile)(HIORING, IORING_HANDLE_REF, IORING_BUFFER_REF, UINT32, UINT64, FILE_WRITE_FLAGS, UINT_PTR, IORING_SQE_FLAGS);
-typedef HRESULT(WINAPI *PFN_SetIoRingCompletionEvent)(HIORING, HANDLE);
+typedef HRESULT(WINAPI* PFN_QueryIoRingCapabilities)(IORING_CAPABILITIES*);
+typedef HRESULT(WINAPI* PFN_CloseIoRing)(HIORING);
+typedef HRESULT(WINAPI* PFN_CreateIoRing)(IORING_VERSION, IORING_CREATE_FLAGS, UINT32, UINT32, HIORING*);
+typedef HRESULT(WINAPI* PFN_SubmitIoRing)(HIORING, UINT32, UINT32, UINT32*);
+typedef HRESULT(WINAPI* PFN_PopIoRingCompletion)(HIORING, IORING_CQE*);
+typedef HRESULT(WINAPI* PFN_BuildIoRingWriteFile)(HIORING, IORING_HANDLE_REF, IORING_BUFFER_REF, UINT32, UINT64, FILE_WRITE_FLAGS, UINT_PTR, IORING_SQE_FLAGS);
+typedef HRESULT(WINAPI* PFN_SetIoRingCompletionEvent)(HIORING, HANDLE);
+
+void PrintStackTrace() {
+    HANDLE process = GetCurrentProcess();
+    SymInitialize(process, NULL, TRUE); // Initialize symbol handler
+
+    void* stack[64];
+    unsigned short frames = CaptureStackBackTrace(0, 64, stack, NULL);
+
+    SYMBOL_INFO* symbol = (SYMBOL_INFO*)calloc(sizeof(SYMBOL_INFO) + 256 * sizeof(char), 1);
+    symbol->MaxNameLen = 255;
+    symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+
+    IMAGEHLP_LINE64 line;
+    line.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
+
+    for (unsigned short i = 0; i < frames; i++) {
+        DWORD64 address = (DWORD64)(stack[i]);
+        SymFromAddr(process, address, NULL, symbol);
+
+        DWORD displacement;
+        if (SymGetLineFromAddr64(process, address, &displacement, &line)) {
+            printf("Frame %02d: %s [0x%llx] (Line %lu)\n",
+                i, symbol->Name, address, line.LineNumber);
+        }
+        else {
+            printf("Frame %02d: %s [0x%llx] (Line info unavailable)\n",
+                i, symbol->Name, address);
+        }
+    }
+
+    free(symbol);
+    SymCleanup(process);
+}
 
 typedef enum workitem_type
 {
@@ -28,8 +61,8 @@ typedef enum workitem_type
 
 struct workitem
 {
-    struct workitem *next;
-    struct workitem *prev;
+    struct workitem* next;
+    struct workitem* prev;
     int completed;
 
     HANDLE file;
@@ -39,7 +72,7 @@ struct workitem
     bool errored;
     uint64_t offset;
     uint64_t size;
-    char *buffer;
+    char* buffer;
 };
 
 struct IoRingSetup
@@ -57,12 +90,12 @@ struct IoRingSetup
     HANDLE thread;
     HANDLE has_error;
     int errored;
-    struct workitem *head;
+    struct workitem* head;
 };
 
 struct IoRingSetup IoRing;
 
-bool FillIoRingFunctions(struct IoRingSetup *s)
+bool FillIoRingFunctions(struct IoRingSetup* s)
 {
     memset(s, 0, sizeof(struct IoRingSetup));
     HMODULE hKernelDll = LoadLibrary(TEXT("kernel32.dll"));
@@ -82,24 +115,72 @@ bool FillIoRingFunctions(struct IoRingSetup *s)
     FreeLibrary(hKernelDll);
 
     return (s->QueryIoRingCapabilities &&
-            s->CloseIoRing &&
-            s->CreateIoRing &&
-            s->SubmitIoRing &&
-            s->PopIoRingCompletion &&
-            s->SetIoRingCompletionEvent &&
-            s->BuildIoRingWriteFile);
+        s->CloseIoRing &&
+        s->CreateIoRing &&
+        s->SubmitIoRing &&
+        s->PopIoRingCompletion &&
+        s->SetIoRingCompletionEvent &&
+        s->BuildIoRingWriteFile);
 }
 
-void queue_work(struct workitem *work)
+__declspec(noinline) void alert()
 {
+    PrintStackTrace();
+    while(1)
+    {
+        Beep(800, 200);
+        Sleep(200);
+    }
+}
+
+bool hasCycle(struct workitem* head)
+{
+    if (head == NULL || head->next == NULL)
+    {
+        return false;
+    }
+
+    struct workitem* slow = head;       // Tortoise: moves one step
+    struct workitem* fast = head->next; // Hare: moves two steps
+
+    while (fast != NULL && fast->next != NULL)
+    {
+        if (slow == fast)
+        {
+            return true; // Cycle detected: pointers meet
+        }
+        slow = slow->next;       // Move one step
+        fast = fast->next->next; // Move two steps
+    }
+
+    return false; // No cycle: reached end (NULL)
+}
+
+void queue_work(struct workitem* work)
+{
+    if (work->completed)
+    {
+        alert();
+    }
     work->next = IoRing.head;
     while (true)
     {
-        struct workitem *cur_head = InterlockedCompareExchangePointer(&IoRing.head, work, work->next);
+        if (hasCycle(work))
+        {
+            alert();
+        }
+        struct workitem* cur_head = InterlockedCompareExchangePointer(&IoRing.head, work, work->next);
         if (cur_head == work->next)
             break;
         work->next = cur_head;
     }
+}
+
+__declspec(noinline) void keep(void* ptr) {
+    volatile void* dummy = ptr;
+    // MSVC doesn't have a direct equivalent to GCC's asm memory barrier,
+    // but volatile alone is often enough to prevent elimination
+    dummy; // Ensure dummy isn't flagged as unused
 }
 
 void close_ring_with_error(HRESULT hr)
@@ -112,7 +193,7 @@ void close_ring_with_error(HRESULT hr)
     IORING_CQE cqe;
     while (SUCCEEDED(IoRing.PopIoRingCompletion(IoRing.io_ring, &cqe)))
     {
-        struct workitem *work = (struct workitem *)cqe.UserData;
+        struct workitem* work = (struct workitem*)cqe.UserData;
         work->result = hr;
         work->errored = true;
         SetEvent(work->notify);
@@ -133,7 +214,7 @@ DWORD WINAPI do_ring_work(LPVOID lpThreadParameter)
     }
     SetThreadDescription(GetCurrentThread(), L"Rvn.Ring.Wrkr");
     HIORING ring = IoRing.io_ring;
-    struct workitem *work = NULL;
+    struct workitem* work = NULL;
     HRESULT hr = 0;
     while (true)
     {
@@ -152,16 +233,24 @@ DWORD WINAPI do_ring_work(LPVOID lpThreadParameter)
             if (!work) // we may have _previous_ work to run through
             {
                 work = InterlockedExchangePointer(&IoRing.head, 0);
+                if (hasCycle(work))
+                {
+                    alert();
+                }
             }
             while (work)
             {
+                if (work->completed)
+                {
+                    alert();
+                }
                 has_work = true;
                 IORING_HANDLE_REF file_handle_ref = IoRingHandleRefFromHandle(work->file);
                 IORING_BUFFER_REF buffer_ref = IoRingBufferRefFromPointer(work->buffer);
                 int32_t size_to_write = (int32_t)(rvn_min(work->size, INT32_MAX));
                 hr = IoRing.BuildIoRingWriteFile(ring, file_handle_ref,
-                                                 buffer_ref, size_to_write, work->offset, FILE_WRITE_FLAGS_NONE,
-                                                 (UINT_PTR)work, IOSQE_FLAGS_NONE);
+                    buffer_ref, size_to_write, work->offset, FILE_WRITE_FLAGS_NONE,
+                    (UINT_PTR)work, IOSQE_FLAGS_NONE);
 
                 if (hr == IORING_E_SUBMISSION_QUEUE_FULL)
                 {
@@ -173,16 +262,18 @@ DWORD WINAPI do_ring_work(LPVOID lpThreadParameter)
 
                 work = work->next;
             }
-            hr = must_wait ? 
-                IoRing.SubmitIoRing(ring, 1, INFINITE, NULL) : 
-                IoRing.SubmitIoRing(ring, 0, 0, NULL);
+            hr = must_wait ? IoRing.SubmitIoRing(ring, 1, INFINITE, NULL) : IoRing.SubmitIoRing(ring, 0, 0, NULL);
             if (FAILED(hr))
                 goto error;
             IORING_CQE cqe;
             while (IoRing.PopIoRingCompletion(ring, &cqe) == S_OK)
             {
                 has_work = true;
-                struct workitem *cur = (struct workitem *)cqe.UserData;
+                struct workitem* cur = (struct workitem*)cqe.UserData;
+                if (cur->completed)
+                {
+                    alert();
+                }
                 switch (cur->type)
                 {
                 case workitem_write:
@@ -207,7 +298,7 @@ DWORD WINAPI do_ring_work(LPVOID lpThreadParameter)
                 default:
                     break;
                 }
-                InterlockedExchange(&cur->completed, 1);
+                InterlockedExchange(&cur->completed, 7);
                 SetEvent(cur->notify);
             }
         }
@@ -235,14 +326,16 @@ error:
     return 0;
 }
 
+__declspec(thread) int g_threadStaticVar = 0;
+
 int32_t rvn_write_io_ring(
-    void *handle,
-    struct page_to_write *buffers,
+    void* handle,
+    struct page_to_write* buffers,
     int32_t count,
-    int32_t *detailed_error_code)
+    int32_t* detailed_error_code)
 {
     int32_t rc = SUCCESS;
-    struct handle *handle_ptr = handle;
+    struct handle* handle_ptr = handle;
     if (count == 0)
         return SUCCESS;
 
@@ -255,29 +348,50 @@ int32_t rvn_write_io_ring(
     EnterCriticalSection(&handle_ptr->global_state->lock);
 
     size_t max_req_size = (size_t)count * sizeof(struct workitem);
+    size_t orign_size = handle_ptr->global_state->arena_size;
+    bool ralloced = false;
+    void* origin_arena = handle_ptr->global_state->arena;
     if (handle_ptr->global_state->arena_size < max_req_size)
     {
+        ralloced = true;
         size_t size = (size_t)nextPowerOf2(max_req_size);
-        void *ptr = realloc(handle_ptr->global_state->arena, size);
+        void* ptr = realloc(handle_ptr->global_state->arena, size);
         if (!ptr)
         {
             *detailed_error_code = errno;
             LeaveCriticalSection(&handle_ptr->global_state->lock);
             return FAIL_NOMEM;
         }
+        handle_ptr->global_state->last_arena_thread = GetCurrentThreadId();
         handle_ptr->global_state->arena = ptr;
         handle_ptr->global_state->arena_size = size;
     }
     ResetEvent(handle_ptr->global_state->notify);
 
-    char *buf = handle_ptr->global_state->arena;
-    struct workitem *prev = NULL;
+    void* old_global_state = handle_ptr->global_state;
+    char* buf = handle_ptr->global_state->arena;
+    struct workitem* prev = NULL;
+    char* old_arena = handle_ptr->global_state->arena;
     for (int32_t curIdx = 0; curIdx < count; curIdx++)
     {
+        g_threadStaticVar = curIdx;
         uint64_t offset = buffers[curIdx].page_num * VORON_PAGE_SIZE;
         uint64_t size = (uint64_t)buffers[curIdx].count_of_pages * VORON_PAGE_SIZE;
 
-        struct workitem *work = (struct workitem *)buf;
+        struct workitem* work = (struct workitem*)buf;
+        ptrdiff_t diff = (char*)work - (char*)handle_ptr->global_state->arena;
+        if (diff > (ptrdiff_t)handle_ptr->global_state->arena_size ||
+            diff < 0)
+        {
+            PrintStackTrace();
+            printf("Diff: %llu, old: %x, new: %x, work: %x\n", diff, old_arena, handle_ptr->global_state->arena, work);
+            alert();
+        }
+        if (old_arena != handle_ptr->global_state->arena)
+        {
+            printf("old_global_state : %x, current state: %x\n", old_global_state, handle_ptr->global_state);
+            alert();
+        }
         buf += sizeof(struct workitem);
         *work = (struct workitem){
             .buffer = buffers[curIdx].ptr,
@@ -291,10 +405,21 @@ int32_t rvn_write_io_ring(
             .prev = prev,
             .notify = handle_ptr->global_state->notify,
         };
+        if (old_arena != handle_ptr->global_state->arena)
+        {
+            alert();
+        }
+        if (work->completed != 0) {
+            alert();
+        }
         prev = work;
         queue_work(work);
-    }
+        keep(&buf);
+        keep(&work);
 
+        keep(&handle_ptr);
+    }
+    keep(&handle_ptr);
     SetEvent(IoRing.event);
 
     bool all_done = false;
@@ -312,7 +437,7 @@ int32_t rvn_write_io_ring(
         }
         ResetEvent(handle_ptr->global_state->notify);
 
-        struct workitem *work = prev;
+        struct workitem* work = prev;
         while (work)
         {
             all_done &= InterlockedCompareExchange(&work->completed, 0, 0);
@@ -333,12 +458,12 @@ int32_t rvn_write_io_ring(
 }
 
 PRIVATE int32_t
-rvn_one_time_init(int32_t *detailed_error_code)
+rvn_one_time_init(int32_t* detailed_error_code)
 {
     if (g_cfg.io_ring_queue_size < 0 || !FillIoRingFunctions(&IoRing))
         return SUCCESS; // not supported  or disabled, that is fine...
 
-    IORING_CREATE_FLAGS flags = {0};
+    IORING_CREATE_FLAGS flags = { 0 };
     HRESULT hr = IoRing.CreateIoRing(IORING_VERSION_3, flags, g_cfg.io_ring_queue_size, g_cfg.io_ring_queue_size * 2, &IoRing.io_ring);
     if (FAILED(hr))
     {

@@ -1425,6 +1425,17 @@ namespace Voron.Impl.Journal
                         (dataPagerState.TotalFileSize, dataPagerState.TotalDiskSpace) = dataPager.GetFileSize(dataPagerState);
                         fixed (Pal.page_to_write* ptr = pages)
                         {
+                            
+                            using (var writer = File.AppendText(Path.Combine("C:\\Work\\tmp",_waj._env.DbId.ToString())))
+                            {
+                                writer.Write(pages.Length);
+                                writer.Write(" - ");
+                                foreach (var p in pages)
+                                {
+                                    writer.Write($"{p.page_num}:{p.count_of_pages}, ");
+                                }
+                                writer.WriteLine();
+                            }
                             var rc = dataPager.Write(dataPagerState.Handle, ptr, pages.Length,  out var errorCode);
                             if (rc != PalFlags.FailCodes.Success)
                             {
