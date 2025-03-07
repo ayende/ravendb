@@ -1,5 +1,6 @@
 // required to enable io ring support
 #define NTDDI_VERSION NTDDI_WIN10_NI
+#include <intrin.h>
 #include <windows.h>
 #include <dbghelp.h>
 #include <VersionHelpers.h>
@@ -160,6 +161,7 @@ void queue_work(struct workitem* work)
 {
     if (work->completed)
     {
+
         alert();
     }
     work->next = IoRing.head;
@@ -174,13 +176,6 @@ void queue_work(struct workitem* work)
             break;
         work->next = cur_head;
     }
-}
-
-__declspec(noinline) void keep(void* ptr) {
-    volatile void* dummy = ptr;
-    // MSVC doesn't have a direct equivalent to GCC's asm memory barrier,
-    // but volatile alone is often enough to prevent elimination
-    dummy; // Ensure dummy isn't flagged as unused
 }
 
 void close_ring_with_error(HRESULT hr)
@@ -238,69 +233,75 @@ DWORD WINAPI do_ring_work(LPVOID lpThreadParameter)
                     alert();
                 }
             }
-            while (work)
-            {
-                if (work->completed)
-                {
-                    alert();
-                }
-                has_work = true;
-                IORING_HANDLE_REF file_handle_ref = IoRingHandleRefFromHandle(work->file);
-                IORING_BUFFER_REF buffer_ref = IoRingBufferRefFromPointer(work->buffer);
-                int32_t size_to_write = (int32_t)(rvn_min(work->size, INT32_MAX));
-                hr = IoRing.BuildIoRingWriteFile(ring, file_handle_ref,
-                    buffer_ref, size_to_write, work->offset, FILE_WRITE_FLAGS_NONE,
-                    (UINT_PTR)work, IOSQE_FLAGS_NONE);
-
-                if (hr == IORING_E_SUBMISSION_QUEUE_FULL)
-                {
-                    must_wait = true; // need to submit the work we have so far, and retry later
-                    break;
-                }
-                if (FAILED(hr))
-                    goto error;
-
-                work = work->next;
+            while (work) {
+                struct workitem* n = work->next;
+                InterlockedExchange(&work->completed, 7);
+                SetEvent(work->notify);
+                work = n;
             }
-            hr = must_wait ? IoRing.SubmitIoRing(ring, 1, INFINITE, NULL) : IoRing.SubmitIoRing(ring, 0, 0, NULL);
-            if (FAILED(hr))
-                goto error;
-            IORING_CQE cqe;
-            while (IoRing.PopIoRingCompletion(ring, &cqe) == S_OK)
-            {
-                has_work = true;
-                struct workitem* cur = (struct workitem*)cqe.UserData;
-                if (cur->completed)
-                {
-                    alert();
-                }
-                switch (cur->type)
-                {
-                case workitem_write:
-                    if (SUCCEEDED(cqe.ResultCode))
-                    {
-                        cur->offset += (uint64_t)cqe.Information;
-                        cur->buffer += cqe.Information;
-                        cur->size -= (uint64_t)cqe.Information;
-                        if (cur->size)
-                        {
-                            queue_work(cur);
-                            continue;
-                        }
-                    }
-                    else
-                    {
-                        cur->errored = true;
-                        cur->result = cqe.ResultCode;
-                    }
-                    break;
+            //while (work)
+            //{
+            //    if (work->completed)
+            //    {
+            //        alert();
+            //    }
+            //    has_work = true;
+            //    IORING_HANDLE_REF file_handle_ref = IoRingHandleRefFromHandle(work->file);
+            //    IORING_BUFFER_REF buffer_ref = IoRingBufferRefFromPointer(work->buffer);
+            //    int32_t size_to_write = (int32_t)(rvn_min(work->size, INT32_MAX));
+            //    hr = IoRing.BuildIoRingWriteFile(ring, file_handle_ref,
+            //        buffer_ref, size_to_write, work->offset, FILE_WRITE_FLAGS_NONE,
+            //        (UINT_PTR)work, IOSQE_FLAGS_NONE);
 
-                default:
-                    break;
-                }
-                InterlockedExchange(&cur->completed, 7);
-                SetEvent(cur->notify);
-            }
+            //    if (hr == IORING_E_SUBMISSION_QUEUE_FULL)
+            //    {
+            //        must_wait = true; // need to submit the work we have so far, and retry later
+            //        break;
+            //    }
+            //    if (FAILED(hr))
+            //        goto error;
+
+            //    work = work->next;
+            //}
+            //hr = must_wait ? IoRing.SubmitIoRing(ring, 1, INFINITE, NULL) : IoRing.SubmitIoRing(ring, 0, 0, NULL);
+            //if (FAILED(hr))
+            //    goto error;
+            //IORING_CQE cqe;
+            //while (IoRing.PopIoRingCompletion(ring, &cqe) == S_OK)
+            //{
+            //    has_work = true;
+            //    struct workitem* cur = (struct workitem*)cqe.UserData;
+            //    if (cur->completed)
+            //    {
+            //        alert();
+            //    }
+            //    switch (cur->type)
+            //    {
+            //    case workitem_write:
+            //        if (SUCCEEDED(cqe.ResultCode))
+            //        {
+            //            cur->offset += (uint64_t)cqe.Information;
+            //            cur->buffer += cqe.Information;
+            //            cur->size -= (uint64_t)cqe.Information;
+            //            if (cur->size)
+            //            {
+            //                queue_work(cur);
+            //                continue;
+            //            }
+            //        }
+            //        else
+            //        {
+            //            cur->errored = true;
+            //            cur->result = cqe.ResultCode;
+            //        }
+            //        break;
+
+            //    default:
+            //        break;
+            //    }
+            //    InterlockedExchange(&cur->completed, 7);
+            //    SetEvent(cur->notify);
+            //}
         }
     }
 error:
@@ -319,6 +320,7 @@ error:
         {
             work->result = ERROR_IO_INCOMPLETE;
             work->errored = true;
+            //TODO: this is wrong
             SetEvent(work->notify);
             work = work->next;
         }
@@ -384,12 +386,12 @@ int32_t rvn_write_io_ring(
             diff < 0)
         {
             PrintStackTrace();
-            printf("Diff: %llu, old: %x, new: %x, work: %x\n", diff, old_arena, handle_ptr->global_state->arena, work);
+            printf("Diff: %llu, old: %p, new: %p, work: %p\n", diff, old_arena, handle_ptr->global_state->arena, work);
             alert();
         }
         if (old_arena != handle_ptr->global_state->arena)
         {
-            printf("old_global_state : %x, current state: %x\n", old_global_state, handle_ptr->global_state);
+            printf("old_global_state : %p, current state: %p\n", old_global_state, handle_ptr->global_state);
             alert();
         }
         buf += sizeof(struct workitem);
@@ -407,19 +409,18 @@ int32_t rvn_write_io_ring(
         };
         if (old_arena != handle_ptr->global_state->arena)
         {
+            printf("old_global_state : %p, current state: %p\n", old_global_state, handle_ptr->global_state);
+            printf("old_arena : %p, current state: %p\n", old_arena, handle_ptr->global_state->arena);
             alert();
         }
         if (work->completed != 0) {
+            printf("old_global_state : %p, current state: %p\n", old_global_state, handle_ptr->global_state);
+            printf("old_arena : %p, current state: %p\n", old_arena, handle_ptr->global_state->arena);
             alert();
         }
         prev = work;
         queue_work(work);
-        keep(&buf);
-        keep(&work);
-
-        keep(&handle_ptr);
     }
-    keep(&handle_ptr);
     SetEvent(IoRing.event);
 
     bool all_done = false;

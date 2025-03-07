@@ -224,7 +224,7 @@ void once(LenPageData* log)
 
 int thread(void* state)
 {
-    for (size_t i = 0; i < 100; i++)
+    for (size_t i = 0; i < 1000; i++)
     {
         LenPageData** files = state;
         while (*files)
