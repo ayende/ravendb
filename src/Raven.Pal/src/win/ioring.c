@@ -92,13 +92,12 @@ bool FillIoRingFunctions(struct IoRingSetup *s)
 
 void queue_work(struct workitem *work)
 {
-    work->next = IoRing.head;
     while (true)
     {
-        struct workitem *cur_head = InterlockedCompareExchangePointer(&IoRing.head, work, work->next);
-        if (cur_head == work->next)
-            break;
+        struct workitem *cur_head = IoRing.head;
         work->next = cur_head;
+        if (InterlockedCompareExchangePointer(&IoRing.head, work, cur_head) == cur_head)
+            break;
     }
 }
 
@@ -173,9 +172,7 @@ DWORD WINAPI do_ring_work(LPVOID lpThreadParameter)
 
                 work = work->next;
             }
-            hr = must_wait ? 
-                IoRing.SubmitIoRing(ring, 1, INFINITE, NULL) : 
-                IoRing.SubmitIoRing(ring, 0, 0, NULL);
+            hr = must_wait ? IoRing.SubmitIoRing(ring, 1, INFINITE, NULL) : IoRing.SubmitIoRing(ring, 0, 0, NULL);
             if (FAILED(hr))
                 goto error;
             IORING_CQE cqe;
