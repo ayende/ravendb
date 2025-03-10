@@ -26,20 +26,25 @@ typedef enum workitem_type
     workitem_fsync,
 } workitem_type;
 
-struct workitem
+struct submittion
 {
-    struct workitem *next;
-    struct workitem *prev;
-    int completed;
-
     HANDLE file;
     HANDLE notify;
-    int result;
-    workitem_type type;
-    bool errored;
+    int32_t count;
+    int32_t result;
+    bool error;
+};
+
+struct workitem
+{
+    struct submittion *submittion;
+    struct workitem *next;
+    char *buffer;
+
     uint64_t offset;
     uint64_t size;
-    char *buffer;
+
+    workitem_type type;
 };
 
 struct IoRingSetup
@@ -90,13 +95,13 @@ bool FillIoRingFunctions(struct IoRingSetup *s)
             s->BuildIoRingWriteFile);
 }
 
-void queue_work(struct workitem *work)
+void queue_work(struct workitem *head, struct workitem *last)
 {
     while (true)
     {
         struct workitem *cur_head = IoRing.head;
-        work->next = cur_head;
-        if (InterlockedCompareExchangePointer(&IoRing.head, work, cur_head) == cur_head)
+        last->next = cur_head;
+        if (InterlockedCompareExchangePointer(&IoRing.head, head, cur_head) == cur_head)
             break;
     }
 }
@@ -112,9 +117,12 @@ void close_ring_with_error(HRESULT hr)
     while (SUCCEEDED(IoRing.PopIoRingCompletion(IoRing.io_ring, &cqe)))
     {
         struct workitem *work = (struct workitem *)cqe.UserData;
-        work->result = hr;
-        work->errored = true;
-        SetEvent(work->notify);
+        work->submittion->result = hr;
+        work->submittion->error = true;
+        if (--work->submittion->count == 0)
+        {
+            SetEvent(work->submittion->notify);
+        }
     }
     IoRing.CloseIoRing(IoRing.io_ring);
     IoRing.io_ring = NULL;
@@ -155,7 +163,7 @@ DWORD WINAPI do_ring_work(LPVOID lpThreadParameter)
             while (work)
             {
                 has_work = true;
-                IORING_HANDLE_REF file_handle_ref = IoRingHandleRefFromHandle(work->file);
+                IORING_HANDLE_REF file_handle_ref = IoRingHandleRefFromHandle(work->submittion->file);
                 IORING_BUFFER_REF buffer_ref = IoRingBufferRefFromPointer(work->buffer);
                 int32_t size_to_write = (int32_t)(rvn_min(work->size, INT32_MAX));
                 hr = IoRing.BuildIoRingWriteFile(ring, file_handle_ref,
@@ -175,6 +183,8 @@ DWORD WINAPI do_ring_work(LPVOID lpThreadParameter)
             hr = must_wait ? IoRing.SubmitIoRing(ring, 1, INFINITE, NULL) : IoRing.SubmitIoRing(ring, 0, 0, NULL);
             if (FAILED(hr))
                 goto error;
+
+            struct submittion *completed = NULL;
             IORING_CQE cqe;
             while (IoRing.PopIoRingCompletion(ring, &cqe) == S_OK)
             {
@@ -190,22 +200,24 @@ DWORD WINAPI do_ring_work(LPVOID lpThreadParameter)
                         cur->size -= (uint64_t)cqe.Information;
                         if (cur->size)
                         {
-                            queue_work(cur);
+                            queue_work(cur, cur);
                             continue;
                         }
                     }
                     else
                     {
-                        cur->errored = true;
-                        cur->result = cqe.ResultCode;
+                        cur->submittion->error = true;
+                        cur->submittion->result = cqe.ResultCode;
                     }
                     break;
 
                 default:
                     break;
                 }
-                InterlockedExchange(&cur->completed, 1);
-                SetEvent(cur->notify);
+                if (--cur->submittion->count == 0)
+                {
+                    SetEvent(cur->submittion->notify);
+                }
             }
         }
     }
@@ -223,10 +235,15 @@ error:
         work = InterlockedExchangePointer(&IoRing.head, 0);
         while (work)
         {
-            work->result = ERROR_IO_INCOMPLETE;
-            work->errored = true;
-            SetEvent(work->notify);
-            work = work->next;
+            struct workitem *n = work->next;
+
+            work->submittion->result = ERROR_IO_INCOMPLETE;
+            work->submittion->error = true;
+            if (--work->submittion->count == 0)
+            {
+                SetEvent(work->submittion->notify);
+            }
+            work = n;
         }
     }
     return 0;
@@ -259,72 +276,58 @@ int32_t rvn_write_io_ring(
         if (!ptr)
         {
             *detailed_error_code = errno;
-            LeaveCriticalSection(&handle_ptr->global_state->lock);
-            return FAIL_NOMEM;
+            rc = FAIL_NOMEM;
+            goto exit;
         }
         handle_ptr->global_state->arena = ptr;
         handle_ptr->global_state->arena_size = size;
     }
-    ResetEvent(handle_ptr->global_state->notify);
+
+    struct submittion submittion = {
+        .file = handle_ptr->file_handle,
+        .notify = handle_ptr->global_state->notify,
+        .count = count,
+    };
 
     char *buf = handle_ptr->global_state->arena;
-    struct workitem *prev = NULL;
-    for (int32_t curIdx = 0; curIdx < count; curIdx++)
+    struct workitem *head = NULL;
+    for (int32_t curIdx = count - 1; curIdx >= 0; curIdx--)
     {
         uint64_t offset = buffers[curIdx].page_num * VORON_PAGE_SIZE;
         uint64_t size = (uint64_t)buffers[curIdx].count_of_pages * VORON_PAGE_SIZE;
 
         struct workitem *work = (struct workitem *)buf;
-        buf += sizeof(struct workitem);
         *work = (struct workitem){
             .buffer = buffers[curIdx].ptr,
             .size = size,
-            .completed = 0,
             .type = workitem_write,
-            .file = handle_ptr->file_handle,
             .offset = offset,
-            .errored = false,
-            .result = 0,
-            .prev = prev,
-            .notify = handle_ptr->global_state->notify,
+            .next = head,
+            .submittion = &submittion,
         };
-        prev = work;
-        queue_work(work);
+        head = work;
+        buf += sizeof(struct workitem);
     }
 
+    rc = SUCCESS;
+    ResetEvent(handle_ptr->global_state->notify);
+    struct workitem *last = handle_ptr->global_state->arena;
+    queue_work(head, last);
     SetEvent(IoRing.event);
-
-    bool all_done = false;
-    while (!all_done)
+    if (WaitForSingleObject(handle_ptr->global_state->notify, INFINITE) == WAIT_FAILED)
     {
-        all_done = true;
-        rc = SUCCESS;
-        *detailed_error_code = 0;
-
-        if (WaitForSingleObject(handle_ptr->global_state->notify, INFINITE) == WAIT_FAILED)
-        {
-            *detailed_error_code = GetLastError();
-            rc = FAIL_POLL_EVENTFD;
-            break;
-        }
-        ResetEvent(handle_ptr->global_state->notify);
-
-        struct workitem *work = prev;
-        while (work)
-        {
-            all_done &= InterlockedCompareExchange(&work->completed, 0, 0);
-            if (work->errored)
-            {
-                *detailed_error_code = work->result;
-                rc = FAIL_IO_RING_WRITE_RESULT;
-                // note that we still need to wait for the whole
-                // set to complete before we can safely return...
-            }
-            // move to the previous one...
-            work = work->prev;
-        }
+        *detailed_error_code = GetLastError();
+        rc = FAIL_POLL_EVENTFD;
+        goto exit;
     }
 
+    if (submittion.error)
+    {
+        *detailed_error_code = submittion.result;
+        rc = FAIL_IO_RING_WRITE;
+    }
+
+exit:
     LeaveCriticalSection(&handle_ptr->global_state->lock);
     return rc;
 }
