@@ -36,28 +36,33 @@ typedef enum workitem_type
     workitem_fsync_folders,
 } workitem_type;
 
-struct workitem
+struct submittion
 {
-    struct workitem *next;
-    struct workitem *prev;
-    off_t offset;
-    _Atomic int completed;
-
     int filefd;
     int notifyfd;
-    int result;
+    int32_t count;
+    int32_t result;
+    bool error;
+};
+
+struct workitem
+{
+    struct submittion *submittion;
+    struct workitem *next;
     workitem_type type;
-    bool errored;
+
     union
     {
         struct
         {
+            off_t offset;
             int iovecs_count;
             struct iovec *iovecs;
         } write;
         struct
         {
             char *path;
+            int folderid;
         } folder_sync;
     } op;
 };
@@ -80,25 +85,28 @@ uint64_t done = 1;
 
 void notify_work_completed(struct io_uring *ring, struct workitem *work)
 {
-    atomic_store(&work->completed, 1);
+    if (--work->submittion->count > 0)
+    {
+        return; // not yet completed
+    }
     struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
     if (!sqe) // if we can't notify via the io_uring because it is full, let's use direct syscall
     {
         // explicitly ignoring the return value, we can't do anything about it
-        eventfd_write(work->notifyfd, done);
+        eventfd_write(work->submittion->notifyfd, done);
         return;
     }
-    io_uring_prep_write(sqe, work->notifyfd, &done, sizeof(done), 0);
+    io_uring_prep_write(sqe, work->submittion->notifyfd, &done, sizeof(done), 0);
     io_uring_sqe_set_data(sqe, 0);
 }
 
-void queue_work(struct workitem *work)
+void queue_work(struct workitem *head, struct workitem *last)
 {
-    struct workitem *head = atomic_load(&g_worker.head);
+    struct workitem *cur_head = atomic_load(&g_worker.head);
     do
     {
-        work->next = head;
-    } while (!atomic_compare_exchange_weak(&g_worker.head, &head, work));
+        last->next = cur_head;
+    } while (!atomic_compare_exchange_weak(&g_worker.head, &cur_head, head));
 }
 
 void mark_all_cqes_as_errors(struct io_uring *ring, int rc)
@@ -109,9 +117,13 @@ void mark_all_cqes_as_errors(struct io_uring *ring, int rc)
     {
         struct workitem *work = io_uring_cqe_get_data(cqe);
         io_uring_cqe_seen(ring, cqe);
-        work->result = rc;
-        work->errored = true;
-        eventfd_write(work->notifyfd, 1);
+        if (--work->submittion->count > 0)
+        {
+            continue;
+        }
+        work->submittion->error = true;
+        work->submittion->result = rc;
+        eventfd_write(work->submittion->notifyfd, 1);
     }
 }
 
@@ -145,16 +157,14 @@ void *do_ring_work(void *arg)
     struct workitem *work = NULL;
     while (true)
     {
-        do
         {
             // wait for any writes on the eventfd / completion on the ring (associated with the eventfd)
             eventfd_t v;
-            rc = read(g_worker.eventfd, &v, sizeof(eventfd_t));
-        } while (rc < 0 && errno == EINTR);
-        if (rc < 0 || rc != sizeof(eventfd_t))
-        {
-            rc = errno;
-            goto error;
+            if (eventfd_read(g_worker.eventfd, &v))
+            {
+                rc = errno;
+                goto error;
+            }
         }
         bool has_work = true;
         while (has_work)
@@ -190,18 +200,18 @@ void *do_ring_work(void *arg)
                         must_wait = 2;
                         goto sumbit_and_wait; // will retry
                     }
-                    io_uring_prep_fsync(sqe, work->filefd, 0);
+                    io_uring_prep_fsync(sqe, work->op.folder_sync.folderid, 0);
                     io_uring_sqe_set_data64(sqe, 0);
                     sqe->flags |= IOSQE_IO_LINK;
-                    io_uring_prep_close(sqe2, work->filefd);
+                    io_uring_prep_close(sqe2, work->op.folder_sync.folderid);
                     io_uring_sqe_set_data(sqe2, work);
                     break;
                 }
                 case workitem_fsync:
-                    io_uring_prep_fsync(sqe, work->filefd, IORING_FSYNC_DATASYNC);
+                    io_uring_prep_fsync(sqe, work->submittion->filefd, IORING_FSYNC_DATASYNC);
                     break;
                 case workitem_write:
-                    io_uring_prep_writev(sqe, work->filefd, work->op.write.iovecs, work->op.write.iovecs_count, work->offset);
+                    io_uring_prep_writev(sqe, work->submittion->filefd, work->op.write.iovecs, work->op.write.iovecs_count, work->op.write.offset);
                     break;
                 default:
                     break;
@@ -234,24 +244,25 @@ void *do_ring_work(void *arg)
                 }
 
                 int result = cqe->res;
-                cur->result = -result;
                 switch (cur->type)
                 {
                 case workitem_open_folders:
-                    cur->filefd = result;
-                    cur->result = -result;
-                    cur->errored = result < 0;
+                    cur->op.folder_sync.folderid = result;
                     notify_work_completed(ring, cur);
                     break;
                 case workitem_fsync_folders:
                 case workitem_fsync:
-                    cur->errored = result != 0;
+                    if (result != 0)
+                    {
+                        cur->submittion->error = true;
+                        cur->submittion->result = result;
+                    }
                     notify_work_completed(ring, cur);
                     break;
                 case workitem_write:
                     if (result > 0)
                     {
-                        cur->offset += result;
+                        cur->op.write.offset += result;
                         while (result)
                         {
                             if (result >= cur->op.write.iovecs->iov_len)
@@ -267,19 +278,29 @@ void *do_ring_work(void *arg)
                                 break;
                             }
                         }
+                        if (result < 0)
+                        {
+                            // I'm *never* supposed to get to this line of code
+                            // this is here as a safety net, to ensure that we if
+                            // we messed up, we'll know about it rather than get an
+                            // infinite loop or something like that
+                            cur->submittion->error = true;
+                            cur->submittion->result = ERANGE;
+                            result = 0; // will force a completion of the current write
+                        }
                         if (result)
                         {
-                            queue_work(cur);
+                            queue_work(cur, cur);
                             continue;
                         }
                     }
                     else
                     {
-                        cur->errored = true;
+                        cur->submittion->error = true;
                         if (result == 0)
                         {
                             // this usually happens if we a disk full, or some
-                            cur->result = ENOSPC;
+                            cur->submittion->result = ENOSPC;
                         }
                     }
                     notify_work_completed(ring, cur);
@@ -309,9 +330,11 @@ error:
         }
         while (work)
         {
-            work->result = rc;
-            work->errored = true;
-            eventfd_write(work->notifyfd, 1);
+            work->submittion->error = true;
+            work->submittion->result = rc;
+            if (--work->submittion->count > 0)
+                continue;
+            eventfd_write(work->submittion->notifyfd, 1);
             work = work->next;
         }
     }
@@ -349,46 +372,17 @@ bool wake_ring_worker(int32_t *detailed_error_code)
 }
 
 int32_t
-wait_for_work_completion(struct handle *handle_ptr, struct workitem *prev, int eventfd, int32_t *detailed_error_code)
+wait_for_work_completion(struct handle *handle_ptr, struct submittion *submittion, int32_t *detailed_error_code)
 {
-
     if (!wake_ring_worker(detailed_error_code))
     {
-        pthread_mutex_unlock(&handle_ptr->global_state->writes_arena.lock);
-        // ignoring errors in mutex unlock, since we are on an error path
         return FAIL_IO_RING_WRITE;
     }
-
-    bool all_done = false;
-    while (!all_done)
+    eventfd_t v;
+    eventfd_read(submittion->notifyfd, &v);
+    if (submittion->error)
     {
-        all_done = true;
-        *detailed_error_code = 0;
-
-        eventfd_t v;
-        int rc = read(eventfd, &v, sizeof(eventfd_t));
-        if (rc != sizeof(eventfd_t))
-        {
-            if (errno == EINTR)
-                continue;
-
-            *detailed_error_code = errno;
-            return FAIL_POLL_EVENTFD;
-        }
-
-        struct workitem *work = prev;
-        while (work)
-        {
-            all_done &= atomic_load(&work->completed);
-            if (work->errored)
-            {
-                *detailed_error_code = work->result;
-                // note that we still need to wait for the whole
-                // set to complete before we can safely return...
-            }
-            // move to the previous one...
-            work = work->prev;
-        }
+        *detailed_error_code = submittion->result;
     }
     return SUCCESS;
 }
@@ -408,36 +402,25 @@ rvn_sync_pager(void *handle,
         return SUCCESS;
     }
     int eventfd = handle_ptr->global_state->fsync_dir_arena.eventfd;
-    struct workitem work = {
-        .completed = 0,
-        .type = workitem_fsync,
+    struct submittion submittion = {
         .filefd = handle_ptr->file_fd,
-        .offset = 0,
-        .errored = false,
-        .result = 0,
         .notifyfd = eventfd,
+        .count = 1,
+        .result = 0,
+        .error = false,
     };
-    queue_work(&work);
-    if (!wake_ring_worker(detailed_error_code))
+    struct workitem work = {
+        .type = workitem_fsync,
+        .submittion = &submittion,
+    };
+    queue_work(&work, &work);
+    *detailed_error_code = 0;
+    int32_t rc = wait_for_work_completion(handle_ptr, &submittion, detailed_error_code);
+    if (*detailed_error_code)
     {
-        return FAIL_IO_RING_WRITE;
+        rc = FAIL_SYNC_FILE;
     }
-    while (!atomic_load(&work.completed))
-    {
-        eventfd_t v;
-        int rc = read(eventfd, &v, sizeof(eventfd_t));
-        if (rc == sizeof(eventfd_t) || errno == EINTR)
-            continue;
-
-        *detailed_error_code = errno;
-        return FAIL_POLL_EVENTFD;
-    }
-    if (work.errored)
-    {
-        *detailed_error_code = work.result;
-        return FAIL_IO_RING_WRITE_RESULT;
-    }
-    return SUCCESS;
+    return rc;
 }
 
 int32_t rvn_write_io_ring(
@@ -446,6 +429,7 @@ int32_t rvn_write_io_ring(
     int32_t count,
     int32_t *detailed_error_code)
 {
+    *detailed_error_code = 0;
     int32_t rc = SUCCESS;
     struct handle *handle_ptr = handle;
     if (count == 0)
@@ -479,53 +463,62 @@ int32_t rvn_write_io_ring(
         handle_ptr->global_state->writes_arena.arena = ptr;
         handle_ptr->global_state->writes_arena.arena_size = size;
     }
+    struct submittion submittion = {
+        .filefd = handle_ptr->file_fd,
+        .notifyfd = handle_ptr->global_state->writes_arena.eventfd,
+        .count = count,
+        .result = 0,
+        .error = false,
+    };
+
     void *buf = handle_ptr->global_state->writes_arena.arena;
-    struct workitem *prev = NULL;
-    int eventfd = handle_ptr->global_state->writes_arena.eventfd;
-    for (int32_t curIdx = 0; curIdx < count; curIdx++)
+    struct workitem *head = NULL;
+    struct workitem *last = buf;
+    for (int32_t curIdx = count - 1; curIdx >= 0;)
     {
+        int32_t startIdx = curIdx;
+        while (startIdx > 0 && (curIdx - startIdx) < IOV_MAX)
+        {
+            int32_t prevIdx = startIdx - 1;
+            if (buffers[startIdx].page_num !=
+                buffers[prevIdx].page_num + buffers[prevIdx].count_of_pages)
+                break;
+            startIdx--;
+        }
         int64_t offset = buffers[curIdx].page_num * VORON_PAGE_SIZE;
-        int64_t size = (int64_t)buffers[curIdx].count_of_pages * VORON_PAGE_SIZE;
-        int64_t after = offset + size;
 
         struct workitem *work = buf;
+        struct iovec *iovecs = buf + sizeof(struct workitem);
+        int32_t vec_count = curIdx - startIdx + 1;
         *work = (struct workitem){
-            .op.write.iovecs_count = 1,
-            .op.write.iovecs = buf + sizeof(struct workitem),
-            .completed = 0,
+            .submittion = &submittion,
+            .op.write = {
+                .iovecs_count = vec_count,
+                .iovecs = iovecs,
+                .offset = offset,
+            },
             .type = workitem_write,
-            .filefd = handle_ptr->file_fd,
-            .offset = offset,
-            .errored = false,
-            .result = 0,
-            .prev = prev,
-            .notifyfd = eventfd,
+            .next = head,
         };
-        prev = work;
-        work->op.write.iovecs[0] = (struct iovec){.iov_len = size, .iov_base = buffers[curIdx].ptr};
-        buf += sizeof(struct workitem) + sizeof(struct iovec);
+        head = work;
 
-        for (size_t nextIndex = curIdx + 1; nextIndex < count && work->op.write.iovecs_count < IOV_MAX; nextIndex++)
+        int32_t i = 0;
+        for (size_t idx = startIdx; idx <= curIdx; idx++)
         {
-            int64_t dest = buffers[nextIndex].page_num * VORON_PAGE_SIZE;
-            if (after != dest)
-                break;
-
-            size = (int64_t)buffers[nextIndex].count_of_pages * VORON_PAGE_SIZE;
-            after = dest + size;
-            work->op.write.iovecs[work->op.write.iovecs_count++] = (struct iovec){
-                .iov_base = buffers[nextIndex].ptr,
-                .iov_len = size,
+            iovecs[i++] = (struct iovec){
+                .iov_len = (int64_t)buffers[idx].count_of_pages * VORON_PAGE_SIZE,
+                .iov_base = buffers[idx].ptr,
             };
-            curIdx++;
-            buf += sizeof(struct iovec);
         }
-        queue_work(work);
+        buf += sizeof(struct workitem) + (sizeof(struct iovec) * vec_count);
+        curIdx = startIdx - 1;
     }
-    *detailed_error_code = 0;
-    rc = wait_for_work_completion(handle_ptr, prev, eventfd, detailed_error_code);
+    queue_work(head, last);
+    rc = wait_for_work_completion(handle_ptr, &submittion, detailed_error_code);
     if (*detailed_error_code)
+    {
         rc = FAIL_IO_RING_WRITE_RESULT;
+    }
 
     if (pthread_mutex_unlock(&handle_ptr->global_state->writes_arena.lock) &&
         rc != SUCCESS)
@@ -653,54 +646,58 @@ rvn_sync_directories_ioring(void *handle, char **folders, int32_t count, int32_t
     // to get the file descriptor for the folder, so we need to do it in two steps.
     // We still can do that in a batched manner, though...
 
-    struct workitem *prev = NULL;
+    struct submittion submittion = {
+        .notifyfd = eventfd,
+        .count = count,
+        .result = 0,
+        .error = false,
+    };
+
     for (size_t i = 0; i < count; i++)
     {
         arr[i] = (struct workitem){
-            .completed = 0,
             .type = workitem_open_folders,
-            .errored = false,
-            .result = 0,
-            .notifyfd = eventfd,
-            .op = {.folder_sync = {.path = folders[i]}},
-            .prev = prev};
-        prev = &arr[i];
-        queue_work(&arr[i]);
+            .next = &arr[i + 1], // fine to also set on the last, queue_work will override it
+            .op = {.folder_sync = {.path = folders[i]}}};
     }
-
     *detailed_error_code = 0;
-    rc = wait_for_work_completion(handle_ptr, prev, eventfd, detailed_error_code);
+    queue_work(&arr[0], &arr[count - 1]);
+    rc = wait_for_work_completion(handle_ptr, &submittion, detailed_error_code);
     if (rc != SUCCESS)
     {
         pthread_mutex_unlock(&handle_ptr->global_state->fsync_dir_arena.lock);
         // ignoring possible error code because we are in error path
         return rc;
     }
-
     // here we are *explicitly* ignoring wait_for_work_completion() detailed_error_code
     // since it is _fine_ to have errors opening the folder, such as when we deleted an
     // index before we had a chance to flush it
-    prev = NULL;
+    *detailed_error_code = 0;
+    struct workitem *prev = NULL;
+    struct workitem *head = NULL;
+    submittion.count = 0;
     for (size_t i = 0; i < count; i++)
     {
-        if (arr[i].errored)
+        if (arr[i].op.folder_sync.folderid < 0)
             continue;
 
+        submittion.count++;
         arr[i] = (struct workitem){
-            .completed = 0,
             .type = workitem_fsync_folders,
-            .errored = false,
-            .result = 0,
-            .filefd = arr[i].filefd,
-            .notifyfd = eventfd,
-            .prev = prev};
+            .next = prev};
         prev = &arr[i];
-        queue_work(&arr[i]);
+        if (!head)
+            head = prev;
     }
 
+    if (!head)
+    {
+        return SUCCESS;
+    }
+    queue_work(head, prev);
     *detailed_error_code = 0;
-    rc = wait_for_work_completion(handle_ptr, prev, eventfd, detailed_error_code);
-    if(*detailed_error_code)
+    rc = wait_for_work_completion(handle_ptr, &submittion, detailed_error_code);
+    if (*detailed_error_code)
         rc = FAIL_IO_RING_WRITE_RESULT;
 
     if (pthread_mutex_unlock(&handle_ptr->global_state->fsync_dir_arena.lock) &&
