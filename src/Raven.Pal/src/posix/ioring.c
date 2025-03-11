@@ -68,6 +68,7 @@ struct workitem
 };
 
 _Static_assert(_Alignof(struct workitem) == _Alignof(struct iovec), "workitem must have same alignment as iovec");
+_Static_assert(sizeof(struct workitem) >= sizeof(struct iovec), "workitem must bet equal to or greater than iovec");
 
 struct worker
 {
@@ -477,12 +478,17 @@ int32_t rvn_write_io_ring(
     for (int32_t curIdx = count - 1; curIdx >= 0;)
     {
         int32_t startIdx = curIdx;
-        while (startIdx > 0 && (curIdx - startIdx) < IOV_MAX)
+        while (startIdx > 0)
         {
             int32_t prevIdx = startIdx - 1;
             if (buffers[startIdx].page_num !=
                 buffers[prevIdx].page_num + buffers[prevIdx].count_of_pages)
                 break;
+
+            int32_t iovecs = (curIdx - startIdx) + 1;
+            if (iovecs >= IOV_MAX)
+                break;
+
             startIdx--;
         }
         int64_t offset = buffers[startIdx].page_num * VORON_PAGE_SIZE;

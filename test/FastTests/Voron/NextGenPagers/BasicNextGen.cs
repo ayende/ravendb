@@ -132,6 +132,56 @@ public class BasicNextGen : StorageTest
         Env.SyncDataFileImmediately();
     }
 
+    [RavenFact(RavenTestCategory.Voron)]
+    public void WithFlushAndRestart()
+    {
+        RequireFileBasedPager();
+        Options.ManualFlushing = true;
+        ReadOnlySpan<byte> msg = "Hello there"u8;
+        List<long> pages = [];
+        using (var tx2 = Env.WriteTransaction())
+        {
+            // it is important to check that we are okay when using > IOV_MAX size
+            for (int i = 0; i < 1500; i++)
+            {
+                Page page = tx2.LowLevelTransaction.AllocatePage(1);
+                pages.Add(page.PageNumber);
+                msg.CopyTo(page.SpanOfData);
+            }
+            tx2.Commit();
+        }
+        
+        using (var tx2 = Env.ReadTransaction())
+        {
+            foreach (long p in pages)
+            {
+                Page page = tx2.LowLevelTransaction.GetPage(p);
+                Assert.True(msg.SequenceEqual(page.SpanOfData[..msg.Length]));
+            }
+        }
+        Env.FlushLogToDataFile();
+        Env.SyncDataFileImmediately();
+        
+        using (var tx2 = Env.ReadTransaction())
+        {
+            foreach (long p in pages)
+            {
+                Page page = tx2.LowLevelTransaction.GetPage(p);
+                Assert.True(msg.SequenceEqual(page.SpanOfData[..msg.Length]));
+            }
+        }
+        
+        RestartDatabase();
+        
+        using (var tx2 = Env.ReadTransaction())
+        {
+            foreach (long p in pages)
+            {
+                Page page = tx2.LowLevelTransaction.GetPage(p);
+                Assert.True(msg.SequenceEqual(page.SpanOfData[..msg.Length]));
+            }
+        }
+    }
 
 
     [RavenFact(RavenTestCategory.Voron)]
