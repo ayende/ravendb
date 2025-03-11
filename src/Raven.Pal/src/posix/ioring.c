@@ -466,7 +466,7 @@ int32_t rvn_write_io_ring(
     struct submittion submittion = {
         .filefd = handle_ptr->file_fd,
         .notifyfd = handle_ptr->global_state->writes_arena.eventfd,
-        .count = count,
+        .count = 0, // we merge work items for vector writes, so we update this below
         .result = 0,
         .error = false,
     };
@@ -485,11 +485,12 @@ int32_t rvn_write_io_ring(
                 break;
             startIdx--;
         }
-        int64_t offset = buffers[curIdx].page_num * VORON_PAGE_SIZE;
+        int64_t offset = buffers[startIdx].page_num * VORON_PAGE_SIZE;
 
         struct workitem *work = buf;
         struct iovec *iovecs = buf + sizeof(struct workitem);
         int32_t vec_count = curIdx - startIdx + 1;
+        submittion.count++;
         *work = (struct workitem){
             .submittion = &submittion,
             .op.write = {
@@ -657,6 +658,7 @@ rvn_sync_directories_ioring(void *handle, char **folders, int32_t count, int32_t
     {
         arr[i] = (struct workitem){
             .type = workitem_open_folders,
+            .submittion = &submittion,
             .next = &arr[i + 1], // fine to also set on the last, queue_work will override it
             .op = {.folder_sync = {.path = folders[i]}}};
     }
@@ -673,28 +675,30 @@ rvn_sync_directories_ioring(void *handle, char **folders, int32_t count, int32_t
     // since it is _fine_ to have errors opening the folder, such as when we deleted an
     // index before we had a chance to flush it
     *detailed_error_code = 0;
-    struct workitem *prev = NULL;
-    struct workitem *head = NULL;
     submittion.count = 0;
     for (size_t i = 0; i < count; i++)
     {
-        if (arr[i].op.folder_sync.folderid < 0)
+        int folderid = arr[i].op.folder_sync.folderid;
+        if (folderid < 0)
             continue;
 
-        submittion.count++;
-        arr[i] = (struct workitem){
+        struct workitem *previous = NULL;
+        if (submittion.count)
+        {
+            previous = &arr[submittion.count - 1];
+        }
+        arr[submittion.count++] = (struct workitem){
             .type = workitem_fsync_folders,
-            .next = prev};
-        prev = &arr[i];
-        if (!head)
-            head = prev;
+            .op = {.folder_sync = {.folderid = folderid}},
+            .submittion = &submittion,
+            .next = previous};
     }
 
-    if (!head)
+    if (!submittion.count)
     {
         return SUCCESS;
     }
-    queue_work(head, prev);
+    queue_work(&arr[submittion.count - 1], &arr[0]);
     *detailed_error_code = 0;
     rc = wait_for_work_completion(handle_ptr, &submittion, detailed_error_code);
     if (*detailed_error_code)
