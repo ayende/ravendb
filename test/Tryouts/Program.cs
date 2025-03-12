@@ -26,11 +26,11 @@ public static class Program
             {
                 Console.WriteLine(i);
                 using (ConsoleTestOutputHelper testOutputHelper = new())
-                using (RavenDB_22659 test = new(testOutputHelper))
+                using (RavenDB_13293 test = new(testOutputHelper))
                 {
                     DebuggerAttachedTimeout.DisableLongTimespan = true;
 
-                    await test.CannotDeleteDatabaseWhenRestoreCancelledOnNonResponsibleNode();
+                    await test.CanPassNodeTagToRestorePatchOperation();
                 }
             }
             catch (Exception e)

@@ -36,7 +36,7 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             rootOptions.MaxLogFileSize = 3 * 4096; // only two transactions per journal
 
             using var root = new StorageEnvironment(rootOptions);
-            using var _ = root.Journal.SharedJournalsScope(CancellationToken.None);
+            using var _ = root.Journal.SharedJournalsScope();
 
             var mre = new ManualResetEventSlim(false);
             root.Journal.BranchJournalMerger = new MyJournalMerger(mre);
@@ -94,7 +94,7 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             rootOptions.ManualSyncing = true;
 
             using var root = new StorageEnvironment(rootOptions);
-            using var _ = root.Journal.SharedJournalsScope(CancellationToken.None);
+            using var _ = root.Journal.SharedJournalsScope();
             
             using (var rootTx = root.WriteTransaction())
             {
@@ -130,7 +130,7 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             rootOptions.ManualSyncing = true;
 
             using var root = new StorageEnvironment(rootOptions);
-            using var _ = root.Journal.SharedJournalsScope(CancellationToken.None);
+            using var _ = root.Journal.SharedJournalsScope();
 
             using var branch = CreateBranchEnv(branchPath, root);
 
@@ -180,7 +180,7 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             branchOptions.ManualSyncing = true;
 
             using var root = new StorageEnvironment(rootOptions);
-            using var _ = root.Journal.SharedJournalsScope(CancellationToken.None);
+            using var _ = root.Journal.SharedJournalsScope();
             branchOptions.RootJournal = root.Journal;
             using var branch = new StorageEnvironment(branchOptions);
 
@@ -215,7 +215,7 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             rootOptions.ManualSyncing = true;
 
             using var root = new StorageEnvironment(rootOptions);
-            using var _ = root.Journal.SharedJournalsScope(CancellationToken.None);
+            using var _ = root.Journal.SharedJournalsScope();
             
             using (var rootTx = root.WriteTransaction())
             {
@@ -257,7 +257,7 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             rootOptions.ManualSyncing = true;
 
             using var root = new StorageEnvironment(rootOptions);
-            using var _ = root.Journal.SharedJournalsScope(CancellationToken.None);
+            using var _ = root.Journal.SharedJournalsScope();
             
             using var branch = CreateBranchEnv(branchPath, root);
 
@@ -307,7 +307,7 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             branchOptions.ManualSyncing = true;
 
             using var root = new StorageEnvironment(rootOptions);
-            using var _ = root.Journal.SharedJournalsScope(CancellationToken.None);
+            using var _ = root.Journal.SharedJournalsScope();
             branchOptions.RootJournal = root.Journal;
             using var branch = new StorageEnvironment(branchOptions);
 
@@ -340,7 +340,7 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             rootOptions.ManualSyncing = true;
 
             using var root = new StorageEnvironment(rootOptions);
-            using var _ = root.Journal.SharedJournalsScope(CancellationToken.None);
+            using var _ = root.Journal.SharedJournalsScope();
 
             using (var rootTx = root.WriteTransaction())
             {
@@ -382,7 +382,7 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
 
 
             using var root = new StorageEnvironment(rootOptions);
-            using var _ = root.Journal.SharedJournalsScope(CancellationToken.None);
+            using var _ = root.Journal.SharedJournalsScope();
             
             using (var rootTx = root.ReadTransaction())
             {
@@ -442,7 +442,7 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
 
             // journal 0 - 0
             using var root = new StorageEnvironment(rootOptions);
-            using var _ = root.Journal.SharedJournalsScope(CancellationToken.None);
+            using var _ = root.Journal.SharedJournalsScope();
             // journal 0 - 1
             using (var rootTx = root.WriteTransaction())
             {
@@ -526,7 +526,7 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             rootOptions.MaxLogFileSize = 4096 * 3;
 
             using var root = new StorageEnvironment(rootOptions);
-            using var _ = root.Journal.SharedJournalsScope(CancellationToken.None);
+            using var _ = root.Journal.SharedJournalsScope();
 
             using (var rootTx = root.WriteTransaction())
             {
@@ -663,7 +663,7 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             rootOptions.MaxLogFileSize = 4096 * 3;
 
             using var root = new StorageEnvironment(rootOptions);
-            using var _ = root.Journal.SharedJournalsScope(CancellationToken.None);
+            using var _ = root.Journal.SharedJournalsScope();
 
             using (var rootTx = root.WriteTransaction())
             {
@@ -720,7 +720,7 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             rootOptions.MaxLogFileSize = 4096 * 3;
 
             using var root = new StorageEnvironment(rootOptions);
-            using var _ = root.Journal.SharedJournalsScope(CancellationToken.None);
+            using var _ = root.Journal.SharedJournalsScope();
 
             for (int i = 0; i < 2; i++)
             {

@@ -131,7 +131,7 @@ public class LegacyHandling(ITestOutputHelper output) : RavenTestBase(output)
         var optionsForRoot = StorageEnvironmentOptions.ForPathForTests(rootPath);
         optionsForRoot.ManualFlushing = true;
         using var root = new StorageEnvironment(optionsForRoot);
-        using var _ = root.Journal.SharedJournalsScope(CancellationToken.None);
+        using var _ = root.Journal.SharedJournalsScope();
         {
             using var branchOptions = StorageEnvironmentOptions.ForPathForTests(legacyPath);
             branchOptions.RootJournal = root.Journal;

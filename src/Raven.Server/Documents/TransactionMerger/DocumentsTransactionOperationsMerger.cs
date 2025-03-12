@@ -13,7 +13,7 @@ public sealed class DocumentsTransactionOperationsMerger : AbstractTransactionOp
     private readonly DocumentDatabase _database;
 
     public DocumentsTransactionOperationsMerger([NotNull] DocumentDatabase database)
-        : base(database.Name, database.Configuration, database.Time, database.Loggers.GetLogger<DocumentsTransactionOperationsMerger>(), database.TransactionMergerShutdown)
+        : base(database.Name, database.Configuration, database.Time, database.Loggers.GetLogger<DocumentsTransactionOperationsMerger>(), database.DatabaseShutdown)
     {
         _database = database ?? throw new ArgumentNullException(nameof(database));
     }

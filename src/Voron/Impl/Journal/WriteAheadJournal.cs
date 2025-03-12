@@ -178,13 +178,11 @@ namespace Voron.Impl.Journal
             }
         }
 
-        
-        public ScopeForSharedJournals SharedJournalsScope(CancellationToken mergedCommits)
+        public ScopeForSharedJournals SharedJournalsScope()
         {
-            if (_rootJournalMergedCommitsCts != null) 
+            if (_rootJournalMergedCommitsCts != null)
                 throw new InvalidOperationException("Already using shared scope, can only be done once");
-
-            _rootJournalMergedCommitsCts = CancellationTokenSource.CreateLinkedTokenSource(mergedCommits);
+            _rootJournalMergedCommitsCts = new();
             return new ScopeForSharedJournals(this);
         }
 
