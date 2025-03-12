@@ -3,6 +3,7 @@ using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Reflection;
+using System.Reflection.Metadata;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Sparrow.Json;
@@ -37,6 +38,15 @@ namespace Voron
             get { return Pointer + PageHeader.SizeOf; }
         }
 
+        public Span<byte> SpanOfData
+        {
+            get
+            {
+                Debug.Assert(IsOverflow is false);
+                return new Span<byte>(Pointer + PageHeader.SizeOf, Constants.Storage.PageSize);
+            }
+        }
+        
         public long PageNumber
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
