@@ -175,7 +175,7 @@ namespace Voron.Impl.Backup
                         }
 
                         lastBackedUpFile = journalFile.Number;
-                        if (env.Options.JournalExists(journalFile.Number + 1)) // this is the last file, no more after it...
+                        if (env.Options.JournalExists(journalFile.Number + 1) is false) // this is the last file, no more after it...
                         {
                             lastBackedUpPage = startBackupAt + numberOf4KbsToCopy - 1;
                             // we used all of this file, so the next backup should start in the next file
