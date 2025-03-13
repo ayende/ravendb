@@ -175,7 +175,7 @@ namespace SlowTests.Issues
         
         
         [RavenFact(RavenTestCategory.Voron)]
-        public async Task IndexesJournalsUseHardLinksToDatabaseJournal()
+        public async Task IndexesJournalsUseHardLinksToShareJournals()
         {
             var serverPath = NewDataPath();
             var databasePath = NewDataPath();
@@ -197,18 +197,25 @@ namespace SlowTests.Issues
                         .ToList();
                 }
 
+                using (var session = store.OpenSession())
+                {
+                    for (int i = 0; i < 10; i++)
+                    {
+                        session.Store(new Order());
+                    }
+                    session.SaveChanges();
+                }
+                
                 Indexes.WaitForIndexing(store);
 
                 var database = await server.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(store.Database);
                 indexStoragePath1 = database.IndexStore.GetIndex(index.IndexName)._environment.Options.BasePath.FullPath;
                 indexStoragePath2 = database.IndexStore.GetIndex("Auto/Orders/ByOrderedAt")._environment.Options.BasePath.FullPath;
 
-                var dbJrnl = Directory.GetFiles(Path.Combine(databasePath, "Journals"), "*.journal").Last();
                 var idx1Jrnl = Directory.GetFiles(Path.Combine(indexStoragePath1, "Journals"), "*.journal").Last();
                 var idx2Jrnl = Directory.GetFiles(Path.Combine(indexStoragePath2, "Journals"), "*.journal").Last();
 
-                Assert.True(Pal.rvn_is_same_hard_link(dbJrnl, idx1Jrnl));
-                Assert.True(Pal.rvn_is_same_hard_link(dbJrnl, idx2Jrnl));
+                Assert.True(Pal.rvn_is_same_hard_link(idx2Jrnl, idx1Jrnl));
             }
 
         }
