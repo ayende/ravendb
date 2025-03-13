@@ -262,11 +262,13 @@ namespace Voron.Impl.Backup
             try
             {
                 options.ManualFlushing = true;
+                bool shouldDeleteInitialJournal = false;
                 using (var env = new StorageEnvironment(options))
                 {
                     // We create a completely new environment... 
                     if (env.CurrentReadTransactionId is 1)
                     {
+                        shouldDeleteInitialJournal = true;
                         env.HeaderAccessor.Modify((ref FileHeader header) =>
                         {
                             // The journal id should come from the first
@@ -279,6 +281,11 @@ namespace Voron.Impl.Backup
                     {
                         Restore(env, backupPath);
                     }
+                }
+                if (shouldDeleteInitialJournal)
+                {
+                    options.TryDeleteJournal(0);
+
                 }
             }
             finally
