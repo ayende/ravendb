@@ -60,7 +60,7 @@ namespace SlowTests.Voron
 
             var exception = Assert.Throws<InvalidOperationException>(() => BackupMethods.Incremental.ToFile(Env, _incrementalBackupTestUtils.IncrementalBackupFile(0)));
 
-            Assert.Equal("The first incremental backup creation failed because the first journal file " + StorageEnvironmentOptions.JournalName(0) + " was not found. Did you turn on the incremental backup feature after initializing the storage? In order to create backups incrementally the storage must be created with IncrementalBackupEnabled option set to 'true'.", exception.Message);
+            Assert.Contains("The first incremental backup creation failed because the first journal file " + StorageEnvironmentOptions.JournalName(0) + " was not found.", exception.Message);
         }
 
         public override void Dispose()

@@ -559,6 +559,22 @@ namespace Voron
                 }
             }
 
+            public override long? GetLatestJournalNumber()
+            {
+                string latestJournalName = string.Empty;
+                foreach (string cur in Directory.EnumerateFiles(JournalPath.FullPath,"*.journal"))
+                {
+                    if(string.CompareOrdinal(latestJournalName, cur) >= 0)
+                        continue;
+                    latestJournalName = cur;
+                }
+
+                if (latestJournalName.Length == 0)
+                    return null;
+                
+                return long.Parse(Path.GetFileNameWithoutExtension(latestJournalName));
+            }
+
             public override bool JournalExists(long number)
             {
                 var name = JournalName(number);
@@ -921,6 +937,14 @@ namespace Voron
                 _headers.Clear();
             }
 
+            public override long? GetLatestJournalNumber()
+            {
+                string lastJournal = _logs.Keys.Order().LastOrDefault();
+                if (lastJournal is null)
+                    return null;
+                return long.Parse(Path.GetFileNameWithoutExtension(lastJournal));
+            }
+
             public override bool JournalExists(long number)
             {
                 var name = JournalName(number);
@@ -1033,6 +1057,8 @@ namespace Voron
         }
 
         protected abstract void Disposing();
+        
+        public abstract long? GetLatestJournalNumber(); 
 
         public abstract bool JournalExists(long number);
 

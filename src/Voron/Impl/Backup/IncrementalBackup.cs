@@ -135,11 +135,13 @@ namespace Voron.Impl.Backup
 
                     if (firstJournalToBackup == -1)
                         firstJournalToBackup = 0; // first time that we do incremental backup
-
+                    
+                    long lastSeenJournal = firstJournalToBackup;
                     for (var journalNum = firstJournalToBackup;
-                        env.Options.JournalExists(journalNum);
-                        journalNum++)
+                         env.Options.JournalExists(journalNum);
+                         journalNum++)
                     {
+                        lastSeenJournal = journalNum;
                         var num = journalNum;
 
                         var journalFile = GetJournalFile(env, journalNum, backupInfo, journalInfo);
@@ -188,6 +190,17 @@ namespace Voron.Impl.Backup
 
                         numberOfBackedUpPages += numberOf4KbsToCopy;
                     }
+                    
+                    long latestJournal = env.Options.GetLatestJournalNumber() ?? journalInfo.LastSyncedJournal;
+                    if (lastSeenJournal != latestJournal)
+                    {
+                        throw new InvalidOperationException(
+                            $"The first incremental backup creation failed because the first journal file {StorageEnvironmentOptions.JournalName(lastSeenJournal)} was not found." +
+                            $" Expected to find journals {StorageEnvironmentOptions.JournalName(lastSeenJournal)}..{StorageEnvironmentOptions.JournalName(latestJournal)}." +
+                            $" Did you turn on the incremental backup feature after initializing the storage? " +
+                            $"In order to create backups incrementally the storage must be created with 'IncrementalBackupEnabled' option set to 'true'.");
+                    }
+
 
                     env.HeaderAccessor.Modify((ref FileHeader header) =>
                     {
@@ -233,26 +246,11 @@ namespace Voron.Impl.Backup
                 journalFile.AddRef();
                 return journalFile;
             }
-            try
-            {
-                long journalSize = Bits.PowerOf2(env.Options.GetJournalFileSize(journalNum, journalInfo));
-                journalFile = new JournalFile(env, env.Options.CreateJournalWriter(journalNum, journalSize), journalNum, FrozenSet<Guid>.Empty);
-                journalFile.AddRef();
-                return journalFile;
-            }
-            catch (InvalidJournalException e)
-            {
-                if (backupInfo.LastBackedUpJournal == -1 && journalNum == 0)
-                {
-                    throw new InvalidOperationException("The first incremental backup creation failed because the first journal file " +
-                                                        StorageEnvironmentOptions.JournalName(journalNum) + " was not found. " +
-                                                        "Did you turn on the incremental backup feature after initializing the storage? " +
-                                                        "In order to create backups incrementally the storage must be created with IncrementalBackupEnabled option set to 'true'.", e);
-                }
 
-                throw;
-            }
-
+            long journalSize = Bits.PowerOf2(env.Options.GetJournalFileSize(journalNum, journalInfo));
+            journalFile = new JournalFile(env, env.Options.CreateJournalWriter(journalNum, journalSize), journalNum, FrozenSet<Guid>.Empty);
+            journalFile.AddRef();
+            return journalFile;
         }
 
         public void Restore(StorageEnvironmentOptions options, IEnumerable<string> backupPaths)
