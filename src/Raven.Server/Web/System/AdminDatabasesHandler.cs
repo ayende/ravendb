@@ -286,7 +286,7 @@ namespace Raven.Server.Web.System
                         if (ServerStore.DatabasesLandlord.IsDatabaseLoaded(rawDatabaseRecord.DatabaseName) == false)
                         {
                             using (await ServerStore.DatabasesLandlord.UnloadAndLockDatabase(rawDatabaseRecord.DatabaseName, "Checking if we need to recreate indexes"))
-                                RecreateIndexes(rawDatabaseRecord.DatabaseName, databaseRecord);
+                                await RecreateIndexes(rawDatabaseRecord.DatabaseName, databaseRecord);
                         }
                     }
                 }
@@ -345,7 +345,7 @@ namespace Raven.Server.Web.System
             return false;
         }
 
-        private void RecreateIndexes(string databaseName, DatabaseRecord databaseRecord)
+        private async Task RecreateIndexes(string databaseName, DatabaseRecord databaseRecord)
         {
             var databaseConfiguration = ServerStore.DatabasesLandlord.CreateDatabaseConfiguration(databaseName, true, true, true, databaseRecord);
             if (databaseConfiguration.Indexing.RunInMemory ||
@@ -385,6 +385,7 @@ namespace Raven.Server.Web.System
             {
                 var options = InitializeOptions.SkipLoadingDatabaseRecord;
                 documentDatabase.Initialize(options);
+                await documentDatabase.IndexStore.InitializeSharedJournalsAsync();
 
                 var indexesPath = databaseConfiguration.Indexing.StoragePath.FullPath;
                 var sideBySideIndexes = new Dictionary<string, IndexDefinition>();
