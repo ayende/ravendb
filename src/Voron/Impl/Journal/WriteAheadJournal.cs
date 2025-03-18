@@ -1951,6 +1951,9 @@ namespace Voron.Impl.Journal
             if (_linkedJournalsRecord.HasEntries)
             {
                 var entry = _linkedJournalsRecord.CreateEntry();
+                if (_env.Options.Encryption.IsEnabled)
+                    EncryptTransaction((byte*)entry.Base);
+
                 requiredSizeIn4Kbs += entry.NumberOf4Kbs;
                 _mergedEntriesBuffer.Add(entry);
                 long available4Kbs = CurrentFile.GetAvailable4Kbs(tx.CurrentStateRecord);
