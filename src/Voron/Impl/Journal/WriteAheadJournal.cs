@@ -334,12 +334,13 @@ namespace Voron.Impl.Journal
                     Pager.PagerTransactionState txState = default;
                     var transactionHeader = txHeader->TransactionId == 0 ? null : txHeader;
 
+                    List<TransactionHeader> transactionHeaders;
                     var journalReader = new JournalReader(_env, journalNumber, journalPager, journalPagerState, dataPager, recoveryPager, modifiedPages, logInfo, currentFileHeader,
                         transactionHeader);
                     try
                     {
-                        var transactionHeaders = journalReader.RecoverAndValidate(ref dataPagerState, ref recoveryPagerState, ref txState, _env.Options);
-       
+                        transactionHeaders = journalReader.RecoverAndValidate(ref dataPagerState, ref recoveryPagerState, ref txState, _env.Options);
+
                         if (transactionHeaders.Count > 0)
                         {
                             lastJournalNumber = journalNumber;
@@ -365,30 +366,31 @@ namespace Voron.Impl.Journal
                             }
                         }
 
-                        journalPager.Dispose(); // need to close it before we open the journal writer
-
-                        if(_env.Options.RootJournal is null)
-                        {
-                            var jrnlWriter = _env.Options.CreateJournalWriter(journalNumber, journalPagerState.TotalAllocatedSize);
-                            var jrnlFile = new JournalFile(_env, jrnlWriter, journalNumber, journalReader.RecoveredJournalIds.ToFrozenSet());
-                            jrnlFile.DoneWriting = new SingleUseFlag();
-                            jrnlFile.InitFrom(_env, journalReader, transactionHeaders);
-                            jrnlFile.AddRef(); // creator reference - write ahead log
-
-                            journalFiles.Add(jrnlFile);
-                        }
-
-                        lastProcessedJournal = journalNumber;
-
-                        if (journalReader.RequireHeaderUpdate) //this should prevent further load of transactions
-                        {
-                            requireHeaderUpdate = true;
-                            break;
-                        }
                     }
                     finally
                     {
                         journalReader.Complete(ref dataPagerState, ref txState);
+                        journalPager.Dispose(); // need to close it before we open the journal writer
+                    }
+
+                    
+                    if(_env.Options.RootJournal is null)
+                    {
+                        var jrnlWriter = _env.Options.CreateJournalWriter(journalNumber, journalPagerState.TotalAllocatedSize);
+                        var jrnlFile = new JournalFile(_env, jrnlWriter, journalNumber, journalReader.RecoveredJournalIds.ToFrozenSet());
+                        jrnlFile.DoneWriting = new SingleUseFlag();
+                        jrnlFile.InitFrom(_env, journalReader, transactionHeaders);
+                        jrnlFile.AddRef(); // creator reference - write ahead log
+
+                        journalFiles.Add(jrnlFile);
+                    }
+
+                    lastProcessedJournal = journalNumber;
+
+                    if (journalReader.RequireHeaderUpdate) //this should prevent further load of transactions
+                    {
+                        requireHeaderUpdate = true;
+                        break;
                     }
 
                     addToInitLog?.Invoke(LogLevel.Debug, $"Journal {journalNumber:#,#;;0} Recovered");
