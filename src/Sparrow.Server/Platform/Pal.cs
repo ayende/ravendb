@@ -441,8 +441,8 @@ namespace Sparrow.Server.Platform
             public RvnWriteMode write_mode;
             public bool low_priority_io;
 
-            public delegate*<Int64, char*, void> memoryLockCallback;
-            public delegate*<Int64, char*, bool> recoveryMemoryLockFailureCallback;
+            public delegate* unmanaged[Cdecl]<Int64, char*, void> memoryLockCallback;
+            public delegate* unmanaged[Cdecl]<Int64, char*, int> recoveryMemoryLockFailureCallback;
         };
         
         [DllImport(LIBRVNPAL, SetLastError = true)]

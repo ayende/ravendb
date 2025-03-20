@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Sparrow.Binary;
@@ -14,16 +15,18 @@ public static unsafe class MemoryLockUsage
         
         public static event EventHandler<long> MemoryLockedCalled;
 
+        [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
         public static void UpdateLockedMemory(Int64 v, char* filenamePtr)
         {
             MemoryLockedCalled?.Invoke(null, v);
             Interlocked.Add(ref LockedMemorySize, v);
         }
         
-        public static bool RecoverLockedMemoryFailure(Int64 sizeToLock, char* filenamePtr)
+        [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+        public static int RecoverLockedMemoryFailure(Int64 sizeToLock, char* filenamePtr)
         {
             if (PlatformDetails.RunningOnPosix)
-                return false; // nothing to do here
+                return 0; // nothing to do here
             using var currentProcess = Process.GetCurrentProcess();
             var nextWorkingSetSize = GetNearestFileSize(currentProcess.MinWorkingSet.ToInt64() + sizeToLock);
             if (nextWorkingSetSize > int.MaxValue && PlatformDetails.Is32Bits)
@@ -43,7 +46,7 @@ public static unsafe class MemoryLockUsage
                 catch
                 {
                     // cannot throw, called from native code
-                    return false;
+                    return 0;
                 }
             }
             
@@ -54,11 +57,11 @@ public static unsafe class MemoryLockUsage
             catch
             {
                 // cannot throw, called from native code
-                return false;
+                return 0;
             }
 #pragma warning restore CA1416 // Validate platform compatibility
 
-            return true;
+            return 1;
         }
         
         private static readonly long IncreaseByPowerOf2Threshold = new Size(512, SizeUnit.Megabytes).GetValue(SizeUnit.Bytes);
