@@ -293,13 +293,13 @@ class shell extends viewModelBase {
         const clientCertificateTask = clientCertificateModel.fetchClientCertificate();
         const studioBootstrapTask = new getStudioBootstrapCommand().execute();
         
-        licenseTask.done((result) => {
+        const supportTask = licenseTask.then((result) => {
             if (result.Type !== "None") {
-                license.fetchSupportCoverage();
+                return license.fetchSupportCoverage();
             }
         });
         
-        $.when<any>(buildVersionTask, licenseTask)
+        $.when<any>(buildVersionTask, licenseTask, supportTask)
             .done(() => {
                 this.initAnalytics();
             });
@@ -319,8 +319,7 @@ class shell extends viewModelBase {
                 
                 // load global settings
                 studioSettings.default.globalSettings()
-                    .done((settings: globalSettings) => this.onGlobalConfiguration(settings));
-                
+                    .then((settings: globalSettings) => this.onGlobalConfiguration(settings));
                 studioSettings.default.registerOnSettingChangedHandler(() => true, (name: string, setting: studioSetting<any>) => {
                     // if any remote configuration was changed, then force reload
                     if (setting.saveLocation === "remote") {
@@ -579,7 +578,10 @@ class shell extends viewModelBase {
     }
 
     private initAnalytics() {
-        if (eventsCollector.gaDefined()) {
+        if (buildInfo.isDevVersion()) {
+            // don't track dev versions
+            return;
+        }
             
             studioSettings.default.globalSettings()
                 .done(settings => {
@@ -609,11 +611,7 @@ class shell extends viewModelBase {
                         this.configureAnalytics(shouldTraceUsageMetrics);
                     }
             });
-        } else {
-            // user has uBlock etc?
-            this.configureAnalytics(false);
         }
-    }
 
     collectUsageData() {
         this.trackingTask.resolve(true);
@@ -623,18 +621,22 @@ class shell extends viewModelBase {
         this.trackingTask.resolve(false);
     }
 
-    private configureAnalytics(track: boolean) {
-        const currentBuildVersion = buildInfo.serverBuildVersion().BuildVersion;
-        const shouldTrack = track && !buildInfo.isDevVersion();
+    private configureAnalytics(shouldTrack: boolean) {
+        const serverBuildVersion = buildInfo.serverBuildVersion();
+        const currentBuildVersion = serverBuildVersion.BuildVersion;
+        const fullVersion = serverBuildVersion.FullVersion;
 
-        const licenseStatus = license.licenseStatus();
-        const env = licenseStatus ? licenseStatus.Type : "N/A";
-        const fullVersion = buildInfo.serverBuildVersion().FullVersion;
-        eventsCollector.default.initialize(buildInfo.mainVersion(), currentBuildVersion, env, fullVersion, shouldTrack);
+        eventsCollector.default.initialize(buildInfo.mainVersion(),
+            currentBuildVersion,
+            this.serverEnvironment(),
+            fullVersion,
+            license.licenseStatus,
+            license.supportCoverage,
+            shouldTrack);
         
         studioSettings.default.registerOnSettingChangedHandler(
             name => name === "sendUsageStats",
-            (name, track: simpleStudioSetting<boolean>) => eventsCollector.default.enabled = track.getValue() && eventsCollector.gaDefined());
+            (name, track: simpleStudioSetting<boolean>) => eventsCollector.default.setEnabled(track.getValue()));
     }
     
     static chooseTheme() {

@@ -1,8 +1,10 @@
 ﻿import { ChangeEvent } from "react";
 import Badge from "react-bootstrap/Badge";
 import Collapse from "react-bootstrap/Collapse";
-import { Card, CardBody, InputGroup, InputGroupText, Label } from "reactstrap";
-import { FormInput, FormSwitch } from "components/common/Form";
+import Card from "react-bootstrap/Card";
+import InputGroup from "react-bootstrap/InputGroup";
+
+import { FormInput, FormLabel, FormSwitch } from "components/common/Form";
 import { useFormContext, useWatch } from "react-hook-form";
 import { FlexGrow } from "components/common/FlexGrow";
 import { Icon } from "components/common/Icon";
@@ -49,7 +51,7 @@ export default function Ftp() {
 
     return (
         <Card className="well mb-2">
-            <CardBody>
+            <Card.Body>
                 <FormSwitch name={getName("isEnabled")} control={control}>
                     FTP
                 </FormSwitch>
@@ -68,7 +70,7 @@ export default function Ftp() {
                         ) : (
                             <div className="vstack gap-3 mt-2">
                                 <div className="mb-2">
-                                    <Label className="d-flex align-items-center gap-1">
+                                    <FormLabel className="d-flex align-items-center gap-1">
                                         Host
                                         <PopoverWithHoverWrapper
                                             message={
@@ -94,7 +96,7 @@ export default function Ftp() {
                                                 Failed connection
                                             </Badge>
                                         ) : null}
-                                    </Label>
+                                    </FormLabel>
                                     <FormInput
                                         name={getName("url")}
                                         control={control}
@@ -104,7 +106,7 @@ export default function Ftp() {
                                     />
                                 </div>
                                 <div className="mb-2">
-                                    <Label>Username</Label>
+                                    <FormLabel>Username</FormLabel>
                                     <FormInput
                                         name={getName("userName")}
                                         control={control}
@@ -114,7 +116,7 @@ export default function Ftp() {
                                     />
                                 </div>
                                 <div className="mb-2">
-                                    <Label>Password</Label>
+                                    <FormLabel>Password</FormLabel>
                                     <FormInput
                                         name={getName("password")}
                                         control={control}
@@ -126,18 +128,18 @@ export default function Ftp() {
                                 </div>
                                 {isCertificateFieldVisible && (
                                     <div className="mb-2">
-                                        <Label>Certificate</Label>
+                                        <FormLabel>Certificate</FormLabel>
                                         <input id="filePicker" type="file" onChange={selectFile} className="d-none" />
                                         <InputGroup>
                                             <span className="static-name form-control d-flex align-items-center">
                                                 {formValues.certificateAsBase64 ? "<certificate>" : "Select file..."}
                                             </span>
-                                            <InputGroupText>
+                                            <InputGroup.Text>
                                                 <label htmlFor="filePicker" className="cursor-pointer">
                                                     <Icon icon="document" />
                                                     <span>Browse</span>
                                                 </label>
-                                            </InputGroupText>
+                                            </InputGroup.Text>
                                         </InputGroup>
                                         {formState.errors.destinations?.ftp?.certificateAsBase64 && (
                                             <div className="position-absolute badge bg-danger rounded-pill margin-top-xxs">
@@ -167,7 +169,7 @@ export default function Ftp() {
                         )}
                     </div>
                 </Collapse>
-            </CardBody>
+            </Card.Body>
         </Card>
     );
 }

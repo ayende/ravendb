@@ -1,8 +1,11 @@
-import { Button, Col, Modal, ModalBody, ModalFooter, Row } from "reactstrap";
+import Button from "react-bootstrap/Button";
+import Col from "react-bootstrap/Col";
+import Row from "react-bootstrap/Row";
 import { Icon } from "components/common/Icon";
 import Code from "components/common/Code";
 import { Row as ReactTableRow } from "@tanstack/react-table";
 import { useState } from "react";
+import Modal from "components/common/Modal";
 
 interface IndexErrorsModalProps {
     toggleModal: () => void;
@@ -36,15 +39,14 @@ export default function IndexErrorsModal({
 
     const errorDetailsOriginal = currentErrorDetails.original;
     return (
-        <Modal centered contentClassName="modal-border bulge-warning" wrapClassName="bs5" size="lg" isOpen={isOpen}>
-            <ModalBody className="pb-0 vstack modal-details gap-3">
-                <div className="position-absolute m-2 end-0 top-0">
-                    <Button close onClick={toggleModal} />
-                </div>
+        <Modal contentClassName="modal-border bulge-warning" size="lg" show={isOpen}>
+            <Modal.Header className="vstack gap-3" onCloseClick={toggleModal}>
                 <div className="text-center">
                     <Icon icon="warning" color="warning" margin="me-0" className="fs-1" />
                 </div>
                 <div className="text-center lead">Indexing error details</div>
+            </Modal.Header>
+            <Modal.Body className="pb-0 vstack modal-details gap-3">
                 <Row className="details-item" title={errorDetailsOriginal.IndexName}>
                     <Col lg={2}>Index name</Col>
                     <Col lg={10} className="text-right fw-bold text-truncate">
@@ -70,22 +72,32 @@ export default function IndexErrorsModal({
                     </Col>
                 </Row>
                 <Code code={errorDetailsOriginal.Error} elementToCopy={errorDetailsOriginal.Error} language="csharp" />
-            </ModalBody>
-            <ModalFooter className="d-flex justify-content-between mt-4">
+            </Modal.Body>
+            <Modal.Footer className="d-flex justify-content-between mt-4">
                 <div className="d-flex gap-2">
-                    <Button disabled={!canNavigateToPreviousError} onClick={previousError} className="rounded-pill">
+                    <Button
+                        variant="secondary"
+                        disabled={!canNavigateToPreviousError}
+                        onClick={previousError}
+                        className="rounded-pill"
+                    >
                         <Icon icon="arrow-left" />
                         Previous
                     </Button>
-                    <Button disabled={!canNavigateToNextError} onClick={nextError} className="rounded-pill">
+                    <Button
+                        variant="secondary"
+                        disabled={!canNavigateToNextError}
+                        onClick={nextError}
+                        className="rounded-pill"
+                    >
                         Next
                         <Icon icon="arrow-right" margin="ms-1" />
                     </Button>
                 </div>
-                <Button className="rounded-pill" color="primary" onClick={toggleModal} type="button">
+                <Button className="rounded-pill" variant="primary" onClick={toggleModal} type="button">
                     Close
                 </Button>
-            </ModalFooter>
+            </Modal.Footer>
         </Modal>
     );
 }

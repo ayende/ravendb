@@ -3,8 +3,8 @@ import { Icon } from "components/common/Icon";
 import { FormDestinations } from "./utils/formDestinationsTypes";
 import Badge from "react-bootstrap/Badge";
 import Collapse from "react-bootstrap/Collapse";
-import { Card, CardBody, Label } from "reactstrap";
-import { FormSwitch, FormInput, FormSelectCreatable } from "../Form";
+import Card from "react-bootstrap/Card";
+import { FormInput, FormSelectCreatable, FormSwitch } from "../Form";
 import OverrideConfiguration from "./OverrideConfiguration";
 import { useServices } from "components/hooks/useServices";
 import { useAsyncCallback } from "react-async-hook";
@@ -14,6 +14,7 @@ import ConnectionTestResult from "../connectionTests/ConnectionTestResult";
 import { FlexGrow } from "components/common/FlexGrow";
 import { availableS3Regions } from "components/utils/common";
 import PopoverWithHoverWrapper from "../PopoverWithHoverWrapper";
+import { FormLabel } from "components/common/Form";
 
 export default function AmazonS3() {
     const { control, trigger } = useFormContext<FormDestinations>();
@@ -34,7 +35,7 @@ export default function AmazonS3() {
 
     return (
         <Card className="well">
-            <CardBody>
+            <Card.Body>
                 <FormSwitch name={getName("isEnabled")} control={control}>
                     Amazon S3
                 </FormSwitch>
@@ -96,7 +97,7 @@ export default function AmazonS3() {
                                 <div className="vstack gap-3 mt-2">
                                     {formValues.isUseCustomHost && (
                                         <div className="mb-2">
-                                            <Label>Custom server URL</Label>
+                                            <FormLabel>Custom server URL</FormLabel>
                                             <FormInput
                                                 control={control}
                                                 name={getName("customServerUrl")}
@@ -107,7 +108,7 @@ export default function AmazonS3() {
                                         </div>
                                     )}
                                     <div className="mb-2">
-                                        <Label className="d-flex align-items-center gap-1">
+                                        <FormLabel className="d-flex align-items-center gap-1">
                                             Bucket name
                                             <PopoverWithHoverWrapper
                                                 message={
@@ -132,7 +133,7 @@ export default function AmazonS3() {
                                                     Failed connection
                                                 </Badge>
                                             ) : null}
-                                        </Label>
+                                        </FormLabel>
                                         <FormInput
                                             control={control}
                                             name={getName("bucketName")}
@@ -142,9 +143,9 @@ export default function AmazonS3() {
                                         />
                                     </div>
                                     <div className="mb-2">
-                                        <Label>
+                                        <FormLabel>
                                             Remote folder name <small className="text-muted fw-light">(optional)</small>
-                                        </Label>
+                                        </FormLabel>
                                         <FormInput
                                             control={control}
                                             name={getName("remoteFolderName")}
@@ -154,12 +155,12 @@ export default function AmazonS3() {
                                         />
                                     </div>
                                     <div className="mb-2">
-                                        <Label>
+                                        <FormLabel>
                                             Region{" "}
                                             {formValues.isUseCustomHost && (
                                                 <small className="text-muted fw-light">(optional)</small>
                                             )}
-                                        </Label>
+                                        </FormLabel>
                                         {formValues.isUseCustomHost ? (
                                             <FormInput
                                                 type="text"
@@ -178,7 +179,7 @@ export default function AmazonS3() {
                                         )}
                                     </div>
                                     <div className="mb-2">
-                                        <Label>Access key</Label>
+                                        <FormLabel>Access key</FormLabel>
                                         <FormInput
                                             name={getName("awsAccessKey")}
                                             control={control}
@@ -188,7 +189,7 @@ export default function AmazonS3() {
                                         />
                                     </div>
                                     <div className="mb-2">
-                                        <Label>Secret key</Label>
+                                        <FormLabel>Secret key</FormLabel>
                                         <FormInput
                                             name={getName("awsSecretKey")}
                                             control={control}
@@ -220,7 +221,7 @@ export default function AmazonS3() {
                         )}
                     </div>
                 </Collapse>
-            </CardBody>
+            </Card.Body>
         </Card>
     );
 }

@@ -429,7 +429,7 @@ namespace Raven.Server.Commercial
 
         public class LicenseVerificationErrorBuilder
         {
-            private readonly RavenConfiguration _configuration;
+            private protected RavenConfiguration Configuration;
             private readonly StorageEnvironment _storageEnvironment;
             private readonly TransactionContextPool _contextPool;
             private readonly StringBuilder _errorBuilder = new();
@@ -438,13 +438,9 @@ namespace Raven.Server.Commercial
 
             public LicenseVerificationErrorBuilder(RavenConfiguration configuration, StorageEnvironment storageEnvironment, TransactionContextPool contextPool)
             {
-                _configuration = configuration;
+                Configuration = configuration;
                 _storageEnvironment = storageEnvironment;
                 _contextPool = contextPool;
-            }
-
-            public LicenseVerificationErrorBuilder()
-            {
             }
 
             public void AppendInStorageLicenseExpiredMessage(DateTime expirationDate)
@@ -491,15 +487,50 @@ namespace Raven.Server.Commercial
                         _errorBuilder.AppendLine($"- As a temporary measure, consider downgrading to the last working build ({buildInfo.FullVersion}).");
                 }
 
-                AppendSuggestionToDisableThrowOnInvalidOrMissingLicenseOption(_configuration.Licensing.ThrowOnInvalidOrMissingLicense, _isInStorageLicenseExpired);
+                AppendSuggestionToDisableThrowOnInvalidOrMissingLicenseOption(Configuration.Licensing.ThrowOnInvalidOrMissingLicense, _isInStorageLicenseExpired);
             }
 
             public void AppendGeneralSuggestions()
             {
                 _errorBuilder.AppendLine();
                 _errorBuilder.AppendLine("To resolve this issue, you may consider the following options:");
-                _errorBuilder.AppendLine("- Ensure your license key is correctly embedded in 'settings.json', set as an environment variable, or included in your 'ServerOptions' if using an embedded server or Raven.TestDriver.");
-                _errorBuilder.AppendLine("- Alternatively, check the 'License.Path' in your configuration to ensure it points to a valid 'license.json' file.");
+                _errorBuilder.AppendLine("- Ensure your license key is correctly embedded in 'settings.json' or set as an environment variable.");
+                _errorBuilder.AppendLine($"- Or, check the '{RavenConfiguration.GetKey(x => x.Licensing.LicensePath)}' in your configuration to ensure it points to a valid 'license.json' file.");
+
+                if (Configuration.Embedded.ParentProcessId.HasValue)
+                {
+                    _errorBuilder.AppendLine("""
+                        - Or, since you are using an embedded server (TestDriver or EmbeddedServer), you can provide a valid license using one of these approaches:
+                            * For RavenTestDriver:
+                              public class YourTestClass : RavenTestDriver
+                              {
+                                  static YourTestClass()
+                                  {
+                                      ConfigureServer(new TestServerOptions
+                                      {
+                                          Licensing = new ServerOptions.LicensingOptions 
+                                          { 
+                                              License = "your license here", // Replace with your actual license,
+                                              // or
+                                              LicensePath = "path to license.json file" // Replace with the actual path to your license.json file
+                                          }
+                                      });
+                                  }
+                              }
+                              IMPORTANT: This configuration must be done in a static constructor before any server initialization.
+
+                            * For EmbeddedServer:
+                              EmbeddedServer.Instance.StartServer(new ServerOptions
+                              {
+                                  Licensing = new ServerOptions.LicensingOptions
+                                  {
+                                      License = "your license here", // Replace with your actual license,
+                                      // or
+                                      LicensePath = "path to license.json file" // Replace with the actual path to your license.json file
+                                  }
+                              });
+                        """);
+                }
             }
 
             public void AppendConfigurationLicenseExpiredMessage(Guid? inStorageLicenseId, Guid deserializedLicenseId, DateTime deserializedLicenseExpirationDate)
@@ -519,8 +550,23 @@ namespace Raven.Server.Commercial
 
             public void AppendSuggestionToDisableThrowOnInvalidOrMissingLicenseOption(bool throwOnInvalidOrMissingLicenseOptionEnabled, bool isInStorageLicenseExpired)
             {
-                if (throwOnInvalidOrMissingLicenseOptionEnabled && isInStorageLicenseExpired == false)
-                    _errorBuilder.AppendLine($"- Configure the '{RavenConfiguration.GetKey(x => x.Licensing.ThrowOnInvalidOrMissingLicense)}' option by setting it to 'False' to disable this strict licensing requirement for server startup.");
+                if (throwOnInvalidOrMissingLicenseOptionEnabled == false || isInStorageLicenseExpired)
+                    return;
+
+                _errorBuilder.AppendLine();
+                if (Configuration.Embedded.ParentProcessId.HasValue)
+                {
+                    _errorBuilder.AppendLine("""
+                                             - Alternatively, since you are using an embedded server, you can disable this strict licensing requirement by setting the 'ThrowOnInvalidOrMissingLicense' option to 'false' in your configuration, as demonstrated in the example above:
+                                                 * For RavenTestDriver: in your test class's static constructor
+                                                 * For EmbeddedServer: in ServerOptions.Licensing when calling StartServer
+                                             """);
+                }
+                else
+                {
+                    _errorBuilder.AppendLine(
+                        $"- Alternatively, you can disable this strict licensing requirement by setting the '{RavenConfiguration.GetKey(x => x.Licensing.ThrowOnInvalidOrMissingLicense)}' option to 'false' in your configuration.");
+                }
             }
 
             public override string ToString() => _errorBuilder.ToString();

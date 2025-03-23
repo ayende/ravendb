@@ -1,8 +1,8 @@
-/* eslint-disable local-rules/no-reactstrap-alert */
 import classNames from "classnames";
-import { Alert, AlertProps, CloseButton } from "reactstrap";
+import CloseButton from "react-bootstrap/CloseButton";
 import { Icon } from "components/common/Icon";
 import IconName from "../../../typings/server/icons";
+import Alert, { AlertProps } from "react-bootstrap/Alert";
 
 interface RichAlertProps extends AlertProps {
     icon?: IconName;
@@ -38,7 +38,7 @@ export function RichAlert({ className, variant, children, icon, iconAddon, title
     const renderAlertIcon = icon ?? defaultIcons[variant] ?? "terms";
 
     return (
-        <Alert color={variant} className={classNames(title ? "vstack" : "hstack gap-2", className)} {...rest}>
+        <Alert variant={variant} className={classNames(title ? "vstack" : "hstack gap-2", className)} {...rest}>
             {title ? (
                 <h3 className="hstack mb-1 gap-1">
                     <Icon icon={renderAlertIcon} addon={iconAddon} margin="m-0" className="title-icon" /> {title}
@@ -47,17 +47,7 @@ export function RichAlert({ className, variant, children, icon, iconAddon, title
                 <Icon icon={renderAlertIcon} addon={iconAddon} margin="m-0" className="title-icon fs-3" />
             )}
             <div className="w-100">{children}</div>
-            {onCancel && (
-                <CloseButton
-                    className="pt-0"
-                    onClick={onCancel}
-                    style={{
-                        position: "absolute",
-                        top: 0,
-                        right: 0,
-                    }}
-                />
-            )}
+            {onCancel && <CloseButton className="position-absolute end-0 top-0" onClick={onCancel} />}
         </Alert>
     );
 }

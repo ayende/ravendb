@@ -4,7 +4,8 @@ import { UseIndexCleanupResult } from "components/pages/database/indexes/cleanup
 import { useAppSelector } from "components/store";
 import React from "react";
 import Badge from "react-bootstrap/Badge";
-import { NavItem, Card } from "reactstrap";
+import Card from "react-bootstrap/Card";
+import Nav from "react-bootstrap/Nav";
 
 const removeSubindexesImg = require("Content/img/pages/indexCleanup/remove-subindexes.svg");
 
@@ -17,7 +18,7 @@ export default function RemoveSubindexesNavItem({ carousel, surpassing }: Remove
     const hasIndexCleanup = useAppSelector(licenseSelectors.statusValue("HasIndexCleanup"));
 
     return (
-        <NavItem>
+        <Nav.Item>
             <Card
                 className={classNames("p-3", "card-tab", { active: carousel.activeTab === 1 })}
                 onClick={() => carousel.setActiveTab(1)}
@@ -32,6 +33,6 @@ export default function RemoveSubindexesNavItem({ carousel, surpassing }: Remove
                     sub-indexes
                 </h4>
             </Card>
-        </NavItem>
+        </Nav.Item>
     );
 }

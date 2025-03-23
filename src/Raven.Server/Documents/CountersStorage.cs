@@ -1903,6 +1903,27 @@ namespace Raven.Server.Documents
             }
         }
 
+        public IEnumerable<CounterTombstoneDetailWithCollection> GetCounterWithCollectionTombstonesFrom(DocumentsOperationContext context, string collectionName, long etag)
+        {
+            var table = new Table(CounterTombstonesSchema, context.Transaction.InnerTransaction);
+
+            foreach (var result in table.SeekForwardFrom(CounterTombstonesSchema.FixedSizeIndexes[AllCounterTombstonesEtagSlice], etag, 0))
+            {
+                var tombstoneDetail = TableValueToCounterTombstoneDetail(context, ref result.Reader);
+                var documentOrTombstone = _documentsStorage.GetDocumentOrTombstone(context, tombstoneDetail.DocumentId);
+
+                if (documentOrTombstone.Missing)
+                    continue;
+
+                string collection = documentOrTombstone.Document != null ?
+                    _documentDatabase.DocumentsStorage.ExtractCollectionName(context, documentOrTombstone.Document.Data).Name :
+                    documentOrTombstone.Tombstone.Collection;
+
+                if (collection.Equals(collectionName))
+                    yield return new CounterTombstoneDetailWithCollection(tombstoneDetail, collection);
+            }
+        }
+
         public long PurgeCountersAndCounterTombstones(DocumentsOperationContext context, string collection, long upto, long numberOfEntriesToDelete)
         {
             var collectionName = _documentsStorage.GetCollection(collection, throwIfDoesNotExist: false);
@@ -2754,18 +2775,32 @@ namespace Raven.Server.Documents
         public string Name;
     }
 
-    public sealed class CounterTombstoneDetail : IDisposable
+    public class CounterTombstoneDetail : IDisposable
     {
         public LazyStringValue DocumentId { get; set; }
         public LazyStringValue ChangeVector { get; set; }
         public LazyStringValue Name { get; set; }
         public long Etag { get; set; }
 
+        public CounterTombstoneDetail() { }
+
+        public CounterTombstoneDetail(LazyStringValue documentId, LazyStringValue changeVector, LazyStringValue name, long etag)
+        {
+            DocumentId = documentId;
+            ChangeVector = changeVector;
+            Name = name;
+            Etag = etag;
+        }
         public void Dispose()
         {
             DocumentId?.Dispose();
             ChangeVector?.Dispose();
             Name?.Dispose();
         }
+    }
+    public class CounterTombstoneDetailWithCollection(CounterTombstoneDetail counterTombstoneDetail, string collection)
+        : CounterTombstoneDetail(counterTombstoneDetail.DocumentId, counterTombstoneDetail.ChangeVector, counterTombstoneDetail.Name, counterTombstoneDetail.Etag)
+    {
+        public string Collection { get; private set; } = collection ?? throw new ArgumentNullException(nameof(collection));
     }
 }

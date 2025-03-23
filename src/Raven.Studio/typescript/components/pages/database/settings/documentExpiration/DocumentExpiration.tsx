@@ -1,5 +1,8 @@
 import React, { useEffect } from "react";
-import { Card, CardBody, Col, Form, Row } from "reactstrap";
+import Card from "react-bootstrap/Card";
+import Form from "react-bootstrap/Form";
+import Row from "react-bootstrap/Row";
+import Col from "react-bootstrap/Col";
 import { AboutViewAnchored, AboutViewHeading, AccordionItemWrapper } from "components/common/AboutView";
 import { Icon } from "components/common/Icon";
 import { FormInput, FormSwitch } from "components/common/Form";
@@ -149,7 +152,7 @@ export default function DocumentExpiration() {
                             </ButtonWithSpinner>
                             <Col>
                                 <Card>
-                                    <CardBody>
+                                    <Card.Body>
                                         <div className="vstack gap-2">
                                             <FormSwitch name="isDocumentExpirationEnabled" control={control}>
                                                 Enable Document Expiration
@@ -217,7 +220,7 @@ export default function DocumentExpiration() {
                                                 />
                                             </div>
                                         </div>
-                                    </CardBody>
+                                    </Card.Body>
                                 </Card>
                             </Col>
                         </Form>

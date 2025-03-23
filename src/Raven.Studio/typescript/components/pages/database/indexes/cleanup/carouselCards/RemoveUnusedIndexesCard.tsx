@@ -12,7 +12,8 @@ import {
 import { useAppSelector } from "components/store";
 import React from "react";
 import Badge from "react-bootstrap/Badge";
-import { Card, Table } from "reactstrap";
+import Table from "react-bootstrap/Table";
+import Card from "react-bootstrap/Card";
 
 interface RemoveUnusedIndexesCardProps {
     unused: UseIndexCleanupResult["unused"];

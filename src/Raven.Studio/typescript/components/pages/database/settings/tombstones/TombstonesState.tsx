@@ -56,7 +56,7 @@ function TombstonesStateWithSize({ location, width }: TombstonesStateWithSizePro
 
     const subscriptionsTable = useReactTable({
         columns: subscriptionsColumns,
-        data: asyncGetTombstonesState.result?.PerSubscriptionInfo || [],
+        data: asyncGetTombstonesState.result?.PerSubscriptionInfoExtended || [],
         columnResizeMode: "onChange",
         getCoreRowModel: getCoreRowModel(),
         getSortedRowModel: getSortedRowModel(),

@@ -1,5 +1,7 @@
 import React from "react";
-import { Card, CardBody, Col, Row } from "reactstrap";
+import Card from "react-bootstrap/Card";
+import Row from "react-bootstrap/Row";
+import Col from "react-bootstrap/Col";
 import Button from "react-bootstrap/Button";
 import { AboutViewHeading } from "components/common/AboutView";
 import ButtonWithSpinner from "components/common/ButtonWithSpinner";
@@ -35,7 +37,7 @@ export default function UnusedDatabaseIds() {
                     </ButtonWithSpinner>
                     <Card className="mb-3">
                         <LazyLoad active={isLoading}>
-                            <CardBody>
+                            <Card.Body>
                                 <div className="vstack gap-2">
                                     <div className="d-flex gap-1 align-items-center">
                                         <h4 className="mb-0">Used IDs</h4>
@@ -47,12 +49,12 @@ export default function UnusedDatabaseIds() {
                                         ))}
                                     </div>
                                 </div>
-                            </CardBody>
+                            </Card.Body>
                         </LazyLoad>
                     </Card>
                     <Card className="mb-3">
                         <LazyLoad active={isLoading}>
-                            <CardBody>
+                            <Card.Body>
                                 <div className="vstack gap-2">
                                     <div className="d-flex gap-1 align-items-center justify-content-between">
                                         <div className="d-flex gap-1">
@@ -85,7 +87,7 @@ export default function UnusedDatabaseIds() {
                                         unusedIdsActions={unusedIdsActions}
                                     />
                                 </div>
-                            </CardBody>
+                            </Card.Body>
                         </LazyLoad>
                     </Card>
                 </Col>

@@ -1,4 +1,6 @@
-﻿import { Card, CardBody, Col, Row } from "reactstrap";
+﻿import Card from "react-bootstrap/Card";
+import Row from "react-bootstrap/Row";
+import Col from "react-bootstrap/Col";
 import { OverallInfoItem } from "components/pages/resources/about/partials/common";
 import { Icon } from "components/common/Icon";
 import React, { useState } from "react";
@@ -42,40 +44,42 @@ export function VersionsSummary(props: VersionsSummaryProps) {
 
     return (
         <Card>
-            <CardBody>
+            <Card.Body>
                 <h4>Software Version</h4>
-                <Row>
-                    <OverallInfoItem icon="server" label="Server version">
-                        {serverFullVersion}
-                    </OverallInfoItem>
-                    <Col className="d-flex flex-wrap gap-2 align-items-center justify-content-end">
-                        <Button variant="outline-secondary" className="rounded-pill" onClick={showChangeLogModal}>
-                            <Icon icon="logs" /> Changelog
-                        </Button>
-                    </Col>
-                </Row>
-                {showLatestVersionInfo && (
+                <div className="vstack gap-4">
                     <Row>
-                        <OverallInfoItem icon="global" label="Updates">
-                            <LatestVersion
-                                asyncLatestVersion={asyncLatestVersion}
-                                serverVersion={serverVersion}
-                                showWhatsNewModal={showWhatsNewModal}
-                            />
+                        <OverallInfoItem icon="server" label="Server version">
+                            {serverFullVersion}
                         </OverallInfoItem>
                         <Col className="d-flex flex-wrap gap-2 align-items-center justify-content-end">
-                            <ButtonWithSpinner
-                                isSpinning={refreshing}
-                                variant="outline-secondary"
-                                className="rounded-pill"
-                                onClick={checkForUpdates}
-                            >
-                                <Icon icon="refresh" /> Check for updates
-                            </ButtonWithSpinner>
+                            <Button variant="outline-secondary" className="rounded-pill" onClick={showChangeLogModal}>
+                                <Icon icon="logs" /> Changelog
+                            </Button>
                         </Col>
                     </Row>
-                )}
-            </CardBody>
+                    {showLatestVersionInfo && (
+                        <Row>
+                            <OverallInfoItem icon="global" label="Updates">
+                                <LatestVersion
+                                    asyncLatestVersion={asyncLatestVersion}
+                                    serverVersion={serverVersion}
+                                    showWhatsNewModal={showWhatsNewModal}
+                                />
+                            </OverallInfoItem>
+                            <Col className="d-flex flex-wrap gap-2 align-items-center justify-content-end">
+                                <ButtonWithSpinner
+                                    isSpinning={refreshing}
+                                    variant="outline-secondary"
+                                    className="rounded-pill"
+                                    onClick={checkForUpdates}
+                                >
+                                    <Icon icon="refresh" /> Check for updates
+                                </ButtonWithSpinner>
+                            </Col>
+                        </Row>
+                    )}
+                </div>
+            </Card.Body>
         </Card>
     );
 }

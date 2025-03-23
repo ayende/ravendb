@@ -1,6 +1,6 @@
 import { yupResolver } from "@hookform/resolvers/yup";
 import ButtonWithSpinner from "components/common/ButtonWithSpinner";
-import { FormSelect } from "components/common/Form";
+import { FormGroup, FormLabel, FormSelect } from "components/common/Form";
 import { Icon } from "components/common/Icon";
 import { useDirtyFlag } from "components/hooks/useDirtyFlag";
 import { useServices } from "components/hooks/useServices";
@@ -13,8 +13,11 @@ import {
 import { useAppDispatch, useAppSelector } from "components/store";
 import { logFilterActionOptions, tryHandleSubmit } from "components/utils/common";
 import { SubmitHandler, useFieldArray, useForm } from "react-hook-form";
-import { Button, CloseButton, Form, FormGroup, Label, Modal, ModalBody, UncontrolledPopover } from "reactstrap";
+import Button from "react-bootstrap/Button";
+import Form from "react-bootstrap/Form";
+import Modal from "components/common/Modal";
 import * as yup from "yup";
+import PopoverWithHoverWrapper from "components/common/PopoverWithHoverWrapper";
 
 type AdminLogsConfig = Raven.Client.ServerWide.Operations.Logs.GetLogsConfigurationResult["AdminLogs"];
 
@@ -46,47 +49,41 @@ export default function AdminLogsViewSettingsModal() {
     };
 
     return (
-        <Modal isOpen wrapClassName="bs5" centered size="lg">
-            <ModalBody>
-                <div className="d-flex">
+        <Modal show size="lg" onHide={() => dispatch(adminLogsActions.isViewSettingOpenToggled())}>
+            <Form onSubmit={handleSubmit(handleSave)}>
+                <Modal.Header onCloseClick={() => dispatch(adminLogsActions.isViewSettingOpenToggled())}>
                     <h3>
                         <Icon icon="client" addon="settings" />
                         Settings - logs on this view
                     </h3>
-                    <CloseButton
-                        className="ms-auto"
-                        onClick={() => dispatch(adminLogsActions.isViewSettingOpenToggled())}
-                    />
-                </div>
-
-                <Form onSubmit={handleSubmit(handleSave)}>
+                </Modal.Header>
+                <Modal.Body>
                     <FormGroup>
-                        <Label>
+                        <FormLabel>
                             Default Filter Action
-                            <span id="default-filter-action-for-view">
-                                <Icon icon="info" color="info" margin="ms-1" />
-                            </span>
-                            <UncontrolledPopover
-                                target="default-filter-action-for-view"
-                                trigger="hover"
-                                className="bs5"
+                            <PopoverWithHoverWrapper
+                                message={
+                                    <>
+                                        <p className="mb-1">
+                                            This action does <strong>Not apply</strong> when no filters are defined.
+                                            <br />
+                                            This action <strong>applies</strong> in the following cases:
+                                        </p>
+                                        <ul className="mb-0">
+                                            <li className="mb-1">
+                                                When a log entry does Not match any defined filter.
+                                            </li>
+                                            <li>
+                                                When a log entry matches a filter with a <code>Neutral</code> action,
+                                                provided that no subsequent filters apply.
+                                            </li>
+                                        </ul>
+                                    </>
+                                }
                             >
-                                <div className="p-3">
-                                    <p className="mb-1">
-                                        This action does <strong>Not apply</strong> when no filters are defined.
-                                        <br />
-                                        This action <strong>applies</strong> in the following cases:
-                                    </p>
-                                    <ul className="mb-0">
-                                        <li className="mb-1">When a log entry does Not match any defined filter.</li>
-                                        <li>
-                                            When a log entry matches a filter with a <code>Neutral</code> action,
-                                            provided that no subsequent filters apply.
-                                        </li>
-                                    </ul>
-                                </div>
-                            </UncontrolledPopover>
-                        </Label>
+                                <Icon icon="info" color="info" margin="ms-1" />
+                            </PopoverWithHoverWrapper>
+                        </FormLabel>
                         <FormSelect
                             control={control}
                             name="logFilterDefaultAction"
@@ -95,7 +92,7 @@ export default function AdminLogsViewSettingsModal() {
                         />
                     </FormGroup>
                     <FormGroup className="vstack">
-                        <Label>Filters</Label>
+                        <FormLabel>Filters</FormLabel>
                         <div className="vstack gap-1 mb-1">
                             {filterFieldArray.fields.map((field, idx) => (
                                 <AdminLogsFilterField
@@ -108,7 +105,7 @@ export default function AdminLogsViewSettingsModal() {
                         </div>
                         <Button
                             type="button"
-                            color="info"
+                            variant="info"
                             className="w-fit-content"
                             onClick={() => filterFieldArray.append(adminLogsUtils.initialFilter)}
                         >
@@ -116,23 +113,27 @@ export default function AdminLogsViewSettingsModal() {
                             Add Filter
                         </Button>
                     </FormGroup>
-                    <div className="d-flex justify-content-end gap-2">
-                        <Button type="button" onClick={() => dispatch(adminLogsActions.isViewSettingOpenToggled())}>
-                            <Icon icon="cancel" />
-                            Close
-                        </Button>
-                        <ButtonWithSpinner
-                            type="submit"
-                            icon="save"
-                            color="success"
-                            isSpinning={formState.isSubmitting}
-                            disabled={!formState.isDirty}
-                        >
-                            Save
-                        </ButtonWithSpinner>
-                    </div>
-                </Form>
-            </ModalBody>
+                </Modal.Body>
+                <Modal.Footer>
+                    <Button
+                        variant="secondary"
+                        type="button"
+                        onClick={() => dispatch(adminLogsActions.isViewSettingOpenToggled())}
+                    >
+                        <Icon icon="cancel" />
+                        Close
+                    </Button>
+                    <ButtonWithSpinner
+                        type="submit"
+                        icon="save"
+                        variant="success"
+                        isSpinning={formState.isSubmitting}
+                        disabled={!formState.isDirty}
+                    >
+                        Save
+                    </ButtonWithSpinner>
+                </Modal.Footer>
+            </Form>
         </Modal>
     );
 }

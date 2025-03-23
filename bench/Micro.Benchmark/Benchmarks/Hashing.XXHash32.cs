@@ -28,11 +28,6 @@ namespace Micro.Benchmark.Benchmarks
                 AddJob(new Job
                 {
                     Environment = { Runtime = CoreRuntime.Core90, Platform = Platform.X64, Jit = Jit.RyuJit, },
-                    Run =
-                    {
-                        // TODO: Next line is just for testing. Fine tune parameters.
-                        //RunStrategy = RunStrategy.Monitoring,
-                    }
                 });
 
                 // Exporters for data

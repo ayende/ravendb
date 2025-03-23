@@ -1348,12 +1348,14 @@ namespace Raven.Server.Documents
         private void AddOrUpdateWakeupTimer(string databaseName, IdleDatabaseActivity idleDatabaseActivity)
         {
             // in case the DueTime is negative or zero, the callback will be called immediately and database will be loaded.
+            var newTimer = new Timer(_ => NextScheduledActivityCallback(databaseName, idleDatabaseActivity), null, idleDatabaseActivity.DueTime, Timeout.Infinite);
+
             _wakeupTimers.AddOrUpdate(databaseName,
-                _ => new Timer(_ => NextScheduledActivityCallback(databaseName, idleDatabaseActivity), state: null, dueTime: idleDatabaseActivity.DueTime, period: Timeout.Infinite),
+                _ => newTimer,
                 (_, timer) =>
                 {
-                    timer.Change(idleDatabaseActivity.DueTime, Timeout.Infinite);
-                    return timer;
+                    timer.Dispose();
+                    return newTimer;
                 });
         }
 

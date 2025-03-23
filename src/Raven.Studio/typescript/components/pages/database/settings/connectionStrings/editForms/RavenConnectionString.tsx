@@ -1,8 +1,9 @@
 ﻿import Badge from "react-bootstrap/Badge";
-import { Form, Label } from "reactstrap";
-import { FormInput } from "components/common/Form";
+import Form from "react-bootstrap/Form";
+
+import { FormInput, FormLabel } from "components/common/Form";
 import React from "react";
-import { Control, SubmitHandler, UseFormTrigger, UseFormWatch, useFieldArray, useForm } from "react-hook-form";
+import { Control, SubmitHandler, useFieldArray, useForm, UseFormTrigger, UseFormWatch } from "react-hook-form";
 import { Icon } from "components/common/Icon";
 import { ConnectionFormData, EditConnectionStringFormProps, RavenConnection } from "../connectionStringsTypes";
 import { useServices } from "components/hooks/useServices";
@@ -51,7 +52,7 @@ export default function RavenConnectionString({
     return (
         <Form id="connection-string-form" onSubmit={handleSubmit(handleSave)} className="vstack gap-3">
             <div className="mb-2">
-                <Label>Name</Label>
+                <FormLabel>Name</FormLabel>
                 <FormInput
                     control={control}
                     name="name"
@@ -62,7 +63,7 @@ export default function RavenConnectionString({
                 />
             </div>
             <div className="mb-2">
-                <Label>Database</Label>
+                <FormLabel>Database</FormLabel>
                 <FormInput
                     control={control}
                     name="database"
@@ -72,7 +73,7 @@ export default function RavenConnectionString({
                 />
             </div>
             <div className="mb-2">
-                <Label>Discovery URLs</Label>
+                <FormLabel>Discovery URLs</FormLabel>
                 <div className="vstack gap-3">
                     {formState.errors?.topologyDiscoveryUrls?.message && (
                         <div className="text-danger small">{formState.errors.topologyDiscoveryUrls.message}</div>
@@ -127,7 +128,7 @@ function DiscoveryUrl({ idx, control, isDeleteButtonVisible, trigger, watch, onD
 
     return (
         <div className="vstack mb-2 gap-1">
-            <Label className="mb-0 d-flex align-items-center gap-1">
+            <FormLabel className="mb-0 d-flex align-items-center gap-1">
                 <span className="small-label mb-0">URL #{idx + 1}</span>
                 {asyncTest.result?.Success ? (
                     <Badge bg="success" pill>
@@ -140,7 +141,7 @@ function DiscoveryUrl({ idx, control, isDeleteButtonVisible, trigger, watch, onD
                         Failed connection
                     </Badge>
                 ) : null}
-            </Label>
+            </FormLabel>
             <div className="input-group mb-2">
                 <FormInput
                     type="text"

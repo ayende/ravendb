@@ -15,6 +15,8 @@ namespace Raven.Server.Indexing;
 public sealed class LuceneCleaner : ILowMemoryHandler
 {
     private readonly AsyncReaderWriterLock _runningQueryLock = new();
+    private long _lowMemoryOverGeneration;
+    private long _lowMemoryGeneration = -1;
     private static readonly RavenLogger Logger = RavenLogManager.Instance.GetLoggerForServer<LuceneCleaner>();
 
     public LuceneCleaner()
@@ -24,6 +26,12 @@ public sealed class LuceneCleaner : ILowMemoryHandler
 
     public void LowMemory(LowMemorySeverity lowMemorySeverity)
     {
+        if (_lowMemoryGeneration == _lowMemoryOverGeneration)
+        {
+            // we've already run cleanup for this low memory cycle
+            return;
+        }
+
         IDisposable writeLock;
 
         using (var cts = new CancellationTokenSource())
@@ -55,6 +63,8 @@ public sealed class LuceneCleaner : ILowMemoryHandler
             writeLock.Dispose();
         }
 
+        _lowMemoryGeneration = _lowMemoryOverGeneration;
+
         Stopwatch sp = Logger.IsInfoEnabled ? Stopwatch.StartNew() : null;
 
         cacheToDispose.Dispose();
@@ -62,12 +72,13 @@ public sealed class LuceneCleaner : ILowMemoryHandler
         if (sp != null && sp.ElapsedMilliseconds > 100)
         {
             Logger.Info($"Purged Lucene caches, took: {sp.ElapsedMilliseconds}ms, " +
-                        $"cleaned: {new Size(NativeMemory.TotalLuceneUnmanagedAllocationsForSorting - unmanagedUsedBeforeInBytes, SizeUnit.Bytes)}");
+                        $"cleaned: {new Size(unmanagedUsedBeforeInBytes - NativeMemory.TotalLuceneUnmanagedAllocationsForSorting, SizeUnit.Bytes)}");
         }
     }
 
     public void LowMemoryOver()
     {
+        _lowMemoryOverGeneration++;
     }
 
     public IDisposable EnterRunningQueryReadLock()

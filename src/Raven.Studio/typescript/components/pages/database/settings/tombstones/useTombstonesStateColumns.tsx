@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { Getter, ColumnDef } from "@tanstack/react-table";
 import { CellValueWrapper } from "components/common/virtualTable/cells/CellValue";
 import { virtualTableUtils } from "components/common/virtualTable/utils/virtualTableUtils";
-type SubscriptionInfo = Raven.Server.Documents.TombstoneCleaner.TombstonesState.SubscriptionInfo;
+import SubscriptionInfoExtended = Raven.Server.Documents.TombstoneCleaner.TombstonesState.SubscriptionInfoExtended;
 
 export function useTombstonesStateColumns(availableWidth: number) {
     const bodyWidth = virtualTableUtils.getTableBodyWidth(availableWidth);
@@ -55,29 +55,43 @@ export function useTombstonesStateColumns(availableWidth: number) {
         [getSize]
     );
 
-    const subscriptionsColumns: ColumnDef<SubscriptionInfo>[] = useMemo(
+    const subscriptionsColumns: ColumnDef<SubscriptionInfoExtended>[] = useMemo(
         () => [
             {
                 header: "Process",
-                accessorKey: "Identifier",
+                accessorKey: "Process",
                 cell: CellValueWrapper,
-                size: getSize(30),
+                size: getSize(16.66),
             },
             {
-                accessorKey: "Type",
+                accessorKey: "Identifier",
                 cell: CellValueWrapper,
-                size: getSize(20),
+                size: getSize(16.66),
+            },
+            {
+                header: "Number of tombstones left",
+                accessorKey: "NumberOfTombstoneLeft",
+                cell: CellValueWrapper,
+                size: getSize(16.66),
             },
             {
                 accessorKey: "Collection",
+                accessorFn: (x) => x.Etag,
                 cell: CellValueWrapper,
-                size: getSize(25),
+                size: getSize(16.66),
             },
             {
                 accessorKey: "Etag",
                 accessorFn: (x) => x.Etag,
                 cell: CellEtagWrapper,
-                size: getSize(25),
+                size: getSize(16.66),
+            },
+            {
+                header: "Cleanup status",
+                id: "CleanupStatus",
+                accessorFn: (x) => (x.NumberOfTombstoneLeft > 0 ? "Blocking" : "Not blocking"),
+                cell: CellValueWrapper,
+                size: getSize(16.66),
             },
         ],
         [getSize]

@@ -1,7 +1,10 @@
 import React from "react";
 import { Icon } from "components/common/Icon";
 import { FlexGrow } from "components/common/FlexGrow";
-import { Button, Collapse, Form, FormGroup } from "reactstrap";
+import Button from "react-bootstrap/Button";
+import Collapse from "react-bootstrap/Collapse";
+import Form from "react-bootstrap/Form";
+import { FormGroup } from "components/common/Form";
 import { useRavenLink } from "hooks/useRavenLink";
 import { useAppSelector } from "components/store";
 import { licenseSelectors } from "components/common/shell/licenseSlice";
@@ -30,8 +33,8 @@ export function FeedbackFormContent({ goBack }: FeedbackFormProps) {
     const serverVersion = useAppSelector(clusterSelectors.serverVersion).FullVersion;
     const clientVersion = useAppSelector(clusterSelectors.clientVersion);
 
-    const gitHubCommunityUrl = useRavenLink({ hash: "ITXUEA" });
-    const cloudRequestSupportUrl = useRavenLink({ hash: "2YGOL1" });
+    const communityUrl = useRavenLink({ hash: "FUNILW", isDocs: false });
+    const cloudRequestSupportUrl = useRavenLink({ hash: "2YGOL1", isDocs: false });
     const onPremiseRequestSupportUrl = "https://ravendb.net/support/supportrequest?licenseId=" + licenseId;
 
     const requestSupportUrl = isCloud ? cloudRequestSupportUrl : onPremiseRequestSupportUrl;
@@ -101,16 +104,16 @@ export function FeedbackFormContent({ goBack }: FeedbackFormProps) {
     return (
         <Form onSubmit={handleSubmit(handleSendFeedback)}>
             <ul className="action-menu__list">
-                <FormGroup noMargin>
+                <FormGroup marginClass="m-0">
                     <FormInput placeholder="Your name" type="text" control={control} name="name" />
                 </FormGroup>
-                <FormGroup noMargin>
+                <FormGroup marginClass="m-0">
                     <FormInput placeholder="Your email" type="email" control={control} name="email" />
                 </FormGroup>
-                <FormGroup noMargin>
+                <FormGroup marginClass="m-0">
                     <FormInput placeholder="Message" type="textarea" rows={8} control={control} name="message" />
                 </FormGroup>
-                <FormGroup noMargin>
+                <FormGroup marginClass="m-0">
                     <FormCheckbox control={control} name="isFeatureSpecific">
                         <span className="fw-normal">
                             Is your feedback related to the <strong>{moduleTitle}</strong> feature?
@@ -118,36 +121,38 @@ export function FeedbackFormContent({ goBack }: FeedbackFormProps) {
                     </FormCheckbox>
                 </FormGroup>
                 <div className="d-flex align-items-center">
-                    <Collapse isOpen={isFeatureSpecific}>
-                        <div className="d-flex gap-1">
-                            <Button
-                                color="link"
-                                className={classNames("p-0", {
-                                    "text-body": featureImpression === null,
-                                    "text-success": featureImpression === "positive",
-                                    "text-secondary": featureImpression === "negative",
-                                })}
-                                onClick={() => changeFeatureImpression("positive")}
-                            >
-                                <Icon icon="thumb-up" margin="m-0" title="Positive" />
-                            </Button>
-                            <Button
-                                color="link"
-                                className={classNames("p-0", {
-                                    "text-body": featureImpression === null,
-                                    "text-danger": featureImpression === "negative",
-                                    "text-secondary": featureImpression === "positive",
-                                })}
-                                onClick={() => changeFeatureImpression("negative")}
-                            >
-                                <Icon icon="thumb-down" margin="m-0" title="Negative" />
-                            </Button>
+                    <Collapse in={isFeatureSpecific}>
+                        <div>
+                            <div className="d-flex gap-1">
+                                <Button
+                                    variant="link"
+                                    className={classNames("p-0", {
+                                        "text-body": featureImpression === null,
+                                        "text-success": featureImpression === "positive",
+                                        "text-secondary": featureImpression === "negative",
+                                    })}
+                                    onClick={() => changeFeatureImpression("positive")}
+                                >
+                                    <Icon icon="thumb-up" margin="m-0" title="Positive" />
+                                </Button>
+                                <Button
+                                    variant="link"
+                                    className={classNames("p-0", {
+                                        "text-body": featureImpression === null,
+                                        "text-danger": featureImpression === "negative",
+                                        "text-secondary": featureImpression === "positive",
+                                    })}
+                                    onClick={() => changeFeatureImpression("negative")}
+                                >
+                                    <Icon icon="thumb-down" margin="m-0" title="Negative" />
+                                </Button>
+                            </div>
                         </div>
                     </Collapse>
                     <FlexGrow />
                     <ButtonWithSpinner
                         type="submit"
-                        color="primary"
+                        variant="primary"
                         className="rounded-pill"
                         icon="paperplane"
                         isSpinning={formState.isSubmitting}
@@ -157,14 +162,14 @@ export function FeedbackFormContent({ goBack }: FeedbackFormProps) {
                 </div>
             </ul>
             <div className="action-menu__footer">
-                <small className="text-muted lh-1">
-                    <Icon icon="github" />
+                <small className="lh-1">
+                    <Icon icon="community" />
                     Join our{" "}
-                    <a href={gitHubCommunityUrl} target="_blank">
-                        GitHub community
+                    <a href={communityUrl} target="_blank">
+                        Community
                     </a>
                 </small>
-                <small className="text-muted lh-1 mt-1">
+                <small className="lh-1 mt-1">
                     <Icon icon="support" />
                     Need help?{" "}
                     <a href={requestSupportUrl} target="_blank">

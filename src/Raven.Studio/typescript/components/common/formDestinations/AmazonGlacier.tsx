@@ -1,7 +1,7 @@
 ﻿import Badge from "react-bootstrap/Badge";
 import Collapse from "react-bootstrap/Collapse";
-import { Card, CardBody, Label } from "reactstrap";
-import { FormInput, FormSelectCreatable, FormSwitch } from "components/common/Form";
+import Card from "react-bootstrap/Card";
+import { FormInput, FormLabel, FormSelectCreatable, FormSwitch } from "components/common/Form";
 import { useFormContext, useWatch } from "react-hook-form";
 import OverrideConfiguration from "./OverrideConfiguration";
 import { Icon } from "components/common/Icon";
@@ -34,7 +34,7 @@ export default function AmazonGlacier() {
 
     return (
         <Card className="well">
-            <CardBody>
+            <Card.Body>
                 <FormSwitch name={getName("isEnabled")} control={control}>
                     Amazon Glacier
                 </FormSwitch>
@@ -53,7 +53,7 @@ export default function AmazonGlacier() {
                         ) : (
                             <div className="vstack gap-3 mt-2">
                                 <div className="mb-2">
-                                    <Label className="d-flex align-items-center gap-1">
+                                    <FormLabel className="d-flex align-items-center gap-1">
                                         Vault name
                                         <PopoverWithHoverWrapper
                                             message={
@@ -77,7 +77,7 @@ export default function AmazonGlacier() {
                                                 Failed connection
                                             </Badge>
                                         ) : null}
-                                    </Label>
+                                    </FormLabel>
                                     <FormInput
                                         name={getName("vaultName")}
                                         control={control}
@@ -87,9 +87,9 @@ export default function AmazonGlacier() {
                                     />
                                 </div>
                                 <div className="mb-2">
-                                    <Label>
+                                    <FormLabel>
                                         Remote folder name <small className="text-muted fw-light">(optional)</small>
-                                    </Label>
+                                    </FormLabel>
                                     <FormInput
                                         name={getName("remoteFolderName")}
                                         control={control}
@@ -99,7 +99,7 @@ export default function AmazonGlacier() {
                                     />
                                 </div>
                                 <div className="mb-2">
-                                    <Label>Region</Label>
+                                    <FormLabel>Region</FormLabel>
                                     <FormSelectCreatable
                                         name={getName("awsRegionName")}
                                         control={control}
@@ -108,7 +108,7 @@ export default function AmazonGlacier() {
                                     />
                                 </div>
                                 <div className="mb-2">
-                                    <Label>Access key</Label>
+                                    <FormLabel>Access key</FormLabel>
                                     <FormInput
                                         name={getName("awsAccessKey")}
                                         control={control}
@@ -118,7 +118,7 @@ export default function AmazonGlacier() {
                                     />
                                 </div>
                                 <div className="mb-2">
-                                    <Label>Secret key</Label>
+                                    <FormLabel>Secret key</FormLabel>
                                     <FormInput
                                         name={getName("awsSecretKey")}
                                         control={control}
@@ -149,7 +149,7 @@ export default function AmazonGlacier() {
                         )}
                     </div>
                 </Collapse>
-            </CardBody>
+            </Card.Body>
         </Card>
     );
 }

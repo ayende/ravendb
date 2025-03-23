@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq.Expressions;
 using Raven.Client.Documents.Queries.TimeSeries;
 using Raven.Client.Documents.Session;
 
@@ -11,7 +12,7 @@ namespace Raven.Client.Documents.Queries
         {
             throw new NotSupportedException("This method is here for strongly type support of server side call during Linq queries and should never be directly called");
         }
-        
+
         public static string Id(object documentInstance)
         {
             throw new NotSupportedException("This method is here for strongly type support of server side call during Linq queries and should never be directly called");
@@ -31,7 +32,7 @@ namespace Raven.Client.Documents.Queries
         {
             throw new NotSupportedException("This method is here for strongly type support of server side call during Linq queries and should never be directly called");
         }
-        
+
         public static DateTime LastModified<T>(T instance)
         {
             throw new NotSupportedException("This method is here for strongly type support of server side call during Linq queries and should never be directly called");
@@ -90,6 +91,12 @@ namespace Raven.Client.Documents.Queries
         public static ITimeSeriesQueryable<T> TimeSeries<T>(object documentInstance, string name, DateTime from, DateTime to) where T : new()
         {
             throw new NotSupportedException("This method is here for strongly type support of server side call during Linq queries and should never be directly called");
+        }
+
+        public static object Include<T>(Expression<Func<T, string>> path)
+        {
+            throw new NotSupportedException(
+                "This method is here for strongly type support of server-side calls during LINQ queries and should never be directly called.");
         }
     }
 }

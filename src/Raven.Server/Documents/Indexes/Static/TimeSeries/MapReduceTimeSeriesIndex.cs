@@ -68,14 +68,14 @@ namespace Raven.Server.Documents.Indexes.Static.TimeSeries
             return new StaticIndexItemEnumerator<DynamicTimeSeriesSegment>(items, filter: null, _compiled.Maps[collection], collection, stats, type);
         }
 
-        public override Dictionary<string, long> GetLastProcessedTombstonesPerCollection(ITombstoneAware.TombstoneType tombstoneType)
+        public override Dictionary<string, long> GetLastProcessedTombstonesPerCollection(ITombstoneAware.TombstoneType tombstoneType, Dictionary<string, LastTombstoneInfo> lastProcessedTombstonesInfo = null)
         {
             if (tombstoneType == ITombstoneAware.TombstoneType.Documents)
             {
                 using (CurrentlyInUse())
                 {
                     return StaticIndexHelper.GetLastProcessedDocumentTombstonesPerCollection(
-                        this, _referencedCollections, Collections, _compiled.ReferencedCollections, _indexStorage);
+                        this, _referencedCollections, Collections, _compiled.ReferencedCollections, _indexStorage, lastProcessedTombstonesInfo);
                 }
             }
 
@@ -83,7 +83,7 @@ namespace Raven.Server.Documents.Indexes.Static.TimeSeries
             {
                 using (CurrentlyInUse())
                 {
-                    return StaticIndexHelper.GetLastProcessedEtagsPerCollection(this, Collections, _indexStorage);
+                    return StaticIndexHelper.GetLastProcessedEtagsPerCollection(this, Collections, _indexStorage, lastProcessedTombstonesInfo);
                 }
             }
 

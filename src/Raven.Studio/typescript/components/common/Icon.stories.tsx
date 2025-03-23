@@ -4,7 +4,7 @@ import { Icon } from "./Icon";
 import { exhaustiveStringTuple } from "components/utils/common";
 import IconName from "typings/server/icons";
 import copyToClipboard from "common/copyToClipboard";
-import { Button } from "reactstrap";
+import Button from "react-bootstrap/Button";
 
 export default {
     title: "Bits/Icon",
@@ -19,7 +19,7 @@ export const IconStory: StoryObj = {
                 <div key={name}>
                     <Icon icon={name} />
                     {name}
-                    <Button color="link" onClick={() => copyToClipboard.copy(name, "Copied to clipboard")}>
+                    <Button variant="link" onClick={() => copyToClipboard.copy(name, "Copied to clipboard")}>
                         <Icon icon="copy-to-clipboard" />
                     </Button>
                 </div>
@@ -176,6 +176,7 @@ const allIconNames = exhaustiveStringTuple<IconName>()(
     "disabled",
     "disconnect",
     "disconnected",
+    "discord",
     "disk-io-viewer",
     "disk-support",
     "dismiss-all",
@@ -465,9 +466,9 @@ const allIconNames = exhaustiveStringTuple<IconName>()(
     "tick",
     "timeseries-settings",
     "timeseries",
-    "tombstones",
     "toggle-off",
     "toggle-on",
+    "tombstones",
     "topology",
     "traffic-watch",
     "traffic",
@@ -488,8 +489,8 @@ const allIconNames = exhaustiveStringTuple<IconName>()(
     "upload",
     "user-info",
     "user",
-    "vector",
     "vector-search",
+    "vector",
     "versioning",
     "waiting",
     "warning",

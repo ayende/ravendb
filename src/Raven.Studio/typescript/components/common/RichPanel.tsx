@@ -2,7 +2,7 @@
 import "./RichPanel.scss";
 import classNames from "classnames";
 import Badge from "react-bootstrap/Badge";
-import { Card, CardHeader } from "reactstrap";
+import Card from "react-bootstrap/Card";
 
 interface RichPanelProps extends ComponentProps<typeof Card> {
     className?: string;
@@ -51,9 +51,9 @@ interface RichPanelHeaderProps extends HTMLAttributes<HTMLDivElement> {
 export function RichPanelHeader(props: RichPanelHeaderProps) {
     const { children, className, ...rest } = props;
     return (
-        <CardHeader className={classNames("rich-panel-header gap-2", className)} {...rest}>
+        <Card.Header className={classNames("rich-panel-header gap-2", className)} {...rest}>
             {children}
-        </CardHeader>
+        </Card.Header>
     );
 }
 

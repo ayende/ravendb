@@ -3,6 +3,36 @@ import { BsPrefixRefForwardingComponent } from "react-bootstrap/helpers";
 import { ButtonProps } from "react-bootstrap/Button";
 import { SpinnerProps as ReactBootstrapSpinnerProps } from "react-bootstrap/Spinner";
 import { BadgeProps } from "react-bootstrap/Badge";
+import { FormControlProps } from "react-bootstrap/FormControl";
+import { DropdownToggleProps } from "react-bootstrap/DropdownToggle";
+
+type InputType =
+  | 'text'
+  | 'email'
+  | 'select'
+  | 'file'
+  | 'radio'
+  | 'checkbox'
+  | 'switch'
+  | 'textarea'
+  | 'button'
+  | 'reset'
+  | 'submit'
+  | 'date'
+  | 'datetime-local'
+  | 'hidden'
+  | 'image'
+  | 'month'
+  | 'number'
+  | 'range'
+  | 'search'
+  | 'tel'
+  | 'url'
+  | 'week'
+  | 'password'
+  | 'datetime'
+  | 'time'
+  | 'color';
 
 type RavenSizes = "xs"
 
@@ -70,4 +100,33 @@ declare module "react-bootstrap/Badge" {
     
     declare const Badge: BsPrefixRefForwardingComponent<"span", RavenBadgeProps>;
     export = Badge;
+}
+
+declare module "react-bootstrap/FormControl" {
+    export type RavenFormControlSizes = FormControlProps["size"] | "md" | RavenSizes;
+    
+    export interface RavenFormControlProps extends Omit<FormControlProps, "size"> {
+        size?: RavenFormControlSizes;
+    }
+    
+    declare const FormControl: BsPrefixRefForwardingComponent<"div", RavenFormControlProps>
+    export = FormControl;
+}
+
+declare module "react-bootstrap/Dropdown" {
+    export type RavenDropdownToggleSizes = ButtonProps["size"] | RavenSizes
+
+    export interface RavenDropdownToggleProps extends DropdownToggleProps {
+        size?: RavenDropdownToggleSizes;
+    }
+
+    declare const Dropdown: BsPrefixRefForwardingComponent<"div", import("react-bootstrap/Dropdown").DropdownProps> & {
+        Toggle: BsPrefixRefForwardingComponent<"button", RavenDropdownToggleProps>;
+        Menu: BsPrefixRefForwardingComponent<"div", import("react-bootstrap/DropdownMenu").DropdownMenuProps>;
+        Item: BsPrefixRefForwardingComponent<"a", import("react-bootstrap/DropdownItem").DropdownItemProps>;
+        ItemText: BsPrefixRefForwardingComponent<"span", import("react-bootstrap/DropdownItemText").DropdownItemTextProps>;
+        Divider: BsPrefixRefForwardingComponent<"hr", import("react-bootstrap/DropdownDivider").DropdownDividerProps>;
+        Header: BsPrefixRefForwardingComponent<"div", import("react-bootstrap/DropdownHeader").DropdownHeaderProps>;
+    }
+    export = Dropdown;
 }

@@ -1,4 +1,7 @@
-﻿import { Col, Input, Row, Table } from "reactstrap";
+﻿import Table from "react-bootstrap/Table";
+import Form from "react-bootstrap/Form";
+import Row from "react-bootstrap/Row";
+import Col from "react-bootstrap/Col";
 import { Icon } from "components/common/Icon";
 import React, { useState } from "react";
 import { RadioToggleWithIcon, RadioToggleWithIconInputItem } from "components/common/toggles/RadioToggle";
@@ -120,7 +123,7 @@ function LicenseTable(props: LicenseTableProps) {
         <>
             <div className="px-4 pb-4">
                 <div className="clearable-input">
-                    <Input
+                    <Form.Control
                         type="text"
                         accessKey="/"
                         placeholder="Filter: e.g. ETL"

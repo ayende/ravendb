@@ -972,7 +972,7 @@ namespace Raven.Client.Util
             public LoadSupport()
             {
             }
-            
+
             public LoadSupport(HashSet<Type> loadedTypes)
             {
                 _loadedTypes = loadedTypes;
@@ -1020,6 +1020,61 @@ namespace Raven.Client.Util
                     writer.Write("load(");
                     context.Visitor.Visit(Arg);
                     writer.Write(")");
+                }
+            }
+        }
+
+        internal sealed class IncludeSupport(string fromAlias) : JavascriptConversionExtension
+        {
+            public List<string> IncludeComplexFunctions;
+            public List<string> IncludeSimpleFunctions;
+            public bool HasInclude;
+            public readonly string Alias = fromAlias;
+
+            public override void ConvertToJavascript(JavascriptConversionContext context)
+            {
+                var methodCallExpression = context.Node as MethodCallExpression;
+
+                if (methodCallExpression?.Method.Name != "Include")
+                    return;
+
+                if (methodCallExpression.Method.DeclaringType != typeof(RavenQuery))
+                    return;
+
+                if (methodCallExpression.Arguments.Count != 1)
+                    return;
+
+                if (methodCallExpression.Arguments[0] is not UnaryExpression { Operand: LambdaExpression le })
+                    return;
+
+                var body = le.Body;
+                var parameter = le.Parameters[0];
+                var replacedBody = ReplaceParameter(body, parameter, Alias);
+                var replaced = replacedBody.CompileToJavascript(context.Options);
+
+                if (body is MemberExpression)
+                {
+                    (IncludeSimpleFunctions ??= new List<string>()).Add(replaced);
+                }
+                else
+                {
+                    (IncludeComplexFunctions ??= new List<string>()).Add(replaced);
+                }
+                HasInclude = true;
+                context.PreventDefault();
+            }
+
+            private static Expression ReplaceParameter(Expression body, ParameterExpression oldParam, string alias)
+            {
+                var newParam = Expression.Parameter(oldParam.Type, alias);
+                var replacer = new ParameterReplacer(oldParam, newParam);
+                return replacer.Visit(body);
+            }
+            private class ParameterReplacer(ParameterExpression oldParam, ParameterExpression newParam) : ExpressionVisitor
+            {
+                protected override Expression VisitParameter(ParameterExpression node)
+                {
+                    return node == oldParam ? newParam : base.VisitParameter(node);
                 }
             }
         }

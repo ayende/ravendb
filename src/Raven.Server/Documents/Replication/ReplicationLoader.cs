@@ -115,7 +115,7 @@ namespace Raven.Server.Documents.Replication
             MinimalHeartbeatInterval = (int)config.ReplicationMinimalHeartbeat.AsTimeSpan.TotalMilliseconds;
         }
 
-        public long GetMinimalEtagForReplication()
+        public long GetMinimalEtagForReplication(Dictionary<string, LastTombstoneInfo> lastProcessedTombstonesInfo = null, string collection = null)
         {
             DatabaseTopology topology;
             long minEtag = long.MaxValue;
@@ -133,6 +133,7 @@ namespace Raven.Server.Documents.Replication
                         var state = GetExternalReplicationState(_server, Database.Name, external.TaskId, ctx);
                         var myEtag = ChangeVectorUtils.GetEtagById(state.SourceChangeVector, Database.DbBase64Id);
                         minEtag = Math.Min(myEtag, minEtag);
+                        AddOrUpdateLastEtag(lastProcessedTombstonesInfo, collection, external.Name, myEtag, ITombstoneAware.TombstoneDeletionBlockerType.ExternalReplication);
                     }
                 }
             }
@@ -155,6 +156,21 @@ namespace Raven.Server.Documents.Replication
             {
                 replicationNodes.Remove(lastEtagPerDestination.Key);
                 minEtag = Math.Min(lastEtagPerDestination.Value.LastEtag, minEtag);
+                if (lastProcessedTombstonesInfo != null)
+                {
+                    switch (lastEtagPerDestination.Key)
+                    {
+                        case PullReplicationAsSink pullReplicationAsSink:
+                            AddOrUpdateLastEtag(lastProcessedTombstonesInfo, collection, pullReplicationAsSink.Name, lastEtagPerDestination.Value.LastEtag, ITombstoneAware.TombstoneDeletionBlockerType.PullReplicationAsSink);
+                            break;
+                        case ExternalReplication externalReplication and not PullReplicationAsHub:
+                            AddOrUpdateLastEtag(lastProcessedTombstonesInfo, collection, externalReplication.Name, lastEtagPerDestination.Value.LastEtag, ITombstoneAware.TombstoneDeletionBlockerType.ExternalReplication);
+                            break;
+                        case InternalReplication internalReplication:
+                            AddOrUpdateLastEtag(lastProcessedTombstonesInfo, collection, internalReplication.NodeTag, lastEtagPerDestination.Value.LastEtag, ITombstoneAware.TombstoneDeletionBlockerType.InternalReplication);
+                            break;
+                    }
+                }
             }
 
             if (replicationNodes.Count > 0)
@@ -162,14 +178,36 @@ namespace Raven.Server.Documents.Replication
                 // if we don't have information from all our destinations, we don't know what tombstones
                 // we can remove. Note that this explicitly _includes_ disabled destinations, which prevents
                 // us from doing any tombstone cleanup.
+                if (lastProcessedTombstonesInfo == null)
+                    return 0;
+
+                foreach (var node in replicationNodes)
+                {
+                    AddOrUpdateLastEtag(lastProcessedTombstonesInfo, collection, ((InternalReplication)node).NodeTag, 0, ITombstoneAware.TombstoneDeletionBlockerType.InternalReplication);
+                }
+
                 return 0;
             }
 
             return minEtag;
         }
 
-        public long GetMinimalEtagForTombstoneCleanupWithHubReplication()
+        private static void AddOrUpdateLastEtag(Dictionary<string, LastTombstoneInfo> lastProcessedTombstonesInfo, string collection, string name, long etag, ITombstoneAware.TombstoneDeletionBlockerType type)
         {
+            if (lastProcessedTombstonesInfo?.TryGetValue(name, out LastTombstoneInfo info) == true)
+            {
+                info.Etag = Math.Min(etag, info.Etag);
+                lastProcessedTombstonesInfo[name] = info;
+            }
+            else
+            {
+                lastProcessedTombstonesInfo?.Add(name, new LastTombstoneInfo(name, collection, etag, type));
+            }
+        }
+
+        public long GetMinimalEtagForTombstoneCleanupWithHubReplication(Dictionary<string, LastTombstoneInfo> lastProcessedTombstonesInfo = null, string collection = null)
+        {
+            const string hubReplicationKey = "Hub Replication";
             long minEtag = long.MaxValue;
 
             using (_server.ContextPool.AllocateOperationContext(out TransactionOperationContext ctx))
@@ -182,7 +220,10 @@ namespace Raven.Server.Documents.Replication
                 var lastCleanUp = _hubInfoForCleaner?.LastCleanup ?? DateTime.MinValue;
                 if (lastCleanUp.AddMinutes(time) > Database.Time.GetUtcNow())
                 {
-                    return _hubInfoForCleaner?.LastEtag ?? minEtag;
+                    var etag = _hubInfoForCleaner?.LastEtag ?? minEtag;
+                    lastProcessedTombstonesInfo?.Add(hubReplicationKey, new LastTombstoneInfo(hubReplicationKey, collection, etag, ITombstoneAware.TombstoneDeletionBlockerType.PullReplicationAsHub));
+
+                    return etag;
                 }
             }
 
@@ -203,6 +244,7 @@ namespace Raven.Server.Documents.Replication
                 {
                     //All tombstones can be deleted
                     Interlocked.Exchange(ref _hubInfoForCleaner, new HubInfoForCleaner { LastCleanup = Database.Time.GetUtcNow(), LastEtag = max });
+                    lastProcessedTombstonesInfo?.Add(hubReplicationKey, new LastTombstoneInfo(hubReplicationKey, collection, max, ITombstoneAware.TombstoneDeletionBlockerType.PullReplicationAsHub));
                     return max;
                 }
 
@@ -213,6 +255,7 @@ namespace Raven.Server.Documents.Replication
                 {
                     // Can't delete tombstones yet
                     Interlocked.Exchange(ref _hubInfoForCleaner, new HubInfoForCleaner { LastCleanup = Database.Time.GetUtcNow(), LastEtag = minTombstone.Etag - 1 });
+                    lastProcessedTombstonesInfo?.Add(hubReplicationKey, new LastTombstoneInfo(hubReplicationKey, collection, minTombstone.Etag - 1, ITombstoneAware.TombstoneDeletionBlockerType.PullReplicationAsHub));
                     return minTombstone.Etag - 1;
                 }
                 var oldEtag = -1L;
@@ -223,6 +266,7 @@ namespace Raven.Server.Documents.Replication
                     if (newEtag == oldEtag)
                     {
                         Interlocked.Exchange(ref _hubInfoForCleaner, new HubInfoForCleaner { LastCleanup = Database.Time.GetUtcNow(), LastEtag = min });
+                        lastProcessedTombstonesInfo?.Add(hubReplicationKey, new LastTombstoneInfo(hubReplicationKey, collection, min, ITombstoneAware.TombstoneDeletionBlockerType.PullReplicationAsHub));
                         return min;
                     }
 
@@ -236,6 +280,7 @@ namespace Raven.Server.Documents.Replication
                         if (newTombstone.Etag == min)
                         {
                             Interlocked.Exchange(ref _hubInfoForCleaner, new HubInfoForCleaner { LastCleanup = Database.Time.GetUtcNow(), LastEtag = min });
+                            lastProcessedTombstonesInfo?.Add(hubReplicationKey, new LastTombstoneInfo(hubReplicationKey, collection, min, ITombstoneAware.TombstoneDeletionBlockerType.PullReplicationAsHub));
                             return min;
                         }
                     }
@@ -1716,27 +1761,24 @@ namespace Raven.Server.Documents.Replication
 
         public event Action<ReplicationNode, IncomingReplicationFailureToConnectReporter> IncomingReplicationConnectionErrored;
 
-        public Dictionary<string, long> GetLastProcessedTombstonesPerCollection(ITombstoneAware.TombstoneType tombstoneType)
+        public Dictionary<string, long> GetLastProcessedTombstonesPerCollection(ITombstoneAware.TombstoneType tombstoneType, Dictionary<string, LastTombstoneInfo> lastProcessedTombstonesInfo = null)
         {
-            var minEtag = Math.Min(GetMinimalEtagForTombstoneCleanupWithHubReplication(), GetMinimalEtagForReplication());
+            string collection = tombstoneType switch
+            {
+                ITombstoneAware.TombstoneType.Documents => Constants.Documents.Collections.AllDocumentsCollection,
+                ITombstoneAware.TombstoneType.TimeSeries => Constants.TimeSeries.All,
+                ITombstoneAware.TombstoneType.Counters => Constants.Counters.All,
+                _ => throw new NotSupportedException($"Tombstone type '{tombstoneType}' is not supported.")
+            };
+
+            var minEtag = Math.Min(GetMinimalEtagForTombstoneCleanupWithHubReplication(lastProcessedTombstonesInfo, collection), GetMinimalEtagForReplication(lastProcessedTombstonesInfo, collection));
             if (minEtag == long.MaxValue)
                 return null;
 
             var result = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
-            switch (tombstoneType)
-            {
-                case ITombstoneAware.TombstoneType.Documents:
-                    result.Add(Constants.Documents.Collections.AllDocumentsCollection, minEtag);
-                    break;
-                case ITombstoneAware.TombstoneType.TimeSeries:
-                    result.Add(Constants.TimeSeries.All, minEtag);
-                    break;
-                case ITombstoneAware.TombstoneType.Counters:
-                    result.Add(Constants.Counters.All, minEtag);
-                    break;
-                default:
-                    throw new NotSupportedException($"Tombstone type '{tombstoneType}' is not supported.");
-            }
+
+            result.Add(collection, minEtag);
+
 
             if (Destinations == null)
                 return result;

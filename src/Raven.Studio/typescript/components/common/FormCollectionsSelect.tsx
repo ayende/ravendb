@@ -1,6 +1,7 @@
 import React, { ComponentProps } from "react";
 import Collapse from "react-bootstrap/Collapse";
-import { Row, Col } from "reactstrap";
+import Row from "react-bootstrap/Row";
+import Col from "react-bootstrap/Col";
 import { EmptySet } from "./EmptySet";
 import Button from "react-bootstrap/Button";
 import { FlexGrow } from "./FlexGrow";

@@ -28,11 +28,6 @@ namespace Micro.Benchmark.Benchmarks
                         Runtime = CoreRuntime.Core90,
                         Platform = Platform.X64,
                         Jit = Jit.Default,
-                    },
-                    Run =
-                    {
-                        // TODO: Next line is just for testing. Fine tune parameters.
-                        //RunStrategy = RunStrategy.Monitoring,
                     }
                 });
 

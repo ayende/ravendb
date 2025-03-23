@@ -1,6 +1,6 @@
 import { yupResolver } from "@hookform/resolvers/yup";
 import ButtonWithSpinner from "components/common/ButtonWithSpinner";
-import { FormInput, FormSelect, FormSwitch, FormValidationMessage } from "components/common/Form";
+import { FormGroup, FormInput, FormLabel, FormSelect, FormSwitch, FormValidationMessage } from "components/common/Form";
 import { Icon } from "components/common/Icon";
 import { SelectOption } from "components/common/select/Select";
 import { databaseSelectors } from "components/common/shell/databaseSliceSelectors";
@@ -10,24 +10,18 @@ import { useServices } from "components/hooks/useServices";
 import AdminLogsPersistInfoIcon from "components/pages/resources/manageServer/adminLogs/bits/AdminLogsPersistInfoIcon";
 
 import {
-    adminLogsSelectors,
     adminLogsActions,
+    adminLogsSelectors,
 } from "components/pages/resources/manageServer/adminLogs/store/adminLogsSlice";
 import { useAppDispatch, useAppSelector } from "components/store";
 import { exhaustiveStringTuple, tryHandleSubmit } from "components/utils/common";
-import { useForm, useWatch, SubmitHandler, useFieldArray } from "react-hook-form";
-import {
-    AccordionItem,
-    AccordionHeader,
-    AccordionBody,
-    Collapse,
-    Form,
-    FormGroup,
-    Button,
-    InputGroup,
-    Label,
-} from "reactstrap";
+import { SubmitHandler, useFieldArray, useForm, useWatch } from "react-hook-form";
+import Collapse from "react-bootstrap/Collapse";
+import Button from "react-bootstrap/Button";
+import InputGroup from "react-bootstrap/InputGroup";
+import Form from "react-bootstrap/Form";
 import * as yup from "yup";
+import Accordion from "react-bootstrap/Accordion";
 
 type TrafficWatchChangeType = Raven.Client.Documents.Changes.TrafficWatchChangeType;
 type TrafficWatchConfiguration =
@@ -79,209 +73,218 @@ export default function AdminLogsConfigTrafficWatch({ targetId }: { targetId: st
     };
 
     return (
-        <AccordionItem className="p-1 rounded-3">
-            <AccordionHeader targetId={targetId}>Traffic watch</AccordionHeader>
-            <AccordionBody accordionId={targetId}>
+        <Accordion.Item eventKey={targetId} className="p-1 rounded-3">
+            <Accordion.Header>Traffic watch</Accordion.Header>
+            <Accordion.Body>
                 <Form onSubmit={handleSubmit(handleSave)} key={targetId}>
                     <FormGroup>
                         <FormSwitch control={control} name="isEnabled">
                             Enable
                         </FormSwitch>
                     </FormGroup>
-                    <Collapse isOpen={isEnabled}>
-                        <FormGroup>
-                            <FormSwitch control={control} name="isFilterByChangeType">
-                                Filter by Change Type
-                            </FormSwitch>
-                            <Collapse isOpen={isFilterByChangeType}>
-                                <InputGroup>
-                                    <FormSelect
-                                        control={control}
-                                        name="changeTypes"
-                                        placeholder="Select event types"
-                                        options={changeTypesOptions}
-                                        isMulti
-                                    />
-                                    <Button
-                                        type="button"
-                                        onClick={() =>
-                                            setValue(
-                                                "changeTypes",
-                                                changeTypesOptions.map((x) => x.value)
-                                            )
-                                        }
-                                    >
-                                        Select all
-                                    </Button>
-                                </InputGroup>
-                            </Collapse>
-                        </FormGroup>
-                        <FormGroup>
-                            <FormSwitch control={control} name="isFilterByStatusCode">
-                                Filter by HTTP Status Code
-                            </FormSwitch>
-                            <Collapse isOpen={isFilterByStatusCode}>
-                                <InputGroup>
-                                    <FormSelect
-                                        control={control}
-                                        name="statusCodes"
-                                        placeholder="Select status codes"
-                                        options={statusCodesOptions}
-                                        isMulti
-                                    />
-                                    <Button
-                                        type="button"
-                                        onClick={() =>
-                                            setValue(
-                                                "statusCodes",
-                                                statusCodesOptions.map((x) => x.value)
-                                            )
-                                        }
-                                    >
-                                        Select all
-                                    </Button>
-                                </InputGroup>
-                            </Collapse>
-                        </FormGroup>
-                        <FormGroup>
-                            <FormSwitch control={control} name="isFilterByDatabaseName">
-                                Filter by Database
-                            </FormSwitch>
-                            <Collapse isOpen={isFilterByDatabaseName}>
-                                <InputGroup>
-                                    <FormSelect
-                                        control={control}
-                                        name="databaseNames"
-                                        placeholder="Select databases"
-                                        options={databaseOptions}
-                                        isMulti
-                                    />
-                                    <Button
-                                        type="button"
-                                        onClick={() =>
-                                            setValue(
-                                                "databaseNames",
-                                                databaseOptions.map((x) => x.value)
-                                            )
-                                        }
-                                    >
-                                        Select all
-                                    </Button>
-                                </InputGroup>
-                            </Collapse>
-                        </FormGroup>
-                        <FormGroup>
-                            <FormSwitch control={control} name="isFilterByHttpMethod">
-                                Filter by HTTP Method
-                            </FormSwitch>
-                            <Collapse isOpen={isFilterByHttpMethod}>
-                                <InputGroup>
-                                    <FormSelect
-                                        control={control}
-                                        name="httpMethods"
-                                        placeholder="Select HTTP methods"
-                                        options={httpMethodsOptions}
-                                        isMulti
-                                    />
-                                    <Button
-                                        type="button"
-                                        onClick={() =>
-                                            setValue(
-                                                "httpMethods",
-                                                httpMethodsOptions.map((x) => x.value)
-                                            )
-                                        }
-                                    >
-                                        Select all
-                                    </Button>
-                                </InputGroup>
-                            </Collapse>
-                        </FormGroup>
-                        {isUsingHttps && (
+                    <Collapse in={isEnabled}>
+                        <div>
                             <FormGroup>
-                                <FormSwitch control={control} name="isFilterByCertificateThumbprint">
-                                    Filter by Certificate Thumbprint
+                                <FormSwitch control={control} name="isFilterByChangeType">
+                                    Filter by Change Type
                                 </FormSwitch>
-
-                                <Collapse isOpen={isFilterByCertificateThumbprint}>
-                                    {thumbprintFieldsArray.fields.map((field, idx) => (
-                                        <FormGroup key={field.id}>
-                                            <FormInput
-                                                type="text"
-                                                control={control}
-                                                name={`certificateThumbprints.${idx}.value`}
-                                                placeholder="Certificate Thumbprint"
-                                                addon={
-                                                    <Button
-                                                        type="button"
-                                                        color="link"
-                                                        className="text-danger"
-                                                        onClick={() => thumbprintFieldsArray.remove(idx)}
-                                                    >
-                                                        <Icon icon="trash" margin="m-0" />
-                                                    </Button>
-                                                }
-                                            />
-                                        </FormGroup>
-                                    ))}
-                                    {certificateThumbprintsError && (
-                                        <FormValidationMessage>{certificateThumbprintsError}</FormValidationMessage>
-                                    )}
-                                    <Button
-                                        type="button"
-                                        color="info"
-                                        className="mt-1"
-                                        outline
-                                        onClick={() => thumbprintFieldsArray.append({ value: "" })}
-                                    >
-                                        <Icon icon="plus" />
-                                        Add
-                                    </Button>
+                                <Collapse in={isFilterByChangeType}>
+                                    <InputGroup>
+                                        <FormSelect
+                                            control={control}
+                                            name="changeTypes"
+                                            placeholder="Select event types"
+                                            options={changeTypesOptions}
+                                            isMulti
+                                        />
+                                        <Button
+                                            variant="secondary"
+                                            type="button"
+                                            onClick={() =>
+                                                setValue(
+                                                    "changeTypes",
+                                                    changeTypesOptions.map((x) => x.value)
+                                                )
+                                            }
+                                        >
+                                            Select all
+                                        </Button>
+                                    </InputGroup>
                                 </Collapse>
                             </FormGroup>
-                        )}
-                        <FormGroup>
-                            <Label>Minimum Request Size</Label>
-                            <FormInput
-                                type="number"
-                                control={control}
-                                name="minimumRequestSizeInBytes"
-                                placeholder="Minimum Request Size"
-                                addon="bytes"
-                            />
-                        </FormGroup>
-                        <FormGroup>
-                            <Label>Minimum Request Duration</Label>
-                            <FormInput
-                                type="number"
-                                control={control}
-                                name="minimumRequestDurationInMs"
-                                placeholder="Minimum Duration"
-                                addon="ms"
-                            />
-                        </FormGroup>
-                        <FormGroup>
-                            <Label>Minimum Response Size</Label>
-                            <FormInput
-                                type="number"
-                                control={control}
-                                name="minimumResponseSizeInBytes"
-                                placeholder="Minimum Response Size"
-                                addon="bytes"
-                            />
-                        </FormGroup>
-                        {!isCloud && (
                             <FormGroup>
-                                <FormSwitch control={control} name="isPersist">
-                                    Save this configuration in <code>settings.json</code>
-                                    <AdminLogsPersistInfoIcon />
+                                <FormSwitch control={control} name="isFilterByStatusCode">
+                                    Filter by HTTP Status Code
                                 </FormSwitch>
+                                <Collapse in={isFilterByStatusCode}>
+                                    <InputGroup>
+                                        <FormSelect
+                                            control={control}
+                                            name="statusCodes"
+                                            placeholder="Select status codes"
+                                            options={statusCodesOptions}
+                                            isMulti
+                                        />
+                                        <Button
+                                            variant="secondary"
+                                            type="button"
+                                            onClick={() =>
+                                                setValue(
+                                                    "statusCodes",
+                                                    statusCodesOptions.map((x) => x.value)
+                                                )
+                                            }
+                                        >
+                                            Select all
+                                        </Button>
+                                    </InputGroup>
+                                </Collapse>
                             </FormGroup>
-                        )}
+                            <FormGroup>
+                                <FormSwitch control={control} name="isFilterByDatabaseName">
+                                    Filter by Database
+                                </FormSwitch>
+                                <Collapse in={isFilterByDatabaseName}>
+                                    <InputGroup>
+                                        <FormSelect
+                                            control={control}
+                                            name="databaseNames"
+                                            placeholder="Select databases"
+                                            options={databaseOptions}
+                                            isMulti
+                                        />
+                                        <Button
+                                            variant="secondary"
+                                            type="button"
+                                            onClick={() =>
+                                                setValue(
+                                                    "databaseNames",
+                                                    databaseOptions.map((x) => x.value)
+                                                )
+                                            }
+                                        >
+                                            Select all
+                                        </Button>
+                                    </InputGroup>
+                                </Collapse>
+                            </FormGroup>
+                            <FormGroup>
+                                <FormSwitch control={control} name="isFilterByHttpMethod">
+                                    Filter by HTTP Method
+                                </FormSwitch>
+                                <Collapse in={isFilterByHttpMethod}>
+                                    <InputGroup>
+                                        <FormSelect
+                                            control={control}
+                                            name="httpMethods"
+                                            placeholder="Select HTTP methods"
+                                            options={httpMethodsOptions}
+                                            isMulti
+                                        />
+                                        <Button
+                                            variant="secondary"
+                                            type="button"
+                                            onClick={() =>
+                                                setValue(
+                                                    "httpMethods",
+                                                    httpMethodsOptions.map((x) => x.value)
+                                                )
+                                            }
+                                        >
+                                            Select all
+                                        </Button>
+                                    </InputGroup>
+                                </Collapse>
+                            </FormGroup>
+                            {isUsingHttps && (
+                                <FormGroup>
+                                    <FormSwitch control={control} name="isFilterByCertificateThumbprint">
+                                        Filter by Certificate Thumbprint
+                                    </FormSwitch>
+
+                                    <Collapse in={isFilterByCertificateThumbprint}>
+                                        <div>
+                                            {thumbprintFieldsArray.fields.map((field, idx) => (
+                                                <FormGroup key={field.id}>
+                                                    <FormInput
+                                                        type="text"
+                                                        control={control}
+                                                        name={`certificateThumbprints.${idx}.value`}
+                                                        placeholder="Certificate Thumbprint"
+                                                        addon={
+                                                            <Button
+                                                                type="button"
+                                                                variant="link"
+                                                                className="text-danger"
+                                                                onClick={() => thumbprintFieldsArray.remove(idx)}
+                                                            >
+                                                                <Icon icon="trash" margin="m-0" />
+                                                            </Button>
+                                                        }
+                                                    />
+                                                </FormGroup>
+                                            ))}
+                                            {certificateThumbprintsError && (
+                                                <FormValidationMessage>
+                                                    {certificateThumbprintsError}
+                                                </FormValidationMessage>
+                                            )}
+                                            <Button
+                                                type="button"
+                                                variant="outline-info"
+                                                className="mt-1"
+                                                onClick={() => thumbprintFieldsArray.append({ value: "" })}
+                                            >
+                                                <Icon icon="plus" />
+                                                Add
+                                            </Button>
+                                        </div>
+                                    </Collapse>
+                                </FormGroup>
+                            )}
+                            <FormGroup>
+                                <FormLabel>Minimum Request Size</FormLabel>
+                                <FormInput
+                                    type="number"
+                                    control={control}
+                                    name="minimumRequestSizeInBytes"
+                                    placeholder="Minimum Request Size"
+                                    addon="bytes"
+                                />
+                            </FormGroup>
+                            <FormGroup>
+                                <FormLabel>Minimum Request Duration</FormLabel>
+                                <FormInput
+                                    type="number"
+                                    control={control}
+                                    name="minimumRequestDurationInMs"
+                                    placeholder="Minimum Duration"
+                                    addon="ms"
+                                />
+                            </FormGroup>
+                            <FormGroup>
+                                <FormLabel>Minimum Response Size</FormLabel>
+                                <FormInput
+                                    type="number"
+                                    control={control}
+                                    name="minimumResponseSizeInBytes"
+                                    placeholder="Minimum Response Size"
+                                    addon="bytes"
+                                />
+                            </FormGroup>
+                            {!isCloud && (
+                                <FormGroup>
+                                    <FormSwitch control={control} name="isPersist">
+                                        Save this configuration in <code>settings.json</code>
+                                        <AdminLogsPersistInfoIcon />
+                                    </FormSwitch>
+                                </FormGroup>
+                            )}
+                        </div>
                     </Collapse>
                     <ButtonWithSpinner
                         type="submit"
-                        color="success"
+                        variant="success"
                         className="ms-auto"
                         icon="save"
                         isSpinning={formState.isSubmitting}
@@ -290,8 +293,8 @@ export default function AdminLogsConfigTrafficWatch({ targetId }: { targetId: st
                         Save
                     </ButtonWithSpinner>
                 </Form>
-            </AccordionBody>
-        </AccordionItem>
+            </Accordion.Body>
+        </Accordion.Item>
     );
 }
 

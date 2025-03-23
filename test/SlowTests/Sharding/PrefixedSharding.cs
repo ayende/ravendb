@@ -2391,7 +2391,7 @@ public class PrefixedSharding : ClusterTestBase
                 Assert.Equal(1, count);
             }
 
-            await Sharding.Backup.RunBackupAsync(store, backupTaskId, isFullBackup: false);
+            await Sharding.Backup.RunBackupAsync(store, backupTaskId.TaskId, isFullBackup: false);
             Assert.True(WaitHandle.WaitAll(waitHandles, TimeSpan.FromMinutes(1)));
 
             var dirs = Directory.GetDirectories(backupPath);

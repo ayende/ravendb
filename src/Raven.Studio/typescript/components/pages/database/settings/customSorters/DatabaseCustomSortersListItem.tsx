@@ -1,13 +1,13 @@
 import fileImporter from "common/fileImporter";
 import ButtonWithSpinner from "components/common/ButtonWithSpinner";
-import { FormInput, FormAceEditor } from "components/common/Form";
+import { FormAceEditor, FormInput, FormLabel } from "components/common/Form";
 import {
     RichPanel,
+    RichPanelActions,
+    RichPanelDetails,
     RichPanelHeader,
     RichPanelInfo,
     RichPanelName,
-    RichPanelActions,
-    RichPanelDetails,
 } from "components/common/RichPanel";
 import DeleteCustomSorterConfirm from "components/common/customSorters/DeleteCustomSorterConfirm";
 import { accessManagerSelectors } from "components/common/shell/accessManagerSliceSelectors";
@@ -23,12 +23,13 @@ import {
 import { useAppSelector } from "components/store";
 import { tryHandleSubmit } from "components/utils/common";
 import { Icon } from "components/common/Icon";
-import React from "react";
-import { useState } from "react";
-import { UseAsyncReturn, useAsyncCallback } from "react-async-hook";
-import { useForm, useWatch, SubmitHandler } from "react-hook-form";
+import React, { useState } from "react";
+import { useAsyncCallback, UseAsyncReturn } from "react-async-hook";
+import { SubmitHandler, useForm, useWatch } from "react-hook-form";
 import Collapse from "react-bootstrap/Collapse";
-import { Form, InputGroup, Label } from "reactstrap";
+import InputGroup from "react-bootstrap/InputGroup";
+import Form from "react-bootstrap/Form";
+
 import DatabaseCustomSorterTest from "components/pages/database/settings/customSorters/DatabaseCustomSorterTest";
 import { ConditionalPopover } from "components/common/ConditionalPopover";
 import { databaseSelectors } from "components/common/shell/databaseSliceSelectors";
@@ -140,7 +141,7 @@ export default function DatabaseCustomSortersListItem(props: DatabaseCustomSorte
                         <RichPanelDetails className="vstack gap-3 p-4">
                             {isNew && (
                                 <InputGroup className="vstack mb-1">
-                                    <Label>Name</Label>
+                                    <FormLabel>Name</FormLabel>
                                     <FormInput
                                         type="text"
                                         control={control}
@@ -152,7 +153,7 @@ export default function DatabaseCustomSortersListItem(props: DatabaseCustomSorte
                             <InputGroup className="vstack">
                                 {hasDatabaseAdminAccess && (
                                     <div className="d-flex justify-content-end">
-                                        <Label className="btn btn-link btn-xs text-right">
+                                        <FormLabel className="btn btn-link btn-xs text-right">
                                             <Icon icon="upload" />
                                             Load from a file
                                             <input
@@ -165,7 +166,7 @@ export default function DatabaseCustomSortersListItem(props: DatabaseCustomSorte
                                                 }
                                                 accept=".cs"
                                             />
-                                        </Label>
+                                        </FormLabel>
                                     </div>
                                 )}
                                 <FormAceEditor

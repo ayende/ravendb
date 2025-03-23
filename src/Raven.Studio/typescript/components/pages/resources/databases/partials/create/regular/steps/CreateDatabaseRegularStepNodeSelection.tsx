@@ -2,11 +2,11 @@ import { Icon } from "components/common/Icon";
 import { CreateDatabaseRegularFormData } from "../createDatabaseRegularValidation";
 import { useEffect } from "react";
 import { useFormContext, useWatch } from "react-hook-form";
-import { Table, Label } from "reactstrap";
-import { FormSelect } from "components/common/Form";
+import Table from "react-bootstrap/Table";
+import { FormLabel, FormSelect } from "components/common/Form";
 import { OptionWithIcon, SelectOptionWithIcon, SingleValueWithIcon } from "components/common/select/Select";
 import { Checkbox } from "components/common/Checkbox";
-import { NodeSet, NodeSetLabel, NodeSetList, NodeSetItem } from "components/common/NodeSet";
+import { NodeSet, NodeSetItem, NodeSetLabel, NodeSetList } from "components/common/NodeSet";
 import { useAppSelector } from "components/store";
 import { clusterSelectors } from "components/common/shell/clusterSlice";
 import OverlayTrigger from "react-bootstrap/OverlayTrigger";
@@ -146,7 +146,7 @@ export default function CreateDatabaseRegularStepNodeSelection() {
                     <NodeSetList>
                         {availableNodeTags.map((nodeTag) => (
                             <NodeSetItem key={nodeTag}>
-                                <Label title={"Node " + nodeTag}>
+                                <FormLabel title={"Node " + nodeTag}>
                                     <Icon icon="node" color="node" />
                                     {nodeTag}
                                     <div className="d-flex justify-content-center">
@@ -155,7 +155,7 @@ export default function CreateDatabaseRegularStepNodeSelection() {
                                             selected={manualNodes.includes(nodeTag)}
                                         />
                                     </div>
-                                </Label>
+                                </FormLabel>
                             </NodeSetItem>
                         ))}
                     </NodeSetList>

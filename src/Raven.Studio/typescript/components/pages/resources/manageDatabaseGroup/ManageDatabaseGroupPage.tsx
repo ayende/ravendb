@@ -1,5 +1,6 @@
 ﻿import React, { useCallback } from "react";
-import { Input, Label } from "reactstrap";
+import Form from "react-bootstrap/Form";
+
 import { UncontrolledButtonWithDropdownPanel } from "components/common/DropdownPanel";
 import useUniqueId from "components/hooks/useUniqueId";
 import useBoolean from "hooks/useBoolean";
@@ -18,6 +19,7 @@ import { SortableModeCounterProvider } from "./partials/useSortableModeCounter";
 import { licenseSelectors } from "components/common/shell/licenseSlice";
 import { accessManagerSelectors } from "components/common/shell/accessManagerSliceSelectors";
 import Button from "react-bootstrap/Button";
+import { FormLabel } from "components/common/Form";
 
 function getDynamicDatabaseDistributionWarning(
     hasDynamicNodesDistribution: boolean,
@@ -77,9 +79,9 @@ export function ManageDatabaseGroupPage() {
                     {!db.isSharded && (
                         <UncontrolledButtonWithDropdownPanel buttonText="Settings">
                             <>
-                                <Label className="dropdown-item-text m-0" htmlFor={settingsUniqueId}>
+                                <FormLabel className="dropdown-item-text m-0" htmlFor={settingsUniqueId}>
                                     <div className="d-flex gap-3 form-switch">
-                                        <Input
+                                        <Form.Check
                                             id={settingsUniqueId}
                                             type="switch"
                                             role="switch"
@@ -89,7 +91,7 @@ export function ManageDatabaseGroupPage() {
                                         />
                                         Allow dynamic database distribution
                                     </div>
-                                </Label>
+                                </FormLabel>
                                 {dynamicDatabaseDistributionWarning && (
                                     <div className="bg-faded-warning px-4 py-2">
                                         {dynamicDatabaseDistributionWarning}

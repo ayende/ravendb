@@ -1,5 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Card, CardBody, Col, InputGroup, Row } from "reactstrap";
+import Card from "react-bootstrap/Card";
+import InputGroup from "react-bootstrap/InputGroup";
+import Row from "react-bootstrap/Row";
+import Col from "react-bootstrap/Col";
 import { AboutViewHeading } from "components/common/AboutView";
 import { Icon } from "components/common/Icon";
 import useConfirm from "components/common/ConfirmDialog";
@@ -210,7 +213,7 @@ export default function DatabaseRecord() {
                         </div>
 
                         <Card>
-                            <CardBody className="d-flex flex-center flex-column flex-wrap gap-4">
+                            <Card.Body className="d-flex flex-center flex-column flex-wrap gap-4">
                                 <InputGroup className="gap-1 flex-wrap flex-column">
                                     <div
                                         className={classNames(
@@ -255,7 +258,7 @@ export default function DatabaseRecord() {
                                         readOnly={!isEditMode}
                                     />
                                 </InputGroup>
-                            </CardBody>
+                            </Card.Body>
                         </Card>
                     </Col>
                     <Col sm={12} lg={4}>

@@ -40,8 +40,6 @@ namespace Micro.Benchmark.Benchmarks.Hardware
 
                 // Exporters for data
                 AddExporter(GetExporters().ToArray());
-                // Generate plots using R if %R_HOME% is correctly set
-                AddExporter(RPlotExporter.Default);
 
                 AddColumn(StatisticColumn.AllStatistics);
 

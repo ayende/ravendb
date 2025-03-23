@@ -291,7 +291,10 @@ namespace Raven.Server.Web.System
                     }
                 }
 
-                databaseRecord.SupportedFeatures = new List<string> { Constants.DatabaseRecord.SupportedFeatures.ThrowRevisionKeyTooBigFix };
+                if (databaseRecord.SupportedFeatures == null || databaseRecord.SupportedFeatures.Count == 0)
+                {
+                    databaseRecord.SupportedFeatures = new List<string> { Constants.DatabaseRecord.SupportedFeatures.ThrowRevisionKeyTooBigFix };
+                }
 
                 var (newIndex, topology, nodeUrlsAddedTo) = await CreateDatabase(databaseRecord.DatabaseName, databaseRecord, context, replicationFactor, index, raftRequestId);
 

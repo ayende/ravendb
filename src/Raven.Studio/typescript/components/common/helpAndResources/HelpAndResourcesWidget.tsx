@@ -2,15 +2,15 @@ import React, { useState } from "react";
 import { Icon } from "components/common/Icon";
 import "./HelpAndResources.scss";
 import { FlexGrow } from "components/common/FlexGrow";
-import { UncontrolledTooltip } from "reactstrap";
-import { AskCommunityContent } from "components/common/helpAndResources/partials/AskCommunityContent";
+import { JoinCommunityContent } from "components/common/helpAndResources/partials/JoinCommunityContent";
 import { FeedbackFormContent } from "components/common/helpAndResources/partials/FeedbackFormContent";
 import { ContactSupportContent } from "components/common/helpAndResources/partials/ContactSupportContent";
 import useBoolean from "components/hooks/useBoolean";
 import GithubButtonWithStars from "components/common/helpAndResources/partials/GithubButtonWithStars";
 import SeeDocumentationButton from "components/common/helpAndResources/partials/SeeDocumentationButton";
+import PopoverWithHoverWrapper from "components/common/PopoverWithHoverWrapper";
 
-type Tab = "Help and resources" | "Ask the community" | "Contact support" | "Submit feedback";
+type Tab = "Help and resources" | "Join the community" | "Contact support" | "Submit feedback";
 
 export function HelpAndResourcesWidget() {
     const { value: isMenuOpen, setValue: setIsMenuOpen } = useBoolean(false);
@@ -26,12 +26,11 @@ export function HelpAndResourcesWidget() {
     return (
         <section className="bottom-right-tools-container">
             {!isMenuOpen && (
-                <>
-                    <span role="button" id="helpWidget" className="btn-help-widget" onClick={toggleIsMenuOpen}>
+                <PopoverWithHoverWrapper message="Help and resources">
+                    <span role="button" className="btn-help-widget" onClick={toggleIsMenuOpen}>
                         <Icon icon="question" margin="m-0" />
                     </span>
-                    <UncontrolledTooltip target="helpWidget">Help and resources</UncontrolledTooltip>
-                </>
+                </PopoverWithHoverWrapper>
             )}
             {isMenuOpen && (
                 <div className="action-menu">
@@ -57,11 +56,11 @@ export function HelpAndResourcesWidget() {
                                 <li
                                     className="action-menu__list-item action-menu__list-item--highlight"
                                     role="button"
-                                    title="Ask the community"
-                                    onClick={() => setActiveTab("Ask the community")}
+                                    title="Join the Community"
+                                    onClick={() => setActiveTab("Join the community")}
                                 >
                                     <Icon icon="group" margin="m-0" />
-                                    Ask the community
+                                    Join the Community
                                 </li>
                                 <li
                                     className="action-menu__list-item"
@@ -76,15 +75,15 @@ export function HelpAndResourcesWidget() {
                             </ul>
                             <div className="action-menu__footer">
                                 <div className="d-flex flex-row align-items-center">
-                                    <small className="text-muted lh-1">See our project on GitHub</small>
+                                    <small className="lh-1">See our project on GitHub</small>
                                     <FlexGrow />
                                     <GithubButtonWithStars />
                                 </div>
                             </div>
                         </>
                     )}
-                    {activeTab === "Ask the community" && (
-                        <AskCommunityContent openFeedbackForm={() => setActiveTab("Submit feedback")} />
+                    {activeTab === "Join the community" && (
+                        <JoinCommunityContent openFeedbackForm={() => setActiveTab("Submit feedback")} />
                     )}
                     {activeTab === "Submit feedback" && (
                         <FeedbackFormContent goBack={() => setActiveTab("Help and resources")} />

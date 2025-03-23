@@ -35,10 +35,6 @@ namespace Micro.Benchmark.Benchmarks.LZ4
 
                 // Exporters for data
                 AddExporter(GetExporters().ToArray());
-                // Generate plots using R if %R_HOME% is correctly set
-                // AddExporter(RPlotExporter.Default);
-
-                // AddColumn(StatisticColumn.AllStatistics);
 
                 AddValidator(BaselineValidator.FailOnError);
                 AddValidator(JitOptimizationsValidator.FailOnError);

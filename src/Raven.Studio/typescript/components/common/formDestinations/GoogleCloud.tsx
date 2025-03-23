@@ -1,8 +1,8 @@
 ﻿import Badge from "react-bootstrap/Badge";
 import Collapse from "react-bootstrap/Collapse";
-import { Card, CardBody, Label } from "reactstrap";
+import Card from "react-bootstrap/Card";
 import Button from "react-bootstrap/Button";
-import { FormInput, FormSwitch } from "components/common/Form";
+import { FormInput, FormLabel, FormSwitch } from "components/common/Form";
 import { useFormContext, useWatch } from "react-hook-form";
 import OverrideConfiguration from "./OverrideConfiguration";
 import { FlexGrow } from "components/common/FlexGrow";
@@ -43,7 +43,7 @@ export default function GoogleCloud({ isForNewConnection }: GoogleCloudProps) {
 
     return (
         <Card className="well">
-            <CardBody>
+            <Card.Body>
                 <FormSwitch name={getName("isEnabled")} control={control}>
                     Google Cloud
                 </FormSwitch>
@@ -62,7 +62,7 @@ export default function GoogleCloud({ isForNewConnection }: GoogleCloudProps) {
                         ) : (
                             <div className="vstack gap-3 mt-2">
                                 <div className="mb-2">
-                                    <Label className="d-flex align-items-center gap-1">
+                                    <FormLabel className="d-flex align-items-center gap-1">
                                         Bucket{" "}
                                         <PopoverWithHoverWrapper
                                             message={
@@ -94,7 +94,7 @@ export default function GoogleCloud({ isForNewConnection }: GoogleCloudProps) {
                                                 Failed connection
                                             </Badge>
                                         ) : null}
-                                    </Label>
+                                    </FormLabel>
 
                                     <FormInput
                                         name={getName("bucketName")}
@@ -105,9 +105,9 @@ export default function GoogleCloud({ isForNewConnection }: GoogleCloudProps) {
                                     />
                                 </div>
                                 <div className="mb-2">
-                                    <Label>
+                                    <FormLabel>
                                         Remote folder name <small className="text-muted fw-light">(optional)</small>
-                                    </Label>
+                                    </FormLabel>
                                     <FormInput
                                         name={getName("remoteFolderName")}
                                         control={control}
@@ -117,12 +117,13 @@ export default function GoogleCloud({ isForNewConnection }: GoogleCloudProps) {
                                     />
                                 </div>
                                 <div className="mb-2">
-                                    <Label>Google Credentials Json</Label>
+                                    <FormLabel>Google Credentials Json</FormLabel>
                                     <FormInput
                                         name={getName("googleCredentialsJson")}
                                         control={control}
                                         placeholder={googleCredentialsJsonPlaceholder}
                                         type="textarea"
+                                        as="textarea"
                                         autoComplete="off"
                                         rows={15}
                                         className={classNames({ "d-none": !isCredentialsJsonVisible })}
@@ -168,7 +169,7 @@ export default function GoogleCloud({ isForNewConnection }: GoogleCloudProps) {
                         )}
                     </div>
                 </Collapse>
-            </CardBody>
+            </Card.Body>
         </Card>
     );
 }

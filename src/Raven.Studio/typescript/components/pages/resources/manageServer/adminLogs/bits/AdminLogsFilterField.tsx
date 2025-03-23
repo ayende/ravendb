@@ -1,13 +1,18 @@
 import { ConditionalPopover } from "components/common/ConditionalPopover";
-import { FormSelect, FormInput } from "components/common/Form";
+import { FormGroup, FormInput, FormLabel, FormSelect } from "components/common/Form";
 import { Icon } from "components/common/Icon";
 import { SelectOption } from "components/common/select/Select";
 import { AdminLogsConfigLogsFormData } from "components/pages/resources/manageServer/adminLogs/disk/settings/AdminLogsConfigLogs";
 import { AdminLogsViewSettingsFormData } from "components/pages/resources/manageServer/adminLogs/view/AdminLogsViewSettingsModal";
-import { logLevelOptions, logFilterActionOptions, logLevelRelevances } from "components/utils/common";
+import { logFilterActionOptions, logLevelOptions, logLevelRelevances } from "components/utils/common";
 import { Control, useWatch } from "react-hook-form";
 import { components, OptionProps } from "react-select";
-import { Row, Col, FormGroup, Label, Button, UncontrolledPopover, Card, InputGroup } from "reactstrap";
+import Button from "react-bootstrap/Button";
+import Card from "react-bootstrap/Card";
+import InputGroup from "react-bootstrap/InputGroup";
+import Row from "react-bootstrap/Row";
+import Col from "react-bootstrap/Col";
+import PopoverWithHoverWrapper from "components/common/PopoverWithHoverWrapper";
 
 type FormData = AdminLogsViewSettingsFormData | AdminLogsConfigLogsFormData;
 
@@ -57,7 +62,7 @@ export default function AdminLogsFilterField({ control, idx, remove }: AdminLogs
             <Row>
                 <Col md={4}>
                     <FormGroup className="flex-grow-1">
-                        <Label>Minimum level</Label>
+                        <FormLabel>Minimum level</FormLabel>
                         <FormSelect
                             control={control}
                             name={`filters.${idx}.minLevel`}
@@ -68,7 +73,7 @@ export default function AdminLogsFilterField({ control, idx, remove }: AdminLogs
                 </Col>
                 <Col md={4}>
                     <FormGroup className="flex-grow-1">
-                        <Label>Maximum level</Label>
+                        <FormLabel>Maximum level</FormLabel>
                         <FormSelect
                             control={control}
                             name={`filters.${idx}.maxLevel`}
@@ -79,109 +84,111 @@ export default function AdminLogsFilterField({ control, idx, remove }: AdminLogs
                 </Col>
                 <Col md={4}>
                     <FormGroup className="flex-grow-1">
-                        <Label>
+                        <FormLabel>
                             Action
-                            <span id="filter-action">
+                            <PopoverWithHoverWrapper
+                                message={
+                                    <>
+                                        <p>
+                                            The selected action will apply to all log entries that match the
+                                            filter&apos;s logging-rules (condition + min + max levels):
+                                        </p>
+                                        <ul className="mb-1">
+                                            <li className="mb-1">
+                                                <code>Ignore</code> - The log entry will Not be logged.
+                                            </li>
+                                            <li className="mb-1">
+                                                <code>IgnoreFinal</code> - The log entry will Not be logged.
+                                                <br />
+                                                Any subsequent filters with the same logging-rules as this filter will
+                                                be ignored.
+                                            </li>
+                                            <li className="mb-1">
+                                                <code>Log</code> - The log entry will be logged.
+                                            </li>
+                                            <li className="mb-1">
+                                                <code>LogFinal</code> - The log entry will be logged.
+                                                <br />
+                                                Any subsequent filters with the same logging-rules as this filter will
+                                                be ignored.
+                                            </li>
+                                            <li>
+                                                <code>Neutral</code> - The action to take is deferred to the next filter
+                                                that matches the log entry. If no other filter matches, the
+                                                &quot;Default Filter Action&quot; will be applied.
+                                            </li>
+                                        </ul>
+                                    </>
+                                }
+                            >
                                 <Icon icon="info" color="info" margin="ms-1" />
-                            </span>
-                            <UncontrolledPopover target="filter-action" trigger="hover" className="bs5" placement="top">
-                                <div className="p-3">
-                                    <p>
-                                        The selected action will apply to all log entries that match the filter&apos;s
-                                        logging-rules (condition + min + max levels):
-                                    </p>
-                                    <ul className="mb-1">
-                                        <li className="mb-1">
-                                            <code>Ignore</code> - The log entry will Not be logged.
-                                        </li>
-                                        <li className="mb-1">
-                                            <code>IgnoreFinal</code> - The log entry will Not be logged.
-                                            <br />
-                                            Any subsequent filters with the same logging-rules as this filter will be
-                                            ignored.
-                                        </li>
-                                        <li className="mb-1">
-                                            <code>Log</code> - The log entry will be logged.
-                                        </li>
-                                        <li className="mb-1">
-                                            <code>LogFinal</code> - The log entry will be logged.
-                                            <br />
-                                            Any subsequent filters with the same logging-rules as this filter will be
-                                            ignored.
-                                        </li>
-                                        <li>
-                                            <code>Neutral</code> - The action to take is deferred to the next filter
-                                            that matches the log entry. If no other filter matches, the &quot;Default
-                                            Filter Action&quot; will be applied.
-                                        </li>
-                                    </ul>
-                                </div>
-                            </UncontrolledPopover>
-                        </Label>
+                            </PopoverWithHoverWrapper>
+                        </FormLabel>
                         <FormSelect control={control} name={`filters.${idx}.action`} options={logFilterActionOptions} />
                     </FormGroup>
                 </Col>
             </Row>
             <div className="flex-grow-1 mb-0">
-                <Label className="d-flex">
+                <FormLabel className="d-flex">
                     Condition
-                    <div id="condition-tooltip">
+                    <PopoverWithHoverWrapper
+                        message={
+                            <>
+                                <hr className="p-0 m-0" />
+                                <p>
+                                    This expression will be evaluated against the log entries.
+                                    <br />
+                                    Some examples are:
+                                </p>
+                                <p>
+                                    Log entries related to <strong>database &quot;DB1&quot;</strong>:
+                                    <br />
+                                    <code>
+                                        contains(&apos;&#36;&#123;event-properties:item=Resource&#125;&apos;,
+                                        &apos;DB1&apos;)
+                                    </code>
+                                </p>
+                                <p>
+                                    Log entries for <strong>database &quot;DB2&quot;</strong> with an{" "}
+                                    <strong>exception</strong>:
+                                    <br />
+                                    <code>
+                                        contains(&apos;&#36;&#123;event-properties:item=Resource&#125;&apos;,
+                                        &apos;DB2&apos;) and exception &#33;&#61; null
+                                    </code>
+                                </p>
+                                <p>
+                                    Log entries associated with <strong>index &quot;MyIndex&quot;</strong>:
+                                    <br />
+                                    <code>
+                                        contains(&apos;&#36;&#123;event-properties:item=Component&#125;&apos;,
+                                        &apos;MyIndex&apos;)
+                                    </code>
+                                </p>
+                                <p>
+                                    Log entries from a specific <strong>logger</strong>:
+                                    <br />
+                                    <code>logger &#61;&#61; &apos;Voron.Impl.Journal.WriteAheadJournal&apos;</code>
+                                </p>
+                                <p>
+                                    Log entries that exceed a certain length:
+                                    <br />
+                                    <code>length(message) &gt; 200</code>
+                                </p>
+                                <hr className="p-0 m-0" />
+                                <p className="m-0">
+                                    Learn more about conditions in:
+                                    <br />
+                                    <a href="https://github.com/NLog/NLog/wiki/When-filter#conditions" target="_blank">
+                                        github.com/NLog/NLog/wiki/When-filter#conditions
+                                    </a>
+                                </p>
+                            </>
+                        }
+                    >
                         <Icon icon="info" color="info" margin="ms-1" />
-                    </div>
-                    <UncontrolledPopover target="condition-tooltip" trigger="hover" className="bs5" placement="top">
-                        <div className="p-3">
-                            <hr className="p-0 m-0" />
-                            <p>
-                                This expression will be evaluated against the log entries.
-                                <br />
-                                Some examples are:
-                            </p>
-                            <p>
-                                Log entries related to <strong>database &quot;DB1&quot;</strong>:
-                                <br />
-                                <code>
-                                    contains(&apos;&#36;&#123;event-properties:item=Resource&#125;&apos;,
-                                    &apos;DB1&apos;)
-                                </code>
-                            </p>
-                            <p>
-                                Log entries for <strong>database &quot;DB2&quot;</strong> with an{" "}
-                                <strong>exception</strong>:
-                                <br />
-                                <code>
-                                    contains(&apos;&#36;&#123;event-properties:item=Resource&#125;&apos;,
-                                    &apos;DB2&apos;) and exception &#33;&#61; null
-                                </code>
-                            </p>
-                            <p>
-                                Log entries associated with <strong>index &quot;MyIndex&quot;</strong>:
-                                <br />
-                                <code>
-                                    contains(&apos;&#36;&#123;event-properties:item=Component&#125;&apos;,
-                                    &apos;MyIndex&apos;)
-                                </code>
-                            </p>
-                            <p>
-                                Log entries from a specific <strong>logger</strong>:
-                                <br />
-                                <code>logger &#61;&#61; &apos;Voron.Impl.Journal.WriteAheadJournal&apos;</code>
-                            </p>
-                            <p>
-                                Log entries that exceed a certain length:
-                                <br />
-                                <code>length(message) &gt; 200</code>
-                            </p>
-                            <hr className="p-0 m-0" />
-                            <p className="m-0">
-                                Learn more about conditions in:
-                                <br />
-                                <a href="https://github.com/NLog/NLog/wiki/When-filter#conditions" target="_blank">
-                                    github.com/NLog/NLog/wiki/When-filter#conditions
-                                </a>
-                            </p>
-                        </div>
-                    </UncontrolledPopover>
-                </Label>
+                    </PopoverWithHoverWrapper>
+                </FormLabel>
                 <InputGroup>
                     <FormInput
                         control={control}
@@ -189,7 +196,7 @@ export default function AdminLogsFilterField({ control, idx, remove }: AdminLogs
                         type="text"
                         className="border-top-right-radius-none border-bottom-right-radius-none"
                     />
-                    <Button type="button" color="danger" onClick={remove}>
+                    <Button type="button" variant="danger" onClick={remove}>
                         <Icon icon="trash" margin="m-0" />
                     </Button>
                 </InputGroup>

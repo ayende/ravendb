@@ -1048,7 +1048,10 @@ interface taskInfo {
 }
 
 type TombstoneItem = Raven.Server.Documents.TombstoneCleaner.StateHolder & { Collection: string };
-type TombstonesStateOnWire = Omit<Raven.Server.Documents.TombstoneCleaner.TombstonesState, "Tombstones"> & { Results: TombstoneItem[] };
+type TombstonesStateOnWire = Omit<Raven.Server.Documents.TombstoneCleaner.TombstonesState,"Tombstones" | "PerSubscriptionInfoExtended"> & {
+    Results: TombstoneItem[];
+    PerSubscriptionInfoExtended: Raven.Server.Documents.TombstoneCleaner.TombstonesState.SubscriptionInfoExtended[];
+};
 
 // Server ToJson() method converts the version object to a string
 type LicenseStatus = Omit<Raven.Server.Commercial.LicenseStatus, "Version"> & { Version: string };

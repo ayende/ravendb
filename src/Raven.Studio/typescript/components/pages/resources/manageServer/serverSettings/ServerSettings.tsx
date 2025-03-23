@@ -1,5 +1,6 @@
 import React from "react";
-import { Col, Row } from "reactstrap";
+import Col from "react-bootstrap/Col";
+import Row from "react-bootstrap/Row";
 import { AboutViewHeading } from "components/common/AboutView";
 import { ServerSettingsVirtualTable } from "components/pages/resources/manageServer/serverSettings/ServerSettingsVirtualTable";
 import ButtonWithSpinner from "components/common/ButtonWithSpinner";
@@ -30,13 +31,14 @@ export default function ServerSettings() {
     }
 
     return (
-        <Row className="content-padding">
+        <Row className="content-padding h-100">
             <Col className="h-100" md={12} lg={7}>
                 <div className="h-100 flex-column d-flex mb-4">
                     <AboutViewHeading title="Server Settings" icon="server-settings" />
                     {asyncFetchServerSettings.status !== "error" && (
                         <div className="d-flex justify-content-end">
                             <ButtonWithSpinner
+                                variant="secondary"
                                 className="justify-content-end"
                                 onClick={asyncFetchServerSettings.execute}
                                 isSpinning={asyncFetchServerSettings.loading}

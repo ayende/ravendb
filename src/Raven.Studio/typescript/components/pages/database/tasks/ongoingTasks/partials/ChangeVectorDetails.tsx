@@ -1,6 +1,9 @@
 import copyToClipboard from "common/copyToClipboard";
 import changeVectorUtils from "common/changeVectorUtils";
-import { Button, Input, InputGroup, Label } from "reactstrap";
+import Button from "react-bootstrap/Button";
+import InputGroup from "react-bootstrap/InputGroup";
+import Form from "react-bootstrap/Form";
+import { FormLabel } from "components/common/Form";
 import { Icon } from "components/common/Icon";
 import React from "react";
 
@@ -31,11 +34,11 @@ export function ChangeVectorDetails(props: ChangeVectorDetailsProps) {
         <div className="px-2">
             {sourceDatabaseChangeVectorFormatted && (
                 <div className="mb-3">
-                    <Label for="sourceDatabaseCv" className="mb-0 md-label">
+                    <FormLabel for="sourceDatabaseCv" className="mb-0 md-label">
                         Source database CV
-                    </Label>
+                    </FormLabel>
                     <InputGroup>
-                        <Input
+                        <Form.Control
                             type="text"
                             className="form-control"
                             id="sourceDatabaseCv"
@@ -48,7 +51,7 @@ export function ChangeVectorDetails(props: ChangeVectorDetailsProps) {
                                     sourceDatabaseChangeVectorFormatted.map((x) => x.fullFormat).join(",")
                                 )
                             }
-                            color="primary"
+                            variant="primary"
                             size="sm"
                             title="Copy to clipboard"
                         >
@@ -60,11 +63,11 @@ export function ChangeVectorDetails(props: ChangeVectorDetailsProps) {
 
             {lastAcceptedChangeVectorFromDestinationFormatted && (
                 <div>
-                    <Label for="lastAcceptedCV" className="mb-0 md-label">
+                    <FormLabel for="lastAcceptedCV" className="mb-0 md-label">
                         Last accepted CV (from destination)
-                    </Label>
+                    </FormLabel>
                     <InputGroup>
-                        <Input
+                        <Form.Control
                             type="text"
                             className="form-control"
                             id="lastAcceptedCV"
@@ -77,7 +80,7 @@ export function ChangeVectorDetails(props: ChangeVectorDetailsProps) {
                                     lastAcceptedChangeVectorFromDestinationFormatted.map((x) => x.fullFormat).join(", ")
                                 )
                             }
-                            color="primary"
+                            variant="primary"
                             size="sm"
                             title="Copy to clipboard"
                         >

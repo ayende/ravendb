@@ -47,7 +47,9 @@ import shardViewModelBase = require("viewmodels/shardViewModelBase");
 import shard = require("models/resources/shard");
 import shardedDatabase = require("models/resources/shardedDatabase");
 import assertUnreachable = require("components/utils/assertUnreachable");
+import getDocumentRevisionsPhysicalSizeCommand = require("commands/database/documents/getDocumentRevisionPhysicalSizeCommand");
 import deleteRevisionsForDocumentsCommand = require("commands/database/documents/deleteRevisionsForDocumentsCommand");
+
 
 class editDocument extends shardViewModelBase {
 
@@ -612,11 +614,11 @@ class editDocument extends shardViewModelBase {
         });
 
         this.documentSizeHtml = ko.computed(() => {
-            if (this.isClone() || this.isCreatingNewDocument() || this.inReadOnlyMode()) {
+            if (this.isClone() || this.isCreatingNewDocument()) {
                 return `Computed Size: ${this.computedDocumentSize()} KB`;
             }
             
-            const text = `<div class="margin-top-sm margin-bottom-sm"><strong>Document Size on Disk</strong></div> Actual Size: ${this.sizeOnDiskActual()} <br/> Allocated Size: ${this.sizeOnDiskAllocated()} <br/> Compressed: ${this.isCompressed() ? "Yes" : "No"}`;
+            const text = `<div class="margin-top-sm margin-bottom-sm"><strong>${this.inReadOnlyMode() ? "Revision" : "Document"} Size on Disk</strong></div> Actual Size: ${this.sizeOnDiskActual()} <br/> Allocated Size: ${this.sizeOnDiskAllocated()} <br/> Compressed: ${this.isCompressed() ? "Yes" : "No"}`;
             const hugeSizeText = this.isHugeDocument() ? `<br /><div class="text-warning bg-warning margin-top margin-bottom">Document is huge</div>` : "";
             
             return text + hugeSizeText;
@@ -1392,13 +1394,21 @@ class editDocument extends shardViewModelBase {
                 
                 this.document(doc);
                 this.displayDocumentChange(false);
-
+                this.getRevisionPhysicalSize(changeVector)
                 this.revisionChangeVector(changeVector);
 
                 this.dirtyFlag().reset();
             })
             .fail(() => messagePublisher.reportError("Could not find requested revision. Redirecting to latest version"))
             .always(() => this.isBusy(false));
+    }
+
+    private getRevisionPhysicalSize(changeVector: string): JQueryPromise<Raven.Client.Documents.Commands.SizeDetails> {
+        return new getDocumentRevisionsPhysicalSizeCommand(changeVector, this.activeDatabase()).execute().done((response) => {
+            this.sizeOnDiskActual(response.HumaneActualSize);
+            this.sizeOnDiskAllocated(response.HumaneAllocatedSize);
+            this.isCompressed(response.IsCompressed);
+        });
     }
 
     refreshDocument() {

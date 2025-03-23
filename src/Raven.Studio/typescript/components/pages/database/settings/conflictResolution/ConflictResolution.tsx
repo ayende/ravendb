@@ -1,5 +1,7 @@
 ﻿import React, { useEffect } from "react";
-import { Card, CardBody, Col, Row } from "reactstrap";
+import Card from "react-bootstrap/Card";
+import Row from "react-bootstrap/Row";
+import Col from "react-bootstrap/Col";
 import Button from "react-bootstrap/Button";
 import { AboutViewHeading } from "components/common/AboutView";
 import { Icon } from "components/common/Icon";
@@ -127,7 +129,7 @@ export default function ConflictResolution() {
                             )}
                         </div>
                         <Card>
-                            <CardBody>
+                            <Card.Body>
                                 <Switch
                                     color="primary"
                                     selected={isResolveToLatest}
@@ -139,7 +141,7 @@ export default function ConflictResolution() {
                                     If no script was defined for a collection, resolve the conflict using the latest
                                     version
                                 </Switch>
-                            </CardBody>
+                            </Card.Body>
                         </Card>
                     </LazyLoad>
                 </Col>

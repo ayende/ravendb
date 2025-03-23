@@ -32,6 +32,7 @@ using Raven.Client.Documents.Session.Tokens;
 using Raven.Client.Exceptions;
 using Raven.Client.Extensions;
 using Raven.Client.Util;
+using static Raven.Client.Util.JavascriptConversionExtensions;
 using MethodCallExpression = System.Linq.Expressions.MethodCallExpression;
 using NotSupportedException = System.NotSupportedException;
 
@@ -82,6 +83,7 @@ namespace Raven.Client.Documents.Linq
         private bool _addedDefaultAlias;
         private Type _ofType;
         private bool _isSelectArg;
+        private IncludeSupport _includeSupport;
         private (bool IsSet, string Name) _manualLet;
         private JavascriptConversionExtensions.TypedParameterSupport _typedParameterSupport;
 
@@ -2790,6 +2792,14 @@ The recommended method is to use full text search (mark the field as Analyzed an
                         HandleSelectId(GetSelectPath(field.Member));
                         continue;
                     }
+
+                    if (LinqPathProvider.IsIncludeCall(mce))
+                    {
+                        var name = field.Member.Name;
+                        if (TryProcessIncludeCall(mce, name, lambdaExpression, memberInitExpression))
+                            continue;
+                        return;
+                    }
                 }
 
                 //lambda 2 js
@@ -2874,6 +2884,14 @@ The recommended method is to use full text search (mark the field as Analyzed an
                         HandleSelectId(GetSelectPath(newExpression.Members[index]));
                         continue;
                     }
+
+                    if (LinqPathProvider.IsIncludeCall(mce))
+                    {
+                        var name = newExpression.Members[index].Name;
+                        if (TryProcessIncludeCall(mce, name, lambdaExpression, newExpression))
+                            continue;
+                        return;
+                    }
                 }
 
                 //lambda 2 js
@@ -2884,8 +2902,40 @@ The recommended method is to use full text search (mark the field as Analyzed an
 
                 FieldsToFetch?.Clear();
                 _jsSelectBody = TranslateSelectBodyToJs(newExpression);
+                if (_includeSupport?.IncludeSimpleFunctions != null)
+                {
+                    foreach (var includeFunction in _includeSupport.IncludeSimpleFunctions)
+                    {
+                        var includeName = includeFunction.Split('.')[1];
+                        DocumentQuery.Include(includeName);
+                    }
+                }
                 break;
             }
+        }
+
+        private bool TryProcessIncludeCall(MethodCallExpression mce, string name, LambdaExpression lambdaExpression, Expression memberInitOrNewExpression)
+        {
+            AssertNameForInclude(name);
+
+            if ((mce.Arguments[0] is UnaryExpression unaryExpr && unaryExpr.Operand is LambdaExpression lambdaExpr) == false) 
+                return false;
+
+            if (lambdaExpr.Body is MemberExpression memberExpr)
+            {
+                string fieldName = memberExpr.Member.Name;
+                DocumentQuery.Include(fieldName);
+                return true;
+            }
+
+            if (FromAlias == null)
+            {
+                AddFromAlias(lambdaExpression?.Parameters[0].Name);
+            }
+
+            _declareBuilder ??= new();
+            AddReturnStatementToOutputFunction(memberInitOrNewExpression);
+            return false;
         }
 
         private void SelectMemberAccess(Expression body)
@@ -3006,6 +3056,13 @@ The recommended method is to use full text search (mark the field as Analyzed an
                 _typedParameterSupport = new JavascriptConversionExtensions.TypedParameterSupport(_manualLet.Name);
             }
             var js = TranslateSelectBodyToJs(expression);
+            if (_includeSupport?.IncludeComplexFunctions != null)
+            {
+                foreach (var include in _includeSupport.IncludeComplexFunctions)
+                {
+                    _declareBuilder.Append("\tinclude(").Append(include).AppendLine(");");
+                }
+            }
             _declareBuilder.Append('\t').Append("return ").Append(js).Append(';');
 
             var paramBuilder = new StringBuilder();
@@ -3043,6 +3100,45 @@ The recommended method is to use full text search (mark the field as Analyzed an
             if (_insideWhereOrSearchCounter > 0)
                 throw new NotSupportedException("Queries with a LET clause before a WHERE clause are not supported. " +
                                                 "WHERE clauses should appear before any LET clauses.");
+            MethodCallExpression includeMethodCall = null;
+            int includeIndex = -1;
+
+            for (int i = 0; i < expression.Arguments.Count; i++)
+            {
+                var argument = expression.Arguments[i];
+                if (argument is MethodCallExpression methodCall &&
+                    methodCall.Method.DeclaringType == typeof(RavenQuery) &&
+                    methodCall.Method.Name == "Include")
+                {
+                    includeMethodCall = methodCall;
+                    includeIndex = i;
+                    break;
+                }
+            }
+
+            if (includeMethodCall != null && includeIndex != -1 && expression.Members != null)
+            {
+                var name = expression.Members[includeIndex].Name;
+                AssertNameForInclude(name);
+
+                if (includeMethodCall.Arguments[0] is UnaryExpression unaryExpr &&
+                    unaryExpr.Operand is LambdaExpression lambdaExpr)
+                {
+                    if (lambdaExpr.Body is MemberExpression memberExpr)
+                    {
+                        string fieldName = memberExpr.Member.Name;
+                        DocumentQuery.Include(fieldName);
+
+                        if (FromAlias == null)
+                        {
+                            var parameter = expression.Arguments[0] as ParameterExpression;
+                            AddFromAlias(parameter?.Name);
+                        }
+
+                        return;
+                    }
+                }
+            }
 
             if (FromAlias == null)
             {
@@ -3101,6 +3197,12 @@ The recommended method is to use full text search (mark the field as Analyzed an
                 var loadSupport = new JavascriptConversionExtensions.LoadSupport(_loadTypes) { DoNotTranslate = shouldUseLoadToken };
                 var js = ToJs(arg, false, loadSupport);
 
+                if (_includeSupport.HasInclude)
+                {
+                    _includeSupport.HasInclude = false;
+                    AssertNameForInclude(name);
+                }
+
                 if (loadSupport.HasLoad && shouldUseLoadToken)
                 {
                     HandleLoad(arg, loadSupport, name, js, wrapper);
@@ -3116,7 +3218,6 @@ The recommended method is to use full text search (mark the field as Analyzed an
                 AppendLineToOutputFunction(_manualLet.Name, wrapper.ToString());
             }
         }
-
 
         private void HandleLoad(Expression expression, JavascriptConversionExtensions.LoadSupport loadSupport, string name, string js, StringBuilder wrapper)
         {
@@ -3275,10 +3376,14 @@ The recommended method is to use full text search (mark the field as Analyzed an
             }
 
             _declareBuilder ??= new StringBuilder();
-            _declareBuilder.Append('\t')
-                .Append("var ").Append(name)
-                .Append(" = ").Append(js).Append(';')
-                .Append(Environment.NewLine);
+
+            if (string.IsNullOrEmpty(js) == false)
+            {
+                _declareBuilder.Append('\t')
+                    .Append("var ").Append(name)
+                    .Append(" = ").Append(js).Append(';')
+                    .Append(Environment.NewLine);
+            }
         }
 
         private static void AddPropertyToWrapperObject(string name, string js, StringBuilder wrapper)
@@ -3330,7 +3435,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
         private string TranslateSelectBodyToJs(Expression expression)
         {
             var sb = new StringBuilder();
-          
+
             if (expression is NewExpression newExpression)
             {
                 sb.Append("{ ");
@@ -3352,6 +3457,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
                         AddJsProjection(name, newExpression.Arguments[index], sb, index != 0);
                     }
                 }
+
                 sb.Append(" }");
             }
 
@@ -3376,18 +3482,47 @@ The recommended method is to use full text search (mark the field as Analyzed an
                         continue;
                     }
 
-                    AddJsProjection(name, field.Expression, sb, index != 0);
-
+                    if (_includeSupport?.IncludeComplexFunctions != null || _includeSupport?.IncludeSimpleFunctions != null)
+                    {
+                        var totalIncludes = (_includeSupport.IncludeComplexFunctions?.Count ?? 0)
+                                            + (_includeSupport.IncludeSimpleFunctions?.Count ?? 0);
+                        AddJsProjection(name, field.Expression, sb, index - totalIncludes > 0);
+                    }
+                    else
+                    {
+                        AddJsProjection(name, field.Expression, sb, index != 0);
+                    }
                 }
+
                 sb.Append(" }");
             }
 
             if (expression is MemberExpression or MethodCallExpression)
-            { 
+            {
                 if (IsRawOrTimeSeriesCall(expression, out string script) == false)
                     script = ToJs(expression);
-                
+
+                var anyInclude = false;
+                var containsDot = false;
+                if (expression is MemberExpression)
+                {
+                    anyInclude = (_includeSupport is not null && _includeSupport.IncludeComplexFunctions.IsNullOrEmpty() == false);
+                    containsDot = GetMember(expression).Path.Contains('.');
+                    if (anyInclude && containsDot)
+                    {
+                        sb.Append('{');
+                        var name = GetMember(expression);
+                        var newName = name.Path.Split('.')[1];
+                        sb.Append(newName);
+                        sb.Append(':');
+                    }
+                }
+
                 sb.Append(script);
+                if (expression is MemberExpression && anyInclude && containsDot)
+                {
+                    sb.Append('}');
+                }
             }
 
             return sb.ToString();
@@ -3401,7 +3536,25 @@ The recommended method is to use full text search (mark the field as Analyzed an
             {
                 script = ToJs(expression);
             }
-            
+
+            if (_includeSupport?.HasInclude == true)
+            {
+                AssertNameForInclude(name);
+
+                _jsProjectionNames.Remove(name);
+                _includeSupport.HasInclude = false;
+                if (_includeSupport?.IncludeSimpleFunctions != null)
+                {
+                    foreach (var includeFunction in _includeSupport.IncludeSimpleFunctions)
+                    {
+                        var includeName = includeFunction.Split('.')[1];
+                        DocumentQuery.Include(includeName);
+                    }
+                }
+                return;
+
+            }
+
             if (QueryGenerator.Conventions.FindProjectedPropertyNameForIndex != null)
             {
                 var firstDotIndex = script.IndexOf('.');
@@ -3429,6 +3582,14 @@ The recommended method is to use full text search (mark the field as Analyzed an
             sb.Append(name).Append(" : ").Append(script);
         }
 
+        private void AssertNameForInclude(string name)
+        {
+            if (string.IsNullOrEmpty(name) || !name.All(c => c == '_'))
+            {
+                throw new InvalidOperationException("The result of an Include can only be assigned to the discard symbol (_)");
+            }
+        }
+
         private static bool IsRawCall(MethodCallExpression mce)
         {
             return mce.Method.DeclaringType == typeof(RavenQuery) && mce.Method.Name == "Raw";
@@ -3440,6 +3601,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
             {
                 new JavascriptConversionExtensions.DictionarySupport(),
                 JavascriptConversionExtensions.LinqMethodsSupport.Instance,
+                _includeSupport ??= new JavascriptConversionExtensions.IncludeSupport(FromAlias),
                 loadSupport ?? new JavascriptConversionExtensions.LoadSupport(_loadTypes ??= new()),
                 JavascriptConversionExtensions.MetadataSupport.Instance,
                 JavascriptConversionExtensions.CompareExchangeSupport.Instance,
@@ -4043,7 +4205,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
 
             if (_jsSelectBody != null)
             {
-                return documentQuery.CreateDocumentQueryInternal<T>(new QueryData(new[] { _jsSelectBody }, _jsProjectionNames, FromAlias, _declareTokens, _loadTokens, true)
+                return documentQuery.CreateDocumentQueryInternal<T>(new QueryData(new[] { _jsSelectBody }, _jsProjectionNames, FromAlias, _declareTokens, _loadTokens, true, hadAnyInclude: _includeSupport?.IncludeComplexFunctions.IsNullOrEmpty() == false)
                 {
                     QueryStatistics = _queryStatistics
                 });
@@ -4161,7 +4323,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
 
             // used only for DocumentQuery
             var finalQuery = ((DocumentQuery<T>)DocumentQuery).CreateDocumentQueryInternal<TProjection>(
-                new QueryData(fields, projections, FromAlias, _declareTokens, _loadTokens, _declareTokens != null || _jsSelectBody != null)
+                new QueryData(fields, projections, FromAlias, _declareTokens, _loadTokens, _declareTokens != null || _jsSelectBody != null, _includeSupport?.IncludeComplexFunctions.IsNullOrEmpty() == false)
                 {
                     IsProjectInto = _isProjectInto,
                     QueryStatistics =  _queryStatistics

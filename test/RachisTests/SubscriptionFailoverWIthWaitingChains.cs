@@ -9,6 +9,7 @@ using Raven.Client.Documents;
 using Raven.Client.Documents.Operations.OngoingTasks;
 using Raven.Client.Documents.Subscriptions;
 using Raven.Tests.Core.Utils.Entities;
+using Sparrow.Collections;
 using Sparrow.Platform;
 using Sparrow.Server;
 using Tests.Infrastructure;
@@ -44,7 +45,7 @@ namespace RachisTests
                     TimeToWaitBeforeConnectionRetry = TimeSpan.FromMilliseconds(16)
                 });
 
-                HashSet<string> redirects = new HashSet<string>();
+                ConcurrentSet<string> redirects = new ConcurrentSet<string>();
                 var mre = new AsyncManualResetEvent();
                 var processedItems = new List<string>();
                 subsWorker.AfterAcknowledgment += batch =>

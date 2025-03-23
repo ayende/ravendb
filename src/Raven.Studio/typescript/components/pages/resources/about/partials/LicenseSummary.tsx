@@ -1,4 +1,6 @@
-﻿import { Card, CardBody, Col, Row } from "reactstrap";
+﻿import Card from "react-bootstrap/Card";
+import Row from "react-bootstrap/Row";
+import Col from "react-bootstrap/Col";
 import classNames from "classnames";
 import { Icon } from "components/common/Icon";
 import React, { useState } from "react";
@@ -53,25 +55,31 @@ export function LicenseSummary(props: LicenseSummaryProps) {
 
     return (
         <Card>
-            <CardBody>
+            <Card.Body>
                 <h4>License</h4>
-                <Row>
-                    <OverallInfoItem icon="license" label="License type">
-                        <span className={classNames({ "text-cloud": isCloud })}>
-                            {licenseModel.licenseTypeTextProvider(licenseStatus)}
-                        </span>
-                    </OverallInfoItem>
-                    <LicenseExpiration />
-                    <OverallInfoItem icon="raven" label="License server">
-                        <ConnectivityStatusComponent
-                            refreshing={refreshing}
-                            refresh={refreshConnectivity}
-                            status={asyncCheckLicenseServerConnectivity}
-                        />
-                    </OverallInfoItem>
-                    <LicenseActions asyncGetConfigurationSettings={asyncGetConfigurationSettings} />
-                </Row>
-            </CardBody>
+                <div className="vstack gap-4">
+                    <Row>
+                        <OverallInfoItem icon="license" label="License type">
+                            <span className={classNames({ "text-cloud": isCloud })}>
+                                {licenseModel.licenseTypeTextProvider(licenseStatus)}
+                            </span>
+                        </OverallInfoItem>
+                    </Row>
+                    <Row>
+                        <LicenseExpiration />
+                    </Row>
+                    <Row>
+                        <OverallInfoItem icon="raven" label="License server">
+                            <ConnectivityStatusComponent
+                                refreshing={refreshing}
+                                refresh={refreshConnectivity}
+                                status={asyncCheckLicenseServerConnectivity}
+                            />
+                        </OverallInfoItem>
+                        <LicenseActions asyncGetConfigurationSettings={asyncGetConfigurationSettings} />
+                    </Row>
+                </div>
+            </Card.Body>
         </Card>
     );
 }

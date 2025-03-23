@@ -1,5 +1,6 @@
-﻿import { Badge, Form, Label } from "reactstrap";
-import { FormInput } from "components/common/Form";
+﻿import Badge from "react-bootstrap/Badge";
+import Form from "react-bootstrap/Form";
+import { FormInput, FormLabel } from "components/common/Form";
 import React from "react";
 import { SubmitHandler, useForm, useWatch } from "react-hook-form";
 import { ConnectionFormData, EditConnectionStringFormProps, SnowflakeConnection } from "../connectionStringsTypes";
@@ -58,7 +59,7 @@ export default function SnowflakeConnectionString({
     return (
         <Form id="connection-string-form" onSubmit={handleSubmit(handleSave)} className="vstack gap-3">
             <div className="mb-2">
-                <Label>Name</Label>
+                <FormLabel>Name</FormLabel>
                 <FormInput
                     control={control}
                     name="name"
@@ -69,20 +70,20 @@ export default function SnowflakeConnectionString({
                 />
             </div>
             <div className="mb-2">
-                <Label className="d-flex align-items-center gap-1">
+                <FormLabel className="d-flex align-items-center gap-1">
                     Connection string{" "}
                     {asyncTest.result?.Success ? (
-                        <Badge color="success" pill>
+                        <Badge bg="success" pill>
                             <Icon icon="check" />
                             Successfully connected
                         </Badge>
                     ) : asyncTest.result?.Error ? (
-                        <Badge color="danger" pill>
+                        <Badge bg="danger" pill>
                             <Icon icon="warning" />
                             Failed connection
                         </Badge>
                     ) : null}
-                </Label>
+                </FormLabel>
                 <FormInput
                     control={control}
                     name="connectionString"
@@ -94,7 +95,7 @@ export default function SnowflakeConnectionString({
                 <div className="d-flex mt-4">
                     <FlexGrow />
                     <ButtonWithSpinner
-                        color="secondary"
+                        variant="secondary"
                         icon="rocket"
                         onClick={asyncTest.execute}
                         isSpinning={asyncTest.loading}

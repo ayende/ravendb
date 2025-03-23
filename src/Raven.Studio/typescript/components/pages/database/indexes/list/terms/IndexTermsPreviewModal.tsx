@@ -1,4 +1,5 @@
-import { Button, Modal, ModalBody, ModalFooter } from "reactstrap";
+import Button from "react-bootstrap/Button";
+import Modal from "components/common/Modal";
 import { Icon } from "components/common/Icon";
 import React, { useState } from "react";
 import Code from "components/common/Code";
@@ -36,20 +37,20 @@ export default function IndexTermsPreviewModal({
     };
 
     return (
-        <Modal centered contentClassName="modal-border bulge-primary" isOpen={isOpen} wrapClassName="bs5">
-            <ModalBody className="pb-0 vstack gap-3">
-                <div className="position-absolute m-2 end-0 top-0">
-                    <Button close onClick={toggleModal} />
-                </div>
+        <Modal contentClassName="modal-border bulge-primary" show={isOpen}>
+            <Modal.Header className="vstack gap-3" onCloseClick={toggleModal}>
                 <div className="text-center">
                     <Icon icon="terms" color="primary" margin="me-0" className="fs-1" />
                 </div>
                 <div className="text-center lead">Indexing term value</div>
+            </Modal.Header>
+            <Modal.Body>
                 <Code elementToCopy={term} code={term} language="plaintext" />
-            </ModalBody>
-            <ModalFooter className="mt-4 d-flex justify-content-between w-100">
+            </Modal.Body>
+            <Modal.Footer className="mt-4 d-flex justify-content-between w-100">
                 <div className="d-flex gap-2">
                     <Button
+                        variant="secondary"
                         onClick={navigateToPreviousTerm}
                         disabled={!canNavigateToPreviousTerm}
                         className="rounded-pill"
@@ -57,15 +58,20 @@ export default function IndexTermsPreviewModal({
                         <Icon icon="arrow-thin-left" />
                         Previous
                     </Button>
-                    <Button onClick={navigateToNextTerm} disabled={!canNavigateToNextTerm} className="rounded-pill">
+                    <Button
+                        variant="secondary"
+                        onClick={navigateToNextTerm}
+                        disabled={!canNavigateToNextTerm}
+                        className="rounded-pill"
+                    >
                         Next
                         <Icon icon="arrow-thin-right" margin="ms-1" />
                     </Button>
                 </div>
-                <Button className="rounded-pill" color="primary" onClick={toggleModal} type="button">
+                <Button className="rounded-pill" variant="primary" onClick={toggleModal} type="button">
                     Close
                 </Button>
-            </ModalFooter>
+            </Modal.Footer>
         </Modal>
     );
 }

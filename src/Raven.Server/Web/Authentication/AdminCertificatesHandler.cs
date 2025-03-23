@@ -95,7 +95,7 @@ namespace Raven.Server.Web.Authentication
                     var permissions = FormatPermissions(certificate);
 
                     LogAuditFor("Certificates", "GENERATE", 
-                        $"Certificate {certificate?.Name}. Security Clearance: {certificate?.SecurityClearance}. Permissions: {permissions}. TwoFactor: {string.IsNullOrEmpty(twoFactorAuthenticationKey)}");
+                        $"Certificate {certificate?.Name}. Security Clearance: {certificate?.SecurityClearance}. Permissions: {permissions}. TwoFactor: {string.IsNullOrEmpty(twoFactorAuthenticationKey) == false}");
                 }
                 
                 byte[] certs = null;
@@ -234,7 +234,7 @@ namespace Raven.Server.Web.Authentication
                     var permissions = FormatPermissions(certificate);
                     LogAuditFor("Certificates",
                         "ADD",
-                        $"New certificate {certificate?.Name} ['{certificate?.Thumbprint}']. Security Clearance: {certificate?.SecurityClearance}. Permissions:{permissions}. TwoFactor: {string.IsNullOrEmpty(twoFactorAuthenticationKey)}");
+                        $"New certificate {certificate?.Name} ['{certificate?.Thumbprint}']. Security Clearance: {certificate?.SecurityClearance}. Permissions:{permissions}. TwoFactor: {string.IsNullOrEmpty(twoFactorAuthenticationKey) == false}");
                 }
 
                 try
@@ -778,7 +778,7 @@ namespace Raven.Server.Web.Authentication
                     var permissions = FormatPermissions(newCertificate);
 
                     LogAuditFor("Certificates", "CHANGE", 
-                        $"Certificate {newCertificate?.Name}. Security Clearance: {newCertificate?.SecurityClearance}. Permissions: {permissions}. TwoFactor: {string.IsNullOrEmpty(twoFactorAuthenticationKey)}");
+                        $"Certificate {newCertificate?.Name}. Security Clearance: {newCertificate?.SecurityClearance}. Permissions: {permissions}. TwoFactor: {string.IsNullOrEmpty(twoFactorAuthenticationKey) == false}");
                 }
 
                 var cmd = new PutCertificateCommand(newCertificate.Thumbprint,
@@ -1092,6 +1092,7 @@ namespace Raven.Server.Web.Authentication
                                 // Exporting with the private key, but without the password
                                 certBytes = cert.Export(X509ContentType.Pkcs12);
                                 certificate.Certificate = Convert.ToBase64String(certBytes);
+                                certificate.Password = null;
                             }
                             catch (Exception e)
                             {

@@ -95,7 +95,7 @@ namespace Raven.Server.Utils
 
         public void WriteStartArray()
         {
-            _inner.WriteStartArray(); 
+            _inner.WriteStartArray();
         }
 
         public void WriteEndArray()

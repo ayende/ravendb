@@ -1,11 +1,13 @@
-import { FormInput, FormSwitch } from "components/common/Form";
+import { FormInput, FormRange, FormSwitch } from "components/common/Form";
 import { Icon } from "components/common/Icon";
 import { CreateDatabaseRegularFormData } from "../createDatabaseRegularValidation";
 import { useAppSelector } from "components/store";
 import { useEffect } from "react";
 import { useFormContext, useWatch } from "react-hook-form";
 import Collapse from "react-bootstrap/Collapse";
-import { Col, InputGroup, InputGroupText, Row } from "reactstrap";
+import InputGroup from "react-bootstrap/InputGroup";
+import Row from "react-bootstrap/Row";
+import Col from "react-bootstrap/Col";
 import { clusterSelectors } from "components/common/shell/clusterSlice";
 import { licenseSelectors } from "components/common/shell/licenseSlice";
 import { LicenseRestrictedMessage } from "components/common/LicenseRestrictedMessage";
@@ -77,7 +79,7 @@ export default function CreateDatabaseRegularStepReplicationAndSharding() {
             <h2 className="text-center">Replication & Sharding</h2>
 
             <Row>
-                <Col lg={{ size: 8, offset: 2 }} className="text-center">
+                <Col lg={{ span: 8, offset: 2 }} className="text-center">
                     <p>
                         Database replication provides benefits such as improved data availability, increased
                         scalability, and enhanced disaster recovery capabilities.
@@ -120,7 +122,7 @@ export default function CreateDatabaseRegularStepReplicationAndSharding() {
             </Row>
 
             <Row>
-                <Col lg={{ offset: 1, size: 10 }}>
+                <Col lg={{ offset: 1, span: 10 }}>
                     <Row className="pt-2">
                         <Col sm="6" className="d-flex gap-1 align-items-center">
                             <PopoverWithHoverWrapper
@@ -172,7 +174,7 @@ export default function CreateDatabaseRegularStepReplicationAndSharding() {
                             <Collapse in={isReplicationFactorVisible}>
                                 <div>
                                     <InputGroup>
-                                        <InputGroupText>Replication Factor</InputGroupText>
+                                        <InputGroup.Text>Replication Factor</InputGroup.Text>
                                         <FormInput
                                             type="number"
                                             control={control}
@@ -182,8 +184,7 @@ export default function CreateDatabaseRegularStepReplicationAndSharding() {
                                             max={maxReplicationFactor}
                                         />
                                     </InputGroup>
-                                    <FormInput
-                                        type="range"
+                                    <FormRange
                                         control={control}
                                         name="replicationAndShardingStep.replicationFactor"
                                         min="1"
@@ -197,7 +198,7 @@ export default function CreateDatabaseRegularStepReplicationAndSharding() {
                             <Collapse in={isSharded}>
                                 <div>
                                     <InputGroup>
-                                        <InputGroupText>Number of shards</InputGroupText>
+                                        <InputGroup.Text>Number of shards</InputGroup.Text>
                                         <FormInput
                                             type="number"
                                             control={control}
@@ -251,7 +252,7 @@ export default function CreateDatabaseRegularStepReplicationAndSharding() {
             </Row>
 
             <Row className="mt-4">
-                <Col lg={{ offset: 1, size: 5 }}>
+                <Col lg={{ offset: 1, span: 5 }}>
                     <ConditionalPopover
                         conditions={{
                             isActive: !hasDynamicNodesDistribution,
@@ -276,7 +277,7 @@ export default function CreateDatabaseRegularStepReplicationAndSharding() {
                         </FormSwitch>
                     </ConditionalPopover>
                 </Col>
-                <Col lg={{ size: 5 }}>
+                <Col lg={{ span: 5 }}>
                     <ConditionalPopover
                         conditions={[
                             {

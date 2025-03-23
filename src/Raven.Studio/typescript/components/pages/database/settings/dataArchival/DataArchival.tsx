@@ -1,5 +1,8 @@
 ﻿import { useEffect } from "react";
-import { Card, CardBody, Col, Form, Row } from "reactstrap";
+import Card from "react-bootstrap/Card";
+import Form from "react-bootstrap/Form";
+import Row from "react-bootstrap/Row";
+import Col from "react-bootstrap/Col";
 import { useServices } from "hooks/useServices";
 import { useAsyncCallback } from "react-async-hook";
 import {
@@ -128,7 +131,7 @@ export default function DataArchival() {
                             </ConditionalPopover>
                             <Col className={hasDataArchival ? "" : "item-disabled pe-none"}>
                                 <Card>
-                                    <CardBody>
+                                    <Card.Body>
                                         <div className="vstack gap-2">
                                             <FormSwitch
                                                 name="isDataArchivalEnabled"
@@ -160,7 +163,7 @@ export default function DataArchival() {
                                                 />
                                             </div>
                                         </div>
-                                    </CardBody>
+                                    </Card.Body>
                                 </Card>
                             </Col>
                         </Form>

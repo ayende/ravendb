@@ -100,5 +100,18 @@ namespace Sparrow.Collections
         {
             return Count.ToString("#,#", CultureInfo.InvariantCulture);
         }
+
+        public void UnionWith(IEnumerable<T> other)
+        {
+            if (other == null)
+            {
+                throw new ArgumentNullException(nameof(other));
+            }
+
+            foreach (T item in other)
+            {
+                TryAdd(item);
+            }
+        }
     }
 }

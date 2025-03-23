@@ -1,10 +1,11 @@
-import { Row, Col, Label } from "reactstrap";
+import Row from "react-bootstrap/Row";
+import Col from "react-bootstrap/Col";
 import { Icon } from "components/common/Icon";
 import { useFormContext, useWatch } from "react-hook-form";
 import { CreateDatabaseFromBackupFormData as FormData } from "../../createDatabaseFromBackupValidation";
 import CreateDatabaseFromBackupRestorePoint from "components/pages/resources/databases/partials/create/formBackup/steps/source/RestorePointField";
 import { useServices } from "components/hooks/useServices";
-import { FormInput } from "components/common/Form";
+import { FormInput, FormLabel } from "components/common/Form";
 import { useAsyncDebounce } from "components/hooks/useAsyncDebounce";
 import { useRestorePointUtils } from "components/pages/resources/databases/partials/create/formBackup/steps/source/useRestorePointUtils";
 import EncryptionField from "components/pages/resources/databases/partials/create/formBackup/steps/source/EncryptionField";
@@ -48,7 +49,7 @@ export default function BackupSourceRavenCloud() {
             {expireDateMoment && (
                 <Row className="mt-2 align-items-center">
                     <Col lg="3">
-                        <Label className="col-form-label">Link will expire in</Label>
+                        <FormLabel className="col-form-label">Link will expire in</FormLabel>
                     </Col>
                     <Col>
                         <Icon icon="clock" />
@@ -82,9 +83,9 @@ function LinkLabel() {
                 </ol>
             }
         >
-            <Label className="col-form-label">
+            <FormLabel className="col-form-label">
                 Backup Link <Icon icon="info" color="info" margin="m-0" />
-            </Label>
+            </FormLabel>
         </PopoverWithHoverWrapper>
     );
 }

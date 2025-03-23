@@ -46,12 +46,12 @@ namespace Voron.Impl
         internal readonly PageLocator _pageLocator;
         private readonly bool _disposeAllocator;
         private readonly bool _isValidationEnabled;
-        private ImmutableDictionary<long,PageFromScratchBuffer>.Builder _scratchPagesInUse;
-        private readonly ImmutableDictionary<long,PageFromScratchBuffer> _scratchPagesForReads;
+        private ImmutableDictionary<long, PageFromScratchBuffer>.Builder _scratchPagesInUse;
+        private readonly ImmutableDictionary<long, PageFromScratchBuffer> _scratchPagesForReads;
         private HashSet<long> _sparsePageRanges;
         private readonly GetPageMethod _getPageMethod;
         private readonly long _id;
-        
+
         internal long DecompressedBufferBytes;
         internal TestingStuff _forTestingPurposes;
         public Pager.State DataPagerState;
@@ -84,21 +84,21 @@ namespace Voron.Impl
 #endif
             public readonly TableValueBuilder TableValueBuilder = new();
 
-            public readonly HashSet<long> DirtyPagesPool = new ();
-            
+            public readonly HashSet<long> DirtyPagesPool = new();
+
 
             // The ScratchPagesInUse is not just about pooling memory, but about actually holding on to the values _across_ transactions
             // and keeping a mutable instance that we can cheaply modify
-            public ImmutableDictionary<long, PageFromScratchBuffer>.Builder ScratchPagesInUse = ImmutableDictionary.CreateBuilder<long, PageFromScratchBuffer>(); 
+            public ImmutableDictionary<long, PageFromScratchBuffer>.Builder ScratchPagesInUse = ImmutableDictionary.CreateBuilder<long, PageFromScratchBuffer>();
 
             public void Reset()
             {
                 // We are _explicitly_ not clearing this, we rely on the 
                 // state here to carry all the modified pages between write
                 // transactions. 
-                
+
                 // -- ScratchPagesInUse.Clear(); --
-                
+
                 DirtyPagesPool.Clear();
                 TableValueBuilder.Reset();
             }
@@ -108,7 +108,7 @@ namespace Voron.Impl
         private readonly HashSet<long> _dirtyPages;
         private readonly Stack<long> _pagesToFreeOnCommit;
         // END: Structures that are safe to pool.
-        
+
 
         public event Action<LowLevelTransaction> BeforeCommitFinalization;
 
@@ -179,7 +179,7 @@ namespace Voron.Impl
             TxStartTime = previous.TxStartTime;
             DataPager = previous.DataPager;
             DataPagerState = previous.DataPagerState;
-            
+
             _txHeader = TxHeaderInitializerTemplate;
             _env = previous._env;
             _journal = previous._journal;
@@ -230,7 +230,7 @@ namespace Voron.Impl
                 Root = previous._root.ReadHeader()
             };
             _localTxNextPageNumber = previous._localTxNextPageNumber;
-            
+
             _txHeader = TxHeaderInitializerTemplate;
             _env = env;
             _journal = env.Journal;
@@ -252,7 +252,7 @@ namespace Voron.Impl
 
             _dirtyPages = previous._dirtyPages;
             _dirtyPages.Clear();
-            
+
             _transactionPages = new HashSet<PageFromScratchBuffer>(PageFromScratchBufferEqualityComparer.Instance);
             _pagesToFreeOnCommit = new Stack<long>();
 
@@ -321,7 +321,7 @@ namespace Voron.Impl
         {
             var envRecord = _envRecord;
 
-            if (envRecord is null) 
+            if (envRecord is null)
                 ThrowObjectDisposed();
 
             if (envRecord.ClientState is T t)
@@ -357,7 +357,7 @@ namespace Voron.Impl
         {
             _envRecord = _envRecord with { Journal = (journalNumber, last4KWrite) };
         }
-        
+
         internal void UpdateClientState(object state)
         {
             if (VoronConfiguration.FailFastForStability)
@@ -371,7 +371,7 @@ namespace Voron.Impl
 
         private void InitializeRoots()
         {
-            if (_root == null && 
+            if (_root == null &&
                 _envRecord.Root.RootObjectType is not RootObjectType.None)
             {
                 _root = Tree.GetRoot(this, Constants.RootTreeNameSlice, _envRecord.Root);
@@ -542,7 +542,7 @@ namespace Voron.Impl
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private Page PageInternalFromReadScratchTable(long pageNumber)
         {
-            if(_scratchPagesForReads.TryGetValue(pageNumber, out var value))
+            if (_scratchPagesForReads.TryGetValue(pageNumber, out var value))
                 return value.ReadPage(this);
             return GetPageInternalFromDataFile(pageNumber);
         }
@@ -576,7 +576,7 @@ namespace Voron.Impl
 
             DataPager.TryReleasePage(ref PagerTransactionState, pageNumber);
         }
-        
+
         [DoesNotReturn]
         private void ThrowObjectDisposed()
         {
@@ -590,7 +590,7 @@ namespace Voron.Impl
             pageNumber ??= GetPageNumberForAllocation(numberOfPages);
             return AllocatePageImpl(numberOfPages, pageNumber.Value, previousPage, zeroPage);
         }
-        
+
         public Page AllocateMultiplePageAndReturnFirst(int numberOfPages, bool zeroPage = true)
         {
             var firstPageNumber = GetPageNumberForAllocation(numberOfPages);
@@ -633,7 +633,7 @@ namespace Voron.Impl
         public Page AllocateOverflowRawPage(long overflowSize, out int numberOfPages, long? pageNumber = null, Page? previousPage = null, bool zeroPage = true)
         {
             if (overflowSize > int.MaxValue - 1)
-                throw new InvalidOperationException($"Cannot allocate chunks bigger than { int.MaxValue / 1024 * 1024 } Mb.");
+                throw new InvalidOperationException($"Cannot allocate chunks bigger than {int.MaxValue / 1024 * 1024} Mb.");
 
             Debug.Assert(overflowSize >= 0);
 
@@ -666,7 +666,7 @@ namespace Voron.Impl
 #endif
                 var pageFromScratchBuffer = _env.ScratchBufferPool.Allocate(this, numberOfPages, pageNumber, previousVersion ?? default);
 
-              
+
                 _transactionPages.Add(pageFromScratchBuffer);
 
                 _numberOfModifiedPages += numberOfPages;
@@ -767,9 +767,9 @@ namespace Voron.Impl
         public bool IsDisposed => _txStatus.HasFlag(TxStatus.Disposed);
 
         public bool HasErrors => _txStatus.HasFlag(TxStatus.Errored);
-        
+
         public int CurrentTransactionIdHolder { get; set; }
-        
+
         public PageLocator PageLocator => _pageLocator;
 
 
@@ -807,7 +807,7 @@ namespace Voron.Impl
                 _env.TransactionCompleted(this);
 
                 _disposableScope.Dispose();
-              
+
                 if (_disposeAllocator)
                 {
                     if (_env.Options.Encryption.IsEnabled)
@@ -816,7 +816,7 @@ namespace Voron.Impl
                     }
                     _allocator.Dispose();
                 }
-                
+
                 PagerTransactionState.InvokeDispose(_env, ref DataPagerState, ref PagerTransactionState);
                 OnDispose?.Invoke(this);
 
@@ -842,7 +842,7 @@ namespace Voron.Impl
         internal void DiscardScratchModificationOn(long pageNumber)
         {
             var scratchPagesInUse = _scratchPagesInUse;
-            if (scratchPagesInUse.Remove(pageNumber, out var scratchPage) 
+            if (scratchPagesInUse.Remove(pageNumber, out var scratchPage)
                 && scratchPage.AllocatedInTransaction == Id)
             {
                 _transactionPages.Remove(scratchPage);
@@ -887,7 +887,7 @@ namespace Voron.Impl
             }
         }
 
-        private static readonly ObjectPool<CompactKey> _sharedCompactKeyPool = new ( () => new CompactKey() );
+        private static readonly ObjectPool<CompactKey> _sharedCompactKeyPool = new(() => new CompactKey());
 
         public CompactKey AcquireCompactKey()
         {
@@ -903,7 +903,7 @@ namespace Voron.Impl
                 _llt.ReleaseCompactKey(ref _key);
             }
         }
-        
+
         public CompactKeyScope AcquireCompactKey(out CompactKey key)
         {
             key = _sharedCompactKeyPool.Allocate();
@@ -915,7 +915,7 @@ namespace Voron.Impl
         {
             if (key == null)
                 return;
-            
+
             // The reason why we reset the key, which in turn will null the storage is to avoid cases of reused keys
             // been used by multiple operations. Eventually someone wil restore
             if (ReferenceEquals(key, CompactKey.NullInstance) == false)
@@ -934,7 +934,7 @@ namespace Voron.Impl
         public void Commit()
         {
             ValidateOverflowPagesRemoval();
-            
+
             if (Flags != TransactionFlags.ReadWrite)
                 return;// nothing to do
 
@@ -947,7 +947,7 @@ namespace Voron.Impl
                 Environment.LastWorkTime = DateTime.UtcNow;
                 CommitStage2_WriteToJournal();
             }
-            
+
             BeforeCommitFinalization?.Invoke(this);
             CommitStage3_DisposeTransactionResources();
         }
@@ -1107,7 +1107,7 @@ namespace Voron.Impl
                 if (_forTestingPurposes?.SimulateThrowingOnCommitStage2 == true)
                     _forTestingPurposes.ThrowSimulateErrorOnCommitStage2();
 
-                if (_requestedCommitStats == null) 
+                if (_requestedCommitStats == null)
                     return;
 
                 _requestedCommitStats.NumberOfModifiedPages = numberOfUncompressedPages;
@@ -1185,7 +1185,7 @@ namespace Voron.Impl
             try
             {
                 ValidateAllPages();
-                
+
                 PagerTransactionState.InvokeBeforeCommitFinalization(_env, ref DataPagerState, ref PagerTransactionState);
 
                 Committed = true;
@@ -1239,14 +1239,14 @@ namespace Voron.Impl
             ValidateReadOnlyPages();
 
             var rollbackPages = _env.WriteTransactionPool.ScratchPagesInUse;
-            
+
             // we need to roll back all the changes we made here
-            _env.WriteTransactionPool.ScratchPagesInUse = _scratchPagesInUse = _scratchBuffersSnapshotToRollbackTo.ToBuilder(); 
+            _env.WriteTransactionPool.ScratchPagesInUse = _scratchPagesInUse = _scratchBuffersSnapshotToRollbackTo.ToBuilder();
             foreach (var (k, maybeRollBack) in rollbackPages)
             {
-                if(maybeRollBack.AllocatedInTransaction != Id)
+                if (maybeRollBack.AllocatedInTransaction != Id)
                     continue; // from a committed transaction, can keep
-                
+
                 _env.ScratchBufferPool.FreeImmediately(this, maybeRollBack.File.Number, maybeRollBack.PositionInScratchBuffer);
             }
 
@@ -1275,21 +1275,22 @@ namespace Voron.Impl
 
         //overflowPageId, Parent
         private readonly Dictionary<long, long> _overflowPagesToBeRemoved = new();
-        
+
         [Conditional("DEBUG")]
         private void ValidateOverflowPagesRemoval()
         {
             if (_overflowPagesToBeRemoved.Count == 0)
                 return;
-            
+
             StringBuilder sb = new();
             var pagesMissed = from overflowPage in _overflowPagesToBeRemoved
-                group overflowPage.Key by overflowPage.Value
+                              group overflowPage.Key by overflowPage.Value
                 into g
-                select new {
-                    Parent = g.Key, 
-                    OverflowPages = g.Select(i => i).ToArray()
-                };
+                              select new
+                              {
+                                  Parent = g.Key,
+                                  OverflowPages = g.Select(i => i).ToArray()
+                              };
 
             sb.AppendLine("We commit but we still have not deleted all overflow pages to retrieve used storage. Missed pages: ");
             foreach (var pageMissed in pagesMissed)
@@ -1308,14 +1309,14 @@ namespace Voron.Impl
                 _overflowPagesToBeRemoved.Remove(pageId);
                 return;
             }
-            
+
             if (_envRecord.Root.PageCount < pageId)
                 return;
-            
+
             var page = GetPage(pageId);
             if (page.IsOverflow == false)
                 return;
-            
+
             int numberOfOverflowPages = Paging.Paging.GetNumberOfOverflowPages(page.OverflowSize);
             for (int pageOffset = 1; pageOffset < numberOfOverflowPages; ++pageOffset)
             {
@@ -1331,8 +1332,8 @@ namespace Voron.Impl
         private void TrackOverflowPageRemoval(long pageId){}
 
 #endif
-        
-        
+
+
 #if VALIDATE_PAGES
 
         private Dictionary<long, ulong> readOnlyPages = new Dictionary<long, ulong>();
@@ -1465,7 +1466,7 @@ namespace Voron.Impl
             {
                 _tx = tx;
             }
-            
+
             internal void SetLocalTxNextPageNumber(long n)
             {
                 _tx._localTxNextPageNumber = n;
@@ -1535,7 +1536,7 @@ namespace Voron.Impl
             if (_scratchPagesInUse.TryGetValue(value.PageNumberInDataFile, out var existing) == false)
             {
                 // page may have been freed, that is expected
-                return; 
+                return;
             }
 
             Debug.Assert(value.PageNumberInDataFile == existing.PageNumberInDataFile);

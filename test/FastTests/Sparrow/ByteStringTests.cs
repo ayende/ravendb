@@ -1,6 +1,6 @@
-﻿using System;
-using Sparrow.Server;
+﻿using Sparrow.Server;
 using Sparrow.Threading;
+using Tests.Infrastructure;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -125,7 +125,10 @@ namespace FastTests.Sparrow
                 context.Allocate(2 * ByteStringContext.MinBlockSizeInBytes - sizeof(ByteStringStorage), out var byteStringInFirst);
 
                 long ptrLocation = (long)byteStringInFirst._pointer;
-                long nextPtrLocation = ptrLocation + byteStringInFirst._pointer->Size;
+
+                // we need to allocate this since we want the first block to be released as a new segment
+                context.Allocate(1, out var byteStringInSecond);
+                long nextPtrLocation = (long)byteStringInSecond._pointer + byteStringInSecond._pointer->Size;
 
                 context.Release(ref byteStringInFirst); // After the release the block should be reserved as a new segment. 
 
@@ -135,9 +138,9 @@ namespace FastTests.Sparrow
                 Assert.InRange((long)byteStringReused._pointer, ptrLocation, ptrLocation + allocationBlockSize);
                 Assert.Equal(ptrLocation, (long)byteStringReused._pointer); // We are the first in the segment.
 
-                // This allocation will have an allocation unit size of 128 and fit into the rest of the initial segment, which should be 
+                // This allocation will have an allocation unit size of 64 and fit into the rest of the initial segment, which should be 
                 // available for an exact reuse bucket allocation. 
-                context.Allocate(64, out var byteStringReusedFromBucket);
+                context.Allocate(32, out var byteStringReusedFromBucket);
 
                 Assert.Equal((long)byteStringReusedFromBucket._pointer, nextPtrLocation);
             }
@@ -158,6 +161,71 @@ namespace FastTests.Sparrow
                     Assert.Equal(ptrLocation, (long)repeat._pointer);
                     context.Release(ref repeat);
                 }
+            }
+        }
+
+        [RavenFact(RavenTestCategory.Memory)]
+        public void CanResetAllocationBlockSize()
+        {
+            using (var context = new ByteStringContext<ByteStringDirectAllocator>(SharedMultipleUseFlag.None))
+            {
+                while (context.AllocationBlockSize == ByteStringContext.DefaultAllocationBlockSizeInBytes)
+                {
+                    context.Allocate(ByteStringContext.MinBlockSizeInBytes / 2, out _);
+                }
+
+                Assert.NotEqual(ByteStringContext.DefaultAllocationBlockSizeInBytes, context.AllocationBlockSize);
+
+                context.Reset();
+
+                Assert.Equal(ByteStringContext.DefaultAllocationBlockSizeInBytes, context.AllocationBlockSize);
+            }
+
+            var blockSizeInBytes = ByteStringContext.MinBlockSizeInBytes * 8;
+            using (var context = new ByteStringContext<ByteStringDirectAllocator>(SharedMultipleUseFlag.None, allocationBlockSize: blockSizeInBytes))
+            {
+                while (context.AllocationBlockSize == blockSizeInBytes)
+                {
+                    context.Allocate(blockSizeInBytes / 2, out _);
+                }
+
+                Assert.NotEqual(ByteStringContext.MinBlockSizeInBytes, context.AllocationBlockSize);
+
+                context.Reset();
+
+                Assert.Equal(blockSizeInBytes, context.AllocationBlockSize);
+            }
+        }
+
+        [RavenFact(RavenTestCategory.Memory)]
+        public void CanReuseMemory()
+        {
+            using (var context = new ByteStringContext<ByteStringDirectAllocator>(SharedMultipleUseFlag.None))
+            {
+                while (context.AllocationBlockSize != ByteStringContext.MaxSegmentSizeInBytes)
+                {
+                    context.Allocate(ByteStringContext.MinBlockSizeInBytes / 2, out _);
+                }
+
+                Assert.Equal(ByteStringContext.MaxSegmentSizeInBytes, context.AllocationBlockSize);
+
+                const int toAllocate = ByteStringContext.MinBlockSizeInBytes * 5;
+                context.Allocate(toAllocate, out var first);
+                var ptrLocation = (long)first._pointer;
+                var allocatedBefore = context._totalAllocated;
+                context.Release(ref first);
+
+                for (var i = 0; i < 512; i++)
+                {
+                    var allocation = i % 2 == 0 ? toAllocate / 2 : toAllocate;
+                    context.Allocate(allocation, out var byteString);
+
+                    Assert.Equal(ptrLocation, (long)byteString._pointer);
+
+                    context.Release(ref byteString);
+                }
+
+                Assert.Equal(allocatedBefore, context._totalAllocated);
             }
         }
 

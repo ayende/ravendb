@@ -1,7 +1,7 @@
 ﻿import Badge from "react-bootstrap/Badge";
 import Collapse from "react-bootstrap/Collapse";
-import { Card, CardBody, Label } from "reactstrap";
-import { FormInput, FormSwitch } from "components/common/Form";
+import Card from "react-bootstrap/Card";
+import { FormInput, FormLabel, FormSwitch } from "components/common/Form";
 import { useFormContext, useWatch } from "react-hook-form";
 import OverrideConfiguration from "./OverrideConfiguration";
 import { FlexGrow } from "components/common/FlexGrow";
@@ -33,7 +33,7 @@ export default function Azure() {
 
     return (
         <Card className="well">
-            <CardBody>
+            <Card.Body>
                 <FormSwitch name={getName("isEnabled")} control={control}>
                     Azure
                 </FormSwitch>
@@ -52,7 +52,7 @@ export default function Azure() {
                         ) : (
                             <div className="vstack gap-3 mt-2">
                                 <div className="mb-2">
-                                    <Label className="d-flex gap-1 align-items-center">
+                                    <FormLabel className="d-flex gap-1 align-items-center">
                                         Storage container{" "}
                                         <PopoverWithHoverWrapper
                                             message={
@@ -77,7 +77,7 @@ export default function Azure() {
                                                 Failed connection
                                             </Badge>
                                         ) : null}
-                                    </Label>
+                                    </FormLabel>
                                     <FormInput
                                         name={getName("storageContainer")}
                                         control={control}
@@ -87,9 +87,9 @@ export default function Azure() {
                                     />
                                 </div>
                                 <div className="mb-2">
-                                    <Label>
+                                    <FormLabel>
                                         Remote folder name <small className="text-muted fw-light">(optional)</small>
-                                    </Label>
+                                    </FormLabel>
                                     <FormInput
                                         name={getName("remoteFolderName")}
                                         control={control}
@@ -99,7 +99,7 @@ export default function Azure() {
                                     />
                                 </div>
                                 <div className="mb-2">
-                                    <Label>Account name</Label>
+                                    <FormLabel>Account name</FormLabel>
                                     <FormInput
                                         name={getName("accountName")}
                                         control={control}
@@ -109,7 +109,7 @@ export default function Azure() {
                                     />
                                 </div>
                                 <div className="mb-2">
-                                    <Label>Account key</Label>
+                                    <FormLabel>Account key</FormLabel>
                                     <FormInput
                                         name={getName("accountKey")}
                                         control={control}
@@ -140,7 +140,7 @@ export default function Azure() {
                         )}
                     </div>
                 </Collapse>
-            </CardBody>
+            </Card.Body>
         </Card>
     );
 }

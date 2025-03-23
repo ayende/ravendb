@@ -1,26 +1,23 @@
 import AdminLogsConfigTableValue from "components/pages/resources/manageServer/adminLogs/bits/AdminLogsConfigTableValue";
 import { adminLogsSelectors } from "components/pages/resources/manageServer/adminLogs/store/adminLogsSlice";
 import { useAppSelector } from "components/store";
-import { AccordionItem, AccordionBody, AccordionHeader, Table, UncontrolledPopover } from "reactstrap";
+import Table from "react-bootstrap/Table";
 import { Icon } from "components/common/Icon";
+import PopoverWithHoverWrapper from "components/common/PopoverWithHoverWrapper";
+import Accordion from "react-bootstrap/Accordion";
 
 export default function AdminLogsConfigAuditLogs({ targetId }: { targetId: string }) {
     const config = useAppSelector(adminLogsSelectors.configs).adminLogsConfig.AuditLogs;
 
     return (
-        <AccordionItem className="p-1 rounded-3">
-            <AccordionHeader targetId={targetId}>Audit logs</AccordionHeader>
-            <AccordionBody accordionId={targetId}>
+        <Accordion.Item eventKey={targetId} className="p-1 rounded-3">
+            <Accordion.Header>Audit logs</Accordion.Header>
+            <Accordion.Body>
                 <h5 className="text-center text-muted text-uppercase">
                     Read-only
-                    <span id="read-only-tooltip-for-audit-logs">
+                    <PopoverWithHoverWrapper message="These settings are not editable here but can be configured through the server configuration.">
                         <Icon icon="info" color="info" margin="ms-1" />
-                    </span>
-                    <UncontrolledPopover target="read-only-tooltip-for-audit-logs" trigger="hover" className="bs5">
-                        <div className="p-3">
-                            These settings are not editable here but can be configured through the server configuration.
-                        </div>
-                    </UncontrolledPopover>
+                    </PopoverWithHoverWrapper>
                 </h5>
                 <Table>
                     <tbody>
@@ -64,7 +61,7 @@ export default function AdminLogsConfigAuditLogs({ targetId }: { targetId: strin
                         </tr>
                     </tbody>
                 </Table>
-            </AccordionBody>
-        </AccordionItem>
+            </Accordion.Body>
+        </Accordion.Item>
     );
 }

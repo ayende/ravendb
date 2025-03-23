@@ -1,6 +1,10 @@
 import { useEffect, useMemo } from "react";
 import Spinner from "react-bootstrap/Spinner";
-import { Form, Col, Row, Input, InputGroup, Card } from "reactstrap";
+import Card from "react-bootstrap/Card";
+import InputGroup from "react-bootstrap/InputGroup";
+import Form from "react-bootstrap/Form";
+import Row from "react-bootstrap/Row";
+import Col from "react-bootstrap/Col";
 import Button from "react-bootstrap/Button";
 import { SubmitHandler, useForm, useWatch } from "react-hook-form";
 import { FormCheckbox, FormInput, FormRadioToggleWithIcon, FormSelect, FormSwitch } from "components/common/Form";
@@ -201,7 +205,7 @@ export default function ClientDatabaseConfiguration() {
                                                         <Icon icon="info" color="info" />
                                                     </PopoverWithHoverWrapper>
                                                 </div>
-                                                <Input
+                                                <Form.Control
                                                     defaultValue={globalConfig.identityPartsSeparatorValue}
                                                     disabled
                                                     placeholder={
@@ -223,7 +227,7 @@ export default function ClientDatabaseConfiguration() {
                                                         <Icon icon="info" color="info" />
                                                     </PopoverWithHoverWrapper>
                                                 </div>
-                                                <Input
+                                                <Form.Control
                                                     defaultValue={globalConfig.maximumNumberOfRequestsValue}
                                                     disabled
                                                     placeholder={
@@ -377,7 +381,7 @@ export default function ClientDatabaseConfiguration() {
                                                     <Icon icon="info" color="info" />
                                                 </PopoverWithHoverWrapper>
                                             </div>
-                                            <Input
+                                            <Form.Control
                                                 defaultValue={globalConfig.loadBalancerValue}
                                                 disabled
                                                 placeholder="None"
@@ -401,7 +405,7 @@ export default function ClientDatabaseConfiguration() {
                                                             <Icon icon="info" color="info" />
                                                         </PopoverWithHoverWrapper>
                                                     </div>
-                                                    <Input
+                                                    <Form.Control
                                                         defaultValue={globalConfig.loadBalancerSeedValue}
                                                         disabled
                                                         placeholder="0 (default)"
@@ -424,7 +428,7 @@ export default function ClientDatabaseConfiguration() {
                                                     <Icon icon="info" color="info" />
                                                 </PopoverWithHoverWrapper>
                                             </div>
-                                            <Input
+                                            <Form.Control
                                                 defaultValue={globalConfig.readBalanceBehaviorValue}
                                                 placeholder="None"
                                                 disabled
@@ -514,7 +518,6 @@ export default function ClientDatabaseConfiguration() {
                                                         control={control}
                                                         name="loadBalancerSeedEnabled"
                                                         color="primary"
-                                                        label="Seed"
                                                         disabled={
                                                             formValues.loadBalancerValue !== "UseSessionContext" ||
                                                             !canEditDatabaseConfig

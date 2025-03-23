@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using Raven.Server.Documents.Handlers.Debugging.Processors;
 using Raven.Server.Routing;
 using Raven.Server.Utils;
+using Sparrow;
 using Sparrow.Extensions;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
@@ -83,7 +84,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
                 [nameof(TxInfoResult.IsCloned)] = lowLevelTransaction.IsCloned,
                 [nameof(TxInfoResult.NumberOfModifiedPages)] = lowLevelTransaction.NumberOfModifiedPages,
                 [nameof(TxInfoResult.Committed)] = lowLevelTransaction.Committed,
-                [nameof(TxInfoResult.TotalEncryptionBufferSize)] = lowLevelTransaction.AdditionalMemoryUsageSize.ToString(),
+                [nameof(TxInfoResult.DecompressedBufferSize)] = new Size(lowLevelTransaction.DecompressedBufferBytes, SizeUnit.Bytes).ToString(),
             };
         }
     }
@@ -101,6 +102,6 @@ namespace Raven.Server.Documents.Handlers.Debugging
         public bool IsCloned;
         public long NumberOfModifiedPages;
         public bool Committed;
-        public string TotalEncryptionBufferSize;
+        public string DecompressedBufferSize;
     }
 }

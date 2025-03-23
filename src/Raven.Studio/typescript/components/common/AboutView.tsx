@@ -1,7 +1,6 @@
 ﻿import "./AboutView.scss";
 import { ReactNode } from "react";
 import Badge from "react-bootstrap/Badge";
-import { AccordionBody, AccordionHeader, AccordionItem, UncontrolledAccordion } from "reactstrap";
 import Button from "react-bootstrap/Button";
 import classNames from "classnames";
 import { Icon } from "./Icon";
@@ -11,6 +10,7 @@ import { uniqueId } from "lodash";
 import LicenseRestrictedBadge, { LicenseBadgeText } from "components/common/LicenseRestrictedBadge";
 import OverlayTrigger from "react-bootstrap/OverlayTrigger";
 import Popover from "react-bootstrap/Popover";
+import Accordion from "react-bootstrap/Accordion";
 
 interface AboutViewProps {
     children?: ReactNode | ReactNode[];
@@ -58,7 +58,16 @@ const AboutViewFloating = (props: AboutViewProps) => {
                     ],
                 }}
                 overlay={
-                    <Popover id={aboutViewId} className="bs5 about-view-dropdown" style={{ width: "100%" }}>
+                    <Popover
+                        id={aboutViewId}
+                        className="bs5 about-view-dropdown"
+                        style={
+                            {
+                                width: "100%",
+                                "--bs-popover-max-width": "640px",
+                            } as React.CSSProperties
+                        }
+                    >
                         <Popover.Body className="p-1">
                             <AboutViewAnchored defaultOpen={defaultOpen ? "licensing" : null}>
                                 {children}
@@ -92,8 +101,11 @@ const AccordionItemWrapper = (props: AccordionItemWrapperProps) => {
     const { icon, color, heading, description, children, pill, pillText, pillIcon, className } = props;
     const targetId = props.targetId ?? uniqueId();
     return (
-        <AccordionItem className={classNames("license-accordion", `box-shadow-${color}`, "panel-bg-1", className)}>
-            <AccordionHeader targetId={targetId}>
+        <Accordion.Item
+            eventKey={targetId}
+            className={classNames("license-accordion", `box-shadow-${color}`, "panel-bg-1", className)}
+        >
+            <Accordion.Header>
                 <Icon icon={icon} color={color} className="tab-icon me-3" />
                 <div className="vstack gap-1">
                     <div className="hstack flex-wrap gap-1">
@@ -107,30 +119,24 @@ const AccordionItemWrapper = (props: AccordionItemWrapperProps) => {
                     </div>
                     <small className="description">{description}</small>
                 </div>
-            </AccordionHeader>
-            <AccordionBody accordionId={targetId}>{children}</AccordionBody>
-        </AccordionItem>
+            </Accordion.Header>
+            <Accordion.Body>{children}</Accordion.Body>
+        </Accordion.Item>
     );
 };
 
 const AboutViewAnchored = (props: AboutViewProps) => {
     const { children, className } = props;
 
-    // UncontrolledAccordion works incorrectly if we do not provide an array
+    // Ensure defaultActiveKey and activeKey are arrays when using alwaysOpen
+    // Otherwise, Accordion may not function correctly – see: https://github.com/react-bootstrap/react-bootstrap/issues/6757#issuecomment-1925633893
     const defaultOpen = Array.isArray(props.defaultOpen) ? props.defaultOpen : [props.defaultOpen];
 
     return (
         <div className={classNames(className)}>
-            <UncontrolledAccordion
-                className="bs5 about-view-accordion"
-                flush
-                stayOpen
-                defaultOpen={defaultOpen}
-                // reactstrap make it required in 9.2.1 but it is not used. Probably will be removed in new version
-                toggle={null}
-            >
+            <Accordion alwaysOpen className="bs5 about-view-accordion" flush defaultActiveKey={defaultOpen}>
                 {children}
-            </UncontrolledAccordion>
+            </Accordion>
         </div>
     );
 };
