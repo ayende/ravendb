@@ -315,7 +315,14 @@ namespace Voron.Impl.Journal
             var dataPagerState = currentState.DataPagerState;
             lastJournalNumber = -1;
             var deleteLastJournal = false;
-            for (var journalNumber = journalToStartReadingFrom; _env.Options.JournalExists(journalNumber); journalNumber++)
+
+            var lastJournal = _env.Options.GetLatestJournalNumber();
+            if (lastJournal.HasValue == false)
+            {
+                goto FinishJournalRecovery;
+            }
+
+            for (var journalNumber = journalToStartReadingFrom; journalNumber <= lastJournal.Value; journalNumber++)
             {
                 addToInitLog?.Invoke(LogLevel.Debug, $"Recovering journal {journalNumber:#,#;;0}...");
                 var initialSize = _env.Options.InitialFileSize ?? _env.Options.InitialLogFileSize;
@@ -374,7 +381,7 @@ namespace Voron.Impl.Journal
                     }
 
                     
-                    if(_env.Options.RootJournal is null)
+                    if (_env.Options.RootJournal is null)
                     {
                         var jrnlWriter = _env.Options.CreateJournalWriter(journalNumber, journalPagerState.TotalAllocatedSize);
                         var jrnlFile = new JournalFile(_env, jrnlWriter, journalNumber, journalReader.RecoveredJournalIds.ToFrozenSet());
@@ -410,6 +417,7 @@ namespace Voron.Impl.Journal
                 }
             }
 
+FinishJournalRecovery:
             if (_env.Options.Encryption.IsEnabled == false) // for encryption, we already use AEAD, so no need
             {
                 // here we want to check that the checksum on all the modified pages is valid

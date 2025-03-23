@@ -921,16 +921,17 @@ namespace Sparrow.Server
         private sealed class ByteStringMemoryManager<T>(ByteStringContext<TAllocator> context, ByteString str) : MemoryManager<T>
             where T : unmanaged
         {
-            public override Memory<T> Memory => CreateMemory(str.Length / sizeof(T));
+            private ByteString _str = str;
+            public override Memory<T> Memory => CreateMemory(_str.Length / sizeof(T));
 
-            public override Span<T> GetSpan() => new(str.Ptr, str.Length / sizeof(T));
+            public override Span<T> GetSpan() => new(_str.Ptr, _str.Length / sizeof(T));
 
             public override MemoryHandle Pin(int elementIndex = 0)
             {
-                if (elementIndex < 0 || elementIndex >= str.Length / sizeof(T))
+                if (elementIndex < 0 || elementIndex >= _str.Length / sizeof(T))
                     throw new ArgumentOutOfRangeException(nameof(elementIndex));
 
-                return new MemoryHandle(str._pointer + (elementIndex * sizeof(T)));
+                return new MemoryHandle(_str._pointer + (elementIndex * sizeof(T)));
             }
 
             public override void Unpin()
@@ -939,7 +940,7 @@ namespace Sparrow.Server
 
             protected override void Dispose(bool disposing)
             {
-                context.Release(ref str);
+                context.Release(ref _str);
             }
         }
 
