@@ -240,7 +240,7 @@ public class EmbeddingsGenerator(DocumentDatabase database, RavenLogger logger, 
                 return false;
             }
 
-            var document = _documentsStorage.Get(documentsContext, docId);
+            using var document = _documentsStorage.Get(documentsContext, docId);
             if (document.Data.TryGet(Constants.Documents.Metadata.Key, out BlittableJsonReaderObject metadata))
             {
                 if (metadata.TryGet(Constants.Documents.Metadata.Expires, out DateTime expires))
@@ -448,10 +448,6 @@ public class EmbeddingsGenerator(DocumentDatabase database, RavenLogger logger, 
     {
         var record = _database.ReadDatabaseRecord();
         HandleDatabaseRecordChange(record);
-        foreach (var (name, state) in _workers)
-        {
-            _ = state.RunAsync();
-        }
     }
 
     protected override async Task DoWork()
@@ -558,7 +554,7 @@ public class EmbeddingsGenerator(DocumentDatabase database, RavenLogger logger, 
         while (_toCache.TryDequeue(out object o))
         {
             results.Add(o);
-            if (results.Count > 128)
+            if (results.Count > 128)//TODO: configuration? At what level?
             {
                 _hasWork.Set();
                 break;
