@@ -22,6 +22,8 @@ using Sparrow.Json;
 using Sparrow.Logging;
 using Sparrow.Server.Logging;
 using Voron.Logging;
+using Voron.Util.Settings;
+using static Voron.StorageEnvironmentOptions;
 
 namespace Voron.Impl.Journal
 {
@@ -559,7 +561,7 @@ namespace Voron.Impl.Journal
                     JournalId = current->JournalId;
                 }
 
-                if (current->JournalId == WriteAheadJournal.LinkedJournalsRecord.LinkedJournalId &&
+                if (current->Flags == TransactionPersistenceModeFlags.LinkedJournalsRecord &&
                     _environment.Options.RootJournal is null) // this only applies to the _root_, not to branches
                 {
                     ProcessLinkedJournalsRecord(current);
@@ -610,6 +612,9 @@ namespace Voron.Impl.Journal
             int numberOfLinks = current->PageCount;
             for (int i = 0; i < numberOfLinks; i++)
             {
+                var journalId = new Guid(buffer[..sizeof(Guid)]);
+                buffer = buffer[sizeof(Guid)..];
+
                 var nextSep = buffer.IndexOf((byte)0);
                 if (nextSep == -1)
                     throw new InvalidOperationException("Unable to find null terminator for the linked journal path, got: " + Encoding.UTF8.GetString(buffer));
@@ -618,6 +623,16 @@ namespace Voron.Impl.Journal
                 buffer = buffer[(nextSep + 1)..];
                 var relativePath = Encoding.UTF8.GetString(link);
                 string dest = Path.GetFullPath(relativePath, _journalPager.FileName);
+
+                var dirInfo = new DirectoryInfo(dest);
+                var parentPath = new VoronPathSetting(dirInfo.Parent.Parent.FullName, dirInfo.Parent.Parent.FullName);
+
+                if (DirectoryStorageEnvironmentOptions.TryGetJournalId(parentPath, out var headerJournalId) == false)
+                    continue;
+
+                if (headerJournalId != journalId)
+                    continue;
+
                 var rc = Pal.rvn_ensure_hard_link_non_durable(_journalPager.FileName, dest, out var errorCode);
                 if (rc == PalFlags.FailCodes.Success) 
                     continue;

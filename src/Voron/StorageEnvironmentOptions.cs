@@ -606,10 +606,12 @@ namespace Voron
                 return true;
             }
 
-            public override bool ReadValidHeader(string filename, out FileHeader header)
+            public override bool ReadValidHeader(string filename, out FileHeader header) => ReadValidHeader(_basePath, filename, out header);
+
+            public static bool ReadValidHeader(VoronPathSetting basePath, string filename, out FileHeader header)
             {
                 header = default;
-                var path = _basePath.Combine(filename);
+                var path = basePath.Combine(filename);
                 if (File.Exists(path.FullPath) == false)
                 {
                     return false;
@@ -652,6 +654,21 @@ namespace Voron
                     header = headerBuf[0];
                     return true;
                 }
+            }
+
+            public static bool TryGetJournalId(VoronPathSetting basePath, out Guid journalId)
+            {
+                foreach (var headerFilename in HeaderAccessor.HeaderFileNames)
+                {
+                    if (ReadValidHeader(basePath, headerFilename, out var header))
+                    {
+                        journalId = header.JournalId;
+                        return true;
+                    }
+                }
+
+                journalId = Guid.Empty;
+                return false;
             }
 
             public override unsafe void WriteHeader(string filename, FileHeader header)

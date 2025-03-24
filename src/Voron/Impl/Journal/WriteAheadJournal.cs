@@ -92,14 +92,17 @@ namespace Voron.Impl.Journal
             private int _bufferSize;
             private NativeMemory.ThreadStats _threadStats;
             private readonly List<string> _paths = new();
-            private int _pathsSize;
+            private readonly List<Guid> _journalIds = new();
+            private int _linksDataSize;
             private readonly Dictionary<string, long> _lastCreatedJournals = [];
             private readonly Dictionary<string, long> _lastFlushedJournals = [];
 
-            public void Add(string relativePath)
+            public void Add(string relativePath, Guid journalId)
             {
                 _paths.Add(relativePath);
-                _pathsSize += relativePath.Length;
+                _journalIds.Add(journalId);
+
+                _linksDataSize += relativePath.Length + sizeof(Guid);
             }
             
             public void RegisterNewJournal(string journal, long number) => _lastCreatedJournals[journal] =  number;
@@ -125,7 +128,7 @@ namespace Voron.Impl.Journal
             public Pal.journal_entry CreateEntry()
             {
                 int reqSize = checked(
-                    Encoding.UTF8.GetMaxByteCount(_pathsSize) + _paths.Count + sizeof(TransactionHeader)
+                    Encoding.UTF8.GetMaxByteCount(_linksDataSize) + _paths.Count + sizeof(TransactionHeader)
                 );
                 if (reqSize > _bufferSize)
                 {
@@ -149,18 +152,25 @@ namespace Voron.Impl.Journal
                 var data = _buffer + sizeof(TransactionHeader);
                 int usableBufferSize = _bufferSize - sizeof(TransactionHeader);
                 var span = new Span<byte>(data, usableBufferSize);
-                foreach (var path in _paths)
+                for (int index = 0; index < _paths.Count; index++)
                 {
+                    var path = _paths[index];
+                    var journalId = _journalIds[index];
+
+                    MemoryMarshal.Cast<Guid, byte>(new Span<Guid>(ref journalId)).CopyTo(span);
+                    span = span[sizeof(Guid)..];
+
                     int written = Encoding.UTF8.GetBytes(path, span);
                     span[written] = 0;
                     span = span[(written + 1)..];
                 }
+
                 var dataSize = usableBufferSize - span.Length;
                 header->UncompressedSize = dataSize;
                 header->Hash = Hashing.XXHash64.Calculate(data, dataSize, (ulong)header->TransactionId);
                 
                 _paths.Clear();
-                _pathsSize = 0;
+                _linksDataSize = 0;
                 
                 var actualSize = header->UncompressedSize + sizeof(TransactionHeader);
                 return new Pal.journal_entry
@@ -1947,7 +1957,7 @@ FinishJournalRecovery:
                 string relativePath = Path.GetRelativePath(
                     CurrentFile.JournalWriter.FileName.FullPath, 
                     journalFile.JournalWriter.FileName.FullPath);
-                _linkedJournalsRecord.Add(relativePath);
+                _linkedJournalsRecord.Add(relativePath, environment.HeaderAccessor.JournalId);
 
                 if (environment.Options is StorageEnvironmentOptions.DirectoryStorageEnvironmentOptions)
                 {
