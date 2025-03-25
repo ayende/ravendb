@@ -561,7 +561,8 @@ namespace Voron.Impl.Journal
                     JournalId = current->JournalId;
                 }
 
-                if (current->Flags == TransactionPersistenceModeFlags.LinkedJournalsRecord &&
+                if (_environment.Options.AvoidSharedJournals == false && 
+                    current->Flags == TransactionPersistenceModeFlags.LinkedJournalsRecord &&
                     _environment.Options.RootJournal is null) // this only applies to the _root_, not to branches
                 {
                     ProcessLinkedJournalsRecord(current);

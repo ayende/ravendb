@@ -1127,6 +1127,7 @@ namespace Voron
         public bool DisableSparseRegions { get; set; }
         public int JournalsCompressionAcceleration { get; set; } = 1;
         public int MinimumSharedJournalsMergeCount { get; set; } = 8;
+        public bool AvoidSharedJournals { get; set; }
 
         private readonly RavenLogger _log;
 

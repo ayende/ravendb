@@ -49,7 +49,9 @@ public class SharedIndexJournals : IJournalMerger, IDisposable
         options.JournalsCompressionAcceleration = documentDatabase.Configuration.Storage.JournalsCompressionAcceleration;
         options.MinimumSharedJournalsMergeCount = documentDatabase.Configuration.Storage.MinimumSharedJournalsMergeCount;
         options.MaxLogFileSize = documentDatabase.Configuration.Storage.MaxJournalFileSize.GetValue(SizeUnit.Bytes);
-     
+
+        options.AvoidSharedJournals = documentDatabase.Configuration.Storage.AvoidSharedJournals;
+
         _env = new StorageEnvironment(options);
         _env.Journal.BranchJournalMerger = this;
         _scopeForSharedJournals = _env.Journal.SharedJournalsScope();

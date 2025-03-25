@@ -34,6 +34,7 @@ namespace SlowTests.Issues
                 ModifyDatabaseRecord = databaseRecord =>
                 {
                     databaseRecord.Settings[RavenConfiguration.GetKey(x => x.Core.ThrowIfAnyIndexCannotBeOpened)] = "false";
+                    databaseRecord.Settings[RavenConfiguration.GetKey(x => x.Storage.AvoidSharedJournals)] = "true";
                 }
             }))
             {
