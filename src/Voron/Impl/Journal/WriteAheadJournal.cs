@@ -327,10 +327,12 @@ namespace Voron.Impl.Journal
             var deleteLastJournal = false;
 
             var lastJournal = _env.Options.GetLatestJournalNumber();
-            if (lastJournal.HasValue == false)
+            if (lastJournal.HasValue == false && journalToStartReadingFrom == 0)
             {
                 goto FinishJournalRecovery;
             }
+
+            lastJournal ??= journalToStartReadingFrom;
 
             for (var journalNumber = journalToStartReadingFrom; journalNumber <= lastJournal.Value; journalNumber++)
             {
@@ -420,6 +422,13 @@ namespace Voron.Impl.Journal
                     {
                         addToInitLog?.Invoke(LogLevel.Warn,
                             $"Encountered invalid journal {journalNumber} @ {_env.Options}. Skipping this journal and keep going the recovery operation because '{nameof(_env.Options.IgnoreInvalidJournalErrors)}' options is set");
+                        continue;
+                    }
+
+                    if (journalNumber == lastJournal.Value && logInfo.Flags.HasFlag(JournalInfoFlags.IgnoreMissingLastSyncJournal))
+                    {
+                        addToInitLog?.Invoke(LogLevel.Warn,
+                            $"Missing journal {journalNumber} @ {_env.Options}. Skipping this journal and keep going the recovery operation because '{nameof(JournalInfoFlags.IgnoreMissingLastSyncJournal)}' flag is set");
                         continue;
                     }
 

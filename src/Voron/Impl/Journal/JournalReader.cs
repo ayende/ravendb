@@ -599,6 +599,8 @@ namespace Voron.Impl.Journal
             return false;
         }
 
+        private readonly Dictionary<string, StorageEnvironmentOptions> _recoveredLinkedEnvOptions = new Dictionary<string, StorageEnvironmentOptions>();
+
         private void ProcessLinkedJournalsRecord(TransactionHeader* current)
         {
             if (current->TransactionId != WriteAheadJournal.LinkedJournalsRecord.TransactionIdMarker)
@@ -623,11 +625,27 @@ namespace Voron.Impl.Journal
                 buffer = buffer[(nextSep + 1)..];
                 var relativePath = Encoding.UTF8.GetString(link);
                 string dest = Path.GetFullPath(relativePath, _journalPager.FileName);
-
                 var dirInfo = new DirectoryInfo(dest);
-                var parentPath = new VoronPathSetting(dirInfo.Parent.Parent.FullName, dirInfo.Parent.Parent.FullName);
+                
+                var basePath = dirInfo.Parent?.Parent?.FullName;
+                if (basePath == null)
+                    continue;
 
-                if (DirectoryStorageEnvironmentOptions.TryGetJournalId(parentPath, out var headerJournalId) == false)
+                if (_recoveredLinkedEnvOptions.TryGetValue(basePath, out var envOptions) == false)
+                {
+                    envOptions = ForPath(
+                        basePath,
+                        tempPath: null, 
+                        journalPath: null, 
+                        ioChangesNotifications: null,
+                        catastrophicFailureNotification: null, 
+                        loggingResource: null,
+                        loggingComponent: null);
+
+                    _recoveredLinkedEnvOptions.Add(basePath, envOptions);
+                }
+
+                if (envOptions.TryGetJournalId(out var headerJournalId) == false)
                     continue;
 
                 if (headerJournalId != journalId)

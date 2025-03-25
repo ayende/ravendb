@@ -188,7 +188,7 @@ namespace SlowTests.Issues
             using (var store = GetDocumentStore(new Options { Server = server, RunInMemory = false, Path = databasePath }))
             {
                 databaseName = store.Database;
-                index.Execute(store);
+                await index.ExecuteAsync(store);
 
                 using (var session = store.OpenSession())
                 {
@@ -206,7 +206,7 @@ namespace SlowTests.Issues
                     session.SaveChanges();
                 }
                 
-                Indexes.WaitForIndexing(store);
+                await Indexes.WaitForIndexingAsync(store);
 
                 var database = await server.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(store.Database);
                 indexStoragePath1 = database.IndexStore.GetIndex(index.IndexName)._environment.Options.BasePath.FullPath;
@@ -215,7 +215,7 @@ namespace SlowTests.Issues
                 var idx1Jrnl = Directory.GetFiles(Path.Combine(indexStoragePath1, "Journals"), "*.journal").Last();
                 var idx2Jrnl = Directory.GetFiles(Path.Combine(indexStoragePath2, "Journals"), "*.journal").Last();
 
-                Assert.True(Pal.rvn_is_same_hard_link(idx2Jrnl, idx1Jrnl));
+                Assert.True(Pal.rvn_is_same_hard_link(idx2Jrnl, idx1Jrnl), $"{idx2Jrnl} vs {idx1Jrnl}");
             }
 
         }

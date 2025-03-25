@@ -1395,6 +1395,7 @@ namespace FastTests.Server.Documents.Indexing.Auto
                 await ModifyDatabaseSettings(dbName, record =>
                 {
                     record.Settings[RavenConfiguration.GetKey(x => x.Core.ThrowIfAnyIndexCannotBeOpened)] = "false";
+                    record.Settings[RavenConfiguration.GetKey(x => x.Storage.AvoidSharedJournals)] = "true";
                 });
 
                 database = await GetDatabase(dbName);
@@ -1450,6 +1451,7 @@ namespace FastTests.Server.Documents.Indexing.Auto
                 await ModifyDatabaseSettings(dbName, record =>
                 {
                     record.Settings[RavenConfiguration.GetKey(x => x.Core.ThrowIfAnyIndexCannotBeOpened)] = "false";
+                    record.Settings[RavenConfiguration.GetKey(x => x.Storage.AvoidSharedJournals)] = "true";
                 });
 
                 database = await GetDatabase(dbName);
