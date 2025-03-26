@@ -95,6 +95,31 @@ public sealed class AiConnectionString : ConnectionString
         return result;
     }
 
+    public bool UsingEncryptedCommunicationChannel()
+    {
+        AiConnectorType aiConnectorType = GetActiveProvider();
+        switch (aiConnectorType)
+        {
+            case AiConnectorType.Ollama:
+                return OllamaSettings.Uri.StartsWith("https");
+            case AiConnectorType.OpenAi:
+                return this.OpenAiSettings.Endpoint.StartsWith("https");
+            case AiConnectorType.AzureOpenAi:
+                return this.AzureOpenAiSettings.Endpoint.StartsWith("https");
+            case AiConnectorType.MistralAi:
+                return this.MistralAiSettings.Endpoint.StartsWith("https");
+            case AiConnectorType.HuggingFace:
+                // Endpoint is optional for HuggingFace, it will use the default endpoint if not provided, which is HTTPS
+                return string.IsNullOrWhiteSpace(this.HuggingFaceSettings.Endpoint) || this.HuggingFaceSettings.Endpoint.StartsWith("https");
+            case AiConnectorType.Embedded:
+            case AiConnectorType.Google:
+                return true;
+
+            default:
+                throw new NotSupportedException($"Unknown AI connector type: {aiConnectorType}");
+        }
+    }
+
     public AiConnectorType GetActiveProvider()
     {
         if (OpenAiSettings != null)

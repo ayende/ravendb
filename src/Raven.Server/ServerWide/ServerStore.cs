@@ -2208,12 +2208,26 @@ namespace Raven.Server.ServerWide
                         break;
 
                     case EtlType.EmbeddingsGeneration:
+                    {
                         var aiIntegration = JsonDeserializationCluster.EmbeddingsGenerationConfiguration(etlConfiguration);
                         aiIntegration.Validate(out var aiIntegrationErr, validateName: false, validateConnection: false);
                         if (ValidateConnectionString(rawRecord, aiIntegration.ConnectionStringName, aiIntegration.EtlType) == false)
-                            aiIntegrationErr.Add($"Could not find connection string named '{aiIntegration.ConnectionStringName}'. Please supply an existing connection string.");
+                            aiIntegrationErr.Add(
+                                $"Could not find connection string named '{aiIntegration.ConnectionStringName}'. Please supply an existing connection string.");
                         ThrowInvalidConfigurationIfNecessary(etlConfiguration, aiIntegrationErr);
                         command = new AddEmbeddingsGenerationCommand(aiIntegration, databaseName, raftRequestId);
+                    }
+                        break;
+                    case EtlType.AiGen:
+                    {
+                        var aiIntegration = JsonDeserializationCluster.AiGenConfiguration(etlConfiguration);
+                        aiIntegration.Validate(out var aiIntegrationErr, validateName: false, validateConnection: false);
+                        if (ValidateConnectionString(rawRecord, aiIntegration.ConnectionStringName, aiIntegration.EtlType) == false)
+                            aiIntegrationErr.Add(
+                                $"Could not find connection string named '{aiIntegration.ConnectionStringName}'. Please supply an existing connection string.");
+                        ThrowInvalidConfigurationIfNecessary(etlConfiguration, aiIntegrationErr);
+                        command = new AddAiGenCommand(aiIntegration, databaseName, raftRequestId);
+                    }
                         break;
 
                     default:

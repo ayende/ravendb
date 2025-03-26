@@ -105,13 +105,13 @@ namespace Raven.Client.ServerWide
 
         public IntegrationConfigurations Integrations;
 
-        public List<PeriodicBackupConfiguration> PeriodicBackups = new List<PeriodicBackupConfiguration>();
+        public List<PeriodicBackupConfiguration> PeriodicBackups = [];
 
-        public List<ExternalReplication> ExternalReplications = new List<ExternalReplication>();
+        public List<ExternalReplication> ExternalReplications = [];
 
-        public List<PullReplicationAsSink> SinkPullReplications = new List<PullReplicationAsSink>();
+        public List<PullReplicationAsSink> SinkPullReplications = [];
 
-        public List<PullReplicationDefinition> HubPullReplications = new List<PullReplicationDefinition>();
+        public List<PullReplicationDefinition> HubPullReplications = [];
 
         public Dictionary<string, RavenConnectionString> RavenConnectionStrings = new Dictionary<string, RavenConnectionString>();
 
@@ -127,21 +127,23 @@ namespace Raven.Client.ServerWide
         
         public Dictionary<string, AiConnectionString> AiConnectionStrings = new();
 
-        public List<RavenEtlConfiguration> RavenEtls = new List<RavenEtlConfiguration>();
+        public List<RavenEtlConfiguration> RavenEtls = [];
 
-        public List<SqlEtlConfiguration> SqlEtls = new List<SqlEtlConfiguration>();
+        public List<SqlEtlConfiguration> SqlEtls = [];
 
-        public List<ElasticSearchEtlConfiguration> ElasticSearchEtls = new List<ElasticSearchEtlConfiguration>();
+        public List<ElasticSearchEtlConfiguration> ElasticSearchEtls = [];
 
-        public List<OlapEtlConfiguration> OlapEtls = new List<OlapEtlConfiguration>();
+        public List<OlapEtlConfiguration> OlapEtls = [];
         
-        public List<QueueEtlConfiguration> QueueEtls = new List<QueueEtlConfiguration>();
+        public List<QueueEtlConfiguration> QueueEtls = [];
         
-        public List<QueueSinkConfiguration> QueueSinks = new List<QueueSinkConfiguration>();
+        public List<QueueSinkConfiguration> QueueSinks = [];
         
-        public List<SnowflakeEtlConfiguration> SnowflakeEtls = new List<SnowflakeEtlConfiguration>();
+        public List<SnowflakeEtlConfiguration> SnowflakeEtls = [];
         
         public List<EmbeddingsGenerationConfiguration> EmbeddingsGenerations = [];
+        
+        public List<AiGenConfiguration> AiGenEtls = [];
 
         public ClientConfiguration Client;
 
@@ -149,7 +151,7 @@ namespace Raven.Client.ServerWide
 
         public long TruncatedClusterTransactionCommandsCount;
 
-        public HashSet<string> UnusedDatabaseIds = new HashSet<string>();
+        public HashSet<string> UnusedDatabaseIds = [];
 
         [JsonIgnore]
         public bool IsSharded => Sharding?.Shards?.Count > 0;
@@ -280,7 +282,7 @@ namespace Raven.Client.ServerWide
             List<IndexHistoryEntry> history;
             if (IndexesHistory.TryGetValue(definition.Name, out history) == false)
             {
-                history = new List<IndexHistoryEntry>();
+                history = [];
                 IndexesHistory.Add(definition.Name, history);
             }
             

@@ -112,6 +112,38 @@ namespace Raven.Server.Documents.ETL.Stats
             return operation;
         }
     }
+    
+    public sealed class AiGenStatsScope(EtlRunStats stats, bool start = true)
+        : AbstractEtlStatsScope<AiGenStatsScope, AiGenPerformanceOperation>(stats, start)
+    {
+     
+        protected override AiGenStatsScope OpenNewScope(EtlRunStats stats, bool start)
+        {
+            return new AiGenStatsScope(stats, start);
+        }
+
+        protected override AiGenPerformanceOperation ToPerformanceOperation(string name, AiGenStatsScope scope)
+        {
+            return scope.ToPerformanceOperation(name);
+        }
+
+        public override AiGenPerformanceOperation ToPerformanceOperation(string name)
+        {
+            var operation = new AiGenPerformanceOperation(Duration)
+            {
+                Name = name,
+            };
+
+            if (Scopes != null)
+            {
+                operation.Operations = Scopes
+                    .Select(x => ToPerformanceOperation(x.Key, x.Value))
+                    .ToArray();
+            }
+
+            return operation;
+        }
+    }
 
     public sealed class EtlStatsScope : AbstractEtlStatsScope<EtlStatsScope, EtlPerformanceOperation>
     {

@@ -5,7 +5,7 @@ using System.Diagnostics.CodeAnalysis;
 
 namespace Raven.Server.Documents.ETL.Providers.AI.Enumerators;
 
-public sealed class TombstonesToEmbeddingsGenerationItems : IEnumerator<EmbeddingsGenerationItem>
+public sealed class TombstonesToEmbeddingsGenerationItems : IEnumerator<AiEtlItem>
 {
     private readonly IEnumerator<Tombstone> _tombstones;
     private readonly string _collection;
@@ -13,7 +13,7 @@ public sealed class TombstonesToEmbeddingsGenerationItems : IEnumerator<Embeddin
     
     object IEnumerator.Current => Current;
     
-    public EmbeddingsGenerationItem Current { get; private set; }
+    public AiEtlItem Current { get; private set; }
     
     public TombstonesToEmbeddingsGenerationItems(IEnumerator<Tombstone> tombstones, string collection)
     {
@@ -28,13 +28,13 @@ public sealed class TombstonesToEmbeddingsGenerationItems : IEnumerator<Embeddin
         if (_tombstones.MoveNext() == false)
             return false;
             
-        Current = new EmbeddingsGenerationItem(_tombstones.Current, _collection, EtlItemType.Document);
+        Current = new AiEtlItem(_tombstones.Current, _collection, EtlItemType.Document);
         Current.Filtered = Filter(Current);
 
         return true;
     }
     
-    private bool Filter(EmbeddingsGenerationItem _)
+    private bool Filter(AiEtlItem _)
     {
         var tombstone = _tombstones.Current;
         if (tombstone.Flags.Contain(DocumentFlags.Artificial))
