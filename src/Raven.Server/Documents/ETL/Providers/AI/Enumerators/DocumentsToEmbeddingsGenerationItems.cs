@@ -3,12 +3,12 @@ using System.Collections.Generic;
 
 namespace Raven.Server.Documents.ETL.Providers.AI.Enumerators;
 
-public sealed class DocumentsToEmbeddingsGenerationItems : IEnumerator<EmbeddingsGenerationItem>
+public sealed class DocumentsToEmbeddingsGenerationItems : IEnumerator<AiEtlItem>
 {
     private readonly IEnumerator<Document> _docs;
     private readonly string _collection;
     
-    public EmbeddingsGenerationItem Current { get; private set; }
+    public AiEtlItem Current { get; private set; }
     object IEnumerator.Current => Current;
     
     public DocumentsToEmbeddingsGenerationItems(IEnumerator<Document> docs, string collection)
@@ -22,7 +22,7 @@ public sealed class DocumentsToEmbeddingsGenerationItems : IEnumerator<Embedding
         if (_docs.MoveNext() == false)
             return false;
 
-        Current = new EmbeddingsGenerationItem(_docs.Current, _collection);
+        Current = new AiEtlItem(_docs.Current, _collection);
 
         return true;
     }

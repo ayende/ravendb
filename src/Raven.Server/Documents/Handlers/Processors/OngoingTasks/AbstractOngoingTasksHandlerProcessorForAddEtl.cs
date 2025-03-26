@@ -92,17 +92,29 @@ namespace Raven.Server.Documents.Handlers.Processors.OngoingTasks
                     {
                         var embeddingsGenerationConfiguration = Client.Json.Serialization.JsonDeserializationClient.EmbeddingsGenerationConfiguration(etlConfiguration);
                         var connectionStringName = embeddingsGenerationConfiguration.ConnectionStringName ?? string.Empty;
-                        var database = RequestHandler.ServerStore.Cluster.ReadRawDatabaseRecord(context, RequestHandler.DatabaseName);
-
-                        AiConnectionString aiConnectionString = null;
-                        database?.AiConnectionStrings?.TryGetValue(connectionStringName, out aiConnectionString);
-
-                        RequestHandler.ServerStore.LicenseManager.AssertCanAddEmbeddingsGenerationTask(aiConnectionString);
+                        RequestHandler.ServerStore.LicenseManager.AssertCanAddEmbeddingsGenerationTask(GetAiConnectionString(context, connectionStringName));
+                        break;
+                    }
+                case EtlType.AiGen:
+                    using (RequestHandler.ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
+                    using (context.OpenReadTransaction())
+                    {
+                        var aiGenConfiguration = Client.Json.Serialization.JsonDeserializationClient.AiGenConfiguration(etlConfiguration);
+                        var connectionStringName = aiGenConfiguration.ConnectionStringName ?? string.Empty;
+                        RequestHandler.ServerStore.LicenseManager.AssertCanAddEmbeddingsGenerationTask(GetAiConnectionString(context, connectionStringName));
                         break;
                     }
 
                 default:
                     throw new NotSupportedException($"Unknown ETL configuration type. Configuration: {etlConfiguration}");
+            }
+
+            AiConnectionString GetAiConnectionString(TransactionOperationContext context, string connectionStringName)
+            {
+                var database = RequestHandler.ServerStore.Cluster.ReadRawDatabaseRecord(context, RequestHandler.DatabaseName);
+                AiConnectionString aiConnectionString = null;
+                database?.AiConnectionStrings?.TryGetValue(connectionStringName, out aiConnectionString);
+                return aiConnectionString;
             }
         }
     }

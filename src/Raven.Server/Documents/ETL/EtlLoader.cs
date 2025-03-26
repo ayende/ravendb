@@ -18,6 +18,7 @@ using Raven.Client.Documents.Operations.ETL.Snowflake;
 using Raven.Client.Documents.Operations.ETL.SQL;
 using Raven.Client.ServerWide;
 using Raven.Server.Documents.ETL.Providers.AI;
+using Raven.Server.Documents.ETL.Providers.AI.AiGen;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings;
 using Raven.Server.Documents.ETL.Providers.ElasticSearch;
 using Raven.Server.Documents.ETL.Providers.OLAP;
@@ -260,6 +261,7 @@ namespace Raven.Server.Documents.ETL
                 QueueEtlConfiguration queueConfig = null;
                 SnowflakeEtlConfiguration snowflakeConfig = null;
                 EmbeddingsGenerationConfiguration embeddingsGenerationConfig = null;
+                AiGenConfiguration aiGenGenerationConfig = null;
 
                 var connectionStringNotFound = false;
 
@@ -317,8 +319,18 @@ namespace Raven.Server.Documents.ETL
                     case EtlType.EmbeddingsGeneration:
                         embeddingsGenerationConfig = config as EmbeddingsGenerationConfiguration;
                         
-                        if (_databaseRecord.AiConnectionStrings.TryGetValue(config.ConnectionStringName, out var aiConnection))
-                            embeddingsGenerationConfig.Initialize(aiConnection);
+                        if (_databaseRecord.AiConnectionStrings.TryGetValue(config.ConnectionStringName, out var embeddingsConStr))
+                            embeddingsGenerationConfig.Initialize(embeddingsConStr);
+                        else
+                            connectionStringNotFound = true;
+                        
+                        break;
+                    
+                    case EtlType.AiGen:
+                        aiGenGenerationConfig = config as AiGenConfiguration;
+                        
+                        if (_databaseRecord.AiConnectionStrings.TryGetValue(config.ConnectionStringName, out var aiGetnConStr))
+                            embeddingsGenerationConfig.Initialize(aiGetnConStr);
                         else
                             connectionStringNotFound = true;
                         

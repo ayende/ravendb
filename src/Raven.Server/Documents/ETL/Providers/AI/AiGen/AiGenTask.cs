@@ -2,17 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
-using System.Runtime.InteropServices;
-using System.Threading.Tasks;
-using Google.Apis.Util;
-using Lucene.Net.Documents;
 using Microsoft.SemanticKernel.Embeddings;
 using Raven.Client.Documents.Operations.AI;
 using Raven.Client.Documents.Operations.Counters;
 using Raven.Client.Documents.Operations.ETL;
 using Raven.Server.Documents.AI;
-using Raven.Server.Documents.AI.Embeddings;
 using Raven.Server.Documents.ETL.Metrics;
+using Raven.Server.Documents.ETL.Providers.AI.Embeddings;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings.Stats;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings.Test;
 using Raven.Server.Documents.ETL.Providers.AI.Enumerators;
@@ -21,28 +17,27 @@ using Raven.Server.Documents.Replication.ReplicationItems;
 using Raven.Server.Documents.TimeSeries;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
-using Raven.Server.Utils;
-using Sparrow.Json.Parsing;
 using Sparrow.Server.Utils;
 
 #pragma warning disable SKEXP0001
 
-namespace Raven.Server.Documents.ETL.Providers.AI.Embeddings;
+namespace Raven.Server.Documents.ETL.Providers.AI.AiGen;
 
-public sealed class EmbeddingsGenerationTask : EtlProcess<AiEtlItem, EmbeddingGenerationScriptResult, EmbeddingsGenerationConfiguration, AiConnectionString,
-    EmbeddingsGenerationStatsScope, EmbeddingsGenerationPerformanceOperation>
+public sealed class AiGenTask : EtlProcess<AiEtlItem, AiGenScriptResult, AiGenConfiguration, AiConnectionString,
+    AiGenStatsScope, AiGenPerformanceOperation>
 {
     private const string EmbeddingsTaskTag = "AI/Embeddings Generation";
 
     private int _fallbackCounter = 0;
-    
-    public EmbeddingsGenerationTask(Transformation transformation, EmbeddingsGenerationConfiguration configuration, DocumentDatabase database, ServerStore serverStore)
+
+
+    public AiGenTask(Transformation transformation, AiGenConfiguration configuration, DocumentDatabase database, ServerStore serverStore)
         : base(transformation, configuration, database, serverStore, EmbeddingsTaskTag)
     {
         Metrics = new EtlMetricsCountersManager();
     }
 
-    public override EtlType EtlType => EtlType.EmbeddingsGeneration;
+    public override EtlType EtlType => EtlType.AiGen;
     public override bool ShouldTrackCounters() => false;
     public override bool ShouldTrackTimeSeries() => false;
     
@@ -83,10 +78,10 @@ public sealed class EmbeddingsGenerationTask : EtlProcess<AiEtlItem, EmbeddingGe
         throw new NotSupportedException($"{nameof(ConvertTimeSeriesDeletedRangeEnumerator)} is not supported for {nameof(EmbeddingsGenerationTask)}");
     }
 
-    protected override EtlTransformer<AiEtlItem, EmbeddingGenerationScriptResult, EmbeddingsGenerationStatsScope, EmbeddingsGenerationPerformanceOperation>
+    protected override EtlTransformer<AiEtlItem, AiGenScriptResult, AiGenStatsScope, AiGenPerformanceOperation>
         GetTransformer(DocumentsOperationContext context)
     {
-        return new EmbeddingsGenerationScriptTransformer(Database, context, Transformation, null, Configuration);
+        return new AiGenScriptTransformer(Database, context, Transformation, null, Configuration);
     }
 
     protected override string LoadFailureMessage => $"Failed to generate embeddings in '{Configuration.Name}' task. Going to do the retry in {FallbackTime} (failure #{_fallbackCounter}).";
@@ -115,7 +110,7 @@ public sealed class EmbeddingsGenerationTask : EtlProcess<AiEtlItem, EmbeddingGe
         FallbackTime = TimeSpan.FromSeconds(Math.Min(secondsToWait, max));
     }
 
-    protected override int LoadInternal(IEnumerable<EmbeddingGenerationScriptResult> items, DocumentsOperationContext context, EmbeddingsGenerationStatsScope scope)
+    protected override int LoadInternal(IEnumerable<AiGenScriptResult> items, DocumentsOperationContext context, AiGenStatsScope scope)
     {
         if (items is not EmbeddingsGenerationScriptRun embeddingsScriptRun)
         {
@@ -124,42 +119,15 @@ public sealed class EmbeddingsGenerationTask : EtlProcess<AiEtlItem, EmbeddingGe
             return 0;
         }
 
-        var taskId = new EmbeddingsGenerationTaskIdentifier(Configuration.Identifier);
+        int count = 0;
+         
 
-        var batch = Database.EmbeddingsGeneratorEtl.BatchFor(taskId);
-        using (var storageScope = scope.For(EmbeddingsGenerationOperations.GenerateInAiService))
-        {
-            foreach (var embeddingItem in embeddingsScriptRun.Additions)
-            {
-                batch.StartGenerateEmbeddingFor(context, embeddingItem.DocumentId, embeddingItem.DocumentCollectionName,
-                    embeddingItem.Fields);
-            }
-            // We only wait for embeddings generation here, documents creation (and update) is done in the background
-            // https://issues.hibernatingrhinos.com/issue/RavenDB-24062
-            batch.WaitForGenerationAsync().GetAwaiter().GetResult();
-            storageScope.NumberOfEmbeddingsInCache = batch.CachedEmbeddings;
-            storageScope.NumberOfGeneratedEmbeddings = embeddingsScriptRun.Additions.Count;
-        }
-
-        foreach (var embeddingItem in embeddingsScriptRun.Removals)
-        {
-            batch.Delete(embeddingItem.DocumentId);
-        }
-        using (var storageScope = scope.For(EmbeddingsGenerationOperations.Storage))
-        {
-            batch.StoreResults().GetAwaiter().GetResult();
-            
-            storageScope.NumberOfPutEmbeddingDocuments = embeddingsScriptRun.Additions.Count;
-            storageScope.NumberOfDeletedEmbeddingDocuments = embeddingsScriptRun.Removals.Count;
-        }
-        
-        _fallbackCounter = 0;
-        return embeddingsScriptRun.Additions.Count + embeddingsScriptRun.Removals.Count;
+        return count;
     }
 
-    protected override EmbeddingsGenerationStatsScope CreateScope(EtlRunStats stats)
+    protected override AiGenStatsScope CreateScope(EtlRunStats stats)
     {
-        return new EmbeddingsGenerationStatsScope(stats);
+        return new AiGenStatsScope(stats);
     }
 
     protected override string StatsAggregatorTag => "Embeddings Generation";
@@ -169,39 +137,8 @@ public sealed class EmbeddingsGenerationTask : EtlProcess<AiEtlItem, EmbeddingGe
         return true;
     }
 
-    public EmbeddingsGenerationTestScriptResult RunTest(IEnumerable<EmbeddingGenerationScriptResult> records, DocumentsOperationContext context)
+    public AiGenTestScriptResult RunTest(IEnumerable<AiGenScriptResult> records, DocumentsOperationContext context)
     {
-        (ITextEmbeddingGenerationService embeddingService, _) = AiHelper.CreateServicesForTest(
-            new EmbeddingsGenerationConfiguration { Connection = new AiConnectionString { EmbeddedSettings = new EmbeddedSettings() } });
-
-        var result = new EmbeddingsGenerationTestScriptResult();
-        List<string> chunks = [];
-        List<EmbeddingsGenerationTestScriptResult.Item> allItems = [];
-        foreach (var record in records)
-        {
-            foreach (var (name, values) in record.Fields)
-            {
-                List<EmbeddingsGenerationTestScriptResult.Item> items = [];
-                result.Results[name] = items;
-                foreach (var (value, chunking) in values)
-                {
-                    foreach(var chunked in TextChunker.Chunk(value, chunking))
-                    {
-                        var item = new EmbeddingsGenerationTestScriptResult.Item(chunked);
-                        chunks.Add(name);
-                        allItems.Add(item);
-                        items.Add(item);
-                    }
-                }
-            }
-        }
-        var results = embeddingService.GenerateEmbeddingsAsync(chunks, cancellationToken: CancellationToken).GetAwaiter().GetResult();
-        for (int i = 0; i < results.Count; i++)
-        {
-            allItems[i].Embeddings = MemoryMarshalEx.Cast<float, byte>(results[i]);
-        }
-
-        result.TransformationErrors = Statistics.TransformationErrorsInCurrentBatch.Errors.ToList();
-        return result;
+        return null;
     }
 }

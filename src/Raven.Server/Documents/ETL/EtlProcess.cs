@@ -22,6 +22,7 @@ using Raven.Client.ServerWide;
 using Raven.Client.Util;
 using Raven.Server.Documents.ETL.Metrics;
 using Raven.Server.Documents.ETL.Providers.AI;
+using Raven.Server.Documents.ETL.Providers.AI.AiGen;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings;
 using Raven.Server.Documents.ETL.Providers.ElasticSearch;
 using Raven.Server.Documents.ETL.Providers.OLAP;
@@ -558,7 +559,7 @@ namespace Raven.Server.Documents.ETL
                 }
             }
             
-            else if (currentItem is EmbeddingsGenerationItem)
+            else if (currentItem is AiEtlItem)
             {
                 if (stats.NumberOfExtractedItems[EtlItemType.Document] >= Database.Configuration.Ai.EmbeddingsGenerationMaxBatchSize)
                 {
@@ -1440,14 +1441,26 @@ namespace Raven.Server.Documents.ETL
                     {
                         embeddingsGenerationTask.EnsureThreadAllocationStats();
                         
-                        var embeddingsGenerationItem = new EmbeddingsGenerationItem(document, docCollection);
+                        var embeddingsGenerationItem = new AiEtlItem(document, docCollection);
                         var results = embeddingsGenerationTask.Transform([embeddingsGenerationItem], context, new EmbeddingsGenerationStatsScope(new EtlRunStats()), new EtlProcessState());
 
                         var result  = embeddingsGenerationTask.RunTest(results, context);
                         result.DebugOutput = debugOutput;
                         return result;
                     }
+                case EtlType.AiGen:
+                    using (var aiGenTask = new AiGenTask(testScript.Configuration.Transforms[0], testScript.Configuration as AiGenConfiguration, database, database.ServerStore))
+                    using (aiGenTask.EnterTestMode(out debugOutput))
+                    {
+                        aiGenTask.EnsureThreadAllocationStats();
+                        
+                        var embeddingsGenerationItem = new AiEtlItem(document, docCollection);
+                        var results = aiGenTask.Transform([embeddingsGenerationItem], context, new AiGenStatsScope(new EtlRunStats()), new EtlProcessState());
 
+                        var result  = aiGenTask.RunTest(results, context);
+                        result.DebugOutput = debugOutput;
+                        return result;
+                    }
                 default:
                         throw new NotSupportedException($"Unknown ETL type in script test: {testScript.Configuration.EtlType}");
                 }

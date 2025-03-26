@@ -129,6 +129,8 @@ namespace Raven.Server.ServerWide
         public static readonly Func<BlittableJsonReaderObject, SnowflakeEtlConfiguration> SnowflakeEtlConfiguration = GenerateJsonDeserializationRoutine<SnowflakeEtlConfiguration>();
         
         public static readonly Func<BlittableJsonReaderObject, EmbeddingsGenerationConfiguration> EmbeddingsGenerationConfiguration = GenerateJsonDeserializationRoutine<EmbeddingsGenerationConfiguration>();
+        
+        public static readonly Func<BlittableJsonReaderObject, AiGenConfiguration> AiGenConfiguration = GenerateJsonDeserializationRoutine<AiGenConfiguration>();
 
         public static readonly Func<BlittableJsonReaderObject, AddOrUpdateCompareExchangeCommand.CompareExchangeResult> CompareExchangeResult = GenerateJsonDeserializationRoutine<AddOrUpdateCompareExchangeCommand.CompareExchangeResult>();
 

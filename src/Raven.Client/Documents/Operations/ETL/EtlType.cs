@@ -8,6 +8,7 @@
         ElasticSearch,
         Queue,
         Snowflake,
-        EmbeddingsGeneration
+        EmbeddingsGeneration,
+        AiGen
     }
 }

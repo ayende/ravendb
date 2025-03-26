@@ -34,7 +34,7 @@ using Sparrow.Json.Parsing;
 
 namespace Raven.Server.Documents.ETL.Providers.AI.Embeddings;
 
-internal sealed class EmbeddingsGenerationScriptTransformer : EtlTransformer<EmbeddingsGenerationItem, EmbeddingGenerationScriptResult, EmbeddingsGenerationStatsScope, EmbeddingsGenerationPerformanceOperation>
+internal sealed class EmbeddingsGenerationScriptTransformer : EtlTransformer<AiEtlItem, EmbeddingGenerationScriptResult, EmbeddingsGenerationStatsScope, EmbeddingsGenerationPerformanceOperation>
 {
     private readonly EmbeddingsGenerationConfiguration _configuration;
     private EmbeddingsGenerationScriptRun _currentRun;
@@ -102,7 +102,7 @@ internal sealed class EmbeddingsGenerationScriptTransformer : EtlTransformer<Emb
         return _currentRun ?? Enumerable.Empty<EmbeddingGenerationScriptResult>();
     }
 
-    public override void Transform(EmbeddingsGenerationItem item, EmbeddingsGenerationStatsScope stats, EtlProcessState state)
+    public override void Transform(AiEtlItem item, EmbeddingsGenerationStatsScope stats, EtlProcessState state)
     {
         Current = item;
         _currentRun ??= new EmbeddingsGenerationScriptRun();
