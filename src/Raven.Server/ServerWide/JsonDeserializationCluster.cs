@@ -131,7 +131,7 @@ namespace Raven.Server.ServerWide
         public static readonly Func<BlittableJsonReaderObject, EmbeddingsGenerationConfiguration> EmbeddingsGenerationConfiguration = GenerateJsonDeserializationRoutine<EmbeddingsGenerationConfiguration>();
         
         public static readonly Func<BlittableJsonReaderObject, AiGenConfiguration> AiGenConfiguration = GenerateJsonDeserializationRoutine<AiGenConfiguration>();
-
+        
         public static readonly Func<BlittableJsonReaderObject, AddOrUpdateCompareExchangeCommand.CompareExchangeResult> CompareExchangeResult = GenerateJsonDeserializationRoutine<AddOrUpdateCompareExchangeCommand.CompareExchangeResult>();
 
         public static readonly Func<BlittableJsonReaderObject, AdminJsScript> AdminJsScript = GenerateJsonDeserializationRoutine<AdminJsScript>();
@@ -247,6 +247,7 @@ namespace Raven.Server.ServerWide
             [nameof(AddQueueSinkCommand)] = GenerateJsonDeserializationRoutine<AddQueueSinkCommand>(),
             [nameof(AddSnowflakeEtlCommand)] = GenerateJsonDeserializationRoutine<AddSnowflakeEtlCommand>(),
             [nameof(AddEmbeddingsGenerationCommand)] = GenerateJsonDeserializationRoutine<AddEmbeddingsGenerationCommand>(),
+            [nameof(AddAiGenCommand)] = GenerateJsonDeserializationRoutine<AddAiGenCommand>(),
             [nameof(UpdateRavenEtlCommand)] = GenerateJsonDeserializationRoutine<UpdateRavenEtlCommand>(),
             [nameof(UpdateSqlEtlCommand)] = GenerateJsonDeserializationRoutine<UpdateSqlEtlCommand>(),
             [nameof(UpdateOlapEtlCommand)] = GenerateJsonDeserializationRoutine<UpdateOlapEtlCommand>(),

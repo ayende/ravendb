@@ -84,6 +84,8 @@ namespace Raven.Server.ServerWide.Commands.ETL
 
             if (TryGetMatchingConfiguration(record.EmbeddingsGenerations, out var embeddingGenerationsConfiguration))
                 return embeddingGenerationsConfiguration;
+            if (TryGetMatchingConfiguration(record.AiGens, out var aiGenConfiguration))
+                return aiGenConfiguration;
 
             return null;
 

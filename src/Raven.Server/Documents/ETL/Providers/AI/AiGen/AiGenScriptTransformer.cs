@@ -5,6 +5,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using Jint;
 using Jint.Native;
+using Jint.Runtime;
 using Jint.Runtime.Descriptors;
 using Jint.Runtime.Interop;
 using Raven.Client.Documents.Operations.AI;
@@ -42,7 +43,7 @@ internal sealed class AiGenScriptTransformer : EtlTransformer<AiEtlItem, AiGenSc
         if (debugMode)
             DocumentScript.DebugMode = true;
 
-        var contextFunc = new PropertyDescriptor(new ClrFunction(DocumentScript.ScriptEngine, "context", AddContext), false, false, false);
+        var contextFunc = new ClrFunction(DocumentScript.ScriptEngine, "context", AddContext);
         DocumentScript.ScriptEngine.SetValue("context", contextFunc);
     }
 
@@ -90,11 +91,14 @@ internal sealed class AiGenScriptTransformer : EtlTransformer<AiEtlItem, AiGenSc
 
         if (args[0].IsObject() is false)
             throw new ArgumentException("Expected 'ctx' to be an object, but was: " + args[0].Type + ", " + args[0]);
-        if(args[1].IsString() is false && args[1].IsNull() is false && args[1].IsUndefined() is false)
-            throw new ArgumentException($"The 'hash' argument must be string or null, but was: " + args[1].Type + ", " + args[1]);
 
         var context = JsBlittableBridge.Translate(Context, DocumentScript.ScriptEngine, args[0].AsObject());
-        string hash = args[1].AsString();
+        string hash = args[1].Type switch
+        {
+            Types.Null or Types.Undefined => null,
+            Types.String => args[1].AsString(),
+            _ => throw new ArgumentException($"The 'hash' argument must be string or null, but was: " + args[1].Type + ", " + args[1])
+        };
 
         _currentRun.Add(new AiGenScriptResult(Current.DocumentId, context, hash));
         return JsValue.Null;

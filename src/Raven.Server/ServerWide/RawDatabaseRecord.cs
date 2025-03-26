@@ -935,6 +935,31 @@ namespace Raven.Server.ServerWide
             }
         }
 
+        
+        
+        private List<AiGenConfiguration> _aiGenConfigurationTasks;
+
+        public List<AiGenConfiguration> AiGens
+        {
+            get
+            {
+                if (_materializedRecord != null)
+                    return _materializedRecord.AiGenEtls;
+
+                if (_aiGenConfigurationTasks == null)
+                {
+                    _aiGenConfigurationTasks = [];
+                    if (_record.TryGet(nameof(DatabaseRecord.AiGenEtls), out BlittableJsonReaderArray bjra) && bjra != null)
+                    {
+                        foreach (BlittableJsonReaderObject element in bjra)
+                            _aiGenConfigurationTasks.Add(JsonDeserializationCluster.AiGenConfiguration(element));
+                    }
+                }
+
+                return _aiGenConfigurationTasks;
+            }
+        }
+
         private Dictionary<string, string> _settings;
 
         public Dictionary<string, string> Settings

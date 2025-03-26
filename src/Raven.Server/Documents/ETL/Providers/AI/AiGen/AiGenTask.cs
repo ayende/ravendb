@@ -1,23 +1,34 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
+using System.Text.Json;
+using System.Threading.Tasks;
 using Microsoft.SemanticKernel.Embeddings;
+using Parquet.Meta;
 using Raven.Client.Documents.Operations.AI;
 using Raven.Client.Documents.Operations.Counters;
 using Raven.Client.Documents.Operations.ETL;
 using Raven.Server.Documents.AI;
+using Raven.Server.Documents.AI.AiGen;
 using Raven.Server.Documents.ETL.Metrics;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings.Stats;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings.Test;
 using Raven.Server.Documents.ETL.Providers.AI.Enumerators;
 using Raven.Server.Documents.ETL.Stats;
+using Raven.Server.Documents.Patch;
 using Raven.Server.Documents.Replication.ReplicationItems;
 using Raven.Server.Documents.TimeSeries;
+using Raven.Server.Documents.TransactionMerger.Commands;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
+using Sparrow.Json;
+using Sparrow.Json.Parsing;
 using Sparrow.Server.Utils;
+using Encoding = System.Text.Encoding;
 
 #pragma warning disable SKEXP0001
 
@@ -29,12 +40,25 @@ public sealed class AiGenTask : EtlProcess<AiEtlItem, AiGenScriptResult, AiGenCo
     private const string EmbeddingsTaskTag = "AI/Embeddings Generation";
 
     private int _fallbackCounter = 0;
+    private ChatCompletionClient _chatCompletionClient;
 
 
     public AiGenTask(Transformation transformation, AiGenConfiguration configuration, DocumentDatabase database, ServerStore serverStore)
         : base(transformation, configuration, database, serverStore, EmbeddingsTaskTag)
     {
         Metrics = new EtlMetricsCountersManager();
+        _chatCompletionClient = GetClient(configuration);
+    }
+
+    private static ChatCompletionClient GetClient(AiGenConfiguration cfg)
+    {
+         var (uri, model, apiKey) = cfg.Connection.GetActiveProvider() switch
+        {
+            AiConnectorType.Ollama => (cfg.Connection.OllamaSettings.Uri, cfg.Connection.OllamaSettings.Model, (string)null),
+            AiConnectorType.OpenAi => (cfg.Connection.OpenAiSettings.Endpoint, cfg.Connection.OpenAiSettings.Model, null),
+            _ => throw new NotSupportedException(cfg.Connection.GetActiveProvider().ToString())
+        };
+        return new ChatCompletionClient(new Uri(uri), model, apiKey, cfg.JsonSchema);
     }
 
     public override EtlType EtlType => EtlType.AiGen;
@@ -112,17 +136,120 @@ public sealed class AiGenTask : EtlProcess<AiEtlItem, AiGenScriptResult, AiGenCo
 
     protected override int LoadInternal(IEnumerable<AiGenScriptResult> items, DocumentsOperationContext context, AiGenStatsScope scope)
     {
-        if (items is not EmbeddingsGenerationScriptRun embeddingsScriptRun)
+        int count = 0;
+
+        List<Task<(string Result, string Usage)>> tasks = [];
+        List<AiGenScriptResult> matchingItems = [];
+        
+        foreach (var item in items)
         {
-            Debug.Assert(items != null && items!.GetType()!.FullName!.StartsWith("System.Linq.EmptyPartition"),
-                $"items != null && items!.GetType()!.FullName!.StartsWith('System.Linq.EmptyPartition'): {items!.GetType()!.FullName!}");
-            return 0;
+            string json = item.Context.ToString();
+            string hash = AttachmentsStorageHelper.CalculateHash(MemoryMarshal.AsBytes(json.AsSpan()));
+            if(item.AiHash == hash)
+                continue; // no change, can skip
+            tasks.Add(_chatCompletionClient.CompleteAsync(Configuration.Prompt, json));
+            matchingItems.Add(item with { AiHash = hash });
         }
 
-        int count = 0;
-         
+        
+        try
+        {
+            // TODO: Yuck
+            Task.WaitAll(tasks.OfType<Task>().ToArray());
+        }
+        catch
+        {
+            // we'll handle that later
+        }
+
+        List<Exception> exceptions = null;
+        for (int index = 0; index < tasks.Count; index++)
+        {
+            count++;
+            Task<(string Result, string Usage)> task = tasks[index];
+            if (task.IsCompletedSuccessfully is false)
+            {
+                exceptions ??= [];
+                exceptions.Add(task.Exception);
+                matchingItems[index] = null; // so we won't try to save it 
+                continue;
+            }
+
+            (string result, string usage) = task.Result;
+            // TODO: report usage
+
+            //TODO: REALLY YUCKY!
+            var stream = new ReadOnlyMemoryStream<byte>(Encoding.UTF8.GetBytes(result));
+            matchingItems[index].Output = context.ReadForMemoryAsync(stream, matchingItems[index].DocumentId).GetAwaiter().GetResult();
+        }
+
+        if (matchingItems.Count is not 0)
+        {
+            List<Task> patches = [];
+            PatchRequest req = new(Configuration.Update, PatchRequestType.AiGen);
+            foreach (var item in matchingItems)
+            {
+                if(item is null) continue;
+                
+                var dvj = new DynamicJsonValue { ["output"] = item.Output, ["aiHash"] = item.AiHash, ["input"] = item.Context, };
+                var args = context.ReadObject(dvj, item.DocumentId);
+                var cmd = new PatchDocumentCommand(
+                    context: context,
+                    id: item.DocumentId,
+                    expectedChangeVector: null,
+                    skipPatchIfChangeVectorMismatch: false,
+                    patch: (req, args),
+                    patchIfMissing: default,
+                    createIfMissing: null,
+                    identityPartsSeparator: Database.IdentityPartsSeparator,
+                    isTest: false,
+                    debugMode: false,
+                    collectResultsNeeded: false,
+                    returnDocument: false,
+                    ignoreMaxStepsForScript: false);
+                patches.Add(
+                    Database.TxMerger.Enqueue(cmd)
+                    );
+            }
+
+            try
+            {
+                Task.WaitAll(patches.OfType<Task>().ToArray()); // TODO: yuck
+            }
+            catch (Exception e)
+            {
+                if (exceptions is null)
+                    throw;
+                exceptions.Add(e);
+            }
+        }
+        if(exceptions is not null)
+            throw new AggregateException(exceptions);
 
         return count;
+    }
+
+    public class AiGenUpdateScript(List<AiGenScriptResult> work, string update) : MergedTransactionCommand<DocumentsOperationContext, DocumentsTransaction>
+    {
+        protected override long ExecuteCmd(DocumentsOperationContext context)
+        {
+            var patch = new PatchRequest(update, PatchRequestType.AiGen);
+            context.DocumentDatabase.Scripts.GetScriptRunner(patch, true, out var script);
+
+            int count = 0;
+            foreach (AiGenScriptResult item in work)
+            {
+                count++;
+                script.Run(context, context, "execute", [item.DocumentId, item.Context, item.AiHash, item.Output]);
+            }
+
+            return count;
+        }
+
+        public override IReplayableCommandDto<DocumentsOperationContext, DocumentsTransaction, MergedTransactionCommand<DocumentsOperationContext, DocumentsTransaction>> ToDto(DocumentsOperationContext context)
+        {
+            throw new NotImplementedException();
+        }
     }
 
     protected override AiGenStatsScope CreateScope(EtlRunStats stats)
