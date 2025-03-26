@@ -1062,11 +1062,12 @@ namespace Voron
 
         public abstract bool JournalExists(long number);
 
-        public bool TryGetJournalId(out Guid journalId)
+
+        public bool TryGetJournalId(string basePath, out Guid journalId)
         {
             foreach (var fileHeader in HeaderAccessor.HeaderFileNames)
             {
-                if (ReadValidHeader(fileHeader, out var header))
+                if (ReadValidHeader(Path.Combine(basePath, fileHeader), out var header))
                 {
                     journalId = header.JournalId;
                     return true;
@@ -1127,7 +1128,6 @@ namespace Voron
         public bool DisableSparseRegions { get; set; }
         public int JournalsCompressionAcceleration { get; set; } = 1;
         public int MinimumSharedJournalsMergeCount { get; set; } = 8;
-        public bool AvoidSharedJournals { get; set; }
 
         private readonly RavenLogger _log;
 

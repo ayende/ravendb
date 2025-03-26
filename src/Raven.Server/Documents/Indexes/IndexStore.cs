@@ -2235,6 +2235,7 @@ namespace Raven.Server.Documents.Indexes
 
         internal TestingStuff ForTestingPurposes;
         private SharedIndexJournals _sharedJournals;
+        public SharedIndexJournals SharedJournals => _sharedJournals;
 
         internal TestingStuff ForTestingPurposesOnly()
         {

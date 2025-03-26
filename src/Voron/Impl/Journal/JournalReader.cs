@@ -561,8 +561,7 @@ namespace Voron.Impl.Journal
                     JournalId = current->JournalId;
                 }
 
-                if (_environment.Options.AvoidSharedJournals == false && 
-                    current->Flags == TransactionPersistenceModeFlags.LinkedJournalsRecord &&
+                if (current->Flags == TransactionPersistenceModeFlags.LinkedJournalsRecord &&
                     _environment.Options.RootJournal is null) // this only applies to the _root_, not to branches
                 {
                     ProcessLinkedJournalsRecord(current);
@@ -600,7 +599,6 @@ namespace Voron.Impl.Journal
             return false;
         }
 
-        private readonly Dictionary<string, StorageEnvironmentOptions> _recoveredLinkedEnvOptions = new Dictionary<string, StorageEnvironmentOptions>();
 
         private void ProcessLinkedJournalsRecord(TransactionHeader* current)
         {
@@ -632,24 +630,10 @@ namespace Voron.Impl.Journal
                 if (basePath == null)
                     continue;
 
-                if (_recoveredLinkedEnvOptions.TryGetValue(basePath, out var envOptions) == false)
-                {
-                    envOptions = ForPath(
-                        basePath,
-                        tempPath: null, 
-                        journalPath: null, 
-                        ioChangesNotifications: null,
-                        catastrophicFailureNotification: null, 
-                        loggingResource: null,
-                        loggingComponent: null);
-
-                    _recoveredLinkedEnvOptions.Add(basePath, envOptions);
-                }
-
-                if (envOptions.TryGetJournalId(out var headerJournalId) == false)
+                if (_environment.Options.TryGetJournalId(basePath, out var envJournalId) == false)
                     continue;
 
-                if (headerJournalId != journalId)
+                if (envJournalId != journalId)
                     continue;
 
                 var rc = Pal.rvn_ensure_hard_link_non_durable(_journalPager.FileName, dest, out var errorCode);

@@ -50,8 +50,6 @@ public class SharedIndexJournals : IJournalMerger, IDisposable
         options.MinimumSharedJournalsMergeCount = documentDatabase.Configuration.Storage.MinimumSharedJournalsMergeCount;
         options.MaxLogFileSize = documentDatabase.Configuration.Storage.MaxJournalFileSize.GetValue(SizeUnit.Bytes);
 
-        options.AvoidSharedJournals = documentDatabase.Configuration.Storage.AvoidSharedJournals;
-
         _env = new StorageEnvironment(options);
         _env.Journal.BranchJournalMerger = this;
         _scopeForSharedJournals = _env.Journal.SharedJournalsScope();
@@ -59,12 +57,12 @@ public class SharedIndexJournals : IJournalMerger, IDisposable
         _sharedJournalsThread = PoolOfThreads.GlobalRavenThreadPool.LongRunning(
             WriteSharedJournals, null,
             ThreadNames.ForIndexSharedJournals("Index SharedJournals for " + documentDatabase.Name, documentDatabase.Name));
-
     }
 
     
     private readonly ManualResetEventSlim _waitForJournals = new(initialState: true);
     private readonly StorageEnvironment _env;
+    public StorageEnvironment Env => _env;
     private bool _disposed;
     private readonly PoolOfThreads.LongRunningWork _sharedJournalsThread;
     private readonly WriteAheadJournal.ScopeForSharedJournals _scopeForSharedJournals;

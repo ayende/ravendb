@@ -34,7 +34,6 @@ namespace SlowTests.Issues
                 ModifyDatabaseRecord = databaseRecord =>
                 {
                     databaseRecord.Settings[RavenConfiguration.GetKey(x => x.Core.ThrowIfAnyIndexCannotBeOpened)] = "false";
-                    databaseRecord.Settings[RavenConfiguration.GetKey(x => x.Storage.AvoidSharedJournals)] = "true";
                 }
             }))
             {
@@ -65,6 +64,8 @@ namespace SlowTests.Issues
 
                 IOExtensions.DeleteFile(autoIndexPath.Combine(Constants.DatabaseFilename).FullPath);
                 IOExtensions.DeleteDirectory(autoIndexPath.Combine("Journals").FullPath);
+
+                IOExtensions.DeleteDirectory(database.IndexStore.SharedJournals.Env.Options.BasePath.FullPath);
 
                 database = await Databases.GetDocumentDatabaseInstanceFor(store);
 
