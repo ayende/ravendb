@@ -71,7 +71,6 @@ public class SharedIndexJournals : IJournalMerger, IDisposable
     {
         using (_scopeForSharedJournals)
         {
-            int i = 0;
             while (_disposed is false)
             {
                 _waitForJournals.Wait();

@@ -935,7 +935,7 @@ namespace Sparrow.Server
                 if (elementIndex < 0 || elementIndex >= _str.Length / sizeof(T))
                     throw new ArgumentOutOfRangeException(nameof(elementIndex));
 
-                return new MemoryHandle(_str._pointer + (elementIndex * sizeof(T)));
+                return new MemoryHandle(_str.Ptr + (elementIndex * sizeof(T)));
             }
 
             public override void Unpin()

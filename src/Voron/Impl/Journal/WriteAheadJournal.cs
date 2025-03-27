@@ -223,6 +223,7 @@ namespace Voron.Impl.Journal
                 RejectCommitsToMerge();
 
                 _compressionPager.Dispose();
+                _compressionPager.LogForDebug();
 
                 _journalApplicator.Dispose();
                 if (_env.Options.OwnsPagers)

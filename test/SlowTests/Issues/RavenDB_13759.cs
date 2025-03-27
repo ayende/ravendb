@@ -212,8 +212,8 @@ namespace SlowTests.Issues
                 indexStoragePath1 = database.IndexStore.GetIndex(index.IndexName)._environment.Options.BasePath.FullPath;
                 indexStoragePath2 = database.IndexStore.GetIndex("Auto/Orders/ByOrderedAt")._environment.Options.BasePath.FullPath;
 
-                var idx1Jrnl = Directory.GetFiles(Path.Combine(indexStoragePath1, "Journals"), "*.journal").Last();
-                var idx2Jrnl = Directory.GetFiles(Path.Combine(indexStoragePath2, "Journals"), "*.journal").Last();
+                var idx1Jrnl = Directory.GetFiles(Path.Combine(indexStoragePath1, "Journals"), "*.journal").Order().Last();
+                var idx2Jrnl = Directory.GetFiles(Path.Combine(indexStoragePath2, "Journals"), "*.journal").Order().Last();
 
                 Assert.True(Pal.rvn_is_same_hard_link(idx2Jrnl, idx1Jrnl), $"{idx2Jrnl} vs {idx1Jrnl}");
             }

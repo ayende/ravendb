@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Threading;
 using Sparrow;
 using Sparrow.Binary;
@@ -585,6 +586,30 @@ public unsafe partial class Pager : IDisposable
                 // we can do about it
             }
         }
+    }
+
+
+    public void LogForDebug()
+    {
+        if (_states.Count == 0)
+            return;
+
+        Console.WriteLine(ToString());
+    }
+
+    public override string ToString()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"Pager : {FileName} (states:{_states.Count})");
+        foreach (var state in _states)
+        {
+            if (state.TryGetTarget(out var v))
+            {
+                sb.AppendLine($"|>state {v.Pager.ToString()}");
+            }
+        }
+
+        return sb.ToString();
     }
 
     public void TryReleasePage(ref PagerTransactionState txState, long pageNumber)
