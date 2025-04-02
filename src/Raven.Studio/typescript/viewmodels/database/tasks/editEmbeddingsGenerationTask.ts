@@ -109,7 +109,7 @@ class editEmbeddingsGenerationTask extends shardViewModelBase {
             // 1. Editing an Existing task
             this.isAddingNewEtlTask(false);
 
-            getOngoingTaskInfoCommand.forAiIntegration(this.db, args.taskId)
+            getOngoingTaskInfoCommand.forEmbeddingsGeneration(this.db, args.taskId)
                 .execute()
                 .done((result) => {
                     this.editedEmbeddingsGeneration(new ongoingTaskEmbeddingsGenerationEditModel(result, this.aiConnectionStrings));

@@ -104,6 +104,15 @@ export default function OngoingTaskAddModal(props: OngoingTaskAddModalProps) {
                 <HrHeader>AI</HrHeader>
                 <Row className="gy-sm">
                     <TaskItem
+                        title="Create new GenAI task"
+                        href={appUrl.forEditGenAi(db.name)}
+                        className="ai-etl"
+                        target="GenAi"
+                    >
+                        <Icon icon="ai-etl" margin="m-0" />
+                        <h4 className="mt-1 mb-0">GenAI</h4>
+                    </TaskItem>
+                    <TaskItem
                         title="Create new AI task"
                         href={appUrl.forEditEmbeddingsGeneration(db.name)}
                         className="ai-etl"
@@ -115,6 +124,7 @@ export default function OngoingTaskAddModal(props: OngoingTaskAddModalProps) {
                         <h4 className="mt-1 mb-0">Embeddings Generation</h4>
                     </TaskItem>
                 </Row>
+
                 {!isAiOnly && (
                     <>
                         <HrHeader>Replication</HrHeader>

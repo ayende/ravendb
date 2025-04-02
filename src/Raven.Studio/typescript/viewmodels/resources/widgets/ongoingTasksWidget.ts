@@ -81,6 +81,11 @@ class ongoingTasksWidget extends websocketBasedWidget<Raven.Server.Dashboard.Clu
             icon: "icon-ai-etl",
             colorClass: "ai-etl"
         },
+        "GenAi": {
+            nameForUI: "GenAI",
+            icon: "icon-ai-etl", // TODO kalczur
+            colorClass: "ai-etl" // TODO kalczur
+        },
         "KafkaQueueSink": {
             nameForUI: "Kafka Sink",
             icon: "icon-kafka-sink",

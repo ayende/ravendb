@@ -3,6 +3,7 @@ import intermediateMenuItem = require("common/shell/menu/intermediateMenuItem");
 import leafMenuItem = require("common/shell/menu/leafMenuItem");
 import BackupsPage = require("components/pages/database/tasks/backups/BackupsPage");
 import CreateSampleData = require("components/pages/database/tasks/createSampleData/CreateSampleData");
+import EditGenAiTask = require("components/pages/database/tasks/ongoingTasks/editTasks/editGenAiTask/EditGenAiTask");
 import OngoingTasksPage = require("components/pages/database/tasks/ongoingTasks/OngoingTasksPage");
 
 export = getTasksMenuItem;
@@ -348,6 +349,19 @@ function getTasksMenuItem(appUrls: computedAppUrls) {
             search: {
                 overrideTitle: "Add New Embeddings Generation Task",
                 alternativeTitles: ["Create Embeddings Generation Task"],
+            }
+        }),
+        new leafMenuItem({
+            route: 'databases/tasks/editGenAiTask',
+            moduleId: reactUtils.bridgeToReact(EditGenAiTask.default, "nonShardedView"),
+            title: 'GenAI Task',
+            nav: false,
+            css: "icon-plus",
+            dynamicHash: appUrls.editGenAiTaskUrl,
+            itemRouteToHighlight: 'databases/tasks/ongoingTasks',
+            search: {
+                overrideTitle: "Add New GenAI Task",
+                alternativeTitles: ["Create GenAI Task"],
             }
         }),
         new leafMenuItem({
