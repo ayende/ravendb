@@ -23,11 +23,11 @@ namespace Raven.Server.Documents.ETL.Providers.AI.AiGen;
 
 internal sealed class AiGenScriptTransformer : EtlTransformer<AiEtlItem, AiGenScriptResult, AiGenStatsScope, AiGenPerformanceOperation>
 {
-    private readonly AiGenConfiguration _configuration;
+    private readonly GenAiConfiguration _configuration;
     private List<AiGenScriptResult> _currentRun;
     private readonly PatchRequest _mainScript;
 
-    public AiGenScriptTransformer(DocumentDatabase database, DocumentsOperationContext context, Transformation transformation, PatchRequest behaviorFunctions, AiGenConfiguration configuration) : base(database, context, null, behaviorFunctions)
+    public AiGenScriptTransformer(DocumentDatabase database, DocumentsOperationContext context, Transformation transformation, PatchRequest behaviorFunctions, GenAiConfiguration configuration) : base(database, context, null, behaviorFunctions)
     {
         _configuration = configuration;
         _mainScript = new PatchRequest(transformation.Script, PatchRequestType.AiGen);

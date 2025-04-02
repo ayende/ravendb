@@ -38,6 +38,7 @@ namespace Raven.Client.Documents.Operations.OngoingTasks
         PullReplicationAsSink,
         QueueSink,
         EmbeddingsGeneration,
+        GenAi
     }
 
     public enum OngoingTaskState

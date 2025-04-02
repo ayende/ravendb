@@ -582,13 +582,16 @@ namespace TypingsGenerator
             scripter.AddType(typeof(TestRelationalDatabaseEtlScript<SnowflakeConnectionString, SnowflakeEtlConfiguration>));
             scripter.AddType(typeof(SnowflakeEtlTable));
 
-            // ongoing tasks - AI Integration
+            // ongoing tasks - Embeddings Generation
             scripter.AddType(typeof(EmbeddingsGeneration));
             scripter.AddType(typeof(EmbeddingsGenerationConfiguration));
             scripter.AddType(typeof(TestEmbeddingsGenerationScript));
             scripter.AddType(typeof(EmbeddingsGenerationTestScriptResult));
             scripter.AddType(typeof(AiConnectorType));
             scripter.AddType(typeof(EmbeddingsGenerationPerformanceOperation));
+
+            // ongoing tasks - GenAI
+            scripter.AddType(typeof(GenAiConfiguration));
 
             // connection strings
             scripter.AddType(typeof(ConnectionString));

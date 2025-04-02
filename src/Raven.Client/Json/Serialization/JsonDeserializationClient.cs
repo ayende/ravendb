@@ -312,7 +312,7 @@ namespace Raven.Client.Json.Serialization
         
         public static readonly Func<BlittableJsonReaderObject, EmbeddingsGenerationConfiguration> EmbeddingsGenerationConfiguration = GenerateJsonDeserializationRoutine<EmbeddingsGenerationConfiguration>();
         
-        public static readonly Func<BlittableJsonReaderObject, AiGenConfiguration> AiGenConfiguration = GenerateJsonDeserializationRoutine<AiGenConfiguration>();
+        public static readonly Func<BlittableJsonReaderObject, GenAiConfiguration> AiGenConfiguration = GenerateJsonDeserializationRoutine<GenAiConfiguration>();
 
         public static readonly Func<BlittableJsonReaderObject, ElasticSearchConnectionString> ElasticSearchConnectionString = GenerateJsonDeserializationRoutine<ElasticSearchConnectionString>();
 

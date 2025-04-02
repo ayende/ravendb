@@ -1449,7 +1449,7 @@ namespace Raven.Server.Documents.ETL
                         return result;
                     }
                 case EtlType.AiGen:
-                    using (var aiGenTask = new AiGenTask(testScript.Configuration.Transforms[0], testScript.Configuration as AiGenConfiguration, database, database.ServerStore))
+                    using (var aiGenTask = new AiGenTask(testScript.Configuration.Transforms[0], testScript.Configuration as GenAiConfiguration, database, database.ServerStore))
                     using (aiGenTask.EnterTestMode(out debugOutput))
                     {
                         aiGenTask.EnsureThreadAllocationStats();
