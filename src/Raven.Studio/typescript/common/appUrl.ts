@@ -53,6 +53,7 @@ class appUrl {
         editOlapEtl: (taskId?: number) => ko.pureComputed(() => appUrl.forEditOlapEtl(appUrl.currentDatabase(), taskId)),
         editElasticSearchEtl: (taskId?: number) => ko.pureComputed(() => appUrl.forEditElasticSearchEtl(appUrl.currentDatabase(), taskId)),
         editEmbeddingsGeneration: (taskId?: number) => ko.pureComputed(() => appUrl.forEditEmbeddingsGeneration(appUrl.currentDatabase(), taskId)),
+        editGenAi: (taskId?: number) => ko.pureComputed(() => appUrl.forEditGenAi(appUrl.currentDatabase(), taskId)),
         editKafkaEtl: (taskId?: number) => ko.pureComputed(() => appUrl.forEditKafkaEtl(appUrl.currentDatabase(), taskId)),
         editRabbitMqEtl: (taskId?: number) => ko.pureComputed(() => appUrl.forEditRabbitMqEtl(appUrl.currentDatabase(), taskId)),
         editAzureQueueStorageEtl: (taskId?: number) => ko.pureComputed(() => appUrl.forEditAzureQueueStorageEtl(appUrl.currentDatabase(), taskId)),
@@ -80,6 +81,7 @@ class appUrl {
         editOlapEtlTaskUrl: ko.pureComputed(() => appUrl.forEditOlapEtl(appUrl.currentDatabase())),
         editElasticSearchEtlTaskUrl: ko.pureComputed(() => appUrl.forEditElasticSearchEtl(appUrl.currentDatabase())),
         editEmbeddingsGenerationTaskUrl: ko.pureComputed(() => appUrl.forEditEmbeddingsGeneration(appUrl.currentDatabase())),
+        editGenAiTaskUrl: ko.pureComputed(() => appUrl.forEditGenAi(appUrl.currentDatabase())),
         editKafkaEtlTaskUrl: ko.pureComputed(() => appUrl.forEditKafkaEtl(appUrl.currentDatabase())),
         editRabbitMqEtlTaskUrl: ko.pureComputed(() => appUrl.forEditRabbitMqEtl(appUrl.currentDatabase())),
         editAzureQueueStorageEtlTaskUrl: ko.pureComputed(() => appUrl.forEditAzureQueueStorageEtl(appUrl.currentDatabase())),
@@ -706,6 +708,14 @@ class appUrl {
         return "#databases/tasks/editEmbeddingsGenerationTask?" + databasePart + sourceViewPart + taskPart;
     }
 
+    static forEditGenAi(db: database | string, taskId?: number): string {
+        const databasePart = appUrl.getEncodedDbPart(db);
+        
+        const sourceViewPart = "&sourceView=" + appUrl.getAiTaskSourceView();
+        const taskPart = taskId ? "&taskId=" + taskId : "";
+        return "#databases/tasks/editGenAiTask?" + databasePart + sourceViewPart + taskPart;
+    }
+    
     static getAiTaskSourceView(): EditAiTaskSourceView {
         if (window.location.href.includes("/ai/")) {
             return "AiTasks";

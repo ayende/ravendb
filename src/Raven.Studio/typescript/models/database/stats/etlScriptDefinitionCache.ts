@@ -50,7 +50,10 @@ class etlScriptDefinitionCache {
                     command = getOngoingTaskInfoCommand.forQueueEtl(databaseName, taskId);
                     break;
                 case "EmbeddingsGeneration":
-                    command = getOngoingTaskInfoCommand.forAiIntegration(databaseName, taskId);
+                    command = getOngoingTaskInfoCommand.forEmbeddingsGeneration(databaseName, taskId);
+                    break;
+                case "AiGen":
+                    command = getOngoingTaskInfoCommand.forGenAi(databaseName, taskId);
                     break;
                 default: 
                     genUtils.assertUnreachable(etlType, "Unknown studioEtlType: " + etlType);
