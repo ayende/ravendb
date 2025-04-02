@@ -18,7 +18,7 @@ public partial class Hnsw
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static float CosineSimilaritySingles(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b)
+    internal static float CosineSimilaritySingles(ReadOnlySpan<byte> a, ref float aMagCache, ref bool aIsCached, ReadOnlySpan<byte> b, ref float bMagCache, ref bool bIsCached)
     {
         var aSingles = MemoryMarshal.Cast<byte, float>(a);
         var bSingles = MemoryMarshal.Cast<byte, float>(b);
@@ -26,7 +26,7 @@ public partial class Hnsw
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static float CosineSimilarityI8(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b)
+    internal static float CosineSimilarityI8(ReadOnlySpan<byte> a, ref float aMagCache, ref bool aIsCached, ReadOnlySpan<byte> b, ref float bMagCache, ref bool bIsCached)
     {
         Debug.Assert(a.Length == b.Length, "a.Length == b.Length");
         var vectorLength = a.Length - sizeof(float);
@@ -64,7 +64,7 @@ public partial class Hnsw
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static float HammingDistance(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b)
+    private static float HammingDistance(ReadOnlySpan<byte> a, ref float aMagCache, ref bool aIsCached, ReadOnlySpan<byte> b, ref float bMagCache, ref bool bIsCached)
     {
         return TensorPrimitives.HammingBitDistance<byte>(a, b);
     }

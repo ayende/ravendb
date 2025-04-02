@@ -134,6 +134,9 @@ public unsafe struct NativeList<T>
     public void Grow(ByteStringContext ctx, int addition)
     {
         var capacity = Math.Max(1, Bits.NextAllocationSize(Capacity + addition));
+
+        var maxCapacity = int.MaxValue / sizeof(T);
+        PortableExceptions.ThrowIf<ArgumentOutOfRangeException>(capacity > maxCapacity, $"Required {capacity} len, however the max capacity is {maxCapacity} for {typeof(T)}");
         ctx.Allocate(capacity * sizeof(T), out var mem);
 
         if (_storage.HasValue)

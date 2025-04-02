@@ -101,6 +101,7 @@ public unsafe partial class Hnsw
 
         public static NodeReader Decode(LowLevelTransaction llt, long id)
         {
+            
             var span = Container.Get(llt, id).ToSpan();
             return Decode(llt, span);
         }
@@ -236,12 +237,16 @@ public unsafe partial class Hnsw
         private readonly PriorityQueue<int, float> _nearestEdgesQ = new();
         private readonly Dictionary<long, int> _nodeIdToIdx = new();
         private NativeList<Node> _nodes = default;
+        private NativeList<float> _nodesMagnitudeCache = default;
+        private NativeList<bool> _nodesMagnitudeIsCached = default;
         private readonly Tree _tree;
         private readonly Lookup<Int64LookupKey> _nodeIdToLocations;
         public readonly LowLevelTransaction Llt;
         private int _visitsCounter;
-        public readonly delegate*<ReadOnlySpan<byte>, ReadOnlySpan<byte>, float> SimilarityCalc;
+        public readonly delegate*<ReadOnlySpan<byte>, ref float, ref bool, ReadOnlySpan<byte>, ref float, ref bool, float> SimilarityCalc;
         public readonly bool IsEmpty;
+        private float _selfMagnitudeCache;
+        private bool _selfMagnitudeIsCached;
         
         
         public Span<Node> Nodes => _nodes.ToSpan();
@@ -351,6 +356,8 @@ public unsafe partial class Hnsw
         {
             int nodeIndex = _nodes.Count;
             _nodes.Add(Llt.Allocator, new Node { NodeId = nodeId });
+            _nodesMagnitudeCache.Add(Llt.Allocator, 0f);
+            _nodesMagnitudeIsCached.Add(Llt.Allocator, false);
             return nodeIndex;
         }
 
@@ -448,9 +455,20 @@ public unsafe partial class Hnsw
                 vector = from.GetVector(this); // note we've to make a copy here since we cannot pass this as ref into ref value
             }
 
+            ref var fromMagnitudeCache = ref _selfMagnitudeCache;
+            ref var fromMagnitudeIsCached = ref _selfMagnitudeIsCached;
+            if (fromIdx != -1)
+            {
+                fromMagnitudeCache = ref _nodesMagnitudeCache[fromIdx];
+                fromMagnitudeIsCached = ref _nodesMagnitudeIsCached[fromIdx];
+            }
+
+            ref var toMagnitudeCache = ref _nodesMagnitudeCache[toIdx];
+            ref var toMagnitudeIsCached = ref _nodesMagnitudeIsCached[toIdx];
+
             ref var to = ref GetNodeByIndex(toIdx);
             Span<byte> v2 = to.GetVector(this);
-            var distance = SimilarityCalc(vector, v2);
+            var distance = SimilarityCalc(vector, ref fromMagnitudeCache, ref fromMagnitudeIsCached, v2, ref toMagnitudeCache, ref toMagnitudeIsCached);
             return distance;
         }
         
@@ -1212,14 +1230,18 @@ public unsafe partial class Hnsw
     {
         var searchState = new SearchState(llt, name);
         var pq = new PriorityQueue<long, float>();
+        bool isCached = false;
+        float mangnitudeCache = 0;
         for (long nodeId = 1; nodeId <= searchState.Options.CountOfVectors; nodeId++)
         {
             searchState.ReadNode(nodeId, out var reader);
             if (reader.PostingListId is 0)
                 continue; // no entries, can skip
 
+            float curCache = 0f;
+            bool curIsCached = false;
             var curVect = reader.ReadVector(in searchState);
-            var distance = searchState.SimilarityCalc(vector, curVect);
+            var distance = searchState.SimilarityCalc(vector, ref mangnitudeCache, ref isCached, curVect, ref curCache, ref curIsCached);
             if (pq.Count < numberOfCandidates)
             {
                 pq.Enqueue(nodeId, -distance);
