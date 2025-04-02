@@ -7,14 +7,14 @@ using Raven.Server.ServerWide.Commands.ETL;
 
 namespace Raven.Server.ServerWide.Commands.AI;
 
-public sealed class AddAiGenCommand : AddEtlCommand<AiGenConfiguration, AiConnectionString>
+public sealed class AddAiGenCommand : AddEtlCommand<GenAiConfiguration, AiConnectionString>
 {
     public AddAiGenCommand()
     {
         // for deserialization
     }
 
-    public AddAiGenCommand(AiGenConfiguration configuration, string databaseName, string uniqueRequestId) : base(configuration, databaseName, uniqueRequestId)
+    public AddAiGenCommand(GenAiConfiguration configuration, string databaseName, string uniqueRequestId) : base(configuration, databaseName, uniqueRequestId)
     {
 
     }

@@ -7,7 +7,7 @@ using Sparrow.Json;
 
 namespace Raven.Client.Documents.Operations.AI;
 
-public class AiGenConfiguration : EtlConfiguration<AiConnectionString>
+public class GenAiConfiguration : EtlConfiguration<AiConnectionString>
 {
 
     [JsonDeserializationIgnore]

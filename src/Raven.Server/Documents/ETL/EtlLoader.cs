@@ -125,7 +125,7 @@ namespace Raven.Server.Documents.ETL
             List<QueueEtlConfiguration> newQueueDestinations,
             List<SnowflakeEtlConfiguration> newSnowflakeDestinations,
             List<EmbeddingsGenerationConfiguration> newEmbeddingsGenerationDestinations,
-            List<AiGenConfiguration> newAiGenDestinations,
+            List<GenAiConfiguration> newAiGenDestinations,
             List<EtlProcess> toRemove, Dictionary<string, string> responsibleNodes,
             List<string> explanations)
         {
@@ -178,7 +178,7 @@ namespace Raven.Server.Documents.ETL
                     newProcesses.AddRange(GetRelevantProcesses<EmbeddingsGenerationConfiguration, AiConnectionString>(newEmbeddingsGenerationDestinations, ensureUniqueConfigurationNames));
 
                 if (newAiGenDestinations != null && newAiGenDestinations.Count > 0)
-                    newProcesses.AddRange(GetRelevantProcesses<AiGenConfiguration, AiConnectionString>(newAiGenDestinations, ensureUniqueConfigurationNames));
+                    newProcesses.AddRange(GetRelevantProcesses<GenAiConfiguration, AiConnectionString>(newAiGenDestinations, ensureUniqueConfigurationNames));
 
                 processes.AddRange(newProcesses);
                 _processes = processes.ToArray();
@@ -265,7 +265,7 @@ namespace Raven.Server.Documents.ETL
                 QueueEtlConfiguration queueConfig = null;
                 SnowflakeEtlConfiguration snowflakeConfig = null;
                 EmbeddingsGenerationConfiguration embeddingsGenerationConfig = null;
-                AiGenConfiguration aiGenGenerationConfig = null;
+                GenAiConfiguration aiGenGenerationConfig = null;
 
                 var connectionStringNotFound = false;
 
@@ -331,7 +331,7 @@ namespace Raven.Server.Documents.ETL
                         break;
                     
                     case EtlType.AiGen:
-                        aiGenGenerationConfig = config as AiGenConfiguration;
+                        aiGenGenerationConfig = config as GenAiConfiguration;
                         
                         if (_databaseRecord.AiConnectionStrings.TryGetValue(config.ConnectionStringName, out var aiGetnConStr))
                             aiGenGenerationConfig.Initialize(aiGetnConStr);
@@ -552,7 +552,7 @@ namespace Raven.Server.Documents.ETL
             var myQueueEtl = new List<QueueEtlConfiguration>();
             var mySnowflakeEtl = new List<SnowflakeEtlConfiguration>();
             var myEmbeddingsGenerationEtl = new List<EmbeddingsGenerationConfiguration>();
-            var myAiGenEtl = new List<AiGenConfiguration>();
+            var myAiGenEtl = new List<GenAiConfiguration>();
 
             var responsibleNodes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
@@ -616,7 +616,7 @@ namespace Raven.Server.Documents.ETL
             
             foreach (var config in record.AiGenEtls)
             {
-                if (IsMyEtlTask<AiGenConfiguration, AiConnectionString>(record, config, ref responsibleNodes, out explanations))
+                if (IsMyEtlTask<GenAiConfiguration, AiConnectionString>(record, config, ref responsibleNodes, out explanations))
                 {
                     myAiGenEtl.Add(config);
                 }
@@ -859,7 +859,7 @@ namespace Raven.Server.Documents.ETL
                     }
                     case AiGenTask aiGenTask:
                     {
-                        AiGenConfiguration existing = null;
+                        GenAiConfiguration existing = null;
 
                         foreach (var config in myAiGenEtl)
                         {
@@ -961,7 +961,7 @@ namespace Raven.Server.Documents.ETL
             List<QueueEtlConfiguration> myQueueEtl,
             List<SnowflakeEtlConfiguration> mySnowflakeEtl,
             List<EmbeddingsGenerationConfiguration> myEmbeddingsGenerationEtl,
-            List<AiGenConfiguration> myAiGenEtl,
+            List<GenAiConfiguration> myAiGenEtl,
             Dictionary<string, string> responsibleNodes,
             List<string> explanations)
         {

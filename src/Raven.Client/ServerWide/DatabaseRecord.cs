@@ -143,7 +143,7 @@ namespace Raven.Client.ServerWide
         
         public List<EmbeddingsGenerationConfiguration> EmbeddingsGenerations = [];
         
-        public List<AiGenConfiguration> AiGenEtls = [];
+        public List<GenAiConfiguration> AiGenEtls = [];
 
         public ClientConfiguration Client;
 

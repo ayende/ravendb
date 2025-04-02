@@ -937,9 +937,9 @@ namespace Raven.Server.ServerWide
 
         
         
-        private List<AiGenConfiguration> _aiGenConfigurationTasks;
+        private List<GenAiConfiguration> _aiGenConfigurationTasks;
 
-        public List<AiGenConfiguration> AiGens
+        public List<GenAiConfiguration> AiGens
         {
             get
             {

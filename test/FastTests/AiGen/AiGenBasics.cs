@@ -30,7 +30,7 @@ public class AiGenBasics(ITestOutputHelper output) : RavenTestBase(output)
         }));
         
     
-        store.Maintenance.Send(new AddAiGenOperation(new AiGenConfiguration
+        store.Maintenance.Send(new AddAiGenOperation(new GenAiConfiguration
         {
             Name = "Check blog comments spam",
             ConnectionStringName = "ollama-local-deepseek-r1",
@@ -90,7 +90,7 @@ for(const comment of this.Comments)
         
         var etl = Etl.WaitForEtlToComplete(store);
 
-        store.Maintenance.Send(new AddAiGenOperation(new AiGenConfiguration
+        store.Maintenance.Send(new AddAiGenOperation(new GenAiConfiguration
         {
             Name = "Check blog comments spam",
             ConnectionStringName = "ollama-local-deepseek-r1",

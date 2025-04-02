@@ -34,7 +34,7 @@ using Encoding = System.Text.Encoding;
 
 namespace Raven.Server.Documents.ETL.Providers.AI.AiGen;
 
-public sealed class AiGenTask : EtlProcess<AiEtlItem, AiGenScriptResult, AiGenConfiguration, AiConnectionString,
+public sealed class AiGenTask : EtlProcess<AiEtlItem, AiGenScriptResult, GenAiConfiguration, AiConnectionString,
     AiGenStatsScope, AiGenPerformanceOperation>
 {
     private const string EmbeddingsTaskTag = "AI/Embeddings Generation";
@@ -43,14 +43,14 @@ public sealed class AiGenTask : EtlProcess<AiEtlItem, AiGenScriptResult, AiGenCo
     private ChatCompletionClient _chatCompletionClient;
 
 
-    public AiGenTask(Transformation transformation, AiGenConfiguration configuration, DocumentDatabase database, ServerStore serverStore)
+    public AiGenTask(Transformation transformation, GenAiConfiguration configuration, DocumentDatabase database, ServerStore serverStore)
         : base(transformation, configuration, database, serverStore, EmbeddingsTaskTag)
     {
         Metrics = new EtlMetricsCountersManager();
         _chatCompletionClient = GetClient(configuration);
     }
 
-    private static ChatCompletionClient GetClient(AiGenConfiguration cfg)
+    private static ChatCompletionClient GetClient(GenAiConfiguration cfg)
     {
          var (uri, model, apiKey) = cfg.Connection.GetActiveProvider() switch
         {

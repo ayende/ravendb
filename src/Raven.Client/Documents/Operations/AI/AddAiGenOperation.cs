@@ -5,7 +5,7 @@ using Sparrow.Json;
 
 namespace Raven.Client.Documents.Operations.AI;
 
-public class AddAiGenOperation(AiGenConfiguration configuration) : IMaintenanceOperation<AddEtlOperationResult>
+public class AddAiGenOperation(GenAiConfiguration configuration) : IMaintenanceOperation<AddEtlOperationResult>
 {
     public RavenCommand<AddEtlOperationResult> GetCommand(DocumentConventions conventions, JsonOperationContext context)
     {
