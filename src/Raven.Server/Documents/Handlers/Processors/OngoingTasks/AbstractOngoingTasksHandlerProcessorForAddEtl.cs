@@ -95,7 +95,7 @@ namespace Raven.Server.Documents.Handlers.Processors.OngoingTasks
                         RequestHandler.ServerStore.LicenseManager.AssertCanAddEmbeddingsGenerationTask(GetAiConnectionString(context, connectionStringName));
                         break;
                     }
-                case EtlType.AiGen:
+                case EtlType.GenAi:
                     using (RequestHandler.ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
                     using (context.OpenReadTransaction())
                     {

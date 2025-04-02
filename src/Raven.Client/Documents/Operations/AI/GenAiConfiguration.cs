@@ -17,7 +17,7 @@ public class GenAiConfiguration : EtlConfiguration<AiConnectionString>
     public override string GetDestination() => Name;
     public override string GetDefaultTaskName() => Name;
     
-    public override EtlType EtlType => EtlType.AiGen;
+    public override EtlType EtlType => EtlType.GenAi;
     public override bool UsingEncryptedCommunicationChannel() => Connection?.UsingEncryptedCommunicationChannel() ?? false;
 
     public string GenerateIdentifier() => EmbeddingsGenerationConfiguration.GenerateIdentifier(Name);

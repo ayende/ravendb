@@ -9,6 +9,6 @@
         Queue,
         Snowflake,
         EmbeddingsGeneration,
-        AiGen
+        GenAi
     }
 }

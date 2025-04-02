@@ -61,7 +61,7 @@ public sealed class AiGenTask : EtlProcess<AiEtlItem, AiGenScriptResult, GenAiCo
         return new ChatCompletionClient(new Uri(uri), model, apiKey, cfg.JsonSchema);
     }
 
-    public override EtlType EtlType => EtlType.AiGen;
+    public override EtlType EtlType => EtlType.GenAi;
     public override bool ShouldTrackCounters() => false;
     public override bool ShouldTrackTimeSeries() => false;
     

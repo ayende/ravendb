@@ -1448,7 +1448,7 @@ namespace Raven.Server.Documents.ETL
                         result.DebugOutput = debugOutput;
                         return result;
                     }
-                case EtlType.AiGen:
+                case EtlType.GenAi:
                     using (var aiGenTask = new AiGenTask(testScript.Configuration.Transforms[0], testScript.Configuration as GenAiConfiguration, database, database.ServerStore))
                     using (aiGenTask.EnterTestMode(out debugOutput))
                     {

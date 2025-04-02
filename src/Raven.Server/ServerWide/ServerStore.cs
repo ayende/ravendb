@@ -2219,7 +2219,7 @@ namespace Raven.Server.ServerWide
                         command = new AddEmbeddingsGenerationCommand(aiIntegration, databaseName, raftRequestId);
                     }
                         break;
-                    case EtlType.AiGen:
+                    case EtlType.GenAi:
                     {
                         var aiIntegration = JsonDeserializationCluster.AiGenConfiguration(etlConfiguration);
                         if (aiIntegration.JsonSchema is null)
@@ -2364,7 +2364,7 @@ namespace Raven.Server.ServerWide
                     var snowflakeConnectionString = databaseRecord.SnowflakeConnectionStrings;
                     return snowflakeConnectionString != null && snowflakeConnectionString.TryGetValue(connectionStringName, out _);
                 case EtlType.EmbeddingsGeneration:
-                case EtlType.AiGen:
+                case EtlType.GenAi:
                     var aiConnectionStrings = databaseRecord.AiConnectionStrings;
                     return aiConnectionStrings != null && aiConnectionStrings.TryGetValue(connectionStringName, out _);
                 default:

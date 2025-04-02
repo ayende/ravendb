@@ -414,7 +414,7 @@ namespace Raven.Client.Documents.Operations.ETL
 
             if (IsEmptyScript)
             {
-                if (type is not EtlType.Raven and not EtlType.EmbeddingsGeneration and not EtlType.AiGen)
+                if (type is not EtlType.Raven and not EtlType.EmbeddingsGeneration and not EtlType.GenAi)
                     errors.Add($"Script '{Name}' must not be empty");
             }
 
