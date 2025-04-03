@@ -152,7 +152,7 @@ namespace Raven.Server.Documents.ETL
         private IEtlStatsAggregator _lastStats;
         private int _statsId;
 
-        protected TestMode _testMode;
+        private TestMode _testMode;
 
         protected readonly Transformation Transformation;
         protected readonly RavenLogger Logger;
@@ -1457,8 +1457,8 @@ namespace Raven.Server.Documents.ETL
                         result.DebugOutput = debugOutput;
                         return result;
                     }
-                case EtlType.AiGen:
-                    var aiGenConfiguration = testScript.Configuration as AiGenConfiguration;
+                case EtlType.GenAi:
+                    var aiGenConfiguration = testScript.Configuration as GenAiConfiguration;
                     if (aiGenConfiguration?.JsonSchema is null)
                     {
                         // todo: move this to a better location
@@ -1599,7 +1599,7 @@ namespace Raven.Server.Documents.ETL
             exceptionAggregator.ThrowIfNeeded();
         }
 
-        protected sealed class TestMode
+        private sealed class TestMode
         {
             public readonly List<string> DebugOutput = new List<string>();
         }

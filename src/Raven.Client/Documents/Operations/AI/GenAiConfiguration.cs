@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
 using Newtonsoft.Json;
-using Raven.Client.Documents.Indexes.Vector;
 using Raven.Client.Documents.Operations.ETL;
 using Sparrow.Json;
 
@@ -25,6 +24,8 @@ public class GenAiConfiguration : EtlConfiguration<AiConnectionString>
 
     public string GenerateIdentifier() => EmbeddingsGenerationConfiguration.GenerateIdentifier(Name);
 
+    public GenAiTransformation GenAiTransformation { get; set; }
+
     public string Prompt { get; set; }
     
     //TODO: Make this JSON objects? 
@@ -36,25 +37,26 @@ public class GenAiConfiguration : EtlConfiguration<AiConnectionString>
 
     [JsonDeserializationIgnore]
     [JsonIgnore]
-    [Obsolete($"{nameof(EmbeddingsGenerationConfiguration)} doesn't support multiple transformations.")]
+    [Obsolete($"{nameof(GenAiConfiguration)} doesn't support multiple transformations.")]
 #pragma warning disable CS0809 // Obsolete member overrides non-obsolete member
     public override List<Transformation> Transforms
 #pragma warning restore CS0809 // Obsolete member overrides non-obsolete member
     {
         get
         {
-            return _transforms ??= new List<Transformation>()
+            return _transforms ??=
+            [
+                new Transformation
                 {
-                    new Transformation
-                    {
-                        Name = "GenAI",
-                        Collections = [Collection]
-                    }
-                };
+                    Name = "GenAi-transform-script",
+                    Collections = [Collection],
+                    Script = GenAiTransformation?.Script
+                }
+            ];
         }
         set
         {
-            throw new NotSupportedException($"{nameof(EmbeddingsGenerationConfiguration)} doesn't support multiple transformations.");
+            throw new NotSupportedException($"{nameof(EmbeddingsGenerationConfiguration)} doesn't support multiple transformations.  Please use {nameof(GenAiTransformation)} property instead.");
         }
     }
 
@@ -74,26 +76,18 @@ public class GenAiConfiguration : EtlConfiguration<AiConnectionString>
         if (validateConnection && TestMode == false)
             Connection.Validate(errors);
 
-        if (Transforms.Count is 0)
-        {
-            errors.Add($"At least one transform script must be specified");
-        }
+        if (string.IsNullOrEmpty(Collection))
+            errors.Add($"{nameof(Collection)} must be provided");
 
-        //TODO: probably need better checks here
-        foreach (Transformation transform in Transforms)
-        {
-            if (transform.Collections.Count is 0)
-            {
-                errors.Add($"At least one collection must be provided");
-            }
+        if (GenAiTransformation == null)
+            errors.Add($"{nameof(GenAiTransformation)} must be specified");
 
-            if (transform.Script.Contains("context") is false)
-            {
-                errors.Add($"You must call the context(ctx, hash) function in your script");
-            }
-        }
-        if(string.IsNullOrEmpty(Update))
+        else if (GenAiTransformation.ValidateScript(out var error) == false)
+            errors.Add(error);
+
+        if (string.IsNullOrEmpty(Update))
             errors.Add($"You must provide an update function");
+
         return errors.Count == 0;
     }
 }

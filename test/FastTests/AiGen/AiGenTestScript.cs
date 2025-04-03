@@ -1,7 +1,6 @@
 ﻿using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Raven.Client.Documents.Operations.AI;
-using Raven.Client.Documents.Operations.ETL;
 using Raven.Server.Documents.ETL.Providers.AI.AiGen;
 using Raven.Server.Documents.ETL.Providers.AI.AiGen.Test;
 using Raven.Server.ServerWide.Context;
@@ -57,6 +56,7 @@ public class AiGenTestScript(ITestOutputHelper output) : RavenTestBase(output)
                                 Model = "deepseek-r1:1.5b"
                             }
                         },
+                        Collection = "Posts",
                         Prompt = "Check if the following blog post comment is spam or not",
                         SampleObject = JsonConvert.SerializeObject(new
                         {
@@ -73,19 +73,14 @@ else
 {
     this.Comments[idx].AiHash = $aiHash; // remember this decision
 }",
-                        Transforms =
+                        GenAiTransformation = new GenAiTransformation
                         {
-                            new Transformation
-                            {
-                                Collections = ["Posts"],
-                                Name = "script",
-                                Script = @"
+                            Script = @"
 for (const comment of this.Comments)
 {
     context({Text: comment.Text, Author: comment.Author, Id: comment.Id}, comment.AiHash);
 }
 "
-                            }
                         }
                     }
                 };

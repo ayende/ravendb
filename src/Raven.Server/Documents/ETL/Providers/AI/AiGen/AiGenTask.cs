@@ -3,9 +3,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
-using Elastic.Clients.Elasticsearch;
-using FluentFTP.Exceptions;
-using Raven.Client.Documents.Operations;
 using Raven.Client.Documents.Operations.AI;
 using Raven.Client.Documents.Operations.Counters;
 using Raven.Client.Documents.Operations.ETL;
@@ -18,13 +15,11 @@ using Raven.Server.Documents.ETL.Stats;
 using Raven.Server.Documents.Patch;
 using Raven.Server.Documents.Replication.ReplicationItems;
 using Raven.Server.Documents.TimeSeries;
-using Raven.Server.Documents.TransactionMerger.Commands;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using Sparrow.Server.Utils;
-using static Raven.Server.Documents.Patch.ScriptRunner;
 using Encoding = System.Text.Encoding;
 using PatchRequest = Raven.Server.Documents.Patch.PatchRequest;
 
@@ -287,13 +282,13 @@ public sealed class AiGenTask : EtlProcess<AiEtlItem, AiGenScriptResult, GenAiCo
         for (int index = 0; index < tasks.Count; index++)
         {
             var task = tasks[index];
+            var item = results[index];
             if (task.IsCompletedSuccessfully is false)
             {
                 exceptions ??= [];
                 exceptions.Add(task.Exception);
 
-                results[index].ModelOutput = null; // so we won't try to save it 
-                continue;
+                continue; // so we won't try to save it 
             }
 
             (string result, string usage) = task.Result;
@@ -301,14 +296,14 @@ public sealed class AiGenTask : EtlProcess<AiEtlItem, AiGenScriptResult, GenAiCo
 
             //TODO: REALLY YUCKY!
             var stream = new ReadOnlyMemoryStream<byte>(Encoding.UTF8.GetBytes(result));
-            results[index].ModelOutput = context.ReadForMemoryAsync(stream, document.Id).GetAwaiter().GetResult();
+            item.ModelOutput = context.ReadForMemoryAsync(stream, item.DocId).GetAwaiter().GetResult();
             stream.Dispose();
 
             if (Configuration.TestMode == false) 
                 continue;
 
             stream = new ReadOnlyMemoryStream<byte>(Encoding.UTF8.GetBytes(usage));
-            results[index].Usage = context.ReadForMemoryAsync(stream, document.Id).GetAwaiter().GetResult();
+            item.Usage = context.ReadForMemoryAsync(stream, item.DocId).GetAwaiter().GetResult();
             stream.Dispose();
         }
 

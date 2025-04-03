@@ -3,7 +3,7 @@ using Raven.Server.Documents.ETL.Test;
 
 namespace Raven.Server.Documents.ETL.Providers.AI.AiGen.Test
 {
-    public sealed class TestAiGenScript : TestEtlScript<AiGenConfiguration, AiConnectionString>
+    public sealed class TestAiGenScript : TestEtlScript<GenAiConfiguration, AiConnectionString>
     {
         
     }
