@@ -61,6 +61,7 @@ function initRedux() {
                 .map((x) => ({
                     nodeTag: x.tag(),
                     serverUrl: x.serverUrl(),
+                    type: x.type(),
                 })) ?? [];
 
         globalDispatch(clusterActions.nodesLoaded(clusterNodes));

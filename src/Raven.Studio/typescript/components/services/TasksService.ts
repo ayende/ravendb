@@ -33,6 +33,7 @@ import testSnowflakeConnectionStringCommand from "commands/database/cluster/test
 import testAmazonSqsServerConnectionCommand from "commands/database/cluster/testAmazonSqsServerConnectionCommand";
 import testAiCommand from "commands/database/tasks/testAiCommand";
 import testAiConnectionStringCommand from "commands/database/cluster/testAiConnectionStringCommand";
+import saveEtlTaskCommand from "commands/database/tasks/saveEtlTaskCommand";
 
 export default class TasksService {
     async getOngoingTasks(databaseName: string, location: databaseLocationSpecifier) {
@@ -184,5 +185,13 @@ export default class TasksService {
 
     async testAiConnectionString(...args: ConstructorParameters<typeof testAiConnectionStringCommand>) {
         return new testAiConnectionStringCommand(...args).execute();
+    }
+
+    async getGenAiTaskInfo(...args: Parameters<typeof getOngoingTaskInfoCommand.forGenAi>) {
+        return getOngoingTaskInfoCommand.forGenAi(...args).execute();
+    }
+
+    async saveGenAiTask(...args: Parameters<typeof saveEtlTaskCommand.forGenAi>) {
+        return saveEtlTaskCommand.forGenAi(...args).execute();
     }
 }

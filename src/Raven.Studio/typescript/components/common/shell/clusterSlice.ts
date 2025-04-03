@@ -4,6 +4,7 @@ import { RootState } from "components/store";
 export interface ClusterNode {
     nodeTag: string;
     serverUrl: string;
+    type: clusterNodeType;
 }
 
 interface ClusterState {
