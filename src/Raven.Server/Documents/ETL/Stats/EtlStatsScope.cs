@@ -2,8 +2,8 @@
 using System.Diagnostics;
 using System.Linq;
 using Raven.Client.Documents.Operations.Backups;
-using Raven.Server.Documents.ETL.Providers.AI.AiGen;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings.Stats;
+using Raven.Server.Documents.ETL.Providers.AI.GenAi;
 using Raven.Server.Documents.ETL.Providers.OLAP;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.Utils;
@@ -113,23 +113,23 @@ namespace Raven.Server.Documents.ETL.Stats
         }
     }
     
-    public sealed class AiGenStatsScope(EtlRunStats stats, bool start = true)
-        : AbstractEtlStatsScope<AiGenStatsScope, AiGenPerformanceOperation>(stats, start)
+    public sealed class GenAiStatsScope(EtlRunStats stats, bool start = true)
+        : AbstractEtlStatsScope<GenAiStatsScope, GenAiPerformanceOperation>(stats, start)
     {
      
-        protected override AiGenStatsScope OpenNewScope(EtlRunStats stats, bool start)
+        protected override GenAiStatsScope OpenNewScope(EtlRunStats stats, bool start)
         {
-            return new AiGenStatsScope(stats, start);
+            return new GenAiStatsScope(stats, start);
         }
 
-        protected override AiGenPerformanceOperation ToPerformanceOperation(string name, AiGenStatsScope scope)
+        protected override GenAiPerformanceOperation ToPerformanceOperation(string name, GenAiStatsScope scope)
         {
             return scope.ToPerformanceOperation(name);
         }
 
-        public override AiGenPerformanceOperation ToPerformanceOperation(string name)
+        public override GenAiPerformanceOperation ToPerformanceOperation(string name)
         {
-            var operation = new AiGenPerformanceOperation(Duration)
+            var operation = new GenAiPerformanceOperation(Duration)
             {
                 Name = name,
             };

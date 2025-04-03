@@ -8,9 +8,9 @@ using Raven.Client.Documents.Operations.Counters;
 using Raven.Client.Documents.Operations.ETL;
 using Raven.Server.Documents.AI.AiGen;
 using Raven.Server.Documents.ETL.Metrics;
-using Raven.Server.Documents.ETL.Providers.AI.AiGen.Test;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings;
 using Raven.Server.Documents.ETL.Providers.AI.Enumerators;
+using Raven.Server.Documents.ETL.Providers.AI.GenAi.Test;
 using Raven.Server.Documents.ETL.Stats;
 using Raven.Server.Documents.Patch;
 using Raven.Server.Documents.Replication.ReplicationItems;
@@ -25,19 +25,19 @@ using PatchRequest = Raven.Server.Documents.Patch.PatchRequest;
 
 #pragma warning disable SKEXP0001
 
-namespace Raven.Server.Documents.ETL.Providers.AI.AiGen;
+namespace Raven.Server.Documents.ETL.Providers.AI.GenAi;
 
-public sealed class AiGenTask : EtlProcess<AiEtlItem, AiGenScriptResult, GenAiConfiguration, AiConnectionString,
-    AiGenStatsScope, AiGenPerformanceOperation>
+public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiConfiguration, AiConnectionString,
+    GenAiStatsScope, GenAiPerformanceOperation>
 {
-    private const string EmbeddingsTaskTag = "AI/Embeddings Generation";
+    private const string GenAiTaskTag = "AI/Gen";
 
     private int _fallbackCounter = 0;
     private readonly ChatCompletionClient _chatCompletionClient;
 
 
-    public AiGenTask(Transformation transformation, GenAiConfiguration configuration, DocumentDatabase database, ServerStore serverStore)
-        : base(transformation, configuration, database, serverStore, EmbeddingsTaskTag)
+    public GenAiTask(Transformation transformation, GenAiConfiguration configuration, DocumentDatabase database, ServerStore serverStore)
+        : base(transformation, configuration, database, serverStore, GenAiTaskTag)
     {
         Metrics = new EtlMetricsCountersManager();
         _chatCompletionClient = GetClient(configuration);
@@ -96,10 +96,10 @@ public sealed class AiGenTask : EtlProcess<AiEtlItem, AiGenScriptResult, GenAiCo
         throw new NotSupportedException($"{nameof(ConvertTimeSeriesDeletedRangeEnumerator)} is not supported for {nameof(EmbeddingsGenerationTask)}");
     }
 
-    protected override EtlTransformer<AiEtlItem, AiGenScriptResult, AiGenStatsScope, AiGenPerformanceOperation>
+    protected override EtlTransformer<AiEtlItem, GenAiScriptResult, GenAiStatsScope, GenAiPerformanceOperation>
         GetTransformer(DocumentsOperationContext context)
     {
-        return new AiGenScriptTransformer(Database, context, Transformation, null, Configuration);
+        return new GenAiScriptTransformer(Database, context, Transformation, null, Configuration);
     }
 
     protected override string LoadFailureMessage => $"Failed to generate embeddings in '{Configuration.Name}' task. Going to do the retry in {FallbackTime} (failure #{_fallbackCounter}).";
@@ -128,7 +128,7 @@ public sealed class AiGenTask : EtlProcess<AiEtlItem, AiGenScriptResult, GenAiCo
         FallbackTime = TimeSpan.FromSeconds(Math.Min(secondsToWait, max));
     }
 
-    protected override int LoadInternal(IEnumerable<AiGenScriptResult> items, DocumentsOperationContext context, AiGenStatsScope scope)
+    protected override int LoadInternal(IEnumerable<GenAiScriptResult> items, DocumentsOperationContext context, GenAiStatsScope scope)
     {
         var results = SendToModel(document: null, items, context, out var exceptions);
 
@@ -178,9 +178,9 @@ public sealed class AiGenTask : EtlProcess<AiEtlItem, AiGenScriptResult, GenAiCo
         return results.Count;
     }
 
-    protected override AiGenStatsScope CreateScope(EtlRunStats stats)
+    protected override GenAiStatsScope CreateScope(EtlRunStats stats)
     {
-        return new AiGenStatsScope(stats);
+        return new GenAiStatsScope(stats);
     }
 
     protected override string StatsAggregatorTag => "Embeddings Generation";
@@ -190,7 +190,7 @@ public sealed class AiGenTask : EtlProcess<AiEtlItem, AiGenScriptResult, GenAiCo
         return true;
     }
 
-    public AiGenTestScriptResult RunTest(Document document, IEnumerable<AiGenScriptResult> records, DocumentsOperationContext context)
+    public GenAiTestScriptResult RunTest(Document document, IEnumerable<GenAiScriptResult> records, DocumentsOperationContext context)
     {
         // TODO : avoid duplication, merge with LoadInternal
 
@@ -237,7 +237,7 @@ public sealed class AiGenTask : EtlProcess<AiEtlItem, AiGenScriptResult, GenAiCo
         if (exceptions is not null)
             throw new AggregateException(exceptions);
 
-        return new AiGenTestScriptResult()
+        return new GenAiTestScriptResult()
         {
             InputDocument = document.Data,
             Results = results,
@@ -245,7 +245,7 @@ public sealed class AiGenTask : EtlProcess<AiEtlItem, AiGenScriptResult, GenAiCo
         };
     }
 
-    private List<SingleItemResult> SendToModel(Document document, IEnumerable<AiGenScriptResult> records, DocumentsOperationContext context, out List<Exception> exceptions)
+    private List<SingleItemResult> SendToModel(Document document, IEnumerable<GenAiScriptResult> records, DocumentsOperationContext context, out List<Exception> exceptions)
     {
         exceptions = null;
         List<Task<(string Result, string Usage)>> tasks = [];

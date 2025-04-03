@@ -1,20 +1,17 @@
-﻿using System;
-using System.Linq;
-using Raven.Client.Documents.Operations.AI;
+﻿using Raven.Client.Documents.Operations.AI;
 using Raven.Client.ServerWide;
-using Raven.Server.Rachis;
 using Raven.Server.ServerWide.Commands.ETL;
 
 namespace Raven.Server.ServerWide.Commands.AI;
 
-public sealed class AddAiGenCommand : AddEtlCommand<GenAiConfiguration, AiConnectionString>
+public sealed class AddGenAiCommand : AddEtlCommand<GenAiConfiguration, AiConnectionString>
 {
-    public AddAiGenCommand()
+    public AddGenAiCommand()
     {
         // for deserialization
     }
 
-    public AddAiGenCommand(GenAiConfiguration configuration, string databaseName, string uniqueRequestId) : base(configuration, databaseName, uniqueRequestId)
+    public AddGenAiCommand(GenAiConfiguration configuration, string databaseName, string uniqueRequestId) : base(configuration, databaseName, uniqueRequestId)
     {
 
     }

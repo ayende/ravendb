@@ -4,16 +4,15 @@ using System.Threading;
 using Newtonsoft.Json;
 using Raven.Client.Documents.Operations.AI;
 using Raven.Client.Documents.Operations.ConnectionStrings;
-using Raven.Client.Documents.Operations.ETL;
 using Tests.Infrastructure;
 using Xunit.Abstractions;
 
-namespace FastTests.AiGen;
+namespace FastTests.GenAi;
 
-public class AiGenBasics(ITestOutputHelper output) : RavenTestBase(output)
+public class GenAiBasics(ITestOutputHelper output) : RavenTestBase(output)
 {
     [RavenFact(RavenTestCategory.Ai)]
-    public void CanCreateAiGetTask()
+    public void CanCreateGenAiTask()
     {
         using var store = GetDocumentStore();
         store.Maintenance.Send(new PutConnectionStringOperation<AiConnectionString>(new AiConnectionString
@@ -28,7 +27,7 @@ public class AiGenBasics(ITestOutputHelper output) : RavenTestBase(output)
         }));
         
     
-        store.Maintenance.Send(new AddAiGenOperation(new GenAiConfiguration
+        store.Maintenance.Send(new AddGenAiOperation(new GenAiConfiguration
         {
             Name = "Check blog comments spam",
             ConnectionStringName = "ollama-local-deepseek-r1",
@@ -84,7 +83,7 @@ for(const comment of this.Comments)
         
         var etl = Etl.WaitForEtlToComplete(store);
 
-        store.Maintenance.Send(new AddAiGenOperation(new GenAiConfiguration
+        store.Maintenance.Send(new AddGenAiOperation(new GenAiConfiguration
         {
             Name = "Check blog comments spam",
             ConnectionStringName = "ollama-local-deepseek-r1",

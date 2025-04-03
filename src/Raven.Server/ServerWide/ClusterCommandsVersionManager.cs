@@ -203,7 +203,7 @@ namespace Raven.Server.ServerWide
             [nameof(PutAiConnectionStringCommand)] = 70_001,
             [nameof(RemoveAiConnectionStringCommand)] = 70_001,
             
-            [nameof(AddAiGenCommand)] = 70_002,
+            [nameof(AddGenAiCommand)] = 70_002,
         };
 
         public bool CanPutCommand(string command)

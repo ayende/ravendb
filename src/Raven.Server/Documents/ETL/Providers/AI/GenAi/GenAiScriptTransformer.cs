@@ -13,15 +13,15 @@ using Raven.Server.Documents.Patch;
 using Raven.Server.Documents.TimeSeries;
 using Raven.Server.ServerWide.Context;
 
-namespace Raven.Server.Documents.ETL.Providers.AI.AiGen;
+namespace Raven.Server.Documents.ETL.Providers.AI.GenAi;
 
-internal sealed class AiGenScriptTransformer : EtlTransformer<AiEtlItem, AiGenScriptResult, AiGenStatsScope, AiGenPerformanceOperation>
+internal sealed class GenAiScriptTransformer : EtlTransformer<AiEtlItem, GenAiScriptResult, GenAiStatsScope, GenAiPerformanceOperation>
 {
     private readonly GenAiConfiguration _configuration;
-    private List<AiGenScriptResult> _currentRun;
+    private List<GenAiScriptResult> _currentRun;
     private readonly PatchRequest _mainScript;
 
-    public AiGenScriptTransformer(DocumentDatabase database, DocumentsOperationContext context, Transformation transformation, PatchRequest behaviorFunctions, GenAiConfiguration configuration) : base(database, context, null, behaviorFunctions)
+    public GenAiScriptTransformer(DocumentDatabase database, DocumentsOperationContext context, Transformation transformation, PatchRequest behaviorFunctions, GenAiConfiguration configuration) : base(database, context, null, behaviorFunctions)
     {
         _configuration = configuration;
         _mainScript = new PatchRequest(transformation.Script, PatchRequestType.AiGen);
@@ -63,12 +63,12 @@ internal sealed class AiGenScriptTransformer : EtlTransformer<AiEtlItem, AiGenSc
         throw new NotImplementedException();
     }
 
-    public override IEnumerable<AiGenScriptResult> GetTransformedResults()
+    public override IEnumerable<GenAiScriptResult> GetTransformedResults()
     {
-        return _currentRun ?? Enumerable.Empty<AiGenScriptResult>();
+        return _currentRun ?? Enumerable.Empty<GenAiScriptResult>();
     }
 
-    public override void Transform(AiEtlItem item, AiGenStatsScope stats, EtlProcessState state)
+    public override void Transform(AiEtlItem item, GenAiStatsScope stats, EtlProcessState state)
     {
         Current = item;
         _currentRun ??= [];
@@ -95,7 +95,7 @@ internal sealed class AiGenScriptTransformer : EtlTransformer<AiEtlItem, AiGenSc
             _ => throw new ArgumentException($"The 'hash' argument must be string or null, but was: " + args[1].Type + ", " + args[1])
         };
 
-        _currentRun.Add(new AiGenScriptResult(Current.DocumentId, context, hash));
+        _currentRun.Add(new GenAiScriptResult(Current.DocumentId, context, hash));
         return JsValue.Null;
     }
 }

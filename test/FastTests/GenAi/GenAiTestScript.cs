@@ -1,16 +1,16 @@
 ﻿using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Raven.Client.Documents.Operations.AI;
-using Raven.Server.Documents.ETL.Providers.AI.AiGen;
-using Raven.Server.Documents.ETL.Providers.AI.AiGen.Test;
+using Raven.Server.Documents.ETL.Providers.AI.GenAi;
+using Raven.Server.Documents.ETL.Providers.AI.GenAi.Test;
 using Raven.Server.ServerWide.Context;
 using Tests.Infrastructure;
 using Xunit;
 using Xunit.Abstractions;
 
-namespace FastTests.AiGen;
+namespace FastTests.GenAi;
 
-public class AiGenTestScript(ITestOutputHelper output) : RavenTestBase(output)
+public class GenAiTestScript(ITestOutputHelper output) : RavenTestBase(output)
 {
     [RavenTheory(RavenTestCategory.Etl)]
     [RavenData(DatabaseMode = RavenDatabaseMode.Single)]
@@ -22,11 +22,11 @@ public class AiGenTestScript(ITestOutputHelper output) : RavenTestBase(output)
 
             using (var session = store.OpenAsyncSession())
             {
-                var p = new AiGenBasics.Post(
+                var p = new GenAiBasics.Post(
                     [
-                        new AiGenBasics.Comment("This article really helped me understand how indexes work in RavenDB. Great write-up!", "sarah_j"),
-                        new AiGenBasics.Comment("Learn how to make $5000/month from home! Visit click4cash.biz.example now!!!", "shady_marketer"),
-                        new AiGenBasics.Comment("I tried this approach with IO_Uring in the past, but I run into problems with security around the IO systems and the CISO didn't let us deploy that to production. It is more mature at this point?", "dave")
+                        new GenAiBasics.Comment("This article really helped me understand how indexes work in RavenDB. Great write-up!", "sarah_j"),
+                        new GenAiBasics.Comment("Learn how to make $5000/month from home! Visit click4cash.biz.example now!!!", "shady_marketer"),
+                        new GenAiBasics.Comment("I tried this approach with IO_Uring in the past, but I run into problems with security around the IO systems and the CISO didn't let us deploy that to production. It is more mature at this point?", "dave")
                     ],
                     "Understanding Indexing in RavenDB",
                     "Indexes in RavenDB are a powerful way to optimize query performance. This blog post walks through auto-indexes, static indexes, and best practices when designing queries that scale."
@@ -40,7 +40,7 @@ public class AiGenTestScript(ITestOutputHelper output) : RavenTestBase(output)
 
             using (database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
             {
-                var testAiGenScript = new TestAiGenScript
+                var testAiGenScript = new TestGenAiScript
                 {
                     DocumentId = id,
                     Configuration = new()
@@ -86,9 +86,9 @@ for (const comment of this.Comments)
                 };
 
 
-                var testResult = AiGenTask.TestScript(testAiGenScript, database, database.ServerStore, context);
+                var testResult = GenAiTask.TestScript(testAiGenScript, database, database.ServerStore, context);
 
-                var result = (AiGenTestScriptResult)testResult;
+                var result = (GenAiTestScriptResult)testResult;
                 Assert.Equal(3, result.Results.Count);
             }
         }

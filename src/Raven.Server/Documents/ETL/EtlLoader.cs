@@ -17,9 +17,8 @@ using Raven.Client.Documents.Operations.ETL.Queue;
 using Raven.Client.Documents.Operations.ETL.Snowflake;
 using Raven.Client.Documents.Operations.ETL.SQL;
 using Raven.Client.ServerWide;
-using Raven.Server.Documents.ETL.Providers.AI;
-using Raven.Server.Documents.ETL.Providers.AI.AiGen;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings;
+using Raven.Server.Documents.ETL.Providers.AI.GenAi;
 using Raven.Server.Documents.ETL.Providers.ElasticSearch;
 using Raven.Server.Documents.ETL.Providers.OLAP;
 using Raven.Server.Documents.ETL.Providers.Queue;
@@ -30,13 +29,11 @@ using Raven.Server.Documents.ETL.Providers.Queue.RabbitMq;
 using Raven.Server.Documents.ETL.Providers.Raven;
 using Raven.Server.Documents.ETL.Providers.RelationalDatabase.Snowflake;
 using Raven.Server.Documents.ETL.Providers.RelationalDatabase.SQL;
-using Raven.Server.Logging;
 using Raven.Server.NotificationCenter;
 using Raven.Server.NotificationCenter.Notifications;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.Utils;
-using Sparrow.Logging;
 using Sparrow.Server.Logging;
 
 namespace Raven.Server.Documents.ETL
@@ -383,7 +380,7 @@ namespace Raven.Server.Documents.ETL
                     if (embeddingsGenerationConfig != null)
                         process = new EmbeddingsGenerationTask(transform, embeddingsGenerationConfig, _database, _serverStore);
                     if (aiGenGenerationConfig != null)
-                        process = new AiGenTask(transform, aiGenGenerationConfig, _database, _serverStore);
+                        process = new GenAiTask(transform, aiGenGenerationConfig, _database, _serverStore);
                     yield return process;
                 }
             }
@@ -857,7 +854,7 @@ namespace Raven.Server.Documents.ETL
 
                         break;
                     }
-                    case AiGenTask aiGenTask:
+                    case GenAiTask aiGenTask:
                     {
                         GenAiConfiguration existing = null;
 
@@ -1040,7 +1037,7 @@ namespace Raven.Server.Documents.ETL
                 if (existing != null)
                     differences = embeddingsGenerationTask.Configuration.Compare(existing, record.AiConnectionStrings, transformationDiffs);
             }
-            else if (process is AiGenTask aiGenTask)
+            else if (process is GenAiTask aiGenTask)
             {
                 var existing = myAiGenEtl.FirstOrDefault(x => x.Name.Equals(aiGenTask.ConfigurationName, StringComparison.OrdinalIgnoreCase));
 

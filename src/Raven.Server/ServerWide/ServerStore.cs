@@ -2232,7 +2232,7 @@ namespace Raven.Server.ServerWide
                             aiIntegrationErr.Add(
                                 $"Could not find connection string named '{aiIntegration.ConnectionStringName}'. Please supply an existing connection string.");
                         ThrowInvalidConfigurationIfNecessary(etlConfiguration, aiIntegrationErr);
-                        command = new AddAiGenCommand(aiIntegration, databaseName, raftRequestId);
+                        command = new AddGenAiCommand(aiIntegration, databaseName, raftRequestId);
                     }
                         break;
 

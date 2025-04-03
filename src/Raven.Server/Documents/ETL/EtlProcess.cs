@@ -23,8 +23,8 @@ using Raven.Client.Util;
 using Raven.Server.Documents.AI.AiGen;
 using Raven.Server.Documents.ETL.Metrics;
 using Raven.Server.Documents.ETL.Providers.AI;
-using Raven.Server.Documents.ETL.Providers.AI.AiGen;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings;
+using Raven.Server.Documents.ETL.Providers.AI.GenAi;
 using Raven.Server.Documents.ETL.Providers.ElasticSearch;
 using Raven.Server.Documents.ETL.Providers.OLAP;
 using Raven.Server.Documents.ETL.Providers.OLAP.Test;
@@ -1465,13 +1465,13 @@ namespace Raven.Server.Documents.ETL
                         aiGenConfiguration.JsonSchema = ChatCompletionClient.GetSchemaFor(aiGenConfiguration.SampleObject);
                     }
 
-                    using (var aiGenTask = new AiGenTask(testScript.Configuration.Transforms[0], aiGenConfiguration, database, database.ServerStore))
+                    using (var aiGenTask = new GenAiTask(testScript.Configuration.Transforms[0], aiGenConfiguration, database, database.ServerStore))
                     using (aiGenTask.EnterTestMode(out debugOutput))
                     {
                         aiGenTask.EnsureThreadAllocationStats();
                         
                         var aiEtlItem = new AiEtlItem(document, docCollection);
-                        var results = aiGenTask.Transform([aiEtlItem], context, new AiGenStatsScope(new EtlRunStats()), new EtlProcessState());
+                        var results = aiGenTask.Transform([aiEtlItem], context, new GenAiStatsScope(new EtlRunStats()), new EtlProcessState());
 
                         var result  = aiGenTask.RunTest(document, results, context);
                         result.DebugOutput = debugOutput;

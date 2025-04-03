@@ -3,9 +3,9 @@ using Raven.Server.Documents.ETL.Test;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 
-namespace Raven.Server.Documents.ETL.Providers.AI.AiGen.Test;
+namespace Raven.Server.Documents.ETL.Providers.AI.GenAi.Test;
 
-public class AiGenTestScriptResult : TestEtlScriptResult
+public class GenAiTestScriptResult : TestEtlScriptResult
 {
     public List<SingleItemResult> Results;
 
