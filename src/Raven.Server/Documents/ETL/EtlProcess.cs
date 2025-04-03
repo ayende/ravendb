@@ -20,6 +20,7 @@ using Raven.Client.Exceptions.Documents.Patching;
 using Raven.Client.Json.Serialization;
 using Raven.Client.ServerWide;
 using Raven.Client.Util;
+using Raven.Server.Documents.AI.AiGen;
 using Raven.Server.Documents.ETL.Metrics;
 using Raven.Server.Documents.ETL.Providers.AI;
 using Raven.Server.Documents.ETL.Providers.AI.AiGen;
@@ -151,7 +152,7 @@ namespace Raven.Server.Documents.ETL
         private IEtlStatsAggregator _lastStats;
         private int _statsId;
 
-        private TestMode _testMode;
+        protected TestMode _testMode;
 
         protected readonly Transformation Transformation;
         protected readonly RavenLogger Logger;
@@ -1099,7 +1100,11 @@ namespace Raven.Server.Documents.ETL
             where TC : EtlConfiguration<TCS>
             where TCS : ConnectionString
         {
-            using var tx = testScript.IsDelete ? context.OpenWriteTransaction() : context.OpenReadTransaction(); // we open write tx to test deletion but we won't commit it
+            var aiTestScript = typeof(TCS) == typeof(AiConnectionString);
+            using var tx = testScript.IsDelete || aiTestScript 
+                ? context.OpenWriteTransaction() 
+                : context.OpenReadTransaction(); // we open write tx to test deletion but we won't commit it
+            
             var document = database.DocumentsStorage.Get(context, testScript.DocumentId);
 
             if (document == null)
@@ -1178,6 +1183,10 @@ namespace Raven.Server.Documents.ETL
                         throw new InvalidOperationException($"Unexpected connection string type {typeof(TCS)}");
                     }
                 }
+            }
+            else if (aiTestScript)
+            {
+                connection = testScript.Configuration.Connection;
             }
 
             testScript.Configuration.Initialize(connection);
@@ -1448,16 +1457,23 @@ namespace Raven.Server.Documents.ETL
                         result.DebugOutput = debugOutput;
                         return result;
                     }
-                case EtlType.GenAi:
-                    using (var aiGenTask = new AiGenTask(testScript.Configuration.Transforms[0], testScript.Configuration as GenAiConfiguration, database, database.ServerStore))
+                case EtlType.AiGen:
+                    var aiGenConfiguration = testScript.Configuration as AiGenConfiguration;
+                    if (aiGenConfiguration?.JsonSchema is null)
+                    {
+                        // todo: move this to a better location
+                        aiGenConfiguration.JsonSchema = ChatCompletionClient.GetSchemaFor(aiGenConfiguration.SampleObject);
+                    }
+
+                    using (var aiGenTask = new AiGenTask(testScript.Configuration.Transforms[0], aiGenConfiguration, database, database.ServerStore))
                     using (aiGenTask.EnterTestMode(out debugOutput))
                     {
                         aiGenTask.EnsureThreadAllocationStats();
                         
-                        var embeddingsGenerationItem = new AiEtlItem(document, docCollection);
-                        var results = aiGenTask.Transform([embeddingsGenerationItem], context, new AiGenStatsScope(new EtlRunStats()), new EtlProcessState());
+                        var aiEtlItem = new AiEtlItem(document, docCollection);
+                        var results = aiGenTask.Transform([aiEtlItem], context, new AiGenStatsScope(new EtlRunStats()), new EtlProcessState());
 
-                        var result  = aiGenTask.RunTest(results, context);
+                        var result  = aiGenTask.RunTest(document, results, context);
                         result.DebugOutput = debugOutput;
                         return result;
                     }
@@ -1583,7 +1599,7 @@ namespace Raven.Server.Documents.ETL
             exceptionAggregator.ThrowIfNeeded();
         }
 
-        private sealed class TestMode
+        protected sealed class TestMode
         {
             public readonly List<string> DebugOutput = new List<string>();
         }

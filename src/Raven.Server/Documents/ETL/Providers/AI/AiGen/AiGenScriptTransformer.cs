@@ -2,22 +2,16 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
-using System.Runtime.InteropServices;
 using Jint;
 using Jint.Native;
 using Jint.Runtime;
-using Jint.Runtime.Descriptors;
 using Jint.Runtime.Interop;
 using Raven.Client.Documents.Operations.AI;
 using Raven.Client.Documents.Operations.ETL;
-using Raven.Server.Documents.ETL.Providers.AI.Embeddings;
-using Raven.Server.Documents.ETL.Providers.AI.Embeddings.Stats;
 using Raven.Server.Documents.ETL.Stats;
 using Raven.Server.Documents.Patch;
 using Raven.Server.Documents.TimeSeries;
-using Raven.Server.Json;
 using Raven.Server.ServerWide.Context;
-using Sparrow.Json;
 
 namespace Raven.Server.Documents.ETL.Providers.AI.AiGen;
 
@@ -63,6 +57,7 @@ internal sealed class AiGenScriptTransformer : EtlTransformer<AiEtlItem, AiGenSc
     }
 
     protected override string[] LoadToDestinations { get; }
+
     protected override void LoadToFunction(string tableName, ScriptRunnerResult colsAsObject)
     {
         throw new NotImplementedException();
@@ -86,7 +81,7 @@ internal sealed class AiGenScriptTransformer : EtlTransformer<AiEtlItem, AiGenSc
     private JsValue AddContext(JsValue self, JsValue[] args)
     {
         const string methodDecl = "context(ctx, hash);";
-        if(args.Length != 2)
+        if (args.Length != 2)
             throw new InvalidOperationException($"Invalid number of arguments for {methodDecl}, got {args.Length} but expected 2.");
 
         if (args[0].IsObject() is false)

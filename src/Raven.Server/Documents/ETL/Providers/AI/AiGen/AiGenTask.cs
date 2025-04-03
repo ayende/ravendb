@@ -1,22 +1,18 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
-using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
-using System.Text.Json;
 using System.Threading.Tasks;
-using Microsoft.SemanticKernel.Embeddings;
-using Parquet.Meta;
+using Elastic.Clients.Elasticsearch;
+using FluentFTP.Exceptions;
+using Raven.Client.Documents.Operations;
 using Raven.Client.Documents.Operations.AI;
 using Raven.Client.Documents.Operations.Counters;
 using Raven.Client.Documents.Operations.ETL;
-using Raven.Server.Documents.AI;
 using Raven.Server.Documents.AI.AiGen;
 using Raven.Server.Documents.ETL.Metrics;
+using Raven.Server.Documents.ETL.Providers.AI.AiGen.Test;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings;
-using Raven.Server.Documents.ETL.Providers.AI.Embeddings.Stats;
-using Raven.Server.Documents.ETL.Providers.AI.Embeddings.Test;
 using Raven.Server.Documents.ETL.Providers.AI.Enumerators;
 using Raven.Server.Documents.ETL.Stats;
 using Raven.Server.Documents.Patch;
@@ -28,7 +24,9 @@ using Raven.Server.ServerWide.Context;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using Sparrow.Server.Utils;
+using static Raven.Server.Documents.Patch.ScriptRunner;
 using Encoding = System.Text.Encoding;
+using PatchRequest = Raven.Server.Documents.Patch.PatchRequest;
 
 #pragma warning disable SKEXP0001
 
@@ -40,7 +38,7 @@ public sealed class AiGenTask : EtlProcess<AiEtlItem, AiGenScriptResult, GenAiCo
     private const string EmbeddingsTaskTag = "AI/Embeddings Generation";
 
     private int _fallbackCounter = 0;
-    private ChatCompletionClient _chatCompletionClient;
+    private readonly ChatCompletionClient _chatCompletionClient;
 
 
     public AiGenTask(Transformation transformation, GenAiConfiguration configuration, DocumentDatabase database, ServerStore serverStore)
@@ -52,11 +50,12 @@ public sealed class AiGenTask : EtlProcess<AiEtlItem, AiGenScriptResult, GenAiCo
 
     private static ChatCompletionClient GetClient(GenAiConfiguration cfg)
     {
-         var (uri, model, apiKey) = cfg.Connection.GetActiveProvider() switch
+        var connectorType = cfg.Connection.GetActiveProvider();
+        var (uri, model, apiKey) = connectorType switch
         {
             AiConnectorType.Ollama => (cfg.Connection.OllamaSettings.Uri, cfg.Connection.OllamaSettings.Model, (string)null),
             AiConnectorType.OpenAi => (cfg.Connection.OpenAiSettings.Endpoint, cfg.Connection.OpenAiSettings.Model, null),
-            _ => throw new NotSupportedException(cfg.Connection.GetActiveProvider().ToString())
+            _ => throw new NotSupportedException(connectorType.ToString())
         };
         return new ChatCompletionClient(new Uri(uri), model, apiKey, cfg.JsonSchema);
     }
@@ -64,7 +63,7 @@ public sealed class AiGenTask : EtlProcess<AiEtlItem, AiGenScriptResult, GenAiCo
     public override EtlType EtlType => EtlType.GenAi;
     public override bool ShouldTrackCounters() => false;
     public override bool ShouldTrackTimeSeries() => false;
-    
+
     protected override bool ShouldTrackAttachmentTombstones() => false;
 
     protected override IEnumerator<AiEtlItem> ConvertDocsEnumerator(DocumentsOperationContext context, IEnumerator<Document> docs, string collection)
@@ -136,80 +135,35 @@ public sealed class AiGenTask : EtlProcess<AiEtlItem, AiGenScriptResult, GenAiCo
 
     protected override int LoadInternal(IEnumerable<AiGenScriptResult> items, DocumentsOperationContext context, AiGenStatsScope scope)
     {
-        int count = 0;
+        var results = SendToModel(document: null, items, context, out var exceptions);
 
-        List<Task<(string Result, string Usage)>> tasks = [];
-        List<AiGenScriptResult> matchingItems = [];
-        
-        foreach (var item in items)
-        {
-            string json = item.Context.ToString();
-            string hash = AttachmentsStorageHelper.CalculateHash(MemoryMarshal.AsBytes(json.AsSpan()));
-            if(item.AiHash == hash)
-                continue; // no change, can skip
-            tasks.Add(_chatCompletionClient.CompleteAsync(Configuration.Prompt, json));
-            matchingItems.Add(item with { AiHash = hash });
-        }
-
-        
-        try
-        {
-            // TODO: Yuck
-            Task.WaitAll(tasks.OfType<Task>().ToArray());
-        }
-        catch
-        {
-            // we'll handle that later
-        }
-
-        List<Exception> exceptions = null;
-        for (int index = 0; index < tasks.Count; index++)
-        {
-            count++;
-            Task<(string Result, string Usage)> task = tasks[index];
-            if (task.IsCompletedSuccessfully is false)
-            {
-                exceptions ??= [];
-                exceptions.Add(task.Exception);
-                matchingItems[index] = null; // so we won't try to save it 
-                continue;
-            }
-
-            (string result, string usage) = task.Result;
-            // TODO: report usage
-
-            //TODO: REALLY YUCKY!
-            var stream = new ReadOnlyMemoryStream<byte>(Encoding.UTF8.GetBytes(result));
-            matchingItems[index].Output = context.ReadForMemoryAsync(stream, matchingItems[index].DocumentId).GetAwaiter().GetResult();
-        }
-
-        if (matchingItems.Count is not 0)
+        if (results.Count is not 0)
         {
             List<Task> patches = [];
             PatchRequest req = new(Configuration.Update, PatchRequestType.AiGen);
-            foreach (var item in matchingItems)
+
+            foreach (var item in results)
             {
-                if(item is null) continue;
-                
-                var dvj = new DynamicJsonValue { ["output"] = item.Output, ["aiHash"] = item.AiHash, ["input"] = item.Context, };
-                var args = context.ReadObject(dvj, item.DocumentId);
+                if (item?.ModelOutput is null)
+                    continue;
+
+                var dvj = new DynamicJsonValue { ["output"] = item.ModelOutput, ["aiHash"] = item.AiHash, ["input"] = item.Context, };
+                var args = context.ReadObject(dvj, item.DocId);
                 var cmd = new PatchDocumentCommand(
                     context: context,
-                    id: item.DocumentId,
+                    id: item.DocId,
                     expectedChangeVector: null,
                     skipPatchIfChangeVectorMismatch: false,
                     patch: (req, args),
                     patchIfMissing: default,
                     createIfMissing: null,
                     identityPartsSeparator: Database.IdentityPartsSeparator,
-                    isTest: false,
+                    isTest: Configuration.TestMode,
                     debugMode: false,
                     collectResultsNeeded: false,
                     returnDocument: false,
                     ignoreMaxStepsForScript: false);
-                patches.Add(
-                    Database.TxMerger.Enqueue(cmd)
-                    );
+                patches.Add(Database.TxMerger.Enqueue(cmd));
             }
 
             try
@@ -223,33 +177,10 @@ public sealed class AiGenTask : EtlProcess<AiEtlItem, AiGenScriptResult, GenAiCo
                 exceptions.Add(e);
             }
         }
-        if(exceptions is not null)
+        if (exceptions is not null)
             throw new AggregateException(exceptions);
 
-        return count;
-    }
-
-    public class AiGenUpdateScript(List<AiGenScriptResult> work, string update) : MergedTransactionCommand<DocumentsOperationContext, DocumentsTransaction>
-    {
-        protected override long ExecuteCmd(DocumentsOperationContext context)
-        {
-            var patch = new PatchRequest(update, PatchRequestType.AiGen);
-            context.DocumentDatabase.Scripts.GetScriptRunner(patch, true, out var script);
-
-            int count = 0;
-            foreach (AiGenScriptResult item in work)
-            {
-                count++;
-                script.Run(context, context, "execute", [item.DocumentId, item.Context, item.AiHash, item.Output]);
-            }
-
-            return count;
-        }
-
-        public override IReplayableCommandDto<DocumentsOperationContext, DocumentsTransaction, MergedTransactionCommand<DocumentsOperationContext, DocumentsTransaction>> ToDto(DocumentsOperationContext context)
-        {
-            throw new NotImplementedException();
-        }
+        return results.Count;
     }
 
     protected override AiGenStatsScope CreateScope(EtlRunStats stats)
@@ -264,8 +195,123 @@ public sealed class AiGenTask : EtlProcess<AiEtlItem, AiGenScriptResult, GenAiCo
         return true;
     }
 
-    public AiGenTestScriptResult RunTest(IEnumerable<AiGenScriptResult> records, DocumentsOperationContext context)
+    public AiGenTestScriptResult RunTest(Document document, IEnumerable<AiGenScriptResult> records, DocumentsOperationContext context)
     {
-        return null;
+        // TODO : avoid duplication, merge with LoadInternal
+
+        var results = SendToModel(document, records, context, out List<Exception> exceptions);
+
+        BlittableJsonReaderObject outputDocument = null;
+        if (results.Count is not 0)
+        {
+            PatchRequest req = new(Configuration.Update, PatchRequestType.AiGen);
+            //using var wtx = context.OpenWriteTransaction();
+
+            PatchDocumentCommand lastPatch = null;
+            foreach (var item in results)
+            {
+                if (item?.ModelOutput is null)
+                    continue;
+
+                var dvj = new DynamicJsonValue { ["output"] = item.ModelOutput, ["aiHash"] = item.AiHash, ["input"] = item.Context };
+                var args = context.ReadObject(dvj, document.Id);
+                var cmd = lastPatch = new PatchDocumentCommand(
+                    context: context,
+                    id: document.Id,
+                    expectedChangeVector: null,
+                    skipPatchIfChangeVectorMismatch: false,
+                    patch: (req, args),
+                    patchIfMissing: default,
+                    createIfMissing: null,
+                    identityPartsSeparator: Database.IdentityPartsSeparator,
+                    isTest: false,
+                    debugMode: false,
+                    collectResultsNeeded: true,
+                    returnDocument: false,
+                    ignoreMaxStepsForScript: false);
+
+                cmd.Execute(context, recordingState: null);
+
+                item.DebugActions = cmd.DebugActions;
+                item.DebugOutput = cmd.DebugOutput;
+            }
+
+            outputDocument = lastPatch?.PatchResult.ModifiedDocument;
+        }
+
+        if (exceptions is not null)
+            throw new AggregateException(exceptions);
+
+        return new AiGenTestScriptResult()
+        {
+            InputDocument = document.Data,
+            Results = results,
+            OutputDocument = outputDocument
+        };
+    }
+
+    private List<SingleItemResult> SendToModel(Document document, IEnumerable<AiGenScriptResult> records, DocumentsOperationContext context, out List<Exception> exceptions)
+    {
+        exceptions = null;
+        List<Task<(string Result, string Usage)>> tasks = [];
+        List<SingleItemResult> results = [];
+
+        foreach (var item in records)
+        {
+            var singleResult = new SingleItemResult { Context = item.Context, DocId = item.DocumentId};
+            results.Add(singleResult);
+
+            string json = item.Context.ToString();
+            string hash = AttachmentsStorageHelper.CalculateHash(MemoryMarshal.AsBytes(json.AsSpan()));
+            if (item.AiHash == hash)
+            {
+                singleResult.IsCached = true;
+                continue; // no change, can skip
+            }
+
+            singleResult.AiHash = hash;
+            tasks.Add(_chatCompletionClient.CompleteAsync(Configuration.Prompt, json));
+            //matchingItems.Add(item with { AiHash = hash });
+        }
+
+        try
+        {
+            // TODO: Yuck
+            Task.WaitAll(tasks.OfType<Task>().ToArray());
+        }
+        catch
+        {
+            // we'll handle that later
+        }
+
+        for (int index = 0; index < tasks.Count; index++)
+        {
+            var task = tasks[index];
+            if (task.IsCompletedSuccessfully is false)
+            {
+                exceptions ??= [];
+                exceptions.Add(task.Exception);
+
+                results[index].ModelOutput = null; // so we won't try to save it 
+                continue;
+            }
+
+            (string result, string usage) = task.Result;
+            // TODO: report usage
+
+            //TODO: REALLY YUCKY!
+            var stream = new ReadOnlyMemoryStream<byte>(Encoding.UTF8.GetBytes(result));
+            results[index].ModelOutput = context.ReadForMemoryAsync(stream, document.Id).GetAwaiter().GetResult();
+            stream.Dispose();
+
+            if (Configuration.TestMode == false) 
+                continue;
+
+            stream = new ReadOnlyMemoryStream<byte>(Encoding.UTF8.GetBytes(usage));
+            results[index].Usage = context.ReadForMemoryAsync(stream, document.Id).GetAwaiter().GetResult();
+            stream.Dispose();
+        }
+
+        return results;
     }
 }
