@@ -52,7 +52,7 @@ class etlScriptDefinitionCache {
                 case "EmbeddingsGeneration":
                     command = getOngoingTaskInfoCommand.forEmbeddingsGeneration(databaseName, taskId);
                     break;
-                case "AiGen":
+                case "GenAi":
                     command = getOngoingTaskInfoCommand.forGenAi(databaseName, taskId);
                     break;
                 default: 

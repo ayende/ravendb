@@ -21,14 +21,17 @@ export class MockClusterManager {
                 {
                     nodeTag: "A",
                     serverUrl: "https://a.server-url.com",
+                    type: "Member",
                 },
                 {
                     nodeTag: "B",
                     serverUrl: "https://b.server-url.com",
+                    type: "Member",
                 },
                 {
                     nodeTag: "C",
                     serverUrl: "https://c.server-url.com",
+                    type: "Member",
                 },
             ])
         );
@@ -41,6 +44,7 @@ export class MockClusterManager {
                 {
                     nodeTag: "A",
                     serverUrl: "https://a.server-url.com",
+                    type: "Member",
                 },
             ])
         );
