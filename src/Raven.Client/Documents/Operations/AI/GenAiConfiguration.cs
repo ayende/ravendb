@@ -16,6 +16,9 @@ public class GenAiConfiguration : EtlConfiguration<AiConnectionString>
 
     public override string GetDestination() => Name;
     public override string GetDefaultTaskName() => Name;
+
+    public string Identifier { get; set; }
+    public string Collection { get; set; }
     
     public override EtlType EtlType => EtlType.GenAi;
     public override bool UsingEncryptedCommunicationChannel() => Connection?.UsingEncryptedCommunicationChannel() ?? false;
@@ -28,6 +31,32 @@ public class GenAiConfiguration : EtlConfiguration<AiConnectionString>
     public string JsonSchema { get; set; }
     public string SampleObject { get; set; }
     public string Update { get; set; }
+    
+    private List<Transformation> _transforms;
+
+    [JsonDeserializationIgnore]
+    [JsonIgnore]
+    [Obsolete($"{nameof(EmbeddingsGenerationConfiguration)} doesn't support multiple transformations.")]
+#pragma warning disable CS0809 // Obsolete member overrides non-obsolete member
+    public override List<Transformation> Transforms
+#pragma warning restore CS0809 // Obsolete member overrides non-obsolete member
+    {
+        get
+        {
+            return _transforms ??= new List<Transformation>()
+                {
+                    new Transformation
+                    {
+                        Name = "GenAI",
+                        Collections = [Collection]
+                    }
+                };
+        }
+        set
+        {
+            throw new NotSupportedException($"{nameof(EmbeddingsGenerationConfiguration)} doesn't support multiple transformations.");
+        }
+    }
 
     public override bool Validate(out List<string> errors, bool validateName = true, bool validateConnection = true)
     {
