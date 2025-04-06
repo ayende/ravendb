@@ -1464,7 +1464,7 @@ namespace Raven.Server.Documents.ETL
                         // todo: move this to a better location
                         aiGenConfiguration.JsonSchema = ChatCompletionClient.GetSchemaFor(aiGenConfiguration.SampleObject);
                     }
-
+                    
                     using (var aiGenTask = new GenAiTask(testScript.Configuration.Transforms[0], aiGenConfiguration, database, database.ServerStore))
                     using (aiGenTask.EnterTestMode(out debugOutput))
                     {

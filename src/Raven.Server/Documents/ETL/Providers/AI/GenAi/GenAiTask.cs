@@ -237,6 +237,10 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
         if (exceptions is not null)
             throw new AggregateException(exceptions);
 
+        using (var old = document.Data)
+            document.Data = document.Data?.CloneOnTheSameContext();
+
+
         return new GenAiTestScriptResult()
         {
             InputDocument = document.Data,

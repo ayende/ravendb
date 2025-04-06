@@ -4,6 +4,7 @@ using Raven.Client.Documents.Operations.AI;
 using Raven.Server.Documents.ETL.Providers.AI.GenAi;
 using Raven.Server.Documents.ETL.Providers.AI.GenAi.Test;
 using Raven.Server.ServerWide.Context;
+using Sparrow.Json;
 using Tests.Infrastructure;
 using Xunit;
 using Xunit.Abstractions;
@@ -85,11 +86,38 @@ for (const comment of this.Comments)
                     }
                 };
 
-
-                var testResult = GenAiTask.TestScript(testAiGenScript, database, database.ServerStore, context);
-
-                var result = (GenAiTestScriptResult)testResult;
+                var result = GenAiTask.TestScript(testAiGenScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+                Assert.NotNull(result);
                 Assert.Equal(3, result.Results.Count);
+
+                Assert.NotNull(result.InputDocument);
+                result.InputDocument.TryGet(nameof(GenAiBasics.Post.Comments), out BlittableJsonReaderArray comments);
+                Assert.Equal(3, comments.Length);
+
+                var spamComments = 0;
+                foreach (var item in result.Results)
+                {
+                    Assert.True(item.ModelOutput.TryGet("Blocked", out bool blocked));
+                    if (blocked)
+                        spamComments++;
+
+                    Assert.True(item.ModelOutput.TryGet("Reason", out string r));
+                    Assert.False(string.IsNullOrEmpty(r));
+
+                    Assert.NotNull(item.AiHash);
+                    Assert.False(item.IsCached);
+
+                    Assert.True(item.Context.TryGet("Text", out string _));
+                    Assert.True(item.Context.TryGet("Author", out string _));
+                    Assert.True(item.Context.TryGet("Id", out string _));
+                }
+
+                Assert.NotNull(result.OutputDocument);
+                result.OutputDocument.TryGet(nameof(GenAiBasics.Post.Comments), out comments);
+
+                var expected = 3 - spamComments;
+                Assert.Equal(expected, comments.Length);
+
             }
         }
     }
