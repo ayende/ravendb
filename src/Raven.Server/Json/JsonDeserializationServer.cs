@@ -80,9 +80,9 @@ using DatabasesInfo = Raven.Client.ServerWide.Operations.DatabasesInfo;
 using FacetSetup = Raven.Client.Documents.Queries.Facets.FacetSetup;
 using MigrationConfiguration = Raven.Server.Smuggler.Migration.MigrationConfiguration;
 using StudioConfiguration = Raven.Client.Documents.Operations.Configuration.StudioConfiguration;
-using RevisionsHandler = Raven.Server.Documents.Handlers.RevisionsHandler;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings.Test;
 using Raven.Client.Documents.Operations.AI;
+using Raven.Server.Documents.ETL.Providers.AI.GenAi.Test;
 
 namespace Raven.Server.Json
 {
@@ -145,6 +145,8 @@ namespace Raven.Server.Json
         public static readonly Func<BlittableJsonReaderObject, TestQueueSinkScript> TestQueueSinkScript = GenerateJsonDeserializationRoutine<TestQueueSinkScript>();
 
         public static readonly Func<BlittableJsonReaderObject, TestEmbeddingsGenerationScript> TestEmbeddingsGenerationScript = GenerateJsonDeserializationRoutine<TestEmbeddingsGenerationScript>();
+
+        public static readonly Func<BlittableJsonReaderObject, TestGenAiScript> TestGenAiScript = GenerateJsonDeserializationRoutine<TestGenAiScript>();
 
         public static readonly Func<BlittableJsonReaderObject, SubscriptionCreationOptions> SubscriptionCreationParams = GenerateJsonDeserializationRoutine<SubscriptionCreationOptions>();
 

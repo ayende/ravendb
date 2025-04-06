@@ -130,7 +130,7 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
 
     protected override int LoadInternal(IEnumerable<GenAiScriptResult> items, DocumentsOperationContext context, GenAiStatsScope scope)
     {
-        var results = SendToModel(document: null, items, context, out var exceptions);
+        var results = SendToModel(items, context, out var exceptions);
 
         if (results.Count is not 0)
         {
@@ -192,15 +192,12 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
 
     public GenAiTestScriptResult RunTest(Document document, IEnumerable<GenAiScriptResult> records, DocumentsOperationContext context)
     {
-        // TODO : avoid duplication, merge with LoadInternal
-
-        var results = SendToModel(document, records, context, out List<Exception> exceptions);
+        var results = SendToModel(records, context, out List<Exception> exceptions);
 
         BlittableJsonReaderObject outputDocument = null;
         if (results.Count is not 0)
         {
             PatchRequest req = new(Configuration.Update, PatchRequestType.AiGen);
-            //using var wtx = context.OpenWriteTransaction();
 
             PatchDocumentCommand lastPatch = null;
             foreach (var item in results)
@@ -238,26 +235,28 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
             throw new AggregateException(exceptions);
 
         using (var old = document.Data)
+        {
             document.Data = document.Data?.CloneOnTheSameContext();
+        }
 
-
-        return new GenAiTestScriptResult()
+        return new GenAiTestScriptResult
         {
             InputDocument = document.Data,
             Results = results,
-            OutputDocument = outputDocument
+            OutputDocument = outputDocument,
+            TransformationErrors = Statistics.TransformationErrorsInCurrentBatch.Errors.ToList()
         };
     }
 
-    private List<SingleItemResult> SendToModel(Document document, IEnumerable<GenAiScriptResult> records, DocumentsOperationContext context, out List<Exception> exceptions)
+    private List<GenAiResultItem> SendToModel(IEnumerable<GenAiScriptResult> records, DocumentsOperationContext context, out List<Exception> exceptions)
     {
         exceptions = null;
         List<Task<(string Result, string Usage)>> tasks = [];
-        List<SingleItemResult> results = [];
+        List<GenAiResultItem> results = [];
 
         foreach (var item in records)
         {
-            var singleResult = new SingleItemResult { Context = item.Context, DocId = item.DocumentId};
+            var singleResult = new GenAiResultItem { Context = item.Context, DocId = item.DocumentId};
             results.Add(singleResult);
 
             string json = item.Context.ToString();
@@ -270,7 +269,6 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
 
             singleResult.AiHash = hash;
             tasks.Add(_chatCompletionClient.CompleteAsync(Configuration.Prompt, json));
-            //matchingItems.Add(item with { AiHash = hash });
         }
 
         try

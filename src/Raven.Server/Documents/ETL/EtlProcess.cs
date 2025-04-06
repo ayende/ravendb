@@ -1100,11 +1100,11 @@ namespace Raven.Server.Documents.ETL
             where TC : EtlConfiguration<TCS>
             where TCS : ConnectionString
         {
-            var aiTestScript = typeof(TCS) == typeof(AiConnectionString);
-            using var tx = testScript.IsDelete || aiTestScript 
+            var genAiTestScript = typeof(TC) == typeof(GenAiConfiguration);
+            using var tx = testScript.IsDelete || genAiTestScript
                 ? context.OpenWriteTransaction() 
                 : context.OpenReadTransaction(); // we open write tx to test deletion but we won't commit it
-            
+
             var document = database.DocumentsStorage.Get(context, testScript.DocumentId);
 
             if (document == null)
@@ -1113,20 +1113,21 @@ namespace Raven.Server.Documents.ETL
             TCS connection = null;
 
             var relationalTestScript = testScript as TestRelationalDatabaseEtlScript<TCS, TC>;
+            var connectionStringRequiredForTesting = relationalTestScript != null || genAiTestScript;
 
-            if (relationalTestScript != null)
+            if (connectionStringRequiredForTesting)
             {
                 // we need to have connection string when testing SQL ETL because we need to have the factory name
                 // and if PerformRolledBackTransaction = true is specified then we need make a connection to SQL
 
                 List<string> csErrors = [];
 
-                if (relationalTestScript.Connection != null)
+                if (testScript.Configuration.Connection != null)
                 {
-                    if (relationalTestScript.Connection.Validate(csErrors) == false)
+                    if (testScript.Configuration.Connection.Validate(csErrors) == false)
                         throw new InvalidOperationException($"Invalid connection string due to {string.Join(";", csErrors)}");
 
-                    connection = relationalTestScript.Connection as TCS;
+                    connection = testScript.Configuration.Connection as TCS;
                 }
                 else
                 {
@@ -1178,15 +1179,35 @@ namespace Raven.Server.Documents.ETL
     
                         connection = snowflakeConnection as TCS;
                     }
+                    else if (typeof(TCS) == typeof(AiConnectionString))
+                    {
+                        Dictionary<string, AiConnectionString> connectionStrings;
+                        using (serverStore.ContextPool.AllocateOperationContext(out TransactionOperationContext ctx))
+                        using (ctx.OpenReadTransaction())
+                        using (var rawRecord = serverStore.Cluster.ReadRawDatabaseRecord(ctx, database.Name))
+                        {
+                            connectionStrings = rawRecord.AiConnectionStrings;
+                            if (connectionStrings == null)
+                                throw new InvalidOperationException($"{nameof(DatabaseRecord.AiConnectionStrings)} was not found in the database record");
+                        }
+
+                        if (connectionStrings.TryGetValue(testScript.Configuration.ConnectionStringName, out var aiConnection) == false)
+                        {
+                            throw new InvalidOperationException(
+                                $"Connection string named '{testScript.Configuration.ConnectionStringName}' was not found in the database record");
+                        }
+
+                        if (aiConnection.Validate(csErrors) == false)
+                            throw new InvalidOperationException(
+                                $"Invalid '{testScript.Configuration.ConnectionStringName}' connection string due to {string.Join(";", csErrors)}");
+
+                        connection = aiConnection as TCS;
+                    }
                     else
                     {
                         throw new InvalidOperationException($"Unexpected connection string type {typeof(TCS)}");
                     }
                 }
-            }
-            else if (aiTestScript)
-            {
-                connection = testScript.Configuration.Connection;
             }
 
             testScript.Configuration.Initialize(connection);

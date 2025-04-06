@@ -330,8 +330,8 @@ namespace Raven.Server.Documents.ETL
                     case EtlType.GenAi:
                         aiGenGenerationConfig = config as GenAiConfiguration;
                         
-                        if (_databaseRecord.AiConnectionStrings.TryGetValue(config.ConnectionStringName, out var aiGetnConStr))
-                            aiGenGenerationConfig.Initialize(aiGetnConStr);
+                        if (_databaseRecord.AiConnectionStrings.TryGetValue(config.ConnectionStringName, out var genAiConStr))
+                            aiGenGenerationConfig.Initialize(genAiConStr);
                         else
                             connectionStringNotFound = true;
                         
