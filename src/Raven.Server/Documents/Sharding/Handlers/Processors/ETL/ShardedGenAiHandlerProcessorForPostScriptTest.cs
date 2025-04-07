@@ -1,6 +1,7 @@
 ﻿using System;
 using JetBrains.Annotations;
 using Raven.Client.Documents.Operations.AI;
+using Raven.Client.Exceptions.Sharding;
 using Raven.Client.Http;
 using Raven.Server.Documents.Commands.ETL;
 using Raven.Server.Documents.ETL.Providers.AI.GenAi.Test;
@@ -13,8 +14,7 @@ internal sealed class ShardedGenAiHandlerProcessorForPostScriptTest : AbstractSh
 {
     public ShardedGenAiHandlerProcessorForPostScriptTest([NotNull] ShardedDatabaseRequestHandler requestHandler) : base(requestHandler)
     {
-        // TODO : do we want to mark it as NotSupported like in ShardedEmbeddingsGenerationHandlerProcessorForPostScriptTest ?
-        throw new NotImplementedException(); 
+        throw new NotSupportedInShardingException("GenAI is currently not supported in sharding");
     }
 
     protected override TestGenAiScript GetTestEtlScript(BlittableJsonReaderObject json) => JsonDeserializationServer.TestGenAiScript(json);

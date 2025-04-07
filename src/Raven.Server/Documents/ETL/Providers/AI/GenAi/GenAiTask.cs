@@ -192,8 +192,15 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
 
     public GenAiTestScriptResult RunTest(Document document, IEnumerable<GenAiScriptResult> records, DocumentsOperationContext context)
     {
-        var results = SendToModel(records, context, out List<Exception> exceptions);
+        // we close the read tx in SendToModel, so we need to clone this document
+        using (var old = document)
+        {
+            document = document.Clone(context);
+        }
 
+        var results = SendToModel(records, context, out List<Exception> exceptions);
+        
+        using var _ = context.OpenWriteTransaction();
         BlittableJsonReaderObject outputDocument = null;
         if (results.Count is not 0)
         {
@@ -234,11 +241,6 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
         if (exceptions is not null)
             throw new AggregateException(exceptions);
 
-        using (var old = document.Data)
-        {
-            document.Data = document.Data?.CloneOnTheSameContext();
-        }
-
         return new GenAiTestScriptResult
         {
             InputDocument = document.Data,
@@ -250,6 +252,8 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
 
     private List<GenAiResultItem> SendToModel(IEnumerable<GenAiScriptResult> records, DocumentsOperationContext context, out List<Exception> exceptions)
     {
+        context.CloseTransaction();
+
         exceptions = null;
         List<Task<(string Result, string Usage)>> tasks = [];
         List<GenAiResultItem> results = [];

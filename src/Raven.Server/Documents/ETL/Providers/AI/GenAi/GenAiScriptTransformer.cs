@@ -92,10 +92,14 @@ internal sealed class GenAiScriptTransformer : EtlTransformer<AiEtlItem, GenAiSc
         {
             Types.Null or Types.Undefined => null,
             Types.String => args[1].AsString(),
-            _ => throw new ArgumentException($"The 'hash' argument must be string or null, but was: " + args[1].Type + ", " + args[1])
+            _ => throw new ArgumentException("The 'hash' argument must be string or null, but was: " + args[1].Type + ", " + args[1])
         };
 
-        _currentRun.Add(new GenAiScriptResult(Current.DocumentId, context, hash));
+        using (context)
+        {
+            _currentRun.Add(new GenAiScriptResult(Current.DocumentId, context.CloneOnTheSameContext(), hash));
+        }
+
         return JsValue.Null;
     }
 }

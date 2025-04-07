@@ -1100,20 +1100,18 @@ namespace Raven.Server.Documents.ETL
             where TC : EtlConfiguration<TCS>
             where TCS : ConnectionString
         {
-            var genAiTestScript = typeof(TC) == typeof(GenAiConfiguration);
-            using var tx = testScript.IsDelete || genAiTestScript
+            using var tx = testScript.IsDelete
                 ? context.OpenWriteTransaction() 
                 : context.OpenReadTransaction(); // we open write tx to test deletion but we won't commit it
 
             var document = database.DocumentsStorage.Get(context, testScript.DocumentId);
-
             if (document == null)
                 throw new InvalidOperationException($"Document {testScript.DocumentId} does not exist");
 
             TCS connection = null;
 
             var relationalTestScript = testScript as TestRelationalDatabaseEtlScript<TCS, TC>;
-            var connectionStringRequiredForTesting = relationalTestScript != null || genAiTestScript;
+            var connectionStringRequiredForTesting = relationalTestScript != null || typeof(TC) == typeof(GenAiConfiguration);
 
             if (connectionStringRequiredForTesting)
             {
