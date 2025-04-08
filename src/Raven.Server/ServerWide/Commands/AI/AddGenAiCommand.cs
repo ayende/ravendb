@@ -20,7 +20,7 @@ public sealed class AddGenAiCommand : AddEtlCommand<GenAiConfiguration, AiConnec
     {
         Validate(record);
 
-        Add(ref record.AiGenEtls, record, etag);
+        Add(ref record.GenAiEtls, record, etag);
     }
 
     private void Validate(DatabaseRecord databaseRecord)

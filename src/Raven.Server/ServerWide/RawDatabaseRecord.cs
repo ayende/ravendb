@@ -937,26 +937,26 @@ namespace Raven.Server.ServerWide
 
         
         
-        private List<GenAiConfiguration> _aiGenConfigurationTasks;
+        private List<GenAiConfiguration> _genAiConfigurationTasks;
 
-        public List<GenAiConfiguration> AiGens
+        public List<GenAiConfiguration> GenAis
         {
             get
             {
                 if (_materializedRecord != null)
-                    return _materializedRecord.AiGenEtls;
+                    return _materializedRecord.GenAiEtls;
 
-                if (_aiGenConfigurationTasks == null)
+                if (_genAiConfigurationTasks == null)
                 {
-                    _aiGenConfigurationTasks = [];
-                    if (_record.TryGet(nameof(DatabaseRecord.AiGenEtls), out BlittableJsonReaderArray bjra) && bjra != null)
+                    _genAiConfigurationTasks = [];
+                    if (_record.TryGet(nameof(DatabaseRecord.GenAiEtls), out BlittableJsonReaderArray bjra) && bjra != null)
                     {
                         foreach (BlittableJsonReaderObject element in bjra)
-                            _aiGenConfigurationTasks.Add(JsonDeserializationCluster.AiGenConfiguration(element));
+                            _genAiConfigurationTasks.Add(JsonDeserializationCluster.AiGenConfiguration(element));
                     }
                 }
 
-                return _aiGenConfigurationTasks;
+                return _genAiConfigurationTasks;
             }
         }
 

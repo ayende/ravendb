@@ -437,6 +437,26 @@ namespace Raven.Client.Documents.Operations.OngoingTasks
         }
     }
 
+    public sealed class GenAi : OngoingTask
+    {
+        public GenAi()
+        {
+            TaskType = OngoingTaskType.GenAi;
+        }
+
+        public string ConnectionStringName { get; set; }
+
+        public GenAiConfiguration Configuration { get; set; }
+
+        public override DynamicJsonValue ToJson()
+        {
+            var json = base.ToJson();
+            json[nameof(ConnectionStringName)] = ConnectionStringName;
+            json[nameof(Configuration)] = Configuration?.ToJson();
+            return json;
+        }
+    }
+
     public sealed class OngoingTaskBackup : OngoingTask
     {
         public BackupType BackupType { get; set; }
