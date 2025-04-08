@@ -291,6 +291,10 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
                     <FormLabel>Update</FormLabel>
                     <FormAceEditor control={control} name="update" mode="javascript" />
                 </FormGroup>
+                <FormGroup>
+                    <FormLabel>Script</FormLabel>
+                    <FormAceEditor control={control} name="script" mode="javascript" />
+                </FormGroup>
             </form>
         </div>
     );
@@ -354,10 +358,13 @@ const mapToDto = (data: FormData, taskId: number): Raven.Client.Documents.Operat
         PinToMentorNode: data.isSetResponsibleNode && data.isPinResponsibleNode,
         Transforms: null,
         Collection: data.collectionName,
-        Prompt: data.prompt,
-        JsonSchema: data.jsonSchema,
-        SampleObject: data.sampleObject,
-        Update: data.update,
+        Prompt: data.prompt || null,
+        JsonSchema: data.jsonSchema || null,
+        SampleObject: data.sampleObject || null,
+        Update: data.update || null,
+        GenAiTransformation: {
+            Script: data.script || null,
+        },
     };
 };
 
@@ -375,6 +382,7 @@ const schema = yup.object({
     sampleObject: yup.string(),
     update: yup.string(),
     isResetScript: yup.boolean(),
+    script: yup.string(),
 });
 
 type FormData = yup.InferType<typeof schema>;
