@@ -330,6 +330,16 @@ public abstract class AbstractOngoingTasks<TSubscriptionConnectionsState>
                     return null;
 
                 return CreateEmbeddingsGenerationTaskInfo(clusterTopology, databaseRecord, embeddingsGeneration);
+            case OngoingTaskType.GenAi:
+
+                var genAiConfig = taskName != null
+                    ? databaseRecord.GenAiEtls.Find(x => x.Name.Equals(taskName, StringComparison.OrdinalIgnoreCase))
+                    : databaseRecord.GenAiEtls?.Find(x => x.TaskId == taskId);
+
+                if (genAiConfig == null)
+                    return null;
+
+                return CreateGenAiTaskInfo(clusterTopology, databaseRecord, genAiConfig);
             default:
                 return null;
         }

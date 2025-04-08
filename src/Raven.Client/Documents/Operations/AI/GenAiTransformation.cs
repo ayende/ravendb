@@ -1,4 +1,4 @@
-﻿using System.Text.RegularExpressions;
+﻿using Sparrow.Json.Parsing;
 
 namespace Raven.Client.Documents.Operations.AI;
 
@@ -16,4 +16,9 @@ public class GenAiTransformation
         return false;
 
     }
+
+    public DynamicJsonValue ToJson() => new()
+    {
+        [nameof(Script)] = Script
+    };
 }

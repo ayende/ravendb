@@ -1,10 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Threading;
+using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Raven.Client.Documents.Operations.AI;
 using Raven.Client.Documents.Operations.ConnectionStrings;
+using Raven.Client.Documents.Operations.OngoingTasks;
 using Tests.Infrastructure;
+using Xunit;
 using Xunit.Abstractions;
 
 namespace FastTests.GenAi;
@@ -129,5 +132,76 @@ for(const comment of this.Comments)
         //WaitForUserToContinueTheTest(store);
         
         etl.Wait(CancellationToken.None);
+    }
+
+    [RavenFact(RavenTestCategory.Ai)]
+    public async Task CanGetGenAiOngoingTask()
+    {
+        const string connectionStrName = "ollama-local-deepseek-r1";
+
+        using var store = GetDocumentStore();
+        store.Maintenance.Send(new PutConnectionStringOperation<AiConnectionString>(new AiConnectionString
+        {
+            Name = connectionStrName,
+            Identifier = connectionStrName,
+            OllamaSettings = new OllamaSettings
+            {
+                Uri = "http://127.0.0.1:11434/",
+                Model = "deepseek-r1:1.5b"
+            }
+        }));
+
+
+        var configuration = new GenAiConfiguration
+        {
+            Name = "Check blog comments spam",
+            ConnectionStringName = connectionStrName,
+            Prompt = "Check if the following blog post comment is spam or not",
+            Collection = "Posts",
+            SampleObject = JsonConvert.SerializeObject(new
+            {
+                Blocked = true,
+                Reason = "Concise reason for why this comment was marked as spam or ham"
+            }),
+            Update = @"    
+const idx = this.Comments.findIndex(c => c.Id == $input.Id);  
+if($output.Blocked)
+{
+    this.Comments.splice(idx, 1); // remove
+}
+else 
+{
+    this.Comments[idx].AiHash = $aiHash; // remember this decision
+}",
+            GenAiTransformation = new GenAiTransformation
+            {
+                Script = @"
+for(const comment of this.Comments)
+{
+    context({Text: comment.Text, Author: comment.Author, Id: comment.Id}, comment.AiHash);
+}
+"
+            }
+        };
+
+        store.Maintenance.Send(new AddGenAiOperation(configuration));
+
+        var op = new GetOngoingTaskInfoOperation(configuration.Name, OngoingTaskType.GenAi);
+        var taskInfo = await store.Maintenance.SendAsync(op);
+
+        Assert.NotNull(taskInfo);
+        Assert.Equal(configuration.Name, taskInfo.TaskName);
+        Assert.Equal(OngoingTaskType.GenAi, taskInfo.TaskType);
+        Assert.Equal(OngoingTaskConnectionStatus.Active, taskInfo.TaskConnectionStatus);
+
+        var genAiTaskInfo = taskInfo as Raven.Client.Documents.Operations.OngoingTasks.GenAi;
+        Assert.NotNull(genAiTaskInfo);
+        Assert.Equal(configuration.ConnectionStringName, genAiTaskInfo.ConnectionStringName);
+        Assert.Equal(configuration.Collection, genAiTaskInfo.Configuration.Collection);
+        Assert.Equal(configuration.Prompt, genAiTaskInfo.Configuration.Prompt);
+        Assert.Equal(configuration.SampleObject, genAiTaskInfo.Configuration.SampleObject);
+        Assert.Equal(configuration.Update, genAiTaskInfo.Configuration.Update);
+        Assert.Equal(configuration.AiConnectorType, genAiTaskInfo.Configuration.AiConnectorType);
+        Assert.Equal(configuration.GenAiTransformation.Script, genAiTaskInfo.Configuration.GenAiTransformation.Script);
     }
 }

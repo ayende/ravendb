@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using Newtonsoft.Json;
 using Raven.Client.Documents.Operations.ETL;
 using Sparrow.Json;
+using Sparrow.Json.Parsing;
 
 namespace Raven.Client.Documents.Operations.AI;
 
@@ -86,8 +87,24 @@ public class GenAiConfiguration : EtlConfiguration<AiConnectionString>
             errors.Add(error);
 
         if (string.IsNullOrEmpty(Update))
-            errors.Add($"You must provide an update function");
+            errors.Add("You must provide an update function");
 
         return errors.Count == 0;
+    }
+
+    public override DynamicJsonValue ToJson()
+    {
+        var json = base.ToJson();
+
+        json[nameof(AiConnectorType)] = AiConnectorType;
+        json[nameof(Identifier)] = Identifier;
+        json[nameof(Collection)] = Collection;
+        json[nameof(Prompt)] = Prompt;
+        json[nameof(SampleObject)] = SampleObject;
+        json[nameof(JsonSchema)] = JsonSchema;
+        json[nameof(Update)] = Update;
+        json[nameof(GenAiTransformation)] = GenAiTransformation.ToJson();
+
+        return json;
     }
 }

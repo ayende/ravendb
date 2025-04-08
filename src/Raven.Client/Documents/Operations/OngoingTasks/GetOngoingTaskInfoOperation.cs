@@ -130,6 +130,9 @@ namespace Raven.Client.Documents.Operations.OngoingTasks
                         case OngoingTaskType.EmbeddingsGeneration:
                             Result = JsonDeserializationClient.GetOngoingTaskEmbeddingsGenerationResult(response);
                             break;
+                        case OngoingTaskType.GenAi:
+                            Result = JsonDeserializationClient.GetOngoingTaskGenAiResult(response);
+                            break;
                         default:
                             throw new ArgumentOutOfRangeException(nameof(_type), _type, "Unknown task type");
                     }
