@@ -9,7 +9,12 @@ import { StickyHeader } from "components/common/StickyHeader";
 import useBoolean from "components/hooks/useBoolean";
 import useInterval from "components/hooks/useInterval";
 import { useServices } from "components/hooks/useServices";
-import { OngoingTaskInfo, OngoingTaskSharedInfo, OngoingTaskEmbeddingsGenerationInfo } from "components/models/tasks";
+import {
+    OngoingTaskInfo,
+    OngoingTaskSharedInfo,
+    OngoingTaskEmbeddingsGenerationInfo,
+    OngoingTaskGenAiInfo,
+} from "components/models/tasks";
 import { useAppSelector } from "components/store";
 import TaskUtils from "components/utils/TaskUtils";
 import etlScriptDefinitionCache from "models/database/stats/etlScriptDefinitionCache";
@@ -28,6 +33,7 @@ import {
     ongoingTasksReducerInitializer,
 } from "../../tasks/ongoingTasks/partials/OngoingTasksReducer";
 import { EtlProgressProvider } from "../../tasks/ongoingTasks/partials/OngoingTaskProgressProviders";
+import { GenAiPanel } from "../../tasks/ongoingTasks/panels/GenAiPanel";
 
 type EtlTaskProgress = Raven.Server.Documents.ETL.Stats.EtlTaskProgress;
 
@@ -106,10 +112,14 @@ export default function AiTasks() {
         (x) => x.shared.taskType === "EmbeddingsGeneration"
     ) as OngoingTaskEmbeddingsGenerationInfo[];
 
-    const getSelectedTaskShardedInfos = () =>
-        [...embeddingsGenerations].filter((x) => selectedTaskIds.includes(x.shared.taskId)).map((x) => x.shared);
+    const genAiTasks = tasks.tasks.filter((x) => x.shared.taskType === "GenAi") as OngoingTaskGenAiInfo[];
 
-    const filteredDatabaseTaskIds = Object.values(embeddingsGenerations)
+    const getSelectedTaskShardedInfos = () =>
+        [...embeddingsGenerations, ...genAiTasks]
+            .filter((x) => selectedTaskIds.includes(x.shared.taskId))
+            .map((x) => x.shared);
+
+    const filteredDatabaseTaskIds = Object.values([...embeddingsGenerations, ...genAiTasks])
         .flat()
         .filter((x) => !x.shared.serverWide)
         .map((x) => x.shared.taskId);
@@ -174,7 +184,7 @@ export default function AiTasks() {
                     <FlexGrow />
                     <AiTasksInfoHub />
                 </div>
-                {embeddingsGenerations.length > 0 && hasDatabaseAdminAccess && (
+                {(embeddingsGenerations.length > 0 || genAiTasks.length > 0) && hasDatabaseAdminAccess && (
                     <OngoingTaskSelectActions
                         allTasks={filteredDatabaseTaskIds}
                         selectedTasks={selectedTaskIds}
@@ -188,8 +198,26 @@ export default function AiTasks() {
             <Row className="gy-sm">
                 <div className="flex-vertical">
                     <div className="scroll flex-grow">
-                        {embeddingsGenerations.length === 0 && (
+                        {embeddingsGenerations.length === 0 && genAiTasks.length === 0 && (
                             <EmptySet>No tasks have been created for this Database Group.</EmptySet>
+                        )}
+                        {genAiTasks.length > 0 && (
+                            <div key="ai-etls">
+                                <HrHeader className="ai-etl" count={genAiTasks.length}>
+                                    <Icon icon="ai-etl" />
+                                    GenAI
+                                </HrHeader>
+
+                                {genAiTasks.map((x) => (
+                                    <GenAiPanel
+                                        {...sharedPanelProps}
+                                        key={taskKey(x.shared)}
+                                        data={x}
+                                        onToggleDetails={startTrackingProgress}
+                                        showItemPreview={showItemPreview}
+                                    />
+                                ))}
+                            </div>
                         )}
                         {embeddingsGenerations.length > 0 && (
                             <div key="ai-etls">

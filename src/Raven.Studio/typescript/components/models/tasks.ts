@@ -149,6 +149,11 @@ export interface OngoingTaskEmbeddingsGenerationSharedInfo extends OngoingTaskSh
     identifier: string;
 }
 
+export interface OngoingTaskGenAiSharedInfo extends OngoingTaskSharedInfo {
+    connectionStringName: string;
+    identifier: string;
+}
+
 export type OngoingTaskKafkaEtlSharedInfo = OngoingTaskQueueEtlSharedInfo;
 
 export type OngoingTaskRabbitMqEtlSharedInfo = OngoingTaskQueueEtlSharedInfo;
@@ -320,6 +325,11 @@ export type OngoingTaskAmazonSqsEtlInfo = OngoingTaskInfo<
 
 export type OngoingTaskEmbeddingsGenerationInfo = OngoingTaskInfo<
     OngoingTaskEmbeddingsGenerationSharedInfo,
+    OngoingEtlTaskNodeInfo<OngoingTaskAiEtlNodeInfoDetails>
+>;
+
+export type OngoingTaskGenAiInfo = OngoingTaskInfo<
+    OngoingTaskGenAiSharedInfo,
     OngoingEtlTaskNodeInfo<OngoingTaskAiEtlNodeInfoDetails>
 >;
 

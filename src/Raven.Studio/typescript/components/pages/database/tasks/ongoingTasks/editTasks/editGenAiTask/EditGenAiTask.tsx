@@ -102,18 +102,19 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
 
     const { appUrl } = useAppUrls();
 
-    const handleCancel = () => {
+    const handleSave: SubmitHandler<FormData> = (data) => {
+        return tryHandleSubmit(async () => {
+            await tasksService.saveGenAiTask(databaseName, mapToDto(data, taskId));
+            goBack();
+        });
+    };
+
+    const goBack = () => {
         if (queryParams.sourceView === "AiTasks") {
             router.navigate(appUrl.forAiTasks(databaseName));
         } else {
             router.navigate(appUrl.forOngoingTasks(databaseName));
         }
-    };
-
-    const handleSave: SubmitHandler<FormData> = (data) => {
-        return tryHandleSubmit(async () => {
-            await tasksService.saveGenAiTask(databaseName, mapToDto(data, taskId));
-        });
     };
 
     console.log("kalczur errors", formState.errors);
@@ -133,7 +134,7 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
                     >
                         Save
                     </ButtonWithSpinner>
-                    <Button variant="secondary" onClick={handleCancel}>
+                    <Button variant="secondary" onClick={goBack}>
                         <Icon icon="cancel" />
                         Cancel
                     </Button>
