@@ -1,6 +1,7 @@
 ﻿using System.Net.Http;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
+using Raven.Client.Documents.Commands;
 using Raven.Client.Documents.Conventions;
 using Raven.Client.Documents.Operations.AI;
 using Raven.Client.Documents.Operations.ConnectionStrings;
@@ -18,7 +19,7 @@ namespace FastTests.GenAi;
 
 public class GenAiTestScript(ITestOutputHelper output) : RavenTestBase(output)
 {
-    [RavenTheory(RavenTestCategory.Etl)]
+    [RavenTheory(RavenTestCategory.Etl | RavenTestCategory.Ai)]
     [RavenData(DatabaseMode = RavenDatabaseMode.Single)]
     public async Task CanTestGenAiScript(Options options)
     {
@@ -126,7 +127,7 @@ for (const comment of this.Comments)
         }
     }
 
-    [RavenTheory(RavenTestCategory.Etl)]
+    [RavenTheory(RavenTestCategory.Etl | RavenTestCategory.Ai)]
     [RavenData(DatabaseMode = RavenDatabaseMode.Single)]
     public async Task CanTestGenAiScript_ViaEndpoint(Options options)
     {
@@ -251,6 +252,109 @@ for (const comment of this.Comments)
                 var expected = 3 - spamComments;
                 Assert.Equal(expected, comments.Length);
             }
+        }
+    }
+
+    [RavenTheory(RavenTestCategory.Etl | RavenTestCategory.Ai)]
+    [RavenData(DatabaseMode = RavenDatabaseMode.Single)]
+    public async Task TestGenAiScript_ShouldNotSendCachedItems(Options options)
+    {
+        using (var store = GetDocumentStore(options))
+        {
+            const string id = "posts/1";
+
+            using (var session = store.OpenAsyncSession())
+            {
+                var p = new GenAiBasics.Post(
+                    [
+                        new GenAiBasics.Comment("This article really helped me understand how indexes work in RavenDB. Great write-up!", "sarah_j"),
+                        new GenAiBasics.Comment("Learn how to make $5000/month from home! Visit click4cash.biz.example now!!!", "shady_marketer"),
+                        new GenAiBasics.Comment("I tried this approach with IO_Uring in the past, but I run into problems with security around the IO systems and the CISO didn't let us deploy that to production. It is more mature at this point?", "dave"),
+                        new GenAiBasics.Comment("Hey Dave, yes — IO_Uring has come a long way since then. We've been using it in production for about 6 months now with good results, especially on high-throughput workloads.", "ayende")
+
+                    ],
+                    "Understanding Indexing in RavenDB",
+                    "Indexes in RavenDB are a powerful way to optimize query performance. This blog post walks through auto-indexes, static indexes, and best practices when designing queries that scale."
+                );
+                await session.StoreAsync(p, id);
+
+                await session.SaveChangesAsync();
+            }
+
+            var database = await GetDocumentDatabaseInstanceFor(store);
+
+            using (database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
+            {
+                var testAiGenScript = new TestGenAiScript
+                {
+                    DocumentId = id,
+                    Configuration = new()
+                    {
+                        Name = "Check blog comments spam",
+                        Connection = new AiConnectionString
+                        {
+                            Name = "ollama-local-deepseek-r1",
+                            Identifier = "ollama-local-deepseek-r1",
+                            OllamaSettings = new OllamaSettings { Uri = "http://127.0.0.1:11434/", Model = "deepseek-r1:1.5b" }
+                        },
+                        Collection = "Posts",
+                        Prompt = "Check if the following blog post comment is spam or not",
+                        SampleObject = JsonConvert.SerializeObject(new { Blocked = true, Reason = "Concise reason for why this comment was marked as spam or harmful" }),
+                        Update = @"    
+const idx = this.Comments.findIndex(c => c.Id == $input.Id);  
+if($output.Blocked)
+{
+    this.Comments[idx].Spam = true;
+}
+this.Comments[idx].AiHash = $aiHash;
+",
+                        GenAiTransformation = new GenAiTransformation
+                        {
+                            Script = @"
+for (const comment of this.Comments)
+{
+    context({Text: comment.Text, Author: comment.Author, Id: comment.Id}, comment.AiHash);
+}
+"
+                        }
+                    }
+                };
+
+                var result = GenAiTask.TestScript(testAiGenScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+                Assert.NotNull(result);
+                Assert.Equal(4, result.Results.Count);
+
+                foreach (var item in result.Results)
+                {
+                    Assert.NotNull(item.ModelOutput);
+                    Assert.NotNull(item.AiHash);
+                    Assert.False(item.IsCached);
+                }
+
+                // save the output doc as a new document
+                var newId = id + "/new";
+                using (var requestExecutor = store.GetRequestExecutor())
+                using (requestExecutor.ContextPool.AllocateOperationContext(out JsonOperationContext ctx))
+                {
+                    await requestExecutor.ExecuteAsync(new PutDocumentCommand(store.Conventions, newId, changeVector: null, result.OutputDocument), ctx);
+                }
+
+                // re-run the test script on the output document
+                testAiGenScript.DocumentId = newId;
+                result = GenAiTask.TestScript(testAiGenScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+                Assert.NotNull(result);
+                Assert.Equal(4, result.Results.Count);
+
+                // should not send anything to model, all comments are cached 
+                foreach (var item in result.Results)
+                {
+                    Assert.Null(item.ModelOutput);
+                    Assert.Null(item.AiHash);
+                    Assert.True(item.IsCached);
+                }
+
+            }
+
         }
     }
 
