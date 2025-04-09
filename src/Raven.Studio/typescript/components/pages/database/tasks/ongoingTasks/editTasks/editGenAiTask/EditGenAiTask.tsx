@@ -16,6 +16,7 @@ import {
     FormInput,
     FormLabel,
     FormSelect,
+    FormSelectAutocomplete,
     FormSelectCreatable,
     FormSwitch,
 } from "components/common/Form";
@@ -24,7 +25,7 @@ import OptionalLabel from "components/common/OptionalLabel";
 import PopoverWithHoverWrapper from "components/common/PopoverWithHoverWrapper";
 import { SelectOption } from "components/common/select/Select";
 import RichAlert from "components/common/RichAlert";
-import { useAsync } from "react-async-hook";
+import { useAsync, useAsyncCallback } from "react-async-hook";
 import { sortBy } from "common/typeUtils";
 import useBoolean from "components/hooks/useBoolean";
 import EditConnectionStrings from "components/pages/database/settings/connectionStrings/EditConnectionStrings";
@@ -33,6 +34,8 @@ import { useAppUrls } from "components/hooks/useAppUrls";
 import router from "plugins/router";
 import { collectionsTrackerSelectors } from "components/common/shell/collectionsTrackerSlice";
 import { tryHandleSubmit } from "components/utils/common";
+import { useAsyncDebounce } from "components/hooks/useAsyncDebounce";
+import Code from "components/common/Code";
 
 type OngoingTaskState = Raven.Client.Documents.Operations.OngoingTasks.OngoingTaskState;
 
@@ -54,7 +57,7 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
 
     const possibleMentors = nodes.filter((x) => x.type === "Member").map((x) => x.nodeTag);
 
-    const { tasksService } = useServices();
+    const { tasksService, databasesService } = useServices();
     const databaseName = useAppSelector(databaseSelectors.activeDatabaseName);
 
     const { value: isNewConnectionStringOpen, toggle: toggleIsNewConnectionStringOpen } = useBoolean(false);
@@ -71,7 +74,7 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
         },
     });
 
-    const { control, handleSubmit, setValue, formState, reset } = form;
+    const { control, handleSubmit, setValue, formState, reset, trigger } = form;
 
     const formValues = useWatch({ control });
 
@@ -119,26 +122,94 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
 
     console.log("kalczur errors", formState.errors);
 
+    const { value: isTestOpen, toggle: toggleIsTestOpen } = useBoolean(false);
+
+    const asyncGetDocumentIdOptions = useAsyncDebounce(
+        async () => {
+            const result = await databasesService.getDocumentsMetadataByIDPrefix(
+                formValues.documentId,
+                10,
+                databaseName
+            );
+            return result.map((x) => x["@metadata"]["@id"]).map((x) => ({ value: x, label: x }));
+        },
+        [formValues.documentId],
+        300
+    );
+
+    const asyncRunTest = useAsyncCallback(async () => {
+        const isValid = await trigger();
+        if (!isValid) {
+            return;
+        }
+
+        const dto: Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.TestGenAiScript = {
+            DocumentId: formValues.documentId,
+            IsDelete: false,
+            Configuration: mapToDto(formValues, taskId),
+        };
+
+        const result = await tasksService.testGenAi(databaseName, dto);
+        return result;
+    });
+
     return (
         <div className="content-padding">
             <AboutViewHeading title={isNewTask ? "New GenAI" : "Edit GenAI"} icon="ai-etl" />
 
             <form onSubmit={handleSubmit(handleSave)}>
-                <HStack gap={2} className="mb-3">
-                    <ButtonWithSpinner
-                        type="submit"
-                        variant="primary"
-                        icon="save"
-                        isSpinning={false}
-                        disabled={!formState.isDirty}
-                    >
-                        Save
-                    </ButtonWithSpinner>
-                    <Button variant="secondary" onClick={goBack}>
-                        <Icon icon="cancel" />
-                        Cancel
+                <HStack className="mb-3 justify-content-between">
+                    <HStack gap={2}>
+                        <ButtonWithSpinner
+                            type="submit"
+                            variant="primary"
+                            icon="save"
+                            isSpinning={formState.isSubmitting}
+                            disabled={!formState.isDirty}
+                        >
+                            Save
+                        </ButtonWithSpinner>
+
+                        <Button variant="secondary" onClick={goBack}>
+                            <Icon icon="cancel" />
+                            Cancel
+                        </Button>
+                    </HStack>
+                    <Button variant={isTestOpen ? "danger" : "info"} onClick={toggleIsTestOpen}>
+                        <Icon icon={isTestOpen ? "cancel" : "rocket"} />
+                        {isTestOpen ? "Close test area" : "Open test area"}
                     </Button>
                 </HStack>
+                {isTestOpen && (
+                    <div className="panel-bg-1 p-4 mb-2">
+                        <ButtonWithSpinner
+                            variant="info"
+                            onClick={asyncRunTest.execute}
+                            className="mb-2"
+                            isSpinning={asyncRunTest.loading}
+                        >
+                            <Icon icon="play" />
+                            Run test
+                        </ButtonWithSpinner>
+                        <FormGroup>
+                            <FormLabel>Document ID</FormLabel>
+                            <FormSelectAutocomplete
+                                control={control}
+                                name="documentId"
+                                options={asyncGetDocumentIdOptions.result ?? []}
+                                isLoading={asyncGetDocumentIdOptions.loading}
+                            />
+                        </FormGroup>
+
+                        {asyncRunTest.result && (
+                            <>
+                                Test result:
+                                <Code language="json" code={JSON.stringify(asyncRunTest.result, null, 2)} />
+                            </>
+                        )}
+                    </div>
+                )}
+
                 <FormGroup>
                     <FormLabel>Task Name</FormLabel>
                     <FormInput
@@ -346,6 +417,7 @@ const getDefaultValues = (dto: Raven.Client.Documents.Operations.OngoingTasks.Ge
             isResetScript: false,
             scriptToReset: null,
             script: "",
+            documentId: "",
         };
     }
 
@@ -366,6 +438,7 @@ const getDefaultValues = (dto: Raven.Client.Documents.Operations.OngoingTasks.Ge
         isResetScript: true,
         scriptToReset: dto.Configuration.Transforms?.[0].Name ?? null,
         script: dto.Configuration.GenAiTransformation?.Script ?? "",
+        documentId: "",
     };
 };
 
@@ -409,6 +482,8 @@ const schema = yup.object({
     isResetScript: yup.boolean(),
     scriptToReset: yup.string().nullable(),
     script: yup.string(),
+    // For testing
+    documentId: yup.string(),
 });
 
 type FormData = yup.InferType<typeof schema>;

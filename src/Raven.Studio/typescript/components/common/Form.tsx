@@ -293,6 +293,7 @@ export function FormSelectAutocomplete<
         field: { onChange, value },
     } = useController({
         name: props.name,
+        control: props.control,
     });
 
     const onInputChange = (value: string, action: InputActionMeta) => {

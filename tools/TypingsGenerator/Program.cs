@@ -67,6 +67,7 @@ using Raven.Server.Documents.Commands.Replication;
 using Raven.Server.Documents.ETL;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings.Stats;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings.Test;
+using Raven.Server.Documents.ETL.Providers.AI.GenAi.Test;
 using Raven.Server.Documents.ETL.Providers.ElasticSearch.Test;
 using Raven.Server.Documents.ETL.Providers.OLAP;
 using Raven.Server.Documents.ETL.Providers.OLAP.Test;
@@ -76,6 +77,7 @@ using Raven.Server.Documents.ETL.Providers.RelationalDatabase;
 using Raven.Server.Documents.ETL.Providers.RelationalDatabase.Common;
 using Raven.Server.Documents.ETL.Providers.RelationalDatabase.Common.Test;
 using Raven.Server.Documents.ETL.Stats;
+using Raven.Server.Documents.ETL.Test;
 using Raven.Server.Documents.Handlers;
 using Raven.Server.Documents.Handlers.Admin;
 using Raven.Server.Documents.Handlers.Batches;
@@ -593,6 +595,8 @@ namespace TypingsGenerator
             // ongoing tasks - GenAI
             scripter.AddType(typeof(GenAiConfiguration));
             scripter.AddType(typeof(GenAi));
+            scripter.AddType(typeof(TestGenAiScript));
+            scripter.AddType(typeof(TestEtlScriptResult));
 
             // connection strings
             scripter.AddType(typeof(ConnectionString));
