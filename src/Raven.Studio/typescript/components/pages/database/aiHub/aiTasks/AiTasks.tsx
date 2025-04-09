@@ -158,6 +158,8 @@ export default function AiTasks() {
         isDeleting,
     };
 
+    console.log("kalczur genAiTasks", genAiTasks);
+
     return (
         <div className="content-padding ongoing-tasks-page">
             {progressEnabled && <EtlProgressProvider onProgress={onEtlProgress} />}
@@ -202,7 +204,7 @@ export default function AiTasks() {
                             <EmptySet>No tasks have been created for this Database Group.</EmptySet>
                         )}
                         {genAiTasks.length > 0 && (
-                            <div key="ai-etls">
+                            <div key="genAI">
                                 <HrHeader className="ai-etl" count={genAiTasks.length}>
                                     <Icon icon="ai-etl" />
                                     GenAI
@@ -220,7 +222,7 @@ export default function AiTasks() {
                             </div>
                         )}
                         {embeddingsGenerations.length > 0 && (
-                            <div key="ai-etls">
+                            <div key="embeddings-generations">
                                 <HrHeader className="ai-etl" count={embeddingsGenerations.length}>
                                     <Icon icon="ai-etl" />
                                     Embeddings Generation

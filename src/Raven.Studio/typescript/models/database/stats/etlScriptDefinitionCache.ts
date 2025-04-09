@@ -26,6 +26,7 @@ class etlScriptDefinitionCache {
                                                    Raven.Client.Documents.Operations.OngoingTasks.OngoingTaskOlapEtl |
                                                    Raven.Client.Documents.Operations.OngoingTasks.OngoingTaskElasticSearchEtl |
                                                    Raven.Client.Documents.Operations.OngoingTasks.EmbeddingsGeneration |
+                                                   Raven.Client.Documents.Operations.OngoingTasks.GenAi |
                                                    Raven.Client.Documents.Operations.OngoingTasks.OngoingTaskQueueEtl>;
 
             const databaseName = (typeof this.db === "string" ? this.db : this.db.name);

@@ -13,6 +13,7 @@ class getOngoingTaskInfoCommand<T extends Raven.Client.Documents.Operations.Ongo
     Raven.Client.Documents.Operations.OngoingTasks.OngoingTaskElasticSearchEtl |
     Raven.Client.Documents.Operations.OngoingTasks.OngoingTaskQueueEtl |
     Raven.Client.Documents.Operations.OngoingTasks.EmbeddingsGeneration |
+    Raven.Client.Documents.Operations.OngoingTasks.GenAi |
     Raven.Client.Documents.Operations.OngoingTasks.OngoingTaskQueueSink> extends commandBase {
 
     private readonly db: database | string;
@@ -98,7 +99,7 @@ class getOngoingTaskInfoCommand<T extends Raven.Client.Documents.Operations.Ongo
     }
 
     static forGenAi(db: database | string, taskId: number) {
-        return new getOngoingTaskInfoCommand<TODO>(db, "GenAi", null, taskId);
+        return new getOngoingTaskInfoCommand<Raven.Client.Documents.Operations.OngoingTasks.GenAi>(db, "GenAi", null, taskId);
     }
 
     private getArgsToUse() {

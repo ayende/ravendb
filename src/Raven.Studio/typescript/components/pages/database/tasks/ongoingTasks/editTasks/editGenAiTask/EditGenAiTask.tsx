@@ -29,7 +29,6 @@ import { sortBy } from "common/typeUtils";
 import useBoolean from "components/hooks/useBoolean";
 import EditConnectionStrings from "components/pages/database/settings/connectionStrings/EditConnectionStrings";
 import InputGroup from "react-bootstrap/InputGroup";
-import { useDirtyFlag } from "components/hooks/useDirtyFlag";
 import { useAppUrls } from "components/hooks/useAppUrls";
 import router from "plugins/router";
 import { collectionsTrackerSelectors } from "components/common/shell/collectionsTrackerSlice";
@@ -46,6 +45,7 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
     const taskId = queryParams.taskId ? parseInt(queryParams.taskId) : null;
     const isNewTask = taskId === null;
 
+    const isEncrypted = useAppSelector(databaseSelectors.activeDatabase)?.isEncrypted ?? false;
     const nodes = useAppSelector(clusterSelectors.allNodes);
     const collectionOptions: SelectOption[] = useAppSelector(collectionsTrackerSelectors.collectionNames).map((x) => ({
         value: x,
@@ -71,9 +71,7 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
         },
     });
 
-    const { control, handleSubmit, setValue, formState } = form;
-
-    useDirtyFlag(formState.isDirty);
+    const { control, handleSubmit, setValue, formState, reset } = form;
 
     const formValues = useWatch({ control });
 
@@ -104,7 +102,9 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
 
     const handleSave: SubmitHandler<FormData> = (data) => {
         return tryHandleSubmit(async () => {
-            await tasksService.saveGenAiTask(databaseName, mapToDto(data, taskId));
+            const scriptsToReset = data.isResetScript ? [data.scriptToReset] : undefined;
+            await tasksService.saveGenAiTask(databaseName, mapToDto(data, taskId), scriptsToReset);
+            reset(data);
             goBack();
         });
     };
@@ -184,6 +184,18 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
                     <FormLabel>Task State</FormLabel>
                     <FormSelect control={control} name="state" options={stateOptions} />
                 </FormGroup>
+                {isEncrypted && (
+                    <div className="vstack gap-2">
+                        <RichAlert variant="info">
+                            Database <strong>{databaseName}</strong> is encrypted
+                        </RichAlert>
+                        <FormGroup>
+                            <FormSwitch control={control} name="isAllowEtlOnNonEncryptedChannel">
+                                Allow task on a non-encrypted communication channel
+                            </FormSwitch>
+                        </FormGroup>
+                    </div>
+                )}
                 <FormGroup>
                     {possibleMentors.length === 0 && (
                         <RichAlert variant="warning">
@@ -272,6 +284,13 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
                         )}
                     </InputGroup>
                 </FormGroup>
+                {!isNewTask && (
+                    <FormGroup>
+                        <FormSwitch control={control} name="isResetScript">
+                            Regenerate all documents
+                        </FormSwitch>
+                    </FormGroup>
+                )}
                 <FormGroup>
                     <FormLabel>Collection Name</FormLabel>
                     <FormSelectCreatable control={control} name="collectionName" options={collectionOptions} />
@@ -308,41 +327,45 @@ const stateOptions: SelectOption<OngoingTaskState>[] = (["Enabled", "Disabled"] 
     })
 );
 
-const getDefaultValues = (dto: TODO): FormData => {
-    console.log("kalczur dto", dto);
-
+const getDefaultValues = (dto: Raven.Client.Documents.Operations.OngoingTasks.GenAi): FormData => {
     if (!dto) {
         return {
             name: "",
             identifier: "",
             state: "Enabled",
             isSetResponsibleNode: false,
-            responsibleNode: "",
+            responsibleNode: null,
             isPinResponsibleNode: false,
             connectionStringName: "",
+            isAllowEtlOnNonEncryptedChannel: false,
             collectionName: "",
             prompt: "",
             jsonSchema: "",
             sampleObject: "",
             update: "",
-            isResetScript: true,
+            isResetScript: false,
+            scriptToReset: null,
+            script: "",
         };
     }
 
     return {
-        name: "",
-        identifier: "",
-        state: "Enabled",
-        isSetResponsibleNode: false,
-        responsibleNode: "",
-        isPinResponsibleNode: false,
-        connectionStringName: "",
-        collectionName: "",
-        prompt: "",
-        jsonSchema: "",
-        sampleObject: "",
-        update: "",
-        isResetScript: false,
+        name: dto.Configuration.Name,
+        identifier: dto.Configuration.Identifier,
+        state: dto.TaskState,
+        isSetResponsibleNode: dto.MentorNode != null,
+        responsibleNode: dto.MentorNode ?? null,
+        isPinResponsibleNode: dto.PinToMentorNode,
+        connectionStringName: dto.ConnectionStringName,
+        isAllowEtlOnNonEncryptedChannel: dto.Configuration.AllowEtlOnNonEncryptedChannel,
+        collectionName: dto.Configuration.Collection,
+        prompt: dto.Configuration.Prompt ?? "",
+        jsonSchema: dto.Configuration.JsonSchema ?? "",
+        sampleObject: dto.Configuration.SampleObject ?? "",
+        update: dto.Configuration.Update ?? "",
+        isResetScript: true,
+        scriptToReset: dto.Configuration.Transforms?.[0].Name ?? null,
+        script: dto.Configuration.GenAiTransformation?.Script ?? "",
     };
 };
 
@@ -353,18 +376,18 @@ const mapToDto = (data: FormData, taskId: number): Raven.Client.Documents.Operat
         Identifier: data.identifier,
         EtlType: "GenAi",
         ConnectionStringName: data.connectionStringName,
-        AllowEtlOnNonEncryptedChannel: true, // TODO kalczur
+        AllowEtlOnNonEncryptedChannel: data.isAllowEtlOnNonEncryptedChannel,
         Disabled: data.state === "Disabled",
         MentorNode: data.isSetResponsibleNode ? data.responsibleNode : undefined,
         PinToMentorNode: data.isSetResponsibleNode && data.isPinResponsibleNode,
         Transforms: null,
         Collection: data.collectionName,
-        Prompt: data.prompt || null,
-        JsonSchema: data.jsonSchema || null,
-        SampleObject: data.sampleObject || null,
-        Update: data.update || null,
+        Prompt: data.prompt,
+        JsonSchema: data.jsonSchema,
+        SampleObject: data.sampleObject,
+        Update: data.update,
         GenAiTransformation: {
-            Script: data.script || null,
+            Script: data.script,
         },
     };
 };
@@ -374,15 +397,17 @@ const schema = yup.object({
     identifier: yup.string(),
     state: yup.string<Raven.Client.Documents.Operations.OngoingTasks.OngoingTaskState>().required(),
     isSetResponsibleNode: yup.boolean(),
-    responsibleNode: yup.string(),
+    responsibleNode: yup.string().nullable(),
     isPinResponsibleNode: yup.boolean(),
     connectionStringName: yup.string().required(),
+    isAllowEtlOnNonEncryptedChannel: yup.boolean(),
     collectionName: yup.string().required(),
     prompt: yup.string(),
     jsonSchema: yup.string(),
     sampleObject: yup.string(),
     update: yup.string(),
     isResetScript: yup.boolean(),
+    scriptToReset: yup.string().nullable(),
     script: yup.string(),
 });
 

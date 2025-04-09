@@ -423,7 +423,7 @@ export function OngoingTasksPage() {
                         )}
 
                         {genAiTasks.length > 0 && (
-                            <div key="ai-etls">
+                            <div key="genAI">
                                 <HrHeader className="ai-etl" count={genAiTasks.length}>
                                     <Icon icon="ai-etl" />
                                     GenAI
@@ -442,7 +442,7 @@ export function OngoingTasksPage() {
                         )}
 
                         {embeddingsGenerations.length > 0 && (
-                            <div key="ai-etls">
+                            <div key="embeddings-generations">
                                 <HrHeader className="ai-etl" count={embeddingsGenerations.length}>
                                     <Icon icon="ai-etl" />
                                     Embeddings Generation

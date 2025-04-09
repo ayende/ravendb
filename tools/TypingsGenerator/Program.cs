@@ -592,6 +592,7 @@ namespace TypingsGenerator
 
             // ongoing tasks - GenAI
             scripter.AddType(typeof(GenAiConfiguration));
+            scripter.AddType(typeof(GenAi));
 
             // connection strings
             scripter.AddType(typeof(ConnectionString));
