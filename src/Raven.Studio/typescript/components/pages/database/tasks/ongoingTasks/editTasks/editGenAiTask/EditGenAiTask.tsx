@@ -20,9 +20,6 @@ import {
     FormSelectCreatable,
     FormSwitch,
 } from "components/common/Form";
-import TaskUtils from "components/utils/TaskUtils";
-import OptionalLabel from "components/common/OptionalLabel";
-import PopoverWithHoverWrapper from "components/common/PopoverWithHoverWrapper";
 import { SelectOption } from "components/common/select/Select";
 import RichAlert from "components/common/RichAlert";
 import { useAsync, useAsyncCallback } from "react-async-hook";
@@ -77,10 +74,6 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
     const { control, handleSubmit, setValue, formState, reset, trigger } = form;
 
     const formValues = useWatch({ control });
-
-    const handleGenerateIdentifier = () => {
-        setValue("identifier", TaskUtils.getGeneratedIdentifier(formValues.name));
-    };
 
     const asyncGetConnectionStringsOptions = useAsync(async () => {
         const result = await tasksService.getConnectionStrings(databaseName);
@@ -212,44 +205,7 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
 
                 <FormGroup>
                     <FormLabel>Task Name</FormLabel>
-                    <FormInput
-                        type="text"
-                        control={control}
-                        name="name"
-                        onBlur={() => {
-                            if (!formValues.identifier) {
-                                handleGenerateIdentifier();
-                            }
-                        }}
-                    />
-                </FormGroup>
-                <FormGroup>
-                    <FormLabel>
-                        Identifier <OptionalLabel />
-                        <PopoverWithHoverWrapper
-                            message="A unique identifier used in document paths. If not specified, it will be auto-generated
-                                from the connection string name."
-                        >
-                            <Icon icon="info" color="info" margin="ms-1" id="identifier" />
-                        </PopoverWithHoverWrapper>
-                    </FormLabel>
-                    <FormInput
-                        control={control}
-                        name="identifier"
-                        type="text"
-                        placeholder="Enter an identifier for the connection string"
-                        addon={
-                            <Button
-                                variant="link"
-                                className="text-reset px-0"
-                                onClick={handleGenerateIdentifier}
-                                title="Click to generate the identifier from the connection string name"
-                            >
-                                <Icon icon="refresh" />
-                                Regenerate
-                            </Button>
-                        }
-                    />
+                    <FormInput type="text" control={control} name="name" />
                 </FormGroup>
                 <FormGroup>
                     <FormLabel>Task State</FormLabel>
@@ -402,7 +358,6 @@ const getDefaultValues = (dto: Raven.Client.Documents.Operations.OngoingTasks.Ge
     if (!dto) {
         return {
             name: "",
-            identifier: "",
             state: "Enabled",
             isSetResponsibleNode: false,
             responsibleNode: null,
@@ -423,7 +378,6 @@ const getDefaultValues = (dto: Raven.Client.Documents.Operations.OngoingTasks.Ge
 
     return {
         name: dto.Configuration.Name,
-        identifier: dto.Configuration.Identifier,
         state: dto.TaskState,
         isSetResponsibleNode: dto.MentorNode != null,
         responsibleNode: dto.MentorNode ?? null,
@@ -442,11 +396,10 @@ const getDefaultValues = (dto: Raven.Client.Documents.Operations.OngoingTasks.Ge
     };
 };
 
-const mapToDto = (data: FormData, taskId: number): Raven.Client.Documents.Operations.AI.GenAiConfiguration => {
+const mapToDto = (data: FormData, taskId: number): GenAiConfiguration => {
     return {
         TaskId: taskId,
         Name: data.name,
-        Identifier: data.identifier,
         EtlType: "GenAi",
         ConnectionStringName: data.connectionStringName,
         AllowEtlOnNonEncryptedChannel: data.isAllowEtlOnNonEncryptedChannel,
@@ -467,7 +420,6 @@ const mapToDto = (data: FormData, taskId: number): Raven.Client.Documents.Operat
 
 const schema = yup.object({
     name: yup.string().required(),
-    identifier: yup.string(),
     state: yup.string<Raven.Client.Documents.Operations.OngoingTasks.OngoingTaskState>().required(),
     isSetResponsibleNode: yup.boolean(),
     responsibleNode: yup.string().nullable(),
