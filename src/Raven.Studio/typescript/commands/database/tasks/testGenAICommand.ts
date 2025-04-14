@@ -9,10 +9,10 @@ class testGenAiCommand extends commandBase {
         super();
     }  
 
-    execute(): JQueryPromise<TestEtlScriptResult> {
+    execute(): JQueryPromise<TODO> {
         const url = endpoints.databases.genAi.adminAiGenaiTest;
 
-        return this.post<TestEtlScriptResult>(url, JSON.stringify(this.payload), this.db)
+        return this.post<TODO>(url, JSON.stringify(this.payload), this.db)
             .fail((response: JQueryXHR) => {                         
                 this.reportError(`Failed to test GenAI`, response.responseText, response.statusText);
             });

@@ -195,10 +195,26 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
                         </FormGroup>
 
                         {asyncRunTest.result && (
-                            <>
-                                Test result:
-                                <Code language="json" code={JSON.stringify(asyncRunTest.result, null, 2)} />
-                            </>
+                            <div className="vstack gap-2">
+                                <div>
+                                    Input:
+                                    <Code
+                                        language="json"
+                                        code={JSON.stringify(asyncRunTest.result.InputDocument, null, 2)}
+                                    />
+                                </div>
+                                <div>
+                                    Results from the model:
+                                    <Code language="json" code={JSON.stringify(asyncRunTest.result.Results, null, 2)} />
+                                </div>
+                                <div>
+                                    Output:
+                                    <Code
+                                        language="json"
+                                        code={JSON.stringify(asyncRunTest.result.OutputDocument, null, 2)}
+                                    />
+                                </div>
+                            </div>
                         )}
                     </div>
                 )}
