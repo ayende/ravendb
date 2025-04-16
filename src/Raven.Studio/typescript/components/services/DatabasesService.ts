@@ -70,6 +70,7 @@ import saveRevisionsBinCleanerConfigurationCommand from "commands/database/setti
 import getRevisionsPreviewCommand from "commands/database/documents/getRevisionsPreviewCommand";
 import deleteRevisionsForDocumentsCommand = require("commands/database/documents/deleteRevisionsForDocumentsCommand");
 import getRevisionsIdsCommand from "commands/database/documents/getRevisionsIdsCommand";
+import getDocumentWithMetadataCommand = require("commands/database/documents/getDocumentWithMetadataCommand");
 
 export default class DatabasesService {
     async setLockMode(databaseNames: string[], newLockMode: DatabaseLockMode) {
@@ -333,5 +334,9 @@ export default class DatabasesService {
 
     async getRevisionsIds(...args: ConstructorParameters<typeof getRevisionsIdsCommand>) {
         return new getRevisionsIdsCommand(...args).execute();
+    }
+
+    async getDocumentWithMetadata(...args: ConstructorParameters<typeof getDocumentWithMetadataCommand>) {
+        return new getDocumentWithMetadataCommand(...args).execute();
     }
 }

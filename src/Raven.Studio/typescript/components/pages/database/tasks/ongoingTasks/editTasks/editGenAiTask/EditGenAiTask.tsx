@@ -33,6 +33,13 @@ import { collectionsTrackerSelectors } from "components/common/shell/collections
 import { tryHandleSubmit } from "components/utils/common";
 import { useAsyncDebounce } from "components/hooks/useAsyncDebounce";
 import Code from "components/common/Code";
+import Tab from "react-bootstrap/Tab";
+import Tabs from "react-bootstrap/Tabs";
+import Row from "react-bootstrap/Row";
+import Col from "react-bootstrap/Col";
+import classNames from "classnames";
+import documentMetadata from "models/database/documents/documentMetadata";
+import { LazyLoad } from "components/common/LazyLoad";
 
 type OngoingTaskState = Raven.Client.Documents.Operations.OngoingTasks.OngoingTaskState;
 
@@ -71,7 +78,7 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
         },
     });
 
-    const { control, handleSubmit, setValue, formState, reset, trigger } = form;
+    const { control, handleSubmit, setValue, formState, reset, trigger, setError, clearErrors } = form;
 
     const formValues = useWatch({ control });
 
@@ -115,8 +122,6 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
 
     console.log("kalczur errors", formState.errors);
 
-    const { value: isTestOpen, toggle: toggleIsTestOpen } = useBoolean(false);
-
     const asyncGetDocumentIdOptions = useAsyncDebounce(
         async () => {
             const result = await databasesService.getDocumentsMetadataByIDPrefix(
@@ -130,9 +135,28 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
         300
     );
 
+    const asyncGetDocument = useAsyncDebounce(
+        async () => {
+            const result = await databasesService.getDocumentWithMetadata(formValues.documentId, databaseName);
+            const docDto = result.toDto(true);
+            const metaDto = docDto["@metadata"];
+            documentMetadata.filterMetadata(metaDto);
+            return docDto;
+        },
+        [formValues.documentId],
+        300
+    );
+
     const asyncRunTest = useAsyncCallback(async () => {
+        if (!formValues.documentId) {
+            setError("documentId", { message: "Please select a Document ID" });
+        } else {
+            clearErrors("documentId");
+        }
+
         const isValid = await trigger();
-        if (!isValid) {
+
+        if (!isValid || !formValues.documentId) {
             return;
         }
 
@@ -145,6 +169,11 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
         const result = await tasksService.testGenAi(databaseName, dto);
         return result;
     });
+
+    const hasInputErrors = !!formState.errors.script;
+    const hasUpdateErrors = !!formState.errors.update;
+    const hasModelInputErrors =
+        !!formState.errors.prompt || !!formState.errors.jsonSchema || !!formState.errors.sampleObject;
 
     return (
         <div className="content-padding">
@@ -168,57 +197,7 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
                             Cancel
                         </Button>
                     </HStack>
-                    <Button variant={isTestOpen ? "danger" : "info"} onClick={toggleIsTestOpen}>
-                        <Icon icon={isTestOpen ? "cancel" : "rocket"} />
-                        {isTestOpen ? "Close test area" : "Open test area"}
-                    </Button>
                 </HStack>
-                {isTestOpen && (
-                    <div className="panel-bg-1 p-4 mb-2">
-                        <ButtonWithSpinner
-                            variant="info"
-                            onClick={asyncRunTest.execute}
-                            className="mb-2"
-                            isSpinning={asyncRunTest.loading}
-                        >
-                            <Icon icon="play" />
-                            Run test
-                        </ButtonWithSpinner>
-                        <FormGroup>
-                            <FormLabel>Document ID</FormLabel>
-                            <FormSelectAutocomplete
-                                control={control}
-                                name="documentId"
-                                options={asyncGetDocumentIdOptions.result ?? []}
-                                isLoading={asyncGetDocumentIdOptions.loading}
-                            />
-                        </FormGroup>
-
-                        {asyncRunTest.result && (
-                            <div className="vstack gap-2">
-                                <div>
-                                    Input:
-                                    <Code
-                                        language="json"
-                                        code={JSON.stringify(asyncRunTest.result.InputDocument, null, 2)}
-                                    />
-                                </div>
-                                <div>
-                                    Results from the model:
-                                    <Code language="json" code={JSON.stringify(asyncRunTest.result.Results, null, 2)} />
-                                </div>
-                                <div>
-                                    Output:
-                                    <Code
-                                        language="json"
-                                        code={JSON.stringify(asyncRunTest.result.OutputDocument, null, 2)}
-                                    />
-                                </div>
-                            </div>
-                        )}
-                    </div>
-                )}
-
                 <FormGroup>
                     <FormLabel>Task Name</FormLabel>
                     <FormInput type="text" control={control} name="name" />
@@ -338,26 +317,159 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
                     <FormLabel>Collection Name</FormLabel>
                     <FormSelectCreatable control={control} name="collectionName" options={collectionOptions} />
                 </FormGroup>
-                <FormGroup>
-                    <FormLabel>Prompt</FormLabel>
-                    <FormAceEditor control={control} name="prompt" mode="plain_text" />
-                </FormGroup>
-                <FormGroup>
-                    <FormLabel>JSON Schema</FormLabel>
-                    <FormAceEditor control={control} name="jsonSchema" mode="json" />
-                </FormGroup>
-                <FormGroup>
-                    <FormLabel>Sample Object</FormLabel>
-                    <FormAceEditor control={control} name="sampleObject" mode="json" />
-                </FormGroup>
-                <FormGroup>
-                    <FormLabel>Update</FormLabel>
-                    <FormAceEditor control={control} name="update" mode="javascript" />
-                </FormGroup>
-                <FormGroup>
-                    <FormLabel>Script</FormLabel>
-                    <FormAceEditor control={control} name="script" mode="javascript" />
-                </FormGroup>
+                <div className="panel-bg-1 p-4 mb-2">
+                    <ButtonWithSpinner
+                        variant="info"
+                        onClick={asyncRunTest.execute}
+                        className="mb-2"
+                        isSpinning={asyncRunTest.loading}
+                        icon="play"
+                    >
+                        Run test
+                    </ButtonWithSpinner>
+                    {Object.keys(formState.errors).length > 0 && (
+                        <RichAlert variant="warning" className="mb-2">
+                            Please fix all errors in the form before running the test.
+                        </RichAlert>
+                    )}
+                    <FormGroup>
+                        <FormLabel>Document ID</FormLabel>
+                        <FormSelectAutocomplete
+                            control={control}
+                            name="documentId"
+                            options={asyncGetDocumentIdOptions.result ?? []}
+                            isLoading={asyncGetDocumentIdOptions.loading}
+                        />
+                    </FormGroup>
+
+                    <Tabs defaultActiveKey="input" id="gen-ai-tabs" className="mb-2">
+                        <Tab
+                            eventKey="input"
+                            title={
+                                <span
+                                    className={classNames(
+                                        { "text-emphasis": !hasInputErrors },
+                                        { "text-danger": hasInputErrors }
+                                    )}
+                                >
+                                    Input / Script
+                                </span>
+                            }
+                        >
+                            <Row>
+                                <Col>
+                                    <FormGroup>
+                                        <FormLabel>Input</FormLabel>
+                                        <LazyLoad active={asyncGetDocument.loading}>
+                                            <Code
+                                                language="json"
+                                                code={
+                                                    asyncGetDocument.result
+                                                        ? JSON.stringify(asyncGetDocument.result, null, 2)
+                                                        : "Select Document ID"
+                                                }
+                                            />
+                                        </LazyLoad>
+                                    </FormGroup>
+                                </Col>
+                                <Col>
+                                    <FormGroup>
+                                        <FormLabel>Script</FormLabel>
+                                        <FormAceEditor control={control} name="script" mode="javascript" />
+                                    </FormGroup>
+                                </Col>
+                            </Row>
+                        </Tab>
+                        <Tab
+                            eventKey="model-inputs"
+                            title={
+                                <span
+                                    className={classNames(
+                                        { "text-emphasis": !hasModelInputErrors },
+                                        { "text-danger": hasModelInputErrors }
+                                    )}
+                                >
+                                    Model inputs
+                                </span>
+                            }
+                        >
+                            <FormGroup>
+                                <FormLabel>Prompt</FormLabel>
+                                <FormAceEditor control={control} name="prompt" mode="plain_text" />
+                            </FormGroup>
+                            <Row>
+                                <Col>
+                                    <FormGroup>
+                                        <FormLabel>Sample Object</FormLabel>
+                                        <FormAceEditor control={control} name="sampleObject" mode="json" />
+                                    </FormGroup>
+                                </Col>
+                                <Col>
+                                    <FormGroup>
+                                        <FormLabel>JSON Schema</FormLabel>
+                                        <FormAceEditor control={control} name="jsonSchema" mode="json" />
+                                    </FormGroup>
+                                </Col>
+                            </Row>
+                        </Tab>
+                        <Tab
+                            eventKey="result-from-model"
+                            title={
+                                <span
+                                    className={classNames(
+                                        { "text-emphasis": !!asyncRunTest.result },
+                                        { "text-muted": !asyncRunTest.result }
+                                    )}
+                                >
+                                    Result from the model
+                                </span>
+                            }
+                            disabled={!asyncRunTest.result}
+                        >
+                            {asyncRunTest.result && (
+                                <Code language="json" code={JSON.stringify(asyncRunTest.result.Results, null, 2)} />
+                            )}
+                        </Tab>
+                        <Tab
+                            eventKey="update"
+                            title={
+                                <span
+                                    className={classNames(
+                                        { "text-emphasis": !hasUpdateErrors },
+                                        { "text-danger": hasUpdateErrors }
+                                    )}
+                                >
+                                    Update
+                                </span>
+                            }
+                        >
+                            <FormGroup>
+                                <FormAceEditor control={control} name="update" mode="javascript" />
+                            </FormGroup>
+                        </Tab>
+                        <Tab
+                            eventKey="output"
+                            title={
+                                <span
+                                    className={classNames(
+                                        { "text-emphasis": !!asyncRunTest.result },
+                                        { "text-muted": !asyncRunTest.result }
+                                    )}
+                                >
+                                    Output
+                                </span>
+                            }
+                            disabled={!asyncRunTest.result}
+                        >
+                            {asyncRunTest.result && (
+                                <Code
+                                    language="json"
+                                    code={JSON.stringify(asyncRunTest.result.OutputDocument, null, 2)}
+                                />
+                            )}
+                        </Tab>
+                    </Tabs>
+                </div>
             </form>
         </div>
     );
@@ -443,13 +555,13 @@ const schema = yup.object({
     connectionStringName: yup.string().required(),
     isAllowEtlOnNonEncryptedChannel: yup.boolean(),
     collectionName: yup.string().required(),
-    prompt: yup.string(),
+    prompt: yup.string().required(),
     jsonSchema: yup.string(),
     sampleObject: yup.string(),
-    update: yup.string(),
+    update: yup.string().required(),
     isResetScript: yup.boolean(),
     scriptToReset: yup.string().nullable(),
-    script: yup.string(),
+    script: yup.string().required(),
     // For testing
     documentId: yup.string(),
 });
