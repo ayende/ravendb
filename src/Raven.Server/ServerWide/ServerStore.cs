@@ -2222,7 +2222,7 @@ namespace Raven.Server.ServerWide
                     case EtlType.GenAi:
                     {
                         var aiIntegration = JsonDeserializationCluster.AiGenConfiguration(etlConfiguration);
-                        if (aiIntegration.JsonSchema is null)
+                        if (string.IsNullOrEmpty(aiIntegration.JsonSchema))
                         {
                             // todo: move this to a better location
                             aiIntegration.JsonSchema = ChatCompletionClient.GetSchemaFor(aiIntegration.SampleObject);

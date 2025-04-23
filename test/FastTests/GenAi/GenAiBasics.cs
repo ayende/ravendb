@@ -63,12 +63,6 @@ for(const comment of this.Comments)
         }));
     }
 
-    public record Comment(string Text, string Author)
-    {
-        public string Id { get; set; } = Guid.NewGuid().ToString();
-    }
-    public record Post(List<Comment> Comments, string Title, string Body);
-    
     [RavenFact(RavenTestCategory.Ai)]
     public void CanProcessDocuments()
     {
@@ -204,4 +198,10 @@ for(const comment of this.Comments)
         Assert.Equal(configuration.AiConnectorType, genAiTaskInfo.Configuration.AiConnectorType);
         Assert.Equal(configuration.GenAiTransformation.Script, genAiTaskInfo.Configuration.GenAiTransformation.Script);
     }
+
+    internal record Comment(string Text, string Author)
+    {
+        public string Id { get; set; } = Guid.NewGuid().ToString();
+    }
+    internal record Post(List<Comment> Comments, string Title, string Body);
 }

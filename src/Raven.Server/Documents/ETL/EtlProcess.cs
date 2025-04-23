@@ -25,6 +25,7 @@ using Raven.Server.Documents.ETL.Metrics;
 using Raven.Server.Documents.ETL.Providers.AI;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings;
 using Raven.Server.Documents.ETL.Providers.AI.GenAi;
+using Raven.Server.Documents.ETL.Providers.AI.GenAi.Test;
 using Raven.Server.Documents.ETL.Providers.ElasticSearch;
 using Raven.Server.Documents.ETL.Providers.OLAP;
 using Raven.Server.Documents.ETL.Providers.OLAP.Test;
@@ -1478,21 +1479,30 @@ namespace Raven.Server.Documents.ETL
                     }
                 case EtlType.GenAi:
                     var aiGenConfiguration = testScript.Configuration as GenAiConfiguration;
-                    if (aiGenConfiguration?.JsonSchema is null)
+                    if (string.IsNullOrEmpty(aiGenConfiguration.JsonSchema))
                     {
                         // todo: move this to a better location
                         aiGenConfiguration.JsonSchema = ChatCompletionClient.GetSchemaFor(aiGenConfiguration.SampleObject);
                     }
-                    
-                    using (var aiGenTask = new GenAiTask(testScript.Configuration.Transforms[0], aiGenConfiguration, database, database.ServerStore))
-                    using (aiGenTask.EnterTestMode(out debugOutput))
-                    {
-                        aiGenTask.EnsureThreadAllocationStats();
-                        
-                        var aiEtlItem = new AiEtlItem(document, docCollection);
-                        var results = aiGenTask.Transform([aiEtlItem], context, new GenAiStatsScope(new EtlRunStats()), new EtlProcessState());
 
-                        var result  = aiGenTask.RunTest(document, results, context);
+                    using (var genAiTask = new GenAiTask(testScript.Configuration.Transforms[0], aiGenConfiguration, database, database.ServerStore))
+                    using (genAiTask.EnterTestMode(out debugOutput))
+                    {
+                        genAiTask.EnsureThreadAllocationStats();
+
+                        //IEnumerable<GenAiScriptResult> results;
+                        //if (genTest.CreateContextObject)
+                        //{
+                        //    var aiEtlItem = new AiEtlItem(document, docCollection);
+                        //    results = aiGenTask.Transform([aiEtlItem], context, new GenAiStatsScope(new EtlRunStats()), new EtlProcessState());
+                        //}
+                        //else
+                        //{
+
+                        //    results = genTest.Results.Select(x => new GenAiScriptResult(x.DocId, x.ContextOutput.Context, x.ContextOutput.AiHash));
+                        //}
+
+                        var result  = genAiTask.RunTest(document, testScript as TestGenAiScript, context);
                         result.DebugOutput = debugOutput;
                         return result;
                     }

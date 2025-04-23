@@ -12,6 +12,7 @@ using Raven.Server.Documents.ETL.Providers.AI.Embeddings;
 using Raven.Server.Documents.ETL.Providers.AI.Enumerators;
 using Raven.Server.Documents.ETL.Providers.AI.GenAi.Test;
 using Raven.Server.Documents.ETL.Stats;
+using Raven.Server.Documents.ETL.Test;
 using Raven.Server.Documents.Patch;
 using Raven.Server.Documents.Replication.ReplicationItems;
 using Raven.Server.Documents.TimeSeries;
@@ -130,7 +131,9 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
 
     protected override int LoadInternal(IEnumerable<GenAiScriptResult> items, DocumentsOperationContext context, GenAiStatsScope scope)
     {
-        var results = SendToModel(items, context, out var exceptions);
+        var results = PrepareItemsBeforeSendingToModel(items);
+
+        var exceptions = SendToModel(results, context);
 
         if (results.Count is not 0)
         {
@@ -142,7 +145,13 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
                 if (item?.ModelOutput is null)
                     continue;
 
-                var dvj = new DynamicJsonValue { ["output"] = item.ModelOutput, ["aiHash"] = item.AiHash, ["input"] = item.Context, };
+                var dvj = new DynamicJsonValue
+                {
+                    ["output"] = item.ModelOutput.Output, 
+                    ["aiHash"] = item.ContextOutput.AiHash, 
+                    ["input"] = item.ContextOutput.Context
+                };
+
                 var args = context.ReadObject(dvj, item.DocId);
                 var cmd = new PatchDocumentCommand(
                     context: context,
@@ -172,6 +181,7 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
                 exceptions.Add(e);
             }
         }
+
         if (exceptions is not null)
             throw new AggregateException(exceptions);
 
@@ -190,29 +200,122 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
         return true;
     }
 
-    public GenAiTestScriptResult RunTest(Document document, IEnumerable<GenAiScriptResult> records, DocumentsOperationContext context)
+    private List<Exception> SendToModel(List<GenAiResultItem> items, DocumentsOperationContext context)
     {
-        // we close the read tx in SendToModel, so we need to clone this document
+        context.CloseTransaction();
+
+        List<Exception> exceptions = null;
+        List<Task<(string Result, string Usage)>> tasks = [];
+
+        foreach (var item in items)
+        {
+            string json = item.ContextOutput.Context.ToString();
+            string hash = AttachmentsStorageHelper.CalculateHash(MemoryMarshal.AsBytes(json.AsSpan()));
+            if (item.ContextOutput.AiHash == hash)
+            {
+                item.ContextOutput.IsCached = true;
+                continue; // no change, can skip
+            }
+
+            item.ContextOutput.AiHash = hash;
+
+            tasks.Add(_chatCompletionClient.CompleteAsync(Configuration.Prompt, json));
+        }
+
+        try
+        {
+            // TODO: Yuck
+            Task.WaitAll(tasks.OfType<Task>().ToArray());
+        }
+        catch
+        {
+            // we'll handle that later
+        }
+
+        for (int index = 0; index < tasks.Count; index++)
+        {
+            var task = tasks[index];
+            var item = items[index];
+            if (task.IsCompletedSuccessfully is false)
+            {
+                exceptions ??= [];
+                exceptions.Add(task.Exception);
+
+                continue; // so we won't try to save it 
+            }
+
+            (string result, string usage) = task.Result;
+            // TODO: report usage
+
+            //TODO: REALLY YUCKY!
+            var stream = new ReadOnlyMemoryStream<byte>(Encoding.UTF8.GetBytes(result));
+            item.ModelOutput = new ModelOutput
+            {
+                Output = context.ReadForMemoryAsync(stream, item.DocId).GetAwaiter().GetResult()
+            };
+
+            stream.Dispose();
+
+            if (Configuration.TestMode == false)
+                continue;
+
+            stream = new ReadOnlyMemoryStream<byte>(Encoding.UTF8.GetBytes(usage));
+            item.ModelOutput.Usage = context.ReadForMemoryAsync(stream, item.DocId).GetAwaiter().GetResult();
+            stream.Dispose();
+        }
+
+        return exceptions;
+    }
+
+    public TestEtlScriptResult RunTest(Document document, TestGenAiScript testGenAiScript, DocumentsOperationContext context)
+    {
+        List<GenAiResultItem> items;
+        if (testGenAiScript.CreateContextObjects)
+        {
+            var aiEtlItem = new AiEtlItem(document, Configuration.Collection);
+            var transformedResults = Transform([aiEtlItem], context, new GenAiStatsScope(new EtlRunStats()), new EtlProcessState());
+
+            items = PrepareItemsBeforeSendingToModel(transformedResults);
+        }
+        else
+        {
+            items = testGenAiScript.Results;
+        }
+
         using (var old = document)
         {
             document = document.Clone(context);
         }
 
-        var results = SendToModel(records, context, out List<Exception> exceptions);
-        
-        using var _ = context.OpenWriteTransaction();
-        BlittableJsonReaderObject outputDocument = null;
-        if (results.Count is not 0)
+        List<Exception> exceptions = null;
+        if (testGenAiScript.SendToModel)
         {
+            exceptions = SendToModel(items, context);
+        }
+        else
+        {
+            context.CloseTransaction();
+        }
+
+        BlittableJsonReaderObject outputDocument = null;
+        if (testGenAiScript.ApplyUpdateScript)
+        {
+            using var _ = context.OpenWriteTransaction();
             PatchRequest req = new(Configuration.Update, PatchRequestType.AiGen);
 
             PatchDocumentCommand lastPatch = null;
-            foreach (var item in results)
+            foreach (var item in items)
             {
                 if (item?.ModelOutput is null)
                     continue;
 
-                var dvj = new DynamicJsonValue { ["output"] = item.ModelOutput, ["aiHash"] = item.AiHash, ["input"] = item.Context };
+                var dvj = new DynamicJsonValue
+                {
+                    ["output"] = item.ModelOutput.Output, 
+                    ["aiHash"] = item.ContextOutput.AiHash, 
+                    ["input"] = item.ContextOutput.Context
+                };
+
                 var args = context.ReadObject(dvj, document.Id);
                 var cmd = lastPatch = new PatchDocumentCommand(
                     context: context,
@@ -235,7 +338,7 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
                 item.DebugOutput = cmd.DebugOutput;
             }
 
-            outputDocument = lastPatch?.PatchResult.ModifiedDocument;
+            outputDocument = lastPatch?.PatchResult?.ModifiedDocument;
         }
 
         if (exceptions is not null)
@@ -244,75 +347,36 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
         return new GenAiTestScriptResult
         {
             InputDocument = document.Data,
-            Results = results,
+            Results = items,
             OutputDocument = outputDocument,
             TransformationErrors = Statistics.TransformationErrorsInCurrentBatch.Errors.ToList()
         };
     }
 
-    private List<GenAiResultItem> SendToModel(IEnumerable<GenAiScriptResult> records, DocumentsOperationContext context, out List<Exception> exceptions)
+    private static List<GenAiResultItem> PrepareItemsBeforeSendingToModel(IEnumerable<GenAiScriptResult> items)
     {
-        context.CloseTransaction();
+        // TODO we can do this in the transform phase 
 
-        exceptions = null;
-        List<Task<(string Result, string Usage)>> tasks = [];
-        List<GenAiResultItem> results = [];
+        var results = new List<GenAiResultItem>();
 
-        foreach (var item in records)
+        foreach (var scriptResult in items)
         {
-            var singleResult = new GenAiResultItem { Context = item.Context, DocId = item.DocumentId};
-            results.Add(singleResult);
-
-            string json = item.Context.ToString();
-            string hash = AttachmentsStorageHelper.CalculateHash(MemoryMarshal.AsBytes(json.AsSpan()));
-            if (item.AiHash == hash)
+            var item = new GenAiResultItem
             {
-                singleResult.IsCached = true;
-                continue; // no change, can skip
-            }
+                DocId = scriptResult.DocumentId,
 
-            singleResult.AiHash = hash;
-            tasks.Add(_chatCompletionClient.CompleteAsync(Configuration.Prompt, json));
-        }
+                ContextOutput = new ContextOutput
+                {
+                    Context = scriptResult.Context, 
+                    AiHash = scriptResult.AiHash
+                }
+            };
 
-        try
-        {
-            // TODO: Yuck
-            Task.WaitAll(tasks.OfType<Task>().ToArray());
-        }
-        catch
-        {
-            // we'll handle that later
-        }
-
-        for (int index = 0; index < tasks.Count; index++)
-        {
-            var task = tasks[index];
-            var item = results[index];
-            if (task.IsCompletedSuccessfully is false)
-            {
-                exceptions ??= [];
-                exceptions.Add(task.Exception);
-
-                continue; // so we won't try to save it 
-            }
-
-            (string result, string usage) = task.Result;
-            // TODO: report usage
-
-            //TODO: REALLY YUCKY!
-            var stream = new ReadOnlyMemoryStream<byte>(Encoding.UTF8.GetBytes(result));
-            item.ModelOutput = context.ReadForMemoryAsync(stream, item.DocId).GetAwaiter().GetResult();
-            stream.Dispose();
-
-            if (Configuration.TestMode == false) 
-                continue;
-
-            stream = new ReadOnlyMemoryStream<byte>(Encoding.UTF8.GetBytes(usage));
-            item.Usage = context.ReadForMemoryAsync(stream, item.DocId).GetAwaiter().GetResult();
-            stream.Dispose();
+            results.Add(item);
         }
 
         return results;
     }
+
+
 }
