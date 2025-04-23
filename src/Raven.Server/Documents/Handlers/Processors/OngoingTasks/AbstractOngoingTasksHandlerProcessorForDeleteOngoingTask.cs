@@ -123,6 +123,12 @@ namespace Raven.Server.Documents.Handlers.Processors.OngoingTasks
                             if (embeddingsGeneration != null)
                                 _deletingEtl = (embeddingsGeneration.Name, embeddingsGeneration.Transforms.Select(x => x.Name).ToList());
                             break;
+                        case OngoingTaskType.GenAi:
+                            var genAiEtls = rawRecord.GenAis;
+                            var genAi = genAiEtls?.Find(x => x.TaskId == id);
+                            if (genAi != null)
+                                _deletingEtl = (genAi.Name, genAi.Transforms.Select(x => x.Name).ToList());
+                            break;
                     }
                 }
             }

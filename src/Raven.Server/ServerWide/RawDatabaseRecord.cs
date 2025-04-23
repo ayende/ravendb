@@ -952,7 +952,7 @@ namespace Raven.Server.ServerWide
                     if (_record.TryGet(nameof(DatabaseRecord.GenAiEtls), out BlittableJsonReaderArray bjra) && bjra != null)
                     {
                         foreach (BlittableJsonReaderObject element in bjra)
-                            _genAiConfigurationTasks.Add(JsonDeserializationCluster.AiGenConfiguration(element));
+                            _genAiConfigurationTasks.Add(JsonDeserializationCluster.GenAiConfiguration(element));
                     }
                 }
 

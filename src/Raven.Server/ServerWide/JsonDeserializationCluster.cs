@@ -130,7 +130,7 @@ namespace Raven.Server.ServerWide
         
         public static readonly Func<BlittableJsonReaderObject, EmbeddingsGenerationConfiguration> EmbeddingsGenerationConfiguration = GenerateJsonDeserializationRoutine<EmbeddingsGenerationConfiguration>();
         
-        public static readonly Func<BlittableJsonReaderObject, GenAiConfiguration> AiGenConfiguration = GenerateJsonDeserializationRoutine<GenAiConfiguration>();
+        public static readonly Func<BlittableJsonReaderObject, GenAiConfiguration> GenAiConfiguration = GenerateJsonDeserializationRoutine<GenAiConfiguration>();
         
         public static readonly Func<BlittableJsonReaderObject, AddOrUpdateCompareExchangeCommand.CompareExchangeResult> CompareExchangeResult = GenerateJsonDeserializationRoutine<AddOrUpdateCompareExchangeCommand.CompareExchangeResult>();
 
@@ -255,6 +255,7 @@ namespace Raven.Server.ServerWide
             [nameof(UpdateQueueEtlCommand)] = GenerateJsonDeserializationRoutine<UpdateQueueEtlCommand>(),
             [nameof(UpdateSnowflakeEtlCommand)] = GenerateJsonDeserializationRoutine<UpdateSnowflakeEtlCommand>(),
             [nameof(UpdateEmbeddingsGenerationCommand)] = GenerateJsonDeserializationRoutine<UpdateEmbeddingsGenerationCommand>(),
+            [nameof(UpdateGenAiCommand)] = GenerateJsonDeserializationRoutine<UpdateGenAiCommand>(),
             [nameof(UpdateEtlProcessStateCommand)] = GenerateJsonDeserializationRoutine<UpdateEtlProcessStateCommand>(),
             [nameof(UpdateExternalReplicationStateCommand)] = GenerateJsonDeserializationRoutine<UpdateExternalReplicationStateCommand>(),
             [nameof(ShardedUpdateExternalReplicationStateCommand)] = GenerateJsonDeserializationRoutine<ShardedUpdateExternalReplicationStateCommand>(),

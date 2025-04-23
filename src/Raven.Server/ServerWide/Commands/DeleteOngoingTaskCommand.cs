@@ -171,6 +171,13 @@ namespace Raven.Server.ServerWide.Commands
                         record.EmbeddingsGenerations.Remove(embeddingsGenerationTask);
                     }
                     break;
+                case OngoingTaskType.GenAi:
+                    var genAiTask = record.GenAiEtls?.Find(x => x.TaskId == TaskId);
+                    if (genAiTask != null)
+                    {
+                        record.GenAiEtls.Remove(genAiTask);
+                    }
+                    break;
             }
         }
 

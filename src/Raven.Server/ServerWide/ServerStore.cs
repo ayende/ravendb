@@ -2221,7 +2221,7 @@ namespace Raven.Server.ServerWide
                         break;
                     case EtlType.GenAi:
                     {
-                        var aiIntegration = JsonDeserializationCluster.AiGenConfiguration(etlConfiguration);
+                        var aiIntegration = JsonDeserializationCluster.GenAiConfiguration(etlConfiguration);
                         if (string.IsNullOrEmpty(aiIntegration.JsonSchema))
                         {
                             // todo: move this to a better location
@@ -2453,7 +2453,16 @@ namespace Raven.Server.ServerWide
 
                         command = new UpdateEmbeddingsGenerationCommand(id, aiIntegration, databaseName, raftRequestId);
                         break;
+                    case EtlType.GenAi:
+                        var genAi = JsonDeserializationCluster.GenAiConfiguration(etlConfiguration);
+                        genAi.Validate(out var genAiErr, validateName: false, validateConnection: false);
+                        if (ValidateConnectionString(rawRecord, genAi.ConnectionStringName, genAi.EtlType) == false)
+                            genAiErr.Add($"Could not find AI connection string named '{genAi.ConnectionStringName}'. Please supply an existing connection string.");
 
+                        ThrowInvalidConfigurationIfNecessary(etlConfiguration, genAiErr);
+
+                        command = new UpdateGenAiCommand(id, genAi, databaseName, raftRequestId);
+                        break;
                     default:
                         throw new NotSupportedException($"Unknown ETL configuration type. Configuration: {etlConfiguration}");
                 }

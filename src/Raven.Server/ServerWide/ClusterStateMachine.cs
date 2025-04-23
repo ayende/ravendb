@@ -467,6 +467,7 @@ namespace Raven.Server.ServerWide
                     case nameof(UpdateQueueSinkCommand):
                     case nameof(UpdateSnowflakeEtlCommand):
                     case nameof(UpdateEmbeddingsGenerationCommand):
+                    case nameof(UpdateGenAiCommand):
                     case nameof(DeleteOngoingTaskCommand):
                     case nameof(PutRavenConnectionStringCommand):
                     case nameof(PutSqlConnectionStringCommand):
