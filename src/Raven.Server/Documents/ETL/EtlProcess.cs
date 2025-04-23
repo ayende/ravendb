@@ -1490,18 +1490,6 @@ namespace Raven.Server.Documents.ETL
                     {
                         genAiTask.EnsureThreadAllocationStats();
 
-                        //IEnumerable<GenAiScriptResult> results;
-                        //if (genTest.CreateContextObject)
-                        //{
-                        //    var aiEtlItem = new AiEtlItem(document, docCollection);
-                        //    results = aiGenTask.Transform([aiEtlItem], context, new GenAiStatsScope(new EtlRunStats()), new EtlProcessState());
-                        //}
-                        //else
-                        //{
-
-                        //    results = genTest.Results.Select(x => new GenAiScriptResult(x.DocId, x.ContextOutput.Context, x.ContextOutput.AiHash));
-                        //}
-
                         var result  = genAiTask.RunTest(document, testScript as TestGenAiScript, context);
                         result.DebugOutput = debugOutput;
                         return result;
