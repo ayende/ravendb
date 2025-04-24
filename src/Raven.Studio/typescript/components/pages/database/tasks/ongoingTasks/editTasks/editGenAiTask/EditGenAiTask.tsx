@@ -160,14 +160,14 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
             return;
         }
 
-        const dto: Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.TestGenAiScript = {
-            DocumentId: formValues.documentId,
-            IsDelete: false,
-            Configuration: mapToDto(formValues, taskId),
-        };
+        // const dto: Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.TestGenAiScript = {
+        //     DocumentId: formValues.documentId,
+        //     IsDelete: false,
+        //     Configuration: mapToDto(formValues, taskId),
+        // };
 
-        const result = await tasksService.testGenAi(databaseName, dto);
-        return result;
+        // const result = await tasksService.testGenAi(databaseName, dto);
+        return null;
     });
 
     const hasInputErrors = !!formState.errors.script;
