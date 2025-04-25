@@ -596,7 +596,7 @@ namespace TypingsGenerator
             scripter.AddType(typeof(GenAiConfiguration));
             scripter.AddType(typeof(GenAi));
             scripter.AddType(typeof(TestGenAiScript));
-            scripter.AddType(typeof(TestEtlScriptResult));
+            scripter.AddType(typeof(GenAiTestScriptResult));
 
             // connection strings
             scripter.AddType(typeof(ConnectionString));
