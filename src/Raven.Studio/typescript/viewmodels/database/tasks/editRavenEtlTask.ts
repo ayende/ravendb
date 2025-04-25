@@ -133,7 +133,7 @@ class ravenTaskTestMode {
         if (testValid && parentValid) {
             this.spinners.test(true);
 
-            const dto: Raven.Server.Documents.ETL.Providers.Raven.Test.TestRavenEtlScript = {
+            const dto: TestRavenEtlScript = {
                 DocumentId: this.documentId(),
                 IsDelete: this.testDelete(),
                 Configuration: this.configurationProvider()

@@ -660,9 +660,11 @@ declare module Raven.Server.Documents.ETL.Providers.RelationalDatabase.Common.Te
     }
 }
 
-declare module Raven.Server.Documents.ETL.Providers.Raven.Test {
-    interface RavenEtlTestScriptResult extends testEtlScriptResult {
-    }
+interface RavenEtlTestScriptResult extends Raven.Server.Documents.ETL.Test.TestEtlScriptResult {
+    Commands: Array<Raven.Client.Documents.Commands.Batches.ICommandData>;
+}
+
+interface TestRavenEtlScript extends Raven.Server.Documents.ETL.Test.TestEtlScript<Raven.Client.Documents.Operations.ETL.RavenEtlConfiguration, Raven.Client.Documents.Operations.ETL.RavenConnectionString> {
 }
 
 declare module Raven.Server.Documents.ETL.Providers.OLAP.Test {

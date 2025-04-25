@@ -233,6 +233,8 @@ namespace TypingsGenerator
             scripter.AddType(typeof(BatchRequestParser.CommandData));
             scripter.AddType(typeof(TransactionMode));
 
+            scripter.AddType(typeof(ICommandData));
+
             // name validation
             scripter.AddType(typeof(StudioTasksHandler.ItemType));
             scripter.AddType(typeof(NameValidation));
@@ -535,8 +537,6 @@ namespace TypingsGenerator
             scripter.AddType(typeof(OngoingTaskRavenEtl));
             scripter.AddType(typeof(RavenEtlConfiguration));
             scripter.AddType(typeof(EtlProcessStatistics));
-            scripter.AddType(typeof(TestRavenEtlScript));
-            scripter.AddType(typeof(RavenEtlTestScriptResult));
             scripter.AddType(typeof(EtlType));
             scripter.AddType(typeof(EtlTaskPerformanceStats));
 

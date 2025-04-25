@@ -189,6 +189,7 @@ class olapTaskTestMode {
             const dto: Raven.Server.Documents.ETL.Providers.OLAP.Test.TestOlapEtlScript = {
                 DocumentId: this.documentId(),
                 Configuration: this.configurationProvider(),
+                IsDelete: false,
             };
 
             eventsCollector.default.reportEvent("olap-etl", "test-script");
