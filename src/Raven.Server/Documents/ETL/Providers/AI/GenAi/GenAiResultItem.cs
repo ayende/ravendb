@@ -22,8 +22,8 @@ public class GenAiResultItem
         {
             [nameof(DebugOutput)] = DebugOutput == null ? null : new DynamicJsonArray(DebugOutput),
             [nameof(DebugActions)] = DebugActions,
-            [nameof(ContextOutput)] = ContextOutput.ToJson(),
-            [nameof(ModelOutput)] = ModelOutput.ToJson()
+            [nameof(ContextOutput)] = ContextOutput == null ? null : ContextOutput.ToJson(),
+            [nameof(ModelOutput)] = ModelOutput == null ? null : ModelOutput.ToJson()
         };
     }
 }
