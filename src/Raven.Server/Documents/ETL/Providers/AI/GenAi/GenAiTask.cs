@@ -50,9 +50,15 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
         var (uri, model, apiKey) = connectorType switch
         {
             AiConnectorType.Ollama => (cfg.Connection.OllamaSettings.Uri, cfg.Connection.OllamaSettings.Model, (string)null),
-            AiConnectorType.OpenAi => (cfg.Connection.OpenAiSettings.Endpoint, cfg.Connection.OpenAiSettings.Model, null),
+            AiConnectorType.OpenAi => (cfg.Connection.OpenAiSettings.Endpoint, cfg.Connection.OpenAiSettings.Model, cfg.Connection.OpenAiSettings.ApiKey),
             _ => throw new NotSupportedException(connectorType.ToString())
         };
+
+        if (string.IsNullOrWhiteSpace(cfg.JsonSchema))
+        {
+            cfg.JsonSchema = ChatCompletionClient.GetSchemaFor(cfg.SampleObject);
+        }
+
         return new ChatCompletionClient(new Uri(uri), model, apiKey, cfg.JsonSchema);
     }
 
@@ -138,6 +144,7 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
         if (results.Count is not 0)
         {
             List<Task> patches = [];
+            List<PatchDocumentCommand> patchCommands = [];
             PatchRequest req = new(Configuration.Update, PatchRequestType.AiGen);
 
             foreach (var item in results)
@@ -167,6 +174,14 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
                     collectResultsNeeded: false,
                     returnDocument: false,
                     ignoreMaxStepsForScript: false);
+
+                patchCommands.Add(cmd);
+            }
+
+            foreach (var cmd in patchCommands)
+            {
+                // important - we must ensure that we aren't touching the context
+                // while we are sending this to the transaction merger
                 patches.Add(Database.TxMerger.Enqueue(cmd));
             }
 

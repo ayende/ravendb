@@ -1479,12 +1479,6 @@ namespace Raven.Server.Documents.ETL
                     }
                 case EtlType.GenAi:
                     var aiGenConfiguration = testScript.Configuration as GenAiConfiguration;
-                    if (string.IsNullOrEmpty(aiGenConfiguration.JsonSchema))
-                    {
-                        // todo: move this to a better location
-                        aiGenConfiguration.JsonSchema = ChatCompletionClient.GetSchemaFor(aiGenConfiguration.SampleObject);
-                    }
-
                     using (var genAiTask = new GenAiTask(testScript.Configuration.Transforms[0], aiGenConfiguration, database, database.ServerStore))
                     using (genAiTask.EnterTestMode(out debugOutput))
                     {

@@ -49,15 +49,22 @@ public class ChatCompletionClient(Uri baseUri, string model, string apiKey, stri
             ["response_format"] = _schema.DeepClone()
         };
 
-        Console.WriteLine(JsonSerializer.Serialize(req, new JsonSerializerOptions { WriteIndented = true }));
-
         using var reply = await _client.PostAsync("/v1/chat/completions", JsonContent.Create(req)).ConfigureAwait(false);
         using var stream = await reply.Content.ReadAsStreamAsync();
         var response = await JsonDocument.ParseAsync(stream);
 
-        Console.WriteLine(JsonSerializer.Serialize(response.RootElement, new JsonSerializerOptions { WriteIndented = true }));
+        if (response.RootElement.TryGetProperty("choices", out var prop) is false)
+        {
+            if (response.RootElement.TryGetProperty("error", out var err) is false ||
+                err.TryGetProperty("message", out var message) is false)
+            {
+                throw new InvalidOperationException("Unexpected response from model: " + response);
+            }
+            // todo: code, type, etc...
+            throw new InvalidOperationException(message.GetString());
+        }
 
-        var msg = response.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString()!;
+        var msg = prop[0].GetProperty("message").GetProperty("content").GetString()!;
         var usage = response.RootElement.GetProperty("usage");
         return (msg, usage.ToString());
     }
@@ -79,7 +86,9 @@ public class ChatCompletionClient(Uri baseUri, string model, string apiKey, stri
 
         var schema = new JsonObject
         {
-            ["name"] = AttachmentsStorageHelper.CalculateHash(MemoryMarshal.AsBytes(schemaOrSampleObject.AsSpan())), // ensures a unique name
+            ["name"] = AttachmentsStorageHelper.CalculateHash(MemoryMarshal.AsBytes(schemaOrSampleObject.AsSpan()))
+                .Replace("=", "")
+                .Replace("/", "_"), // ensures a unique name
             ["strict"] = true,
             ["schema"] = GenerateJsonObjectFromSampleObject(doc.RootElement)
         };
