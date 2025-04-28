@@ -10,7 +10,7 @@ using System.Threading.Tasks;
 
 namespace Raven.Server.Documents.AI.AiGen;
 
-public class ChatCompletionClient(Uri baseUri, string apiKey, string model, string structuredOutputSchema) : IDisposable
+public class ChatCompletionClient(Uri baseUri, string model, string apiKey, string structuredOutputSchema) : IDisposable
 {
     private readonly JsonObject _schema = new()
     {
@@ -28,7 +28,7 @@ public class ChatCompletionClient(Uri baseUri, string apiKey, string model, stri
         }
     };
 
-    public async Task<(JsonElement Result, JsonElement Usage)> CompleteAsync(string prompt, string context)
+    public async Task<(string Result, string Usage)> CompleteAsync(string prompt, string context)
     {
         var req = new JsonObject
         {
@@ -46,7 +46,7 @@ public class ChatCompletionClient(Uri baseUri, string apiKey, string model, stri
                     ["content"] = context
                 },
             },
-            ["response_format"] = _schema
+            ["response_format"] = _schema.DeepClone()
         };
 
         Console.WriteLine(JsonSerializer.Serialize(req, new JsonSerializerOptions { WriteIndented = true }));
@@ -59,8 +59,7 @@ public class ChatCompletionClient(Uri baseUri, string apiKey, string model, stri
 
         var msg = response.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString()!;
         var usage = response.RootElement.GetProperty("usage");
-        var msgJson = JsonDocument.Parse(msg);
-        return (msgJson.RootElement, usage);
+        return (msg, usage.ToString());
     }
 
 

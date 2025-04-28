@@ -43,6 +43,7 @@ using Raven.Server.Config;
 using Raven.Server.Config.Settings;
 using Raven.Server.Dashboard;
 using Raven.Server.Documents;
+using Raven.Server.Documents.AI.AiGen;
 using Raven.Server.Documents.Indexes;
 using Raven.Server.Documents.Indexes.Analysis;
 using Raven.Server.Documents.Indexes.Sorting;
@@ -2221,6 +2222,11 @@ namespace Raven.Server.ServerWide
                     case EtlType.AiGen:
                     {
                         var aiIntegration = JsonDeserializationCluster.AiGenConfiguration(etlConfiguration);
+                        if (aiIntegration.JsonSchema is null)
+                        {
+                            // todo: move this to a better location
+                            aiIntegration.JsonSchema = ChatCompletionClient.GetSchemaFor(aiIntegration.SampleObject);
+                        }
                         aiIntegration.Validate(out var aiIntegrationErr, validateName: false, validateConnection: false);
                         if (ValidateConnectionString(rawRecord, aiIntegration.ConnectionStringName, aiIntegration.EtlType) == false)
                             aiIntegrationErr.Add(
@@ -2358,6 +2364,7 @@ namespace Raven.Server.ServerWide
                     var snowflakeConnectionString = databaseRecord.SnowflakeConnectionStrings;
                     return snowflakeConnectionString != null && snowflakeConnectionString.TryGetValue(connectionStringName, out _);
                 case EtlType.EmbeddingsGeneration:
+                case EtlType.AiGen:
                     var aiConnectionStrings = databaseRecord.AiConnectionStrings;
                     return aiConnectionStrings != null && aiConnectionStrings.TryGetValue(connectionStringName, out _);
                 default:

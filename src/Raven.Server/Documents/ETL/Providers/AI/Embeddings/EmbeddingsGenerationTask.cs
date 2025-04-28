@@ -2,16 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
-using System.Runtime.InteropServices;
-using System.Threading.Tasks;
-using Google.Apis.Util;
-using Lucene.Net.Documents;
 using Microsoft.SemanticKernel.Embeddings;
 using Raven.Client.Documents.Operations.AI;
 using Raven.Client.Documents.Operations.Counters;
 using Raven.Client.Documents.Operations.ETL;
 using Raven.Server.Documents.AI;
-using Raven.Server.Documents.AI.Embeddings;
 using Raven.Server.Documents.ETL.Metrics;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings.Stats;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings.Test;
@@ -21,8 +16,6 @@ using Raven.Server.Documents.Replication.ReplicationItems;
 using Raven.Server.Documents.TimeSeries;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
-using Raven.Server.Utils;
-using Sparrow.Json.Parsing;
 using Sparrow.Server.Utils;
 
 #pragma warning disable SKEXP0001
