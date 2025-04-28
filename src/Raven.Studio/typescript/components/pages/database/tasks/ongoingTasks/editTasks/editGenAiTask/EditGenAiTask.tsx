@@ -1,49 +1,25 @@
+import "./EditGenAiTask.scss";
 import { AboutViewHeading } from "components/common/AboutView";
-import ButtonWithSpinner from "components/common/ButtonWithSpinner";
-import Button from "react-bootstrap/Button";
 import { HStack } from "components/common/utilities/HStack";
-import { Icon } from "components/common/Icon";
-import * as yup from "yup";
-import { FormProvider, SubmitHandler, useForm, useFormContext, useWatch } from "react-hook-form";
+import { FormProvider, SubmitHandler, useForm } from "react-hook-form";
 import { yupResolver } from "@hookform/resolvers/yup";
 import { useServices } from "components/hooks/useServices";
-import { useAppSelector } from "components/store";
+import { useAppDispatch, useAppSelector } from "components/store";
 import { databaseSelectors } from "components/common/shell/databaseSliceSelectors";
-import { clusterSelectors } from "components/common/shell/clusterSlice";
-import {
-    FormAceEditor,
-    FormGroup,
-    FormInput,
-    FormLabel,
-    FormSelect,
-    FormSelectAutocomplete,
-    FormSelectCreatable,
-    FormSwitch,
-} from "components/common/Form";
-import { SelectOption } from "components/common/select/Select";
-import RichAlert from "components/common/RichAlert";
-import { useAsync, useAsyncCallback } from "react-async-hook";
-import { sortBy } from "common/typeUtils";
-import useBoolean from "components/hooks/useBoolean";
-import EditConnectionStrings from "components/pages/database/settings/connectionStrings/EditConnectionStrings";
-import InputGroup from "react-bootstrap/InputGroup";
 import { useAppUrls } from "components/hooks/useAppUrls";
 import router from "plugins/router";
-import { collectionsTrackerSelectors } from "components/common/shell/collectionsTrackerSlice";
 import { tryHandleSubmit } from "components/utils/common";
-import { useAsyncDebounce } from "components/hooks/useAsyncDebounce";
-import Code from "components/common/Code";
-import Tab from "react-bootstrap/Tab";
-import Tabs from "react-bootstrap/Tabs";
-import Row from "react-bootstrap/Row";
-import Col from "react-bootstrap/Col";
 import classNames from "classnames";
-import documentMetadata from "models/database/documents/documentMetadata";
-import { LazyLoad } from "components/common/LazyLoad";
 import { Switch } from "components/common/Checkbox";
-import EditGenAiTaskNodeField from "./partials/EditGenAiTaskNodeField";
-
-type OngoingTaskState = Raven.Client.Documents.Operations.OngoingTasks.OngoingTaskState;
+import { editGenAiTaskActions, editGenAiTaskSelectors } from "./store/editGenAiTaskSlice";
+import { useEffect } from "react";
+import { useEditGenAiTaskSteps } from "./hooks/useEditGenAiTaskSteps";
+import { NumberedList } from "components/common/NumberedList";
+import ListStepItem from "components/common/ListStepItem";
+import { EditGenAiTaskFormData, editGenAiTaskSchema } from "./utils/editGenAiTaskValidation";
+import { editGenAiTaskUtils } from "./utils/editGenAiTaskUtils";
+import EditGenAiTaskAdvancedMode from "./partials/EditGenAiTaskAdvancedMode";
+import ProgressBar from "react-bootstrap/ProgressBar";
 
 interface QueryParams {
     taskId: string;
@@ -51,21 +27,37 @@ interface QueryParams {
 }
 
 export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<QueryParams>) {
-    const taskId = queryParams?.taskId ? parseInt(queryParams.taskId) : null;
-    const isNewTask = taskId === null;
+    const dispatch = useAppDispatch();
 
     const { tasksService } = useServices();
+
     const databaseName = useAppSelector(databaseSelectors.activeDatabaseName);
+    const isNewTask = useAppSelector(editGenAiTaskSelectors.isNewTask);
+    const isAdvancedMode = useAppSelector(editGenAiTaskSelectors.isAdvancedMode);
+
+    const taskId = queryParams?.taskId ? parseInt(queryParams.taskId) : null;
+
+    // Get query params
+    useEffect(() => {
+        if (queryParams) {
+            dispatch(editGenAiTaskActions.taskIdSet(taskId));
+            dispatch(editGenAiTaskActions.sourceViewSet(queryParams.sourceView));
+        }
+
+        return () => {
+            dispatch(editGenAiTaskActions.reset());
+        };
+    }, []);
 
     const form = useForm<EditGenAiTaskFormData>({
-        resolver: yupResolver(schema),
+        resolver: yupResolver(editGenAiTaskSchema),
         defaultValues: async () => {
             if (taskId) {
                 const dto = await tasksService.getGenAiTaskInfo(databaseName, taskId);
-                return getDefaultValues(dto);
+                return editGenAiTaskUtils.getDefaultValues(dto);
             }
 
-            return getDefaultValues(null);
+            return editGenAiTaskUtils.getDefaultValues(null);
         },
     });
 
@@ -76,7 +68,7 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
     const handleSave: SubmitHandler<EditGenAiTaskFormData> = (data) => {
         return tryHandleSubmit(async () => {
             const scriptsToReset = data.isResetScript ? [data.scriptToReset] : undefined;
-            await tasksService.saveGenAiTask(databaseName, mapToDto(data, taskId), scriptsToReset);
+            await tasksService.saveGenAiTask(databaseName, editGenAiTaskUtils.mapToDto(data, taskId), scriptsToReset);
             reset(data);
             goBack();
         });
@@ -92,458 +84,66 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
 
     console.log("kalczur errors", formState.errors);
 
-    const { value: isAdvancedMode, toggle: toggleIsAdvancedMode } = useBoolean(!isNewTask);
+    const steps = useEditGenAiTaskSteps();
+    const currentStep = steps.find((x) => x.isCurrent);
+    const currentStepIdx = steps.findIndex((x) => x.isCurrent);
 
     return (
-        <div className="content-padding">
-            <HStack className="align-items-center">
-                <AboutViewHeading title={isNewTask ? "New GenAI" : "Edit GenAI"} icon="ai-etl" />
-                <Switch color="primary" selected={isAdvancedMode} toggleSelection={toggleIsAdvancedMode}>
-                    Advanced mode
-                </Switch>
-            </HStack>
-
-            <FormProvider {...form}>
-                <form onSubmit={handleSubmit(handleSave)}>
-                    {isAdvancedMode ? (
-                        <EditGenAiTaskAdvancedMode queryParams={queryParams} isNewTask={isNewTask} taskId={taskId} />
-                    ) : (
-                        <div>
-                            <h1>TODO</h1>
-                        </div>
-                    )}
-                </form>
-            </FormProvider>
-        </div>
-    );
-}
-
-function EditGenAiTaskAdvancedMode({
-    queryParams,
-    isNewTask,
-    taskId,
-}: {
-    queryParams: QueryParams;
-    isNewTask: boolean;
-    taskId: number;
-}) {
-    const { formState, control, setValue, trigger, setError, clearErrors } = useFormContext<EditGenAiTaskFormData>();
-
-    const isEncrypted = useAppSelector(databaseSelectors.activeDatabase)?.isEncrypted ?? false;
-    const collectionOptions: SelectOption[] = useAppSelector(collectionsTrackerSelectors.collectionNames).map((x) => ({
-        value: x,
-        label: x,
-    }));
-
-    const { tasksService, databasesService } = useServices();
-    const databaseName = useAppSelector(databaseSelectors.activeDatabaseName);
-
-    const { value: isNewConnectionStringOpen, toggle: toggleIsNewConnectionStringOpen } = useBoolean(false);
-
-    const formValues = useWatch({ control });
-
-    const asyncGetConnectionStringsOptions = useAsync(async () => {
-        const result = await tasksService.getConnectionStrings(databaseName);
-        const connectionStrings = Object.values(result.AiConnectionStrings).map((x) => x.Name);
-
-        return sortBy(connectionStrings, (x) => x.toUpperCase()).map(
-            (x) => ({ value: x, label: x }) satisfies SelectOption
-        );
-    }, []);
-
-    const handleConnectionStringSave = async (connectionName: string) => {
-        await asyncGetConnectionStringsOptions.execute();
-        setValue("connectionStringName", connectionName, {
-            shouldValidate: true,
-            shouldTouch: true,
-            shouldDirty: true,
-        });
-        toggleIsNewConnectionStringOpen();
-    };
-
-    const { appUrl } = useAppUrls();
-
-    const goBack = () => {
-        if (queryParams?.sourceView === "AiTasks") {
-            router.navigate(appUrl.forAiTasks(databaseName));
-        } else {
-            router.navigate(appUrl.forOngoingTasks(databaseName));
-        }
-    };
-
-    console.log("kalczur errors", formState.errors);
-
-    const asyncGetDocumentIdOptions = useAsyncDebounce(
-        async () => {
-            const result = await databasesService.getDocumentsMetadataByIDPrefix(
-                formValues.documentId,
-                10,
-                databaseName
-            );
-            return result.map((x) => x["@metadata"]["@id"]).map((x) => ({ value: x, label: x }));
-        },
-        [formValues.documentId],
-        300
-    );
-
-    const asyncGetDocument = useAsyncDebounce(
-        async () => {
-            const result = await databasesService.getDocumentWithMetadata(formValues.documentId, databaseName);
-            const docDto = result.toDto(true);
-            const metaDto = docDto["@metadata"];
-            documentMetadata.filterMetadata(metaDto);
-            return docDto;
-        },
-        [formValues.documentId],
-        300
-    );
-
-    const asyncRunTest = useAsyncCallback(
-        async (mode: "applyUpdateScript" | "createContextObjects" | "sendToModel") => {
-            if (!formValues.documentId) {
-                setError("documentId", { message: "Please select a Document ID" });
-                return;
-            } else {
-                clearErrors("documentId");
-            }
-
-            const isValid = await trigger();
-
-            if (!isValid || !formValues.documentId) {
-                return;
-            }
-
-            setIsTestResultsOpen(true);
-
-            const applyUpdateScript = mode === "applyUpdateScript";
-            const createContextObjects = mode === "createContextObjects";
-            const sendToModel = mode === "sendToModel";
-
-            const dto: Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.TestGenAiScript = {
-                ApplyUpdateScript: applyUpdateScript,
-                CreateContextObjects: createContextObjects,
-                Results: formValues.contextOutput ? JSON.parse(formValues.contextOutput) : null,
-                SendToModel: sendToModel,
-                DocumentId: formValues.documentId,
-                IsDelete: false,
-                Configuration: mapToDto(formValues, taskId),
-            };
-
-            const result = await tasksService.testGenAi(databaseName, dto);
-
-            setValue("contextOutput", JSON.stringify(result.Results, null, 2));
-            return result;
-        }
-    );
-
-    const { value: isTestResultsOpen, setValue: setIsTestResultsOpen } = useBoolean(false);
-
-    return (
-        <div>
-            <Col md={isTestResultsOpen ? 8 : 12} className="overflow-scroll">
-                <HStack className="mb-3 justify-content-between">
-                    <HStack gap={2}>
-                        <ButtonWithSpinner
-                            type="submit"
-                            variant="primary"
-                            icon="save"
-                            isSpinning={formState.isSubmitting}
-                            disabled={!formState.isDirty}
-                        >
-                            Save
-                        </ButtonWithSpinner>
-                        <Button variant="secondary" onClick={goBack}>
-                            <Icon icon="cancel" />
-                            Cancel
-                        </Button>
-                    </HStack>
+        <div className="parent">
+            <div className="div1">
+                <HStack className="align-items-center mb-4">
+                    <AboutViewHeading title={isNewTask ? "New GenAI" : "Edit GenAI"} marginBottom={0} icon="ai-etl" />
+                    <Switch
+                        color="primary"
+                        selected={isAdvancedMode}
+                        toggleSelection={() => dispatch(editGenAiTaskActions.isAdvancedModeSet(!isAdvancedMode))}
+                        className="ms-2"
+                    >
+                        Advanced mode
+                    </Switch>
                 </HStack>
-                <HStack className="justify-content-between align-items-center mt-4">
-                    <h3>Basic configuration</h3>
-                    <ButtonWithSpinner variant="info rounded-pill" icon="test" isSpinning={false}>
-                        Test connection
-                    </ButtonWithSpinner>
-                </HStack>
-                <div className="panel-bg-1 p-4 rounded-2">
-                    <FormGroup>
-                        <FormLabel>Task Name</FormLabel>
-                        <FormInput type="text" control={control} name="name" />
-                    </FormGroup>
-                    <FormGroup>
-                        <FormLabel>Task State</FormLabel>
-                        <FormSelect control={control} name="state" options={stateOptions} />
-                    </FormGroup>
-                    {isEncrypted && (
-                        <div className="vstack gap-2">
-                            <RichAlert variant="info">
-                                Database <strong>{databaseName}</strong> is encrypted
-                            </RichAlert>
-                            <FormGroup>
-                                <FormSwitch control={control} name="isAllowEtlOnNonEncryptedChannel">
-                                    Allow task on a non-encrypted communication channel
-                                </FormSwitch>
-                            </FormGroup>
-                        </div>
-                    )}
-                    <EditGenAiTaskNodeField />
-                    <FormGroup>
-                        <FormLabel>Connection String</FormLabel>
-                        <InputGroup>
-                            <FormSelect
-                                control={control}
-                                name="connectionStringName"
-                                options={asyncGetConnectionStringsOptions.result ?? []}
-                                isLoading={asyncGetConnectionStringsOptions.loading}
+
+                <FormProvider {...form}>
+                    <form onSubmit={handleSubmit(handleSave)}>
+                        {isAdvancedMode ? <EditGenAiTaskAdvancedMode /> : currentStep.component}
+                    </form>
+                </FormProvider>
+            </div>
+            <div className="div2">
+                {!isAdvancedMode && (
+                    <div className="flex-grow">
+                        <div className="mb-3">
+                            <span>
+                                {currentStepIdx}/{steps.length} steps completed
+                            </span>
+                            <ProgressBar
+                                now={currentStepIdx}
+                                max={steps.length}
+                                variant="primary"
+                                style={{ height: 7 }}
+                                className="w-50 mt-1"
                             />
-                            <InputGroup.Text>
-                                <ButtonWithSpinner
-                                    variant="link"
-                                    className="text-reset px-0"
-                                    icon="plus"
-                                    isSpinning={asyncGetConnectionStringsOptions.loading}
-                                    onClick={toggleIsNewConnectionStringOpen}
+                        </div>
+                        <NumberedList>
+                            {steps.map((step, idx) => (
+                                <ListStepItem
+                                    key={step.title}
+                                    isCurrent={step.isCurrent}
+                                    isChecked={idx < currentStepIdx}
+                                    isInactive={idx > currentStepIdx}
+                                    className={classNames("cursor-pointer", {
+                                        "cursor-not-allowed": idx > currentStepIdx,
+                                    })}
                                 >
-                                    Create a new AI connection string
-                                </ButtonWithSpinner>
-                            </InputGroup.Text>
-                            {isNewConnectionStringOpen && (
-                                <EditConnectionStrings
-                                    initialConnection={{ type: "Ai" }}
-                                    afterSave={handleConnectionStringSave}
-                                    afterClose={toggleIsNewConnectionStringOpen}
-                                />
-                            )}
-                        </InputGroup>
-                    </FormGroup>
-                    <FormGroup>
-                        <FormLabel>Collection Name</FormLabel>
-                        <FormSelectCreatable control={control} name="collectionName" options={collectionOptions} />
-                    </FormGroup>
-                    {!isNewTask && (
-                        <FormGroup>
-                            <FormSwitch control={control} name="isResetScript">
-                                Regenerate all documents
-                            </FormSwitch>
-                        </FormGroup>
-                    )}
-                </div>
-                <HStack className="justify-content-between align-items-center mt-2">
-                    <h3>Specify task context</h3>
-                    <ButtonWithSpinner
-                        variant="info rounded-pill"
-                        icon="test"
-                        isSpinning={false}
-                        onClick={() => asyncRunTest.execute("createContextObjects")}
-                    >
-                        Test task context
-                    </ButtonWithSpinner>
-                </HStack>
-                <div className="panel-bg-1 p-4 rounded-2">
-                    <FormGroup>
-                        <FormLabel>Document ID</FormLabel>
-                        <FormSelectAutocomplete
-                            control={control}
-                            name="documentId"
-                            options={asyncGetDocumentIdOptions.result ?? []}
-                            isLoading={asyncGetDocumentIdOptions.loading}
-                        />
-                    </FormGroup>
-                    {asyncGetDocument.result && (
-                        <FormGroup>
-                            <FormLabel>Document</FormLabel>
-                            <Code code={JSON.stringify(asyncGetDocument.result, null, 2)} language="json" />
-                        </FormGroup>
-                    )}
-                    <FormGroup>
-                        <FormLabel>Script</FormLabel>
-                        <FormAceEditor control={control} name="script" mode="javascript" />
-                    </FormGroup>
-                </div>
-                <HStack className="justify-content-between align-items-center mt-2">
-                    <h3>Model inputs</h3>
-                    <ButtonWithSpinner
-                        variant="info rounded-pill"
-                        icon="test"
-                        isSpinning={false}
-                        onClick={() => asyncRunTest.execute("sendToModel")}
-                    >
-                        Test model
-                    </ButtonWithSpinner>
-                </HStack>
-                <div className="panel-bg-1 p-4 rounded-2">
-                    <FormGroup>
-                        <FormLabel>Prompt</FormLabel>
-                        <FormAceEditor control={control} name="prompt" mode="plain_text" />
-                    </FormGroup>
-                    <Row>
-                        <Col>
-                            <FormGroup>
-                                <FormLabel>Sample Object</FormLabel>
-                                <FormAceEditor control={control} name="sampleObject" mode="json" />
-                            </FormGroup>
-                        </Col>
-                        <Col>
-                            <FormGroup>
-                                <FormLabel>JSON Schema</FormLabel>
-                                <FormAceEditor control={control} name="jsonSchema" mode="json" />
-                            </FormGroup>
-                        </Col>
-                    </Row>
-                </div>
-                <HStack className="justify-content-between align-items-center mt-2">
-                    <h3>Provide a script for document update</h3>
-                    <ButtonWithSpinner
-                        variant="info rounded-pill"
-                        icon="test"
-                        isSpinning={false}
-                        onClick={() => asyncRunTest.execute("applyUpdateScript")}
-                    >
-                        Test script
-                    </ButtonWithSpinner>
-                </HStack>
-                <div className="panel-bg-1 p-4 rounded-2">
-                    <FormGroup>
-                        <FormLabel>Update script</FormLabel>
-                        <FormAceEditor control={control} name="update" mode="javascript" />
-                    </FormGroup>
-                </div>
-            </Col>
-            {isTestResultsOpen && (
-                <Col md={4} className="panel-bg-1 p-4 border-start">
-                    <HStack className="justify-content-between align-items-center">
-                        <h3>Test results</h3>
-                        <Button variant="link" className="text-reset" onClick={() => setIsTestResultsOpen(false)}>
-                            <Icon icon="cancel" />
-                        </Button>
-                    </HStack>
-                    <Tabs defaultActiveKey="context" id="test-results-tabs" className="mb-2" justify>
-                        <Tab eventKey="context" title={<span className="text-reset">Context output</span>}>
-                            <FormGroup>
-                                <FormLabel>Context output</FormLabel>
-                                <FormAceEditor control={control} name="contextOutput" mode="json" height="500px" />
-                            </FormGroup>
-                        </Tab>
-                        {asyncRunTest.result?.Results.some((x) => x.ModelOutput) && (
-                            <Tab eventKey="model" title={<span className="text-reset">Model result</span>}>
-                                <Code
-                                    language="json"
-                                    code={JSON.stringify(
-                                        asyncRunTest.result.Results.map((result) => result.ModelOutput),
-                                        null,
-                                        2
-                                    )}
-                                />
-                            </Tab>
-                        )}
-                        {asyncRunTest.result?.OutputDocument && (
-                            <Tab eventKey="update" title={<span className="text-reset">Update script result</span>}>
-                                <Code
-                                    language="json"
-                                    code={JSON.stringify(asyncRunTest.result.OutputDocument, null, 2)}
-                                />
-                            </Tab>
-                        )}
-                    </Tabs>
-                </Col>
-            )}
+                                    <h5 className="mb-0" style={{ paddingTop: 4 }}>
+                                        {step.title}
+                                    </h5>
+                                </ListStepItem>
+                            ))}
+                        </NumberedList>
+                    </div>
+                )}
+            </div>
         </div>
     );
 }
-
-const stateOptions: SelectOption<OngoingTaskState>[] = (["Enabled", "Disabled"] satisfies OngoingTaskState[]).map(
-    (x) => ({
-        label: x,
-        value: x,
-    })
-);
-
-const getDefaultValues = (dto: Raven.Client.Documents.Operations.OngoingTasks.GenAi): EditGenAiTaskFormData => {
-    if (!dto) {
-        return {
-            name: "",
-            state: "Enabled",
-            isSetResponsibleNode: false,
-            responsibleNode: null,
-            isPinResponsibleNode: false,
-            connectionStringName: "",
-            isAllowEtlOnNonEncryptedChannel: false,
-            collectionName: "",
-            prompt: "",
-            jsonSchema: "",
-            sampleObject: "",
-            update: "",
-            isResetScript: false,
-            scriptToReset: null,
-            script: "",
-            documentId: "",
-        };
-    }
-
-    return {
-        name: dto.Configuration.Name,
-        state: dto.TaskState,
-        isSetResponsibleNode: dto.MentorNode != null,
-        responsibleNode: dto.MentorNode ?? null,
-        isPinResponsibleNode: dto.PinToMentorNode,
-        connectionStringName: dto.ConnectionStringName,
-        isAllowEtlOnNonEncryptedChannel: dto.Configuration.AllowEtlOnNonEncryptedChannel,
-        collectionName: dto.Configuration.Collection,
-        prompt: dto.Configuration.Prompt ?? "",
-        jsonSchema: dto.Configuration.JsonSchema ?? "",
-        sampleObject: dto.Configuration.SampleObject ?? "",
-        update: dto.Configuration.Update ?? "",
-        isResetScript: true,
-        scriptToReset: dto.Configuration.Transforms?.[0].Name ?? null,
-        script: dto.Configuration.GenAiTransformation?.Script ?? "",
-        documentId: "",
-    };
-};
-
-const mapToDto = (
-    data: EditGenAiTaskFormData,
-    taskId: number
-): Raven.Client.Documents.Operations.AI.GenAiConfiguration => {
-    return {
-        TaskId: taskId,
-        Name: data.name,
-        EtlType: "GenAi",
-        ConnectionStringName: data.connectionStringName,
-        AllowEtlOnNonEncryptedChannel: data.isAllowEtlOnNonEncryptedChannel,
-        Disabled: data.state === "Disabled",
-        MentorNode: data.isSetResponsibleNode ? data.responsibleNode : undefined,
-        PinToMentorNode: data.isSetResponsibleNode && data.isPinResponsibleNode,
-        Transforms: null,
-        Collection: data.collectionName,
-        Prompt: data.prompt,
-        JsonSchema: data.jsonSchema,
-        SampleObject: data.sampleObject,
-        Update: data.update,
-        GenAiTransformation: {
-            Script: data.script,
-        },
-        Identifier: undefined,
-    };
-};
-
-const schema = yup.object({
-    name: yup.string().required(),
-    state: yup.string<Raven.Client.Documents.Operations.OngoingTasks.OngoingTaskState>().required(),
-    isSetResponsibleNode: yup.boolean(),
-    responsibleNode: yup.string().nullable(),
-    isPinResponsibleNode: yup.boolean(),
-    connectionStringName: yup.string().required(),
-    isAllowEtlOnNonEncryptedChannel: yup.boolean(),
-    collectionName: yup.string().required(),
-    prompt: yup.string().required(),
-    jsonSchema: yup.string(),
-    sampleObject: yup.string(),
-    update: yup.string().required(),
-    isResetScript: yup.boolean(),
-    scriptToReset: yup.string().nullable(),
-    script: yup.string().required(),
-    // For testing
-    documentId: yup.string(),
-    contextOutput: yup.string(),
-});
-
-export type EditGenAiTaskFormData = yup.InferType<typeof schema>;

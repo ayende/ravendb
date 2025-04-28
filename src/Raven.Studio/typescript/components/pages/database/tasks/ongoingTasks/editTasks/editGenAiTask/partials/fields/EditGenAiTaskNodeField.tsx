@@ -3,7 +3,7 @@ import RichAlert from "components/common/RichAlert";
 import { clusterSelectors } from "components/common/shell/clusterSlice";
 import { useAppSelector } from "components/store";
 import { useFormContext, useWatch } from "react-hook-form";
-import { EditGenAiTaskFormData } from "../EditGenAiTask";
+import { EditGenAiTaskFormData } from "../../utils/editGenAiTaskValidation";
 
 export default function EditGenAiTaskNodeField() {
     const { control } = useFormContext<EditGenAiTaskFormData>();

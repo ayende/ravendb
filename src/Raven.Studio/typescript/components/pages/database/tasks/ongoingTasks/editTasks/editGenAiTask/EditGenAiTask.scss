@@ -1,0 +1,22 @@
+@use "Content/scss/sizes";
+@use "Content/scss/colors";
+
+.parent {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: 1fr;
+    grid-column-gap: 0px;
+    grid-row-gap: 0px;
+    height: 100%;
+}
+
+.div1 {
+    grid-area: 1 / 1 / 2 / 3;
+    padding: sizes.$gutter;
+}
+
+.div2 {
+    grid-area: 1 / 3 / 2 / 4;
+    padding: sizes.$gutter;
+    background-color: colors.$panel-bg-1;
+}
