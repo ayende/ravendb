@@ -549,7 +549,7 @@ namespace Raven.Server.Documents.ETL
             var myQueueEtl = new List<QueueEtlConfiguration>();
             var mySnowflakeEtl = new List<SnowflakeEtlConfiguration>();
             var myEmbeddingsGenerationEtl = new List<EmbeddingsGenerationConfiguration>();
-            var myAiGenEtl = new List<GenAiConfiguration>();
+            var myGenAiEtl = new List<GenAiConfiguration>();
 
             var responsibleNodes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
@@ -615,7 +615,7 @@ namespace Raven.Server.Documents.ETL
             {
                 if (IsMyEtlTask<GenAiConfiguration, AiConnectionString>(record, config, ref responsibleNodes, out explanations))
                 {
-                    myAiGenEtl.Add(config);
+                    myGenAiEtl.Add(config);
                 }
             }
 
@@ -854,13 +854,13 @@ namespace Raven.Server.Documents.ETL
 
                         break;
                     }
-                    case GenAiTask aiGenTask:
+                    case GenAiTask genAiTask:
                     {
                         GenAiConfiguration existing = null;
 
-                        foreach (var config in myAiGenEtl)
+                        foreach (var config in myGenAiEtl)
                         {
-                            var diff = aiGenTask.Configuration.Compare(config);
+                            var diff = genAiTask.Configuration.Compare(config, record.AiConnectionStrings);
 
                             if (diff == EtlConfigurationCompareDifferences.None)
                             {
@@ -872,7 +872,7 @@ namespace Raven.Server.Documents.ETL
                         if (existing != null)
                         {
                             toRemove.Remove(processesPerConfig.Key);
-                            myAiGenEtl.Remove(existing);
+                            myGenAiEtl.Remove(existing);
                         }
 
                         break;
@@ -882,7 +882,7 @@ namespace Raven.Server.Documents.ETL
                 }
             }
 
-            LoadProcesses(record, myRavenEtl, mySqlEtl, myOlapEtl, myElasticSearchEtl, myQueueEtl, mySnowflakeEtl, myEmbeddingsGenerationEtl, myAiGenEtl, toRemove.SelectMany(x => x.Value).ToList(), responsibleNodes, explanations);
+            LoadProcesses(record, myRavenEtl, mySqlEtl, myOlapEtl, myElasticSearchEtl, myQueueEtl, mySnowflakeEtl, myEmbeddingsGenerationEtl, myGenAiEtl, toRemove.SelectMany(x => x.Value).ToList(), responsibleNodes, explanations);
 
             if (toRemove.Count == 0)
                 return;
@@ -902,7 +902,7 @@ namespace Raven.Server.Documents.ETL
 
                             using (process)
                             {
-                                string reason = GetStopReason(process, record, myRavenEtl, mySqlEtl, myOlapEtl, myElasticSearchEtl, myQueueEtl, mySnowflakeEtl, myEmbeddingsGenerationEtl,myAiGenEtl, responsibleNodes, explanations);
+                                string reason = GetStopReason(process, record, myRavenEtl, mySqlEtl, myOlapEtl, myElasticSearchEtl, myQueueEtl, mySnowflakeEtl, myEmbeddingsGenerationEtl, myGenAiEtl, responsibleNodes, explanations);
                                 process.Stop(reason);
                             }
                         }
@@ -958,7 +958,7 @@ namespace Raven.Server.Documents.ETL
             List<QueueEtlConfiguration> myQueueEtl,
             List<SnowflakeEtlConfiguration> mySnowflakeEtl,
             List<EmbeddingsGenerationConfiguration> myEmbeddingsGenerationEtl,
-            List<GenAiConfiguration> myAiGenEtl,
+            List<GenAiConfiguration> myGenAiEtl,
             Dictionary<string, string> responsibleNodes,
             List<string> explanations)
         {
@@ -1039,10 +1039,10 @@ namespace Raven.Server.Documents.ETL
             }
             else if (process is GenAiTask aiGenTask)
             {
-                var existing = myAiGenEtl.FirstOrDefault(x => x.Name.Equals(aiGenTask.ConfigurationName, StringComparison.OrdinalIgnoreCase));
+                var existing = myGenAiEtl.FirstOrDefault(x => x.Name.Equals(aiGenTask.ConfigurationName, StringComparison.OrdinalIgnoreCase));
 
                 if (existing != null)
-                    differences = aiGenTask.Configuration.Compare(existing, transformationDiffs);
+                    differences = aiGenTask.Configuration.Compare(existing, record.AiConnectionStrings, transformationDiffs);
             }
             else
             {
