@@ -40,13 +40,13 @@ export function useEditGenAiTaskSteps(): EditGenAiTaskStep[] {
         },
         {
             id: "updateScript",
-            title: "Update script",
+            title: "Provide document update script",
             component: <EditGenAiTaskStepUpdate />,
             isCurrent: currentStep === "updateScript",
         },
         {
             id: "summary",
-            title: "Summary",
+            title: "Sum up task configuration",
             component: <EditGenAiTaskStepSummary />,
             isCurrent: currentStep === "summary",
         },

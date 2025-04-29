@@ -6,6 +6,7 @@ import { HStack } from "components/common/utilities/HStack";
 import EditGenAiTaskBasicFields from "../fields/EditGenAiTaskBasicFields";
 import { useFormContext } from "react-hook-form";
 import { EditGenAiTaskFormData } from "../../utils/editGenAiTaskValidation";
+import { AboutViewHeading } from "components/common/AboutView";
 
 export function EditGenAiTaskStepBasic() {
     const dispatch = useAppDispatch();
@@ -22,6 +23,7 @@ export function EditGenAiTaskStepBasic() {
 
     return (
         <div>
+            <AboutViewHeading title="Configure GenAI task settings" marginBottom={4} icon="ai-etl" />
             <EditGenAiTaskBasicFields />
 
             <HStack gap={2} className="justify-content-end">
@@ -30,7 +32,7 @@ export function EditGenAiTaskStepBasic() {
                 </Button>
 
                 <Button variant="primary" className="rounded-pill" onClick={handleNext}>
-                    Next <Icon icon="arrow-right" margin="m-0" />
+                    Next <Icon icon="arrow-right" margin="ms-1" />
                 </Button>
             </HStack>
         </div>

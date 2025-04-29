@@ -6,6 +6,7 @@ import { Icon } from "components/common/Icon";
 import { useAppDispatch, useAppSelector } from "components/store";
 import { editGenAiTaskActions, editGenAiTaskSelectors } from "../../store/editGenAiTaskSlice";
 import classNames from "classnames";
+import { AboutViewHeading } from "components/common/AboutView";
 
 export default function EditGenAiTaskStepSummary() {
     const dispatch = useAppDispatch();
@@ -15,11 +16,14 @@ export default function EditGenAiTaskStepSummary() {
 
     const formValues = useWatch({ control });
 
+    // TODO add preview click
+
     return (
         <>
+            <AboutViewHeading title="Sum up task configuration" marginBottom={4} icon="ai-etl" />
             <HStack className="justify-content-between">
                 <div>Basic configuration</div>
-                <Button variant="link" onClick={() => dispatch(editGenAiTaskActions.currentStepSet("basic"))} size="xs">
+                <Button variant="link" onClick={() => dispatch(editGenAiTaskActions.currentStepSet("basic"))} size="sm">
                     <Icon icon="edit" /> Edit
                 </Button>
             </HStack>
@@ -70,7 +74,7 @@ export default function EditGenAiTaskStepSummary() {
                     </HStack>
                 )}
             </div>
-            <HStack className="justify-content-between">
+            <HStack className="justify-content-between mt-4">
                 <div>Task creation</div>
                 <Button
                     variant="link"
@@ -106,11 +110,11 @@ export default function EditGenAiTaskStepSummary() {
                     </div>
                 </HStack>
             </div>
-            <HStack className="justify-content-between">
+            <HStack className="justify-content-between mt-4">
                 <div>Document update</div>
                 <Button
                     variant="link"
-                    onClick={() => dispatch(editGenAiTaskActions.currentStepSet("context"))}
+                    onClick={() => dispatch(editGenAiTaskActions.currentStepSet("updateScript"))}
                     size="sm"
                 >
                     <Icon icon="edit" /> Edit
@@ -134,7 +138,7 @@ export default function EditGenAiTaskStepSummary() {
                 </Button>
 
                 <Button type="submit" variant="primary" className="rounded-pill">
-                    Save <Icon icon="save" margin="m-0" />
+                    Save <Icon icon="save" margin="ms-1" />
                 </Button>
             </HStack>
         </>

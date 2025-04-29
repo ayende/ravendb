@@ -6,6 +6,7 @@ import { editGenAiTaskActions } from "../../store/editGenAiTaskSlice";
 import { Icon } from "components/common/Icon";
 import { useFormContext } from "react-hook-form";
 import { EditGenAiTaskFormData } from "../../utils/editGenAiTaskValidation";
+import { AboutViewHeading } from "components/common/AboutView";
 
 export default function EditGenAiTaskStepContext() {
     const dispatch = useAppDispatch();
@@ -21,6 +22,7 @@ export default function EditGenAiTaskStepContext() {
 
     return (
         <>
+            <AboutViewHeading title="Specify task context" marginBottom={4} icon="ai-etl" />
             <EditGenAiTaskContextFields />
 
             <HStack className="justify-content-between">
@@ -37,7 +39,7 @@ export default function EditGenAiTaskStepContext() {
                     </Button>
 
                     <Button variant="primary" className="rounded-pill" onClick={handleNext}>
-                        Next <Icon icon="arrow-right" margin="m-0" />
+                        Next <Icon icon="arrow-right" margin="ms-1" />
                     </Button>
                 </HStack>
             </HStack>

@@ -1,5 +1,4 @@
 import "./EditGenAiTask.scss";
-import { AboutViewHeading } from "components/common/AboutView";
 import { FormProvider, SubmitHandler, useForm } from "react-hook-form";
 import { yupResolver } from "@hookform/resolvers/yup";
 import { useServices } from "components/hooks/useServices";
@@ -32,7 +31,6 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
     const { tasksService } = useServices();
 
     const databaseName = useAppSelector(databaseSelectors.activeDatabaseName);
-    const isNewTask = useAppSelector(editGenAiTaskSelectors.isNewTask);
     const isAdvancedMode = useAppSelector(editGenAiTaskSelectors.isAdvancedMode);
     const isTestOpen = useAppSelector(editGenAiTaskSelectors.isTestOpen);
 
@@ -96,8 +94,6 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
     return (
         <Row className="h-100 m-0">
             <Col md={isTestOpen ? 6 : 8} className="p-4">
-                <AboutViewHeading title={isNewTask ? "New GenAI" : "Edit GenAI"} marginBottom={4} icon="ai-etl" />
-
                 <FormProvider {...form}>
                     <form onSubmit={handleSubmit(handleSave)}>
                         {isAdvancedMode ? <EditGenAiTaskAdvancedMode /> : currentStep.component}
@@ -129,6 +125,13 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
                                     className={classNames("cursor-pointer", {
                                         "cursor-not-allowed": idx > currentStepIdx,
                                     })}
+                                    onClick={() => {
+                                        if (idx > currentStepIdx) {
+                                            return;
+                                        }
+
+                                        dispatch(editGenAiTaskActions.currentStepSet(step.id));
+                                    }}
                                 >
                                     <h5 className="mb-0" style={{ paddingTop: 4 }}>
                                         {step.title}

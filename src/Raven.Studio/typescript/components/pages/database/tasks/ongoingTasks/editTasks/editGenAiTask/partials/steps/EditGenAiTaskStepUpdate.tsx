@@ -7,6 +7,7 @@ import { Icon } from "components/common/Icon";
 import Button from "react-bootstrap/Button";
 import { HStack } from "components/common/utilities/HStack";
 import { EditGenAiTaskFormData } from "../../utils/editGenAiTaskValidation";
+import { AboutViewHeading } from "components/common/AboutView";
 
 export default function EditGenAiTaskStepUpdate() {
     const dispatch = useAppDispatch();
@@ -23,6 +24,7 @@ export default function EditGenAiTaskStepUpdate() {
 
     return (
         <>
+            <AboutViewHeading title="Provide document update script" marginBottom={4} icon="ai-etl" />
             <FormGroup>
                 <FormLabel>Update script</FormLabel>
                 <FormAceEditor control={control} name="update" mode="javascript" />
@@ -42,7 +44,7 @@ export default function EditGenAiTaskStepUpdate() {
                     </Button>
 
                     <Button variant="primary" className="rounded-pill" onClick={handleNext}>
-                        Next <Icon icon="arrow-right" margin="m-0" />
+                        Next <Icon icon="arrow-right" margin="ms-1" />
                     </Button>
                 </HStack>
             </HStack>

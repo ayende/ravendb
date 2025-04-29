@@ -28,7 +28,7 @@ export default function ListStepItem(props: ListStepItemProps) {
     })();
 
     return (
-        <li className={classNames("setup-wizard-step-item", className)} {...rest}>
+        <li className={classNames("step-item", className)} {...rest}>
             <span
                 className={classNames(
                     "dot",
