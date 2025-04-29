@@ -3,20 +3,128 @@ import { EditGenAiTaskFormData } from "../../utils/editGenAiTaskValidation";
 import { HStack } from "components/common/utilities/HStack";
 import Button from "react-bootstrap/Button";
 import { Icon } from "components/common/Icon";
-import { useAppDispatch } from "components/store";
-import { editGenAiTaskActions } from "../../store/editGenAiTaskSlice";
+import { useAppDispatch, useAppSelector } from "components/store";
+import { editGenAiTaskActions, editGenAiTaskSelectors } from "../../store/editGenAiTaskSlice";
+import classNames from "classnames";
 
 export default function EditGenAiTaskStepSummary() {
     const dispatch = useAppDispatch();
     const { control } = useFormContext<EditGenAiTaskFormData>();
 
+    const isEditTask = useAppSelector(editGenAiTaskSelectors.isEditTask);
+
     const formValues = useWatch({ control });
 
     return (
         <>
-            <pre>{JSON.stringify(formValues, null, 2)}</pre>
-
-            <HStack gap={2} className="justify-content-between">
+            <HStack className="justify-content-between">
+                <div>Basic configuration</div>
+                <Button variant="link" onClick={() => dispatch(editGenAiTaskActions.currentStepSet("basic"))} size="xs">
+                    <Icon icon="edit" /> Edit
+                </Button>
+            </HStack>
+            <div className="panel-bg-1 p-3 rounded-2 mt-1">
+                <HStack className="justify-content-between">
+                    <div>Task name</div>
+                    <div>{formValues.name}</div>
+                </HStack>
+                <HStack className="justify-content-between">
+                    <div>Task state</div>
+                    <div
+                        className={classNames(
+                            {
+                                "text-success": formValues.state === "Enabled",
+                            },
+                            {
+                                "text-danger": formValues.state === "Disabled",
+                            }
+                        )}
+                    >
+                        {formValues.state}
+                    </div>
+                </HStack>
+                {formValues.responsibleNode && (
+                    <HStack className="justify-content-between">
+                        <div>Responsible node</div>
+                        <div>
+                            <Icon icon="node" color="node" />
+                            {formValues.responsibleNode}
+                        </div>
+                    </HStack>
+                )}
+                <HStack className="justify-content-between">
+                    <div>Connection string</div>
+                    <div>{formValues.connectionStringName}</div>
+                </HStack>
+                {isEditTask && (
+                    <HStack className="justify-content-between">
+                        <div>Regenerate all documents</div>
+                        <div
+                            className={classNames({
+                                "text-success": formValues.isResetScript,
+                                "text-danger": !formValues.isResetScript,
+                            })}
+                        >
+                            {formValues.isResetScript ? "Enabled" : "Disabled"}
+                        </div>
+                    </HStack>
+                )}
+            </div>
+            <HStack className="justify-content-between">
+                <div>Task creation</div>
+                <Button
+                    variant="link"
+                    onClick={() => dispatch(editGenAiTaskActions.currentStepSet("context"))}
+                    size="sm"
+                >
+                    <Icon icon="edit" /> Edit
+                </Button>
+            </HStack>
+            <div className="panel-bg-1 p-3 rounded-2 mt-1">
+                <HStack className="justify-content-between">
+                    <div>Prompt</div>
+                    <div style={{ maxWidth: 200 }} className="text-truncate">
+                        {formValues.prompt}
+                    </div>
+                </HStack>
+                <HStack className="justify-content-between">
+                    <div>JSON schema</div>
+                    <div>
+                        <ValueWithPreview value={formValues.jsonSchema} handleClick={() => {}} />
+                    </div>
+                </HStack>
+                <HStack className="justify-content-between">
+                    <div>Sample object</div>
+                    <div>
+                        <ValueWithPreview value={formValues.sampleObject} handleClick={() => {}} />
+                    </div>
+                </HStack>
+                <HStack className="justify-content-between">
+                    <div>Script</div>
+                    <div>
+                        <ValueWithPreview value={formValues.script} handleClick={() => {}} />
+                    </div>
+                </HStack>
+            </div>
+            <HStack className="justify-content-between">
+                <div>Document update</div>
+                <Button
+                    variant="link"
+                    onClick={() => dispatch(editGenAiTaskActions.currentStepSet("context"))}
+                    size="sm"
+                >
+                    <Icon icon="edit" /> Edit
+                </Button>
+            </HStack>
+            <div className="panel-bg-1 p-3 rounded-2 mt-1">
+                <HStack className="justify-content-between">
+                    <div>Update script</div>
+                    <div>
+                        <ValueWithPreview value={formValues.update} handleClick={() => {}} />
+                    </div>
+                </HStack>
+            </div>
+            <HStack className="justify-content-between mt-4">
                 <Button
                     variant="secondary"
                     className="rounded-pill"
@@ -29,6 +137,21 @@ export default function EditGenAiTaskStepSummary() {
                     Save <Icon icon="save" margin="m-0" />
                 </Button>
             </HStack>
+        </>
+    );
+}
+
+function ValueWithPreview(props: { value: string; handleClick: () => void }) {
+    if (!props.value) {
+        return "Not configured";
+    }
+
+    return (
+        <>
+            Configured{" "}
+            <Button variant="link" size="xs" onClick={props.handleClick}>
+                <Icon icon="preview" margin="m-0" />
+            </Button>
         </>
     );
 }

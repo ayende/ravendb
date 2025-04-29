@@ -45,6 +45,7 @@ export const editGenAiTaskActions = editGenAiTaskSlice.actions;
 export const editGenAiTaskSelectors = {
     taskId: (state: RootState) => state.editGenAiTask.taskId,
     isNewTask: (state: RootState) => state.editGenAiTask.taskId == null,
+    isEditTask: (state: RootState) => state.editGenAiTask.taskId != null,
     sourceView: (state: RootState) => state.editGenAiTask.sourceView,
     isAdvancedMode: (state: RootState) => state.editGenAiTask.isAdvancedMode,
     currentStep: (state: RootState) => state.editGenAiTask.currentStep,

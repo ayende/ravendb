@@ -96,7 +96,7 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
     return (
         <Row className="h-100 m-0">
             <Col md={isTestOpen ? 6 : 8} className="p-4">
-                <AboutViewHeading title={isNewTask ? "New GenAI" : "Edit GenAI"} icon="ai-etl" />
+                <AboutViewHeading title={isNewTask ? "New GenAI" : "Edit GenAI"} marginBottom={4} icon="ai-etl" />
 
                 <FormProvider {...form}>
                     <form onSubmit={handleSubmit(handleSave)}>
