@@ -145,6 +145,14 @@ namespace Raven.Server.ServerWide.Commands
                         embeddingGenerationTask.Disabled = Disable;
                     }
                     break;
+                case OngoingTaskType.GenAi:
+
+                    var genAiTask = record?.GenAiEtls?.Find(x => x.TaskId == TaskId);
+                    if (genAiTask != null)
+                    {
+                        genAiTask.Disabled = Disable;
+                    }
+                    break;
             }
 
             void ThrowIfServerWideTask(string name, string prefix, string typeName)

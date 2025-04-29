@@ -1478,23 +1478,23 @@ namespace Raven.Server.Documents.ETL
                         return result;
                     }
                 case EtlType.GenAi:
-                    var testGenAi = testScript as TestGenAiScript;
-                    var aiGenConfiguration = testGenAi?.Configuration;
+                    var testGenAiScript = testScript as TestGenAiScript;
+                    var aiGenConfiguration = testGenAiScript?.Configuration;
                     using (var genAiTask = new GenAiTask(testScript.Configuration.Transforms[0], aiGenConfiguration, database, database.ServerStore))
                     using (genAiTask.EnterTestMode(out debugOutput))
                     {
                         genAiTask.EnsureThreadAllocationStats();
 
-                        var doc = testGenAi?.Document != null
+                        var doc = testGenAiScript?.Document != null
                             ? new Document
                             {
-                                Data = testGenAi.Document,
+                                Data = testGenAiScript.Document,
                                 ChangeVector = document.ChangeVector,
                                 Etag = document.Etag
                             }
                             : document;
 
-                        var result  = genAiTask.RunTest(doc, testScript as TestGenAiScript, context);
+                        var result  = genAiTask.RunTest(doc, testGenAiScript, context);
                         result.DebugOutput = debugOutput;
                         return result;
                     }
