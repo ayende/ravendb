@@ -1,6 +1,5 @@
 import "./EditGenAiTask.scss";
 import { AboutViewHeading } from "components/common/AboutView";
-import { HStack } from "components/common/utilities/HStack";
 import { FormProvider, SubmitHandler, useForm } from "react-hook-form";
 import { yupResolver } from "@hookform/resolvers/yup";
 import { useServices } from "components/hooks/useServices";
@@ -10,7 +9,6 @@ import { useAppUrls } from "components/hooks/useAppUrls";
 import router from "plugins/router";
 import { tryHandleSubmit } from "components/utils/common";
 import classNames from "classnames";
-import { Switch } from "components/common/Checkbox";
 import { editGenAiTaskActions, editGenAiTaskSelectors } from "./store/editGenAiTaskSlice";
 import { useEffect } from "react";
 import { useEditGenAiTaskSteps } from "./hooks/useEditGenAiTaskSteps";
@@ -20,6 +18,8 @@ import { EditGenAiTaskFormData, editGenAiTaskSchema } from "./utils/editGenAiTas
 import { editGenAiTaskUtils } from "./utils/editGenAiTaskUtils";
 import EditGenAiTaskAdvancedMode from "./partials/EditGenAiTaskAdvancedMode";
 import ProgressBar from "react-bootstrap/ProgressBar";
+import Col from "react-bootstrap/Col";
+import Row from "react-bootstrap/Row";
 
 interface QueryParams {
     taskId: string;
@@ -34,13 +34,18 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
     const databaseName = useAppSelector(databaseSelectors.activeDatabaseName);
     const isNewTask = useAppSelector(editGenAiTaskSelectors.isNewTask);
     const isAdvancedMode = useAppSelector(editGenAiTaskSelectors.isAdvancedMode);
+    const isTestOpen = useAppSelector(editGenAiTaskSelectors.isTestOpen);
 
     const taskId = queryParams?.taskId ? parseInt(queryParams.taskId) : null;
 
-    // Get query params
+    // Set query params to store
     useEffect(() => {
-        if (queryParams) {
+        if (taskId) {
             dispatch(editGenAiTaskActions.taskIdSet(taskId));
+            dispatch(editGenAiTaskActions.currentStepSet("summary"));
+        }
+
+        if (queryParams) {
             dispatch(editGenAiTaskActions.sourceViewSet(queryParams.sourceView));
         }
 
@@ -89,28 +94,18 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
     const currentStepIdx = steps.findIndex((x) => x.isCurrent);
 
     return (
-        <div className="parent">
-            <div className="div1">
-                <HStack className="align-items-center mb-4">
-                    <AboutViewHeading title={isNewTask ? "New GenAI" : "Edit GenAI"} marginBottom={0} icon="ai-etl" />
-                    <Switch
-                        color="primary"
-                        selected={isAdvancedMode}
-                        toggleSelection={() => dispatch(editGenAiTaskActions.isAdvancedModeSet(!isAdvancedMode))}
-                        className="ms-2"
-                    >
-                        Advanced mode
-                    </Switch>
-                </HStack>
+        <Row className="h-100 m-0">
+            <Col md={isTestOpen ? 6 : 8} className="p-4">
+                <AboutViewHeading title={isNewTask ? "New GenAI" : "Edit GenAI"} icon="ai-etl" />
 
                 <FormProvider {...form}>
                     <form onSubmit={handleSubmit(handleSave)}>
                         {isAdvancedMode ? <EditGenAiTaskAdvancedMode /> : currentStep.component}
                     </form>
                 </FormProvider>
-            </div>
-            <div className="div2">
-                {!isAdvancedMode && (
+            </Col>
+            <Col md={isTestOpen ? 6 : 4} className="panel-bg-1 p-4">
+                {!isTestOpen && (
                     <div className="flex-grow">
                         <div className="mb-3">
                             <span>
@@ -143,7 +138,8 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
                         </NumberedList>
                     </div>
                 )}
-            </div>
-        </div>
+                {isTestOpen && <div>test</div>}
+            </Col>
+        </Row>
     );
 }

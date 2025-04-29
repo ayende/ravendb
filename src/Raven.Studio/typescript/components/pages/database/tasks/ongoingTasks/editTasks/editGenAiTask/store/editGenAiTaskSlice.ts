@@ -7,6 +7,7 @@ interface EditGenAiTaskState {
     sourceView: EditAiTaskSourceView;
     isAdvancedMode: boolean;
     currentStep: EditGenAiTaskStepId;
+    isTestOpen: boolean;
 }
 
 const initialState: EditGenAiTaskState = {
@@ -14,6 +15,7 @@ const initialState: EditGenAiTaskState = {
     sourceView: "OngoingTasks",
     isAdvancedMode: false,
     currentStep: "basic",
+    isTestOpen: false,
 };
 
 export const editGenAiTaskSlice = createSlice({
@@ -32,6 +34,9 @@ export const editGenAiTaskSlice = createSlice({
         currentStepSet: (state, action: PayloadAction<EditGenAiTaskStepId>) => {
             state.currentStep = action.payload;
         },
+        isTestOpenSet: (state, action: PayloadAction<boolean>) => {
+            state.isTestOpen = action.payload;
+        },
         reset: () => initialState,
     },
 });
@@ -43,4 +48,5 @@ export const editGenAiTaskSelectors = {
     sourceView: (state: RootState) => state.editGenAiTask.sourceView,
     isAdvancedMode: (state: RootState) => state.editGenAiTask.isAdvancedMode,
     currentStep: (state: RootState) => state.editGenAiTask.currentStep,
+    isTestOpen: (state: RootState) => state.editGenAiTask.isTestOpen,
 };
