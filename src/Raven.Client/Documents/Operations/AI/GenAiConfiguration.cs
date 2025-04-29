@@ -86,7 +86,7 @@ public class GenAiConfiguration : EtlConfiguration<AiConnectionString>
         else if (GenAiTransformation.ValidateScript(out var error) == false)
             errors.Add(error);
 
-        if (string.IsNullOrEmpty(Update))
+        if (TestMode == false && string.IsNullOrEmpty(Update))
             errors.Add("You must provide an update function");
 
         return errors.Count == 0;

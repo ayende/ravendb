@@ -285,75 +285,74 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
     public TestEtlScriptResult RunTest(Document document, TestGenAiScript testGenAiScript, DocumentsOperationContext context)
     {
         List<GenAiResultItem> items;
-        if (testGenAiScript.CreateContextObjects)
-        {
-            var aiEtlItem = new AiEtlItem(document, Configuration.Collection);
-            var transformedResults = Transform([aiEtlItem], context, new GenAiStatsScope(new EtlRunStats()), new EtlProcessState());
-
-            items = PrepareItemsBeforeSendingToModel(transformedResults);
-        }
-        else
-        {
-            items = testGenAiScript.Results;
-        }
+        List<Exception> exceptions = null;
+        BlittableJsonReaderObject outputDocument = null;
 
         using (var old = document)
         {
             document = document.Clone(context);
         }
 
-        List<Exception> exceptions = null;
-        if (testGenAiScript.SendToModel)
+        switch (testGenAiScript.TestStage)
         {
-            exceptions = SendToModel(items, context);
-        }
-        else
-        {
-            context.CloseTransaction();
-        }
-
-        BlittableJsonReaderObject outputDocument = null;
-        if (testGenAiScript.ApplyUpdateScript)
-        {
-            using var _ = context.OpenWriteTransaction();
-            PatchRequest req = new(Configuration.Update, PatchRequestType.AiGen);
-
-            PatchDocumentCommand lastPatch = null;
-            foreach (var item in items)
-            {
-                if (item?.ModelOutput is null)
-                    continue;
-
-                var dvj = new DynamicJsonValue
+            case TestStage.CreateContextObjects:
+                var aiEtlItem = new AiEtlItem(document, Configuration.Collection);
+                var transformedResults = Transform([aiEtlItem], context, new GenAiStatsScope(new EtlRunStats()), new EtlProcessState());
+                items = PrepareItemsBeforeSendingToModel(transformedResults);
+                break;
+            case TestStage.SendToModel:
+                items = testGenAiScript.Input;
+                exceptions = SendToModel(items, context);
+                break;
+            case TestStage.ApplyUpdateScript:
                 {
-                    ["output"] = item.ModelOutput.Output, 
-                    ["aiHash"] = item.ContextOutput.AiHash, 
-                    ["input"] = item.ContextOutput.Context
-                };
+                    context.CloseTransaction();
+                    using var _ = context.OpenWriteTransaction();
 
-                var args = context.ReadObject(dvj, document.Id);
-                var cmd = lastPatch = new PatchDocumentCommand(
-                    context: context,
-                    id: document.Id,
-                    expectedChangeVector: null,
-                    skipPatchIfChangeVectorMismatch: false,
-                    patch: (req, args),
-                    patchIfMissing: default,
-                    createIfMissing: null,
-                    identityPartsSeparator: Database.IdentityPartsSeparator,
-                    isTest: false,
-                    debugMode: false,
-                    collectResultsNeeded: true,
-                    returnDocument: false,
-                    ignoreMaxStepsForScript: false);
+                    items = testGenAiScript.Input;
+                    PatchRequest req = new(Configuration.Update, PatchRequestType.AiGen);
+                    PatchDocumentCommand lastPatch = null;
 
-                cmd.Execute(context, recordingState: null);
+                    foreach (var item in items)
+                    {
+                        if (item?.ModelOutput is null)
+                            continue;
 
-                item.DebugActions = cmd.DebugActions;
-                item.DebugOutput = cmd.DebugOutput;
-            }
+                        var dvj = new DynamicJsonValue
+                        {
+                            ["output"] = item.ModelOutput.Output,
+                            ["aiHash"] = item.ContextOutput.AiHash,
+                            ["input"] = item.ContextOutput.Context
+                        };
 
-            outputDocument = lastPatch?.PatchResult?.ModifiedDocument;
+                        var args = context.ReadObject(dvj, document.Id);
+                        var cmd = lastPatch = new PatchDocumentCommand(
+                            context: context,
+                            id: document.Id,
+                            expectedChangeVector: null,
+                            skipPatchIfChangeVectorMismatch: false,
+                            patch: (req, args),
+                            patchIfMissing: default,
+                            createIfMissing: null,
+                            identityPartsSeparator: Database.IdentityPartsSeparator,
+                            isTest: false,
+                            debugMode: false,
+                            collectResultsNeeded: true,
+                            returnDocument: false,
+                            ignoreMaxStepsForScript: false);
+
+                        cmd.Execute(context, recordingState: null);
+
+                        item.DebugActions = cmd.DebugActions;
+                        item.DebugOutput = cmd.DebugOutput;
+                    }
+
+                    outputDocument = lastPatch?.PatchResult?.ModifiedDocument;
+                    break;
+                }
+
+            default:
+                throw new InvalidOperationException("Unknown TestStage type : " + testGenAiScript.TestStage.GetType());
         }
 
         if (exceptions is not null)
