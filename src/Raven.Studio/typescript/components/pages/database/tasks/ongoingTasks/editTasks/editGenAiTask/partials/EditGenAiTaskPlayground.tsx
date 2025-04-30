@@ -91,9 +91,9 @@ export default function EditGenAiTaskPlayground() {
             </HStack>
             <div className="panel-bg-1 border border-secondary rounded-2">
                 <Tab.Container id="playground-tabs" defaultActiveKey="document">
-                    <Nav variant="pills" className="panel-bg-2 border-bottom border-secondary p-2">
-                        <Nav.Item className="all-reset">
-                            <Nav.Link eventKey="document" color="link">
+                    <Nav className="panel-bg-2 border-bottom border-secondary p-2">
+                        <Nav.Item>
+                            <Nav.Link eventKey="document">
                                 <Icon icon="document" />
                                 Document
                             </Nav.Link>

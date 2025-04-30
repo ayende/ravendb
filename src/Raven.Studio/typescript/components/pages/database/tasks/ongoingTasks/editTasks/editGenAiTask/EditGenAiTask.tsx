@@ -94,7 +94,7 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
 
     return (
         <FormProvider {...form}>
-            <form onSubmit={handleSubmit(handleSave)} className="h-100">
+            <form onSubmit={handleSubmit(handleSave)} className="h-100 edit-gen-ai-task">
                 <Row className="h-100 m-0">
                     <Col md={isTestOpen ? 6 : 8} className="p-4">
                         {currentStep.component}

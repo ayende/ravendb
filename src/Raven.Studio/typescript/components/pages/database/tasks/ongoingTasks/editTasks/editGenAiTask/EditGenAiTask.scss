@@ -1,4 +1,24 @@
 @use "Content/scss/sizes";
 @use "Content/scss/colors";
 
-// TODO remove
+.edit-gen-ai-task {
+    .nav-item {
+        .nav-link {
+            color: inherit;
+            border-radius: sizes.$border-radius;
+
+            &.active {
+                background-color: colors.$panel-bg-3;
+            }
+
+            &:hover {
+                opacity: 0.8;
+                background-image: none !important;
+            }
+
+            &:focus {
+                background-image: none !important;
+            }
+        }
+    }
+}
