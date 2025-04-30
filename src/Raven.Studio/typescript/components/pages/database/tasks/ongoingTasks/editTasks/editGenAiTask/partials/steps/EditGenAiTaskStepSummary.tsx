@@ -7,6 +7,8 @@ import { useAppDispatch, useAppSelector } from "components/store";
 import { editGenAiTaskActions, editGenAiTaskSelectors } from "../../store/editGenAiTaskSlice";
 import classNames from "classnames";
 import { AboutViewHeading } from "components/common/AboutView";
+import useDialog from "components/common/Dialog";
+import Code, { CodeLanguage } from "components/common/Code";
 
 export default function EditGenAiTaskStepSummary() {
     const dispatch = useAppDispatch();
@@ -16,7 +18,14 @@ export default function EditGenAiTaskStepSummary() {
 
     const formValues = useWatch({ control });
 
-    // TODO add preview click
+    const dialog = useDialog();
+
+    const showPreview = (value: string, language: CodeLanguage) => {
+        dialog({
+            title: "Preview",
+            message: <Code code={value} language={language} />,
+        });
+    };
 
     return (
         <>
@@ -75,10 +84,35 @@ export default function EditGenAiTaskStepSummary() {
                 )}
             </div>
             <HStack className="justify-content-between mt-4">
-                <div>Task creation</div>
+                <div>Specify task context</div>
                 <Button
                     variant="link"
                     onClick={() => dispatch(editGenAiTaskActions.currentStepSet("context"))}
+                    size="sm"
+                >
+                    <Icon icon="edit" /> Edit
+                </Button>
+            </HStack>
+            <div className="panel-bg-1 p-3 rounded-2 mt-1">
+                <HStack className="justify-content-between">
+                    <div>Collection name</div>
+                    <div>{formValues.collectionName}</div>
+                </HStack>
+                <HStack className="justify-content-between">
+                    <div>Script</div>
+                    <div>
+                        <ValueWithPreview
+                            value={formValues.script}
+                            handleClick={() => showPreview(formValues.script, "javascript")}
+                        />
+                    </div>
+                </HStack>
+            </div>
+            <HStack className="justify-content-between mt-4">
+                <div>Model input</div>
+                <Button
+                    variant="link"
+                    onClick={() => dispatch(editGenAiTaskActions.currentStepSet("modelInput"))}
                     size="sm"
                 >
                     <Icon icon="edit" /> Edit
@@ -94,19 +128,19 @@ export default function EditGenAiTaskStepSummary() {
                 <HStack className="justify-content-between">
                     <div>JSON schema</div>
                     <div>
-                        <ValueWithPreview value={formValues.jsonSchema} handleClick={() => {}} />
+                        <ValueWithPreview
+                            value={formValues.jsonSchema}
+                            handleClick={() => showPreview(formValues.jsonSchema, "json")}
+                        />
                     </div>
                 </HStack>
                 <HStack className="justify-content-between">
                     <div>Sample object</div>
                     <div>
-                        <ValueWithPreview value={formValues.sampleObject} handleClick={() => {}} />
-                    </div>
-                </HStack>
-                <HStack className="justify-content-between">
-                    <div>Script</div>
-                    <div>
-                        <ValueWithPreview value={formValues.script} handleClick={() => {}} />
+                        <ValueWithPreview
+                            value={formValues.sampleObject}
+                            handleClick={() => showPreview(formValues.sampleObject, "json")}
+                        />
                     </div>
                 </HStack>
             </div>
@@ -124,7 +158,10 @@ export default function EditGenAiTaskStepSummary() {
                 <HStack className="justify-content-between">
                     <div>Update script</div>
                     <div>
-                        <ValueWithPreview value={formValues.update} handleClick={() => {}} />
+                        <ValueWithPreview
+                            value={formValues.update}
+                            handleClick={() => showPreview(formValues.update, "javascript")}
+                        />
                     </div>
                 </HStack>
             </div>

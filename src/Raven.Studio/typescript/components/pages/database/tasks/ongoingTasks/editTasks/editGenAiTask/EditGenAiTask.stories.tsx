@@ -36,7 +36,8 @@ export const Context: StoryObj = {
     ...Basic,
     play: async ({ canvas }) => {
         await userEvent.type(await canvas.findByLabelText("Task Name"), "some-name");
-        await userEvent.click(canvas.getByText("Next"));
+        await userEvent.click(canvas.getByText("Select..."));
+        await userEvent.click(canvas.getByText("ai-name"));
         await userEvent.click(canvas.getByText("Next"));
     },
 };

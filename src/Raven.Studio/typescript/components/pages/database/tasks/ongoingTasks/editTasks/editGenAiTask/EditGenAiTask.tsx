@@ -15,10 +15,10 @@ import { NumberedList } from "components/common/NumberedList";
 import ListStepItem from "components/common/ListStepItem";
 import { EditGenAiTaskFormData, editGenAiTaskSchema } from "./utils/editGenAiTaskValidation";
 import { editGenAiTaskUtils } from "./utils/editGenAiTaskUtils";
-import EditGenAiTaskAdvancedMode from "./partials/EditGenAiTaskAdvancedMode";
 import ProgressBar from "react-bootstrap/ProgressBar";
 import Col from "react-bootstrap/Col";
 import Row from "react-bootstrap/Row";
+import EditGenAiTaskTestResults from "./partials/EditGenAiTaskTestResults";
 
 interface QueryParams {
     taskId: string;
@@ -31,7 +31,6 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
     const { tasksService } = useServices();
 
     const databaseName = useAppSelector(databaseSelectors.activeDatabaseName);
-    const isAdvancedMode = useAppSelector(editGenAiTaskSelectors.isAdvancedMode);
     const isTestOpen = useAppSelector(editGenAiTaskSelectors.isTestOpen);
 
     const taskId = queryParams?.taskId ? parseInt(queryParams.taskId) : null;
@@ -91,58 +90,60 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
     const currentStep = steps.find((x) => x.isCurrent);
     const currentStepIdx = steps.findIndex((x) => x.isCurrent);
 
-    return (
-        <Row className="h-100 m-0">
-            <Col md={isTestOpen ? 6 : 8} className="p-4">
-                <FormProvider {...form}>
-                    <form onSubmit={handleSubmit(handleSave)}>
-                        {isAdvancedMode ? <EditGenAiTaskAdvancedMode /> : currentStep.component}
-                    </form>
-                </FormProvider>
-            </Col>
-            <Col md={isTestOpen ? 6 : 4} className="panel-bg-1 p-4">
-                {!isTestOpen && (
-                    <div className="flex-grow">
-                        <div className="mb-3">
-                            <span>
-                                {currentStepIdx}/{steps.length} steps completed
-                            </span>
-                            <ProgressBar
-                                now={currentStepIdx}
-                                max={steps.length}
-                                variant="primary"
-                                style={{ height: 7 }}
-                                className="w-50 mt-1"
-                            />
-                        </div>
-                        <NumberedList>
-                            {steps.map((step, idx) => (
-                                <ListStepItem
-                                    key={step.title}
-                                    isCurrent={step.isCurrent}
-                                    isChecked={idx < currentStepIdx}
-                                    isInactive={idx > currentStepIdx}
-                                    className={classNames("cursor-pointer", {
-                                        "cursor-not-allowed": idx > currentStepIdx,
-                                    })}
-                                    onClick={() => {
-                                        if (idx > currentStepIdx) {
-                                            return;
-                                        }
+    // TODO move steps to component
 
-                                        dispatch(editGenAiTaskActions.currentStepSet(step.id));
-                                    }}
-                                >
-                                    <h5 className="mb-0" style={{ paddingTop: 4 }}>
-                                        {step.title}
-                                    </h5>
-                                </ListStepItem>
-                            ))}
-                        </NumberedList>
-                    </div>
-                )}
-                {isTestOpen && <div>test</div>}
-            </Col>
-        </Row>
+    return (
+        <FormProvider {...form}>
+            <form onSubmit={handleSubmit(handleSave)} className="h-100">
+                <Row className="h-100 m-0">
+                    <Col md={isTestOpen ? 6 : 8} className="p-4">
+                        {currentStep.component}
+                    </Col>
+                    <Col md={isTestOpen ? 6 : 4} className="panel-bg-1 p-4">
+                        {!isTestOpen && (
+                            <div className="flex-grow">
+                                <div className="mb-3">
+                                    <span>
+                                        {currentStepIdx}/{steps.length} steps completed
+                                    </span>
+                                    <ProgressBar
+                                        now={currentStepIdx}
+                                        max={steps.length}
+                                        variant="primary"
+                                        style={{ height: 7 }}
+                                        className="w-50 mt-1"
+                                    />
+                                </div>
+                                <NumberedList>
+                                    {steps.map((step, idx) => (
+                                        <ListStepItem
+                                            key={step.title}
+                                            isCurrent={step.isCurrent}
+                                            isChecked={idx < currentStepIdx}
+                                            isInactive={idx > currentStepIdx}
+                                            className={classNames("cursor-pointer", {
+                                                "cursor-not-allowed": idx > currentStepIdx,
+                                            })}
+                                            onClick={() => {
+                                                if (idx > currentStepIdx) {
+                                                    return;
+                                                }
+
+                                                dispatch(editGenAiTaskActions.currentStepSet(step.id));
+                                            }}
+                                        >
+                                            <h5 className="mb-0" style={{ paddingTop: 4 }}>
+                                                {step.title}
+                                            </h5>
+                                        </ListStepItem>
+                                    ))}
+                                </NumberedList>
+                            </div>
+                        )}
+                        {isTestOpen && <EditGenAiTaskTestResults />}
+                    </Col>
+                </Row>
+            </form>
+        </FormProvider>
     );
 }

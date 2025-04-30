@@ -652,10 +652,10 @@ export function FormPathSelector<
     );
 }
 
-export function FormValidationMessage(props: { children: string }) {
-    const { children } = props;
+export function FormValidationMessage(props: { children: string; className?: string }) {
+    const { children, className } = props;
     return (
-        <div className="validation-message text-start w-100 ">
+        <div className={classNames("validation-message text-start w-100", className)}>
             <div className="badge bg-danger rounded-pill">{children}</div>
         </div>
     );

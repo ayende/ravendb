@@ -4,6 +4,7 @@ import { FormGroup } from "components/common/Form";
 import Row from "react-bootstrap/Row";
 import Col from "react-bootstrap/Col";
 import { useFormContext } from "react-hook-form";
+import OptionalLabel from "components/common/OptionalLabel";
 
 export default function EditGenAiTaskModelFields() {
     const { control } = useFormContext();
@@ -23,7 +24,9 @@ export default function EditGenAiTaskModelFields() {
                 </Col>
                 <Col>
                     <FormGroup>
-                        <FormLabel>JSON Schema</FormLabel>
+                        <FormLabel>
+                            JSON Schema <OptionalLabel />
+                        </FormLabel>
                         <FormAceEditor control={control} name="jsonSchema" mode="json" />
                     </FormGroup>
                 </Col>

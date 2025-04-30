@@ -18,7 +18,9 @@ export const editGenAiTaskSchema = yup.object({
     script: yup.string().required(),
     // For testing
     documentId: yup.string(),
-    contextOutput: yup.string(),
+    playgroundDocument: yup.string(),
+    playgroundContexts: yup.array().of(yup.object({ value: yup.string() })),
+    playgroundModelOutputs: yup.array().of(yup.object({ value: yup.string() })),
 });
 
 export type EditGenAiTaskFormData = yup.InferType<typeof editGenAiTaskSchema>;
