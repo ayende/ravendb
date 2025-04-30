@@ -6,7 +6,7 @@ import { Icon } from "components/common/Icon";
 import Button from "react-bootstrap/Button";
 import { VStack } from "components/common/utilities/VStack";
 import { databaseSelectors } from "components/common/shell/databaseSliceSelectors";
-import { useAppSelector } from "components/store";
+import { useAppDispatch, useAppSelector } from "components/store";
 import { useServices } from "components/hooks/useServices";
 import { useAsyncDebounce } from "components/hooks/useAsyncDebounce";
 import documentMetadata from "models/database/documents/documentMetadata";
@@ -19,11 +19,15 @@ import {
 } from "components/common/Form";
 import Tab from "react-bootstrap/Tab";
 import Nav from "react-bootstrap/Nav";
-import { editGenAiTaskSelectors } from "../store/editGenAiTaskSlice";
+import { editGenAiTaskActions, editGenAiTaskSelectors } from "../store/editGenAiTaskSlice";
+import Collapse from "react-bootstrap/Collapse";
 
 export default function EditGenAiTaskPlayground() {
+    const dispatch = useAppDispatch();
+
     const databaseName = useAppSelector(databaseSelectors.activeDatabaseName);
     const currentStep = useAppSelector(editGenAiTaskSelectors.currentStep);
+    const isPlaygroundCollapsed = useAppSelector(editGenAiTaskSelectors.isPlaygroundCollapsed);
 
     const {
         control,
@@ -73,6 +77,7 @@ export default function EditGenAiTaskPlayground() {
 
     // TODO dashed border styles
     // TODO info tooltip
+    // TODO click edit
 
     return (
         <div className="mt-4">
@@ -83,103 +88,115 @@ export default function EditGenAiTaskPlayground() {
                 </div>
                 <div style={{ border: "1px dashed #555" }} className="flex-grow mx-2"></div>
                 <div>
-                    <Button variant="link" size="sm">
-                        <Icon icon="collapse-vertical" />
-                        Collapse
+                    <Button
+                        variant="link"
+                        size="xs"
+                        onClick={() => dispatch(editGenAiTaskActions.isPlaygroundCollapsedToggled())}
+                    >
+                        <Icon icon={isPlaygroundCollapsed ? "expand-vertical" : "collapse-vertical"} />
+                        {isPlaygroundCollapsed ? "Expand" : "Collapse"}
                     </Button>
                 </div>
             </HStack>
-            <div className="panel-bg-1 border border-secondary rounded-2">
-                <Tab.Container id="playground-tabs" defaultActiveKey="document">
-                    <Nav className="panel-bg-2 border-bottom border-secondary p-2">
-                        <Nav.Item>
-                            <Nav.Link eventKey="document">
-                                <Icon icon="document" />
-                                Document
-                            </Nav.Link>
-                        </Nav.Item>
-                        {currentStep === "modelInput" && contextsFieldsArray.fields.length > 0 && (
-                            <Nav.Item>
-                                <Nav.Link eventKey="context">
-                                    <Icon icon="indent" />
-                                    Context
-                                </Nav.Link>
-                            </Nav.Item>
-                        )}
-                        {currentStep === "updateScript" && modelOutputsFieldsArray.fields.length > 0 && (
-                            <Nav.Item>
-                                <Nav.Link eventKey="modelOutput">
-                                    <Icon icon="resources" />
-                                    Model output
-                                </Nav.Link>
-                            </Nav.Item>
-                        )}
-                    </Nav>
+            <Collapse in={!isPlaygroundCollapsed}>
+                <div className="panel-bg-1 border border-secondary rounded-2 mt-1">
+                    <Tab.Container id="playground-tabs" defaultActiveKey="document">
+                        <HStack className="panel-bg-2 border-bottom border-secondary p-2 justify-content-between">
+                            <Nav>
+                                <Nav.Item>
+                                    <Nav.Link eventKey="document">
+                                        <Icon icon="document" />
+                                        Document
+                                    </Nav.Link>
+                                </Nav.Item>
+                                {currentStep === "modelInput" && contextsFieldsArray.fields.length > 0 && (
+                                    <Nav.Item>
+                                        <Nav.Link eventKey="context">
+                                            <Icon icon="indent" />
+                                            Context
+                                        </Nav.Link>
+                                    </Nav.Item>
+                                )}
+                                {currentStep === "updateScript" && modelOutputsFieldsArray.fields.length > 0 && (
+                                    <Nav.Item>
+                                        <Nav.Link eventKey="modelOutput">
+                                            <Icon icon="resources" />
+                                            Model output
+                                        </Nav.Link>
+                                    </Nav.Item>
+                                )}
+                            </Nav>
+                            <Button variant="secondary" className="rounded-pill py-1" size="sm">
+                                <Icon icon="edit" />
+                                Edit mode
+                            </Button>
+                        </HStack>
 
-                    <Tab.Content className="p-3">
-                        <Tab.Pane eventKey="document">
-                            {!formValues.playgroundDocument && (
-                                <VStack className="align-items-center">
-                                    {errors.playgroundDocument && (
-                                        <FormValidationMessage className="d-flex justify-content-center mt-2">
-                                            {errors.playgroundDocument.message}
-                                        </FormValidationMessage>
-                                    )}
-                                    <FormGroup>
-                                        <FormLabel>Select document ID from the collection</FormLabel>
-                                        <FormSelectAutocomplete
-                                            control={control}
-                                            name="documentId"
-                                            options={asyncGetDocumentIdOptions.result ?? []}
-                                            isLoading={asyncGetDocumentIdOptions.loading}
-                                        />
-                                    </FormGroup>
-                                    <div className="mb-2">or</div>
-                                    <Button variant="primary" onClick={() => setValue("playgroundDocument", "{}")}>
-                                        <Icon icon="edit" />
-                                        Provide manually
-                                    </Button>
-                                </VStack>
-                            )}
-                            {formValues.playgroundDocument && (
-                                <div>
-                                    <HStack className="justify-content-end mb-1">
-                                        <Button
-                                            variant="link"
-                                            size="sm"
-                                            onClick={() => setValue("playgroundDocument", "")}
-                                        >
-                                            <Icon icon="reset" />
-                                            Reset selection
+                        <Tab.Content className="p-3">
+                            <Tab.Pane eventKey="document">
+                                {!formValues.playgroundDocument && (
+                                    <VStack className="align-items-center">
+                                        {errors.playgroundDocument && (
+                                            <FormValidationMessage className="d-flex justify-content-center mt-2">
+                                                {errors.playgroundDocument.message}
+                                            </FormValidationMessage>
+                                        )}
+                                        <FormGroup>
+                                            <FormLabel>Select document ID from the collection</FormLabel>
+                                            <FormSelectAutocomplete
+                                                control={control}
+                                                name="documentId"
+                                                options={asyncGetDocumentIdOptions.result ?? []}
+                                                isLoading={asyncGetDocumentIdOptions.loading}
+                                            />
+                                        </FormGroup>
+                                        <div className="mb-2">or</div>
+                                        <Button variant="primary" onClick={() => setValue("playgroundDocument", "{}")}>
+                                            <Icon icon="edit" />
+                                            Provide manually
                                         </Button>
-                                    </HStack>
-                                    <FormAceEditor control={control} name="playgroundDocument" mode="json" />
-                                </div>
-                            )}
-                        </Tab.Pane>
-                        <Tab.Pane eventKey="context">
-                            {contextsFieldsArray.fields.map((field, idx) => (
-                                <FormAceEditor
-                                    key={field.id}
-                                    control={control}
-                                    name={`playgroundContexts.${idx}`}
-                                    mode="json"
-                                />
-                            ))}
-                        </Tab.Pane>
-                        <Tab.Pane eventKey="modelOutput">
-                            {modelOutputsFieldsArray.fields.map((field, idx) => (
-                                <FormAceEditor
-                                    key={field.id}
-                                    control={control}
-                                    name={`playgroundModelOutputs.${idx}`}
-                                    mode="json"
-                                />
-                            ))}
-                        </Tab.Pane>
-                    </Tab.Content>
-                </Tab.Container>
-            </div>
+                                    </VStack>
+                                )}
+                                {formValues.playgroundDocument && (
+                                    <div>
+                                        <HStack className="justify-content-end mb-1">
+                                            <Button
+                                                variant="link"
+                                                size="sm"
+                                                onClick={() => setValue("playgroundDocument", "")}
+                                            >
+                                                <Icon icon="reset" />
+                                                Reset selection
+                                            </Button>
+                                        </HStack>
+                                        <FormAceEditor control={control} name="playgroundDocument" mode="json" />
+                                    </div>
+                                )}
+                            </Tab.Pane>
+                            <Tab.Pane eventKey="context">
+                                {contextsFieldsArray.fields.map((field, idx) => (
+                                    <FormAceEditor
+                                        key={field.id}
+                                        control={control}
+                                        name={`playgroundContexts.${idx}`}
+                                        mode="json"
+                                    />
+                                ))}
+                            </Tab.Pane>
+                            <Tab.Pane eventKey="modelOutput">
+                                {modelOutputsFieldsArray.fields.map((field, idx) => (
+                                    <FormAceEditor
+                                        key={field.id}
+                                        control={control}
+                                        name={`playgroundModelOutputs.${idx}`}
+                                        mode="json"
+                                    />
+                                ))}
+                            </Tab.Pane>
+                        </Tab.Content>
+                    </Tab.Container>
+                </div>
+            </Collapse>
         </div>
     );
 }

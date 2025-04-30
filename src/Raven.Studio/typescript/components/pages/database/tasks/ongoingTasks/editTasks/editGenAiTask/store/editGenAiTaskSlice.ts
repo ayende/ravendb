@@ -11,6 +11,7 @@ interface EditGenAiTaskState {
     modelOutputTestResults: string[];
     updateScriptTestResult: string;
     globalTestResult: Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.GenAiTestScriptResult;
+    isPlaygroundCollapsed: boolean;
 }
 
 const initialState: EditGenAiTaskState = {
@@ -22,6 +23,7 @@ const initialState: EditGenAiTaskState = {
     modelOutputTestResults: [],
     updateScriptTestResult: "",
     globalTestResult: null,
+    isPlaygroundCollapsed: false,
 };
 
 export const editGenAiTaskSlice = createSlice({
@@ -45,6 +47,9 @@ export const editGenAiTaskSlice = createSlice({
             action: PayloadAction<Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.GenAiTestScriptResult>
         ) => {
             state.globalTestResult = action.payload;
+        },
+        isPlaygroundCollapsedToggled: (state) => {
+            state.isPlaygroundCollapsed = !state.isPlaygroundCollapsed;
         },
         reset: () => initialState,
     },
@@ -78,4 +83,5 @@ export const editGenAiTaskSelectors = {
     contextTestResults: (state: RootState) => state.editGenAiTask.contextTestResults,
     modelOutputTestResults: (state: RootState) => state.editGenAiTask.modelOutputTestResults,
     updateScriptTestResult: (state: RootState) => state.editGenAiTask.updateScriptTestResult,
+    isPlaygroundCollapsed: (state: RootState) => state.editGenAiTask.isPlaygroundCollapsed,
 };
