@@ -124,8 +124,6 @@ for(const comment of this.Comments)
             session.SaveChanges();
         }
 
-        //WaitForUserToContinueTheTest(store);
-        
         etl.Wait(CancellationToken.None);
     }
 
