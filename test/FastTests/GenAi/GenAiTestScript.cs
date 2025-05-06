@@ -47,7 +47,7 @@ public class GenAiTestScript(ITestOutputHelper output) : RavenTestBase(output)
 
             using (database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
             {
-                var testAiGenScript = new TestGenAiScript
+                var testGenAiScript = new TestGenAiScript
                 {
                     DocumentId = id,
                     Configuration = new()
@@ -94,7 +94,7 @@ for (const comment of this.Comments)
                 };
 
                 // first stage - test context objects creation
-                var result = GenAiTask.TestScript(testAiGenScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+                var result = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
                 Assert.NotNull(result);
                 Assert.Equal(3, result.Results.Count);
 
@@ -114,9 +114,9 @@ for (const comment of this.Comments)
 
                 // second stage - test model call
 
-                testAiGenScript.Input = result.Results;
-                testAiGenScript.TestStage = TestStage.SendToModel;
-                result = GenAiTask.TestScript(testAiGenScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+                testGenAiScript.Input = result.Results;
+                testGenAiScript.TestStage = TestStage.SendToModel;
+                result = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
 
                 Assert.NotNull(result);
                 Assert.Equal(3, result.Results.Count);
@@ -134,9 +134,9 @@ for (const comment of this.Comments)
 
                 // third stage - test update script
 
-                testAiGenScript.Input = result.Results;
-                testAiGenScript.TestStage = TestStage.ApplyUpdateScript;
-                result = GenAiTask.TestScript(testAiGenScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+                testGenAiScript.Input = result.Results;
+                testGenAiScript.TestStage = TestStage.ApplyUpdateScript;
+                result = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
 
                 Assert.NotNull(result);
                 Assert.Equal(3, result.Results.Count);
@@ -679,7 +679,7 @@ Provide an explanation, confidence level (0.0–1.0), and summarize the comment 
 
             using (database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
             {
-                var testAiGenScript = new TestGenAiScript
+                var testGenAiScript = new TestGenAiScript
                 {
                     DocumentId = id,
                     Configuration = new()
@@ -716,7 +716,7 @@ for (const comment of this.Comments)
                 };
 
                 // first stage - test context objects creation
-                var firstRun = GenAiTask.TestScript(testAiGenScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+                var firstRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
                 Assert.NotNull(firstRun);
                 Assert.Equal(3, firstRun.Results.Count);
 
@@ -743,10 +743,10 @@ for (const comment of this.Comments)
                     doc.Comments.Add(newComment);
 
                     var bjro = store.Conventions.Serialization.DefaultConverter.ToBlittable(doc, context);
-                    testAiGenScript.Document = bjro;
+                    testGenAiScript.Document = bjro;
                 }
 
-                var secondRun = GenAiTask.TestScript(testAiGenScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+                var secondRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
                 Assert.NotNull(secondRun);
                 Assert.Equal(4, secondRun.Results.Count);
 
@@ -791,7 +791,7 @@ for (const comment of this.Comments)
 
             using (database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
             {
-                var testAiGenScript = new TestGenAiScript
+                var testGenAiScript = new TestGenAiScript
                 {
                     DocumentId = id,
                     Configuration = new()
@@ -828,7 +828,7 @@ for (const comment of this.Comments)
                 };
 
                 // first stage - test context objects creation
-                var firstRun = GenAiTask.TestScript(testAiGenScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+                var firstRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
                 Assert.NotNull(firstRun);
                 Assert.Equal(3, firstRun.Results.Count);
 
@@ -848,8 +848,8 @@ for (const comment of this.Comments)
 
                 // modify the context objects and test the second stage (model call)
 
-                testAiGenScript.TestStage = TestStage.SendToModel;
-                testAiGenScript.Input = firstRun.Results;
+                testGenAiScript.TestStage = TestStage.SendToModel;
+                testGenAiScript.Input = firstRun.Results;
 
                 var djv = new DynamicJsonValue
                 {
@@ -859,13 +859,13 @@ for (const comment of this.Comments)
                 };
                 var contextObject = context.ReadObject(djv, id);
 
-                testAiGenScript.Input.Add(new GenAiResultItem
+                testGenAiScript.Input.Add(new GenAiResultItem
                 {
                     DocId = id,
                     ContextOutput = new ContextOutput { Context = contextObject }
                 });
 
-                var secondRun = GenAiTask.TestScript(testAiGenScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+                var secondRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
                 Assert.NotNull(secondRun);
                 Assert.Equal(4, secondRun.Results.Count);
 
@@ -923,7 +923,7 @@ for (const comment of this.Comments)
 
             using (database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
             {
-                var testAiGenScript = new TestGenAiScript
+                var testGenAiScript = new TestGenAiScript
                 {
                     DocumentId = id,
                     Configuration = new()
@@ -960,7 +960,7 @@ for (const comment of this.Comments)
                 };
 
                 // create context objects
-                var bjro = store.Conventions.Serialization.DefaultConverter.ToBlittable(testAiGenScript, context);
+                var bjro = store.Conventions.Serialization.DefaultConverter.ToBlittable(testGenAiScript, context);
                 var cmd = new GenAiTestCmd(DocumentConventions.DefaultForServer, bjro);
                 using var requestExecutor = store.GetRequestExecutor();
                 await requestExecutor.ExecuteAsync(cmd, context);
@@ -978,7 +978,7 @@ for (const comment of this.Comments)
                 Assert.Equal(3, comments.Length);
 
                 var dja = new DynamicJsonArray();
-                testAiGenScript.Input = [];
+                testGenAiScript.Input = [];
 
                 foreach (var item in resultItems)
                 {
@@ -1150,7 +1150,7 @@ for (const comment of this.Comments)
 
             using (database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
             {
-                var testAiGenScript = new TestGenAiScript
+                var testGenAiScript = new TestGenAiScript
                 {
                     DocumentId = id,
                     Configuration = new()
@@ -1215,7 +1215,7 @@ for (const comment of this.Comments)
                 }
 
                 // create context objects
-                var bjro = store.Conventions.Serialization.DefaultConverter.ToBlittable(testAiGenScript, context);
+                var bjro = store.Conventions.Serialization.DefaultConverter.ToBlittable(testGenAiScript, context);
                 bjro.Modifications = new DynamicJsonValue(bjro)
                 {
                     [nameof(TestGenAiScript.Document)] = djv
@@ -1268,7 +1268,7 @@ for (const comment of this.Comments)
 
             using (database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
             {
-                var testAiGenScript = new TestGenAiScript
+                var testGenAiScript = new TestGenAiScript
                 {
                     Configuration = new()
                     {
@@ -1298,7 +1298,16 @@ for (const comment of this.Comments)
     context({Text: comment.Text, Author: comment.Author, Id: comment.Id}, comment.AiHash);
 }
 "
-                        }
+                        },
+                        Update = @"const idx = this.Comments.findIndex(c => c.Id == $input.Id);  
+if($output.Blocked)
+{
+    this.Comments.splice(idx, 1); // remove
+}
+else 
+{
+    this.Comments[idx].AiHash = $aiHash;
+}"
                     },
                     TestStage = TestStage.CreateContextObjects
                 };
@@ -1315,10 +1324,10 @@ for (const comment of this.Comments)
                     "Indexes in RavenDB are a powerful way to optimize query performance. This blog post walks through auto-indexes, static indexes, and best practices when designing queries that scale."
                 );
 
-                testAiGenScript.Document = store.Conventions.Serialization.DefaultConverter.ToBlittable(post, context);
+                testGenAiScript.Document = store.Conventions.Serialization.DefaultConverter.ToBlittable(post, context);
 
                 // first stage - test context objects creation
-                var firstRun = GenAiTask.TestScript(testAiGenScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+                var firstRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
                 Assert.NotNull(firstRun);
                 Assert.Equal(3, firstRun.Results.Count);
 
@@ -1340,9 +1349,9 @@ for (const comment of this.Comments)
 
                 var newComment = new GenAiBasics.Comment("Amazing post! By the way, I just made $7,000 last week using this weird AI trading bot — check it out at easyprofits-now.example!", "unreal");
                 post.Comments.Add(newComment);
-                testAiGenScript.Document = store.Conventions.Serialization.DefaultConverter.ToBlittable(post, context);
+                testGenAiScript.Document = store.Conventions.Serialization.DefaultConverter.ToBlittable(post, context);
 
-                var secondRun = GenAiTask.TestScript(testAiGenScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+                var secondRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
                 Assert.NotNull(secondRun);
                 Assert.Equal(4, secondRun.Results.Count);
 
@@ -1359,6 +1368,44 @@ for (const comment of this.Comments)
                     Assert.True(item.ContextOutput.Context.TryGet("Author", out string _));
                     Assert.True(item.ContextOutput.Context.TryGet("Id", out string _));
                 }
+
+                // test model call
+
+                testGenAiScript.Input = secondRun.Results;
+                testGenAiScript.TestStage = TestStage.SendToModel;
+
+                var thirdRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+                Assert.NotNull(thirdRun);
+                Assert.Equal(4, thirdRun.Results.Count);
+
+                var spamComments = 0;
+                foreach (var item in thirdRun.Results)
+                {
+                    Assert.NotNull(item.ContextOutput?.Context);
+                    Assert.NotNull(item.ModelOutput?.Output);
+
+                    Assert.True(item.ModelOutput.Output.TryGet("Blocked", out bool blocked));
+                    if (blocked)
+                        spamComments++;
+
+                    Assert.True(item.ModelOutput.Output.TryGet("Reason", out string r));
+                    Assert.NotNull(r);
+                }
+
+                // final stage - test update script
+
+                testGenAiScript.Input = thirdRun.Results;
+                testGenAiScript.TestStage = TestStage.ApplyUpdateScript;
+                var finalRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+
+                Assert.NotNull(finalRun);
+                Assert.Equal(4, finalRun.Results.Count);
+
+                Assert.NotNull(finalRun.OutputDocument);
+                Assert.True(finalRun.OutputDocument.TryGet(nameof(GenAiBasics.Post.Comments), out comments));
+
+                var expected = 4 - spamComments;
+                Assert.Equal(expected, comments.Length);
             }
         }
     }

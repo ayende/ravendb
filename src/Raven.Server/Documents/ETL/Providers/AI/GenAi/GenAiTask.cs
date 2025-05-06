@@ -37,6 +37,7 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
     private int _fallbackCounter = 0;
     private ChatCompletionClient _chatCompletionClient;
 
+    private const string TestDocumentId = "GenAi/TestDocument";
 
     public GenAiTask(Transformation transformation, GenAiConfiguration configuration, DocumentDatabase database, ServerStore serverStore)
         : base(transformation, configuration, database, serverStore, GenAiTaskTag)
@@ -297,7 +298,8 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
             document = new Document
             {
                 Data = testGenAiScript.Document, 
-                ChangeVector = ChangeVectorUtils.NewChangeVector(context.DocumentDatabase.ServerStore.NodeTag, long.MaxValue, context.DocumentDatabase.DbBase64Id)
+                ChangeVector = ChangeVectorUtils.NewChangeVector(context.DocumentDatabase.ServerStore.NodeTag, long.MaxValue, context.DocumentDatabase.DbBase64Id),
+                Id = context.GetLazyString(TestDocumentId)
             };
         }
         else
@@ -336,6 +338,15 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
                     items = testGenAiScript.Input;
                     PatchRequest req = new(Configuration.Update, PatchRequestType.AiGen);
                     PatchDocumentCommand lastPatch = null;
+
+                    if (testGenAiScript.Document != null)
+                    {
+                        // the document that was provided as input does not exist (we gave it a dummy id),
+                        // so it needs to be written to storage before the patch.
+                        // the write-tx is not commited so this won't be persisted.
+
+                        context.DocumentDatabase.DocumentsStorage.Put(context, document.Id, expectedChangeVector: null, document.Data);
+                    }
 
                     foreach (var item in items)
                     {
