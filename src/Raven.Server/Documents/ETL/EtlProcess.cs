@@ -20,7 +20,6 @@ using Raven.Client.Exceptions.Documents.Patching;
 using Raven.Client.Json.Serialization;
 using Raven.Client.ServerWide;
 using Raven.Client.Util;
-using Raven.Server.Documents.AI.AiGen;
 using Raven.Server.Documents.ETL.Metrics;
 using Raven.Server.Documents.ETL.Providers.AI;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings;
@@ -1101,14 +1100,6 @@ namespace Raven.Server.Documents.ETL
             where TC : EtlConfiguration<TCS>
             where TCS : ConnectionString
         {
-            using var tx = testScript.IsDelete
-                ? context.OpenWriteTransaction() 
-                : context.OpenReadTransaction(); // we open write tx to test deletion but we won't commit it
-
-            var document = database.DocumentsStorage.Get(context, testScript.DocumentId);
-            if (document == null)
-                throw new InvalidOperationException($"Document {testScript.DocumentId} does not exist");
-
             TCS connection = null;
 
             var relationalTestScript = testScript as TestRelationalDatabaseEtlScript<TCS, TC>;
@@ -1225,6 +1216,29 @@ namespace Raven.Server.Documents.ETL
                                                     "while ETL test expects to get exactly 1 transformation script");
             }
 
+            List<string> debugOutput;
+            if (testScript.Configuration.EtlType == EtlType.GenAi)
+            {
+                var testGenAiScript = testScript as TestGenAiScript;
+                var aiGenConfiguration = testGenAiScript?.Configuration;
+                using (var genAiTask = new GenAiTask(testScript.Configuration.Transforms[0], aiGenConfiguration, database, database.ServerStore))
+                using (genAiTask.EnterTestMode(out debugOutput))
+                {
+                    genAiTask.EnsureThreadAllocationStats();
+                    var result = genAiTask.RunTest(testGenAiScript, context);
+                    result.DebugOutput = debugOutput;
+                    return result;
+                }
+            }
+
+            using var tx = testScript.IsDelete
+                ? context.OpenWriteTransaction()
+                : context.OpenReadTransaction(); // we open write tx to test deletion but we won't commit it
+
+            var document = database.DocumentsStorage.Get(context, testScript.DocumentId);
+            if (document == null)
+                throw new InvalidOperationException($"Document {testScript.DocumentId} does not exist");
+
             var docCollection = database.DocumentsStorage.ExtractCollectionName(context, document.Data).Name;
 
             if (testScript.Configuration.Transforms[0].ApplyToAllDocuments == false &&
@@ -1252,8 +1266,6 @@ namespace Raven.Server.Documents.ETL
 
                 tombstone = database.DocumentsStorage.GetTombstoneByEtag(context, deleteResult.Value.Etag);
             }
-
-            List<string> debugOutput;
 
             switch (testScript.Configuration.EtlType)
             {
@@ -1474,27 +1486,6 @@ namespace Raven.Server.Documents.ETL
                         var results = embeddingsGenerationTask.Transform([embeddingsGenerationItem], context, new EmbeddingsGenerationStatsScope(new EtlRunStats()), new EtlProcessState());
 
                         var result  = embeddingsGenerationTask.RunTest(results, context);
-                        result.DebugOutput = debugOutput;
-                        return result;
-                    }
-                case EtlType.GenAi:
-                    var testGenAiScript = testScript as TestGenAiScript;
-                    var aiGenConfiguration = testGenAiScript?.Configuration;
-                    using (var genAiTask = new GenAiTask(testScript.Configuration.Transforms[0], aiGenConfiguration, database, database.ServerStore))
-                    using (genAiTask.EnterTestMode(out debugOutput))
-                    {
-                        genAiTask.EnsureThreadAllocationStats();
-
-                        var doc = testGenAiScript?.Document != null
-                            ? new Document
-                            {
-                                Data = testGenAiScript.Document,
-                                ChangeVector = document.ChangeVector,
-                                Etag = document.Etag
-                            }
-                            : document;
-
-                        var result  = genAiTask.RunTest(doc, testGenAiScript, context);
                         result.DebugOutput = debugOutput;
                         return result;
                     }

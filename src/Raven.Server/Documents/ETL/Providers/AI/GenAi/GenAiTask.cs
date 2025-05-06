@@ -18,6 +18,7 @@ using Raven.Server.Documents.Replication.ReplicationItems;
 using Raven.Server.Documents.TimeSeries;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
+using Raven.Server.Utils;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using Sparrow.Server.Utils;
@@ -282,23 +283,43 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
         return exceptions;
     }
 
-    public TestEtlScriptResult RunTest(Document document, TestGenAiScript testGenAiScript, DocumentsOperationContext context)
+    public TestEtlScriptResult RunTest(TestGenAiScript testGenAiScript, DocumentsOperationContext context)
     {
         List<GenAiResultItem> items;
         List<Exception> exceptions = null;
         BlittableJsonReaderObject outputDocument = null;
 
-        using (var old = document)
+        Document document;
+        if (testGenAiScript.Document != null)
         {
-            document = document.Clone(context);
+            document = new Document
+            {
+                Data = testGenAiScript.Document, 
+                ChangeVector = ChangeVectorUtils.NewChangeVector(context.DocumentDatabase.ServerStore.NodeTag, long.MaxValue, context.DocumentDatabase.DbBase64Id)
+            };
+        }
+        else
+        {
+            if (string.IsNullOrEmpty(testGenAiScript.DocumentId))
+                throw new InvalidOperationException("Document or DocumentId must be provided to run GenAI test");
+
+            context.OpenReadTransaction();
+            document = context.DocumentDatabase.DocumentsStorage.Get(context, testGenAiScript.DocumentId)?.Clone(context);
+            if (document == null)
+                throw new InvalidOperationException($"Document {testGenAiScript.DocumentId} does not exist");
         }
 
         switch (testGenAiScript.TestStage)
         {
             case TestStage.CreateContextObjects:
+                if (context.HasTransaction == false)
+                    context.OpenReadTransaction();
+
                 var aiEtlItem = new AiEtlItem(document, Configuration.Collection);
                 var transformedResults = Transform([aiEtlItem], context, new GenAiStatsScope(new EtlRunStats()), new EtlProcessState());
                 items = PrepareItemsBeforeSendingToModel(transformedResults);
+
+                context.CloseTransaction();
                 break;
             case TestStage.SendToModel:
                 items = testGenAiScript.Input;

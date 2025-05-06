@@ -1258,6 +1258,111 @@ for (const comment of this.Comments)
         }
     }
 
+    [RavenTheory(RavenTestCategory.Etl | RavenTestCategory.Ai)]
+    [RavenData(DatabaseMode = RavenDatabaseMode.Single)]
+    public async Task CanTestGenAi_WithFakeDocumentAndNoId(Options options)
+    {
+        using (var store = GetDocumentStore(options))
+        {
+            var database = await GetDocumentDatabaseInstanceFor(store);
+
+            using (database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
+            {
+                var testAiGenScript = new TestGenAiScript
+                {
+                    Configuration = new()
+                    {
+                        Name = "Check blog comments spam",
+                        Connection = new AiConnectionString
+                        {
+                            Name = "ollama-local-deepseek-r1",
+                            Identifier = "ollama-local-deepseek-r1",
+                            OllamaSettings = new OllamaSettings
+                            {
+                                Uri = "http://127.0.0.1:11434/",
+                                Model = "llama3.2:latest"
+                            }
+                        },
+                        Collection = "Posts",
+                        Prompt = "Check if the following blog post comment is spam or not",
+                        SampleObject = JsonConvert.SerializeObject(new
+                        {
+                            Blocked = true,
+                            Reason = "Concise reason for why this comment was marked as spam or harmful"
+                        }),
+                        GenAiTransformation = new GenAiTransformation
+                        {
+                            Script = @"
+for (const comment of this.Comments)
+{
+    context({Text: comment.Text, Author: comment.Author, Id: comment.Id}, comment.AiHash);
+}
+"
+                        }
+                    },
+                    TestStage = TestStage.CreateContextObjects
+                };
+
+                // create a document instance (without saving it) and pass it as input to TestScript
+
+                var post = new GenAiBasics.Post(
+                    [
+                        new GenAiBasics.Comment("This article really helped me understand how indexes work in RavenDB. Great write-up!", "sarah_j"),
+                        new GenAiBasics.Comment("Learn how to make $5000/month from home! Visit click4cash.biz.example now!!!", "shady_marketer"),
+                        new GenAiBasics.Comment("I tried this approach with IO_Uring in the past, but I run into problems with security around the IO systems and the CISO didn't let us deploy that to production. It is more mature at this point?", "dave")
+                    ],
+                    "Understanding Indexing in RavenDB",
+                    "Indexes in RavenDB are a powerful way to optimize query performance. This blog post walks through auto-indexes, static indexes, and best practices when designing queries that scale."
+                );
+
+                testAiGenScript.Document = store.Conventions.Serialization.DefaultConverter.ToBlittable(post, context);
+
+                // first stage - test context objects creation
+                var firstRun = GenAiTask.TestScript(testAiGenScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+                Assert.NotNull(firstRun);
+                Assert.Equal(3, firstRun.Results.Count);
+
+                Assert.NotNull(firstRun.InputDocument);
+                Assert.True(firstRun.InputDocument.TryGet(nameof(GenAiBasics.Post.Comments), out BlittableJsonReaderArray comments));
+                Assert.Equal(3, comments.Length);
+
+                foreach (var item in firstRun.Results)
+                {
+                    Assert.Null(item.ContextOutput.AiHash);
+                    Assert.False(item.ContextOutput.IsCached);
+
+                    Assert.True(item.ContextOutput.Context.TryGet("Text", out string _));
+                    Assert.True(item.ContextOutput.Context.TryGet("Author", out string _));
+                    Assert.True(item.ContextOutput.Context.TryGet("Id", out string _));
+                }
+
+                // modify the document and test the context objects creation again
+
+                var newComment = new GenAiBasics.Comment("Amazing post! By the way, I just made $7,000 last week using this weird AI trading bot — check it out at easyprofits-now.example!", "unreal");
+                post.Comments.Add(newComment);
+                testAiGenScript.Document = store.Conventions.Serialization.DefaultConverter.ToBlittable(post, context);
+
+                var secondRun = GenAiTask.TestScript(testAiGenScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+                Assert.NotNull(secondRun);
+                Assert.Equal(4, secondRun.Results.Count);
+
+                Assert.NotNull(secondRun.InputDocument);
+                Assert.True(secondRun.InputDocument.TryGet(nameof(GenAiBasics.Post.Comments), out comments));
+                Assert.Equal(4, comments.Length);
+
+                foreach (var item in secondRun.Results)
+                {
+                    Assert.Null(item.ContextOutput.AiHash);
+                    Assert.False(item.ContextOutput.IsCached);
+
+                    Assert.True(item.ContextOutput.Context.TryGet("Text", out string _));
+                    Assert.True(item.ContextOutput.Context.TryGet("Author", out string _));
+                    Assert.True(item.ContextOutput.Context.TryGet("Id", out string _));
+                }
+            }
+        }
+    }
+
     private class GenAiTestCmd : RavenCommand<BlittableJsonReaderObject>
     {
         private readonly DocumentConventions _conventions;
