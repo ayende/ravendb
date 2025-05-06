@@ -1,19 +1,23 @@
-import { createSlice, PayloadAction } from "@reduxjs/toolkit";
+import { createAsyncThunk, createSlice, PayloadAction } from "@reduxjs/toolkit";
 import { RootState } from "components/store";
 import { EditGenAiTaskStepId } from "../hooks/useEditGenAiTaskSteps";
+import { services } from "components/hooks/useServices";
+import { loadableData } from "components/models/common";
+import { createFailureState, createIdleState, createSuccessState } from "components/utils/common";
 
 interface EditGenAiTaskState {
     taskId: number;
     sourceView: EditAiTaskSourceView;
     currentStep: EditGenAiTaskStepId;
     testStage: Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.TestStage;
-    contextTestResults: string[];
-    modelOutputTestResults: string[];
-    updateScriptTestResult: string;
+    contextTest: loadableData<string[]>;
+    modelInputTest: loadableData<string[]>;
+    updateScriptTest: loadableData<string>;
     globalTestResult: Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.GenAiTestScriptResult;
     isPlaygroundCollapsed: boolean;
     isPlaygroundEditMode: boolean;
     aiConnectionStrings: Record<string, Raven.Client.Documents.Operations.AI.AiConnectionString>;
+    isTestOpen: boolean;
 }
 
 const initialState: EditGenAiTaskState = {
@@ -21,13 +25,14 @@ const initialState: EditGenAiTaskState = {
     sourceView: "OngoingTasks",
     currentStep: "basic",
     testStage: null,
-    contextTestResults: [],
-    modelOutputTestResults: [],
-    updateScriptTestResult: "",
+    contextTest: createIdleState([]),
+    modelInputTest: createIdleState([]),
+    updateScriptTest: createIdleState(""),
     globalTestResult: null,
     isPlaygroundCollapsed: false,
     isPlaygroundEditMode: false,
     aiConnectionStrings: {}, // TODO use it to basic step test
+    isTestOpen: false,
 };
 
 export const editGenAiTaskSlice = createSlice({
@@ -45,15 +50,6 @@ export const editGenAiTaskSlice = createSlice({
         },
         testStageSet: (state, action: PayloadAction<Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.TestStage>) => {
             state.testStage = action.payload;
-        },
-        contextTestResultsSet: (state, action: PayloadAction<string[]>) => {
-            state.contextTestResults = action.payload;
-        },
-        modelOutputTestResultsSet: (state, action: PayloadAction<string[]>) => {
-            state.modelOutputTestResults = action.payload;
-        },
-        updateScriptTestResultSet: (state, action: PayloadAction<string>) => {
-            state.updateScriptTestResult = action.payload;
         },
         globalTestResultSet: (
             state,
@@ -73,38 +69,105 @@ export const editGenAiTaskSlice = createSlice({
         ) => {
             state.aiConnectionStrings = action.payload;
         },
+        isTestOpenSet: (state, action: PayloadAction<boolean>) => {
+            state.isTestOpen = action.payload;
+        },
         reset: () => initialState,
+    },
+    extraReducers: (builder) => {
+        builder
+            .addCase(testContext.pending, (state) => {
+                state.contextTest.status = "loading";
+            })
+            .addCase(testContext.rejected, (state, action) => {
+                state.contextTest = createFailureState(action.error.message);
+            })
+            .addCase(testContext.fulfilled, (state, action) => {
+                state.globalTestResult = action.payload;
+                state.isTestOpen = true;
+
+                state.contextTest = createSuccessState(
+                    action.payload.Results.map((x) =>
+                        x.ContextOutput ? JSON.stringify(x.ContextOutput.Context, null, 4) : null
+                    )
+                );
+            })
+            .addCase(testModelInput.pending, (state) => {
+                state.modelInputTest.status = "loading";
+            })
+            .addCase(testModelInput.rejected, (state, action) => {
+                state.modelInputTest = createFailureState(action.error.message);
+            })
+            .addCase(testModelInput.fulfilled, (state, action) => {
+                state.globalTestResult = action.payload;
+                state.isTestOpen = true;
+
+                state.modelInputTest = createSuccessState(
+                    action.payload.Results.map((x) =>
+                        x.ModelOutput ? JSON.stringify(x.ModelOutput.Output, null, 4) : null
+                    )
+                );
+            })
+            .addCase(testUpdateScript.pending, (state) => {
+                state.updateScriptTest.status = "loading";
+            })
+            .addCase(testUpdateScript.rejected, (state, action) => {
+                state.updateScriptTest = createFailureState(action.error.message);
+            })
+            .addCase(testUpdateScript.fulfilled, (state, action) => {
+                state.globalTestResult = action.payload;
+                state.isTestOpen = true;
+
+                state.updateScriptTest = createSuccessState(
+                    action.payload.OutputDocument ? JSON.stringify(action.payload.OutputDocument, null, 4) : null
+                );
+            });
     },
 });
 
-function selectIsTestOpen(state: RootState): boolean {
-    if (state.editGenAiTask.testStage === "CreateContextObjects" && state.editGenAiTask.currentStep === "context") {
-        return true;
+const testContext = createAsyncThunk(
+    editGenAiTaskSlice.name + "/testContext",
+    async (payload: {
+        databaseName: string;
+        dto: Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.TestGenAiScript;
+    }): Promise<Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.GenAiTestScriptResult> => {
+        return services.tasksService.testGenAi(payload.databaseName, payload.dto);
     }
+);
 
-    if (state.editGenAiTask.testStage === "SendToModel" && state.editGenAiTask.currentStep === "modelInput") {
-        return true;
+const testModelInput = createAsyncThunk(
+    editGenAiTaskSlice.name + "/testModelInput",
+    async (payload: {
+        databaseName: string;
+        dto: Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.TestGenAiScript;
+    }): Promise<Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.GenAiTestScriptResult> => {
+        return services.tasksService.testGenAi(payload.databaseName, payload.dto);
     }
+);
 
-    if (state.editGenAiTask.testStage === "ApplyUpdateScript" && state.editGenAiTask.currentStep === "updateScript") {
-        return true;
+const testUpdateScript = createAsyncThunk(
+    editGenAiTaskSlice.name + "/testUpdateScript",
+    async (payload: {
+        databaseName: string;
+        dto: Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.TestGenAiScript;
+    }): Promise<Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.GenAiTestScriptResult> => {
+        return services.tasksService.testGenAi(payload.databaseName, payload.dto);
     }
+);
 
-    return false;
-}
+export const editGenAiTaskActions = { ...editGenAiTaskSlice.actions, testContext, testModelInput };
 
-export const editGenAiTaskActions = editGenAiTaskSlice.actions;
 export const editGenAiTaskSelectors = {
     taskId: (state: RootState) => state.editGenAiTask.taskId,
     isNewTask: (state: RootState) => state.editGenAiTask.taskId == null,
     isEditTask: (state: RootState) => state.editGenAiTask.taskId != null,
     sourceView: (state: RootState) => state.editGenAiTask.sourceView,
     currentStep: (state: RootState) => state.editGenAiTask.currentStep,
-    isTestOpen: selectIsTestOpen,
+    isTestOpen: (state: RootState) => state.editGenAiTask.isTestOpen,
     testStage: (state: RootState) => state.editGenAiTask.testStage,
-    contextTestResults: (state: RootState) => state.editGenAiTask.contextTestResults,
-    modelOutputTestResults: (state: RootState) => state.editGenAiTask.modelOutputTestResults,
-    updateScriptTestResult: (state: RootState) => state.editGenAiTask.updateScriptTestResult,
+    contextTest: (state: RootState) => state.editGenAiTask.contextTest,
+    modelInputTest: (state: RootState) => state.editGenAiTask.modelInputTest,
+    updateScriptTest: (state: RootState) => state.editGenAiTask.updateScriptTest,
     isPlaygroundCollapsed: (state: RootState) => state.editGenAiTask.isPlaygroundCollapsed,
     isPlaygroundEditMode: (state: RootState) => state.editGenAiTask.isPlaygroundEditMode,
     globalTestResult: (state: RootState) => state.editGenAiTask.globalTestResult,

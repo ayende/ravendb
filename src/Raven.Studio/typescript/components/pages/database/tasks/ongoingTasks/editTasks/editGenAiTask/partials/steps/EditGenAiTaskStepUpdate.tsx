@@ -19,6 +19,7 @@ export default function EditGenAiTaskStepUpdate() {
         const isValid = await trigger(["update"]);
 
         if (isValid) {
+            dispatch(editGenAiTaskActions.isTestOpenSet(false));
             dispatch(editGenAiTaskActions.currentStepSet("summary"));
         }
     };

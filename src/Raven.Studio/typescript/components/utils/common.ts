@@ -11,9 +11,9 @@ export function withPreventDefault(action: (...args: any[]) => void): MouseEvent
     };
 }
 
-export function createIdleState(): loadableData<any> {
+export function createIdleState<T>(initialData: T = null): loadableData<T> {
     return {
-        data: null,
+        data: initialData,
         status: "idle",
         error: null,
     };

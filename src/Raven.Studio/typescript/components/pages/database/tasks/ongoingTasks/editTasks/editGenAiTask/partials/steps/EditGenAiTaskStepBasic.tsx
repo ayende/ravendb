@@ -11,7 +11,6 @@ import { useServices } from "components/hooks/useServices";
 import { databaseSelectors } from "components/common/shell/databaseSliceSelectors";
 import { useAsyncCallback } from "react-async-hook";
 import ButtonWithSpinner from "components/common/ButtonWithSpinner";
-import RichAlert from "components/common/RichAlert";
 import ConnectionTestResult from "components/common/connectionTests/ConnectionTestResult";
 
 export function EditGenAiTaskStepBasic() {

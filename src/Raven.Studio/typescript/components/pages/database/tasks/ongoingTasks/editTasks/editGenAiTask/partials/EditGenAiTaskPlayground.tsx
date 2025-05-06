@@ -24,6 +24,7 @@ import Collapse from "react-bootstrap/Collapse";
 import useConfirm from "components/common/ConfirmDialog";
 import RichAlert from "components/common/RichAlert";
 import classNames from "classnames";
+import { useEffect } from "react";
 
 export default function EditGenAiTaskPlayground() {
     const dispatch = useAppDispatch();
@@ -32,14 +33,14 @@ export default function EditGenAiTaskPlayground() {
     const currentStep = useAppSelector(editGenAiTaskSelectors.currentStep);
     const isPlaygroundCollapsed = useAppSelector(editGenAiTaskSelectors.isPlaygroundCollapsed);
     const isPlaygroundEditMode = useAppSelector(editGenAiTaskSelectors.isPlaygroundEditMode);
-    const contextTestResults = useAppSelector(editGenAiTaskSelectors.contextTestResults);
-    const modelOutputTestResults = useAppSelector(editGenAiTaskSelectors.modelOutputTestResults);
-    const updateScriptTestResult = useAppSelector(editGenAiTaskSelectors.updateScriptTestResult);
+    const contextTest = useAppSelector(editGenAiTaskSelectors.contextTest);
+    const modelInputTest = useAppSelector(editGenAiTaskSelectors.modelInputTest);
 
     const {
         control,
         setValue,
         formState: { errors },
+        clearErrors,
     } = useFormContext<EditGenAiTaskFormData>();
 
     const confirm = useConfirm();
@@ -105,16 +106,22 @@ export default function EditGenAiTaskPlayground() {
     // TODO click edit
 
     const getActiveTab = () => {
-        if (currentStep === "modelInput" && contextTestResults.length > 0) {
+        if (currentStep === "modelInput" && contextTest.data?.length > 0) {
             return "context";
         }
 
-        if (currentStep === "updateScript" && modelOutputTestResults.length > 0) {
+        if (currentStep === "updateScript" && modelInputTest.data?.length > 0) {
             return "modelOutput";
         }
 
         return "document";
     };
+
+    useEffect(() => {
+        if (formValues.playgroundDocument) {
+            clearErrors("playgroundDocument");
+        }
+    }, [formValues.playgroundDocument]);
 
     return (
         <div className="mt-4">
@@ -195,10 +202,16 @@ export default function EditGenAiTaskPlayground() {
                                                 name="documentId"
                                                 options={asyncGetDocumentIdOptions.result ?? []}
                                                 isLoading={asyncGetDocumentIdOptions.loading}
+                                                onMenuClose={() => clearErrors("playgroundDocument")}
                                             />
                                         </FormGroup>
                                         <div className="mb-2">or</div>
-                                        <Button variant="primary" onClick={() => setValue("playgroundDocument", "{}")}>
+                                        <Button
+                                            variant="primary"
+                                            onClick={() =>
+                                                setValue("playgroundDocument", "{}", { shouldValidate: true })
+                                            }
+                                        >
                                             <Icon icon="edit" />
                                             Provide manually
                                         </Button>
@@ -233,6 +246,7 @@ export default function EditGenAiTaskPlayground() {
                                             control={control}
                                             name={`playgroundContexts.${idx}.value`}
                                             mode="json"
+                                            readOnly={!isPlaygroundEditMode}
                                         />
                                     ))}
                                 </VStack>
@@ -249,6 +263,7 @@ export default function EditGenAiTaskPlayground() {
                                             control={control}
                                             name={`playgroundModelOutputs.${idx}.value`}
                                             mode="json"
+                                            readOnly={!isPlaygroundEditMode}
                                         />
                                     ))}
                                 </VStack>

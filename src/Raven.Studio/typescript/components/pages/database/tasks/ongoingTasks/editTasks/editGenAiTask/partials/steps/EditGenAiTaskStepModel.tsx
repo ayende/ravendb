@@ -4,88 +4,29 @@ import { Icon } from "components/common/Icon";
 import Button from "react-bootstrap/Button";
 import { editGenAiTaskActions, editGenAiTaskSelectors } from "../../store/editGenAiTaskSlice";
 import EditGenAiTaskModelFields from "../fields/EditGenAiTaskModelFields";
-import { useFormContext, useWatch } from "react-hook-form";
+import { useFormContext } from "react-hook-form";
 import { EditGenAiTaskFormData } from "../../utils/editGenAiTaskValidation";
 import { AboutViewHeading } from "components/common/AboutView";
 import EditGenAiTaskPlayground from "../EditGenAiTaskPlayground";
-import { useAsyncCallback } from "react-async-hook";
-import { editGenAiTaskUtils } from "../../utils/editGenAiTaskUtils";
-import { useServices } from "components/hooks/useServices";
-import { databaseSelectors } from "components/common/shell/databaseSliceSelectors";
 import ButtonWithSpinner from "components/common/ButtonWithSpinner";
+import { useEditGenAiTaskTests } from "../../hooks/useEditGenAiTaskTests";
 
 export default function EditGenAiTaskStepModel() {
     const dispatch = useAppDispatch();
 
-    const { control, trigger, setValue, setError, clearErrors } = useFormContext<EditGenAiTaskFormData>();
+    const modelInputTest = useAppSelector(editGenAiTaskSelectors.modelInputTest);
+    const { trigger } = useFormContext<EditGenAiTaskFormData>();
 
-    const formValues = useWatch<EditGenAiTaskFormData>({ control });
-
-    const taskId = useAppSelector(editGenAiTaskSelectors.taskId);
-    const databaseName = useAppSelector(databaseSelectors.activeDatabaseName);
-    const globalTestResult = useAppSelector(editGenAiTaskSelectors.globalTestResult);
-
-    const { tasksService } = useServices();
+    const { handleModelInputTest } = useEditGenAiTaskTests();
 
     const handleNext = async () => {
         const isValid = await trigger(["prompt", "sampleObject", "jsonSchema"]);
 
         if (isValid) {
+            dispatch(editGenAiTaskActions.isTestOpenSet(false));
             dispatch(editGenAiTaskActions.currentStepSet("updateScript"));
         }
     };
-
-    const asyncHandleTest = useAsyncCallback(async () => {
-        if (!formValues.playgroundDocument) {
-            setError("playgroundDocument", { message: "Please provide a document" });
-            return;
-        } else {
-            clearErrors("playgroundDocument");
-        }
-
-        const isValid = await trigger(["prompt", "sampleObject", "jsonSchema"]);
-
-        if (!isValid || !formValues.documentId) {
-            return;
-        }
-
-        const input = structuredClone(globalTestResult.Results);
-
-        for (let i = 0; i < input.length; i++) {
-            input[i].ContextOutput.Context = JSON.parse(formValues.playgroundContexts[i].value);
-        }
-
-        const dto: Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.TestGenAiScript = {
-            TestStage: "SendToModel",
-            Input: input,
-            Document: JSON.parse(formValues.playgroundDocument),
-            DocumentId: formValues.documentId,
-            IsDelete: false,
-            Configuration: editGenAiTaskUtils.mapToDto(formValues, taskId),
-        };
-
-        const result = await tasksService.testGenAi(databaseName, dto);
-
-        console.log("kalczur result", result);
-
-        dispatch(editGenAiTaskActions.globalTestResultSet(result));
-
-        setValue(
-            "playgroundModelOutputs",
-            result.Results.map((x) => ({
-                value: JSON.stringify(x.ModelOutput?.Output, null, 4),
-            }))
-        );
-        dispatch(
-            editGenAiTaskActions.modelOutputTestResultsSet(
-                result.Results.map((x) => JSON.stringify(x.ModelOutput?.Output, null, 4))
-            )
-        );
-
-        dispatch(editGenAiTaskActions.testStageSet("SendToModel"));
-
-        return result;
-    });
 
     return (
         <>
@@ -103,8 +44,8 @@ export default function EditGenAiTaskStepModel() {
                     <ButtonWithSpinner
                         variant="info"
                         className="rounded-pill"
-                        onClick={asyncHandleTest.execute}
-                        isSpinning={asyncHandleTest.loading}
+                        onClick={handleModelInputTest}
+                        isSpinning={modelInputTest.status === "loading"}
                         icon="test"
                     >
                         Test model

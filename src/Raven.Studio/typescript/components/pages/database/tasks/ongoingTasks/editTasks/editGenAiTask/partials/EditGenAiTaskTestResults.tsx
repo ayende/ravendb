@@ -8,18 +8,24 @@ import { HStack } from "components/common/utilities/HStack";
 import { Icon } from "components/common/Icon";
 import Button from "react-bootstrap/Button";
 import { VStack } from "components/common/utilities/VStack";
+import { useEditGenAiTaskTests } from "../hooks/useEditGenAiTaskTests";
+import ButtonWithSpinner from "components/common/ButtonWithSpinner";
 
 export default function EditGenAiTaskTestResults() {
     const dispatch = useAppDispatch();
 
     const currentStep = useAppSelector(editGenAiTaskSelectors.currentStep);
-    const contextTestResults = useAppSelector(editGenAiTaskSelectors.contextTestResults);
-    const modelOutputTestResults = useAppSelector(editGenAiTaskSelectors.modelOutputTestResults);
-    const updateScriptTestResult = useAppSelector(editGenAiTaskSelectors.updateScriptTestResult);
+    const contextTest = useAppSelector(editGenAiTaskSelectors.contextTest);
+    const modelInputTest = useAppSelector(editGenAiTaskSelectors.modelInputTest);
+    const updateScriptTest = useAppSelector(editGenAiTaskSelectors.updateScriptTest);
+
+    console.log("kalczur c", { currentStep, modelInputTest });
+
+    const { handleContextTest } = useEditGenAiTaskTests();
 
     return (
         <div>
-            {currentStep === "context" && contextTestResults.length > 0 && (
+            {currentStep === "context" && contextTest.data?.length > 0 && (
                 <div>
                     <HStack className="mb-3 justify-content-between">
                         <h3 className="mb-0">
@@ -27,10 +33,15 @@ export default function EditGenAiTaskTestResults() {
                             Task context test results
                         </h3>
                         <HStack gap={2}>
-                            <Button variant="primary" className="rounded-pill">
-                                <Icon icon="reset" />
+                            <ButtonWithSpinner
+                                variant="primary"
+                                className="rounded-pill"
+                                onClick={handleContextTest}
+                                icon="reset"
+                                isSpinning={contextTest.status === "loading"}
+                            >
                                 Re-run test
-                            </Button>
+                            </ButtonWithSpinner>
                             <Button
                                 variant="secondary"
                                 className="rounded-pill"
@@ -42,13 +53,13 @@ export default function EditGenAiTaskTestResults() {
                         </HStack>
                     </HStack>
                     <VStack gap={2}>
-                        {contextTestResults.map((x, idx) => (
+                        {contextTest.data.map((x, idx) => (
                             <AceEditor key={idx} mode="json" value={x} readOnly />
                         ))}
                     </VStack>
                 </div>
             )}
-            {currentStep === "modelInput" && modelOutputTestResults.length > 0 && (
+            {currentStep === "modelInput" && modelInputTest.data?.length > 0 && (
                 <div>
                     <HStack className="mb-3 justify-content-between">
                         <h3 className="mb-0">
@@ -56,10 +67,14 @@ export default function EditGenAiTaskTestResults() {
                             Model input test results
                         </h3>
                         <HStack gap={2}>
-                            <Button variant="primary" className="rounded-pill">
-                                <Icon icon="reset" />
+                            <ButtonWithSpinner
+                                variant="primary"
+                                className="rounded-pill"
+                                icon="reset"
+                                isSpinning={modelInputTest.status === "loading"}
+                            >
                                 Re-run test
-                            </Button>
+                            </ButtonWithSpinner>
                             <Button
                                 variant="secondary"
                                 className="rounded-pill"
@@ -71,13 +86,13 @@ export default function EditGenAiTaskTestResults() {
                         </HStack>
                     </HStack>
                     <VStack gap={2}>
-                        {modelOutputTestResults.map((x, idx) => (
+                        {modelInputTest.data.map((x, idx) => (
                             <AceEditor key={idx} mode="json" value={x} readOnly />
                         ))}
                     </VStack>
                 </div>
             )}
-            {currentStep === "updateScript" && updateScriptTestResult && <UpdateScriptResult />}
+            {currentStep === "updateScript" && updateScriptTest.data != null && <UpdateScriptResult />}
         </div>
     );
 }
@@ -86,7 +101,7 @@ function UpdateScriptResult() {
     const dispatch = useAppDispatch();
 
     const oldDoc = JSON.stringify(useAppSelector(editGenAiTaskSelectors.globalTestResult).InputDocument, null, 4);
-    const newDoc = useAppSelector(editGenAiTaskSelectors.updateScriptTestResult);
+    const newDoc = useAppSelector(editGenAiTaskSelectors.updateScriptTest).data ?? "";
 
     const oldDocRef = useRef<ReactAce>(null);
     const newDocRef = useRef<ReactAce>(null);
