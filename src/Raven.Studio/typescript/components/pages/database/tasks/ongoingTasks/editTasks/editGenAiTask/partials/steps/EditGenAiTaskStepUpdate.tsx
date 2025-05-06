@@ -8,6 +8,7 @@ import Button from "react-bootstrap/Button";
 import { HStack } from "components/common/utilities/HStack";
 import { EditGenAiTaskFormData } from "../../utils/editGenAiTaskValidation";
 import { AboutViewHeading } from "components/common/AboutView";
+import EditGenAiTaskPlayground from "../EditGenAiTaskPlayground";
 
 export default function EditGenAiTaskStepUpdate() {
     const dispatch = useAppDispatch();
@@ -48,6 +49,7 @@ export default function EditGenAiTaskStepUpdate() {
                     </Button>
                 </HStack>
             </HStack>
+            <EditGenAiTaskPlayground />
         </>
     );
 }

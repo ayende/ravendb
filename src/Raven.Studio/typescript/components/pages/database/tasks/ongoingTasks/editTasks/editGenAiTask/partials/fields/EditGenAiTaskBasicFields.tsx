@@ -5,10 +5,10 @@ import { SelectOption } from "components/common/select/Select";
 import { databaseSelectors } from "components/common/shell/databaseSliceSelectors";
 import useBoolean from "components/hooks/useBoolean";
 import EditConnectionStrings from "components/pages/database/settings/connectionStrings/EditConnectionStrings";
-import { useAppSelector } from "components/store";
+import { useAppDispatch, useAppSelector } from "components/store";
 import { sortBy } from "lodash";
 import { useAsync } from "react-async-hook";
-import { editGenAiTaskSelectors } from "../../store/editGenAiTaskSlice";
+import { editGenAiTaskActions, editGenAiTaskSelectors } from "../../store/editGenAiTaskSlice";
 import EditGenAiTaskNodeField from "./EditGenAiTaskNodeField";
 import InputGroup from "react-bootstrap/InputGroup";
 import { useServices } from "components/hooks/useServices";
@@ -18,6 +18,8 @@ import { EditGenAiTaskFormData } from "../../utils/editGenAiTaskValidation";
 type OngoingTaskState = Raven.Client.Documents.Operations.OngoingTasks.OngoingTaskState;
 
 export default function EditGenAiTaskBasicFields() {
+    const dispatch = useAppDispatch();
+
     const isNewTask = useAppSelector(editGenAiTaskSelectors.isNewTask);
     const isEncrypted = useAppSelector(databaseSelectors.activeDatabase)?.isEncrypted ?? false;
     const databaseName = useAppSelector(databaseSelectors.activeDatabaseName);
@@ -30,6 +32,9 @@ export default function EditGenAiTaskBasicFields() {
 
     const asyncGetConnectionStringsOptions = useAsync(async () => {
         const result = await tasksService.getConnectionStrings(databaseName);
+
+        dispatch(editGenAiTaskActions.aiConnectionStringsSet(result.AiConnectionStrings));
+
         const connectionStrings = Object.values(result.AiConnectionStrings).map((x) => x.Name);
 
         return sortBy(connectionStrings, (x) => x.toUpperCase()).map(

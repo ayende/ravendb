@@ -41,16 +41,15 @@ export default function EditGenAiTaskStepContext() {
         }
 
         const isValid = await trigger(["collectionName", "script"]);
-
-        if (!isValid || !formValues.documentId) {
+        if (!isValid) {
             return;
         }
 
         const dto: Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.TestGenAiScript = {
             TestStage: "CreateContextObjects",
             Input: null,
-            Document: formValues.playgroundDocument,
-            DocumentId: undefined,
+            Document: JSON.parse(formValues.playgroundDocument),
+            DocumentId: formValues.documentId,
             IsDelete: false,
             Configuration: editGenAiTaskUtils.mapToDto(formValues, taskId),
         };
@@ -61,7 +60,14 @@ export default function EditGenAiTaskStepContext() {
 
         setValue(
             "playgroundContexts",
-            result.Results.map((x) => ({ value: JSON.stringify(x.ContextOutput.Context, null, 4) }))
+            result.Results.map((x) => ({
+                value: JSON.stringify(x.ContextOutput.Context, null, 4),
+            }))
+        );
+        dispatch(
+            editGenAiTaskActions.contextTestResultsSet(
+                result.Results.map((x) => JSON.stringify(x.ContextOutput.Context, null, 4))
+            )
         );
 
         dispatch(editGenAiTaskActions.testStageSet("CreateContextObjects"));

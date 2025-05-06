@@ -22,6 +22,8 @@ import Nav from "react-bootstrap/Nav";
 import { editGenAiTaskActions, editGenAiTaskSelectors } from "../store/editGenAiTaskSlice";
 import Collapse from "react-bootstrap/Collapse";
 import useConfirm from "components/common/ConfirmDialog";
+import RichAlert from "components/common/RichAlert";
+import classNames from "classnames";
 
 export default function EditGenAiTaskPlayground() {
     const dispatch = useAppDispatch();
@@ -30,6 +32,9 @@ export default function EditGenAiTaskPlayground() {
     const currentStep = useAppSelector(editGenAiTaskSelectors.currentStep);
     const isPlaygroundCollapsed = useAppSelector(editGenAiTaskSelectors.isPlaygroundCollapsed);
     const isPlaygroundEditMode = useAppSelector(editGenAiTaskSelectors.isPlaygroundEditMode);
+    const contextTestResults = useAppSelector(editGenAiTaskSelectors.contextTestResults);
+    const modelOutputTestResults = useAppSelector(editGenAiTaskSelectors.modelOutputTestResults);
+    const updateScriptTestResult = useAppSelector(editGenAiTaskSelectors.updateScriptTestResult);
 
     const {
         control,
@@ -99,6 +104,18 @@ export default function EditGenAiTaskPlayground() {
     // TODO info tooltip
     // TODO click edit
 
+    const getActiveTab = () => {
+        if (currentStep === "modelInput" && contextTestResults.length > 0) {
+            return "context";
+        }
+
+        if (currentStep === "updateScript" && modelOutputTestResults.length > 0) {
+            return "modelOutput";
+        }
+
+        return "document";
+    };
+
     return (
         <div className="mt-4">
             <HStack>
@@ -120,11 +137,14 @@ export default function EditGenAiTaskPlayground() {
             </HStack>
             <Collapse in={!isPlaygroundCollapsed}>
                 <div className="panel-bg-1 border border-secondary rounded-2 mt-1">
-                    <Tab.Container id="playground-tabs" defaultActiveKey="document">
+                    <Tab.Container id="playground-tabs" defaultActiveKey={getActiveTab()}>
                         <HStack className="panel-bg-2 border-bottom border-secondary p-2 justify-content-between">
                             <Nav>
                                 <Nav.Item>
-                                    <Nav.Link eventKey="document">
+                                    <Nav.Link
+                                        eventKey="document"
+                                        className={classNames({ "text-danger": !!errors.playgroundDocument })}
+                                    >
                                         <Icon icon="document" />
                                         Document
                                     </Nav.Link>
@@ -201,24 +221,37 @@ export default function EditGenAiTaskPlayground() {
                                 )}
                             </Tab.Pane>
                             <Tab.Pane eventKey="context">
-                                {contextsFieldsArray.fields.map((field, idx) => (
-                                    <FormAceEditor
-                                        key={field.id}
-                                        control={control}
-                                        name={`playgroundContexts.${idx}`}
-                                        mode="json"
-                                    />
-                                ))}
+                                <RichAlert variant="info" className="mb-3">
+                                    This tab provides a comprehensive overview of the context being transmitted to the
+                                    AI model. Here, you can explore the various elements and data points that contribute
+                                    to the model&apos;s understanding and processing capabilities.
+                                </RichAlert>
+                                <VStack gap={2}>
+                                    {contextsFieldsArray.fields.map((field, idx) => (
+                                        <FormAceEditor
+                                            key={field.id}
+                                            control={control}
+                                            name={`playgroundContexts.${idx}.value`}
+                                            mode="json"
+                                        />
+                                    ))}
+                                </VStack>
                             </Tab.Pane>
                             <Tab.Pane eventKey="modelOutput">
-                                {modelOutputsFieldsArray.fields.map((field, idx) => (
-                                    <FormAceEditor
-                                        key={field.id}
-                                        control={control}
-                                        name={`playgroundModelOutputs.${idx}`}
-                                        mode="json"
-                                    />
-                                ))}
+                                <RichAlert variant="info" className="mb-3">
+                                    Within this section, you can discover the results generated by AI model.Within this
+                                    section, you can discover the results generated by AI model.
+                                </RichAlert>
+                                <VStack gap={2}>
+                                    {modelOutputsFieldsArray.fields.map((field, idx) => (
+                                        <FormAceEditor
+                                            key={field.id}
+                                            control={control}
+                                            name={`playgroundModelOutputs.${idx}.value`}
+                                            mode="json"
+                                        />
+                                    ))}
+                                </VStack>
                             </Tab.Pane>
                         </Tab.Content>
                     </Tab.Container>

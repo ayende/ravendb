@@ -1,40 +1,91 @@
-import { useAppSelector } from "components/store";
-import { editGenAiTaskSelectors } from "../store/editGenAiTaskSlice";
+import { useAppDispatch, useAppSelector } from "components/store";
+import { editGenAiTaskActions, editGenAiTaskSelectors } from "../store/editGenAiTaskSlice";
 import AceEditor from "components/common/AceEditor";
 import aceDiff from "common/helpers/text/aceDiff";
 import ReactAce from "react-ace/lib/ace";
 import { useRef, useEffect } from "react";
+import { HStack } from "components/common/utilities/HStack";
+import { Icon } from "components/common/Icon";
+import Button from "react-bootstrap/Button";
+import { VStack } from "components/common/utilities/VStack";
 
 export default function EditGenAiTaskTestResults() {
-    const testStage = useAppSelector(editGenAiTaskSelectors.testStage);
+    const dispatch = useAppDispatch();
 
+    const currentStep = useAppSelector(editGenAiTaskSelectors.currentStep);
     const contextTestResults = useAppSelector(editGenAiTaskSelectors.contextTestResults);
     const modelOutputTestResults = useAppSelector(editGenAiTaskSelectors.modelOutputTestResults);
     const updateScriptTestResult = useAppSelector(editGenAiTaskSelectors.updateScriptTestResult);
 
     return (
         <div>
-            {testStage === "CreateContextObjects" && contextTestResults.length > 0 && (
+            {currentStep === "context" && contextTestResults.length > 0 && (
                 <div>
-                    {contextTestResults.map((x, idx) => (
-                        <AceEditor key={idx} mode="json" value={x} readOnly />
-                    ))}
+                    <HStack className="mb-3 justify-content-between">
+                        <h3 className="mb-0">
+                            <Icon icon="test" />
+                            Task context test results
+                        </h3>
+                        <HStack gap={2}>
+                            <Button variant="primary" className="rounded-pill">
+                                <Icon icon="reset" />
+                                Re-run test
+                            </Button>
+                            <Button
+                                variant="secondary"
+                                className="rounded-pill"
+                                onClick={() => dispatch(editGenAiTaskActions.testStageSet(null))}
+                            >
+                                <Icon icon="cancel" />
+                                Close
+                            </Button>
+                        </HStack>
+                    </HStack>
+                    <VStack gap={2}>
+                        {contextTestResults.map((x, idx) => (
+                            <AceEditor key={idx} mode="json" value={x} readOnly />
+                        ))}
+                    </VStack>
                 </div>
             )}
-            {testStage === "SendToModel" && modelOutputTestResults.length > 0 && (
+            {currentStep === "modelInput" && modelOutputTestResults.length > 0 && (
                 <div>
-                    {modelOutputTestResults.map((x, idx) => (
-                        <AceEditor key={idx} mode="json" value={x} readOnly />
-                    ))}
+                    <HStack className="mb-3 justify-content-between">
+                        <h3 className="mb-0">
+                            <Icon icon="test" />
+                            Model input test results
+                        </h3>
+                        <HStack gap={2}>
+                            <Button variant="primary" className="rounded-pill">
+                                <Icon icon="reset" />
+                                Re-run test
+                            </Button>
+                            <Button
+                                variant="secondary"
+                                className="rounded-pill"
+                                onClick={() => dispatch(editGenAiTaskActions.testStageSet(null))}
+                            >
+                                <Icon icon="cancel" />
+                                Close
+                            </Button>
+                        </HStack>
+                    </HStack>
+                    <VStack gap={2}>
+                        {modelOutputTestResults.map((x, idx) => (
+                            <AceEditor key={idx} mode="json" value={x} readOnly />
+                        ))}
+                    </VStack>
                 </div>
             )}
-            {testStage === "ApplyUpdateScript" && updateScriptTestResult && <UpdateScriptResult />}
+            {currentStep === "updateScript" && updateScriptTestResult && <UpdateScriptResult />}
         </div>
     );
 }
 
 function UpdateScriptResult() {
-    const oldDoc = ""; // TODO
+    const dispatch = useAppDispatch();
+
+    const oldDoc = JSON.stringify(useAppSelector(editGenAiTaskSelectors.globalTestResult).InputDocument, null, 4);
     const newDoc = useAppSelector(editGenAiTaskSelectors.updateScriptTestResult);
 
     const oldDocRef = useRef<ReactAce>(null);
@@ -54,14 +105,38 @@ function UpdateScriptResult() {
         };
     }, [oldDoc, newDoc]);
 
+    // TODO add ace editor title
+
     return (
-        <div className="vstack gap-2">
-            <div>
-                <AceEditor aceRef={oldDocRef} value={oldDoc} mode="json" height="100px" />
-            </div>
-            <div>
-                <AceEditor aceRef={newDocRef} value={newDoc} mode="json" height="100px" />
-            </div>
+        <div>
+            <HStack className="mb-3 justify-content-between">
+                <h3 className="mb-0">
+                    <Icon icon="test" />
+                    Update script test results
+                </h3>
+                <HStack gap={2}>
+                    <Button variant="primary" className="rounded-pill">
+                        <Icon icon="reset" />
+                        Re-run test
+                    </Button>
+                    <Button
+                        variant="secondary"
+                        className="rounded-pill"
+                        onClick={() => dispatch(editGenAiTaskActions.testStageSet(null))}
+                    >
+                        <Icon icon="cancel" />
+                        Close
+                    </Button>
+                </HStack>
+            </HStack>
+            <VStack gap={2}>
+                <div>
+                    <AceEditor aceRef={oldDocRef} value={oldDoc} mode="json" height="100px" />
+                </div>
+                <div>
+                    <AceEditor aceRef={newDocRef} value={newDoc} mode="json" height="100px" />
+                </div>
+            </VStack>
         </div>
     );
 }

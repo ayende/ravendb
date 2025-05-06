@@ -13,6 +13,7 @@ interface EditGenAiTaskState {
     globalTestResult: Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.GenAiTestScriptResult;
     isPlaygroundCollapsed: boolean;
     isPlaygroundEditMode: boolean;
+    aiConnectionStrings: Record<string, Raven.Client.Documents.Operations.AI.AiConnectionString>;
 }
 
 const initialState: EditGenAiTaskState = {
@@ -26,6 +27,7 @@ const initialState: EditGenAiTaskState = {
     globalTestResult: null,
     isPlaygroundCollapsed: false,
     isPlaygroundEditMode: false,
+    aiConnectionStrings: {}, // TODO use it to basic step test
 };
 
 export const editGenAiTaskSlice = createSlice({
@@ -44,6 +46,15 @@ export const editGenAiTaskSlice = createSlice({
         testStageSet: (state, action: PayloadAction<Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.TestStage>) => {
             state.testStage = action.payload;
         },
+        contextTestResultsSet: (state, action: PayloadAction<string[]>) => {
+            state.contextTestResults = action.payload;
+        },
+        modelOutputTestResultsSet: (state, action: PayloadAction<string[]>) => {
+            state.modelOutputTestResults = action.payload;
+        },
+        updateScriptTestResultSet: (state, action: PayloadAction<string>) => {
+            state.updateScriptTestResult = action.payload;
+        },
         globalTestResultSet: (
             state,
             action: PayloadAction<Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.GenAiTestScriptResult>
@@ -55,6 +66,12 @@ export const editGenAiTaskSlice = createSlice({
         },
         isPlaygroundEditModeToggled: (state) => {
             state.isPlaygroundEditMode = !state.isPlaygroundEditMode;
+        },
+        aiConnectionStringsSet: (
+            state,
+            action: PayloadAction<Record<string, Raven.Client.Documents.Operations.AI.AiConnectionString>>
+        ) => {
+            state.aiConnectionStrings = action.payload;
         },
         reset: () => initialState,
     },
@@ -90,4 +107,6 @@ export const editGenAiTaskSelectors = {
     updateScriptTestResult: (state: RootState) => state.editGenAiTask.updateScriptTestResult,
     isPlaygroundCollapsed: (state: RootState) => state.editGenAiTask.isPlaygroundCollapsed,
     isPlaygroundEditMode: (state: RootState) => state.editGenAiTask.isPlaygroundEditMode,
+    globalTestResult: (state: RootState) => state.editGenAiTask.globalTestResult,
+    aiConnectionStrings: (state: RootState) => state.editGenAiTask.aiConnectionStrings,
 };
