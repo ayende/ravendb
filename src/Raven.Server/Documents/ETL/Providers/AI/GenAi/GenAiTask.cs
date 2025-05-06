@@ -35,14 +35,16 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
     private const string GenAiTaskTag = "AI/Gen";
 
     private int _fallbackCounter = 0;
-    private readonly ChatCompletionClient _chatCompletionClient;
+    private ChatCompletionClient _chatCompletionClient;
 
 
     public GenAiTask(Transformation transformation, GenAiConfiguration configuration, DocumentDatabase database, ServerStore serverStore)
         : base(transformation, configuration, database, serverStore, GenAiTaskTag)
     {
         Metrics = new EtlMetricsCountersManager();
-        _chatCompletionClient = GetClient(configuration);
+
+        if (configuration.TestMode == false)
+            _chatCompletionClient = GetClient(configuration);
     }
 
     private static ChatCompletionClient GetClient(GenAiConfiguration cfg)
@@ -322,6 +324,7 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
                 context.CloseTransaction();
                 break;
             case TestStage.SendToModel:
+                _chatCompletionClient ??= GetClient(Configuration);
                 items = testGenAiScript.Input;
                 exceptions = SendToModel(items, context);
                 break;
