@@ -13,7 +13,22 @@ import { useEditGenAiTaskTests } from "../../hooks/useEditGenAiTaskTests";
 import ButtonWithSpinner from "components/common/ButtonWithSpinner";
 import { ConditionalPopover } from "components/common/ConditionalPopover";
 
-export default function EditGenAiTaskStepUpdate() {
+export function EditGenAiTaskStepUpdate() {
+    const { control } = useFormContext<EditGenAiTaskFormData>();
+
+    return (
+        <>
+            <AboutViewHeading title="Provide document update script" marginBottom={4} icon="ai-etl" />
+            <FormGroup>
+                <FormLabel>Update script</FormLabel>
+                <FormAceEditor control={control} name="update" mode="javascript" />
+            </FormGroup>
+            <EditGenAiTaskPlayground />
+        </>
+    );
+}
+
+export function EditGenAiTaskStepUpdateFooter() {
     const dispatch = useAppDispatch();
     const { control, trigger } = useFormContext<EditGenAiTaskFormData>();
     const formValues = useWatch<EditGenAiTaskFormData>({ control });
@@ -36,56 +51,47 @@ export default function EditGenAiTaskStepUpdate() {
         formValues.playgroundModelOutputs.length === 0;
 
     return (
-        <>
-            <AboutViewHeading title="Provide document update script" marginBottom={4} icon="ai-etl" />
-            <FormGroup>
-                <FormLabel>Update script</FormLabel>
-                <FormAceEditor control={control} name="update" mode="javascript" />
-            </FormGroup>
-
-            <HStack className="justify-content-between">
-                <Button
-                    variant="secondary"
-                    className="rounded-pill"
-                    onClick={() => dispatch(editGenAiTaskActions.currentStepSet("modelInput"))}
+        <HStack className="justify-content-between">
+            <Button
+                variant="secondary"
+                className="rounded-pill"
+                onClick={() => dispatch(editGenAiTaskActions.currentStepSet("modelInput"))}
+            >
+                <Icon icon="arrow-left" /> Back
+            </Button>
+            <HStack gap={2}>
+                <ConditionalPopover
+                    conditions={[
+                        {
+                            isActive: !formValues.playgroundDocument,
+                            message: "Please provide document in the playground",
+                        },
+                        {
+                            isActive: formValues.playgroundContexts.length === 0,
+                            message: "Please run test on 'Specify task context' step",
+                        },
+                        {
+                            isActive: formValues.playgroundModelOutputs.length === 0,
+                            message: "Please run test on 'Model input' step",
+                        },
+                    ]}
                 >
-                    <Icon icon="arrow-left" /> Back
-                </Button>
-                <HStack gap={2}>
-                    <ConditionalPopover
-                        conditions={[
-                            {
-                                isActive: !formValues.playgroundDocument,
-                                message: "Please provide document in the playground",
-                            },
-                            {
-                                isActive: formValues.playgroundContexts.length === 0,
-                                message: "Please run test on 'Specify task context' step",
-                            },
-                            {
-                                isActive: formValues.playgroundModelOutputs.length === 0,
-                                message: "Please run test on 'Model input' step",
-                            },
-                        ]}
+                    <ButtonWithSpinner
+                        variant="info"
+                        className="rounded-pill"
+                        onClick={handleUpdateScriptTest}
+                        isSpinning={updateScriptTest.status === "loading"}
+                        icon="test"
+                        disabled={isTestButtonDisabled}
                     >
-                        <ButtonWithSpinner
-                            variant="info"
-                            className="rounded-pill"
-                            onClick={handleUpdateScriptTest}
-                            isSpinning={updateScriptTest.status === "loading"}
-                            icon="test"
-                            disabled={isTestButtonDisabled}
-                        >
-                            Test update script
-                        </ButtonWithSpinner>
-                    </ConditionalPopover>
+                        Test update script
+                    </ButtonWithSpinner>
+                </ConditionalPopover>
 
-                    <Button variant="primary" className="rounded-pill" onClick={handleNext}>
-                        Next <Icon icon="arrow-right" margin="ms-1" />
-                    </Button>
-                </HStack>
+                <Button variant="primary" className="rounded-pill" onClick={handleNext}>
+                    Next <Icon icon="arrow-right" margin="ms-1" />
+                </Button>
             </HStack>
-            <EditGenAiTaskPlayground />
-        </>
+        </HStack>
     );
 }

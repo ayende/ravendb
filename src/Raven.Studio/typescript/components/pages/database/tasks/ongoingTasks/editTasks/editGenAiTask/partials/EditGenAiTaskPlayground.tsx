@@ -101,9 +101,7 @@ export default function EditGenAiTaskPlayground() {
         }
     };
 
-    // TODO dashed border styles
     // TODO info tooltip
-    // TODO click edit
 
     const getActiveTab = () => {
         if (currentStep === "modelInput" && contextTest.data?.length > 0) {
@@ -124,13 +122,13 @@ export default function EditGenAiTaskPlayground() {
     }, [formValues.playgroundDocument]);
 
     return (
-        <div className="mt-4">
+        <div className="playground">
             <HStack>
                 <div>
                     Playground
                     <Icon icon="info" margin="ms-1" />
                 </div>
-                <div style={{ border: "1px dashed #555" }} className="flex-grow mx-2"></div>
+                <div className="playground-line"></div>
                 <div>
                     <Button
                         variant="link"

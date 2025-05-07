@@ -2,20 +2,11 @@ import commandBase = require("commands/commandBase");
 import endpoints = require("endpoints");
 import database = require("models/resources/database");
 
-type Settings =
-    | Raven.Client.Documents.Operations.AI.OpenAiSettings
-    | Raven.Client.Documents.Operations.AI.AzureOpenAiSettings
-    | Raven.Client.Documents.Operations.AI.OllamaSettings
-    | Raven.Client.Documents.Operations.AI.EmbeddedSettings
-    | Raven.Client.Documents.Operations.AI.GoogleSettings
-    | Raven.Client.Documents.Operations.AI.HuggingFaceSettings
-    | Raven.Client.Documents.Operations.AI.MistralAiSettings;
-
 class testAiConnectionStringCommand extends commandBase {
     constructor(
         private db: database | string,
         private type: Raven.Client.Documents.Operations.AI.AiConnectorType,
-        private settings: Partial<Settings>
+        private settings: Partial<AiConnectionStringsSettings>
     ) {
         super();
     }

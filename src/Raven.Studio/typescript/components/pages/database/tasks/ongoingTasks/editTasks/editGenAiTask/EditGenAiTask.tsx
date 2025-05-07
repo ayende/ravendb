@@ -7,18 +7,13 @@ import { databaseSelectors } from "components/common/shell/databaseSliceSelector
 import { useAppUrls } from "components/hooks/useAppUrls";
 import router from "plugins/router";
 import { tryHandleSubmit } from "components/utils/common";
-import classNames from "classnames";
 import { editGenAiTaskActions, editGenAiTaskSelectors } from "./store/editGenAiTaskSlice";
 import { useEffect } from "react";
 import { useEditGenAiTaskSteps } from "./hooks/useEditGenAiTaskSteps";
-import { NumberedList } from "components/common/NumberedList";
-import ListStepItem from "components/common/ListStepItem";
 import { EditGenAiTaskFormData, editGenAiTaskSchema } from "./utils/editGenAiTaskValidation";
 import { editGenAiTaskUtils } from "./utils/editGenAiTaskUtils";
-import ProgressBar from "react-bootstrap/ProgressBar";
-import Col from "react-bootstrap/Col";
-import Row from "react-bootstrap/Row";
 import EditGenAiTaskTestResults from "./partials/EditGenAiTaskTestResults";
+import EditGenAiTaskSteps from "./partials/EditGenAiTaskSteps";
 
 interface QueryParams {
     taskId: string;
@@ -89,61 +84,15 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
 
     const steps = useEditGenAiTaskSteps();
     const currentStep = steps.find((x) => x.isCurrent);
-    const currentStepIdx = steps.findIndex((x) => x.isCurrent);
-
-    // TODO move steps to component
 
     return (
         <FormProvider {...form}>
-            <form onSubmit={handleSubmit(handleSave)} className="h-100 edit-gen-ai-task">
-                <Row className="h-100 m-0">
-                    <Col md={isTestOpen ? 6 : 8} className="p-4">
-                        {currentStep.component}
-                    </Col>
-                    <Col md={isTestOpen ? 6 : 4} className="panel-bg-1 p-4">
-                        {!isTestOpen && (
-                            <div className="flex-grow">
-                                <div className="mb-3">
-                                    <span>
-                                        {currentStepIdx}/{steps.length} steps completed
-                                    </span>
-                                    <ProgressBar
-                                        now={currentStepIdx}
-                                        max={steps.length}
-                                        variant="primary"
-                                        style={{ height: 7 }}
-                                        className="w-50 mt-1"
-                                    />
-                                </div>
-                                <NumberedList>
-                                    {steps.map((step, idx) => (
-                                        <ListStepItem
-                                            key={step.title}
-                                            isCurrent={step.isCurrent}
-                                            isChecked={idx < currentStepIdx}
-                                            isInactive={idx > currentStepIdx}
-                                            className={classNames("cursor-pointer", {
-                                                "cursor-not-allowed": idx > currentStepIdx,
-                                            })}
-                                            onClick={() => {
-                                                if (idx > currentStepIdx) {
-                                                    return;
-                                                }
-
-                                                dispatch(editGenAiTaskActions.currentStepSet(step.id));
-                                            }}
-                                        >
-                                            <h5 className="mb-0" style={{ paddingTop: 4 }}>
-                                                {step.title}
-                                            </h5>
-                                        </ListStepItem>
-                                    ))}
-                                </NumberedList>
-                            </div>
-                        )}
-                        {isTestOpen && <EditGenAiTaskTestResults />}
-                    </Col>
-                </Row>
+            <form onSubmit={handleSubmit(handleSave)} className="edit-gen-ai-task">
+                <div className="main-container">{currentStep.component}</div>
+                <div className="footer">{currentStep.footer}</div>
+                <div className="sidebar">
+                    {isTestOpen ? <EditGenAiTaskTestResults /> : <EditGenAiTaskSteps steps={steps} />}
+                </div>
             </form>
         </FormProvider>
     );

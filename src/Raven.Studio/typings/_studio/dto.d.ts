@@ -1079,3 +1079,12 @@ type AzureQueueStorageAuthenticationType = "connectionString" | "entraId" | "pas
 type AmazonSqsAuthenticationType = "basic" | "passwordless";
 
 type GenAiConfiguration = Omit<Raven.Client.Documents.Operations.AI.GenAiConfiguration, "Identifier">;
+
+type AiConnectionStringsSettings =
+    | Raven.Client.Documents.Operations.AI.OpenAiSettings
+    | Raven.Client.Documents.Operations.AI.AzureOpenAiSettings
+    | Raven.Client.Documents.Operations.AI.OllamaSettings
+    | Raven.Client.Documents.Operations.AI.EmbeddedSettings
+    | Raven.Client.Documents.Operations.AI.GoogleSettings
+    | Raven.Client.Documents.Operations.AI.HuggingFaceSettings
+    | Raven.Client.Documents.Operations.AI.MistralAiSettings;

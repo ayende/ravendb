@@ -7,21 +7,45 @@ import EditGenAiTaskBasicFields from "../fields/EditGenAiTaskBasicFields";
 import { useFormContext, useWatch } from "react-hook-form";
 import { EditGenAiTaskFormData } from "../../utils/editGenAiTaskValidation";
 import { AboutViewHeading } from "components/common/AboutView";
-import { useServices } from "components/hooks/useServices";
 import { databaseSelectors } from "components/common/shell/databaseSliceSelectors";
-import { useAsyncCallback } from "react-async-hook";
 import ButtonWithSpinner from "components/common/ButtonWithSpinner";
 import ConnectionTestResult from "components/common/connectionTests/ConnectionTestResult";
 
 export function EditGenAiTaskStepBasic() {
+    const connectionStringTest = useAppSelector(editGenAiTaskSelectors.connectionStringTest);
+
+    return (
+        <div>
+            <AboutViewHeading title="Configure GenAI task settings" marginBottom={4} icon="ai-etl" />
+            <EditGenAiTaskBasicFields />
+            <div className="mt-2">
+                <ConnectionTestResult testResult={connectionStringTest.data} />
+            </div>
+        </div>
+    );
+}
+
+export function EditGenAiTaskStepBasicFooter() {
     const dispatch = useAppDispatch();
 
     const { control, trigger } = useFormContext<EditGenAiTaskFormData>();
     const formValues = useWatch({ control });
 
+    const connectionStringTest = useAppSelector(editGenAiTaskSelectors.connectionStringTest);
     const aiConnectionStrings = useAppSelector(editGenAiTaskSelectors.aiConnectionStrings);
     const databaseName = useAppSelector(databaseSelectors.activeDatabaseName);
-    const { tasksService } = useServices();
+
+    const handleTest = async () => {
+        const connectionString = aiConnectionStrings[formValues.connectionStringName];
+
+        dispatch(
+            editGenAiTaskActions.testConnectionString({
+                databaseName,
+                connectorType: getConnectorType(connectionString),
+                settings: mapAiConnectionStringToSettingsDto(connectionString),
+            })
+        );
+    };
 
     const handleNext = async () => {
         const isValid = await trigger(["name", "state", "responsibleNode", "connectionStringName"]);
@@ -31,40 +55,22 @@ export function EditGenAiTaskStepBasic() {
         }
     };
 
-    const asyncHandleTest = useAsyncCallback(async () => {
-        const connectionString = aiConnectionStrings[formValues.connectionStringName];
-
-        return tasksService.testAiConnectionString(
-            databaseName,
-            getConnectorType(connectionString),
-            mapAiConnectionStringToSettingsDto(connectionString)
-        );
-    });
-
     return (
-        <div>
-            <AboutViewHeading title="Configure GenAI task settings" marginBottom={4} icon="ai-etl" />
-            <EditGenAiTaskBasicFields />
-            <div className="mt-2">
-                <ConnectionTestResult testResult={asyncHandleTest.result} />
-            </div>
+        <HStack gap={2} className="justify-content-end">
+            <ButtonWithSpinner
+                variant="info"
+                className="rounded-pill"
+                onClick={handleTest}
+                isSpinning={connectionStringTest.status === "loading"}
+                icon="test"
+            >
+                Test connection
+            </ButtonWithSpinner>
 
-            <HStack gap={2} className="justify-content-end mt-3">
-                <ButtonWithSpinner
-                    variant="info"
-                    className="rounded-pill"
-                    onClick={asyncHandleTest.execute}
-                    isSpinning={asyncHandleTest.loading}
-                    icon="test"
-                >
-                    Test connection
-                </ButtonWithSpinner>
-
-                <Button variant="primary" className="rounded-pill" onClick={handleNext}>
-                    Next <Icon icon="arrow-right" margin="ms-1" />
-                </Button>
-            </HStack>
-        </div>
+            <Button variant="primary" className="rounded-pill" onClick={handleNext}>
+                Next <Icon icon="arrow-right" margin="ms-1" />
+            </Button>
+        </HStack>
     );
 }
 
@@ -96,18 +102,9 @@ const getConnectorType = (
     return "None";
 };
 
-type Settings =
-    | Raven.Client.Documents.Operations.AI.OpenAiSettings
-    | Raven.Client.Documents.Operations.AI.AzureOpenAiSettings
-    | Raven.Client.Documents.Operations.AI.OllamaSettings
-    | Raven.Client.Documents.Operations.AI.EmbeddedSettings
-    | Raven.Client.Documents.Operations.AI.GoogleSettings
-    | Raven.Client.Documents.Operations.AI.HuggingFaceSettings
-    | Raven.Client.Documents.Operations.AI.MistralAiSettings;
-
 export function mapAiConnectionStringToSettingsDto(
     connection: Raven.Client.Documents.Operations.AI.AiConnectionString
-): Settings {
+): AiConnectionStringsSettings {
     if (connection.AzureOpenAiSettings) {
         return connection.AzureOpenAiSettings;
     }

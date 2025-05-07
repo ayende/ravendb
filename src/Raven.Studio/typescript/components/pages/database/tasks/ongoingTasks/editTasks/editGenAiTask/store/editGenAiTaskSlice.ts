@@ -9,6 +9,7 @@ interface EditGenAiTaskState {
     taskId: number;
     sourceView: EditAiTaskSourceView;
     currentStep: EditGenAiTaskStepId;
+    connectionStringTest: loadableData<Raven.Server.Web.System.NodeConnectionTestResult>;
     contextTest: loadableData<string[]>;
     modelInputTest: loadableData<string[]>;
     updateScriptTest: loadableData<string>;
@@ -23,6 +24,7 @@ const initialState: EditGenAiTaskState = {
     taskId: null,
     sourceView: "OngoingTasks",
     currentStep: "basic",
+    connectionStringTest: createIdleState(),
     contextTest: createIdleState([]),
     modelInputTest: createIdleState([]),
     updateScriptTest: createIdleState(""),
@@ -116,6 +118,15 @@ export const editGenAiTaskSlice = createSlice({
                 state.updateScriptTest = createSuccessState(
                     action.payload.OutputDocument ? JSON.stringify(action.payload.OutputDocument, null, 4) : null
                 );
+            })
+            .addCase(testConnectionString.pending, (state) => {
+                state.connectionStringTest.status = "loading";
+            })
+            .addCase(testConnectionString.rejected, (state, action) => {
+                state.connectionStringTest = createFailureState(action.error.message);
+            })
+            .addCase(testConnectionString.fulfilled, (state, action) => {
+                state.connectionStringTest = createSuccessState(action.payload);
             });
     },
 });
@@ -150,7 +161,28 @@ const testUpdateScript = createAsyncThunk(
     }
 );
 
-export const editGenAiTaskActions = { ...editGenAiTaskSlice.actions, testContext, testModelInput, testUpdateScript };
+const testConnectionString = createAsyncThunk(
+    editGenAiTaskSlice.name + "/testConnectionString",
+    async (payload: {
+        databaseName: string;
+        connectorType: Raven.Client.Documents.Operations.AI.AiConnectorType;
+        settings: AiConnectionStringsSettings;
+    }): Promise<Raven.Server.Web.System.NodeConnectionTestResult> => {
+        return services.tasksService.testAiConnectionString(
+            payload.databaseName,
+            payload.connectorType,
+            payload.settings
+        );
+    }
+);
+
+export const editGenAiTaskActions = {
+    ...editGenAiTaskSlice.actions,
+    testContext,
+    testModelInput,
+    testUpdateScript,
+    testConnectionString,
+};
 
 export const editGenAiTaskSelectors = {
     taskId: (state: RootState) => state.editGenAiTask.taskId,
@@ -159,6 +191,7 @@ export const editGenAiTaskSelectors = {
     sourceView: (state: RootState) => state.editGenAiTask.sourceView,
     currentStep: (state: RootState) => state.editGenAiTask.currentStep,
     isTestOpen: (state: RootState) => state.editGenAiTask.isTestOpen,
+    connectionStringTest: (state: RootState) => state.editGenAiTask.connectionStringTest,
     contextTest: (state: RootState) => state.editGenAiTask.contextTest,
     modelInputTest: (state: RootState) => state.editGenAiTask.modelInputTest,
     updateScriptTest: (state: RootState) => state.editGenAiTask.updateScriptTest,

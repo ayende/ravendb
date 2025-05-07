@@ -18,9 +18,11 @@
 
     &.hidden {
         opacity: 0 !important;
+        display: none !important;
     }
 
     &:not(.hidden) {
         opacity: 1;
+        display: block;
     }
 }

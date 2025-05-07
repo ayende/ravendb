@@ -10,7 +10,7 @@ import { AboutViewHeading } from "components/common/AboutView";
 import useDialog from "components/common/Dialog";
 import Code, { CodeLanguage } from "components/common/Code";
 
-export default function EditGenAiTaskStepSummary() {
+export function EditGenAiTaskStepSummary() {
     const dispatch = useAppDispatch();
     const { control } = useFormContext<EditGenAiTaskFormData>();
 
@@ -165,20 +165,27 @@ export default function EditGenAiTaskStepSummary() {
                     </div>
                 </HStack>
             </div>
-            <HStack className="justify-content-between mt-4">
-                <Button
-                    variant="secondary"
-                    className="rounded-pill"
-                    onClick={() => dispatch(editGenAiTaskActions.currentStepSet("updateScript"))}
-                >
-                    <Icon icon="arrow-left" /> Back
-                </Button>
-
-                <Button type="submit" variant="primary" className="rounded-pill">
-                    Save <Icon icon="save" margin="ms-1" />
-                </Button>
-            </HStack>
         </>
+    );
+}
+
+export function EditGenAiTaskStepSummaryFooter() {
+    const dispatch = useAppDispatch();
+
+    return (
+        <HStack className="justify-content-between">
+            <Button
+                variant="secondary"
+                className="rounded-pill"
+                onClick={() => dispatch(editGenAiTaskActions.currentStepSet("updateScript"))}
+            >
+                <Icon icon="arrow-left" /> Back
+            </Button>
+
+            <Button type="submit" variant="primary" className="rounded-pill">
+                Save <Icon icon="save" margin="ms-1" />
+            </Button>
+        </HStack>
     );
 }
 
