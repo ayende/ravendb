@@ -677,4 +677,212 @@ namespace Orders
             List: ["/bin", "/boot", "/data", "/dev", "/etc"],
         };
     }
+
+    static testGenAiResults_context(): Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.GenAiTestScriptResult {
+        return {
+            TransformationErrors: [],
+            DebugOutput: [],
+            InputDocument: {
+                Name: "My first post",
+                Comments: [
+                    {
+                        Id: "comment/1",
+                        Text: "This is spam",
+                        Author: "Bob",
+                    },
+                    {
+                        Id: "comment/2",
+                        Text: "This is not spam",
+                        Author: "Joe",
+                    },
+                ],
+            },
+            OutputDocument: null,
+            Results: [
+                {
+                    DebugOutput: [],
+                    DebugActions: null,
+                    ContextOutput: {
+                        Context: {
+                            Text: "This is spam",
+                            Author: "Bob",
+                            Id: "comment/1",
+                        },
+                        IsCached: true,
+                        AiHash: "MWoEsxOgGzl1OZarcxjlIki5ELBagYJjX/uIPHEFcxA=",
+                    },
+                    ModelOutput: null,
+                },
+                {
+                    DebugOutput: [],
+                    DebugActions: null,
+                    ContextOutput: {
+                        Context: {
+                            Text: "This is not spam",
+                            Author: "Joe",
+                            Id: "comment/2",
+                        },
+                        IsCached: true,
+                        AiHash: "tDRYDLQP/Q7sNmY6ZCRCcMUwwGdD1Lp05/Evybr7C0s=",
+                    },
+                    ModelOutput: null,
+                },
+            ],
+        };
+    }
+
+    static testGenAiResults_model(): Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.GenAiTestScriptResult {
+        return {
+            TransformationErrors: [],
+            DebugOutput: [],
+            InputDocument: {
+                Name: "My first post",
+                Comments: [
+                    {
+                        Id: "comment/1",
+                        Text: "This is spam",
+                        Author: "Bob",
+                    },
+                    {
+                        Id: "comment/2",
+                        Text: "This is not spam",
+                        Author: "Joe",
+                    },
+                ],
+            },
+            OutputDocument: null,
+            Results: [
+                {
+                    DebugOutput: [],
+                    DebugActions: null,
+                    ContextOutput: {
+                        Context: {
+                            Text: "This is spam",
+                            Author: "Bob",
+                            Id: "comment/1",
+                        },
+                        IsCached: true,
+                        AiHash: "MWoEsxOgGzl1OZarcxjlIki5ELBagYJjX/uIPHEFcxA=",
+                    },
+                    ModelOutput: {
+                        Usage: {
+                            prompt_tokens: 32,
+                            completion_tokens: 48,
+                            total_tokens: 80,
+                        },
+                        Output: {
+                            Blocked: true,
+                            Reason: "Spam detected",
+                        },
+                    },
+                },
+                {
+                    DebugOutput: [],
+                    DebugActions: null,
+                    ContextOutput: {
+                        Context: {
+                            Text: "This is not spam",
+                            Author: "Joe",
+                            Id: "comment/2",
+                        },
+                        IsCached: true,
+                        AiHash: "tDRYDLQP/Q7sNmY6ZCRCcMUwwGdD1Lp05/Evybr7C0s=",
+                    },
+                    ModelOutput: {
+                        Usage: {
+                            prompt_tokens: 33,
+                            completion_tokens: 78,
+                            total_tokens: 111,
+                        },
+                        Output: {
+                            Blocked: false,
+                            Reason: "No spam found",
+                        },
+                    },
+                },
+            ],
+        };
+    }
+
+    static testGenAiResults_update(): Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.GenAiTestScriptResult {
+        return {
+            TransformationErrors: [],
+            DebugOutput: [],
+            InputDocument: {
+                Name: "My first post",
+                Comments: [
+                    {
+                        Id: "comment/1",
+                        Text: "This is spam",
+                        Author: "Bob",
+                    },
+                    {
+                        Id: "comment/2",
+                        Text: "This is not spam",
+                        Author: "Joe",
+                    },
+                ],
+            },
+            OutputDocument: {
+                Name: "My first post",
+                Comments: [
+                    {
+                        Id: "comment/2",
+                        Text: "This is not spam",
+                        Author: "Joe",
+                    },
+                ],
+            },
+            Results: [
+                {
+                    DebugOutput: [],
+                    DebugActions: null,
+                    ContextOutput: {
+                        Context: {
+                            Text: "This is spam",
+                            Author: "Bob",
+                            Id: "comment/1",
+                        },
+                        IsCached: true,
+                        AiHash: "MWoEsxOgGzl1OZarcxjlIki5ELBagYJjX/uIPHEFcxA=",
+                    },
+                    ModelOutput: {
+                        Usage: {
+                            prompt_tokens: 32,
+                            completion_tokens: 48,
+                            total_tokens: 80,
+                        },
+                        Output: {
+                            Blocked: true,
+                            Reason: "Spam detected",
+                        },
+                    },
+                },
+                {
+                    DebugOutput: [],
+                    DebugActions: null,
+                    ContextOutput: {
+                        Context: {
+                            Text: "This is not spam",
+                            Author: "Joe",
+                            Id: "comment/2",
+                        },
+                        IsCached: true,
+                        AiHash: "tDRYDLQP/Q7sNmY6ZCRCcMUwwGdD1Lp05/Evybr7C0s=",
+                    },
+                    ModelOutput: {
+                        Usage: {
+                            prompt_tokens: 33,
+                            completion_tokens: 78,
+                            total_tokens: 111,
+                        },
+                        Output: {
+                            Blocked: false,
+                            Reason: "No spam found",
+                        },
+                    },
+                },
+            ],
+        };
+    }
 }

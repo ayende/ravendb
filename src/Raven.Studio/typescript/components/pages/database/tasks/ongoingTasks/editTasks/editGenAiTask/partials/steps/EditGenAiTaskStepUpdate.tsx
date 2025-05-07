@@ -1,19 +1,25 @@
 import { FormGroup, FormLabel } from "components/common/Form";
 import { FormAceEditor } from "components/common/Form";
-import { useAppDispatch } from "components/store";
-import { useFormContext } from "react-hook-form";
-import { editGenAiTaskActions } from "../../store/editGenAiTaskSlice";
+import { useAppDispatch, useAppSelector } from "components/store";
+import { useFormContext, useWatch } from "react-hook-form";
+import { editGenAiTaskActions, editGenAiTaskSelectors } from "../../store/editGenAiTaskSlice";
 import { Icon } from "components/common/Icon";
 import Button from "react-bootstrap/Button";
 import { HStack } from "components/common/utilities/HStack";
 import { EditGenAiTaskFormData } from "../../utils/editGenAiTaskValidation";
 import { AboutViewHeading } from "components/common/AboutView";
 import EditGenAiTaskPlayground from "../EditGenAiTaskPlayground";
+import { useEditGenAiTaskTests } from "../../hooks/useEditGenAiTaskTests";
+import ButtonWithSpinner from "components/common/ButtonWithSpinner";
+import { ConditionalPopover } from "components/common/ConditionalPopover";
 
 export default function EditGenAiTaskStepUpdate() {
     const dispatch = useAppDispatch();
-    const { control } = useFormContext();
-    const { trigger } = useFormContext<EditGenAiTaskFormData>();
+    const { control, trigger } = useFormContext<EditGenAiTaskFormData>();
+    const formValues = useWatch<EditGenAiTaskFormData>({ control });
+    const updateScriptTest = useAppSelector(editGenAiTaskSelectors.updateScriptTest);
+
+    const { handleUpdateScriptTest } = useEditGenAiTaskTests();
 
     const handleNext = async () => {
         const isValid = await trigger(["update"]);
@@ -23,6 +29,11 @@ export default function EditGenAiTaskStepUpdate() {
             dispatch(editGenAiTaskActions.currentStepSet("summary"));
         }
     };
+
+    const isTestButtonDisabled =
+        !formValues.playgroundDocument ||
+        formValues.playgroundContexts.length === 0 ||
+        formValues.playgroundModelOutputs.length === 0;
 
     return (
         <>
@@ -41,9 +52,33 @@ export default function EditGenAiTaskStepUpdate() {
                     <Icon icon="arrow-left" /> Back
                 </Button>
                 <HStack gap={2}>
-                    <Button variant="info" className="rounded-pill">
-                        <Icon icon="test" /> Test update script
-                    </Button>
+                    <ConditionalPopover
+                        conditions={[
+                            {
+                                isActive: !formValues.playgroundDocument,
+                                message: "Please provide document in the playground",
+                            },
+                            {
+                                isActive: formValues.playgroundContexts.length === 0,
+                                message: "Please run test on 'Specify task context' step",
+                            },
+                            {
+                                isActive: formValues.playgroundModelOutputs.length === 0,
+                                message: "Please run test on 'Model input' step",
+                            },
+                        ]}
+                    >
+                        <ButtonWithSpinner
+                            variant="info"
+                            className="rounded-pill"
+                            onClick={handleUpdateScriptTest}
+                            isSpinning={updateScriptTest.status === "loading"}
+                            icon="test"
+                            disabled={isTestButtonDisabled}
+                        >
+                            Test update script
+                        </ButtonWithSpinner>
+                    </ConditionalPopover>
 
                     <Button variant="primary" className="rounded-pill" onClick={handleNext}>
                         Next <Icon icon="arrow-right" margin="ms-1" />

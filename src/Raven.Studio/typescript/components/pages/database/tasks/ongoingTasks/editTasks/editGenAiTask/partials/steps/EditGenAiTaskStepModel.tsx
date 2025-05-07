@@ -4,18 +4,20 @@ import { Icon } from "components/common/Icon";
 import Button from "react-bootstrap/Button";
 import { editGenAiTaskActions, editGenAiTaskSelectors } from "../../store/editGenAiTaskSlice";
 import EditGenAiTaskModelFields from "../fields/EditGenAiTaskModelFields";
-import { useFormContext } from "react-hook-form";
+import { useFormContext, useWatch } from "react-hook-form";
 import { EditGenAiTaskFormData } from "../../utils/editGenAiTaskValidation";
 import { AboutViewHeading } from "components/common/AboutView";
 import EditGenAiTaskPlayground from "../EditGenAiTaskPlayground";
 import ButtonWithSpinner from "components/common/ButtonWithSpinner";
 import { useEditGenAiTaskTests } from "../../hooks/useEditGenAiTaskTests";
+import { ConditionalPopover } from "components/common/ConditionalPopover";
 
 export default function EditGenAiTaskStepModel() {
     const dispatch = useAppDispatch();
 
     const modelInputTest = useAppSelector(editGenAiTaskSelectors.modelInputTest);
-    const { trigger } = useFormContext<EditGenAiTaskFormData>();
+    const { control, trigger } = useFormContext<EditGenAiTaskFormData>();
+    const formValues = useWatch<EditGenAiTaskFormData>({ control });
 
     const { handleModelInputTest } = useEditGenAiTaskTests();
 
@@ -27,6 +29,8 @@ export default function EditGenAiTaskStepModel() {
             dispatch(editGenAiTaskActions.currentStepSet("updateScript"));
         }
     };
+
+    const isTestButtonDisabled = !formValues.playgroundDocument || formValues.playgroundContexts.length === 0;
 
     return (
         <>
@@ -41,15 +45,29 @@ export default function EditGenAiTaskStepModel() {
                     <Icon icon="arrow-left" /> Back
                 </Button>
                 <HStack gap={2}>
-                    <ButtonWithSpinner
-                        variant="info"
-                        className="rounded-pill"
-                        onClick={handleModelInputTest}
-                        isSpinning={modelInputTest.status === "loading"}
-                        icon="test"
+                    <ConditionalPopover
+                        conditions={[
+                            {
+                                isActive: !formValues.playgroundDocument,
+                                message: "Please provide document in the playground",
+                            },
+                            {
+                                isActive: formValues.playgroundContexts.length === 0,
+                                message: "Please run test on 'Specify task context' step",
+                            },
+                        ]}
                     >
-                        Test model
-                    </ButtonWithSpinner>
+                        <ButtonWithSpinner
+                            variant="info"
+                            className="rounded-pill"
+                            onClick={handleModelInputTest}
+                            isSpinning={modelInputTest.status === "loading"}
+                            icon="test"
+                            disabled={isTestButtonDisabled}
+                        >
+                            Test model
+                        </ButtonWithSpinner>
+                    </ConditionalPopover>
 
                     <Button variant="primary" className="rounded-pill" onClick={handleNext}>
                         Next <Icon icon="arrow-right" margin="ms-1" />

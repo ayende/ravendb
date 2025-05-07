@@ -19,6 +19,9 @@ const getDefaultValues = (dto: Raven.Client.Documents.Operations.OngoingTasks.Ge
             scriptToReset: null,
             script: "",
             documentId: "",
+            playgroundContexts: [],
+            playgroundModelOutputs: [],
+            playgroundDocument: "",
         };
     }
 
@@ -39,6 +42,9 @@ const getDefaultValues = (dto: Raven.Client.Documents.Operations.OngoingTasks.Ge
         scriptToReset: dto.Configuration.Transforms?.[0].Name ?? null,
         script: dto.Configuration.GenAiTransformation?.Script ?? "",
         documentId: "",
+        playgroundContexts: [],
+        playgroundModelOutputs: [],
+        playgroundDocument: "",
     };
 };
 

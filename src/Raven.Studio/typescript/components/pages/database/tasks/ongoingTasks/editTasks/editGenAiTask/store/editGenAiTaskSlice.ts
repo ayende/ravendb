@@ -9,7 +9,6 @@ interface EditGenAiTaskState {
     taskId: number;
     sourceView: EditAiTaskSourceView;
     currentStep: EditGenAiTaskStepId;
-    testStage: Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.TestStage;
     contextTest: loadableData<string[]>;
     modelInputTest: loadableData<string[]>;
     updateScriptTest: loadableData<string>;
@@ -24,7 +23,6 @@ const initialState: EditGenAiTaskState = {
     taskId: null,
     sourceView: "OngoingTasks",
     currentStep: "basic",
-    testStage: null,
     contextTest: createIdleState([]),
     modelInputTest: createIdleState([]),
     updateScriptTest: createIdleState(""),
@@ -47,9 +45,6 @@ export const editGenAiTaskSlice = createSlice({
         },
         currentStepSet: (state, action: PayloadAction<EditGenAiTaskStepId>) => {
             state.currentStep = action.payload;
-        },
-        testStageSet: (state, action: PayloadAction<Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.TestStage>) => {
-            state.testStage = action.payload;
         },
         globalTestResultSet: (
             state,
@@ -155,7 +150,7 @@ const testUpdateScript = createAsyncThunk(
     }
 );
 
-export const editGenAiTaskActions = { ...editGenAiTaskSlice.actions, testContext, testModelInput };
+export const editGenAiTaskActions = { ...editGenAiTaskSlice.actions, testContext, testModelInput, testUpdateScript };
 
 export const editGenAiTaskSelectors = {
     taskId: (state: RootState) => state.editGenAiTask.taskId,
@@ -164,7 +159,6 @@ export const editGenAiTaskSelectors = {
     sourceView: (state: RootState) => state.editGenAiTask.sourceView,
     currentStep: (state: RootState) => state.editGenAiTask.currentStep,
     isTestOpen: (state: RootState) => state.editGenAiTask.isTestOpen,
-    testStage: (state: RootState) => state.editGenAiTask.testStage,
     contextTest: (state: RootState) => state.editGenAiTask.contextTest,
     modelInputTest: (state: RootState) => state.editGenAiTask.modelInputTest,
     updateScriptTest: (state: RootState) => state.editGenAiTask.updateScriptTest,

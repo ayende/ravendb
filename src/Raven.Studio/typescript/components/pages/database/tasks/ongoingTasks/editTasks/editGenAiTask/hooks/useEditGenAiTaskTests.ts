@@ -90,8 +90,44 @@ export function useEditGenAiTaskTests() {
         );
     };
 
+    const handleUpdateScriptTest = async () => {
+        const isDocumentValid = await handleDocumentTrigger();
+        if (!isDocumentValid) {
+            return;
+        }
+
+        const areTestRelatedFieldsValid = await trigger(["prompt", "sampleObject", "jsonSchema"]);
+        if (!areTestRelatedFieldsValid) {
+            return;
+        }
+
+        const input = structuredClone(globalTestResult.Results);
+
+        for (let i = 0; i < input.length; i++) {
+            if (input[i].ContextOutput) {
+                input[i].ContextOutput.Context = JSON.parse(formValues.playgroundContexts[i].value);
+            }
+
+            if (input[i].ModelOutput) {
+                input[i].ModelOutput.Output = JSON.parse(formValues.playgroundModelOutputs[i].value);
+            }
+        }
+
+        const dto: Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.TestGenAiScript = {
+            TestStage: "ApplyUpdateScript",
+            Input: input,
+            Document: JSON.parse(formValues.playgroundDocument),
+            DocumentId: undefined,
+            IsDelete: false,
+            Configuration: editGenAiTaskUtils.mapToDto(formValues, taskId),
+        };
+
+        await dispatch(editGenAiTaskActions.testUpdateScript({ databaseName, dto })).unwrap();
+    };
+
     return {
         handleContextTest,
         handleModelInputTest,
+        handleUpdateScriptTest,
     };
 }

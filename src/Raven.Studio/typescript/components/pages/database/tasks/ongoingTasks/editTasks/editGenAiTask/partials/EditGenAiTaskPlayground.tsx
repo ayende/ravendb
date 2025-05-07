@@ -156,14 +156,15 @@ export default function EditGenAiTaskPlayground() {
                                         Document
                                     </Nav.Link>
                                 </Nav.Item>
-                                {currentStep === "modelInput" && contextsFieldsArray.fields.length > 0 && (
-                                    <Nav.Item>
-                                        <Nav.Link eventKey="context">
-                                            <Icon icon="indent" />
-                                            Context
-                                        </Nav.Link>
-                                    </Nav.Item>
-                                )}
+                                {(currentStep === "modelInput" || currentStep === "updateScript") &&
+                                    contextsFieldsArray.fields.length > 0 && (
+                                        <Nav.Item>
+                                            <Nav.Link eventKey="context">
+                                                <Icon icon="indent" />
+                                                Context
+                                            </Nav.Link>
+                                        </Nav.Item>
+                                    )}
                                 {currentStep === "updateScript" && modelOutputsFieldsArray.fields.length > 0 && (
                                     <Nav.Item>
                                         <Nav.Link eventKey="modelOutput">

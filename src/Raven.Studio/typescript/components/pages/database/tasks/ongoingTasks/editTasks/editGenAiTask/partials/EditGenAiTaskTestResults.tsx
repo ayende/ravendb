@@ -10,6 +10,7 @@ import Button from "react-bootstrap/Button";
 import { VStack } from "components/common/utilities/VStack";
 import { useEditGenAiTaskTests } from "../hooks/useEditGenAiTaskTests";
 import ButtonWithSpinner from "components/common/ButtonWithSpinner";
+import SizeGetter from "components/common/SizeGetter";
 
 export default function EditGenAiTaskTestResults() {
     const dispatch = useAppDispatch();
@@ -21,10 +22,10 @@ export default function EditGenAiTaskTestResults() {
 
     console.log("kalczur c", { currentStep, modelInputTest });
 
-    const { handleContextTest } = useEditGenAiTaskTests();
+    const { handleContextTest, handleModelInputTest } = useEditGenAiTaskTests();
 
     return (
-        <div>
+        <div className="h-100">
             {currentStep === "context" && contextTest.data?.length > 0 && (
                 <div>
                     <HStack className="mb-3 justify-content-between">
@@ -45,7 +46,7 @@ export default function EditGenAiTaskTestResults() {
                             <Button
                                 variant="secondary"
                                 className="rounded-pill"
-                                onClick={() => dispatch(editGenAiTaskActions.testStageSet(null))}
+                                onClick={() => dispatch(editGenAiTaskActions.isTestOpenSet(false))}
                             >
                                 <Icon icon="cancel" />
                                 Close
@@ -72,13 +73,14 @@ export default function EditGenAiTaskTestResults() {
                                 className="rounded-pill"
                                 icon="reset"
                                 isSpinning={modelInputTest.status === "loading"}
+                                onClick={handleModelInputTest}
                             >
                                 Re-run test
                             </ButtonWithSpinner>
                             <Button
                                 variant="secondary"
                                 className="rounded-pill"
-                                onClick={() => dispatch(editGenAiTaskActions.testStageSet(null))}
+                                onClick={() => dispatch(editGenAiTaskActions.isTestOpenSet(false))}
                             >
                                 <Icon icon="cancel" />
                                 Close
@@ -100,11 +102,15 @@ export default function EditGenAiTaskTestResults() {
 function UpdateScriptResult() {
     const dispatch = useAppDispatch();
 
+    const updateScriptTest = useAppSelector(editGenAiTaskSelectors.updateScriptTest);
+
     const oldDoc = JSON.stringify(useAppSelector(editGenAiTaskSelectors.globalTestResult).InputDocument, null, 4);
-    const newDoc = useAppSelector(editGenAiTaskSelectors.updateScriptTest).data ?? "";
+    const newDoc = updateScriptTest.data ?? "";
 
     const oldDocRef = useRef<ReactAce>(null);
     const newDocRef = useRef<ReactAce>(null);
+
+    const { handleUpdateScriptTest } = useEditGenAiTaskTests();
 
     useEffect(() => {
         if (!oldDocRef.current || !newDocRef.current) {
@@ -123,21 +129,26 @@ function UpdateScriptResult() {
     // TODO add ace editor title
 
     return (
-        <div>
+        <>
             <HStack className="mb-3 justify-content-between">
                 <h3 className="mb-0">
                     <Icon icon="test" />
                     Update script test results
                 </h3>
                 <HStack gap={2}>
-                    <Button variant="primary" className="rounded-pill">
-                        <Icon icon="reset" />
+                    <ButtonWithSpinner
+                        variant="primary"
+                        className="rounded-pill"
+                        icon="reset"
+                        isSpinning={updateScriptTest.status === "loading"}
+                        onClick={handleUpdateScriptTest}
+                    >
                         Re-run test
-                    </Button>
+                    </ButtonWithSpinner>
                     <Button
                         variant="secondary"
                         className="rounded-pill"
-                        onClick={() => dispatch(editGenAiTaskActions.testStageSet(null))}
+                        onClick={() => dispatch(editGenAiTaskActions.isTestOpenSet(false))}
                     >
                         <Icon icon="cancel" />
                         Close
@@ -145,13 +156,17 @@ function UpdateScriptResult() {
                 </HStack>
             </HStack>
             <VStack gap={2}>
-                <div>
-                    <AceEditor aceRef={oldDocRef} value={oldDoc} mode="json" height="100px" />
+                <div className="border border-secondary rounded-2 ">
+                    <div className="text-center border-bottom border-secondary py-1 panel-harder-bg">
+                        Original document
+                    </div>
+                    <AceEditor aceRef={oldDocRef} value={oldDoc} mode="json" height="300px" readOnly />
                 </div>
-                <div>
-                    <AceEditor aceRef={newDocRef} value={newDoc} mode="json" height="100px" />
+                <div className="border border-secondary rounded-2">
+                    <div className="text-center border-bottom border-secondary py-1">Modified document</div>
+                    <AceEditor aceRef={newDocRef} value={newDoc} mode="json" height="300px" readOnly />
                 </div>
             </VStack>
-        </div>
+        </>
     );
 }
