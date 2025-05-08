@@ -231,31 +231,31 @@ export default function EditGenAiTaskPlayground() {
                         <Tab.Content className="p-3">
                             <Tab.Pane eventKey="document">
                                 {!formValues.playgroundDocument && (
-                                    <VStack className="align-items-center">
+                                    <VStack className="align-items-center py-3">
                                         {errors.playgroundDocument && (
                                             <FormValidationMessage className="d-flex justify-content-center mt-2">
                                                 {errors.playgroundDocument.message}
                                             </FormValidationMessage>
                                         )}
                                         <FormGroup>
-                                            <FormLabel>Select document ID from the collection</FormLabel>
+                                            <FormLabel>Choose document from the selected collection</FormLabel>
                                             <FormSelectAutocomplete
                                                 control={control}
                                                 name="documentId"
+                                                placeholder="E.g. Posts/01"
                                                 options={asyncGetDocumentIdOptions.result ?? []}
                                                 isLoading={asyncGetDocumentIdOptions.loading}
                                                 onMenuClose={() => clearErrors("playgroundDocument")}
                                             />
                                         </FormGroup>
-                                        <div className="mb-2">or</div>
                                         <Button
-                                            variant="primary"
+                                            variant="link"
                                             onClick={() =>
                                                 setValue("playgroundDocument", "{}", { shouldValidate: true })
                                             }
+                                            size="sm"
                                         >
-                                            <Icon icon="edit" />
-                                            Provide manually
+                                            <Icon icon="edit" />I want to provide content manually
                                         </Button>
                                     </VStack>
                                 )}

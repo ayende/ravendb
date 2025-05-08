@@ -32,6 +32,7 @@
         .nav-link {
             color: inherit;
             border-radius: sizes.$border-radius;
+            padding: 3px 6px;
 
             &.active {
                 background-color: colors.$panel-bg-3;
