@@ -1,4 +1,4 @@
-import { FieldArrayWithId, FieldPath, useFieldArray, useWatch } from "react-hook-form";
+import { useFieldArray, useWatch } from "react-hook-form";
 import { useFormContext } from "react-hook-form";
 import { EditGenAiTaskFormData } from "../utils/editGenAiTaskValidation";
 import { HStack } from "components/common/utilities/HStack";
@@ -24,12 +24,10 @@ import Collapse from "react-bootstrap/Collapse";
 import useConfirm from "components/common/ConfirmDialog";
 import RichAlert from "components/common/RichAlert";
 import classNames from "classnames";
-import { useEffect, useRef } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
-import SizeGetter from "components/common/SizeGetter";
-import { EmptySet } from "components/common/EmptySet";
+import { useEffect } from "react";
 import { Switch } from "components/common/Checkbox";
 import { ConditionalPopover } from "components/common/ConditionalPopover";
+import EditGenAiTaskFormVirtualList from "./EditGenAiTaskFormVirtualList";
 
 export default function EditGenAiTaskPlayground() {
     const dispatch = useAppDispatch();
@@ -316,7 +314,7 @@ export default function EditGenAiTaskPlayground() {
     );
 }
 
-function getVirtualListHeight(count: number) {
+function getVirtualListHeight(count: number): `${number}px` {
     if (count <= 1) {
         return "200px";
     }
@@ -326,69 +324,4 @@ function getVirtualListHeight(count: number) {
     }
 
     return "500px";
-}
-
-interface EditGenAiTaskFormVirtualListProps {
-    fields: FieldArrayWithId<EditGenAiTaskFormData>[];
-    name: Extract<FieldPath<EditGenAiTaskFormData>, "playgroundContexts" | "playgroundModelOutputs">;
-    isReadOnly: boolean;
-}
-
-function EditGenAiTaskFormVirtualList({ fields, name, isReadOnly }: EditGenAiTaskFormVirtualListProps) {
-    const { control } = useFormContext<EditGenAiTaskFormData>();
-
-    const listRef = useRef<HTMLDivElement>(null);
-
-    const virtualizer = useVirtualizer({
-        count: fields.length,
-        estimateSize: () => 200,
-        getScrollElement: () => listRef.current,
-        overscan: 5,
-    });
-
-    if (fields.length === 0) {
-        return <EmptySet />;
-    }
-
-    return (
-        <div className="flex-grow-1">
-            <SizeGetter
-                isHeighRequired
-                render={(size) => (
-                    <div className="overflow-auto" style={{ height: size.height }} ref={listRef}>
-                        <div style={{ height: `${virtualizer.getTotalSize()}px`, position: "relative" }}>
-                            {virtualizer.getVirtualItems().map((virtualRow) => {
-                                const field = fields[virtualRow.index];
-
-                                return (
-                                    <div
-                                        key={virtualRow.key}
-                                        data-index={virtualRow.index}
-                                        ref={virtualizer.measureElement}
-                                        className="hover-filter py-1"
-                                        style={{
-                                            position: "absolute",
-                                            top: 0,
-                                            left: 0,
-                                            width: "100%",
-                                            transform: `translateY(${virtualRow.start}px)`,
-                                            transition: "unset",
-                                        }}
-                                    >
-                                        <FormAceEditor
-                                            key={field.id}
-                                            control={control}
-                                            name={`${name}.${virtualRow.index}.value`}
-                                            mode="json"
-                                            readOnly={isReadOnly}
-                                        />
-                                    </div>
-                                );
-                            })}
-                        </div>
-                    </div>
-                )}
-            />
-        </div>
-    );
 }

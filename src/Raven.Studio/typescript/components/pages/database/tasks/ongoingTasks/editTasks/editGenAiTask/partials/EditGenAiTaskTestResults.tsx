@@ -12,6 +12,8 @@ import { useEditGenAiTaskTests } from "../hooks/useEditGenAiTaskTests";
 import ButtonWithSpinner from "components/common/ButtonWithSpinner";
 import EditGenAiTaskReadOnlyVirtualList from "./EditGenAiTaskReadOnlyVirtualList";
 import SizeGetter from "components/common/SizeGetter";
+import Badge from "react-bootstrap/Badge";
+import PopoverWithHoverWrapper from "components/common/PopoverWithHoverWrapper";
 
 export default function EditGenAiTaskTestResults() {
     const dispatch = useAppDispatch();
@@ -82,11 +84,59 @@ export default function EditGenAiTaskTestResults() {
                             </Button>
                         </HStack>
                     </HStack>
+                    <ModelUsage />
                     <EditGenAiTaskReadOnlyVirtualList data={modelInputTest.data} />
                 </>
             )}
             {currentStep === "updateScript" && updateScriptTest.data != null && <UpdateScriptResult />}
         </VStack>
+    );
+}
+
+function ModelUsage() {
+    const globalTestResult = useAppSelector(editGenAiTaskSelectors.globalTestResult);
+
+    let totalTokens = 0;
+    let promptTokens = 0;
+    let completionTokens = 0;
+
+    for (const result of globalTestResult.Results) {
+        totalTokens += result.ModelOutput?.Usage.total_tokens;
+        promptTokens += result.ModelOutput?.Usage.prompt_tokens;
+        completionTokens += result.ModelOutput?.Usage.completion_tokens;
+    }
+
+    if (totalTokens === 0) {
+        return null;
+    }
+
+    return (
+        <div>
+            <PopoverWithHoverWrapper
+                message={
+                    <div>
+                        <HStack className="justify-content-between gap-3">
+                            <span>Prompt tokens</span>
+                            <span>{promptTokens}</span>
+                        </HStack>
+                        <HStack className="justify-content-between gap-3">
+                            <span>Completion tokens</span>
+                            <span>{completionTokens}</span>
+                        </HStack>
+                        <hr className="my-1" />
+                        <HStack className="justify-content-between gap-3">
+                            <span>Tokens usage</span>
+                            <span>{totalTokens}</span>
+                        </HStack>
+                    </div>
+                }
+            >
+                <Badge bg="info">
+                    <Icon icon="info" />
+                    Tokens usage: {totalTokens}
+                </Badge>
+            </PopoverWithHoverWrapper>
+        </div>
     );
 }
 
