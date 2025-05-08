@@ -29,6 +29,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import SizeGetter from "components/common/SizeGetter";
 import { EmptySet } from "components/common/EmptySet";
 import { Switch } from "components/common/Checkbox";
+import { ConditionalPopover } from "components/common/ConditionalPopover";
 
 export default function EditGenAiTaskPlayground() {
     const dispatch = useAppDispatch();
@@ -155,29 +156,64 @@ export default function EditGenAiTaskPlayground() {
                         <HStack className="panel-bg-2 border-bottom border-secondary p-2 justify-content-between">
                             <Nav>
                                 <Nav.Item>
-                                    <Nav.Link
-                                        eventKey="document"
-                                        className={classNames({ "text-danger": !!errors.playgroundDocument })}
+                                    <ConditionalPopover
+                                        conditions={{
+                                            isActive: currentStep !== "context",
+                                            message:
+                                                "This configuration doesn’t give any additional context to the active step.",
+                                        }}
                                     >
-                                        <Icon icon="document" />
-                                        Document
-                                    </Nav.Link>
+                                        <Nav.Link
+                                            eventKey="document"
+                                            className={classNames(
+                                                { "text-danger": !!errors.playgroundDocument },
+                                                { "text-muted": currentStep !== "context" }
+                                            )}
+                                        >
+                                            <Icon icon="document" />
+                                            Document
+                                        </Nav.Link>
+                                    </ConditionalPopover>
                                 </Nav.Item>
                                 {(currentStep === "modelInput" || currentStep === "updateScript") &&
                                     contextsFieldsArray.fields.length > 0 && (
                                         <Nav.Item>
-                                            <Nav.Link eventKey="context">
-                                                <Icon icon="indent" />
-                                                Context
-                                            </Nav.Link>
+                                            <ConditionalPopover
+                                                conditions={{
+                                                    isActive: currentStep !== "modelInput",
+                                                    message:
+                                                        "This configuration doesn’t give any additional context to the active step.",
+                                                }}
+                                            >
+                                                <Nav.Link
+                                                    eventKey="context"
+                                                    className={classNames({
+                                                        "text-muted": currentStep !== "modelInput",
+                                                    })}
+                                                >
+                                                    <Icon icon="indent" />
+                                                    Context
+                                                </Nav.Link>
+                                            </ConditionalPopover>
                                         </Nav.Item>
                                     )}
                                 {currentStep === "updateScript" && modelOutputsFieldsArray.fields.length > 0 && (
                                     <Nav.Item>
-                                        <Nav.Link eventKey="modelOutput">
-                                            <Icon icon="resources" />
-                                            Model output
-                                        </Nav.Link>
+                                        <ConditionalPopover
+                                            conditions={{
+                                                isActive: currentStep !== "updateScript",
+                                                message:
+                                                    "This configuration doesn’t give any additional context to the active step.",
+                                            }}
+                                        >
+                                            <Nav.Link
+                                                eventKey="modelOutput"
+                                                className={classNames({ "text-muted": currentStep !== "updateScript" })}
+                                            >
+                                                <Icon icon="resources" />
+                                                Model output
+                                            </Nav.Link>
+                                        </ConditionalPopover>
                                     </Nav.Item>
                                 )}
                             </Nav>

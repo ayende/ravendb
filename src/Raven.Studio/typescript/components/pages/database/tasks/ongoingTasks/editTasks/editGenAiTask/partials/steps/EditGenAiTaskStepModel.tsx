@@ -56,11 +56,11 @@ export function EditGenAiTaskStepModelFooter() {
                     conditions={[
                         {
                             isActive: !formValues.playgroundDocument,
-                            message: "Please provide document in the playground",
+                            message: "You need to select or provide a document to test this step.",
                         },
                         {
                             isActive: formValues.playgroundContexts.length === 0,
-                            message: "Please run test on 'Specify task context' step",
+                            message: "Please run test on 'Specify task context' step.",
                         },
                     ]}
                 >
