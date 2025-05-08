@@ -197,10 +197,6 @@ function UpdateScriptAceDiff({ height }: { height: number }) {
         // We have different ace versions, lets just use 'any' here instead of editing aceDiff class
         const aceDiffC = new aceDiff(oldDocRef.current.editor as any, newDocRef.current.editor as any, false);
         aceDiffC.refresh(false);
-
-        return () => {
-            aceDiffC.destroy();
-        };
     }, [oldDoc, newDoc]);
 
     return (

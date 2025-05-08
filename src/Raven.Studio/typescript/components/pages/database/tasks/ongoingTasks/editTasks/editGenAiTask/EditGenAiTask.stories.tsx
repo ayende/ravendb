@@ -26,6 +26,7 @@ export const Basic: StoryObj = {
         cluster.with_Single();
         collectionsTracker.with_Collections();
 
+        tasksService.withTestAiConnectionString();
         tasksService.withConnectionStrings();
         tasksService.withTestGenAi();
 
