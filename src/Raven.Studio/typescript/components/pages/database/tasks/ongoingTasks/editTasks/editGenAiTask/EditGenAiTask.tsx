@@ -59,7 +59,7 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
         },
     });
 
-    const { handleSubmit, formState, reset } = form;
+    const { handleSubmit, reset } = form;
 
     const { appUrl } = useAppUrls();
 
@@ -79,8 +79,6 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
             router.navigate(appUrl.forOngoingTasks(databaseName));
         }
     };
-
-    console.log("kalczur errors", formState.errors);
 
     const steps = useEditGenAiTaskSteps();
     const currentStep = steps.find((x) => x.isCurrent);

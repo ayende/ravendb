@@ -82,7 +82,7 @@ async function navigateToStep(canvas: Canvas, step: EditGenAiTaskStepId) {
     await userEvent.click(canvas.getByText("Orders"));
     await userEvent.click(canvas.getByText("1"));
     await userEvent.paste(sampleContextScript);
-    await userEvent.click(canvas.getByRole("button", { name: "Provide manually" }));
+    await userEvent.click(canvas.getByRole("button", { name: "I want to provide content manually" }));
     await userEvent.click(canvas.getByRole("button", { name: "Test task context" }));
 
     if (step === "context") {

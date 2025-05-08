@@ -10,8 +10,6 @@ interface EditGenAiTaskReadOnlyVirtualListProps {
 export default function EditGenAiTaskReadOnlyVirtualList({ data }: EditGenAiTaskReadOnlyVirtualListProps) {
     const listRef = useRef<HTMLDivElement>(null);
 
-    console.log("kalczur data", data);
-
     const virtualizer = useVirtualizer({
         count: data.length,
         estimateSize: () => 200,
