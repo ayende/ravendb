@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using Raven.Client.Documents.Operations.AI;
 using Raven.Client.Documents.Operations.Counters;
@@ -32,12 +31,13 @@ namespace Raven.Server.Documents.ETL.Providers.AI.GenAi;
 public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiConfiguration, AiConnectionString,
     GenAiStatsScope, GenAiPerformanceOperation>
 {
-    private const string GenAiTaskTag = "AI/Gen";
 
-    private int _fallbackCounter = 0;
-    private ChatCompletionClient _chatCompletionClient;
+    internal const string GenAiHashesMetadataKey = "@genAiHashes";
 
     private const string TestDocumentId = "GenAi/TestDocument";
+    private const string GenAiTaskTag = "AI/Gen";
+    private int _fallbackCounter = 0;
+    private ChatCompletionClient _chatCompletionClient;
 
     public GenAiTask(Transformation transformation, GenAiConfiguration configuration, DocumentDatabase database, ServerStore serverStore)
         : base(transformation, configuration, database, serverStore, GenAiTaskTag)
@@ -142,64 +142,12 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
     protected override int LoadInternal(IEnumerable<GenAiScriptResult> items, DocumentsOperationContext context, GenAiStatsScope scope)
     {
         var results = PrepareItemsBeforeSendingToModel(items);
+        if (results.Count is 0)
+            return 0;
 
         var exceptions = SendToModel(results, context);
 
-        if (results.Count is not 0)
-        {
-            List<Task> patches = [];
-            List<PatchDocumentCommand> patchCommands = [];
-            PatchRequest req = new(Configuration.Update, PatchRequestType.AiGen);
-
-            foreach (var item in results)
-            {
-                if (item?.ModelOutput is null)
-                    continue;
-
-                var dvj = new DynamicJsonValue
-                {
-                    ["output"] = item.ModelOutput.Output, 
-                    ["aiHash"] = item.ContextOutput.AiHash, 
-                    ["input"] = item.ContextOutput.Context
-                };
-
-                var args = context.ReadObject(dvj, item.DocId);
-                var cmd = new PatchDocumentCommand(
-                    context: context,
-                    id: item.DocId,
-                    expectedChangeVector: null,
-                    skipPatchIfChangeVectorMismatch: false,
-                    patch: (req, args),
-                    patchIfMissing: default,
-                    createIfMissing: null,
-                    identityPartsSeparator: Database.IdentityPartsSeparator,
-                    isTest: Configuration.TestMode,
-                    debugMode: false,
-                    collectResultsNeeded: false,
-                    returnDocument: false,
-                    ignoreMaxStepsForScript: false);
-
-                patchCommands.Add(cmd);
-            }
-
-            foreach (var cmd in patchCommands)
-            {
-                // important - we must ensure that we aren't touching the context
-                // while we are sending this to the transaction merger
-                patches.Add(Database.TxMerger.Enqueue(cmd));
-            }
-
-            try
-            {
-                Task.WaitAll(patches.OfType<Task>().ToArray()); // TODO: yuck
-            }
-            catch (Exception e)
-            {
-                if (exceptions is null)
-                    throw;
-                exceptions.Add(e);
-            }
-        }
+        ApplyUpdateScript(context, results);
 
         if (exceptions is not null)
             throw new AggregateException(exceptions);
@@ -207,12 +155,20 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
         return results.Count;
     }
 
+    private void ApplyUpdateScript(DocumentsOperationContext context, List<GenAiResultItem> results)
+    {
+        PatchRequest req = new(Configuration.Update, PatchRequestType.AiGen);
+        var cmd = new GenAiBatchPatchCommand(context, results, req, Configuration.Name);
+
+        Database.TxMerger.Enqueue(cmd).GetAwaiter().GetResult();
+    }
+
     protected override GenAiStatsScope CreateScope(EtlRunStats stats)
     {
         return new GenAiStatsScope(stats);
     }
 
-    protected override string StatsAggregatorTag => "Embeddings Generation";
+    protected override string StatsAggregatorTag => "Generative AI";
 
     protected override bool ShouldFilterOutHiLoDocument()
     {
@@ -228,16 +184,10 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
 
         foreach (var item in items)
         {
-            string json = item.ContextOutput.Context.ToString();
-            string hash = AttachmentsStorageHelper.CalculateHash(MemoryMarshal.AsBytes(json.AsSpan()));
-            if (item.ContextOutput.AiHash == hash)
-            {
-                item.ContextOutput.IsCached = true;
+            if (item.ContextOutput.IsCached)
                 continue; // no change, can skip
-            }
-
-            item.ContextOutput.AiHash = hash;
-
+            
+            string json = item.ContextOutput.Context.ToString();
             tasks.Add(_chatCompletionClient.CompleteAsync(Configuration.Prompt, json));
         }
 
@@ -338,6 +288,7 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
                     items = testGenAiScript.Input;
                     PatchRequest req = new(Configuration.Update, PatchRequestType.AiGen);
                     PatchDocumentCommand lastPatch = null;
+                    var hashes = new DynamicJsonArray();
 
                     if (testGenAiScript.Document != null)
                     {
@@ -350,13 +301,14 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
 
                     foreach (var item in items)
                     {
+                        hashes.Add(item.ContextOutput.AiHash);
+
                         if (item?.ModelOutput is null)
                             continue;
 
                         var dvj = new DynamicJsonValue
                         {
                             ["output"] = item.ModelOutput.Output,
-                            ["aiHash"] = item.ContextOutput.AiHash,
                             ["input"] = item.ContextOutput.Context
                         };
 
@@ -382,7 +334,9 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
                         item.DebugOutput = cmd.DebugOutput;
                     }
 
-                    outputDocument = lastPatch?.PatchResult?.ModifiedDocument;
+                    if (lastPatch?.PatchResult?.ModifiedDocument != null)
+                        outputDocument = GenAiBatchPatchCommand.UpdateHashesInMetadata(document.Id, lastPatch.PatchResult.ModifiedDocument, Configuration.Name, hashes, context);
+
                     break;
                 }
 
@@ -416,7 +370,8 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
 
                 ContextOutput = new ContextOutput
                 {
-                    Context = scriptResult.Context, 
+                    Context = scriptResult.Context,
+                    IsCached = scriptResult.IsCached,
                     AiHash = scriptResult.AiHash
                 }
             };
@@ -426,6 +381,4 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
 
         return results;
     }
-
-
 }

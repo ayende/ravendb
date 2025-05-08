@@ -1,11 +1,16 @@
-﻿using System.Net.Http;
+﻿using System;
+using System.Collections.Generic;
+using System.Net.Http;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
+using Raven.Client;
 using Raven.Client.Documents.Conventions;
 using Raven.Client.Documents.Operations.AI;
 using Raven.Client.Documents.Operations.ConnectionStrings;
 using Raven.Client.Http;
 using Raven.Client.Json;
+using Raven.Server.Documents;
 using Raven.Server.Documents.ETL.Providers.AI.GenAi;
 using Raven.Server.Documents.ETL.Providers.AI.GenAi.Test;
 using Raven.Server.ServerWide.Context;
@@ -55,8 +60,8 @@ public class GenAiTestScript(ITestOutputHelper output) : RavenTestBase(output)
                         Name = "Check blog comments spam",
                         Connection = new AiConnectionString
                         {
-                            Name = "ollama-local-deepseek-r1",
-                            Identifier = "ollama-local-deepseek-r1",
+                            Name = "ollama-local",
+                            Identifier = "ollama-local",
                             OllamaSettings = new OllamaSettings
                             {
                                 Uri = "http://127.0.0.1:11434/",
@@ -76,16 +81,13 @@ if($output.Blocked)
 {
     this.Comments.splice(idx, 1); // remove
 }
-else 
-{
-    this.Comments[idx].AiHash = $aiHash; // remember this decision
-}",
+",
                         GenAiTransformation = new GenAiTransformation
                         {
                             Script = @"
 for (const comment of this.Comments)
 {
-    context({Text: comment.Text, Author: comment.Author, Id: comment.Id}, comment.AiHash);
+    context({Text: comment.Text, Author: comment.Author, Id: comment.Id});
 }
 "
                         }
@@ -104,7 +106,7 @@ for (const comment of this.Comments)
 
                 foreach (var item in result.Results)
                 {
-                    Assert.Null(item.ContextOutput.AiHash);
+                    Assert.NotNull(item.ContextOutput.AiHash);
                     Assert.False(item.ContextOutput.IsCached);
 
                     Assert.True(item.ContextOutput.Context.TryGet("Text", out string _));
@@ -182,8 +184,8 @@ for (const comment of this.Comments)
                 Name = "Check blog comments spam",
                 Connection = new AiConnectionString
                 {
-                    Name = "ollama-local-deepseek-r1",
-                    Identifier = "ollama-local-deepseek-r1",
+                    Name = "ollama-local",
+                    Identifier = "ollama-local",
                     OllamaSettings = new OllamaSettings
                     {
                         Uri = "http://127.0.0.1:11434/",
@@ -204,14 +206,13 @@ if($output.Blocked)
 {
     this.Comments[idx].Spam = true;
 }
-this.Comments[idx].AiHash = $aiHash;
 ",
                 GenAiTransformation = new GenAiTransformation
                 {
                     Script = @"
 for (const comment of this.Comments)
 {
-    context({Text: comment.Text, Author: comment.Author, Id: comment.Id}, comment.AiHash);
+    context({Text: comment.Text, Author: comment.Author, Id: comment.Id});
 }
 "
                 }
@@ -231,8 +232,8 @@ for (const comment of this.Comments)
 
         foreach (var item in firstRun.Results)
         {
-            Assert.NotNull(item.ContextOutput?.Context);
-            Assert.Null(item.ContextOutput.AiHash);
+            Assert.NotNull(item.ContextOutput.Context);
+            Assert.NotNull(item.ContextOutput.AiHash);
             Assert.False(item.ContextOutput.IsCached);
             Assert.True(item.ContextOutput.Context.TryGet("Text", out string _));
             Assert.True(item.ContextOutput.Context.TryGet("Author", out string _));
@@ -292,105 +293,107 @@ for (const comment of this.Comments)
         }
 
         var database = await GetDocumentDatabaseInstanceFor(store);
-        database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context);
-
-        var testGenAiScript = new TestGenAiScript
+        using (database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
         {
-            DocumentId = id,
-            Configuration = new()
+            var testGenAiScript = new TestGenAiScript
             {
-                Name = "Check blog comments spam",
-                Connection = new AiConnectionString
+                DocumentId = id,
+                Configuration = new()
                 {
-                    Name = "ollama-local-deepseek-r1",
-                    Identifier = "ollama-local-deepseek-r1",
-                    OllamaSettings = new OllamaSettings
+                    Name = "Check blog comments spam",
+                    Connection = new AiConnectionString
                     {
-                        Uri = "http://127.0.0.1:11434/",
-                        Model = "llama3.2:latest"
-                    }
-                },
-                Collection = "Posts",
-                Prompt = "Check if the following blog post comment is spam or not",
-                SampleObject = JsonConvert.SerializeObject(
-                    new
-                    {
-                        Blocked = true,
-                        Reason = "Concise reason for why this comment was marked as spam or harmful"
-                    }),
-                Update = @"    
+                        Name = "ollama-local",
+                        Identifier = "ollama-local",
+                        OllamaSettings = new OllamaSettings
+                        {
+                            Uri = "http://127.0.0.1:11434/",
+                            Model = "llama3.2:latest"
+                        }
+                    },
+                    Collection = "Posts",
+                    Prompt = "Check if the following blog post comment is spam or not",
+                    SampleObject = JsonConvert.SerializeObject(
+                        new
+                        {
+                            Blocked = true,
+                            Reason = "Concise reason for why this comment was marked as spam or harmful"
+                        }),
+                    Update = @"    
 const idx = this.Comments.findIndex(c => c.Id == $input.Id);  
 if($output.Blocked)
 {
     this.Comments[idx].Spam = true;
 }
-this.Comments[idx].AiHash = $aiHash;
 ",
-                GenAiTransformation = new GenAiTransformation
-                {
-                    Script = @"
+                    GenAiTransformation = new GenAiTransformation
+                    {
+                        Script = @"
 for (const comment of this.Comments)
 {
-    context({Text: comment.Text, Author: comment.Author, Id: comment.Id}, comment.AiHash);
+    context({Text: comment.Text, Author: comment.Author, Id: comment.Id});
 }
 "
+                    }
                 }
+            };
+
+            // first, test creating context objects
+            var firstRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+            Assert.NotNull(firstRun);
+            foreach (var item in firstRun.Results)
+            {
+                Assert.NotNull(item.ContextOutput?.Context);
+                Assert.Null(item.ModelOutput?.Output);
             }
-        };
 
-        // first, test creating context objects
-        var firstRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
-        Assert.NotNull(firstRun);
-        foreach (var item in firstRun.Results)
-        {
-            Assert.NotNull(item.ContextOutput?.Context);
-            Assert.Null(item.ModelOutput?.Output);
+            Assert.Null(firstRun.OutputDocument);
+
+            testGenAiScript.Input = firstRun.Results;
+            testGenAiScript.TestStage = TestStage.SendToModel;
+
+            var secondRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+            Assert.NotNull(secondRun);
+            foreach (var item in secondRun.Results)
+            {
+                Assert.NotNull(item.ContextOutput?.Context);
+                Assert.NotNull(item.ModelOutput?.Output);
+
+                Assert.True(item.ModelOutput.Output.TryGet("Blocked", out bool _));
+                Assert.True(item.ModelOutput.Output.TryGet("Reason", out string _));
+            }
+
+            // intentionally change the schema of the model output - in order to verify that the 3rd test run skips the model call
+            testGenAiScript.TestStage = TestStage.ApplyUpdateScript;
+            testGenAiScript.Input = secondRun.Results;
+            testGenAiScript.Configuration.JsonSchema = null;
+            testGenAiScript.Configuration.SampleObject = JsonConvert.SerializeObject(new
+            {
+                IsSpam = true,
+                Explanation = "Concise reason for why this comment was marked as spam or harmful"
+            });
+
+            var thirdRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+            Assert.NotNull(thirdRun);
+
+            foreach (var item in thirdRun.Results)
+            {
+                Assert.NotNull(item.ContextOutput?.Context);
+                Assert.NotNull(item.ModelOutput?.Output);
+
+                // model output should remain the same as in previous run
+
+                Assert.False(item.ModelOutput.Output.TryGet("IsSpam", out bool _));
+                Assert.False(item.ModelOutput.Output.TryGet("Explanation", out string _));
+
+                Assert.True(item.ModelOutput.Output.TryGet("Blocked", out bool _));
+                Assert.True(item.ModelOutput.Output.TryGet("Reason", out string _));
+            }
+
+            Assert.NotNull(thirdRun.OutputDocument);
         }
 
-        Assert.Null(firstRun.OutputDocument);
 
-        testGenAiScript.Input = firstRun.Results;
-        testGenAiScript.TestStage = TestStage.SendToModel;
-
-        var secondRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
-        Assert.NotNull(secondRun);
-        foreach (var item in secondRun.Results)
-        {
-            Assert.NotNull(item.ContextOutput?.Context);
-            Assert.NotNull(item.ModelOutput?.Output);
-
-            Assert.True(item.ModelOutput.Output.TryGet("Blocked", out bool _));
-            Assert.True(item.ModelOutput.Output.TryGet("Reason", out string _));
-        }
-
-        // intentionally change the schema of the model output - in order to verify that the 3rd test run skips the model call
-        testGenAiScript.TestStage = TestStage.ApplyUpdateScript;
-        testGenAiScript.Input = secondRun.Results;
-        testGenAiScript.Configuration.JsonSchema = null;
-        testGenAiScript.Configuration.SampleObject = JsonConvert.SerializeObject(new
-        {
-            IsSpam = true, 
-            Explanation = "Concise reason for why this comment was marked as spam or harmful"
-        });
-
-        var thirdRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
-        Assert.NotNull(thirdRun);
-
-        foreach (var item in thirdRun.Results)
-        {
-            Assert.NotNull(item.ContextOutput?.Context);
-            Assert.NotNull(item.ModelOutput?.Output);
-
-            // model output should remain the same as in previous run
-
-            Assert.False(item.ModelOutput.Output.TryGet("IsSpam", out bool _));
-            Assert.False(item.ModelOutput.Output.TryGet("Explanation", out string _));
-
-            Assert.True(item.ModelOutput.Output.TryGet("Blocked", out bool _));
-            Assert.True(item.ModelOutput.Output.TryGet("Reason", out string _));
-        }
-
-        Assert.NotNull(thirdRun.OutputDocument);
     }
 
     [RavenTheory(RavenTestCategory.Etl | RavenTestCategory.Ai)]
@@ -410,107 +413,105 @@ for (const comment of this.Comments)
         }
 
         var database = await GetDocumentDatabaseInstanceFor(store);
-        database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context);
 
-        var testGenAiScript = new TestGenAiScript
+        using (database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
         {
-            DocumentId = id,
-            Configuration = new()
+            var testGenAiScript = new TestGenAiScript
             {
-                Name = "Check blog comments spam",
-                Connection = new AiConnectionString
+                DocumentId = id,
+                Configuration = new()
                 {
-                    Name = "ollama-local-deepseek-r1",
-                    Identifier = "ollama-local-deepseek-r1",
-                    OllamaSettings = new OllamaSettings
+                    Name = "Check blog comments spam",
+                    Connection = new AiConnectionString
                     {
-                        Uri = "http://127.0.0.1:11434/",
-                        Model = "llama3.2:latest"
-                    }
-                },
-                Collection = "Posts",
-                Prompt = "Check if the following blog post comment is spam or not",
-                SampleObject = JsonConvert.SerializeObject(
+                        Name = "ollama-local",
+                        Identifier = "ollama-local",
+                        OllamaSettings = new OllamaSettings
+                        {
+                            Uri = "http://127.0.0.1:11434/",
+                            Model = "llama3.2:latest"
+                        }
+                    },
+                    Collection = "Posts",
+                    Prompt = "Check if the following blog post comment is spam or not",
+                    SampleObject = JsonConvert.SerializeObject(
                     new
                     {
                         Blocked = true,
                         Reason = "Concise reason for why this comment was marked as spam or harmful"
                     }),
-                Update = @"    
+                    Update = @"    
 const idx = this.Comments.findIndex(c => c.Id == $input.Id);  
 this.Comments[idx].Spam = $output.Blocked;
-this.Comments[idx].AiHash = $aiHash;
 ",
-                GenAiTransformation = new GenAiTransformation
-                {
-                    Script = @"
+                    GenAiTransformation = new GenAiTransformation
+                    {
+                        Script = @"
 for (const comment of this.Comments)
 {
-    context({Text: comment.Text, Author: comment.Author, Id: comment.Id}, comment.AiHash);
+    context({Text: comment.Text, Author: comment.Author, Id: comment.Id});
 }
 "
-                }
-            },
-            TestStage = TestStage.CreateContextObjects
-        };
+                    }
+                },
+                TestStage = TestStage.CreateContextObjects
+            };
 
-        var firstRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+            var firstRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
 
-        Assert.NotNull(firstRun);
-        Assert.Equal(2, firstRun.Results.Count);
-        testGenAiScript.Input = firstRun.Results;
-        testGenAiScript.TestStage = TestStage.SendToModel;
+            Assert.NotNull(firstRun);
+            Assert.Equal(2, firstRun.Results.Count);
+            testGenAiScript.Input = firstRun.Results;
+            testGenAiScript.TestStage = TestStage.SendToModel;
 
-        var second2Run = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+            var second2Run = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
 
-        Assert.NotNull(second2Run);
-        Assert.Equal(2, second2Run.Results.Count);
-        testGenAiScript.Input = second2Run.Results;
-        testGenAiScript.TestStage = TestStage.ApplyUpdateScript;
+            Assert.NotNull(second2Run);
+            Assert.Equal(2, second2Run.Results.Count);
+            testGenAiScript.Input = second2Run.Results;
+            testGenAiScript.TestStage = TestStage.ApplyUpdateScript;
 
-        var thirdRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+            var thirdRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
 
-        Assert.NotNull(thirdRun);
-        Assert.Equal(2, thirdRun.Results.Count);
-        Assert.NotNull(thirdRun.OutputDocument);
+            Assert.NotNull(thirdRun);
+            Assert.Equal(2, thirdRun.Results.Count);
+            Assert.NotNull(thirdRun.OutputDocument);
 
-        Assert.True(thirdRun.OutputDocument.TryGet(nameof(GenAiBasics.Post.Comments), out BlittableJsonReaderArray comments));
-        Assert.Equal(2, comments.Length);
-        foreach (var item in comments)
-        {
-            var comment = item as BlittableJsonReaderObject;
-            Assert.NotNull(comment);
+            Assert.True(thirdRun.OutputDocument.TryGet(nameof(GenAiBasics.Post.Comments), out BlittableJsonReaderArray comments));
+            Assert.Equal(2, comments.Length);
+            foreach (var item in comments)
+            {
+                var comment = item as BlittableJsonReaderObject;
+                Assert.NotNull(comment);
 
-            Assert.True(comment.TryGet("Spam", out bool b));
-            Assert.True(comment.TryGet("AiHash", out string h));
-        }
+                Assert.True(comment.TryGet("Spam", out bool b));
+            }
 
-        // change the update script and run again (just the update phase, skip context objects creation and model call)
+            // change the update script and run again (just the update phase, skip context objects creation and model call)
 
-        testGenAiScript.Input = thirdRun.Results;
+            testGenAiScript.Input = thirdRun.Results;
 
-        testGenAiScript.Configuration.Update = @"    
+            testGenAiScript.Configuration.Update = @"    
 const idx = this.Comments.findIndex(c => c.Id == $input.Id);  
 this.Comments[idx].Reason = $output.Reason;
 ";
 
-        var finalRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+            var finalRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
 
-        Assert.NotNull(finalRun);
-        Assert.Equal(2, finalRun.Results.Count);
-        Assert.NotNull(finalRun.OutputDocument);
+            Assert.NotNull(finalRun);
+            Assert.Equal(2, finalRun.Results.Count);
+            Assert.NotNull(finalRun.OutputDocument);
 
-        Assert.True(finalRun.OutputDocument.TryGet(nameof(GenAiBasics.Post.Comments), out comments));
-        Assert.Equal(2, comments.Length);
-        foreach (var item in comments)
-        {
-            var comment = item as BlittableJsonReaderObject;
-            Assert.NotNull(comment);
+            Assert.True(finalRun.OutputDocument.TryGet(nameof(GenAiBasics.Post.Comments), out comments));
+            Assert.Equal(2, comments.Length);
+            foreach (var item in comments)
+            {
+                var comment = item as BlittableJsonReaderObject;
+                Assert.NotNull(comment);
 
-            Assert.False(comment.TryGet("Spam", out bool b));
-            Assert.False(comment.TryGet("AiHash", out string h));
-
-            Assert.True(comment.TryGet("Reason", out string r));
+                Assert.False(comment.TryGet("Spam", out bool b));
+                Assert.True(comment.TryGet("Reason", out string r));
+            }
         }
     }
 
@@ -537,117 +538,110 @@ this.Comments[idx].Reason = $output.Reason;
         }
 
         var database = await GetDocumentDatabaseInstanceFor(store);
-        database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context);
-
-        var testGenAiScript = new TestGenAiScript
+        using (database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
         {
-            DocumentId = id,
-            Configuration = new()
+            var testGenAiScript = new TestGenAiScript
             {
-                Name = "Check blog comments spam",
-                Connection = new AiConnectionString
+                DocumentId = id,
+                Configuration = new()
                 {
-                    Name = "ollama-local-deepseek-r1",
-                    Identifier = "ollama-local-deepseek-r1",
-                    OllamaSettings = new OllamaSettings
+                    Name = "Check blog comments spam",
+                    Connection = new AiConnectionString
                     {
-                        Uri = "http://127.0.0.1:11434/",
-                        Model = "llama3.2:latest"
-                    }
-                },
-                Collection = "Posts",
-                Prompt = "Check if the following blog post comment is spam or not",
-                SampleObject = JsonConvert.SerializeObject(new
-                {
-                    Blocked = true,
-                    Reason = "Concise reason for why this comment was marked as spam or harmful"
-                }),
-                Update = @"
+                        Name = "ollama-local",
+                        Identifier = "ollama-local",
+                        OllamaSettings = new OllamaSettings
+                        {
+                            Uri = "http://127.0.0.1:11434/",
+                            Model = "llama3.2:latest"
+                        }
+                    },
+                    Collection = "Posts",
+                    Prompt = "Check if the following blog post comment is spam or not",
+                    SampleObject = JsonConvert.SerializeObject(new
+                    {
+                        Blocked = true,
+                        Reason = "Concise reason for why this comment was marked as spam or harmful"
+                    }),
+                    Update = @"
 const idx = this.Comments.findIndex(c => c.Id == $input.Id);  
 this.Comments[idx].Spam = $output.Blocked;
-this.Comments[idx].AiHash = $aiHash;
 ",
-                GenAiTransformation = new GenAiTransformation
-                {
-                    Script = @"
+                    GenAiTransformation = new GenAiTransformation
+                    {
+                        Script = @"
 for (const comment of this.Comments)
 {
-    context({Text: comment.Text, Author: comment.Author, Id: comment.Id}, comment.AiHash);
+    context({Text: comment.Text, Author: comment.Author, Id: comment.Id});
 }
 "
-                }
-            },
-            TestStage = TestStage.CreateContextObjects
-        };
+                    }
+                },
+                TestStage = TestStage.CreateContextObjects
+            };
 
-        var firstRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
-        Assert.NotNull(firstRun);
-        Assert.Equal(4, firstRun.Results.Count);
+            var firstRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+            Assert.NotNull(firstRun);
+            Assert.Equal(4, firstRun.Results.Count);
 
-        foreach (var item in firstRun.Results)
-        {
-            Assert.NotNull(item.ContextOutput?.Context);
-            Assert.Null(item.ModelOutput?.Output);
-        }
+            foreach (var item in firstRun.Results)
+            {
+                Assert.NotNull(item.ContextOutput?.Context);
+                Assert.Null(item.ModelOutput?.Output);
+            }
 
-        testGenAiScript.TestStage = TestStage.SendToModel;
-        testGenAiScript.Input = firstRun.Results;
-        var secondRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+            testGenAiScript.TestStage = TestStage.SendToModel;
+            testGenAiScript.Input = firstRun.Results;
+            var secondRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
 
-        Assert.NotNull(secondRun);
-        Assert.Equal(4, secondRun.Results.Count);
+            Assert.NotNull(secondRun);
+            Assert.Equal(4, secondRun.Results.Count);
 
-        foreach (var item in secondRun.Results)
-        {
-            Assert.NotNull(item.ContextOutput?.Context);
-            Assert.NotNull(item.ModelOutput?.Output);
-            Assert.True(item.ModelOutput.Output.TryGet("Blocked", out bool _));
-            Assert.True(item.ModelOutput.Output.TryGet("Reason", out string _));
-        }
+            foreach (var item in secondRun.Results)
+            {
+                Assert.NotNull(item.ContextOutput?.Context);
+                Assert.NotNull(item.ModelOutput?.Output);
+                Assert.True(item.ModelOutput.Output.TryGet("Blocked", out bool _));
+                Assert.True(item.ModelOutput.Output.TryGet("Reason", out string _));
+            }
 
-        // now modify prompt + schema
-        testGenAiScript.Input = secondRun.Results;
+            // now modify prompt + schema
+            testGenAiScript.Input = secondRun.Results;
 
-        // todo: can remove this workaround once we have the prompt, schema and update as part of the hash
-        foreach (var item in testGenAiScript.Input)
-        {
-            item.ContextOutput.IsCached = false;
-            item.ContextOutput.AiHash = null;
-        }
-
-        testGenAiScript.Configuration.Prompt = @"
+            testGenAiScript.Configuration.Prompt = @"
 Check if the following blog post comment is legit or not (spam/harmful/bot). 
 Provide an explanation, confidence level (0.0–1.0), and summarize the comment in one sentence.";
 
-        testGenAiScript.Configuration.JsonSchema = null;
-        testGenAiScript.Configuration.SampleObject = JsonConvert.SerializeObject(new
-        {
-            LegitComment = true,
-            Explanation = "Concise reason for why this comment is legit",
-            ConfidenceLevel = 0.95,
-            Summary = "Summary of the comment's content"
-        });
+            testGenAiScript.Configuration.JsonSchema = null;
+            testGenAiScript.Configuration.SampleObject = JsonConvert.SerializeObject(new
+            {
+                LegitComment = true,
+                Explanation = "Concise reason for why this comment is legit",
+                ConfidenceLevel = 0.95,
+                Summary = "Summary of the comment's content"
+            });
 
-        var thirdRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
-        Assert.NotNull(thirdRun);
-        Assert.Equal(4, thirdRun.Results.Count);
+            var thirdRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+            Assert.NotNull(thirdRun);
+            Assert.Equal(4, thirdRun.Results.Count);
 
-        foreach (var item in thirdRun.Results)
-        {
-            var output = item.ModelOutput?.Output;
-            Assert.NotNull(output);
+            foreach (var item in thirdRun.Results)
+            {
+                var output = item.ModelOutput?.Output;
+                Assert.NotNull(output);
 
-            Assert.True(output.TryGet("LegitComment", out bool legit));
-            Assert.True(output.TryGet("Explanation", out string explanation));
-            Assert.True(output.TryGet("ConfidenceLevel", out double confidence));
-            Assert.True(output.TryGet("Summary", out string summary));
+                Assert.True(output.TryGet("LegitComment", out bool legit));
+                Assert.True(output.TryGet("Explanation", out string explanation));
+                Assert.True(output.TryGet("ConfidenceLevel", out double confidence));
+                Assert.True(output.TryGet("Summary", out string summary));
 
-            Assert.NotNull(explanation);
-            Assert.InRange(confidence, 0.0, 1.0);
-            Assert.NotNull(summary);
+                Assert.NotNull(explanation);
+                Assert.InRange(confidence, 0.0, 1.0);
+                Assert.NotNull(summary);
 
-            Assert.False(item.ModelOutput.Output.TryGet("Blocked", out bool _));
-            Assert.False(item.ModelOutput.Output.TryGet("Reason", out string _));
+                Assert.False(item.ModelOutput.Output.TryGet("Blocked", out bool _));
+                Assert.False(item.ModelOutput.Output.TryGet("Reason", out string _));
+            }
         }
     }
 
@@ -671,12 +665,10 @@ Provide an explanation, confidence level (0.0–1.0), and summarize the comment 
                     "Indexes in RavenDB are a powerful way to optimize query performance. This blog post walks through auto-indexes, static indexes, and best practices when designing queries that scale."
                 );
                 await session.StoreAsync(p, id);
-
                 await session.SaveChangesAsync();
             }
 
             var database = await GetDocumentDatabaseInstanceFor(store);
-
             using (database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
             {
                 var testGenAiScript = new TestGenAiScript
@@ -687,8 +679,8 @@ Provide an explanation, confidence level (0.0–1.0), and summarize the comment 
                         Name = "Check blog comments spam",
                         Connection = new AiConnectionString
                         {
-                            Name = "ollama-local-deepseek-r1",
-                            Identifier = "ollama-local-deepseek-r1",
+                            Name = "ollama-local",
+                            Identifier = "ollama-local",
                             OllamaSettings = new OllamaSettings
                             {
                                 Uri = "http://127.0.0.1:11434/",
@@ -707,7 +699,7 @@ Provide an explanation, confidence level (0.0–1.0), and summarize the comment 
                             Script = @"
 for (const comment of this.Comments)
 {
-    context({Text: comment.Text, Author: comment.Author, Id: comment.Id}, comment.AiHash);
+    context({Text: comment.Text, Author: comment.Author, Id: comment.Id});
 }
 "
                         }
@@ -726,7 +718,7 @@ for (const comment of this.Comments)
 
                 foreach (var item in firstRun.Results)
                 {
-                    Assert.Null(item.ContextOutput.AiHash);
+                    Assert.NotNull(item.ContextOutput.AiHash);
                     Assert.False(item.ContextOutput.IsCached);
 
                     Assert.True(item.ContextOutput.Context.TryGet("Text", out string _));
@@ -752,7 +744,7 @@ for (const comment of this.Comments)
 
                 foreach (var item in secondRun.Results)
                 {
-                    Assert.Null(item.ContextOutput.AiHash);
+                    Assert.NotNull(item.ContextOutput.AiHash);
                     Assert.False(item.ContextOutput.IsCached);
 
                     Assert.True(item.ContextOutput.Context.TryGet("Text", out string _));
@@ -799,8 +791,8 @@ for (const comment of this.Comments)
                         Name = "Check blog comments spam",
                         Connection = new AiConnectionString
                         {
-                            Name = "ollama-local-deepseek-r1",
-                            Identifier = "ollama-local-deepseek-r1",
+                            Name = "ollama-local",
+                            Identifier = "ollama-local",
                             OllamaSettings = new OllamaSettings
                             {
                                 Uri = "http://127.0.0.1:11434/",
@@ -819,7 +811,7 @@ for (const comment of this.Comments)
                             Script = @"
 for (const comment of this.Comments)
 {
-    context({Text: comment.Text, Author: comment.Author, Id: comment.Id}, comment.AiHash);
+    context({Text: comment.Text, Author: comment.Author, Id: comment.Id});
 }
 "
                         }
@@ -838,7 +830,7 @@ for (const comment of this.Comments)
 
                 foreach (var item in firstRun.Results)
                 {
-                    Assert.Null(item.ContextOutput.AiHash);
+                    Assert.NotNull(item.ContextOutput.AiHash);
                     Assert.False(item.ContextOutput.IsCached);
 
                     Assert.True(item.ContextOutput.Context.TryGet("Text", out string _));
@@ -862,7 +854,11 @@ for (const comment of this.Comments)
                 testGenAiScript.Input.Add(new GenAiResultItem
                 {
                     DocId = id,
-                    ContextOutput = new ContextOutput { Context = contextObject }
+                    ContextOutput = new ContextOutput
+                    {
+                        Context = contextObject, 
+                        AiHash = AttachmentsStorageHelper.CalculateHash(MemoryMarshal.AsBytes(contextObject.ToString().AsSpan()))
+                    }
                 });
 
                 var secondRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
@@ -910,8 +906,8 @@ for (const comment of this.Comments)
 
             store.Maintenance.Send(new PutConnectionStringOperation<AiConnectionString>(new AiConnectionString
             {
-                Name = "ollama-local-deepseek-r1",
-                Identifier = "ollama-local-deepseek-r1",
+                Name = "ollama-local",
+                Identifier = "ollama-local",
                 OllamaSettings = new OllamaSettings
                 {
                     Uri = "http://127.0.0.1:11434/",
@@ -929,7 +925,7 @@ for (const comment of this.Comments)
                     Configuration = new()
                     {
                         Name = "Check blog comments spam",
-                        ConnectionStringName = "ollama-local-deepseek-r1",
+                        ConnectionStringName = "ollama-local",
                         Collection = "Posts",
                         Prompt = "Check if the following blog post comment is spam or not",
                         SampleObject = JsonConvert.SerializeObject(new
@@ -943,16 +939,13 @@ if($output.Blocked)
 {
     this.Comments.splice(idx, 1); // remove
 }
-else 
-{
-    this.Comments[idx].AiHash = $aiHash;
-}",
+",
                         GenAiTransformation = new GenAiTransformation
                         {
                             Script = @"
 for (const comment of this.Comments)
 {
-    context({Text: comment.Text, Author: comment.Author, Id: comment.Id}, comment.AiHash);
+    context({Text: comment.Text, Author: comment.Author, Id: comment.Id});
 }
 "
                         }
@@ -986,7 +979,7 @@ for (const comment of this.Comments)
                     Assert.NotNull(asBlittable);
                     Assert.True(asBlittable.TryGet(nameof(GenAiResultItem.ContextOutput), out BlittableJsonReaderObject contextOutput));
                     Assert.True(contextOutput.TryGet(nameof(GenAiResultItem.ContextOutput.AiHash), out string hash));
-                    Assert.Null(hash);
+                    Assert.NotNull(hash);
                     Assert.True(contextOutput.TryGet(nameof(GenAiResultItem.ContextOutput.IsCached), out bool cached));
                     Assert.False(cached);
 
@@ -1006,7 +999,8 @@ for (const comment of this.Comments)
                                 ["Text"] = t,
                                 ["Author"] = a,
                                 ["Id"] = i
-                            }
+                            },
+                            [nameof(GenAiResultItem.ContextOutput.AiHash)] = hash
                         }
                     });
                 }
@@ -1137,8 +1131,8 @@ for (const comment of this.Comments)
 
             store.Maintenance.Send(new PutConnectionStringOperation<AiConnectionString>(new AiConnectionString
             {
-                Name = "ollama-local-deepseek-r1",
-                Identifier = "ollama-local-deepseek-r1",
+                Name = "ollama-local",
+                Identifier = "ollama-local",
                 OllamaSettings = new OllamaSettings
                 {
                     Uri = "http://127.0.0.1:11434/",
@@ -1156,7 +1150,7 @@ for (const comment of this.Comments)
                     Configuration = new()
                     {
                         Name = "Check blog comments spam",
-                        ConnectionStringName = "ollama-local-deepseek-r1",
+                        ConnectionStringName = "ollama-local",
                         Collection = "Posts",
                         Prompt = "Check if the following blog post comment is spam or not",
                         SampleObject = JsonConvert.SerializeObject(new
@@ -1170,16 +1164,13 @@ if($output.Blocked)
 {
     this.Comments.splice(idx, 1); // remove
 }
-else 
-{
-    this.Comments[idx].Foo = $aiHash; // remember this decision
-}",
+",
                         GenAiTransformation = new GenAiTransformation
                         {
                             Script = @"
 for (const comment of this.Comments)
 {
-    context({Text: comment.Text, Author: comment.Author, Id: comment.Id}, comment.AiHash);
+    context({Text: comment.Text, Author: comment.Author, Id: comment.Id});
 }
 "
                         }
@@ -1245,7 +1236,7 @@ for (const comment of this.Comments)
                     Assert.NotNull(asBlittable);
                     Assert.True(asBlittable.TryGet(nameof(GenAiResultItem.ContextOutput), out BlittableJsonReaderObject contextOutput));
                     Assert.True(contextOutput.TryGet(nameof(GenAiResultItem.ContextOutput.AiHash), out string hash));
-                    Assert.Null(hash);
+                    Assert.NotNull(hash);
                     Assert.True(contextOutput.TryGet(nameof(GenAiResultItem.ContextOutput.IsCached), out bool cached));
                     Assert.False(cached);
 
@@ -1275,8 +1266,8 @@ for (const comment of this.Comments)
                         Name = "Check blog comments spam",
                         Connection = new AiConnectionString
                         {
-                            Name = "ollama-local-deepseek-r1",
-                            Identifier = "ollama-local-deepseek-r1",
+                            Name = "ollama-local",
+                            Identifier = "ollama-local",
                             OllamaSettings = new OllamaSettings
                             {
                                 Uri = "http://127.0.0.1:11434/",
@@ -1295,7 +1286,7 @@ for (const comment of this.Comments)
                             Script = @"
 for (const comment of this.Comments)
 {
-    context({Text: comment.Text, Author: comment.Author, Id: comment.Id}, comment.AiHash);
+    context({Text: comment.Text, Author: comment.Author, Id: comment.Id});
 }
 "
                         },
@@ -1304,10 +1295,7 @@ if($output.Blocked)
 {
     this.Comments.splice(idx, 1); // remove
 }
-else 
-{
-    this.Comments[idx].AiHash = $aiHash;
-}"
+"
                     },
                     TestStage = TestStage.CreateContextObjects
                 };
@@ -1337,7 +1325,7 @@ else
 
                 foreach (var item in firstRun.Results)
                 {
-                    Assert.Null(item.ContextOutput.AiHash);
+                    Assert.NotNull(item.ContextOutput.AiHash);
                     Assert.False(item.ContextOutput.IsCached);
 
                     Assert.True(item.ContextOutput.Context.TryGet("Text", out string _));
@@ -1361,7 +1349,7 @@ else
 
                 foreach (var item in secondRun.Results)
                 {
-                    Assert.Null(item.ContextOutput.AiHash);
+                    Assert.NotNull(item.ContextOutput.AiHash);
                     Assert.False(item.ContextOutput.IsCached);
 
                     Assert.True(item.ContextOutput.Context.TryGet("Text", out string _));
@@ -1406,6 +1394,291 @@ else
 
                 var expected = 4 - spamComments;
                 Assert.Equal(expected, comments.Length);
+            }
+        }
+    }
+
+    [RavenTheory(RavenTestCategory.Etl | RavenTestCategory.Ai)]
+    [RavenData(DatabaseMode = RavenDatabaseMode.Single)]
+    public async Task TestGenAi_ShouldNotSendCachedItems(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        const string id = "posts/1";
+
+        using (var session = store.OpenAsyncSession())
+        {
+            await session.StoreAsync(new GenAiBasics.Post([
+                    new GenAiBasics.Comment("spam message $$$", "bot"),
+                    new GenAiBasics.Comment("normal comment", "real_user")]
+                , "Spam Check", "Some content"), id);
+            await session.SaveChangesAsync();
+        }
+
+        var database = await GetDocumentDatabaseInstanceFor(store);
+
+        using (database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
+        {
+            var testGenAiScript = new TestGenAiScript
+            {
+                DocumentId = id,
+                Configuration = new()
+                {
+                    Name = "Check blog comments spam",
+                    Connection = new AiConnectionString
+                    {
+                        Name = "ollama-local",
+                        Identifier = "ollama-local",
+                        OllamaSettings = new OllamaSettings
+                        {
+                            Uri = "http://127.0.0.1:11434/",
+                            Model = "llama3.2:latest"
+                        }
+                    },
+                    Collection = "Posts",
+                    Prompt = "Check if the following blog post comment is spam or not",
+                    SampleObject = JsonConvert.SerializeObject(
+                    new
+                    {
+                        Blocked = true,
+                        Reason = "Concise reason for why this comment was marked as spam or harmful"
+                    }),
+                    Update = @"    
+const idx = this.Comments.findIndex(c => c.Id == $input.Id);  
+this.Comments[idx].Spam = $output.Blocked;
+",
+                    GenAiTransformation = new GenAiTransformation
+                    {
+                        Script = @"
+for (const comment of this.Comments)
+{
+    context({Text: comment.Text, Author: comment.Author, Id: comment.Id});
+}
+"
+                    }
+                },
+                TestStage = TestStage.CreateContextObjects
+            };
+
+            var firstRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+
+            Assert.NotNull(firstRun);
+            Assert.Equal(2, firstRun.Results.Count);
+
+            foreach (var item in firstRun.Results)
+            {
+                Assert.NotNull(item.ContextOutput.AiHash);
+                Assert.False(item.ContextOutput.IsCached);
+
+                Assert.True(item.ContextOutput.Context.TryGet("Text", out string _));
+                Assert.True(item.ContextOutput.Context.TryGet("Author", out string _));
+                Assert.True(item.ContextOutput.Context.TryGet("Id", out string _));
+            }
+
+            testGenAiScript.Input = firstRun.Results;
+            testGenAiScript.TestStage = TestStage.SendToModel;
+
+            var second2Run = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+
+            Assert.NotNull(second2Run);
+            Assert.Equal(2, second2Run.Results.Count);
+            testGenAiScript.Input = second2Run.Results;
+            testGenAiScript.TestStage = TestStage.ApplyUpdateScript;
+
+            var thirdRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+
+            Assert.NotNull(thirdRun);
+            Assert.Equal(2, thirdRun.Results.Count);
+            Assert.NotNull(thirdRun.OutputDocument);
+
+            Assert.True(thirdRun.OutputDocument.TryGet(nameof(GenAiBasics.Post.Comments), out BlittableJsonReaderArray comments));
+            Assert.Equal(2, comments.Length);
+            foreach (var item in comments)
+            {
+                var comment = item as BlittableJsonReaderObject;
+                Assert.NotNull(comment);
+
+                Assert.True(comment.TryGet("Spam", out bool b));
+            }
+
+            // use the output document as an input for the test-mode
+            // test context objects creation again - everything should be cached
+
+            var outputDoc = thirdRun.OutputDocument;
+
+            testGenAiScript.Input = thirdRun.Results;
+            testGenAiScript.Document = outputDoc;
+            testGenAiScript.TestStage = TestStage.CreateContextObjects;
+
+            var forthRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+
+            Assert.NotNull(forthRun);
+            Assert.Equal(2, forthRun.Results.Count);
+
+            foreach (var item in forthRun.Results)
+            {
+                Assert.True(item.ContextOutput.IsCached);
+            }
+
+            // now, add a new comment to the document and use it as input for the test-mode
+
+            Assert.True(outputDoc.TryGet(nameof(GenAiBasics.Post.Comments), out comments));
+
+            comments.Modifications = new DynamicJsonArray();
+            const string newCommentText = "I'm a new comment";
+
+            comments.Modifications.Add(new DynamicJsonValue
+            {
+                [nameof(GenAiBasics.Comment.Text)] = newCommentText,
+                [nameof(GenAiBasics.Comment.Author)] = "aviv",
+                [nameof(GenAiBasics.Comment.Id)] = "42"
+            });
+
+            outputDoc.Modifications = new DynamicJsonValue(outputDoc)
+            {
+                [nameof(GenAiBasics.Post.Comments)] = comments
+            };
+
+            using (var old = outputDoc)
+            {
+                outputDoc = context.ReadObject(outputDoc, id);
+            }
+
+            testGenAiScript.Input = forthRun.Results;
+            testGenAiScript.Document = outputDoc;
+
+            // test objects creation once again
+            // the context object of the new comment should not be cached
+            // all other context objects should be cached
+
+            var finalRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+
+            Assert.NotNull(finalRun);
+            Assert.Equal(3, finalRun.Results.Count);
+
+            bool hasNewCommentInResult = false;
+
+            foreach (var item in finalRun.Results)
+            {
+                Assert.True(item.ContextOutput.Context.TryGet("Text", out string text));
+
+                if (text.Equals(newCommentText))
+                {
+                    hasNewCommentInResult = true;
+                    Assert.False(item.ContextOutput.IsCached);
+                    continue;
+                }
+
+                Assert.True(item.ContextOutput.IsCached);
+            }
+
+            Assert.True(hasNewCommentInResult);
+
+        }
+    }
+
+    [RavenTheory(RavenTestCategory.Etl | RavenTestCategory.Ai)]
+    [RavenData(DatabaseMode = RavenDatabaseMode.Single)]
+    public async Task TestGenAi_ShouldTrackAiHashesInMetadata(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        const string id = "posts/1";
+
+        using (var session = store.OpenAsyncSession())
+        {
+            await session.StoreAsync(new GenAiBasics.Post([
+                    new GenAiBasics.Comment("spam message $$$", "bot"),
+                    new GenAiBasics.Comment("normal comment", "real_user"),
+                    new GenAiBasics.Comment("harmful content", "evil bot")
+                ]
+                , "Spam Check", "Some content"), id);
+            await session.SaveChangesAsync();
+        }
+
+        var database = await GetDocumentDatabaseInstanceFor(store);
+
+        using (database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
+        {
+            var testGenAiScript = new TestGenAiScript
+            {
+                DocumentId = id,
+                Configuration = new()
+                {
+                    Name = "Check blog comments spam",
+                    Connection = new AiConnectionString
+                    {
+                        Name = "ollama-local",
+                        Identifier = "ollama-local",
+                        OllamaSettings = new OllamaSettings
+                        {
+                            Uri = "http://127.0.0.1:11434/",
+                            Model = "llama3.2:latest"
+                        }
+                    },
+                    Collection = "Posts",
+                    Prompt = "Check if the following blog post comment is spam or not",
+                    SampleObject = JsonConvert.SerializeObject(
+                    new
+                    {
+                        Blocked = true,
+                        Reason = "Concise reason for why this comment was marked as spam or harmful"
+                    }),
+                    Update = @"    
+const idx = this.Comments.findIndex(c => c.Id == $input.Id);  
+this.Comments[idx].Spam = $output.Blocked;
+",
+                    GenAiTransformation = new GenAiTransformation
+                    {
+                        Script = @"
+for (const comment of this.Comments)
+{
+    context({Text: comment.Text, Author: comment.Author, Id: comment.Id});
+}
+"
+                    }
+                },
+                TestStage = TestStage.CreateContextObjects
+            };
+
+            var firstRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+
+            Assert.NotNull(firstRun);
+            Assert.Equal(3, firstRun.Results.Count);
+
+            testGenAiScript.Input = firstRun.Results;
+            testGenAiScript.TestStage = TestStage.SendToModel;
+
+            var second2Run = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+
+            Assert.NotNull(second2Run);
+            Assert.Equal(3, second2Run.Results.Count);
+            testGenAiScript.Input = second2Run.Results;
+            testGenAiScript.TestStage = TestStage.ApplyUpdateScript;
+
+            var finalRun = GenAiTask.TestScript(testGenAiScript, database, database.ServerStore, context) as GenAiTestScriptResult;
+
+            Assert.NotNull(finalRun);
+            Assert.Equal(3, finalRun.Results.Count);
+            Assert.NotNull(finalRun.OutputDocument);
+
+            Assert.True(finalRun.OutputDocument.TryGet(Constants.Documents.Metadata.Key, out BlittableJsonReaderObject metadata));
+            Assert.True(metadata.TryGet(GenAiTask.GenAiHashesMetadataKey, out BlittableJsonReaderObject hashesSection));
+            Assert.True(hashesSection.TryGet(testGenAiScript.Configuration.Name, out BlittableJsonReaderArray hashes));
+
+            List<string> expectedHashes = new();
+
+            foreach (var item in finalRun.Results)
+            {
+                var contextObj = item.ContextOutput.Context.ToString();
+                var hash = AttachmentsStorageHelper.CalculateHash(MemoryMarshal.AsBytes(contextObj.AsSpan()));
+
+                expectedHashes.Add(hash);
+            }
+            
+            Assert.Equal(expectedHashes.Count, hashes.Length);
+
+            foreach (var hash in expectedHashes)
+            {
+                Assert.Contains(hash, hashes);
             }
         }
     }

@@ -2,4 +2,4 @@
 
 namespace Raven.Server.Documents.ETL.Providers.AI.GenAi;
 
-public record GenAiScriptResult(string DocumentId, BlittableJsonReaderObject Context, string AiHash);
+public record GenAiScriptResult(string DocumentId, BlittableJsonReaderObject Context, string AiHash, bool IsCached);

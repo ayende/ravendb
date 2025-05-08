@@ -2,16 +2,18 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Runtime.InteropServices;
 using Jint;
 using Jint.Native;
-using Jint.Runtime;
 using Jint.Runtime.Interop;
+using Raven.Client;
 using Raven.Client.Documents.Operations.AI;
 using Raven.Client.Documents.Operations.ETL;
 using Raven.Server.Documents.ETL.Stats;
 using Raven.Server.Documents.Patch;
 using Raven.Server.Documents.TimeSeries;
 using Raven.Server.ServerWide.Context;
+using Sparrow.Json;
 
 namespace Raven.Server.Documents.ETL.Providers.AI.GenAi;
 
@@ -80,26 +82,39 @@ internal sealed class GenAiScriptTransformer : EtlTransformer<AiEtlItem, GenAiSc
     
     private JsValue AddContext(JsValue self, JsValue[] args)
     {
-        const string methodDecl = "context(ctx, hash);";
-        if (args.Length != 2)
-            throw new InvalidOperationException($"Invalid number of arguments for {methodDecl}, got {args.Length} but expected 2.");
+        const string methodDecl = "context(ctx);";
+        if (args.Length != 1)
+            throw new InvalidOperationException($"Invalid number of arguments for {methodDecl}, got {args.Length} but expected 1.");
 
         if (args[0].IsObject() is false)
             throw new ArgumentException("Expected 'ctx' to be an object, but was: " + args[0].Type + ", " + args[0]);
 
         var context = JsBlittableBridge.Translate(Context, DocumentScript.ScriptEngine, args[0].AsObject());
-        string hash = args[1].Type switch
-        {
-            Types.Null or Types.Undefined => null,
-            Types.String => args[1].AsString(),
-            _ => throw new ArgumentException("The 'hash' argument must be string or null, but was: " + args[1].Type + ", " + args[1])
-        };
+        string json = context.ToString();
+        string hash = AttachmentsStorageHelper.CalculateHash(MemoryMarshal.AsBytes(json.AsSpan()));
+        var isCached = ShouldSendContext(hash, _configuration.Name, Current.Document) == false;
 
         using (context)
         {
-            _currentRun.Add(new GenAiScriptResult(Current.DocumentId, context.CloneOnTheSameContext(), hash));
+            _currentRun.Add(new GenAiScriptResult(Current.DocumentId, context.CloneOnTheSameContext(), hash, isCached));
         }
 
         return JsValue.Null;
+    }
+
+    private static bool ShouldSendContext(string hash, string taskName, Document doc)
+    {
+        if (doc.Data.TryGet(Constants.Documents.Metadata.Key, out BlittableJsonReaderObject metadata) == false ||
+            metadata.TryGet(GenAiTask.GenAiHashesMetadataKey, out BlittableJsonReaderObject hashesSection) == false ||
+            hashesSection.TryGet(taskName, out BlittableJsonReaderArray existingHashes) == false)
+            return true; // hash not found, should send
+
+        foreach (var h in existingHashes)
+        {
+            if (string.Equals(hash, h?.ToString(), StringComparison.OrdinalIgnoreCase))
+                return false; // already sent
+        }
+
+        return true; // hash not found, should send
     }
 }

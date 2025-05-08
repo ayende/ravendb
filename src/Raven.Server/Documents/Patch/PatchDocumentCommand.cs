@@ -33,7 +33,7 @@ namespace Raven.Server.Documents.Patch
 
         protected readonly (PatchRequest Run, BlittableJsonReaderObject Args) _patchIfMissing;
         private readonly BlittableJsonReaderObject _createIfMissing;
-        protected readonly (PatchRequest Run, BlittableJsonReaderObject Args) _patch;
+        protected (PatchRequest Run, BlittableJsonReaderObject Args) _patch;
 
         public List<string> DebugOutput { get; private set; }
 

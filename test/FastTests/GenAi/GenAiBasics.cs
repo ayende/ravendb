@@ -1,12 +1,19 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
+using Raven.Client;
 using Raven.Client.Documents.Operations.AI;
 using Raven.Client.Documents.Operations.ConnectionStrings;
 using Raven.Client.Documents.Operations.ETL;
 using Raven.Client.Documents.Operations.OngoingTasks;
+using Raven.Server.Documents;
+using Raven.Server.Documents.ETL.Providers.AI.GenAi;
+using Sparrow.Json;
+using Sparrow.Json.Parsing;
 using Tests.Infrastructure;
 using Xunit;
 using Xunit.Abstractions;
@@ -21,12 +28,12 @@ public class GenAiBasics(ITestOutputHelper output) : RavenTestBase(output)
         using var store = GetDocumentStore();
         store.Maintenance.Send(new PutConnectionStringOperation<AiConnectionString>(new AiConnectionString
         {
-            Name = "ollama-local-deepseek-r1",
-            Identifier = "ollama-local-deepseek-r1",
+            Name = "ollama-local",
+            Identifier = "ollama-local",
             OllamaSettings = new OllamaSettings
             {
                 Uri = "http://127.0.0.1:11434/",
-                Model = "deepseek-r1:1.5b"
+                Model = "llama3.2:latest"
             }
         }));
         
@@ -34,7 +41,7 @@ public class GenAiBasics(ITestOutputHelper output) : RavenTestBase(output)
         store.Maintenance.Send(new AddGenAiOperation(new GenAiConfiguration
         {
             Name = "Check blog comments spam",
-            ConnectionStringName = "ollama-local-deepseek-r1",
+            ConnectionStringName = "ollama-local",
             Prompt = "Check if the following blog post comment is spam or not",
             Collection = "Posts",
             SampleObject = JsonConvert.SerializeObject(new
@@ -70,12 +77,12 @@ for(const comment of this.Comments)
         using var store = GetDocumentStore();
         store.Maintenance.Send(new PutConnectionStringOperation<AiConnectionString>(new AiConnectionString
         {
-            Name = "ollama-local-deepseek-r1",
-            Identifier = "ollama-local-deepseek-r1",
+            Name = "ollama-local",
+            Identifier = "ollama-local",
             OllamaSettings = new OllamaSettings
             {
                 Uri = "http://127.0.0.1:11434/",
-                Model = "deepseek-r1:1.5b"
+                Model = "llama3.2:latest"
             }
         }));
         
@@ -84,7 +91,7 @@ for(const comment of this.Comments)
         store.Maintenance.Send(new AddGenAiOperation(new GenAiConfiguration
         {
             Name = "Check blog comments spam",
-            ConnectionStringName = "ollama-local-deepseek-r1",
+            ConnectionStringName = "ollama-local",
             Prompt = "Check if the following blog post comment is spam or not",
             Collection = "Posts",
             SampleObject = JsonConvert.SerializeObject(new
@@ -97,17 +104,13 @@ const idx = this.Comments.findIndex(c => c.Id == $input.Id);
 if($output.Blocked)
 {
     this.Comments.splice(idx, 1); // remove
-}
-else 
-{
-    this.Comments[idx].AiHash = $aiHash; // remember this decision
 }",
             GenAiTransformation = new GenAiTransformation
             {
                 Script = @"
 for(const comment of this.Comments)
 {
-    context({Text: comment.Text, Author: comment.Author, Id: comment.Id}, comment.AiHash);
+    context({Text: comment.Text, Author: comment.Author, Id: comment.Id});
 }
 "
             }
@@ -130,7 +133,7 @@ for(const comment of this.Comments)
     [RavenFact(RavenTestCategory.Ai)]
     public async Task CanGetGenAiOngoingTask()
     {
-        const string connectionStrName = "ollama-local-deepseek-r1";
+        const string connectionStrName = "ollama-local";
 
         using var store = GetDocumentStore();
         store.Maintenance.Send(new PutConnectionStringOperation<AiConnectionString>(new AiConnectionString
@@ -140,7 +143,7 @@ for(const comment of this.Comments)
             OllamaSettings = new OllamaSettings
             {
                 Uri = "http://127.0.0.1:11434/",
-                Model = "deepseek-r1:1.5b"
+                Model = "llama3.2:latest"
             }
         }));
 
@@ -161,17 +164,13 @@ const idx = this.Comments.findIndex(c => c.Id == $input.Id);
 if($output.Blocked)
 {
     this.Comments.splice(idx, 1); // remove
-}
-else 
-{
-    this.Comments[idx].AiHash = $aiHash; // remember this decision
 }",
             GenAiTransformation = new GenAiTransformation
             {
                 Script = @"
 for(const comment of this.Comments)
 {
-    context({Text: comment.Text, Author: comment.Author, Id: comment.Id}, comment.AiHash);
+    context({Text: comment.Text, Author: comment.Author, Id: comment.Id});
 }
 "
             }
@@ -201,7 +200,7 @@ for(const comment of this.Comments)
     [RavenFact(RavenTestCategory.Ai)]
     public async Task CanEditGenAiTask()
     {
-        const string connectionStrName = "ollama-local-deepseek-r1";
+        const string connectionStrName = "ollama-local";
 
         using var store = GetDocumentStore();
         store.Maintenance.Send(new PutConnectionStringOperation<AiConnectionString>(new AiConnectionString
@@ -211,7 +210,7 @@ for(const comment of this.Comments)
             OllamaSettings = new OllamaSettings
             {
                 Uri = "http://127.0.0.1:11434/",
-                Model = "deepseek-r1:1.5b"
+                Model = "llama3.2:latest"
             }
         }));
 
@@ -233,16 +232,13 @@ if($output.Blocked)
 {
     this.Comments.splice(idx, 1); // remove
 }
-else 
-{
-    this.Comments[idx].AiHash = $aiHash; // remember this decision
-}",
+",
             GenAiTransformation = new GenAiTransformation
             {
                 Script = @"
 for(const comment of this.Comments)
 {
-    context({Text: comment.Text, Author: comment.Author, Id: comment.Id}, comment.AiHash);
+    context({Text: comment.Text, Author: comment.Author, Id: comment.Id});
 }
 "
             }
@@ -272,7 +268,7 @@ this.Comments[idx].LegitComment = $output.Blocked == false;
     [RavenFact(RavenTestCategory.Ai)]
     public async Task CanDeleteGenAiTask()
     {
-        const string connectionStrName = "ollama-local-deepseek-r1";
+        const string connectionStrName = "ollama-local";
 
         using var store = GetDocumentStore();
         store.Maintenance.Send(new PutConnectionStringOperation<AiConnectionString>(new AiConnectionString
@@ -282,7 +278,7 @@ this.Comments[idx].LegitComment = $output.Blocked == false;
             OllamaSettings = new OllamaSettings
             {
                 Uri = "http://127.0.0.1:11434/",
-                Model = "deepseek-r1:1.5b"
+                Model = "llama3.2:latest"
             }
         }));
 
@@ -304,16 +300,13 @@ if($output.Blocked)
 {
     this.Comments.splice(idx, 1); // remove
 }
-else 
-{
-    this.Comments[idx].AiHash = $aiHash; // remember this decision
-}",
+",
             GenAiTransformation = new GenAiTransformation
             {
                 Script = @"
 for(const comment of this.Comments)
 {
-    context({Text: comment.Text, Author: comment.Author, Id: comment.Id}, comment.AiHash);
+    context({Text: comment.Text, Author: comment.Author, Id: comment.Id});
 }
 "
             }
@@ -333,7 +326,7 @@ for(const comment of this.Comments)
     [RavenFact(RavenTestCategory.Ai)]
     public async Task CanToggleGenAiTaskState()
     {
-        const string connectionStrName = "ollama-local-deepseek-r1";
+        const string connectionStrName = "ollama-local";
 
         using var store = GetDocumentStore();
         store.Maintenance.Send(new PutConnectionStringOperation<AiConnectionString>(new AiConnectionString
@@ -343,10 +336,9 @@ for(const comment of this.Comments)
             OllamaSettings = new OllamaSettings
             {
                 Uri = "http://127.0.0.1:11434/",
-                Model = "deepseek-r1:1.5b"
+                Model = "llama3.2:latest"
             }
         }));
-
 
         var configuration = new GenAiConfiguration
         {
@@ -364,17 +356,13 @@ const idx = this.Comments.findIndex(c => c.Id == $input.Id);
 if($output.Blocked)
 {
     this.Comments.splice(idx, 1); // remove
-}
-else 
-{
-    this.Comments[idx].AiHash = $aiHash; // remember this decision
 }",
             GenAiTransformation = new GenAiTransformation
             {
                 Script = @"
 for(const comment of this.Comments)
 {
-    context({Text: comment.Text, Author: comment.Author, Id: comment.Id}, comment.AiHash);
+    context({Text: comment.Text, Author: comment.Author, Id: comment.Id});
 }
 "
             }
@@ -397,6 +385,144 @@ for(const comment of this.Comments)
         taskInfo = await store.Maintenance.SendAsync(new GetOngoingTaskInfoOperation(configuration.Name, OngoingTaskType.GenAi));
         Assert.Equal(OngoingTaskState.Enabled, taskInfo.TaskState);
     }
+
+    [RavenFact(RavenTestCategory.Ai)]
+    public async Task ShouldTrackAiHashesInMetadata()
+    {
+        using var store = GetDocumentStore();
+
+        store.Maintenance.Send(new PutConnectionStringOperation<AiConnectionString>(new AiConnectionString
+        {
+            Name = "ollama-local",
+            Identifier = "ollama-local",
+            OllamaSettings = new OllamaSettings
+            {
+                Uri = "http://127.0.0.1:11434/",
+                Model = "llama3.2:latest"
+            }
+        }));
+
+        var etl = Etl.WaitForEtlToComplete(store);
+
+        const string taskName = "Check blog comments spam";
+
+        store.Maintenance.Send(new AddGenAiOperation(new GenAiConfiguration
+        {
+            Name = taskName,
+            ConnectionStringName = "ollama-local",
+            Prompt = "Check if the following blog post comment is spam or not",
+            Collection = "Posts",
+            SampleObject = JsonConvert.SerializeObject(new
+            {
+                Blocked = true,
+                Reason = "Concise reason for why this comment was marked as spam or ham"
+            }),
+            Update = @"    
+const idx = this.Comments.findIndex(c => c.Id == $input.Id);  
+if($output.Blocked)
+{
+    this.Comments.splice(idx, 1); // remove
+}",
+            GenAiTransformation = new GenAiTransformation
+            {
+                Script = @"
+for(const comment of this.Comments)
+{
+    context({Text: comment.Text, Author: comment.Author, Id: comment.Id});
+}
+"
+            }
+        }));
+
+        const string docId = "posts/1";
+
+        var post = new Post([
+            new Comment("Free crypto airdrop! Sign up now at scamcoin.fake", "evil bot"),
+            new Comment("Great article. Helped me understand indexing in RavenDB.", "alex"),
+            new Comment("Surefire investment property in caiman islands, win $$$$ for sure, qucik!", "homepage")
+        ], "Understanding RavenDB Indexing", "Indexes in RavenDB are powerful...");
+
+        using (var session = store.OpenSession())
+        {
+            session.Store(post, docId);
+            session.SaveChanges();
+        }
+
+        etl.Wait();
+
+        using (var session = store.OpenAsyncSession())
+        {
+            var postDoc = await session.LoadAsync<BlittableJsonReaderObject>(docId);
+            Assert.NotNull(postDoc);
+
+            Assert.True(postDoc.TryGet(Constants.Documents.Metadata.Key, out BlittableJsonReaderObject metadata));
+            Assert.True(metadata.TryGet(GenAiTask.GenAiHashesMetadataKey, out BlittableJsonReaderObject hashesSection));
+            Assert.True(hashesSection.TryGet(taskName, out BlittableJsonReaderArray hashes));
+            Assert.NotNull(hashes);
+
+            var expectedHashes = GetExpectedHashes(post, docId);
+            var actualHashes = hashes.Select(h => h.ToString()).ToList();
+
+            Assert.Equal(expectedHashes.Count, actualHashes.Count);
+            foreach (var expected in expectedHashes)
+                Assert.Contains(expected, actualHashes);
+        }
+
+        etl = Etl.WaitForEtlToComplete(store);
+
+        // Update the document to trigger a new context output
+        using (var session = store.OpenSession())
+        {
+            post = session.Load<Post>(docId);
+            post.Comments.Add(new Comment("Nice summary. Bookmarked for future reference.", "emma"));
+            session.SaveChanges();
+        }
+
+        etl.Wait();
+
+        using (var session = store.OpenAsyncSession())
+        {
+            var postDoc = await session.LoadAsync<BlittableJsonReaderObject>(docId);
+            Assert.NotNull(postDoc);
+
+            Assert.True(postDoc.TryGet(Constants.Documents.Metadata.Key, out BlittableJsonReaderObject metadata));
+            Assert.True(metadata.TryGet(GenAiTask.GenAiHashesMetadataKey, out BlittableJsonReaderObject hashesSection));
+            Assert.True(hashesSection.TryGet(taskName, out BlittableJsonReaderArray hashes));
+            Assert.NotNull(hashes);
+
+            var expectedHashes = GetExpectedHashes(post, docId);
+            var actualHashes = hashes.Select(h => h.ToString()).ToList();
+
+            Assert.Equal(expectedHashes.Count, actualHashes.Count);
+            foreach (var expected in expectedHashes)
+                Assert.Contains(expected, actualHashes);
+        }
+
+        static List<string> GetExpectedHashes(Post post, string docId)
+        {
+            var results = new List<string>();
+            using var context = JsonOperationContext.ShortTermSingleUse();
+
+            foreach (var comment in post.Comments)
+            {
+                var djv = new DynamicJsonValue
+                {
+                    [nameof(Comment.Text)] = comment.Text,
+                    [nameof(Comment.Author)] = comment.Author,
+                    [nameof(Comment.Id)] = comment.Id
+                };
+
+                using var ctxDoc = context.ReadObject(djv, docId);
+                var json = ctxDoc.ToString();
+                var hash = AttachmentsStorageHelper.CalculateHash(MemoryMarshal.AsBytes(json.AsSpan()));
+
+                results.Add(hash);
+            }
+
+            return results;
+        }
+    }
+
 
     internal record Comment(string Text, string Author)
     {
