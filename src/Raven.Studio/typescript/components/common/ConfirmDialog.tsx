@@ -4,6 +4,7 @@ import IconName from "typings/server/icons";
 import { Icon } from "./Icon";
 import Button from "react-bootstrap/Button";
 import Modal from "./Modal";
+import { ModalProps } from "react-bootstrap/Modal";
 
 interface ConfirmOptions {
     title: ReactNode;
@@ -12,6 +13,7 @@ interface ConfirmOptions {
     message?: ReactNode;
     confirmText?: string;
     confirmIcon?: IconName;
+    size?: ModalProps["size"];
 }
 
 type InnerOptions = Partial<ConfirmOptions> & { isOpen: boolean };
@@ -22,7 +24,7 @@ export function ConfirmDialogProvider({ children }: PropsWithChildren) {
     const [options, setOptions] = useState<InnerOptions>({ isOpen: false });
     const promise = useRef<(choice: boolean) => void>(null);
 
-    const { isOpen, title, icon, confirmIcon, message } = options;
+    const { isOpen, title, icon, confirmIcon, message, size } = options;
 
     const confirmText = options.confirmText ?? "Yes";
     const actionColor = options.actionColor ?? "warning";
@@ -45,7 +47,7 @@ export function ConfirmDialogProvider({ children }: PropsWithChildren) {
         <ConfirmDialog.Provider value={exposedConfirm}>
             {children}
             {isOpen && (
-                <Modal show onHide={onCancel} contentClassName={`modal-border bulge-${actionColor}`}>
+                <Modal show onHide={onCancel} contentClassName={`modal-border bulge-${actionColor}`} size={size}>
                     <Modal.Header closeButton className="vstack gap-4" onCloseClick={onCancel}>
                         {icon && (
                             <div className="text-center">

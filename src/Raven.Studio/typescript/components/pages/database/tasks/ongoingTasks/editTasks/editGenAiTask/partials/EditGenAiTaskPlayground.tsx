@@ -26,10 +26,9 @@ import RichAlert from "components/common/RichAlert";
 import classNames from "classnames";
 import { useEffect, useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import AceEditor from "components/common/AceEditor";
 import SizeGetter from "components/common/SizeGetter";
-import { data } from "jquery";
 import { EmptySet } from "components/common/EmptySet";
+import { Switch } from "components/common/Checkbox";
 
 export default function EditGenAiTaskPlayground() {
     const dispatch = useAppDispatch();
@@ -90,18 +89,23 @@ export default function EditGenAiTaskPlayground() {
         300
     );
 
-    const handleEditModeToggle = async () => {
-        const isConfirmed = await confirm({
-            title: "You’re about to enter Playground edit mode",
-            message:
-                "While you’ll be able to manipulate the element, please be aware that any changes made won’t be saved to the actual document.",
-            actionColor: "warning",
-            confirmIcon: "arrow-right",
-            confirmText: "Enter edit mode",
-            icon: "edit",
-        });
+    const handleEditModeToggle = async (isSelected: boolean) => {
+        if (isSelected) {
+            const isConfirmed = await confirm({
+                title: "You’re about to enter Playground edit mode",
+                message:
+                    "While you’ll be able to manipulate the element, please be aware that any changes made won’t be saved to the actual document.",
+                actionColor: "warning",
+                confirmIcon: "arrow-right",
+                confirmText: "Enter edit mode",
+                icon: "edited",
+                size: "lg",
+            });
 
-        if (isConfirmed) {
+            if (isConfirmed) {
+                dispatch(editGenAiTaskActions.isPlaygroundEditModeToggled());
+            }
+        } else {
             dispatch(editGenAiTaskActions.isPlaygroundEditModeToggled());
         }
     };
@@ -177,17 +181,15 @@ export default function EditGenAiTaskPlayground() {
                                     </Nav.Item>
                                 )}
                             </Nav>
-                            {!isPlaygroundEditMode && (
-                                <Button
-                                    variant="secondary"
-                                    className="rounded-pill py-1"
-                                    size="sm"
-                                    onClick={handleEditModeToggle}
-                                >
-                                    <Icon icon="edit" />
-                                    Edit mode
-                                </Button>
-                            )}
+                            <Switch
+                                id="editMode"
+                                toggleSelection={(e) => handleEditModeToggle(e.target.checked)}
+                                selected={isPlaygroundEditMode}
+                                color="info"
+                                className="mt-1"
+                            >
+                                Edit mode
+                            </Switch>
                         </HStack>
 
                         <Tab.Content className="p-3">
