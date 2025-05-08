@@ -88,7 +88,7 @@ export default function EditGenAiTaskPlayground() {
         300
     );
 
-    const handleEditModeToggle = async (isSelected: boolean) => {
+    const handleEditModeToggle = async (isSelected: boolean): Promise<boolean> => {
         if (isSelected) {
             const isConfirmed = await confirm({
                 title: "You’re about to enter Playground edit mode",
@@ -103,9 +103,19 @@ export default function EditGenAiTaskPlayground() {
 
             if (isConfirmed) {
                 dispatch(editGenAiTaskActions.isPlaygroundEditModeToggled());
+                return true;
+            } else {
+                return false;
             }
         } else {
             dispatch(editGenAiTaskActions.isPlaygroundEditModeToggled());
+            return true;
+        }
+    };
+
+    const handleProvideContentManually = async () => {
+        if (await handleEditModeToggle(!isPlaygroundEditMode)) {
+            setValue("playgroundDocument", "{}", { shouldValidate: true });
         }
     };
 
@@ -246,20 +256,24 @@ export default function EditGenAiTaskPlayground() {
                                                 onMenuClose={() => clearErrors("playgroundDocument")}
                                             />
                                         </FormGroup>
-                                        <Button
-                                            variant="link"
-                                            onClick={() =>
-                                                setValue("playgroundDocument", "{}", { shouldValidate: true })
-                                            }
-                                            size="sm"
-                                        >
+                                        <Button variant="link" onClick={handleProvideContentManually} size="sm">
                                             <Icon icon="edit" />I want to provide content manually
                                         </Button>
                                     </VStack>
                                 )}
                                 {formValues.playgroundDocument && (
                                     <div>
-                                        <HStack className="justify-content-end mb-1">
+                                        <HStack
+                                            className={classNames("mb-1", {
+                                                "justify-content-end": !formValues.documentId,
+                                                "justify-content-between": formValues.documentId,
+                                            })}
+                                        >
+                                            {formValues.documentId && (
+                                                <div>
+                                                    Selected document: <strong>{formValues.documentId}</strong>
+                                                </div>
+                                            )}
                                             <Button
                                                 variant="link"
                                                 size="sm"
@@ -269,7 +283,12 @@ export default function EditGenAiTaskPlayground() {
                                                 Reset selection
                                             </Button>
                                         </HStack>
-                                        <FormAceEditor control={control} name="playgroundDocument" mode="json" />
+                                        <FormAceEditor
+                                            control={control}
+                                            name="playgroundDocument"
+                                            mode="json"
+                                            readOnly={!isPlaygroundEditMode}
+                                        />
                                     </div>
                                 )}
                             </Tab.Pane>

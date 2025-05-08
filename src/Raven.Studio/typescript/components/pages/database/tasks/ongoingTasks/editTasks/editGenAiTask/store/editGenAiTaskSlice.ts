@@ -60,6 +60,9 @@ export const editGenAiTaskSlice = createSlice({
         isPlaygroundEditModeToggled: (state) => {
             state.isPlaygroundEditMode = !state.isPlaygroundEditMode;
         },
+        isPlaygroundEditModeSet: (state, action: PayloadAction<boolean>) => {
+            state.isPlaygroundEditMode = action.payload;
+        },
         aiConnectionStringsSet: (
             state,
             action: PayloadAction<Record<string, Raven.Client.Documents.Operations.AI.AiConnectionString>>
