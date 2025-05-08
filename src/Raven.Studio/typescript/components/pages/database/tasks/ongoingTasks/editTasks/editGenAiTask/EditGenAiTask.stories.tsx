@@ -27,7 +27,7 @@ export const Basic: StoryObj = {
         collectionsTracker.with_Collections();
 
         tasksService.withConnectionStrings();
-        tasksService.withRegistrationInfo();
+        tasksService.withTestGenAi();
 
         return (
             <div style={{ height: 700 }}>

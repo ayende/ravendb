@@ -158,7 +158,7 @@ export default class MockTasksService extends AutoMockService<TasksService> {
         return this.mockResolvedValue(this.mocks.getLocalFolderPathOptions, dto, TasksStubs.localFolderPathOptions());
     }
 
-    withRegistrationInfo() {
+    withTestGenAi() {
         return this.mocks.testGenAi.mockImplementation(async (_, dto) => {
             if (dto.TestStage === "CreateContextObjects") {
                 return TasksStubs.testGenAiResults_context();

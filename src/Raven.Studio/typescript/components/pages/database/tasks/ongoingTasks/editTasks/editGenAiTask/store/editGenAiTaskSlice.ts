@@ -31,7 +31,7 @@ const initialState: EditGenAiTaskState = {
     globalTestResult: null,
     isPlaygroundCollapsed: false,
     isPlaygroundEditMode: false,
-    aiConnectionStrings: {}, // TODO use it to basic step test
+    aiConnectionStrings: {},
     isTestOpen: false,
 };
 

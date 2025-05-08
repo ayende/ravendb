@@ -10,7 +10,7 @@ import Button from "react-bootstrap/Button";
 import { VStack } from "components/common/utilities/VStack";
 import { useEditGenAiTaskTests } from "../hooks/useEditGenAiTaskTests";
 import ButtonWithSpinner from "components/common/ButtonWithSpinner";
-import SizeGetter from "components/common/SizeGetter";
+import EditGenAiTaskReadOnlyVirtualList from "./EditGenAiTaskReadOnlyVirtualList";
 
 export default function EditGenAiTaskTestResults() {
     const dispatch = useAppDispatch();
@@ -20,14 +20,12 @@ export default function EditGenAiTaskTestResults() {
     const modelInputTest = useAppSelector(editGenAiTaskSelectors.modelInputTest);
     const updateScriptTest = useAppSelector(editGenAiTaskSelectors.updateScriptTest);
 
-    console.log("kalczur c", { currentStep, modelInputTest });
-
     const { handleContextTest, handleModelInputTest } = useEditGenAiTaskTests();
 
     return (
-        <div className="h-100">
+        <VStack className="h-100">
             {currentStep === "context" && contextTest.data?.length > 0 && (
-                <div>
+                <>
                     <HStack className="mb-3 justify-content-between">
                         <h3 className="mb-0">
                             <Icon icon="test" />
@@ -53,15 +51,11 @@ export default function EditGenAiTaskTestResults() {
                             </Button>
                         </HStack>
                     </HStack>
-                    <VStack gap={2}>
-                        {contextTest.data.map((x, idx) => (
-                            <AceEditor key={idx} mode="json" value={x} readOnly />
-                        ))}
-                    </VStack>
-                </div>
+                    <EditGenAiTaskReadOnlyVirtualList data={contextTest.data} />
+                </>
             )}
             {currentStep === "modelInput" && modelInputTest.data?.length > 0 && (
-                <div>
+                <>
                     <HStack className="mb-3 justify-content-between">
                         <h3 className="mb-0">
                             <Icon icon="test" />
@@ -87,15 +81,11 @@ export default function EditGenAiTaskTestResults() {
                             </Button>
                         </HStack>
                     </HStack>
-                    <VStack gap={2}>
-                        {modelInputTest.data.map((x, idx) => (
-                            <AceEditor key={idx} mode="json" value={x} readOnly />
-                        ))}
-                    </VStack>
-                </div>
+                    <EditGenAiTaskReadOnlyVirtualList data={modelInputTest.data} />
+                </>
             )}
             {currentStep === "updateScript" && updateScriptTest.data != null && <UpdateScriptResult />}
-        </div>
+        </VStack>
     );
 }
 
@@ -125,8 +115,6 @@ function UpdateScriptResult() {
             aceDiffC.destroy();
         };
     }, [oldDoc, newDoc]);
-
-    // TODO add ace editor title
 
     return (
         <>
