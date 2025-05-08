@@ -11,6 +11,7 @@ import { VStack } from "components/common/utilities/VStack";
 import { useEditGenAiTaskTests } from "../hooks/useEditGenAiTaskTests";
 import ButtonWithSpinner from "components/common/ButtonWithSpinner";
 import EditGenAiTaskReadOnlyVirtualList from "./EditGenAiTaskReadOnlyVirtualList";
+import SizeGetter from "components/common/SizeGetter";
 
 export default function EditGenAiTaskTestResults() {
     const dispatch = useAppDispatch();
@@ -23,7 +24,7 @@ export default function EditGenAiTaskTestResults() {
     const { handleContextTest, handleModelInputTest } = useEditGenAiTaskTests();
 
     return (
-        <VStack className="h-100">
+        <VStack className="test-results">
             {currentStep === "context" && contextTest.data?.length > 0 && (
                 <>
                     <HStack className="mb-3 justify-content-between">
@@ -93,28 +94,7 @@ function UpdateScriptResult() {
     const dispatch = useAppDispatch();
 
     const updateScriptTest = useAppSelector(editGenAiTaskSelectors.updateScriptTest);
-
-    const oldDoc = JSON.stringify(useAppSelector(editGenAiTaskSelectors.globalTestResult).InputDocument, null, 4);
-    const newDoc = updateScriptTest.data ?? "";
-
-    const oldDocRef = useRef<ReactAce>(null);
-    const newDocRef = useRef<ReactAce>(null);
-
     const { handleUpdateScriptTest } = useEditGenAiTaskTests();
-
-    useEffect(() => {
-        if (!oldDocRef.current || !newDocRef.current) {
-            return;
-        }
-
-        // We have different ace versions, lets just use 'any' here instead of editing aceDiff class
-        const aceDiffC = new aceDiff(oldDocRef.current.editor as any, newDocRef.current.editor as any, false);
-        aceDiffC.refresh(false);
-
-        return () => {
-            aceDiffC.destroy();
-        };
-    }, [oldDoc, newDoc]);
 
     return (
         <>
@@ -143,18 +123,46 @@ function UpdateScriptResult() {
                     </Button>
                 </HStack>
             </HStack>
-            <VStack gap={2}>
-                <div className="border border-secondary rounded-2 ">
-                    <div className="text-center border-bottom border-secondary py-1 panel-harder-bg">
-                        Original document
-                    </div>
-                    <AceEditor aceRef={oldDocRef} value={oldDoc} mode="json" height="300px" readOnly />
-                </div>
-                <div className="border border-secondary rounded-2">
-                    <div className="text-center border-bottom border-secondary py-1">Modified document</div>
-                    <AceEditor aceRef={newDocRef} value={newDoc} mode="json" height="300px" readOnly />
-                </div>
-            </VStack>
+            <div className="flex-grow-1">
+                <SizeGetter isHeighRequired render={({ height }) => <UpdateScriptAceDiff height={height} />} />
+            </div>
         </>
+    );
+}
+
+function UpdateScriptAceDiff({ height }: { height: number }) {
+    const updateScriptTest = useAppSelector(editGenAiTaskSelectors.updateScriptTest);
+
+    const oldDoc = JSON.stringify(useAppSelector(editGenAiTaskSelectors.globalTestResult).InputDocument, null, 4);
+    const newDoc = updateScriptTest.data ?? "";
+
+    const oldDocRef = useRef<ReactAce>(null);
+    const newDocRef = useRef<ReactAce>(null);
+
+    useEffect(() => {
+        if (!oldDocRef.current || !newDocRef.current) {
+            return;
+        }
+
+        // We have different ace versions, lets just use 'any' here instead of editing aceDiff class
+        const aceDiffC = new aceDiff(oldDocRef.current.editor as any, newDocRef.current.editor as any, false);
+        aceDiffC.refresh(false);
+
+        return () => {
+            aceDiffC.destroy();
+        };
+    }, [oldDoc, newDoc]);
+
+    return (
+        <VStack gap={2} className="update-script-result">
+            <div className="border border-secondary rounded-2 ">
+                <div className="text-center border-bottom border-secondary py-1 panel-harder-bg">Original document</div>
+                <AceEditor aceRef={oldDocRef} value={oldDoc} mode="json" height={`${height / 2 - 50}px`} readOnly />
+            </div>
+            <div className="border border-secondary rounded-2">
+                <div className="text-center border-bottom border-secondary py-1">Modified document</div>
+                <AceEditor aceRef={newDocRef} value={newDoc} mode="json" height={`${height / 2 - 50}px`} readOnly />
+            </div>
+        </VStack>
     );
 }

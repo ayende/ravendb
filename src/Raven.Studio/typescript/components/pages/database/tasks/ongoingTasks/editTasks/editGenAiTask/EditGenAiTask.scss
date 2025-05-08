@@ -58,4 +58,14 @@
             flex-grow: 1;
         }
     }
+
+    .test-results {
+        height: 100%;
+
+        .update-script-result {
+            .ace-editor {
+                border: none;
+            }
+        }
+    }
 }
