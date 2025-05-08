@@ -33,7 +33,7 @@ import testSnowflakeConnectionStringCommand from "commands/database/cluster/test
 import testAmazonSqsServerConnectionCommand from "commands/database/cluster/testAmazonSqsServerConnectionCommand";
 import testAiConnectionStringCommand from "commands/database/cluster/testAiConnectionStringCommand";
 import saveEtlTaskCommand from "commands/database/tasks/saveEtlTaskCommand";
-import testGenAiCommand from "commands/database/tasks/testGenAiCommand";
+import testGenAiCommand from "commands/database/tasks/testGenAiCommand_old";
 
 export default class TasksService {
     async getOngoingTasks(databaseName: string, location: databaseLocationSpecifier) {
