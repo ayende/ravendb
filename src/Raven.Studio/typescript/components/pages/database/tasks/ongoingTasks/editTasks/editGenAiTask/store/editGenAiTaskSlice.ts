@@ -18,6 +18,10 @@ interface EditGenAiTaskState {
     isPlaygroundEditMode: boolean;
     aiConnectionStrings: Record<string, Raven.Client.Documents.Operations.AI.AiConnectionString>;
     isTestOpen: boolean;
+    isDocumentInfoVisible: boolean;
+    isContextInfoVisible: boolean;
+    isModelInputInfoVisible: boolean;
+    isEditModeWarningVisible: boolean;
 }
 
 const initialState: EditGenAiTaskState = {
@@ -33,6 +37,10 @@ const initialState: EditGenAiTaskState = {
     isPlaygroundEditMode: false,
     aiConnectionStrings: {},
     isTestOpen: false,
+    isDocumentInfoVisible: true,
+    isContextInfoVisible: true,
+    isModelInputInfoVisible: true,
+    isEditModeWarningVisible: true,
 };
 
 export const editGenAiTaskSlice = createSlice({
@@ -71,6 +79,18 @@ export const editGenAiTaskSlice = createSlice({
         },
         isTestOpenSet: (state, action: PayloadAction<boolean>) => {
             state.isTestOpen = action.payload;
+        },
+        isDocumentInfoVisibleSet: (state, action: PayloadAction<boolean>) => {
+            state.isDocumentInfoVisible = action.payload;
+        },
+        isContextInfoVisibleSet: (state, action: PayloadAction<boolean>) => {
+            state.isContextInfoVisible = action.payload;
+        },
+        isModelInputInfoVisibleSet: (state, action: PayloadAction<boolean>) => {
+            state.isModelInputInfoVisible = action.payload;
+        },
+        isEditModeWarningVisibleSet: (state, action: PayloadAction<boolean>) => {
+            state.isEditModeWarningVisible = action.payload;
         },
         reset: () => initialState,
     },
@@ -202,4 +222,8 @@ export const editGenAiTaskSelectors = {
     isPlaygroundEditMode: (state: RootState) => state.editGenAiTask.isPlaygroundEditMode,
     globalTestResult: (state: RootState) => state.editGenAiTask.globalTestResult,
     aiConnectionStrings: (state: RootState) => state.editGenAiTask.aiConnectionStrings,
+    isDocumentInfoVisible: (state: RootState) => state.editGenAiTask.isDocumentInfoVisible,
+    isContextInfoVisible: (state: RootState) => state.editGenAiTask.isContextInfoVisible,
+    isModelInputInfoVisible: (state: RootState) => state.editGenAiTask.isModelInputInfoVisible,
+    isEditModeWarningVisible: (state: RootState) => state.editGenAiTask.isEditModeWarningVisible,
 };

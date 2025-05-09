@@ -31,6 +31,8 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
 
     const taskId = queryParams?.taskId ? parseInt(queryParams.taskId) : null;
 
+    // TODO if fetch task with id fails then go back to tasks view
+
     // Set query params to store
     useEffect(() => {
         if (taskId) {
