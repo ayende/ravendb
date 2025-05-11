@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
+using FastTests;
 using Newtonsoft.Json;
 using Raven.Client;
 using Raven.Client.Documents.Conventions;
@@ -20,7 +21,7 @@ using Tests.Infrastructure;
 using Xunit;
 using Xunit.Abstractions;
 
-namespace FastTests.GenAi;
+namespace SlowTests.Server.Documents.AI.GenAi;
 
 public class GenAiTestScript(ITestOutputHelper output) : RavenTestBase(output)
 {
