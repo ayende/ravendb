@@ -96,14 +96,8 @@ namespace Raven.Server.Documents.Handlers.Processors.OngoingTasks
                         break;
                     }
                 case EtlType.GenAi:
-                    using (RequestHandler.ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
-                    using (context.OpenReadTransaction())
-                    {
-                        var aiGenConfiguration = Client.Json.Serialization.JsonDeserializationClient.AiGenConfiguration(etlConfiguration);
-                        var connectionStringName = aiGenConfiguration.ConnectionStringName ?? string.Empty;
-                        RequestHandler.ServerStore.LicenseManager.AssertCanAddEmbeddingsGenerationTask(GetAiConnectionString(context, connectionStringName));
-                        break;
-                    }
+                    RequestHandler.ServerStore.LicenseManager.AssertCanAddAiGenerationTask();
+                    break;
 
                 default:
                     throw new NotSupportedException($"Unknown ETL configuration type. Configuration: {etlConfiguration}");

@@ -238,6 +238,8 @@ namespace Raven.Server.Commercial
 
         public bool HasEmbeddingsGeneration => Enabled(LicenseAttribute.AiEmbeddingsGen);
 
+        public bool HasAiGeneration => Enabled(LicenseAttribute.AiGen);
+
         public bool HasPowerBI => Enabled(LicenseAttribute.PowerBI);
 
         public bool HasPostgreSqlIntegration => Enabled(LicenseAttribute.PostgreSqlIntegration);
@@ -348,6 +350,7 @@ namespace Raven.Server.Commercial
                 [nameof(HasQueueEtl)] = HasQueueEtl,
                 [nameof(HasSnowflakeEtl)] = HasSnowflakeEtl,
                 [nameof(HasEmbeddingsGeneration)] = HasEmbeddingsGeneration,
+                [nameof(HasAiGeneration)] = HasAiGeneration,
                 [nameof(HasPowerBI)] = HasPowerBI,
                 [nameof(HasPostgreSqlIntegration)] = HasPostgreSqlIntegration,
                 [nameof(HasServerWideBackups)] = HasServerWideBackups,

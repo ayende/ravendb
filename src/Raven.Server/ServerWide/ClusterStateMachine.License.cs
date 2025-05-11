@@ -12,6 +12,7 @@ using Raven.Server.Documents.Expiration;
 using Raven.Server.Json;
 using Raven.Server.Rachis;
 using Raven.Server.ServerWide.Commands;
+using Raven.Server.ServerWide.Commands.AI;
 using Raven.Server.ServerWide.Commands.Analyzers;
 using Raven.Server.ServerWide.Commands.ConnectionStrings;
 using Raven.Server.ServerWide.Commands.ETL;
@@ -173,9 +174,14 @@ public sealed partial class ClusterStateMachine
             case nameof(EditDocumentsCompressionCommand):
                 AssertDocumentsCompressionLicenseLimits(serverStore, databaseRecord, context);
                 break;
+            case nameof(AddEmbeddingsGenerationCommand):
             case nameof(PutAiConnectionStringCommand):
                 AssertEmbeddingsGeneration(databaseRecord, serverStore.LicenseManager.LicenseStatus);
                 break;
+            case nameof(AddGenAiCommand):
+                AssertAiGeneration(databaseRecord, serverStore.LicenseManager.LicenseStatus);
+                break;
+
         }
     }
 
@@ -215,6 +221,7 @@ public sealed partial class ClusterStateMachine
             AssertAnalyzers(databaseRecord, newLicenseLimits, context, items, type);
             AssertSnowflakeEtl(databaseRecord, newLicenseLimits);
             AssertEmbeddingsGeneration(databaseRecord, newLicenseLimits);
+            AssertAiGeneration(databaseRecord, newLicenseLimits);
             
             if (AssertPeriodicBackup(newLicenseLimits, context) == false && databaseRecord.PeriodicBackups.Count > 0)
                 throw new LicenseLimitException(LimitType.PeriodicBackup, $"Your license doesn't support periodic backup.");
@@ -943,6 +950,17 @@ public sealed partial class ClusterStateMachine
             return;
         
         throw new LicenseLimitException(LimitType.EmbeddingsGeneration, "Your license doesn't support using the Embeddings Generation feature.");
+    }
+
+    private static void AssertAiGeneration(DatabaseRecord databaseRecord, LicenseStatus licenseStatus)
+    {
+        if (licenseStatus.HasAiGeneration)
+            return;
+
+        if (databaseRecord.GenAiEtls.Count == 0)
+            return;
+
+        throw new LicenseLimitException(LimitType.AiGeneration, "Your license doesn't support using the AI Generation feature.");
     }
 
     private void AssertTimeSeriesConfigurationLicenseLimits(ServerStore serverStore, DatabaseRecord databaseRecord, ClusterOperationContext context)
