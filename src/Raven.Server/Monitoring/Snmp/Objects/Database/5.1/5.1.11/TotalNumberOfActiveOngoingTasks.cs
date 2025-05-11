@@ -23,6 +23,8 @@ namespace Raven.Server.Monitoring.Snmp.Objects.Database
             count += GetNumberOfActiveSqlEtls(rachisState, nodeTag, database);
             count += GetNumberOfActiveSnowflakeEtls(rachisState, nodeTag, database);
             count += GetNumberOfActiveSubscriptions(context, rachisState, nodeTag, database);
+            count += GetNumberOfActiveEmbeddingsGenerationTasks(rachisState, nodeTag, database);
+            count += GetNumberOfActiveGenAiTasks(rachisState, nodeTag, database);
 
             return count;
         }

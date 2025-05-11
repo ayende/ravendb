@@ -23,6 +23,8 @@ namespace Raven.Server.Monitoring.Snmp.Objects.Database
             count += GetNumberOfSnowflakeEtls(database);
             count += GetNumberOfSubscriptions(context, database);
             count += GetNumberOfQueueSinks(database);
+            count += GetNumberOfEmbeddingsGenerationTasks(database);
+            count += GetNumberOfGenAiTasks(database);
 
             return count;
         }

@@ -62,6 +62,8 @@ public abstract class OngoingTasksBase : DatabaseBase<Integer32>
     
     protected internal static int GetNumberOfEmbeddingsGenerationTasks(RawDatabaseRecord database) => database.EmbeddingsGenerations?.Count(x => x.Disabled == false) ?? 0;
 
+    protected internal static int GetNumberOfGenAiTasks(RawDatabaseRecord database) => database.GenAis?.Count(x => x.Disabled == false) ?? 0;
+
     protected internal static int GetNumberOfSubscriptions(TransactionOperationContext context, RawDatabaseRecord database)
     {
         var count = 0;

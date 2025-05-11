@@ -999,6 +999,14 @@ namespace Raven.Server.Monitoring.Snmp
                 [Description("Number of active Embeddings Generation tasks for all databases")]
                 public const string TotalNumberOfActiveEmbeddingGenerationTasks = "5.1.11.26";
 
+                [SnmpDataType(SnmpType.Integer32)]
+                [Description("Number of enabled Gen AI tasks for all databases")]
+                public const string TotalNumberOfGenAiTasks = "5.1.11.27";
+
+                [SnmpDataType(SnmpType.Integer32)]
+                [Description("Number of active Gen AI tasks for all databases")]
+                public const string TotalNumberOfActiveGenAiTasks = "5.1.11.28";
+
                 internal static Dictionary<string, string> CreateMapping()
                 {
                     var dictionary = new Dictionary<string, string>();

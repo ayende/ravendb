@@ -72,6 +72,8 @@ public abstract class ActiveOngoingTasksBase : DatabaseBase<Integer32>
 
     protected static int GetNumberOfActiveEmbeddingsGenerationTasks(RachisState rachisState, string nodeTag, RawDatabaseRecord database) => CountTasks(rachisState, nodeTag, database.Topology, database.EmbeddingsGenerations.Where(x => x.Disabled == false));
     
+    protected static int GetNumberOfActiveGenAiTasks(RachisState rachisState, string nodeTag, RawDatabaseRecord database) => CountTasks(rachisState, nodeTag, database.Topology, database.GenAis.Where(x => x.Disabled == false));
+    
     protected static int GetNumberOfActiveSubscriptions(TransactionOperationContext context, RachisState rachisState, string nodeTag, RawDatabaseRecord database)
     {
         var count = 0;
