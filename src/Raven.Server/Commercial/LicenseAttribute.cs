@@ -70,5 +70,5 @@ public enum LicenseAttribute
     SubscriptionExpiration,
     SnowflakeEtl,
     AiEmbeddingsGen,
-    AiGen,
+    GenAi,
 }

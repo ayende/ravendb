@@ -96,7 +96,7 @@ namespace Raven.Server.Documents.Handlers.Processors.OngoingTasks
                         break;
                     }
                 case EtlType.GenAi:
-                    RequestHandler.ServerStore.LicenseManager.AssertCanAddAiGenerationTask();
+                    RequestHandler.ServerStore.LicenseManager.AssertCanAddGenAiTask();
                     break;
 
                 default:

@@ -179,7 +179,7 @@ public sealed partial class ClusterStateMachine
                 AssertEmbeddingsGeneration(databaseRecord, serverStore.LicenseManager.LicenseStatus);
                 break;
             case nameof(AddGenAiCommand):
-                AssertAiGeneration(databaseRecord, serverStore.LicenseManager.LicenseStatus);
+                AssertGenAi(databaseRecord, serverStore.LicenseManager.LicenseStatus);
                 break;
 
         }
@@ -221,7 +221,7 @@ public sealed partial class ClusterStateMachine
             AssertAnalyzers(databaseRecord, newLicenseLimits, context, items, type);
             AssertSnowflakeEtl(databaseRecord, newLicenseLimits);
             AssertEmbeddingsGeneration(databaseRecord, newLicenseLimits);
-            AssertAiGeneration(databaseRecord, newLicenseLimits);
+            AssertGenAi(databaseRecord, newLicenseLimits);
             
             if (AssertPeriodicBackup(newLicenseLimits, context) == false && databaseRecord.PeriodicBackups.Count > 0)
                 throw new LicenseLimitException(LimitType.PeriodicBackup, $"Your license doesn't support periodic backup.");
@@ -952,15 +952,15 @@ public sealed partial class ClusterStateMachine
         throw new LicenseLimitException(LimitType.EmbeddingsGeneration, "Your license doesn't support using the Embeddings Generation feature.");
     }
 
-    private static void AssertAiGeneration(DatabaseRecord databaseRecord, LicenseStatus licenseStatus)
+    private static void AssertGenAi(DatabaseRecord databaseRecord, LicenseStatus licenseStatus)
     {
-        if (licenseStatus.HasAiGeneration)
+        if (licenseStatus.HasGenAi)
             return;
 
         if (databaseRecord.GenAiEtls.Count == 0)
             return;
 
-        throw new LicenseLimitException(LimitType.AiGeneration, "Your license doesn't support using the AI Generation feature.");
+        throw new LicenseLimitException(LimitType.GenAi, "Your license doesn't support using the AI Generation feature.");
     }
 
     private void AssertTimeSeriesConfigurationLicenseLimits(ServerStore serverStore, DatabaseRecord databaseRecord, ClusterOperationContext context)
