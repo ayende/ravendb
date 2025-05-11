@@ -174,8 +174,8 @@ public sealed partial class ClusterStateMachine
             case nameof(EditDocumentsCompressionCommand):
                 AssertDocumentsCompressionLicenseLimits(serverStore, databaseRecord, context);
                 break;
-            case nameof(AddEmbeddingsGenerationCommand):
             case nameof(PutAiConnectionStringCommand):
+            case nameof(AddEmbeddingsGenerationCommand):
                 AssertEmbeddingsGeneration(databaseRecord, serverStore.LicenseManager.LicenseStatus);
                 break;
             case nameof(AddGenAiCommand):
@@ -939,17 +939,21 @@ public sealed partial class ClusterStateMachine
     {
         if (licenseStatus.HasEmbeddingsGeneration)
             return;
-        
-        if (databaseRecord.AiConnectionStrings.Count == 0)
+
+        if (databaseRecord.AiConnectionStrings.Count == 0 || databaseRecord.EmbeddingsGenerations.Count == 0)
             return;
 
-        var countOfExternalConnectors = databaseRecord.AiConnectionStrings
-            .Count(item => item.Value.GetActiveProvider() != AiConnectorType.Embedded);
-        
-        if (countOfExternalConnectors == 0)
-            return;
-        
-        throw new LicenseLimitException(LimitType.EmbeddingsGeneration, "Your license doesn't support using the Embeddings Generation feature.");
+        foreach (var config in databaseRecord.EmbeddingsGenerations)
+        {
+            var connectionStringName = config.ConnectionStringName ?? string.Empty;
+            AiConnectionString aiConnectionString = null;
+            databaseRecord.AiConnectionStrings?.TryGetValue(connectionStringName, out aiConnectionString);
+
+            if (aiConnectionString == null || aiConnectionString.GetActiveProvider() == AiConnectorType.Embedded)
+                continue;
+
+            throw new LicenseLimitException(LimitType.EmbeddingsGeneration, "Your license doesn't support using the Embeddings Generation feature.");
+        }
     }
 
     private static void AssertGenAi(DatabaseRecord databaseRecord, LicenseStatus licenseStatus)

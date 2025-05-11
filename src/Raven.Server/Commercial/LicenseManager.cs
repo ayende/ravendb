@@ -1662,7 +1662,7 @@ namespace Raven.Server.Commercial
             if (LicenseStatus.HasEmbeddingsGeneration)
                 return;
             
-            if (aiConnectionString != null && aiConnectionString.GetActiveProvider() == AiConnectorType.Embedded)
+            if (aiConnectionString == null || aiConnectionString.GetActiveProvider() == AiConnectorType.Embedded)
                 return;
 
             const string message = "Your current license doesn't include the Embeddings Generation feature";
