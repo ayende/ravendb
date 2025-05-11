@@ -296,6 +296,14 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
                         // so it needs to be written to storage before the patch.
                         // the write-tx is not commited so this won't be persisted.
 
+                        if (document.Data.HasParent)
+                        {
+                            using (var old = document.Data)
+                            {
+                                document.Data = document.Data.Clone(context);
+                            }
+                        }
+
                         context.DocumentDatabase.DocumentsStorage.Put(context, document.Id, expectedChangeVector: null, document.Data);
                     }
 
