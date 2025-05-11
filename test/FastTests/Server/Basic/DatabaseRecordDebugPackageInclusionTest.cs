@@ -38,8 +38,9 @@ namespace FastTests.Server.Basic
                 nameof(DatabaseRecord.QueueSinks),
                 nameof(DatabaseRecord.SnowflakeConnectionStrings),
                 nameof(DatabaseRecord.SnowflakeEtls),
-                nameof(DatabaseRecord.EmbeddingsGenerations),
                 nameof(DatabaseRecord.AiConnectionStrings),
+                nameof(DatabaseRecord.EmbeddingsGenerations),
+                nameof(DatabaseRecord.GenAiEtls),
             };
             
             foreach (var safe in ServerWideDebugInfoPackageHandler.FieldsThatShouldBeExposedForDebug)
