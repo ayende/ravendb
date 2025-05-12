@@ -14,6 +14,7 @@ import EditGenAiTaskReadOnlyVirtualList from "./EditGenAiTaskReadOnlyVirtualList
 import SizeGetter from "components/common/SizeGetter";
 import Badge from "react-bootstrap/Badge";
 import PopoverWithHoverWrapper from "components/common/PopoverWithHoverWrapper";
+import { EmptySet } from "components/common/EmptySet";
 
 export default function EditGenAiTaskTestResults() {
     const dispatch = useAppDispatch();
@@ -21,13 +22,12 @@ export default function EditGenAiTaskTestResults() {
     const currentStep = useAppSelector(editGenAiTaskSelectors.currentStep);
     const contextTest = useAppSelector(editGenAiTaskSelectors.contextTest);
     const modelInputTest = useAppSelector(editGenAiTaskSelectors.modelInputTest);
-    const updateScriptTest = useAppSelector(editGenAiTaskSelectors.updateScriptTest);
 
     const { handleContextTest, handleModelInputTest } = useEditGenAiTaskTests();
 
     return (
         <VStack className="test-results">
-            {currentStep === "context" && contextTest.data?.length > 0 && (
+            {currentStep === "context" && (
                 <>
                     <HStack className="mb-3 justify-content-between">
                         <h3 className="mb-0">
@@ -54,10 +54,14 @@ export default function EditGenAiTaskTestResults() {
                             </Button>
                         </HStack>
                     </HStack>
-                    <EditGenAiTaskReadOnlyVirtualList data={contextTest.data} />
+                    {contextTest.data?.length === 0 ? (
+                        <EmptySet>No results</EmptySet>
+                    ) : (
+                        <EditGenAiTaskReadOnlyVirtualList data={contextTest.data} />
+                    )}
                 </>
             )}
-            {currentStep === "modelInput" && modelInputTest.data?.length > 0 && (
+            {currentStep === "modelInput" && (
                 <>
                     <HStack className="mb-3 justify-content-between">
                         <h3 className="mb-0">
@@ -85,10 +89,14 @@ export default function EditGenAiTaskTestResults() {
                         </HStack>
                     </HStack>
                     <ModelUsage />
-                    <EditGenAiTaskReadOnlyVirtualList data={modelInputTest.data} />
+                    {modelInputTest.data?.length === 0 ? (
+                        <EmptySet>No results</EmptySet>
+                    ) : (
+                        <EditGenAiTaskReadOnlyVirtualList data={modelInputTest.data} />
+                    )}
                 </>
             )}
-            {currentStep === "updateScript" && updateScriptTest.data != null && <UpdateScriptResult />}
+            {currentStep === "updateScript" && <UpdateScriptResult />}
         </VStack>
     );
 }
@@ -173,9 +181,13 @@ function UpdateScriptResult() {
                     </Button>
                 </HStack>
             </HStack>
-            <div className="flex-grow-1">
-                <SizeGetter isHeighRequired render={({ height }) => <UpdateScriptAceDiff height={height} />} />
-            </div>
+            {updateScriptTest.data == null ? (
+                <EmptySet>No results</EmptySet>
+            ) : (
+                <div className="flex-grow-1">
+                    <SizeGetter isHeighRequired render={({ height }) => <UpdateScriptAceDiff height={height} />} />
+                </div>
+            )}
         </>
     );
 }
