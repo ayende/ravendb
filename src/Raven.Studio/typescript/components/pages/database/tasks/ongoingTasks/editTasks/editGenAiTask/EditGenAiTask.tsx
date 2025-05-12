@@ -92,7 +92,9 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
         <FormProvider {...form}>
             <form onSubmit={handleSubmit(handleSave)} className="edit-gen-ai-task">
                 <div className="main-container">{currentStep.component}</div>
-                <div className="footer">{currentStep.footer}</div>
+                <div className="footer">
+                    <div className="footer-content">{currentStep.footer}</div>
+                </div>
                 <div className="sidebar">
                     {isTestOpen ? <EditGenAiTaskTestResults /> : <EditGenAiTaskSteps steps={steps} />}
                 </div>

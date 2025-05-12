@@ -16,12 +16,16 @@
     }
     .footer {
         grid-area: 12 / 1 / 13 / 4;
-        padding: 0 sizes.$gutter;
-        border-top: 1px solid colors.$border-color-light;
         display: flex;
         flex-direction: column;
-        justify-content: center;
+        justify-content: end;
+
+        .footer-content {
+            border-top: 1px solid colors.$border-color-light;
+            padding: sizes.$gutter-sm sizes.$gutter;
+        }
     }
+
     .sidebar {
         grid-area: 1 / 4 / 13 / 6;
         padding: sizes.$gutter;
