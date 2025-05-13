@@ -3,7 +3,7 @@ using System.Diagnostics;
 using System.Linq;
 using Raven.Client.Documents.Operations.Backups;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings.Stats;
-using Raven.Server.Documents.ETL.Providers.AI.GenAi;
+using Raven.Server.Documents.ETL.Providers.AI.GenAi.Stats;
 using Raven.Server.Documents.ETL.Providers.OLAP;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.Utils;
@@ -116,7 +116,18 @@ namespace Raven.Server.Documents.ETL.Stats
     public sealed class GenAiStatsScope(EtlRunStats stats, bool start = true)
         : AbstractEtlStatsScope<GenAiStatsScope, GenAiPerformanceOperation>(stats, start)
     {
-     
+        public int NumberOfContextObjects { get; set; }
+
+        public int TotalSentToModel { get; set; }
+
+        public int TotalCachedContexts { get; set; }
+
+        public int TotalTokensUsed { get; set; }
+
+        public int PromptTokensUsed { get; set; }
+
+        public int CompletionTokensUsed { get; set; }
+
         protected override GenAiStatsScope OpenNewScope(EtlRunStats stats, bool start)
         {
             return new GenAiStatsScope(stats, start);
@@ -132,6 +143,12 @@ namespace Raven.Server.Documents.ETL.Stats
             var operation = new GenAiPerformanceOperation(Duration)
             {
                 Name = name,
+                NumberOfContextObjects = NumberOfContextObjects,
+                TotalSentToModel = TotalSentToModel,
+                TotalCachedContexts = TotalCachedContexts,
+                PromptTokensUsed = PromptTokensUsed,
+                CompletionTokensUsed = CompletionTokensUsed,
+                TotalTokensUsed = TotalTokensUsed,
             };
 
             if (Scopes != null)

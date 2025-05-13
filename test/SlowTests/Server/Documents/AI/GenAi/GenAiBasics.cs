@@ -12,7 +12,10 @@ using Raven.Client.Documents.Operations.ConnectionStrings;
 using Raven.Client.Documents.Operations.ETL;
 using Raven.Client.Documents.Operations.OngoingTasks;
 using Raven.Server.Documents;
+using Raven.Server.Documents.ETL;
 using Raven.Server.Documents.ETL.Providers.AI.GenAi;
+using Raven.Server.Documents.ETL.Providers.AI.GenAi.Stats;
+using Raven.Server.Utils;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using Tests.Infrastructure;
@@ -521,6 +524,135 @@ for(const comment of this.Comments)
             }
 
             return results;
+        }
+    }
+
+    [RavenFact(RavenTestCategory.Ai)]
+    public async Task CanGetGenAiStats()
+    {
+        using var store = GetDocumentStore();
+
+        store.Maintenance.Send(new PutConnectionStringOperation<AiConnectionString>(new AiConnectionString
+        {
+            Name = "ollama-local",
+            Identifier = "ollama-local",
+            OllamaSettings = new OllamaSettings
+            {
+                Uri = "http://127.0.0.1:11434/",
+                Model = "llama3.2:latest"
+            }
+        }));
+
+        var etlDone = Etl.WaitForEtlToComplete(store);
+
+        const string taskName = "Check blog comments spam";
+
+        store.Maintenance.Send(new AddGenAiOperation(new GenAiConfiguration
+        {
+            Name = taskName,
+            ConnectionStringName = "ollama-local",
+            Prompt = "Check if the following blog post comment is spam or not",
+            Collection = "Posts",
+            SampleObject = JsonConvert.SerializeObject(new
+            {
+                Blocked = true,
+                Reason = "Concise reason for why this comment was marked as spam or ham"
+            }),
+            Update = @"    
+const idx = this.Comments.findIndex(c => c.Id == $input.Id);
+this.Comments[idx].IsSpam = $output.Blocked;
+",
+            GenAiTransformation = new GenAiTransformation
+            {
+                Script = @"
+for(const comment of this.Comments)
+{
+    context({Text: comment.Text, Author: comment.Author, Id: comment.Id});
+}
+"
+            }
+        }));
+
+
+        var db = await GetDatabase(store.Database);
+
+        var etlProcess = db.EtlLoader.Processes.FirstOrDefault() as GenAiTask;
+        Assert.NotNull(etlProcess);
+
+        const string docId = "posts/1";
+
+        var post = new Post([
+            new Comment("Free crypto airdrop! Sign up now at scamcoin.fake", "evil bot"),
+            new Comment("Great article. Helped me understand indexing in RavenDB.", "alex"),
+            new Comment("Surefire investment property in caiman islands, win $$$$ for sure, qucik!", "homepage")
+        ], "Understanding RavenDB Indexing", "Indexes in RavenDB are powerful...");
+
+        using (var session = store.OpenSession())
+        {
+            session.Store(post, docId);
+            session.SaveChanges();
+        }
+
+        etlDone.Wait();
+
+        var stats = etlProcess.GetPerformanceStats()
+            .Where(x => x.NumberOfLoadedItems > 0)
+            .ToArray();
+
+        Assert.Equal(1, stats[0].NumberOfExtractedItems[EtlItemType.Document]);
+
+        var loadDetails = stats[0].Details.Operations[^1];
+
+        Assert.Equal("Load", loadDetails.Name);
+
+        var genAiStats = loadDetails.Operations.FirstOrDefault(x => x.Name == GenAiOperations.LoadToModel) as GenAiPerformanceOperation;
+        Assert.NotNull(genAiStats);
+
+        Assert.Equal(3, genAiStats.NumberOfContextObjects);
+        Assert.Equal(0, genAiStats.TotalCachedContexts);
+        Assert.Equal(3, genAiStats.TotalSentToModel);
+
+        Assert.True(genAiStats.CompletionTokensUsed > 0);
+        Assert.True(genAiStats.PromptTokensUsed > 0);
+        var expectedTotalTokens = genAiStats.CompletionTokensUsed + genAiStats.PromptTokensUsed;
+        Assert.Equal(expectedTotalTokens, genAiStats.TotalTokensUsed);
+
+        using (var session = store.OpenAsyncSession())
+        {
+            etlDone = Etl.WaitForEtlToComplete(store);
+
+            // add a new comment
+
+            var doc = await session.LoadAsync<Post>(docId);
+            doc.Comments.Add(new Comment("new spam comment", "evil hacker"));
+
+            var etag = ChangeVectorUtils.GetEtagById(session.Advanced.GetChangeVectorFor(doc), db.DbBase64Id);
+
+            await session.SaveChangesAsync();
+
+            Assert.True(etlDone.Wait(TimeSpan.FromMinutes(1)));
+
+            var stats2 = etlProcess.GetPerformanceStats()
+                .Where(x => x.NumberOfLoadedItems > 0 && x.LastLoadedEtag > etag)
+                .ToArray();
+
+            Assert.Equal(1, stats2[^1].NumberOfExtractedItems[EtlItemType.Document]);
+
+            var loadDetails2 = stats2[^1].Details.Operations[^1];
+
+            Assert.Equal("Load", loadDetails2.Name);
+
+            var genAiStats2 = loadDetails2.Operations.FirstOrDefault(x => x.Name == GenAiOperations.LoadToModel) as GenAiPerformanceOperation;
+            Assert.NotNull(genAiStats2);
+
+            // only the newly added comment should be sent to model, the rest should be cached
+            Assert.Equal(4, genAiStats2.NumberOfContextObjects);
+            Assert.Equal(3, genAiStats2.TotalCachedContexts);
+            Assert.Equal(1, genAiStats2.TotalSentToModel);
+
+            Assert.True(genAiStats2.CompletionTokensUsed > 0);
+            Assert.True(genAiStats2.PromptTokensUsed > 0);
+            Assert.True(genAiStats2.TotalTokensUsed > 0);
         }
     }
 

@@ -9,6 +9,7 @@ using Raven.Server.Documents.AI.AiGen;
 using Raven.Server.Documents.ETL.Metrics;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings;
 using Raven.Server.Documents.ETL.Providers.AI.Enumerators;
+using Raven.Server.Documents.ETL.Providers.AI.GenAi.Stats;
 using Raven.Server.Documents.ETL.Providers.AI.GenAi.Test;
 using Raven.Server.Documents.ETL.Stats;
 using Raven.Server.Documents.ETL.Test;
@@ -145,7 +146,7 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
         if (results.Count is 0)
             return 0;
 
-        var exceptions = SendToModel(results, context);
+        var exceptions = SendToModel(results, context, scope);
 
         ApplyUpdateScript(context, results);
 
@@ -175,65 +176,84 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
         return true;
     }
 
-    private List<Exception> SendToModel(List<GenAiResultItem> items, DocumentsOperationContext context)
+    private List<Exception> SendToModel(List<GenAiResultItem> items, DocumentsOperationContext context, GenAiStatsScope scope)
     {
-        context.CloseTransaction();
-
-        List<Exception> exceptions = null;
-        List<Task<(string Result, string Usage)>> tasks = [];
-
-        foreach (var item in items)
+        using (var statsScope = scope.For(GenAiOperations.LoadToModel))
         {
-            if (item.ContextOutput.IsCached)
-                continue; // no change, can skip
-            
-            string json = item.ContextOutput.Context.ToString();
-            tasks.Add(_chatCompletionClient.CompleteAsync(Configuration.Prompt, json));
-        }
+            context.CloseTransaction();
 
-        try
-        {
-            // TODO: Yuck
-            Task.WaitAll(tasks.OfType<Task>().ToArray());
-        }
-        catch
-        {
-            // we'll handle that later
-        }
+            List<Exception> exceptions = null;
+            List<Task<(string Result, string Usage)>> tasks = [];
 
-        for (int index = 0; index < tasks.Count; index++)
-        {
-            var task = tasks[index];
-            var item = items[index];
-            if (task.IsCompletedSuccessfully is false)
+            foreach (var item in items)
             {
-                exceptions ??= [];
-                exceptions.Add(task.Exception);
+                statsScope.NumberOfContextObjects++;
 
-                continue; // so we won't try to save it 
+                if (item.ContextOutput.IsCached)
+                {
+                    statsScope.TotalCachedContexts++;
+                    continue; // no change, can skip
+                }
+
+                statsScope.TotalSentToModel++;
+
+                string json = item.ContextOutput.Context.ToString();
+                tasks.Add(_chatCompletionClient.CompleteAsync(Configuration.Prompt, json));
             }
 
-            (string result, string usage) = task.Result;
-            // TODO: report usage
-
-            //TODO: REALLY YUCKY!
-            var stream = new ReadOnlyMemoryStream<byte>(Encoding.UTF8.GetBytes(result));
-            item.ModelOutput = new ModelOutput
+            try
             {
-                Output = context.ReadForMemoryAsync(stream, item.DocId).GetAwaiter().GetResult()
-            };
+                // TODO: Yuck
+                Task.WaitAll(tasks.OfType<Task>().ToArray());
+            }
+            catch
+            {
+                // we'll handle that later
+            }
 
-            stream.Dispose();
+            for (int index = 0; index < tasks.Count; index++)
+            {
+                var task = tasks[index];
+                var item = items[index];
+                if (task.IsCompletedSuccessfully is false)
+                {
+                    exceptions ??= [];
+                    exceptions.Add(task.Exception);
 
-            if (Configuration.TestMode == false)
-                continue;
+                    continue; // so we won't try to save it 
+                }
 
-            stream = new ReadOnlyMemoryStream<byte>(Encoding.UTF8.GetBytes(usage));
-            item.ModelOutput.Usage = context.ReadForMemoryAsync(stream, item.DocId).GetAwaiter().GetResult();
-            stream.Dispose();
+                (string result, string usage) = task.Result;
+
+                //TODO: REALLY YUCKY!
+                var stream = new ReadOnlyMemoryStream<byte>(Encoding.UTF8.GetBytes(result));
+                item.ModelOutput = new ModelOutput
+                {
+                    Output = context.ReadForMemoryAsync(stream, item.DocId).GetAwaiter().GetResult()
+                };
+
+                stream.Dispose();
+
+                stream = new ReadOnlyMemoryStream<byte>(Encoding.UTF8.GetBytes(usage));
+                var usageBlittable = context.ReadForMemoryAsync(stream, item.DocId).GetAwaiter().GetResult();
+                usageBlittable.TryGet("total_tokens", out int tokensUsed);
+                usageBlittable.TryGet("prompt_tokens", out int promptTokens);
+                usageBlittable.TryGet("completion_tokens", out int completionTokens);
+
+                statsScope.TotalTokensUsed += tokensUsed;
+                statsScope.PromptTokensUsed += promptTokens;
+                statsScope.CompletionTokensUsed += completionTokens;
+
+                if (Configuration.TestMode)
+                {
+                    item.ModelOutput.Usage = usageBlittable;
+                }
+
+                stream.Dispose();
+            }
+
+            return exceptions;
         }
-
-        return exceptions;
     }
 
     public TestEtlScriptResult RunTest(TestGenAiScript testGenAiScript, DocumentsOperationContext context)
@@ -262,6 +282,7 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
             if (document == null)
                 throw new InvalidOperationException($"Document {testGenAiScript.DocumentId} does not exist");
         }
+        using var scope = new GenAiStatsScope(new EtlRunStats());
 
         switch (testGenAiScript.TestStage)
         {
@@ -270,7 +291,7 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
                     context.OpenReadTransaction();
 
                 var aiEtlItem = new AiEtlItem(document, Configuration.Collection);
-                var transformedResults = Transform([aiEtlItem], context, new GenAiStatsScope(new EtlRunStats()), new EtlProcessState());
+                var transformedResults = Transform([aiEtlItem], context, scope, new EtlProcessState());
                 items = PrepareItemsBeforeSendingToModel(transformedResults);
 
                 context.CloseTransaction();
@@ -278,7 +299,7 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
             case TestStage.SendToModel:
                 _chatCompletionClient ??= GetClient(Configuration);
                 items = testGenAiScript.Input;
-                exceptions = SendToModel(items, context);
+                exceptions = SendToModel(items, context, scope);
                 break;
             case TestStage.ApplyUpdateScript:
                 {
