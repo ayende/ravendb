@@ -40,6 +40,7 @@ export default function EditGenAiTaskFormVirtualList({ fields, name, isReadOnly 
             <div style={{ height: `${virtualizer.getTotalSize()}px`, position: "relative" }}>
                 {virtualizer.getVirtualItems().map((virtualRow) => {
                     const field = fields[virtualRow.index];
+
                     return (
                         <div
                             key={virtualRow.key}
