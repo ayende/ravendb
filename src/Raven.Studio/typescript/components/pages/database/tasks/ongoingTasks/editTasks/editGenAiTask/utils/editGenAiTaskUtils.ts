@@ -66,8 +66,8 @@ const mapToDto = (
         Transforms: null,
         Collection: data.collectionName,
         Prompt: data.prompt,
-        JsonSchema: data.jsonSchema,
-        SampleObject: data.sampleObject,
+        JsonSchema: data.schemaProvider === "jsonSchema" ? data.jsonSchema : null,
+        SampleObject: data.schemaProvider === "sampleObject" ? data.sampleObject : null,
         Update: data.update,
         GenAiTransformation: {
             Script: data.script,
