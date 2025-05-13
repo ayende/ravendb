@@ -4,6 +4,10 @@ import { FormAceEditor } from "components/common/Form";
 import { useRef } from "react";
 import { FieldArrayWithId, FieldPath, useFormContext } from "react-hook-form";
 import { EditGenAiTaskFormData } from "../utils/editGenAiTaskValidation";
+import Badge from "react-bootstrap/Badge";
+import { editGenAiTaskActions, editGenAiTaskSelectors } from "../store/editGenAiTaskSlice";
+import { useAppDispatch, useAppSelector } from "components/store";
+import classNames from "classnames";
 
 interface EditGenAiTaskFormVirtualListProps {
     fields: FieldArrayWithId<EditGenAiTaskFormData>[];
@@ -12,6 +16,10 @@ interface EditGenAiTaskFormVirtualListProps {
 }
 
 export default function EditGenAiTaskFormVirtualList({ fields, name, isReadOnly }: EditGenAiTaskFormVirtualListProps) {
+    const dispatch = useAppDispatch();
+
+    const hoverIndex = useAppSelector(editGenAiTaskSelectors.hoverIndex);
+
     const { control } = useFormContext<EditGenAiTaskFormData>();
 
     const listRef = useRef<HTMLDivElement>(null);
@@ -37,7 +45,9 @@ export default function EditGenAiTaskFormVirtualList({ fields, name, isReadOnly 
                             key={virtualRow.key}
                             data-index={virtualRow.index}
                             ref={virtualizer.measureElement}
-                            className="hover-filter py-1"
+                            className={classNames("py-1", {
+                                "ace-hover": hoverIndex === virtualRow.index,
+                            })}
                             style={{
                                 position: "absolute",
                                 top: 0,
@@ -46,14 +56,21 @@ export default function EditGenAiTaskFormVirtualList({ fields, name, isReadOnly 
                                 transform: `translateY(${virtualRow.start}px)`,
                                 transition: "unset",
                             }}
+                            onMouseEnter={() => dispatch(editGenAiTaskActions.hoverIndexSet(virtualRow.index))}
+                            onMouseLeave={() => dispatch(editGenAiTaskActions.hoverIndexSet(null))}
                         >
-                            <FormAceEditor
-                                key={field.id}
-                                control={control}
-                                name={`${name}.${virtualRow.index}.value`}
-                                mode="json"
-                                readOnly={isReadOnly}
-                            />
+                            <div style={{ position: "relative" }}>
+                                <FormAceEditor
+                                    key={field.id}
+                                    control={control}
+                                    name={`${name}.${virtualRow.index}.value`}
+                                    mode="json"
+                                    readOnly={isReadOnly}
+                                />
+                                <Badge bg="secondary" style={{ position: "absolute", bottom: 10, right: 10 }}>
+                                    {virtualRow.index + 1}
+                                </Badge>
+                            </div>
                         </div>
                     );
                 })}

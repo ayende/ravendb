@@ -22,6 +22,7 @@ interface EditGenAiTaskState {
     isContextInfoVisible: boolean;
     isModelInputInfoVisible: boolean;
     isEditModeWarningVisible: boolean;
+    hoverIndex: number;
 }
 
 const initialState: EditGenAiTaskState = {
@@ -41,6 +42,7 @@ const initialState: EditGenAiTaskState = {
     isContextInfoVisible: true,
     isModelInputInfoVisible: true,
     isEditModeWarningVisible: true,
+    hoverIndex: null,
 };
 
 export const editGenAiTaskSlice = createSlice({
@@ -91,6 +93,9 @@ export const editGenAiTaskSlice = createSlice({
         },
         isEditModeWarningVisibleSet: (state, action: PayloadAction<boolean>) => {
             state.isEditModeWarningVisible = action.payload;
+        },
+        hoverIndexSet: (state, action: PayloadAction<number>) => {
+            state.hoverIndex = action.payload;
         },
         reset: () => initialState,
     },
@@ -226,4 +231,5 @@ export const editGenAiTaskSelectors = {
     isContextInfoVisible: (state: RootState) => state.editGenAiTask.isContextInfoVisible,
     isModelInputInfoVisible: (state: RootState) => state.editGenAiTask.isModelInputInfoVisible,
     isEditModeWarningVisible: (state: RootState) => state.editGenAiTask.isEditModeWarningVisible,
+    hoverIndex: (state: RootState) => state.editGenAiTask.hoverIndex,
 };

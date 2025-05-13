@@ -14,7 +14,6 @@ import { EditGenAiTaskFormData, editGenAiTaskSchema } from "./utils/editGenAiTas
 import { editGenAiTaskUtils } from "./utils/editGenAiTaskUtils";
 import EditGenAiTaskTestResults from "./partials/EditGenAiTaskTestResults";
 import EditGenAiTaskSteps from "./partials/EditGenAiTaskSteps";
-import { useDirtyFlag } from "components/hooks/useDirtyFlag";
 
 interface QueryParams {
     taskId: string;

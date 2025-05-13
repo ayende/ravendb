@@ -73,4 +73,8 @@
             }
         }
     }
+
+    .ace-hover {
+        filter: colors.$hover-filter-var;
+    }
 }
