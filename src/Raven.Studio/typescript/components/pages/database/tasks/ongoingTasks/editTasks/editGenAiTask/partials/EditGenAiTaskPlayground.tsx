@@ -161,7 +161,7 @@ export default function EditGenAiTaskPlayground() {
                     </Button>
                 </div>
             </HStack>
-            <Collapse in={!isPlaygroundCollapsed}>
+            <Collapse in={!isPlaygroundCollapsed} mountOnEnter unmountOnExit>
                 <div className="panel-bg-1 border border-secondary rounded-2 mt-1">
                     <Tab.Container id="playground-tabs" defaultActiveKey={getActiveTab()}>
                         <HStack className="panel-bg-2 border-bottom border-secondary p-2 justify-content-between">

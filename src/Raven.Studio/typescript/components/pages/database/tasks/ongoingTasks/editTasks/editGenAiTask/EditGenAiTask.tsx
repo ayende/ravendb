@@ -62,9 +62,7 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
         },
     });
 
-    const { handleSubmit, reset, formState } = form;
-
-    useDirtyFlag(formState.isDirty);
+    const { handleSubmit, reset } = form;
 
     const { appUrl } = useAppUrls();
 
