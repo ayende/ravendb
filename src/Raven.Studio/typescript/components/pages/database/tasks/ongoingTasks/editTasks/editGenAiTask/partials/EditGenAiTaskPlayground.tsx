@@ -15,6 +15,7 @@ import {
     FormGroup,
     FormLabel,
     FormSelectAutocomplete,
+    FormSwitch,
     FormValidationMessage,
 } from "components/common/Form";
 import Tab from "react-bootstrap/Tab";
@@ -28,6 +29,7 @@ import { useEffect } from "react";
 import { Switch } from "components/common/Checkbox";
 import { ConditionalPopover } from "components/common/ConditionalPopover";
 import EditGenAiTaskFormVirtualList from "./EditGenAiTaskFormVirtualList";
+import { SelectOption } from "components/common/select/Select";
 
 export default function EditGenAiTaskPlayground() {
     const dispatch = useAppDispatch();
@@ -78,18 +80,15 @@ export default function EditGenAiTaskPlayground() {
         300
     );
 
-    useAsyncDebounce(
-        async () => {
-            const result = await databasesService.getDocumentWithMetadata(formValues.documentId, databaseName);
-            const docDto = result.toDto(true);
-            const metaDto = docDto["@metadata"];
-            documentMetadata.filterMetadata(metaDto);
+    const handleDocumentIdChange = async ({ value: documentId }: SelectOption) => {
+        setValue("documentId", documentId);
 
-            setValue("playgroundDocument", JSON.stringify(docDto, null, 4));
-        },
-        [formValues.documentId],
-        300
-    );
+        const result = await databasesService.getDocumentWithMetadata(documentId, databaseName);
+        const docDto = result.toDto(true);
+        const metaDto = docDto["@metadata"];
+        documentMetadata.filterMetadata(metaDto);
+        setValue("playgroundDocument", JSON.stringify(docDto, null, 4));
+    };
 
     const handleEditModeToggle = async (isSelected: boolean): Promise<boolean> => {
         if (isSelected) {
@@ -270,7 +269,7 @@ export default function EditGenAiTaskPlayground() {
                                                 placeholder="E.g. Posts/01"
                                                 options={asyncGetDocumentIdOptions.result ?? []}
                                                 isLoading={asyncGetDocumentIdOptions.loading}
-                                                onMenuClose={() => clearErrors("playgroundDocument")}
+                                                onChange={handleDocumentIdChange}
                                             />
                                         </FormGroup>
                                         <Button variant="link" onClick={handleProvideContentManually} size="sm">
@@ -323,6 +322,11 @@ export default function EditGenAiTaskPlayground() {
                                     </RichAlert>
                                 )}
                                 <EditModeWarning />
+                                <FormGroup className="hstack  justify-content-end">
+                                    <FormSwitch control={control} name="isForceSendingCachedObjects">
+                                        Force sending cached data
+                                    </FormSwitch>
+                                </FormGroup>
                                 <div
                                     style={{ height: getVirtualListHeight(contextsFieldsArray.fields.length) }}
                                     className="d-flex"

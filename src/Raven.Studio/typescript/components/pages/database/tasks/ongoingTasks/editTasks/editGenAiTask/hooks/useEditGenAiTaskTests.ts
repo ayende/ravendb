@@ -69,6 +69,11 @@ export function useEditGenAiTaskTests() {
 
         for (let i = 0; i < input.length; i++) {
             input[i].ContextOutput.Context = JSON.parse(formValues.playgroundContexts[i].value);
+
+            if (formValues.isForceSendingCachedObjects) {
+                input[i].ContextOutput.IsCached = false;
+                input[i].ContextOutput.AiHash = null;
+            }
         }
 
         const dto: Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.TestGenAiScript = {
