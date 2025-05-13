@@ -1,5 +1,7 @@
 import * as yup from "yup";
 
+type EditGenAiTaskSchemaProvider = "jsonSchema" | "sampleObject";
+
 export const editGenAiTaskSchema = yup.object({
     name: yup.string().required(),
     state: yup.string<Raven.Client.Documents.Operations.OngoingTasks.OngoingTaskState>().required(),
@@ -9,6 +11,7 @@ export const editGenAiTaskSchema = yup.object({
     connectionStringName: yup.string().required(),
     isAllowEtlOnNonEncryptedChannel: yup.boolean(),
     collectionName: yup.string().required(),
+    schemaProvider: yup.string<EditGenAiTaskSchemaProvider>().nullable().required(),
     prompt: yup.string().required(),
     jsonSchema: yup.string(),
     sampleObject: yup.string(),
