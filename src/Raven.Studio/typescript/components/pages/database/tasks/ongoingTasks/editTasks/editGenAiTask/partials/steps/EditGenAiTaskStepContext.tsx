@@ -66,8 +66,8 @@ export function EditGenAiTaskStepContextFooter() {
                         onClick={handleContextTest}
                         isSpinning={contextTest.status === "loading"}
                         disabled={isTestButtonDisabled}
+                        icon="test"
                     >
-                        <Icon icon="test" />
                         Test task context
                     </ButtonWithSpinner>
                 </ConditionalPopover>
