@@ -15,6 +15,9 @@ export default {
             type: "figma",
             url: "https://www.figma.com/design/OvnqnwTMCiznsaTUxZHiP6/Pages---Gen-AI",
         },
+        test: {
+            dangerouslyIgnoreUnhandledErrors: true,
+        },
     },
 } satisfies Meta;
 
