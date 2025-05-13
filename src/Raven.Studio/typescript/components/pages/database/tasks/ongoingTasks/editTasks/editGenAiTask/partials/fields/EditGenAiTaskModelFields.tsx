@@ -85,7 +85,7 @@ interface SchemaProviderButtonProps {
 function SchemaProviderButton({ icon, title, description, handleClick }: SchemaProviderButtonProps) {
     return (
         <div className="border border-secondary rounded p-2 cursor-pointer h-100" onClick={handleClick}>
-            <div className="text-emphasis hstack gap-4 h-100">
+            <div className="text-emphasis hstack gap-2 h-100">
                 <div>
                     <Icon icon={icon} margin="m-0" style={{ fontSize: 24 }} />
                 </div>

@@ -158,8 +158,6 @@ export default function AiTasks() {
         isDeleting,
     };
 
-    console.log("kalczur genAiTasks", genAiTasks);
-
     return (
         <div className="content-padding ongoing-tasks-page">
             {progressEnabled && <EtlProgressProvider onProgress={onEtlProgress} />}
