@@ -30,8 +30,6 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
 
     const taskId = queryParams?.taskId ? parseInt(queryParams.taskId) : null;
 
-    // TODO if fetch task with id fails then go back to tasks view
-
     // Set query params to store
     useEffect(() => {
         if (taskId) {
@@ -53,8 +51,12 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
         resolver: yupResolver(editGenAiTaskSchema),
         defaultValues: async () => {
             if (taskId) {
-                const dto = await tasksService.getGenAiTaskInfo(databaseName, taskId);
-                return editGenAiTaskUtils.getDefaultValues(dto);
+                try {
+                    const dto = await tasksService.getGenAiTaskInfo(databaseName, taskId);
+                    return editGenAiTaskUtils.getDefaultValues(dto);
+                } catch {
+                    goBack();
+                }
             }
 
             return editGenAiTaskUtils.getDefaultValues(null);
