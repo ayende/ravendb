@@ -106,7 +106,7 @@ export function useStudioSearchAsyncRegister(props: UseStudioSearchAsyncRegister
                     case "EmbeddingsGeneration":
                         return getUrlFromProvider(appUrl.forEditEmbeddingsGeneration);
                     case "GenAi":
-                        return "TODO"; // TODO kalczur
+                        return getUrlFromProvider(appUrl.forEditGenAi);
                     default:
                         assertUnreachable(taskType);
                 }
