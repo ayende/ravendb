@@ -133,7 +133,6 @@ export type AceEditorMode =
     | "pgsql"
     | "php"
     | "pig"
-    | "plain_text"
     | "powershell"
     | "praat"
     | "prolog"

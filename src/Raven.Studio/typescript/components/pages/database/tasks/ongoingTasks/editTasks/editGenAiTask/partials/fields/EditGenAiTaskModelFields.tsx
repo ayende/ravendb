@@ -18,7 +18,7 @@ export default function EditGenAiTaskModelFields() {
         <>
             <FormGroup>
                 <FormLabel>Prompt</FormLabel>
-                <FormAceEditor control={control} name="prompt" mode="plain_text" />
+                <FormAceEditor control={control} name="prompt" mode="text" />
             </FormGroup>
             {formValues.schemaProvider == null && (
                 <div>
