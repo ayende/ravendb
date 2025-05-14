@@ -38,7 +38,7 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
     private const string TestDocumentId = "GenAi/TestDocument";
     private const string GenAiTaskTag = "AI/Gen";
     private int _fallbackCounter = 0;
-    private ChatCompletionClient _chatCompletionClient;
+    private AbstractChatCompletionClient _chatCompletionClient;
 
     public GenAiTask(Transformation transformation, GenAiConfiguration configuration, DocumentDatabase database, ServerStore serverStore)
         : base(transformation, configuration, database, serverStore, GenAiTaskTag)
@@ -49,22 +49,22 @@ public sealed class GenAiTask : EtlProcess<AiEtlItem, GenAiScriptResult, GenAiCo
             _chatCompletionClient = GetClient(configuration);
     }
 
-    private static ChatCompletionClient GetClient(GenAiConfiguration cfg)
+    private static AbstractChatCompletionClient GetClient(GenAiConfiguration cfg)
     {
         var connectorType = cfg.Connection.GetActiveProvider();
-        var (uri, model, apiKey) = connectorType switch
+        if (string.IsNullOrWhiteSpace(cfg.JsonSchema))
         {
-            AiConnectorType.Ollama => (cfg.Connection.OllamaSettings.Uri, cfg.Connection.OllamaSettings.Model, (string)null),
-            AiConnectorType.OpenAi => (cfg.Connection.OpenAiSettings.Endpoint, cfg.Connection.OpenAiSettings.Model, cfg.Connection.OpenAiSettings.ApiKey),
+            cfg.JsonSchema = AbstractChatCompletionClient.GetSchemaFor(cfg.SampleObject);
+        }
+
+        AbstractChatCompletionClient client = connectorType switch
+        {
+            AiConnectorType.Ollama => new OllamaChatCompletionClient(cfg),
+            AiConnectorType.OpenAi => new OpenAiChatCompletionClient(cfg),
             _ => throw new NotSupportedException(connectorType.ToString())
         };
 
-        if (string.IsNullOrWhiteSpace(cfg.JsonSchema))
-        {
-            cfg.JsonSchema = ChatCompletionClient.GetSchemaFor(cfg.SampleObject);
-        }
-
-        return new ChatCompletionClient(new Uri(uri), model, apiKey, cfg.JsonSchema);
+        return client;
     }
 
     public override EtlType EtlType => EtlType.GenAi;

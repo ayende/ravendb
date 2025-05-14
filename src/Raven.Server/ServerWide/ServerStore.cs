@@ -2225,7 +2225,7 @@ namespace Raven.Server.ServerWide
                         if (string.IsNullOrEmpty(aiIntegration.JsonSchema))
                         {
                             // todo: move this to a better location
-                            aiIntegration.JsonSchema = ChatCompletionClient.GetSchemaFor(aiIntegration.SampleObject);
+                            aiIntegration.JsonSchema = AbstractChatCompletionClient.GetSchemaFor(aiIntegration.SampleObject);
                         }
                         aiIntegration.Validate(out var aiIntegrationErr, validateName: false, validateConnection: false);
                         if (ValidateConnectionString(rawRecord, aiIntegration.ConnectionStringName, aiIntegration.EtlType) == false)
