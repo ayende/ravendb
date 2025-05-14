@@ -4,6 +4,7 @@ import { clusterSelectors } from "components/common/shell/clusterSlice";
 import { useAppSelector } from "components/store";
 import { useFormContext, useWatch } from "react-hook-form";
 import { EditGenAiTaskFormData } from "../../utils/editGenAiTaskValidation";
+import { SelectOption } from "components/common/select/Select";
 
 export default function EditGenAiTaskNodeField() {
     const { control } = useFormContext<EditGenAiTaskFormData>();
@@ -11,11 +12,13 @@ export default function EditGenAiTaskNodeField() {
 
     const nodes = useAppSelector(clusterSelectors.allNodes);
 
-    const possibleMentors = nodes.filter((x) => x.type === "Member").map((x) => x.nodeTag);
+    const possibleMentorOptions: SelectOption[] = nodes
+        .filter((x) => x.type === "Member")
+        .map((x) => ({ value: x.nodeTag, label: `Node ${x.nodeTag}` }));
 
     return (
         <FormGroup>
-            {possibleMentors.length === 0 && (
+            {possibleMentorOptions.length === 0 && (
                 <RichAlert variant="warning">
                     Currently, the responsible node cannot be selected because there are no nodes available.
                 </RichAlert>
@@ -28,11 +31,7 @@ export default function EditGenAiTaskNodeField() {
             {formValues.isSetResponsibleNode && (
                 <>
                     <FormGroup>
-                        <FormSelect
-                            control={control}
-                            name="responsibleNode"
-                            options={possibleMentors.map((x) => ({ value: x, label: `Node ${x}` }))}
-                        />
+                        <FormSelect control={control} name="responsibleNode" options={possibleMentorOptions} />
                     </FormGroup>
                     {formValues.responsibleNode && (
                         <FormGroup>

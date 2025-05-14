@@ -99,33 +99,25 @@ const getConnectorType = (
         return "MistralAi";
     }
 
-    return "None";
+    throw new Error("No connector type found. Please check the connection string.");
 };
 
 export function mapAiConnectionStringToSettingsDto(
     connection: Raven.Client.Documents.Operations.AI.AiConnectionString
 ): AiConnectionStringsSettings {
-    if (connection.AzureOpenAiSettings) {
-        return connection.AzureOpenAiSettings;
-    }
-    if (connection.GoogleSettings) {
-        return connection.GoogleSettings;
-    }
-    if (connection.HuggingFaceSettings) {
-        return connection.HuggingFaceSettings;
-    }
-    if (connection.OllamaSettings) {
-        return connection.OllamaSettings;
-    }
-    if (connection.EmbeddedSettings) {
-        return connection.EmbeddedSettings;
-    }
-    if (connection.OpenAiSettings) {
-        return connection.OpenAiSettings;
-    }
-    if (connection.MistralAiSettings) {
-        return connection.MistralAiSettings;
+    const settings = [
+        connection.AzureOpenAiSettings,
+        connection.GoogleSettings,
+        connection.HuggingFaceSettings,
+        connection.OllamaSettings,
+        connection.EmbeddedSettings,
+        connection.OpenAiSettings,
+        connection.MistralAiSettings,
+    ].find(Boolean);
+
+    if (!settings) {
+        throw new Error("No settings found. Please check the connection string.");
     }
 
-    return null;
+    return settings;
 }

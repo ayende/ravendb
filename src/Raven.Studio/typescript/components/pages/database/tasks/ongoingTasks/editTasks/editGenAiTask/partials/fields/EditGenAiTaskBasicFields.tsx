@@ -21,7 +21,7 @@ export default function EditGenAiTaskBasicFields() {
     const dispatch = useAppDispatch();
 
     const isNewTask = useAppSelector(editGenAiTaskSelectors.isNewTask);
-    const isEncrypted = useAppSelector(databaseSelectors.activeDatabase)?.isEncrypted ?? false;
+    const isEncrypted = useAppSelector(databaseSelectors.activeDatabase)?.isEncrypted;
     const databaseName = useAppSelector(databaseSelectors.activeDatabaseName);
 
     const { value: isNewConnectionStringOpen, toggle: toggleIsNewConnectionStringOpen } = useBoolean(false);
