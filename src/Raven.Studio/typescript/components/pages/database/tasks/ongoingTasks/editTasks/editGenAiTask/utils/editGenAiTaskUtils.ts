@@ -23,6 +23,7 @@ const getDefaultValues = (dto: Raven.Client.Documents.Operations.OngoingTasks.Ge
             playgroundContexts: [],
             playgroundModelOutputs: [],
             playgroundDocument: "",
+            isForceSendingCachedObjects: false,
         };
     }
 
@@ -47,6 +48,7 @@ const getDefaultValues = (dto: Raven.Client.Documents.Operations.OngoingTasks.Ge
         playgroundContexts: [],
         playgroundModelOutputs: [],
         playgroundDocument: "",
+        isForceSendingCachedObjects: false,
     };
 };
 
