@@ -102,19 +102,9 @@ export default function EditGenAiTaskTestResults() {
 }
 
 function ModelUsage() {
-    const globalTestResult = useAppSelector(editGenAiTaskSelectors.globalTestResult);
+    const modelUsage = useAppSelector(editGenAiTaskSelectors.modelUsage);
 
-    let totalTokens = 0;
-    let promptTokens = 0;
-    let completionTokens = 0;
-
-    for (const result of globalTestResult.Results) {
-        totalTokens += result.ModelOutput?.Usage.total_tokens;
-        promptTokens += result.ModelOutput?.Usage.prompt_tokens;
-        completionTokens += result.ModelOutput?.Usage.completion_tokens;
-    }
-
-    if (totalTokens === 0) {
+    if (modelUsage.status !== "success") {
         return null;
     }
 
@@ -125,23 +115,23 @@ function ModelUsage() {
                     <div>
                         <HStack className="justify-content-between gap-3">
                             <span>Prompt tokens</span>
-                            <span>{promptTokens}</span>
+                            <span>{modelUsage.data.promptTokens}</span>
                         </HStack>
                         <HStack className="justify-content-between gap-3">
                             <span>Completion tokens</span>
-                            <span>{completionTokens}</span>
+                            <span>{modelUsage.data.completionTokens}</span>
                         </HStack>
                         <hr className="my-1" />
                         <HStack className="justify-content-between gap-3">
                             <span>Tokens usage</span>
-                            <span>{totalTokens}</span>
+                            <span>{modelUsage.data.totalTokens}</span>
                         </HStack>
                     </div>
                 }
             >
                 <Badge bg="info">
                     <Icon icon="info" />
-                    Tokens usage: {totalTokens}
+                    Tokens usage: {modelUsage.data.totalTokens}
                 </Badge>
             </PopoverWithHoverWrapper>
         </div>
@@ -195,7 +185,7 @@ function UpdateScriptResult() {
 function UpdateScriptAceDiff({ height }: { height: number }) {
     const updateScriptTest = useAppSelector(editGenAiTaskSelectors.updateScriptTest);
 
-    const oldDoc = JSON.stringify(useAppSelector(editGenAiTaskSelectors.globalTestResult).InputDocument, null, 4);
+    const oldDoc = useAppSelector(editGenAiTaskSelectors.updateScriptDocumentInput);
     const newDoc = updateScriptTest.data ?? "";
 
     const oldDocRef = useRef<ReactAce>(null);
@@ -211,11 +201,21 @@ function UpdateScriptAceDiff({ height }: { height: number }) {
         aceDiffC.refresh(false);
     }, [oldDoc, newDoc]);
 
+    if (oldDoc.status !== "success") {
+        return null;
+    }
+
     return (
         <VStack gap={2} className="update-script-result">
             <div className="border border-secondary rounded-2 ">
                 <div className="text-center border-bottom border-secondary py-1 panel-harder-bg">Original document</div>
-                <AceEditor aceRef={oldDocRef} value={oldDoc} mode="json" height={`${height / 2 - 50}px`} readOnly />
+                <AceEditor
+                    aceRef={oldDocRef}
+                    value={oldDoc.data}
+                    mode="json"
+                    height={`${height / 2 - 50}px`}
+                    readOnly
+                />
             </div>
             <div className="border border-secondary rounded-2">
                 <div className="text-center border-bottom border-secondary py-1">Modified document</div>

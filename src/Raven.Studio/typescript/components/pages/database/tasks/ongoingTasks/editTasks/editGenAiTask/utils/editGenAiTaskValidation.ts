@@ -23,8 +23,15 @@ export const editGenAiTaskSchema = yup.object({
     // For testing
     documentId: yup.string(),
     playgroundDocument: yup.string(),
-    playgroundContexts: yup.array().of(yup.object({ value: yup.string() })),
-    playgroundModelOutputs: yup.array().of(yup.object({ value: yup.string() })),
+    playgroundContexts: yup.array().of(
+        yup.object({
+            idx: yup.number().nullable(),
+            value: yup.string(),
+            aiHash: yup.string(),
+            isCached: yup.boolean(),
+        })
+    ),
+    playgroundModelOutputs: yup.array().of(yup.object({ idx: yup.number().nullable(), value: yup.string() })),
 });
 
 export type EditGenAiTaskFormData = yup.InferType<typeof editGenAiTaskSchema>;

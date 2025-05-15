@@ -38,8 +38,6 @@ export default function EditGenAiTaskPlayground() {
     const currentStep = useAppSelector(editGenAiTaskSelectors.currentStep);
     const isPlaygroundCollapsed = useAppSelector(editGenAiTaskSelectors.isPlaygroundCollapsed);
     const isPlaygroundEditMode = useAppSelector(editGenAiTaskSelectors.isPlaygroundEditMode);
-    const contextTest = useAppSelector(editGenAiTaskSelectors.contextTest);
-    const modelInputTest = useAppSelector(editGenAiTaskSelectors.modelInputTest);
     const isDocumentInfoVisible = useAppSelector(editGenAiTaskSelectors.isDocumentInfoVisible);
     const isContextInfoVisible = useAppSelector(editGenAiTaskSelectors.isContextInfoVisible);
     const isModelInputInfoVisible = useAppSelector(editGenAiTaskSelectors.isModelInputInfoVisible);
@@ -124,11 +122,11 @@ export default function EditGenAiTaskPlayground() {
     // TODO info tooltip
 
     const getActiveTab = () => {
-        if (currentStep === "modelInput" && contextTest.data?.length > 0) {
+        if (currentStep === "modelInput") {
             return "context";
         }
 
-        if (currentStep === "updateScript" && modelInputTest.data?.length > 0) {
+        if (currentStep === "updateScript") {
             return "modelOutput";
         }
 
@@ -140,6 +138,13 @@ export default function EditGenAiTaskPlayground() {
             clearErrors("playgroundDocument");
         }
     }, [formValues.playgroundDocument]);
+
+    // Set initial document ID based on collection name
+    useEffect(() => {
+        if (formValues.collectionName) {
+            setValue("documentId", formValues.collectionName + "/");
+        }
+    }, [formValues.collectionName]);
 
     return (
         <div className="playground">
@@ -162,7 +167,7 @@ export default function EditGenAiTaskPlayground() {
             </HStack>
             <Collapse in={!isPlaygroundCollapsed} mountOnEnter unmountOnExit>
                 <div className="panel-bg-1 border border-secondary rounded-2 mt-1">
-                    <Tab.Container id="playground-tabs" defaultActiveKey={getActiveTab()}>
+                    <Tab.Container id="playground-tabs" activeKey={getActiveTab()}>
                         <HStack className="panel-bg-2 border-bottom border-secondary p-2 justify-content-between">
                             <Nav>
                                 <Nav.Item>
@@ -185,29 +190,28 @@ export default function EditGenAiTaskPlayground() {
                                         </Nav.Link>
                                     </ConditionalPopover>
                                 </Nav.Item>
-                                {(currentStep === "modelInput" || currentStep === "updateScript") &&
-                                    contextsFieldsArray.fields.length > 0 && (
-                                        <Nav.Item>
-                                            <ConditionalPopover
-                                                conditions={{
-                                                    isActive: currentStep !== "modelInput",
-                                                    message:
-                                                        "This configuration doesn’t give any additional context to the active step.",
-                                                }}
+                                {(currentStep === "modelInput" || currentStep === "updateScript") && (
+                                    <Nav.Item>
+                                        <ConditionalPopover
+                                            conditions={{
+                                                isActive: currentStep !== "modelInput",
+                                                message:
+                                                    "This configuration doesn’t give any additional context to the active step.",
+                                            }}
+                                        >
+                                            <Nav.Link
+                                                eventKey="context"
+                                                className={classNames({
+                                                    "text-muted": currentStep !== "modelInput",
+                                                })}
                                             >
-                                                <Nav.Link
-                                                    eventKey="context"
-                                                    className={classNames({
-                                                        "text-muted": currentStep !== "modelInput",
-                                                    })}
-                                                >
-                                                    <Icon icon="indent" />
-                                                    Context
-                                                </Nav.Link>
-                                            </ConditionalPopover>
-                                        </Nav.Item>
-                                    )}
-                                {currentStep === "updateScript" && modelOutputsFieldsArray.fields.length > 0 && (
+                                                <Icon icon="indent" />
+                                                Context
+                                            </Nav.Link>
+                                        </ConditionalPopover>
+                                    </Nav.Item>
+                                )}
+                                {currentStep === "updateScript" && (
                                     <Nav.Item>
                                         <ConditionalPopover
                                             conditions={{
@@ -322,11 +326,28 @@ export default function EditGenAiTaskPlayground() {
                                     </RichAlert>
                                 )}
                                 <EditModeWarning />
-                                <FormGroup className="hstack  justify-content-end">
+                                <FormGroup className="hstack justify-content-end" marginClass="mb-2">
                                     <FormSwitch control={control} name="isForceSendingCachedObjects">
                                         Force sending cached data
                                     </FormSwitch>
                                 </FormGroup>
+                                {isPlaygroundEditMode && (
+                                    <Button
+                                        variant="primary"
+                                        onClick={() =>
+                                            contextsFieldsArray.prepend({
+                                                value: "{}",
+                                                idx: null,
+                                                aiHash: null,
+                                                isCached: false,
+                                            })
+                                        }
+                                        className="mb-2"
+                                    >
+                                        <Icon icon="plus" />
+                                        Add new
+                                    </Button>
+                                )}
                                 <div
                                     style={{ height: getVirtualListHeight(contextsFieldsArray.fields.length) }}
                                     className="d-flex"
@@ -335,6 +356,7 @@ export default function EditGenAiTaskPlayground() {
                                         fields={contextsFieldsArray.fields}
                                         name="playgroundContexts"
                                         isReadOnly={!isPlaygroundEditMode}
+                                        handleRemove={contextsFieldsArray.remove}
                                     />
                                 </div>
                             </Tab.Pane>
@@ -352,6 +374,21 @@ export default function EditGenAiTaskPlayground() {
                                     </RichAlert>
                                 )}
                                 <EditModeWarning />
+                                {isPlaygroundEditMode && (
+                                    <Button
+                                        variant="primary"
+                                        onClick={() =>
+                                            modelOutputsFieldsArray.prepend({
+                                                value: "{}",
+                                                idx: null,
+                                            })
+                                        }
+                                        className="mb-2"
+                                    >
+                                        <Icon icon="plus" />
+                                        Add new
+                                    </Button>
+                                )}
                                 <div
                                     style={{ height: getVirtualListHeight(modelOutputsFieldsArray.fields.length) }}
                                     className="d-flex"
@@ -360,6 +397,7 @@ export default function EditGenAiTaskPlayground() {
                                         fields={modelOutputsFieldsArray.fields}
                                         name="playgroundModelOutputs"
                                         isReadOnly={!isPlaygroundEditMode}
+                                        handleRemove={modelOutputsFieldsArray.remove}
                                     />
                                 </div>
                             </Tab.Pane>

@@ -5,6 +5,12 @@ import { services } from "components/hooks/useServices";
 import { loadableData } from "components/models/common";
 import { createFailureState, createIdleState, createSuccessState } from "components/utils/common";
 
+interface ModelUsage {
+    totalTokens: number;
+    promptTokens: number;
+    completionTokens: number;
+}
+
 interface EditGenAiTaskState {
     taskId: number;
     sourceView: EditAiTaskSourceView;
@@ -12,7 +18,9 @@ interface EditGenAiTaskState {
     connectionStringTest: loadableData<Raven.Server.Web.System.NodeConnectionTestResult>;
     contextTest: loadableData<string[]>;
     modelInputTest: loadableData<string[]>;
+    modelUsage: loadableData<ModelUsage>;
     updateScriptTest: loadableData<string>;
+    updateScriptDocumentInput: loadableData<string>;
     globalTestResult: Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.GenAiTestScriptResult;
     isPlaygroundCollapsed: boolean;
     isPlaygroundEditMode: boolean;
@@ -32,7 +40,9 @@ const initialState: EditGenAiTaskState = {
     connectionStringTest: createIdleState(),
     contextTest: createIdleState([]),
     modelInputTest: createIdleState([]),
+    modelUsage: createIdleState(),
     updateScriptTest: createIdleState(""),
+    updateScriptDocumentInput: createIdleState(""),
     globalTestResult: null,
     isPlaygroundCollapsed: false,
     isPlaygroundEditMode: false,
@@ -119,9 +129,11 @@ export const editGenAiTaskSlice = createSlice({
             })
             .addCase(testModelInput.pending, (state) => {
                 state.modelInputTest.status = "loading";
+                state.modelUsage.status = "loading";
             })
             .addCase(testModelInput.rejected, (state, action) => {
                 state.modelInputTest = createFailureState(action.error.message);
+                state.modelUsage = createFailureState(action.error.message);
             })
             .addCase(testModelInput.fulfilled, (state, action) => {
                 state.globalTestResult = action.payload;
@@ -132,12 +144,30 @@ export const editGenAiTaskSlice = createSlice({
                         x.ModelOutput ? JSON.stringify(x.ModelOutput.Output, null, 4) : null
                     )
                 );
+
+                let totalTokens = 0;
+                let promptTokens = 0;
+                let completionTokens = 0;
+
+                for (const result of action.payload.Results) {
+                    totalTokens += result.ModelOutput?.Usage.total_tokens ?? 0;
+                    promptTokens += result.ModelOutput?.Usage.prompt_tokens ?? 0;
+                    completionTokens += result.ModelOutput?.Usage.completion_tokens ?? 0;
+                }
+
+                state.modelUsage = createSuccessState({
+                    totalTokens,
+                    promptTokens,
+                    completionTokens,
+                });
             })
             .addCase(testUpdateScript.pending, (state) => {
                 state.updateScriptTest.status = "loading";
+                state.updateScriptDocumentInput.status = "loading";
             })
             .addCase(testUpdateScript.rejected, (state, action) => {
                 state.updateScriptTest = createFailureState(action.error.message);
+                state.updateScriptDocumentInput = createFailureState(action.error.message);
             })
             .addCase(testUpdateScript.fulfilled, (state, action) => {
                 state.globalTestResult = action.payload;
@@ -145,6 +175,10 @@ export const editGenAiTaskSlice = createSlice({
 
                 state.updateScriptTest = createSuccessState(
                     action.payload.OutputDocument ? JSON.stringify(action.payload.OutputDocument, null, 4) : null
+                );
+
+                state.updateScriptDocumentInput = createSuccessState(
+                    action.payload.InputDocument ? JSON.stringify(action.payload.InputDocument, null, 4) : null
                 );
             })
             .addCase(testConnectionString.pending, (state) => {
@@ -223,6 +257,8 @@ export const editGenAiTaskSelectors = {
     contextTest: (state: RootState) => state.editGenAiTask.contextTest,
     modelInputTest: (state: RootState) => state.editGenAiTask.modelInputTest,
     updateScriptTest: (state: RootState) => state.editGenAiTask.updateScriptTest,
+    updateScriptDocumentInput: (state: RootState) => state.editGenAiTask.updateScriptDocumentInput,
+    modelUsage: (state: RootState) => state.editGenAiTask.modelUsage,
     isPlaygroundCollapsed: (state: RootState) => state.editGenAiTask.isPlaygroundCollapsed,
     isPlaygroundEditMode: (state: RootState) => state.editGenAiTask.isPlaygroundEditMode,
     globalTestResult: (state: RootState) => state.editGenAiTask.globalTestResult,

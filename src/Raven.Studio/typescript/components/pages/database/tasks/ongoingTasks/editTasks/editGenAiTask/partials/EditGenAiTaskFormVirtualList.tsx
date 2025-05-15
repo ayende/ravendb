@@ -8,14 +8,22 @@ import Badge from "react-bootstrap/Badge";
 import { editGenAiTaskActions, editGenAiTaskSelectors } from "../store/editGenAiTaskSlice";
 import { useAppDispatch, useAppSelector } from "components/store";
 import classNames from "classnames";
+import Button from "react-bootstrap/Button";
+import { Icon } from "components/common/Icon";
 
 interface EditGenAiTaskFormVirtualListProps {
     fields: FieldArrayWithId<EditGenAiTaskFormData>[];
     name: Extract<FieldPath<EditGenAiTaskFormData>, "playgroundContexts" | "playgroundModelOutputs">;
     isReadOnly: boolean;
+    handleRemove: (index: number) => void;
 }
 
-export default function EditGenAiTaskFormVirtualList({ fields, name, isReadOnly }: EditGenAiTaskFormVirtualListProps) {
+export default function EditGenAiTaskFormVirtualList({
+    fields,
+    name,
+    isReadOnly,
+    handleRemove,
+}: EditGenAiTaskFormVirtualListProps) {
     const dispatch = useAppDispatch();
 
     const hoverIndex = useAppSelector(editGenAiTaskSelectors.hoverIndex);
@@ -32,7 +40,7 @@ export default function EditGenAiTaskFormVirtualList({ fields, name, isReadOnly 
     });
 
     if (fields.length === 0) {
-        return <EmptySet />;
+        return <EmptySet>Empty list</EmptySet>;
     }
 
     return (
@@ -47,7 +55,7 @@ export default function EditGenAiTaskFormVirtualList({ fields, name, isReadOnly 
                             data-index={virtualRow.index}
                             ref={virtualizer.measureElement}
                             className={classNames("py-1", {
-                                "ace-hover": hoverIndex === virtualRow.index,
+                                "ace-hover": hoverIndex === field.idx,
                             })}
                             style={{
                                 position: "absolute",
@@ -57,7 +65,7 @@ export default function EditGenAiTaskFormVirtualList({ fields, name, isReadOnly 
                                 transform: `translateY(${virtualRow.start}px)`,
                                 transition: "unset",
                             }}
-                            onMouseEnter={() => dispatch(editGenAiTaskActions.hoverIndexSet(virtualRow.index))}
+                            onMouseEnter={() => dispatch(editGenAiTaskActions.hoverIndexSet(field.idx))}
                             onMouseLeave={() => dispatch(editGenAiTaskActions.hoverIndexSet(null))}
                         >
                             <div style={{ position: "relative" }}>
@@ -68,8 +76,17 @@ export default function EditGenAiTaskFormVirtualList({ fields, name, isReadOnly 
                                     mode="json"
                                     readOnly={isReadOnly}
                                 />
+                                {!isReadOnly && (
+                                    <Button
+                                        variant="danger"
+                                        style={{ position: "absolute", top: 10, right: 10 }}
+                                        onClick={() => handleRemove(virtualRow.index)}
+                                    >
+                                        <Icon icon="trash" margin="m-0" />
+                                    </Button>
+                                )}
                                 <Badge bg="secondary" style={{ position: "absolute", bottom: 10, right: 10 }}>
-                                    {virtualRow.index + 1}
+                                    {field.idx != null ? field.idx + 1 : "?"}
                                 </Badge>
                             </div>
                         </div>

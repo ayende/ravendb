@@ -8,7 +8,6 @@ import Button from "react-bootstrap/Button";
 import { HStack } from "components/common/utilities/HStack";
 import { EditGenAiTaskFormData } from "../../utils/editGenAiTaskValidation";
 import { AboutViewHeading } from "components/common/AboutView";
-import EditGenAiTaskPlayground from "../EditGenAiTaskPlayground";
 import { useEditGenAiTaskTests } from "../../hooks/useEditGenAiTaskTests";
 import ButtonWithSpinner from "components/common/ButtonWithSpinner";
 import { ConditionalPopover } from "components/common/ConditionalPopover";
@@ -23,7 +22,6 @@ export function EditGenAiTaskStepUpdate() {
                 <FormLabel>Update script</FormLabel>
                 <FormAceEditor control={control} name="update" mode="javascript" />
             </FormGroup>
-            <EditGenAiTaskPlayground />
         </>
     );
 }

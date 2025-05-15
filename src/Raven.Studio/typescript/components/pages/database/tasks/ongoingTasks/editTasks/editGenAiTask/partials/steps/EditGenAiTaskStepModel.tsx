@@ -7,7 +7,6 @@ import EditGenAiTaskModelFields from "../fields/EditGenAiTaskModelFields";
 import { useFormContext, useWatch } from "react-hook-form";
 import { EditGenAiTaskFormData } from "../../utils/editGenAiTaskValidation";
 import { AboutViewHeading } from "components/common/AboutView";
-import EditGenAiTaskPlayground from "../EditGenAiTaskPlayground";
 import ButtonWithSpinner from "components/common/ButtonWithSpinner";
 import { useEditGenAiTaskTests } from "../../hooks/useEditGenAiTaskTests";
 import { ConditionalPopover } from "components/common/ConditionalPopover";
@@ -17,7 +16,6 @@ export function EditGenAiTaskStepModel() {
         <>
             <AboutViewHeading title="Model input" marginBottom={4} icon="ai-etl" />
             <EditGenAiTaskModelFields />
-            <EditGenAiTaskPlayground />
         </>
     );
 }

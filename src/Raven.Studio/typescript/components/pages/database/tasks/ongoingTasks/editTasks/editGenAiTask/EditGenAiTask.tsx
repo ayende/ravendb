@@ -14,6 +14,7 @@ import { EditGenAiTaskFormData, editGenAiTaskSchema } from "./utils/editGenAiTas
 import { editGenAiTaskUtils } from "./utils/editGenAiTaskUtils";
 import EditGenAiTaskTestResults from "./partials/EditGenAiTaskTestResults";
 import EditGenAiTaskSteps from "./partials/EditGenAiTaskSteps";
+import EditGenAiTaskPlayground from "./partials/EditGenAiTaskPlayground";
 
 interface QueryParams {
     taskId: string;
@@ -86,11 +87,17 @@ export default function EditGenAiTask({ queryParams }: ReactQueryParamsProps<Que
 
     const steps = useEditGenAiTaskSteps();
     const currentStep = steps.find((x) => x.isCurrent);
+    const stepName = currentStep.id;
+
+    const isPlaygroundVisible = stepName === "context" || stepName === "modelInput" || stepName === "updateScript";
 
     return (
         <FormProvider {...form}>
             <form onSubmit={handleSubmit(handleSave)} className="edit-gen-ai-task">
-                <div className="main-container">{currentStep.component}</div>
+                <div className="main-container">
+                    {currentStep.component}
+                    {isPlaygroundVisible && <EditGenAiTaskPlayground />}
+                </div>
                 <div className="footer">
                     <div className="footer-content">{currentStep.footer}</div>
                 </div>

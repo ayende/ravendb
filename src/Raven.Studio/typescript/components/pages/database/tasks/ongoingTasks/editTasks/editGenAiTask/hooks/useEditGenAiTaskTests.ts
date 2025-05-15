@@ -12,7 +12,6 @@ export function useEditGenAiTaskTests() {
 
     const databaseName = useAppSelector(databaseSelectors.activeDatabaseName);
     const taskId = useAppSelector(editGenAiTaskSelectors.taskId);
-    const globalTestResult = useAppSelector(editGenAiTaskSelectors.globalTestResult);
 
     const handleDocumentTrigger = async (): Promise<boolean> => {
         if (!formValues.playgroundDocument) {
@@ -48,8 +47,11 @@ export function useEditGenAiTaskTests() {
 
         setValue(
             "playgroundContexts",
-            result.Results.map((x) => ({
+            result.Results.map((x, idx) => ({
+                idx,
                 value: JSON.stringify(x.ContextOutput.Context, null, 4),
+                aiHash: x.ContextOutput.AiHash,
+                isCached: x.ContextOutput.IsCached,
             }))
         );
     };
@@ -65,16 +67,19 @@ export function useEditGenAiTaskTests() {
             return;
         }
 
-        const input = structuredClone(globalTestResult.Results);
-
-        for (let i = 0; i < input.length; i++) {
-            input[i].ContextOutput.Context = JSON.parse(formValues.playgroundContexts[i].value);
-
-            if (formValues.isForceSendingCachedObjects) {
-                input[i].ContextOutput.IsCached = false;
-                input[i].ContextOutput.AiHash = null;
-            }
-        }
+        const input: Raven.Server.Documents.ETL.Providers.AI.GenAi.GenAiResultItem[] =
+            formValues.playgroundContexts.map((x) => {
+                return {
+                    ContextOutput: {
+                        Context: JSON.parse(x.value),
+                        AiHash: formValues.isForceSendingCachedObjects ? null : x.aiHash,
+                        IsCached: formValues.isForceSendingCachedObjects ? false : x.isCached,
+                    },
+                    DebugActions: null,
+                    DebugOutput: [],
+                    ModelOutput: null,
+                };
+            });
 
         const dto: Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.TestGenAiScript = {
             TestStage: "SendToModel",
@@ -88,8 +93,19 @@ export function useEditGenAiTaskTests() {
         const result = await dispatch(editGenAiTaskActions.testModelInput({ databaseName, dto })).unwrap();
 
         setValue(
+            "playgroundContexts",
+            result.Results.map((x, idx) => ({
+                idx,
+                value: JSON.stringify(x.ContextOutput.Context, null, 4),
+                aiHash: x.ContextOutput.AiHash,
+                isCached: x.ContextOutput.IsCached,
+            }))
+        );
+
+        setValue(
             "playgroundModelOutputs",
-            result.Results.map((x) => ({
+            result.Results.map((x, idx) => ({
+                idx,
                 value: JSON.stringify(x.ModelOutput?.Output, null, 4),
             }))
         );
@@ -106,17 +122,22 @@ export function useEditGenAiTaskTests() {
             return;
         }
 
-        const input = structuredClone(globalTestResult.Results);
-
-        for (let i = 0; i < input.length; i++) {
-            if (input[i].ContextOutput) {
-                input[i].ContextOutput.Context = JSON.parse(formValues.playgroundContexts[i].value);
-            }
-
-            if (input[i].ModelOutput) {
-                input[i].ModelOutput.Output = JSON.parse(formValues.playgroundModelOutputs[i].value);
-            }
-        }
+        const input: Raven.Server.Documents.ETL.Providers.AI.GenAi.GenAiResultItem[] =
+            formValues.playgroundModelOutputs.map((x) => {
+                return {
+                    ContextOutput: null,
+                    DebugActions: null,
+                    DebugOutput: [],
+                    ModelOutput: {
+                        Output: JSON.parse(x.value),
+                        Usage: {
+                            total_tokens: 0,
+                            prompt_tokens: 0,
+                            completion_tokens: 0,
+                        },
+                    },
+                };
+            });
 
         const dto: Raven.Server.Documents.ETL.Providers.AI.GenAi.Test.TestGenAiScript = {
             TestStage: "ApplyUpdateScript",
