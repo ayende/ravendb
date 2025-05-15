@@ -15,6 +15,7 @@ using Raven.Server.Documents.Patch;
 using Raven.Server.Documents.TimeSeries;
 using Raven.Server.ServerWide.Context;
 using Sparrow.Json;
+using Sparrow.Json.Parsing;
 
 namespace Raven.Server.Documents.ETL.Providers.AI.GenAi;
 
@@ -91,8 +92,7 @@ internal sealed class GenAiScriptTransformer : EtlTransformer<AiEtlItem, GenAiSc
             throw new ArgumentException("Expected 'ctx' to be an object, but was: " + args[0].Type + ", " + args[0]);
 
         var context = JsBlittableBridge.Translate(Context, DocumentScript.ScriptEngine, args[0].AsObject());
-        string json = context.ToString();
-        string hash = AttachmentsStorageHelper.CalculateHash(MemoryMarshal.AsBytes(json.AsSpan()));
+        string hash = CalculateHash(context);
         var isCached = ShouldSendContext(hash, _configuration.Name, Current.Document) == false;
 
         using (context)
@@ -117,5 +117,19 @@ internal sealed class GenAiScriptTransformer : EtlTransformer<AiEtlItem, GenAiSc
         }
 
         return true; // hash not found, should send
+    }
+
+    private string CalculateHash(BlittableJsonReaderObject contextObj)
+    {
+        var djv = new DynamicJsonValue
+        {
+            ["Context"] = contextObj,
+            ["Prompt"] = _configuration.Prompt,
+            ["Schema"] = _configuration.JsonSchema,
+            ["Update"] = _configuration.Update
+        };
+
+        using var ctx = Context.ReadObject(djv, "hash");
+        return AttachmentsStorageHelper.CalculateHash(ctx.AsSpan());
     }
 }

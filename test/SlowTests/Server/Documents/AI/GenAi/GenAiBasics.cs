@@ -4,6 +4,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using Elastic.Clients.Elasticsearch.Tasks;
 using FastTests;
 using Newtonsoft.Json;
 using Raven.Client;
@@ -12,6 +13,7 @@ using Raven.Client.Documents.Operations.ConnectionStrings;
 using Raven.Client.Documents.Operations.ETL;
 using Raven.Client.Documents.Operations.OngoingTasks;
 using Raven.Server.Documents;
+using Raven.Server.Documents.AI.AiGen;
 using Raven.Server.Documents.ETL;
 using Raven.Server.Documents.ETL.Providers.AI.GenAi;
 using Raven.Server.Documents.ETL.Providers.AI.GenAi.Stats;
@@ -655,6 +657,191 @@ for(const comment of this.Comments)
             Assert.True(genAiStats2.TotalTokensUsed > 0);
         }
     }
+
+    [RavenFact(RavenTestCategory.Ai)]
+    public async Task ShouldResendContextWhenPromptChanges()
+    {
+        await ShouldResendContextOnConfigChange(
+            changeConfig: config => config.Prompt = "please convert the text to Hebrew"
+        );
+    }
+
+    [RavenFact(RavenTestCategory.Ai)]
+    public async Task ShouldResendContextWhenSchemaChanges()
+    {
+        await ShouldResendContextOnConfigChange(
+            changeConfig: config =>
+            {
+                var newSample = JsonConvert.SerializeObject(new
+                {
+                    Translation = "translated sentence",
+                    OriginalLanguage = "the original language of the provided text",
+                    TranslatedTo = "the language that you translated the text to"
+                });
+                config.JsonSchema = AbstractChatCompletionClient.GetSchemaFor(newSample);
+            }
+        );
+    }
+
+    [RavenFact(RavenTestCategory.Ai)]
+    public async Task ShouldResendContextWhenUpdateScriptChanges()
+    {
+        await ShouldResendContextOnConfigChange(
+            changeConfig: config => config.Update = "this.Translated = $output.Translation;"
+        );
+    }
+
+
+    private async Task ShouldResendContextOnConfigChange(Action<GenAiConfiguration> changeConfig)
+    {
+        using var store = GetDocumentStore();
+        const string taskName = "ConfigChangeTest";
+        const string docId = "posts/1";
+
+        store.Maintenance.Send(new PutConnectionStringOperation<AiConnectionString>(new AiConnectionString
+        {
+            Name = "ollama-local",
+            Identifier = "ollama-local",
+            OllamaSettings = new OllamaSettings
+            {
+                Uri = "http://127.0.0.1:11434/",
+                Model = "llama3.2:latest"
+            }
+        }));
+
+        var sampleObject = JsonConvert.SerializeObject(new { Translation = "translated text" });
+        var schema = AbstractChatCompletionClient.GetSchemaFor(sampleObject);
+
+        var config = new GenAiConfiguration
+        {
+            Name = taskName,
+            ConnectionStringName = "ollama-local",
+            Prompt = "Translate this text to Polish",
+            JsonSchema = schema,
+            Update = "this.TextInPolish = $output.Translation;",
+            Collection = "Posts",
+            GenAiTransformation = new GenAiTransformation
+            {
+                Script = "context({ Text: this.Body });"
+            }
+        };
+
+        store.Maintenance.Send(new AddGenAiOperation(config));
+
+        var etlDone = Etl.WaitForEtlToComplete(store);
+
+        using (var session = store.OpenSession())
+        {
+            session.Store(new Post([new Comment("RavenDB is amazing", "Alex")], "Understanding RavenDB Indexing", "Indexes in RavenDB are powerful..."), docId);
+            session.SaveChanges();
+        }
+
+        Assert.True(etlDone.Wait(TimeSpan.FromMinutes(1)));
+
+        string originalHash;
+        using (var session = store.OpenAsyncSession())
+        {
+            var doc = await session.LoadAsync<BlittableJsonReaderObject>(docId);
+            Assert.True(doc.TryGet(Constants.Documents.Metadata.Key, out BlittableJsonReaderObject metadata));
+            Assert.True(metadata.TryGet(GenAiTask.GenAiHashesMetadataKey, out BlittableJsonReaderObject hashesSection));
+            Assert.True(hashesSection.TryGet(taskName, out BlittableJsonReaderArray hashesArray));
+            Assert.NotNull(hashesArray);
+            originalHash = hashesArray.Last().ToString();
+        }
+
+        var db = await GetDatabase(store.Database);
+        var etlProcess = db.EtlLoader.Processes.FirstOrDefault() as GenAiTask;
+        Assert.NotNull(etlProcess);
+
+        var stats = etlProcess.GetPerformanceStats()
+            .Where(x => x.NumberOfLoadedItems > 0)
+            .ToArray();
+
+        Assert.NotEmpty(stats);
+        var loadDetails = stats[0].Details.Operations[^1];
+        var genAiStats = loadDetails.Operations.FirstOrDefault(x => x.Name == GenAiOperations.LoadToModel) as GenAiPerformanceOperation;
+        Assert.Equal(1, genAiStats?.NumberOfContextObjects);
+        Assert.Equal(1, genAiStats?.TotalSentToModel);
+
+        var taskId = etlProcess.TaskId;
+
+        // disable task
+        await store.Maintenance.SendAsync(new ToggleOngoingTaskStateOperation(taskId, OngoingTaskType.GenAi, disable: true));
+
+        var taskInfo = await store.Maintenance.SendAsync(new GetOngoingTaskInfoOperation(config.Name, OngoingTaskType.GenAi));
+        Assert.Equal(OngoingTaskState.Disabled, taskInfo.TaskState);
+
+        // update the configuration
+        changeConfig(config);
+        store.Maintenance.Send(new UpdateEtlOperation<AiConnectionString>(taskId, config));
+
+        // re-enable task
+        await store.Maintenance.SendAsync(new ToggleOngoingTaskStateOperation(taskId, OngoingTaskType.GenAi, disable: false));
+        taskInfo = await store.Maintenance.SendAsync(new GetOngoingTaskInfoOperation(config.Name, OngoingTaskType.GenAi));
+        Assert.Equal(OngoingTaskState.Enabled, taskInfo.TaskState);
+
+        var genAiTaskInfo = taskInfo as Raven.Client.Documents.Operations.OngoingTasks.GenAi;
+        Assert.NotNull(genAiTaskInfo);
+        Assert.Equal(genAiTaskInfo.Configuration.Prompt, config.Prompt);
+        Assert.Equal(genAiTaskInfo.Configuration.JsonSchema, config.JsonSchema);
+        Assert.Equal(genAiTaskInfo.Configuration.Update, config.Update);
+
+        WaitForUserToContinueTheTest(store);
+
+        etlDone = Etl.WaitForEtlToComplete(store);
+        long etag = 0;
+        using (var session = store.OpenSession())
+        {
+            // modify the doc to trigger etl 
+            // the post's Body remains the same - this change won't affect the generated context object 
+            // context should be resent because of the hash-mismatch, not because of the comments addition
+
+            var doc = session.Load<Post>(docId);
+            doc.Comments.Add(new Comment("spam comment", "evil bot"));
+
+            etag = ChangeVectorUtils.GetEtagById(session.Advanced.GetChangeVectorFor(doc), db.DbBase64Id);
+
+            session.SaveChanges();
+        }
+
+        Assert.True(etlDone.Wait(TimeSpan.FromMinutes(1)));
+
+        // assert that context was sent again
+
+        WaitForUserToContinueTheTest(store);
+
+
+        etlProcess = db.EtlLoader.Processes.FirstOrDefault() as GenAiTask;
+        Assert.NotNull(etlProcess);
+
+        var stats2 = etlProcess.GetPerformanceStats()
+            .Where(x => x.NumberOfLoadedItems > 0 && x.LastLoadedEtag > etag)
+            .ToArray();
+        Assert.NotEmpty(stats2);
+
+        Assert.Equal(1, stats2[^1].NumberOfExtractedItems[EtlItemType.Document]);
+
+        var loadDetails2 = stats2[^1].Details.Operations[^1];
+        var genAiStats2 = loadDetails2.Operations.FirstOrDefault(x => x.Name == GenAiOperations.LoadToModel) as GenAiPerformanceOperation;
+        Assert.NotNull(genAiStats2);
+
+        Assert.Equal(1, genAiStats2.NumberOfContextObjects);
+        Assert.Equal(1, genAiStats2.TotalSentToModel);
+        Assert.Equal(0, genAiStats2.TotalCachedContexts);
+
+        using (var session = store.OpenAsyncSession())
+        {
+            var doc = await session.LoadAsync<BlittableJsonReaderObject>(docId);
+            Assert.True(doc.TryGet(Constants.Documents.Metadata.Key, out BlittableJsonReaderObject metadata));
+            Assert.True(metadata.TryGet(GenAiTask.GenAiHashesMetadataKey, out BlittableJsonReaderObject hashesSection));
+            Assert.True(hashesSection.TryGet(taskName, out BlittableJsonReaderArray hashesArray));
+            Assert.NotNull(hashesArray);
+
+            var newHash = hashesArray.Last().ToString();
+            Assert.NotEqual(originalHash, newHash);
+        }
+    }
+
 
 
     internal record Comment(string Text, string Author)
