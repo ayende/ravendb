@@ -62,7 +62,7 @@ export function useEditGenAiTaskTests() {
             return;
         }
 
-        const areTestRelatedFieldsValid = await trigger(["prompt", "sampleObject", "jsonSchema"]);
+        const areTestRelatedFieldsValid = await trigger(["prompt", "schemaProvider", "sampleObject", "jsonSchema"]);
         if (!areTestRelatedFieldsValid) {
             return;
         }

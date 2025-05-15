@@ -1,6 +1,4 @@
-import { FormAceEditor } from "components/common/Form";
-import { FormLabel } from "components/common/Form";
-import { FormGroup } from "components/common/Form";
+import { FormAceEditor, FormLabel, FormGroup, FormValidationMessage } from "components/common/Form";
 import Row from "react-bootstrap/Row";
 import Col from "react-bootstrap/Col";
 import { useFormContext, useWatch } from "react-hook-form";
@@ -11,7 +9,11 @@ import { ReactNode } from "react";
 import IconName from "typings/server/icons";
 
 export default function EditGenAiTaskModelFields() {
-    const { control, setValue } = useFormContext();
+    const {
+        control,
+        setValue,
+        formState: { errors },
+    } = useFormContext();
     const formValues = useWatch({ control });
 
     return (
@@ -45,6 +47,9 @@ export default function EditGenAiTaskModelFields() {
                             />
                         </Col>
                     </Row>
+                    {errors.schemaProvider && (
+                        <FormValidationMessage>{errors.schemaProvider?.message.toString()}</FormValidationMessage>
+                    )}
                 </div>
             )}
             {formValues.schemaProvider === "sampleObject" && (

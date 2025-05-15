@@ -12,16 +12,22 @@ export const editGenAiTaskSchema = yup.object({
     connectionStringName: yup.string().required(),
     isAllowEtlOnNonEncryptedChannel: yup.boolean(),
     collectionName: yup.string().required(),
-    schemaProvider: yup.string<EditGenAiTaskSchemaProvider>().nullable().required(),
     prompt: yup.string().required(),
-    jsonSchema: yup.string(),
-    sampleObject: yup.string(),
+    schemaProvider: yup.string<EditGenAiTaskSchemaProvider>().nullable().required(),
+    jsonSchema: yup.string().when("schemaProvider", {
+        is: "jsonSchema",
+        then: (schema) => schema.required(),
+    }),
+    sampleObject: yup.string().when("schemaProvider", {
+        is: "sampleObject",
+        then: (schema) => schema.required(),
+    }),
     update: yup.string().required(),
     isForceSendingCachedObjects: yup.boolean(),
     isResetScript: yup.boolean(),
-    scriptToReset: yup.string().nullable(),
     script: yup.string().required(),
-    // For testing
+
+    // Playground
     documentId: yup.string(),
     playgroundDocument: yup.string(),
     playgroundContexts: yup.array().of(
