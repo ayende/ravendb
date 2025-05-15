@@ -4,6 +4,7 @@ const getDefaultValues = (dto: Raven.Client.Documents.Operations.OngoingTasks.Ge
     if (!dto) {
         return {
             name: "",
+            identifier: "",
             state: "Enabled",
             isSetResponsibleNode: false,
             responsibleNode: null,
@@ -29,6 +30,7 @@ const getDefaultValues = (dto: Raven.Client.Documents.Operations.OngoingTasks.Ge
 
     return {
         name: dto.Configuration.Name,
+        identifier: dto.Configuration.Identifier,
         state: dto.TaskState,
         isSetResponsibleNode: dto.MentorNode != null,
         responsibleNode: dto.MentorNode ?? null,
@@ -59,6 +61,7 @@ const mapToDto = (
     return {
         TaskId: taskId,
         Name: data.name,
+        Identifier: data.identifier,
         EtlType: "GenAi",
         ConnectionStringName: data.connectionStringName,
         AllowEtlOnNonEncryptedChannel: data.isAllowEtlOnNonEncryptedChannel,
@@ -74,7 +77,6 @@ const mapToDto = (
         GenAiTransformation: {
             Script: data.script,
         },
-        Identifier: undefined,
     };
 };
 

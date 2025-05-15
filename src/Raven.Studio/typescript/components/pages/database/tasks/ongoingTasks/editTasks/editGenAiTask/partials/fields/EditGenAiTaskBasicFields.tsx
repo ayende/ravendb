@@ -12,8 +12,13 @@ import { editGenAiTaskActions, editGenAiTaskSelectors } from "../../store/editGe
 import EditGenAiTaskNodeField from "./EditGenAiTaskNodeField";
 import InputGroup from "react-bootstrap/InputGroup";
 import { useServices } from "components/hooks/useServices";
-import { useFormContext } from "react-hook-form";
+import { useFormContext, useWatch } from "react-hook-form";
 import { EditGenAiTaskFormData } from "../../utils/editGenAiTaskValidation";
+import TaskUtils from "components/utils/TaskUtils";
+import OptionalLabel from "components/common/OptionalLabel";
+import PopoverWithHoverWrapper from "components/common/PopoverWithHoverWrapper";
+import { Icon } from "components/common/Icon";
+import Button from "react-bootstrap/Button";
 
 type OngoingTaskState = Raven.Client.Documents.Operations.OngoingTasks.OngoingTaskState;
 
@@ -29,6 +34,7 @@ export default function EditGenAiTaskBasicFields() {
     const { tasksService } = useServices();
 
     const { control, setValue } = useFormContext<EditGenAiTaskFormData>();
+    const formValues = useWatch({ control });
 
     const asyncGetConnectionStringsOptions = useAsync(async () => {
         const result = await tasksService.getConnectionStrings(databaseName);
@@ -52,11 +58,43 @@ export default function EditGenAiTaskBasicFields() {
         toggleIsNewConnectionStringOpen();
     };
 
+    const handleGenerateIdentifier = () => {
+        setValue("identifier", TaskUtils.getGeneratedIdentifier(formValues.name));
+    };
+
     return (
         <>
             <FormGroup>
                 <FormLabel>Task Name</FormLabel>
-                <FormInput type="text" control={control} name="name" />
+                <FormInput type="text" control={control} name="name" placeholder="My task" />
+            </FormGroup>
+            <FormGroup>
+                <FormLabel>
+                    Identifier <OptionalLabel />
+                    <PopoverWithHoverWrapper
+                        message="A unique identifier used in document paths. If not specified, it will be auto-generated
+                                from the task name."
+                    >
+                        <Icon icon="info" color="info" margin="ms-1" id="identifier" />
+                    </PopoverWithHoverWrapper>
+                </FormLabel>
+                <FormInput
+                    control={control}
+                    name="identifier"
+                    type="text"
+                    placeholder="my-task"
+                    addon={
+                        <Button
+                            variant="link"
+                            className="text-reset px-0"
+                            onClick={handleGenerateIdentifier}
+                            title="Click to generate the identifier from the task name"
+                        >
+                            <Icon icon="refresh" />
+                            Regenerate
+                        </Button>
+                    }
+                />
             </FormGroup>
             <FormGroup>
                 <FormLabel>Task State</FormLabel>

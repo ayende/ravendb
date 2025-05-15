@@ -4,6 +4,7 @@ type EditGenAiTaskSchemaProvider = "jsonSchema" | "sampleObject";
 
 export const editGenAiTaskSchema = yup.object({
     name: yup.string().required(),
+    identifier: yup.string(),
     state: yup.string<Raven.Client.Documents.Operations.OngoingTasks.OngoingTaskState>().required(),
     isSetResponsibleNode: yup.boolean(),
     responsibleNode: yup.string().nullable(),
