@@ -7,6 +7,8 @@ import Button from "react-bootstrap/Button";
 import Badge from "react-bootstrap/Badge";
 import { ReactNode } from "react";
 import IconName from "typings/server/icons";
+import { HStack } from "components/common/utilities/HStack";
+import EditGenAiLoadFile from "../EditGenAiLoadFile";
 
 export default function EditGenAiTaskModelFields() {
     const {
@@ -56,10 +58,13 @@ export default function EditGenAiTaskModelFields() {
                 <FormGroup>
                     <FormLabel className="hstack justify-content-between">
                         <div>Sample Object</div>
-                        <Button variant="link" size="sm" onClick={() => setValue("schemaProvider", "jsonSchema")}>
-                            <Icon icon="edit" />
-                            Provide manually
-                        </Button>
+                        <HStack gap={2}>
+                            <EditGenAiLoadFile name="sampleObject" />
+                            <Button variant="link" size="xs" onClick={() => setValue("schemaProvider", "jsonSchema")}>
+                                <Icon icon="edit" />
+                                Provide manually
+                            </Button>
+                        </HStack>
                     </FormLabel>
                     <FormAceEditor control={control} name="sampleObject" mode="json" />
                 </FormGroup>
@@ -68,10 +73,13 @@ export default function EditGenAiTaskModelFields() {
                 <FormGroup>
                     <FormLabel className="hstack justify-content-between">
                         <div>JSON Schema</div>
-                        <Button variant="link" size="sm" onClick={() => setValue("schemaProvider", "sampleObject")}>
-                            <Icon icon="default" />
-                            Use sample object
-                        </Button>
+                        <HStack gap={2}>
+                            <EditGenAiLoadFile name="jsonSchema" />
+                            <Button variant="link" size="xs" onClick={() => setValue("schemaProvider", "sampleObject")}>
+                                <Icon icon="default" />
+                                Use sample object
+                            </Button>
+                        </HStack>
                     </FormLabel>
                     <FormAceEditor control={control} name="jsonSchema" mode="json" />
                 </FormGroup>

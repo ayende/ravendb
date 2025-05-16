@@ -11,6 +11,7 @@ import { AboutViewHeading } from "components/common/AboutView";
 import { useEditGenAiTaskTests } from "../../hooks/useEditGenAiTaskTests";
 import ButtonWithSpinner from "components/common/ButtonWithSpinner";
 import { ConditionalPopover } from "components/common/ConditionalPopover";
+import EditGenAiLoadFile from "../EditGenAiLoadFile";
 
 export function EditGenAiTaskStepUpdate() {
     const { control } = useFormContext<EditGenAiTaskFormData>();
@@ -19,7 +20,10 @@ export function EditGenAiTaskStepUpdate() {
         <>
             <AboutViewHeading title="Provide document update script" marginBottom={4} icon="ai-etl" />
             <FormGroup>
-                <FormLabel>Update script</FormLabel>
+                <FormLabel className="hstack justify-content-between">
+                    Update script
+                    <EditGenAiLoadFile name="update" />
+                </FormLabel>
                 <FormAceEditor control={control} name="update" mode="javascript" />
             </FormGroup>
         </>

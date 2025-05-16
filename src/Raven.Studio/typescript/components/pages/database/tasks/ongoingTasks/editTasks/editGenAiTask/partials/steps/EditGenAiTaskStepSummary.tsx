@@ -90,7 +90,7 @@ export function EditGenAiTaskStepSummary() {
             <div className="panel-bg-1 p-3 rounded-2 mt-1">
                 <HStack className="justify-content-between">
                     <div>Prompt</div>
-                    <div style={{ maxWidth: 200 }} className="text-truncate">
+                    <div style={{ maxWidth: 200 }} className="text-truncate" title={formValues.prompt}>
                         {formValues.prompt}
                     </div>
                 </HStack>

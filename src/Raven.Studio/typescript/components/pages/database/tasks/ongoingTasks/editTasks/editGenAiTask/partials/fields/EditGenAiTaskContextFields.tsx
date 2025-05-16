@@ -6,6 +6,7 @@ import { EditGenAiTaskFormData } from "../../utils/editGenAiTaskValidation";
 import { useAppSelector } from "components/store";
 import { collectionsTrackerSelectors } from "components/common/shell/collectionsTrackerSlice";
 import { SelectOption } from "components/common/select/Select";
+import EditGenAiLoadFile from "../EditGenAiLoadFile";
 
 export default function EditGenAiTaskContextFields() {
     const { control } = useFormContext<EditGenAiTaskFormData>();
@@ -22,7 +23,10 @@ export default function EditGenAiTaskContextFields() {
                 <FormSelectCreatable control={control} name="collectionName" options={collectionOptions} />
             </FormGroup>
             <FormGroup>
-                <FormLabel>Script</FormLabel>
+                <FormLabel className="hstack justify-content-between">
+                    Script
+                    <EditGenAiLoadFile name="script" />
+                </FormLabel>
                 <FormAceEditor control={control} name="script" mode="javascript" />
             </FormGroup>
         </>

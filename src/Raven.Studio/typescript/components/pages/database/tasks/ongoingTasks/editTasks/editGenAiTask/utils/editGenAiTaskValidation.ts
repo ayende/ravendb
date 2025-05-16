@@ -25,6 +25,7 @@ export const editGenAiTaskSchema = yup.object({
     update: yup.string().required(),
     isForceSendingCachedObjects: yup.boolean(),
     isResetScript: yup.boolean(),
+    scriptToReset: yup.string().nullable(),
     script: yup.string().required(),
 
     // Playground
