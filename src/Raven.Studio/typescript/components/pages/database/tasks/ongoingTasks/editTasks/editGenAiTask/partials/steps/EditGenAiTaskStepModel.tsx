@@ -38,8 +38,6 @@ export function EditGenAiTaskStepModelFooter() {
         }
     };
 
-    const isTestButtonDisabled = !formValues.playgroundDocument || formValues.playgroundContexts.length === 0;
-
     return (
         <HStack className="justify-content-between">
             <Button
@@ -53,12 +51,8 @@ export function EditGenAiTaskStepModelFooter() {
                 <ConditionalPopover
                     conditions={[
                         {
-                            isActive: !formValues.playgroundDocument,
-                            message: "You need to select or provide a document to test this step.",
-                        },
-                        {
                             isActive: formValues.playgroundContexts.length === 0,
-                            message: "Please run test on 'Specify task context' step.",
+                            message: "Please add some contexts to the playground.",
                         },
                     ]}
                 >
@@ -68,7 +62,7 @@ export function EditGenAiTaskStepModelFooter() {
                         onClick={handleModelInputTest}
                         isSpinning={modelInputTest.status === "loading"}
                         icon="test"
-                        disabled={isTestButtonDisabled}
+                        disabled={formValues.playgroundContexts.length === 0}
                     >
                         Test model
                     </ButtonWithSpinner>

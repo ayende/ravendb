@@ -43,7 +43,7 @@ export default function EditGenAiTaskModelFields() {
                         <Col>
                             <SchemaProviderButton
                                 icon="edit"
-                                title="Provide manually"
+                                title="Provide JSON Schema manually"
                                 description="Choose if you want to manually provide the schema"
                                 handleClick={() => setValue("schemaProvider", "jsonSchema")}
                             />
@@ -62,7 +62,7 @@ export default function EditGenAiTaskModelFields() {
                             <EditGenAiLoadFile name="sampleObject" />
                             <Button variant="link" size="xs" onClick={() => setValue("schemaProvider", "jsonSchema")}>
                                 <Icon icon="edit" />
-                                Provide manually
+                                Provide JSON Schema manually
                             </Button>
                         </HStack>
                     </FormLabel>

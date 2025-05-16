@@ -24,7 +24,7 @@ export default function EditGenAiTaskContextFields() {
             </FormGroup>
             <FormGroup>
                 <FormLabel className="hstack justify-content-between">
-                    Script
+                    Context extraction script
                     <EditGenAiLoadFile name="script" />
                 </FormLabel>
                 <FormAceEditor control={control} name="script" mode="javascript" />

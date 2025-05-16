@@ -47,10 +47,7 @@ export function EditGenAiTaskStepUpdateFooter() {
         }
     };
 
-    const isTestButtonDisabled =
-        !formValues.playgroundDocument ||
-        formValues.playgroundContexts.length === 0 ||
-        formValues.playgroundModelOutputs.length === 0;
+    const isTestButtonDisabled = !formValues.playgroundDocument || formValues.playgroundModelOutputs.length === 0;
 
     return (
         <HStack className="justify-content-between">
@@ -69,12 +66,8 @@ export function EditGenAiTaskStepUpdateFooter() {
                             message: "You need to select or provide a document to test this step.",
                         },
                         {
-                            isActive: formValues.playgroundContexts.length === 0,
-                            message: "Please run test on 'Specify task context' step.",
-                        },
-                        {
                             isActive: formValues.playgroundModelOutputs.length === 0,
-                            message: "Please run test on 'Model input' step.",
+                            message: "Please add some model outputs to the playground.",
                         },
                     ]}
                 >
