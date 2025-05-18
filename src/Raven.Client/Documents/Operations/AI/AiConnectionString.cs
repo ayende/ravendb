@@ -203,4 +203,18 @@ public sealed class AiConnectionString : ConnectionString
                HuggingFaceSettings ??
                (AbstractAiSettings)MistralAiSettings;
     }
+
+    public (string Url, string Model, string ApiKey) GetSettings()
+    {
+        AiConnectorType aiConnectorType = GetActiveProvider();
+        switch (aiConnectorType)
+        {
+            case AiConnectorType.Ollama:
+                return (OllamaSettings.Uri, OllamaSettings.Model, null);
+            case AiConnectorType.OpenAi:
+                return (OpenAiSettings.Endpoint, OpenAiSettings.Model, OpenAiSettings.ApiKey);
+            default:
+                throw new NotSupportedException($"Unknown AI connector type: {aiConnectorType}");
+        }
+    }
 }

@@ -17,22 +17,25 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.IdentityModel.Tokens;
 using Raven.Client.Documents.Conventions;
+using Raven.Client.Documents.Operations.AI;
 using Raven.Client.Json;
+using Raven.Client.Json.Serialization;
 using Raven.Client.Util;
 using Sparrow.Json;
+using Sparrow.Server.Json.Sync;
 using JsonSerializer = System.Text.Json.JsonSerializer;
 
 
 namespace Raven.Server.Documents.AI.AiGen;
 
-public abstract class AbstractChatCompletionClient : IDisposable
+public class AbstractChatCompletionClient : IDisposable
 {
     private readonly string _model;
     private readonly HttpClient _client;
     private readonly string _structuredOutputSchema;
     private readonly JsonContextPool _contextPool = new JsonContextPool();
     private static readonly DocumentConventions Conventions = new DocumentConventions { UseHttpCompression = false };
-
+    
     public AbstractChatCompletionClient(Uri baseUri, string model, string apiKey, string structuredOutputSchema)
     {
         _model = model;
@@ -48,10 +51,56 @@ public abstract class AbstractChatCompletionClient : IDisposable
         _structuredOutputSchema = structuredOutputSchema;
     }
 
-    public async Task<(string Result, string Usage)> CompleteAsync(string prompt, string context, CancellationToken token = default)
+
+    public async Task<(BlittableJsonReaderObject Result, AiUsage Usage)> CompleteAsync2(JsonOperationContext context, string systemPrompt, string userPrompt, CancellationToken token = default)
     {
         using var _ = _contextPool.AllocateOperationContext(out var ctx);
-        using var request = GetRequest(ctx, prompt, context);
+        using var request = GetRequest(ctx, systemPrompt, userPrompt);
+        using var response = await _client.SendAsync(request, token).ConfigureAwait(false);
+        using var responseContent = await GetResponseContentAsync(ctx, response, token);
+
+        if (response.IsSuccessStatusCode == false)
+        {
+            HandleUnsuccessfulResponse(response, responseContent);
+            Debug.Assert(false, "we should never get here");
+        }
+
+        if (responseContent.TryGet("choices", out BlittableJsonReaderArray choices) == false || choices.Length == 0)
+        {
+            throw new GenAiUnexpectedResponseException("No choices in response: " + responseContent) { RequestId = GetRequestId(response.Headers) };
+        }
+
+        var choice0 = (BlittableJsonReaderObject)choices[0];
+        if (choice0.TryGet("message", out BlittableJsonReaderObject msg) == false ||
+            msg.TryGet("content", out string content) == false)
+        {
+            throw new GenAiUnexpectedResponseException("No message/content property in choice: " + responseContent) { RequestId = GetRequestId(response.Headers) };
+        }
+
+        if (string.IsNullOrEmpty(content))
+        {
+            choice0.TryGet("finish_reason", out string finishReason);
+            choice0.TryGet("refusal", out string refusal);
+
+            throw new GenAiRefusedToAnswerException("The request was refused by the model")
+            {
+                Refusal = refusal, FinishReason = finishReason, RequestId = GetRequestId(response.Headers)
+            };
+        }
+
+        if (responseContent.TryGet("usage", out BlittableJsonReaderObject usageJson) == false)
+            throw new GenAiUnexpectedResponseException("No choices property in response: " + responseContent) { RequestId = GetRequestId(response.Headers) };
+      
+        var usage = JsonDeserializationClient.AiUsage(usageJson);
+
+        var result = context.Sync.ReadForMemory(content, "ai/output");
+        return (result, usage);
+    }
+
+    public async Task<(string Result, string Usage)> CompleteAsync(string systemPrompt, string userPrompt, CancellationToken token = default)
+    {
+        using var _ = _contextPool.AllocateOperationContext(out var ctx);
+        using var request = GetRequest(ctx, systemPrompt, userPrompt);
         using var response = await _client.SendAsync(request, token).ConfigureAwait(false);
         using var responseContent = await GetResponseContentAsync(ctx, response, token);
 
@@ -92,16 +141,18 @@ public abstract class AbstractChatCompletionClient : IDisposable
             };
         }
 
-        if (responseContent.TryGet("usage", out BlittableJsonReaderObject usage) == false)
+        if (responseContent.TryGet("usage", out BlittableJsonReaderObject usageJson) == false)
             throw new GenAiUnexpectedResponseException("No choices property in response: " + responseContent)
             {
                 RequestId = GetRequestId(response.Headers)
             };
 
-        return (content, usage.ToString());
+        var usage = JsonDeserializationClient.AiUsage(usageJson);
+        
+        return (content, usageJson.ToString());
     }
 
-    private HttpRequestMessage GetRequest(JsonOperationContext ctx, string prompt, string context)
+    private HttpRequestMessage GetRequest(JsonOperationContext ctx, string systemPrompt, string userPrompt)
     {
         var content = new BlittableJsonContent(async stream =>
         {
@@ -126,7 +177,7 @@ public abstract class AbstractChatCompletionClient : IDisposable
                 writer.WriteString("system");
                 writer.WriteComma();
                 writer.WritePropertyName("content");
-                writer.WriteString(prompt);
+                writer.WriteString(systemPrompt);
                 writer.WriteEndObject();
                 writer.WriteComma();
                 writer.WriteStartObject();
@@ -134,7 +185,7 @@ public abstract class AbstractChatCompletionClient : IDisposable
                 writer.WriteString("user");
                 writer.WriteComma();
                 writer.WritePropertyName("content");
-                writer.WriteString(context);
+                writer.WriteString(userPrompt);
                 writer.WriteEndObject();
                 writer.WriteEndArray();
                 writer.WriteComma();
