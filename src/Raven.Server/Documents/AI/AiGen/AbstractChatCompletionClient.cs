@@ -54,7 +54,7 @@ public class AbstractChatCompletionClient : IDisposable
     }
 
     
-    public async Task<AiResponse> CompleteAsync2(JsonOperationContext context, List<AiMessage> messages, DynamicJsonArray tools,
+    public async Task<AiResponse> CompleteAsync2(JsonOperationContext context, List<AiMessage> messages, DynamicJsonArray tools, AiUsage usage,
         CancellationToken token = default)
     {
         using var _ = _contextPool.AllocateOperationContext(out var ctx);
@@ -101,7 +101,7 @@ public class AbstractChatCompletionClient : IDisposable
         if (responseContent.TryGet("usage", out BlittableJsonReaderObject usageJson) == false)
             throw new GenAiUnexpectedResponseException("No choices property in response: " + responseContent) { RequestId = GetRequestId(response.Headers) };
 
-        var usage = JsonDeserializationClient.AiUsage(usageJson);
+        usage.UpdateFrom(usageJson);
 
         if (string.IsNullOrEmpty(content))
         {
@@ -109,7 +109,7 @@ public class AbstractChatCompletionClient : IDisposable
                 finishReason == "tool_calls" && 
                 msg.TryGet("tool_calls", out BlittableJsonReaderArray calls))
             {
-                var resp = new AiResponse(AiResponseType.Tool, usage) { ToolCalls = [] };
+                var resp = new AiResponse(AiResponseType.Tool) { ToolCalls = [] };
                 foreach (BlittableJsonReaderObject call in calls)
                 {
                     if (call.TryGet("id", out string callId) is false ||
@@ -132,7 +132,7 @@ public class AbstractChatCompletionClient : IDisposable
         }
 
         var result = context.Sync.ReadForMemory(content, "ai/output");
-        return new AiResponse(AiResponseType.Result, usage) { Result = result };
+        return new AiResponse(AiResponseType.Result) { Result = result };
     }
 
     public async Task<(string Result, string Usage)> CompleteAsync(string systemPrompt, string userPrompt, CancellationToken token = default)
