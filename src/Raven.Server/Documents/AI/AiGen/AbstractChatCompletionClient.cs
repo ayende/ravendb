@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
@@ -16,12 +17,14 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.IdentityModel.Tokens;
+using NuGet.Protocol;
 using Raven.Client.Documents.Conventions;
 using Raven.Client.Documents.Operations.AI;
 using Raven.Client.Json;
 using Raven.Client.Json.Serialization;
 using Raven.Client.Util;
 using Sparrow.Json;
+using Sparrow.Json.Parsing;
 using Sparrow.Server.Json.Sync;
 using JsonSerializer = System.Text.Json.JsonSerializer;
 
@@ -35,7 +38,7 @@ public class AbstractChatCompletionClient : IDisposable
     private readonly string _structuredOutputSchema;
     private readonly JsonContextPool _contextPool = new JsonContextPool();
     private static readonly DocumentConventions Conventions = new DocumentConventions { UseHttpCompression = false };
-    
+
     public AbstractChatCompletionClient(Uri baseUri, string model, string apiKey, string structuredOutputSchema)
     {
         _model = model;
@@ -44,15 +47,95 @@ public class AbstractChatCompletionClient : IDisposable
             BaseAddress = baseUri,
             DefaultRequestHeaders =
             {
-                Authorization = new AuthenticationHeaderValue("Bearer", apiKey),
-                Accept = { new MediaTypeWithQualityHeaderValue("application/json") }
+                Authorization = new AuthenticationHeaderValue("Bearer", apiKey), Accept = { new MediaTypeWithQualityHeaderValue("application/json") }
             }
         };
         _structuredOutputSchema = structuredOutputSchema;
     }
 
+    
+    public async Task<AiResponse> CompleteAsync2(JsonOperationContext context, List<AiMessage> messages, DynamicJsonArray tools,
+        CancellationToken token = default)
+    {
+        using var _ = _contextPool.AllocateOperationContext(out var ctx);
+        var msgsJson = new DynamicJsonArray();
+        foreach (var m in messages)
+        {
+            msgsJson.Add(m.ToJson());
+        }
 
-    public async Task<(BlittableJsonReaderObject Result, AiUsage Usage)> CompleteAsync2(JsonOperationContext context, string systemPrompt, string userPrompt, CancellationToken token = default)
+        var bodyJson = new DynamicJsonValue
+        {
+            ["model"] = _model,
+            ["messages"] = msgsJson,
+            ["tools"] = tools,
+            ["response_format"] = new DynamicJsonValue
+            {
+                ["type"] = "json_schema", 
+                ["json_schema"] = context.Sync.ReadForMemory(_structuredOutputSchema, "json/schema"),
+            }
+        };
+        using var request = GetRequest2(ctx, bodyJson);
+        using var response = await _client.SendAsync(request, token).ConfigureAwait(false);
+        using var responseContent = await GetResponseContentAsync(ctx, response, token);
+
+        if (response.IsSuccessStatusCode == false)
+        {
+            HandleUnsuccessfulResponse(response, responseContent);
+            Debug.Assert(false, "we should never get here");
+        }
+
+        if (responseContent.TryGet("choices", out BlittableJsonReaderArray choices) == false || choices.Length == 0)
+        {
+            throw new GenAiUnexpectedResponseException("No choices in response: " + responseContent) { RequestId = GetRequestId(response.Headers) };
+        }
+
+        var choice0 = (BlittableJsonReaderObject)choices[0];
+        
+        if (choice0.TryGet("message", out BlittableJsonReaderObject msg) == false ||
+            msg.TryGet("content", out string content) == false)
+        {
+            throw new GenAiUnexpectedResponseException("No message/content property in choice: " + responseContent) { RequestId = GetRequestId(response.Headers) };
+        }
+        
+        if (responseContent.TryGet("usage", out BlittableJsonReaderObject usageJson) == false)
+            throw new GenAiUnexpectedResponseException("No choices property in response: " + responseContent) { RequestId = GetRequestId(response.Headers) };
+
+        var usage = JsonDeserializationClient.AiUsage(usageJson);
+
+        if (string.IsNullOrEmpty(content))
+        {
+            if (choice0.TryGet("finish_reason", out string finishReason) && 
+                finishReason == "tool_calls" && 
+                msg.TryGet("tool_calls", out BlittableJsonReaderArray calls))
+            {
+                var resp = new AiResponse(AiResponseType.Tool, usage) { ToolCalls = [] };
+                foreach (BlittableJsonReaderObject call in calls)
+                {
+                    if (call.TryGet("id", out string callId) is false ||
+                        call.TryGet("function", out BlittableJsonReaderObject function) is false ||
+                        function.TryGet("name", out string name) is false ||
+                        function.TryGet("arguments", out string args) is false)
+                        throw new InvalidOperationException("Invalid function call");//TODO: raise proper error with details here
+                    resp.ToolCalls.Add(new AiToolCall(callId, name, args));
+                }
+                
+                return resp;
+            }
+            
+            choice0.TryGet("refusal", out string refusal); 
+            //TODO: full output if we get here?
+            throw new GenAiRefusedToAnswerException("The request was refused by the model")
+            {
+                Refusal = refusal, FinishReason = finishReason, RequestId = GetRequestId(response.Headers)
+            };
+        }
+
+        var result = context.Sync.ReadForMemory(content, "ai/output");
+        return new AiResponse(AiResponseType.Result, usage) { Result = result };
+    }
+
+    public async Task<(string Result, string Usage)> CompleteAsync(string systemPrompt, string userPrompt, CancellationToken token = default)
     {
         using var _ = _contextPool.AllocateOperationContext(out var ctx);
         using var request = GetRequest(ctx, systemPrompt, userPrompt);
@@ -90,67 +173,25 @@ public class AbstractChatCompletionClient : IDisposable
 
         if (responseContent.TryGet("usage", out BlittableJsonReaderObject usageJson) == false)
             throw new GenAiUnexpectedResponseException("No choices property in response: " + responseContent) { RequestId = GetRequestId(response.Headers) };
-      
-        var usage = JsonDeserializationClient.AiUsage(usageJson);
-
-        var result = context.Sync.ReadForMemory(content, "ai/output");
-        return (result, usage);
-    }
-
-    public async Task<(string Result, string Usage)> CompleteAsync(string systemPrompt, string userPrompt, CancellationToken token = default)
-    {
-        using var _ = _contextPool.AllocateOperationContext(out var ctx);
-        using var request = GetRequest(ctx, systemPrompt, userPrompt);
-        using var response = await _client.SendAsync(request, token).ConfigureAwait(false);
-        using var responseContent = await GetResponseContentAsync(ctx, response, token);
-
-        if (response.IsSuccessStatusCode == false)
-        {
-            HandleUnsuccessfulResponse(response, responseContent);
-            Debug.Assert(false, "we should never get here");
-        }
-
-        if (responseContent.TryGet("choices", out BlittableJsonReaderArray choices) == false || choices.Length == 0)
-        {
-            throw new GenAiUnexpectedResponseException("No choices in response: " + responseContent)
-            {
-                RequestId = GetRequestId(response.Headers)
-            };
-        }
-
-        var choice0 = (BlittableJsonReaderObject)choices[0];
-        if (choice0.TryGet("message", out BlittableJsonReaderObject msg) == false ||
-             msg.TryGet("content", out string content) == false)
-        {
-            throw new GenAiUnexpectedResponseException("No message/content property in choice: " + responseContent)
-            {
-                RequestId = GetRequestId(response.Headers)
-            };
-        }
-
-        if (string.IsNullOrEmpty(content))
-        {
-            choice0.TryGet("finish_reason", out string finishReason);
-            choice0.TryGet("refusal", out string refusal);
-        
-            throw new GenAiRefusedToAnswerException("The request was refused by the model")
-            {
-                Refusal = refusal,
-                FinishReason = finishReason,
-                RequestId = GetRequestId(response.Headers)
-            };
-        }
-
-        if (responseContent.TryGet("usage", out BlittableJsonReaderObject usageJson) == false)
-            throw new GenAiUnexpectedResponseException("No choices property in response: " + responseContent)
-            {
-                RequestId = GetRequestId(response.Headers)
-            };
 
         var usage = JsonDeserializationClient.AiUsage(usageJson);
-        
+
         return (content, usageJson.ToString());
     }
+
+    private HttpRequestMessage GetRequest2(JsonOperationContext ctx, DynamicJsonValue body)
+    {
+        var content = new BlittableJsonContent(async stream =>
+        {
+            using var bodyJson = ctx.ReadObject(body, "ai-rag/request");
+            await using var writer = new AsyncBlittableJsonTextWriter(ctx, stream);
+            writer.WriteObject(bodyJson);
+        }, Conventions);
+
+        content.Headers.Add("Content-Type", "application/json");
+        return new HttpRequestMessage { Method = HttpMethod.Post, Content = content, RequestUri = new Uri("/v1/chat/completions", UriKind.Relative) };
+    }
+
 
     private HttpRequestMessage GetRequest(JsonOperationContext ctx, string systemPrompt, string userPrompt)
     {
@@ -169,7 +210,7 @@ public class AbstractChatCompletionClient : IDisposable
                 writer.WritePropertyName("model");
                 writer.WriteString(_model);
                 writer.WriteComma();
-        
+
                 writer.WritePropertyName("messages");
                 writer.WriteStartArray();
                 writer.WriteStartObject();
@@ -189,7 +230,7 @@ public class AbstractChatCompletionClient : IDisposable
                 writer.WriteEndObject();
                 writer.WriteEndArray();
                 writer.WriteComma();
-        
+
                 writer.WritePropertyName("response_format");
                 writer.WriteStartObject();
                 writer.WritePropertyName("type");
@@ -198,20 +239,15 @@ public class AbstractChatCompletionClient : IDisposable
                 writer.WritePropertyName("json_schema");
                 writer.WriteObject(await GetStructuredOutputSchemaAsBlittable());
                 writer.WriteEndObject();
-        
+
                 writer.WriteEndObject();
             }
         }, Conventions);
 
-        
+
         content.Headers.Add("Content-Type", "application/json");
 
-        return new HttpRequestMessage
-        {
-            Method = HttpMethod.Post,
-            Content = content,
-            RequestUri = new Uri("/v1/chat/completions", UriKind.Relative)
-        };
+        return new HttpRequestMessage { Method = HttpMethod.Post, Content = content, RequestUri = new Uri("/v1/chat/completions", UriKind.Relative) };
 
         async Task<BlittableJsonReaderObject> GetStructuredOutputSchemaAsBlittable()
         {
@@ -246,28 +282,19 @@ public class AbstractChatCompletionClient : IDisposable
         var reqId = GetRequestId(headers);
 
         if (responseContent.TryGet("error", out BlittableJsonReaderObject errBjo) is false || errBjo.TryGet("message", out string message) is false)
-            throw new GenAiUnexpectedResponseException("Unexpected response: " + responseContent)
-            {
-                RequestId = reqId
-            };
+            throw new GenAiUnexpectedResponseException("Unexpected response: " + responseContent) { RequestId = reqId };
 
         switch (response.StatusCode)
         {
             case HttpStatusCode.TooManyRequests:
 
                 if (errBjo.TryGet("type", out string type) == false)
-                    throw new GenAiUnexpectedResponseException($"No type specified (status {HttpStatusCode.TooManyRequests}): " + responseContent)
-                    {
-                        RequestId = reqId
-                    };
+                    throw new GenAiUnexpectedResponseException($"No type specified (status {HttpStatusCode.TooManyRequests}): " + responseContent) { RequestId = reqId };
 
                 switch (type)
                 {
                     case "insufficient_quota":
-                        throw new GenAiInsufficientQuotaException(message)
-                        {
-                            RequestId = reqId
-                        };
+                        throw new GenAiInsufficientQuotaException(message) { RequestId = reqId };
 
                     case "tokens":
                     case "requests":
@@ -275,10 +302,7 @@ public class AbstractChatCompletionClient : IDisposable
                         var retryAfter = TimeSpan.Zero;
                         if (headers.Contains("retry-after-ms") == false)
                         {
-                            throw new GenAiTooManyTokensException(message)
-                            {
-                                RequestId = reqId
-                            };
+                            throw new GenAiTooManyTokensException(message) { RequestId = reqId };
                         }
 
                         if (headers.TryGetValues("x-ratelimit-reset-tokens", out var resetTokensValues))
@@ -300,22 +324,12 @@ public class AbstractChatCompletionClient : IDisposable
                         }
 
                         // TPM/RPM - should retry only for this exception
-                        throw new GenAiRateLimitException(message)
-                        {
-                            RetryAfter = retryAfter,
-                            RequestId = reqId
-                        };
+                        throw new GenAiRateLimitException(message) { RetryAfter = retryAfter, RequestId = reqId };
                     default:
-                        throw new GenAiTooManyRequestsException(message)
-                        {
-                            RequestId = reqId
-                        };
+                        throw new GenAiTooManyRequestsException(message) { RequestId = reqId };
                 }
             default:
-                throw new GenUnsuccessfulRequestException(message, response.StatusCode)
-                {
-                    RequestId = reqId
-                };
+                throw new GenUnsuccessfulRequestException(message, response.StatusCode) { RequestId = reqId };
         }
     }
 
@@ -325,7 +339,8 @@ public class AbstractChatCompletionClient : IDisposable
         {
             return string.Empty;
         }
-        return  values.FirstOrDefault();
+
+        return values.FirstOrDefault();
     }
 
     private static bool TryParseResetTime(string input, out TimeSpan time)
@@ -381,6 +396,7 @@ public class AbstractChatCompletionClient : IDisposable
                     return false;
             }
         }
+
         time = total;
         return true;
     }
@@ -408,76 +424,83 @@ public class AbstractChatCompletionClient : IDisposable
         };
 
         return JsonSerializer.Serialize(schema, new JsonSerializerOptions { WriteIndented = true });
+    }
+    
+    public static string GenerateJsonObjectFromSampleObject(string s)
+    {
+        var doc = JsonDocument.Parse(s);
+        var element = GenerateJsonObjectFromSampleObject(doc.RootElement);
+        return JsonSerializer.Serialize(element, new JsonSerializerOptions { WriteIndented = true });
+    }
 
-        JsonObject GenerateJsonObjectFromSampleObject(JsonElement element)
+    static JsonObject GenerateJsonObjectFromSampleObject(JsonElement element)
+    {
+        var jsonObj = new JsonObject();
+
+        switch (element.ValueKind)
         {
-            var jsonObj = new JsonObject();
+            case JsonValueKind.Object:
+                jsonObj["type"] = "object";
+                var props = new JsonObject();
+                var required = new JsonArray();
+                foreach (JsonProperty prop in element.EnumerateObject())
+                {
+                    props[prop.Name] = GenerateJsonObjectFromSampleObject(prop.Value);
+                    required.Add(prop.Name);
+                }
 
-            switch (element.ValueKind)
-            {
-                case JsonValueKind.Object:
-                    jsonObj["type"] = "object";
-                    var props = new JsonObject();
-                    var required = new JsonArray();
-                    foreach (JsonProperty prop in element.EnumerateObject())
-                    {
-                        props[prop.Name] = GenerateJsonObjectFromSampleObject(prop.Value);
-                        required.Add(prop.Name);
-                    }
-                    jsonObj["properties"] = props;
-                    jsonObj["required"] = required;
-                    jsonObj["additionalProperties"] = false;
+                jsonObj["properties"] = props;
+                jsonObj["required"] = required;
+                jsonObj["additionalProperties"] = false;
 
-                    break;
+                break;
 
-                case JsonValueKind.Array:
-                    jsonObj["type"] = "array";
-                    var content = element.EnumerateArray().FirstOrDefault();
-                    if (content.ValueKind is not JsonValueKind.Undefined)
-                    {
-                        jsonObj["items"] = GenerateJsonObjectFromSampleObject(content);
-                    }
-                    else
-                    {
-                        jsonObj["items"] = new JsonObject
-                        {
-                            ["type"] = "null",
-                        };
-                    }
-                    break;
+            case JsonValueKind.Array:
+                jsonObj["type"] = "array";
+                var content = element.EnumerateArray().FirstOrDefault();
+                if (content.ValueKind is not JsonValueKind.Undefined)
+                {
+                    jsonObj["items"] = GenerateJsonObjectFromSampleObject(content);
+                }
+                else
+                {
+                    jsonObj["items"] = new JsonObject { ["type"] = "null", };
+                }
 
-                case JsonValueKind.String:
-                    jsonObj["type"] = "string";
-                    jsonObj["description"] = element.GetString();
-                    break;
+                break;
 
-                case JsonValueKind.Number:
-                    if (element.TryGetInt32(out _))
-                    {
-                        jsonObj["type"] = "integer";
-                    }
-                    else
-                    {
-                        jsonObj["type"] = "number";
-                    }
-                    break;
+            case JsonValueKind.String:
+                jsonObj["type"] = "string";
+                jsonObj["description"] = element.GetString();
+                break;
 
-                case JsonValueKind.True:
-                case JsonValueKind.False:
-                    jsonObj["type"] = "boolean";
-                    break;
+            case JsonValueKind.Number:
+                if (element.TryGetInt32(out _))
+                {
+                    jsonObj["type"] = "integer";
+                }
+                else
+                {
+                    jsonObj["type"] = "number";
+                }
 
-                case JsonValueKind.Null:
-                    jsonObj["type"] = "null";
-                    break;
+                break;
 
-                default:
-                    jsonObj["type"] = "none";
-                    break;
-            }
+            case JsonValueKind.True:
+            case JsonValueKind.False:
+                jsonObj["type"] = "boolean";
+                break;
 
-            return jsonObj;
+            case JsonValueKind.Null:
+                jsonObj["type"] = "null";
+                break;
+
+            default:
+                jsonObj["type"] = "none";
+                break;
         }
+
+        return jsonObj;
     }
 
     internal static string GetAllowedUniqueName(string schemaOrSampleObject)
