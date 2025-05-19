@@ -54,20 +54,15 @@ public class AbstractChatCompletionClient : IDisposable
     }
 
     
-    public async Task<AiResponse> CompleteAsync2(JsonOperationContext context, List<AiMessage> messages, DynamicJsonArray tools, AiUsage usage,
+    public async Task<AiResponse> CompleteAsync2(JsonOperationContext context, List<BlittableJsonReaderObject> messages, BlittableJsonReaderArray tools, AiUsage usage,
         CancellationToken token = default)
     {
         using var _ = _contextPool.AllocateOperationContext(out var ctx);
-        var msgsJson = new DynamicJsonArray();
-        foreach (var m in messages)
-        {
-            msgsJson.Add(m.ToJson());
-        }
 
         var bodyJson = new DynamicJsonValue
         {
             ["model"] = _model,
-            ["messages"] = msgsJson,
+            ["messages"] = messages,
             ["tools"] = tools,
             ["response_format"] = new DynamicJsonValue
             {
@@ -97,6 +92,8 @@ public class AbstractChatCompletionClient : IDisposable
         {
             throw new GenAiUnexpectedResponseException("No message/content property in choice: " + responseContent) { RequestId = GetRequestId(response.Headers) };
         }
+        
+        messages.Add(context.ReadObject(msg,"copy-msg"));
         
         if (responseContent.TryGet("usage", out BlittableJsonReaderObject usageJson) == false)
             throw new GenAiUnexpectedResponseException("No choices property in response: " + responseContent) { RequestId = GetRequestId(response.Headers) };
