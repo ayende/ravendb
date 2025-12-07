@@ -105,11 +105,4 @@ namespace Voron.Impl.Journal
         [FieldOffset(8)]
         public int EncodedSectionsCount;
     }
-    
-    [StructLayout(LayoutKind.Explicit)]
-    public struct EncodedFreePagesSection
-    {
-        [FieldOffset(0)]
-        public int Size;
-    }
 }
