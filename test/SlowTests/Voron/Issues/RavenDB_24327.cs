@@ -608,13 +608,8 @@ public class RavenDB_24327 : StorageTest
 
         Assert.True(written > ushort.MaxValue);
 
-        var readPages = JournalReader.HandleEncodedFreePage(buffer, allocator);
+        JournalReader.HandleEncodedFreePage(buffer, bufferAllocation.Length, freePages, allocator, errorOnMissingPage: true);
 
-        Assert.Equal(numberOfPages, readPages.Count);
-
-        for (int i = 0; i < numberOfPages; i++)
-        {
-            Assert.Contains(readPages[i], freePages);
-        }
+        Assert.Empty(freePages);
     }
 }

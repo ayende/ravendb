@@ -2541,7 +2541,8 @@ namespace Voron.Impl.Journal
             header->EncodedSectionsSize = checked((int)(output - (dst + sizeof(FreePagesHeader))));
 
             return output - dst;
-
+            
+            
             ByteStringContext<ByteStringMemoryCache>.InternalScope ExtractSortedPagesFrom(out long* buffer, out int count)
             {
                 var scope = allocator.Allocate(freedPages.Count * sizeof(long), out var ptr);
@@ -2552,7 +2553,7 @@ namespace Voron.Impl.Journal
                 {
                     buffer[pos++] = page;
                 }
-                Sort.Run(pages, count);
+                Sort.Run(buffer, count);
                 return scope;
             }
         }

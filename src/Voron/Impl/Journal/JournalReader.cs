@@ -245,7 +245,7 @@ namespace Voron.Impl.Journal
 
             if ((current->Flags & TransactionPersistenceModeFlags.HasFreePages) == TransactionPersistenceModeFlags.HasFreePages)
             {
-                HandleEncodedFreePage(outputPage + totalRead, current->UncompressedSize - totalRead, _allocator);
+                HandleEncodedFreePage(outputPage + totalRead, current->UncompressedSize - totalRead, _modifiedPages, _allocator);
             }
             
             LastTransactionHeader = current;
@@ -253,7 +253,7 @@ namespace Voron.Impl.Journal
             return true;
         }
 
-        internal void HandleEncodedFreePage(byte* src, long validSize, ByteStringContext allocator)
+        internal static void HandleEncodedFreePage(byte* src, long validSize, HashSet<long> modifiedPages, ByteStringContext allocator, bool errorOnMissingPage = false)
         {
             var end = src + validSize;
             var readPtr = src;
@@ -293,7 +293,8 @@ namespace Voron.Impl.Journal
                     for (int j = 0; j < readCount; j++)
                     {
                         var freedPage = freePages[j];
-                        _modifiedPages.Remove(freedPage);
+                        if(modifiedPages.Remove(freedPage) is false && errorOnMissingPage)
+                            throw new InvalidOperationException($"{freedPage} is not in the transaction data"); // used for tests only
                     }
                 }
                 
