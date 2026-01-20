@@ -1,6 +1,7 @@
 ﻿using System;
 using JetBrains.Annotations;
 using Raven.Server.Documents.TransactionMerger.Commands;
+using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 
 namespace Raven.Server.Rachis.Commands;
@@ -29,6 +30,19 @@ public sealed class ElectorCastVoteInTermCommand : MergedTransactionCommand<Clus
 
     public override IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, MergedTransactionCommand<ClusterOperationContext, ClusterTransaction>> ToDto(ClusterOperationContext context)
     {
-        throw new NotImplementedException();
+        return new ElectorCastVoteInTermCommandDto
+        {
+            RequestVote = _requestVote
+        };
+    }
+}
+
+internal sealed class ElectorCastVoteInTermCommandDto : IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, ElectorCastVoteInTermCommand>
+{
+    public RequestVote RequestVote { get; set; }
+
+    public ElectorCastVoteInTermCommand ToCommand(ClusterOperationContext context, ServerStore serverStore)
+    {
+        return new ElectorCastVoteInTermCommand(serverStore.Engine, RequestVote);
     }
 }

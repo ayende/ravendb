@@ -1,6 +1,7 @@
 ﻿using System;
 using Raven.Server.Documents.TransactionMerger.Commands;
 using Raven.Server.ServerWide.Context;
+using Raven.Server.ServerWide;
 
 namespace Raven.Server.Rachis.Commands;
 
@@ -21,6 +22,19 @@ public class InitializeSchemaForNotificationsCommand : MergedTransactionCommand<
 
     public override IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, MergedTransactionCommand<ClusterOperationContext, ClusterTransaction>> ToDto(ClusterOperationContext context)
     {
-        throw new NotImplementedException();
+        return new InitializeSchemaForNotificationsCommandDto
+        {
+            TableName = _tableName
+        };
+    }
+}
+
+internal sealed class InitializeSchemaForNotificationsCommandDto : IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, InitializeSchemaForNotificationsCommand>
+{
+    public string TableName { get; set; }
+
+    public InitializeSchemaForNotificationsCommand ToCommand(ClusterOperationContext context, ServerStore serverStore)
+    {
+        return new InitializeSchemaForNotificationsCommand(TableName);
     }
 }

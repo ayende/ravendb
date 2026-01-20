@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using Raven.Client.Http;
 using Raven.Server.Documents.TransactionMerger.Commands;
+using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 using Voron.Impl;
 
@@ -57,7 +58,22 @@ namespace Raven.Server.Rachis.Commands
 
         public override IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, MergedTransactionCommand<ClusterOperationContext, ClusterTransaction>> ToDto(ClusterOperationContext context)
         {
-            throw new NotImplementedException();
+            return new HardResetToNewClusterCommandDto
+            {
+                Tag = _tag,
+                TopologyId = _topologyId
+            };
+        }
+    }
+
+    internal sealed class HardResetToNewClusterCommandDto : IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, HardResetToNewClusterCommand>
+    {
+        public string Tag { get; set; }
+        public string TopologyId { get; set; }
+
+        public HardResetToNewClusterCommand ToCommand(ClusterOperationContext context, ServerStore serverStore)
+        {
+            return new HardResetToNewClusterCommand(serverStore.Engine, Tag, TopologyId);
         }
     }
 

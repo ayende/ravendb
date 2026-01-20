@@ -1,6 +1,7 @@
 ﻿using System;
 using Raven.Client.ServerWide;
 using Raven.Server.Documents.TransactionMerger.Commands;
+using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 
 namespace Raven.Server.Rachis.Commands
@@ -40,7 +41,27 @@ namespace Raven.Server.Rachis.Commands
 
         public override IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, MergedTransactionCommand<ClusterOperationContext, ClusterTransaction>> ToDto(ClusterOperationContext context)
         {
-            throw new NotImplementedException();
+            return new SetNewStateCommandDto
+            {
+                RachisState = _rachisState,
+                ExpectedTerm = _expectedTerm,
+                StateChangedReason = _stateChangedReason,
+                DisposeAsync = _disposeAsync
+            };
+        }
+    }
+
+    internal sealed class SetNewStateCommandDto : IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, SetNewStateCommand>
+    {
+        public RachisState RachisState { get; set; }
+        public long ExpectedTerm { get; set; }
+        public string StateChangedReason { get; set; }
+        public bool DisposeAsync { get; set; }
+
+        public SetNewStateCommand ToCommand(ClusterOperationContext context, ServerStore serverStore)
+        {
+            // We do not capture parent IDisposable nor beforeStateChangedEvent delegate for replay
+            return new SetNewStateCommand(serverStore.Engine, RachisState, parent: null, expectedTerm: ExpectedTerm, stateChangedReason: StateChangedReason, beforeStateChangedEvent: null, disposeAsync: DisposeAsync);
         }
     }
 

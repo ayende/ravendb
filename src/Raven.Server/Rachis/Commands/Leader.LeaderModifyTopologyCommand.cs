@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using JetBrains.Annotations;
 using Raven.Client.Http;
 using Raven.Server.Documents.TransactionMerger.Commands;
+using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 using Exception = System.Exception;
 
@@ -154,8 +155,29 @@ public partial class Leader
         public override IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, MergedTransactionCommand<ClusterOperationContext, ClusterTransaction>> ToDto(
             ClusterOperationContext context)
         {
-            throw new NotImplementedException();
+            return new LeaderModifyTopologyCommandDto
+            {
+                Modification = _modification,
+                NodeTag = _nodeTag,
+                NodeUrl = _nodeUrl,
+                ValidateNotInTopology = _validateNotInTopology
+            };
         }
     }
 
+}
+
+internal sealed class LeaderModifyTopologyCommandDto : IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, Leader.LeaderModifyTopologyCommand>
+{
+    public Leader.TopologyModification Modification { get; set; }
+    public string NodeTag { get; set; }
+    public string NodeUrl { get; set; }
+    public bool ValidateNotInTopology { get; set; }
+
+    public Leader.LeaderModifyTopologyCommand ToCommand(ClusterOperationContext context, ServerStore serverStore)
+    {
+        var engine = serverStore.Engine;
+        var leader = engine.CurrentLeader;
+        return new Leader.LeaderModifyTopologyCommand(engine, leader, Modification, NodeTag, NodeUrl, ValidateNotInTopology);
+    }
 }

@@ -364,7 +364,24 @@ public sealed class FollowerReadAndCommitSnapshotCommand : MergedTransactionComm
     public override IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, MergedTransactionCommand<ClusterOperationContext, ClusterTransaction>> ToDto(
         ClusterOperationContext context)
     {
-        throw new NotImplementedException();
+        return new FollowerReadAndCommitSnapshotCommandDto
+        {
+            Snapshot = new InstallSnapshot
+            {
+                LastIncludedIndex = _snapshot.LastIncludedIndex,
+                LastIncludedTerm = _snapshot.LastIncludedTerm,
+                Topology = _snapshot.Topology?.Clone(context)
+            }
+        };
     }
+}
 
+internal sealed class FollowerReadAndCommitSnapshotCommandDto : IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, FollowerReadAndCommitSnapshotCommand>
+{
+    public InstallSnapshot Snapshot { get; set; }
+
+    public FollowerReadAndCommitSnapshotCommand ToCommand(ClusterOperationContext context, ServerStore serverStore)
+    {
+        return new FollowerReadAndCommitSnapshotCommand(serverStore.Engine, follower: serverStore.Engine.Follower!, snapshot: Snapshot, token: System.Threading.CancellationToken.None);
+    }
 }

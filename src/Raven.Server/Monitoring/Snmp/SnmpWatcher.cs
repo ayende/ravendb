@@ -714,8 +714,16 @@ namespace Raven.Server.Monitoring.Snmp
 
             public override IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, MergedTransactionCommand<ClusterOperationContext, ClusterTransaction>> ToDto(ClusterOperationContext context)
             {
-                throw new NotImplementedException();
-}
+                return new IncrementEngineBootsCommandDto();
+            }
+        }
+
+        private sealed class IncrementEngineBootsCommandDto : IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, IncrementEngineBootsCommand>
+        {
+            public IncrementEngineBootsCommand ToCommand(ClusterOperationContext context, ServerStore serverStore)
+            {
+                return new IncrementEngineBootsCommand();
+            }
         }
     }
 }

@@ -5,6 +5,7 @@ using Sparrow.Binary;
 using Sparrow.Json.Parsing;
 using Voron;
 using Voron.Data.Tables;
+using Raven.Server.ServerWide;
 
 namespace Raven.Server.Rachis.Commands
 {
@@ -71,7 +72,22 @@ namespace Raven.Server.Rachis.Commands
 
         public override IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, MergedTransactionCommand<ClusterOperationContext, ClusterTransaction>> ToDto(ClusterOperationContext context)
         {
-            throw new NotImplementedException();
+            return new RemoveEntryFromRaftLogCommandDto
+            {
+                Index = _index,
+                Tag = _tag
+            };
+        }
+    }
+
+    internal sealed class RemoveEntryFromRaftLogCommandDto : IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, RemoveEntryFromRaftLogCommand>
+    {
+        public long Index { get; set; }
+        public string Tag { get; set; }
+
+        public RemoveEntryFromRaftLogCommand ToCommand(ClusterOperationContext context, ServerStore serverStore)
+        {
+            return new RemoveEntryFromRaftLogCommand(Tag, Index, serverStore.Engine.LogHistory);
         }
     }
 

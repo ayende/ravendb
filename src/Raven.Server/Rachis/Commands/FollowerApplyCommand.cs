@@ -3,6 +3,8 @@ using System;
 using JetBrains.Annotations;
 using Raven.Server.Documents.TransactionMerger.Commands;
 using Raven.Server.ServerWide.Context;
+using Sparrow.Json;
+using Raven.Server.ServerWide;
 using System.Collections.Generic;
 using System.Diagnostics;
 
@@ -93,6 +95,59 @@ public sealed class FollowerApplyCommand : MergedTransactionCommand<ClusterOpera
 
     public override IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, MergedTransactionCommand<ClusterOperationContext, ClusterTransaction>> ToDto(ClusterOperationContext context)
     {
-        throw new NotImplementedException();
+        var entriesDto = new List<FollowerApplyCommandDto.RachisEntryDto>(_entries.Count);
+        foreach (var e in _entries)
+        {
+            entriesDto.Add(new FollowerApplyCommandDto.RachisEntryDto
+            {
+                Term = e.Term,
+                Index = e.Index,
+                Flags = e.Flags,
+                Entry = e.Entry?.Clone(context)
+            });
+        }
+
+        return new FollowerApplyCommandDto
+        {
+            Term = _term,
+            AppendEntries = _appendEntries,
+            Entries = entriesDto
+        };
+    }
+}
+
+internal sealed class FollowerApplyCommandDto : IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, FollowerApplyCommand>
+{
+    public long Term { get; set; }
+    public AppendEntries AppendEntries { get; set; }
+    public List<RachisEntryDto> Entries { get; set; }
+
+    public sealed class RachisEntryDto
+    {
+        public long Term { get; set; }
+        public long Index { get; set; }
+        public BlittableJsonReaderObject Entry { get; set; }
+        public RachisEntryFlags Flags { get; set; }
+    }
+
+    public FollowerApplyCommand ToCommand(ClusterOperationContext context, ServerStore serverStore)
+    {
+        var entries = new List<RachisEntry>(Entries?.Count ?? 0);
+        if (Entries != null)
+        {
+            foreach (var e in Entries)
+            {
+                entries.Add(new RachisEntry
+                {
+                    Term = e.Term,
+                    Index = e.Index,
+                    Flags = e.Flags,
+                    Entry = e.Entry?.Clone(context)
+                });
+            }
+        }
+
+        var sw = Stopwatch.StartNew();
+        return new FollowerApplyCommand(serverStore.Engine, Term, entries, AppendEntries, sw);
     }
 }

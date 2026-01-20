@@ -1,5 +1,6 @@
 ﻿using System;
 using JetBrains.Annotations;
+using Raven.Server.ServerWide;
 using Raven.Server.Documents.TransactionMerger.Commands;
 using Raven.Server.ServerWide.Context;
 
@@ -26,7 +27,20 @@ public sealed class LowestIndexUpdateCommand : MergedTransactionCommand<ClusterO
 
     public override IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, MergedTransactionCommand<ClusterOperationContext, ClusterTransaction>> ToDto(ClusterOperationContext context)
     {
-        throw new NotImplementedException();
+        return new LowestIndexUpdateCommandDto
+        {
+            LowestIndexInEntireCluster = _lowestIndexInEntireCluster
+        };
+    }
+}
+
+internal sealed class LowestIndexUpdateCommandDto : IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, LowestIndexUpdateCommand>
+{
+    public long LowestIndexInEntireCluster { get; set; }
+
+    public LowestIndexUpdateCommand ToCommand(ClusterOperationContext context, ServerStore serverStore)
+    {
+        return new LowestIndexUpdateCommand(serverStore.Engine, LowestIndexInEntireCluster);
     }
 }
 

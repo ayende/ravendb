@@ -4,6 +4,9 @@ using Raven.Server.Documents.PeriodicBackup;
 using Raven.Server.ServerWide.Context;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
+using Raven.Client.Json.Serialization;
+using Raven.Server.Documents;
+using Raven.Server.ServerWide;
 
 namespace Raven.Server.Documents.TransactionMerger.Commands
 {
@@ -29,7 +32,29 @@ namespace Raven.Server.Documents.TransactionMerger.Commands
 
         public override IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, MergedTransactionCommand<ClusterOperationContext, ClusterTransaction>> ToDto(ClusterOperationContext context)
         {
-            throw new NotImplementedException();
+            return new UpdateLocalBackupStatusCommandDto
+            {
+                BackupStatus = _backupStatusAsJson,
+                DatabaseName = _databaseName,
+                TaskId = _taskId
+            };
+        }
+    }
+
+    internal sealed class UpdateLocalBackupStatusCommandDto : IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, UpdateLocalBackupStatusCommand>
+    {
+        public DynamicJsonValue BackupStatus { get; set; }
+        public string DatabaseName { get; set; }
+        public long TaskId { get; set; }
+
+        public UpdateLocalBackupStatusCommand ToCommand(ClusterOperationContext context, ServerStore serverStore)
+        {
+            // Rehydrate to PeriodicBackupStatus through blittable to keep parity with execution path
+            using (var bjro = context.ReadObject(BackupStatus, $"backup-status-update-taskId-{TaskId}", BlittableJsonDocumentBuilder.UsageMode.ToDisk))
+            {
+                var status = JsonDeserializationClient.PeriodicBackupStatus(bjro);
+                return new UpdateLocalBackupStatusCommand(status, DatabaseName, TaskId);
+            }
         }
     }
 }

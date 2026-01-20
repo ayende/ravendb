@@ -1,6 +1,7 @@
 ﻿using System;
 using Raven.Server.Documents.TransactionMerger.Commands;
 using Raven.Server.ServerWide.Context;
+using Raven.Server.ServerWide;
 
 namespace Raven.Server.Rachis.Commands;
 
@@ -21,6 +22,19 @@ public class DeleteTableForNotificationsCommand : MergedTransactionCommand<Clust
 
     public override IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, MergedTransactionCommand<ClusterOperationContext, ClusterTransaction>> ToDto(ClusterOperationContext context)
     {
-        throw new NotImplementedException();
+        return new DeleteTableForNotificationsCommandDto
+        {
+            TableName = _tableName
+        };
+    }
+}
+
+internal sealed class DeleteTableForNotificationsCommandDto : IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, DeleteTableForNotificationsCommand>
+{
+    public string TableName { get; set; }
+
+    public DeleteTableForNotificationsCommand ToCommand(ClusterOperationContext context, ServerStore serverStore)
+    {
+        return new DeleteTableForNotificationsCommand(TableName);
     }
 }

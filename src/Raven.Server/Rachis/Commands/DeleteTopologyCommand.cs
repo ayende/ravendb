@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using Raven.Client.Http;
 using Raven.Server.Documents.TransactionMerger.Commands;
+using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 
 namespace Raven.Server.Rachis.Commands;
@@ -33,6 +34,14 @@ public sealed class DeleteTopologyCommand : MergedTransactionCommand<ClusterOper
 
     public override IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, MergedTransactionCommand<ClusterOperationContext, ClusterTransaction>> ToDto(ClusterOperationContext context)
     {
-        throw new NotImplementedException();
+        return new DeleteTopologyCommandDto();
+    }
+}
+
+internal sealed class DeleteTopologyCommandDto : IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, DeleteTopologyCommand>
+{
+    public DeleteTopologyCommand ToCommand(ClusterOperationContext context, ServerStore serverStore)
+    {
+        return new DeleteTopologyCommand(serverStore.Engine);
     }
 }

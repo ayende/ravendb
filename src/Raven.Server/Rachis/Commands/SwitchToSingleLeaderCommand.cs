@@ -1,5 +1,6 @@
 ﻿using System;
 using Raven.Server.Documents.TransactionMerger.Commands;
+using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 
 namespace Raven.Server.Rachis.Commands
@@ -21,7 +22,15 @@ namespace Raven.Server.Rachis.Commands
 
         public override IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, MergedTransactionCommand<ClusterOperationContext, ClusterTransaction>> ToDto(ClusterOperationContext context)
         {
-            throw new NotImplementedException();
+            return new SwitchToSingleLeaderCommandDto();
+        }
+    }
+
+    internal sealed class SwitchToSingleLeaderCommandDto : IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, SwitchToSingleLeaderCommand>
+    {
+        public SwitchToSingleLeaderCommand ToCommand(ClusterOperationContext context, ServerStore serverStore)
+        {
+            return new SwitchToSingleLeaderCommand(serverStore.Engine);
         }
     }
 }

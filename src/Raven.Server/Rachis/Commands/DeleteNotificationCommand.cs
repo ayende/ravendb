@@ -2,6 +2,7 @@
 using Raven.Server.Documents.TransactionMerger.Commands;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.NotificationCenter;
+using Raven.Server.ServerWide;
 
 namespace Raven.Server.Rachis.Commands
 {
@@ -17,7 +18,20 @@ namespace Raven.Server.Rachis.Commands
 
         public override IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, MergedTransactionCommand<ClusterOperationContext, ClusterTransaction>> ToDto(ClusterOperationContext context)
         {
-            throw new NotImplementedException();
+            return new DeleteNotificationCommandDto
+            {
+                NotificationId = notificationId
+            };
+        }
+    }
+
+    internal sealed class DeleteNotificationCommandDto : IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, DeleteNotificationCommand>
+    {
+        public string NotificationId { get; set; }
+
+        public DeleteNotificationCommand ToCommand(ClusterOperationContext context, ServerStore serverStore)
+        {
+            return new DeleteNotificationCommand(NotificationId, serverStore.NotificationCenter.Storage);
         }
     }
 }

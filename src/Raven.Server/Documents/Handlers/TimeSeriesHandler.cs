@@ -261,7 +261,24 @@ namespace Raven.Server.Documents.Handlers
 
             public override IReplayableCommandDto<DocumentsOperationContext, DocumentsTransaction, MergedTransactionCommand<DocumentsOperationContext, DocumentsTransaction>> ToDto(DocumentsOperationContext context)
             {
-                throw new System.NotImplementedException();
+                return new ExecuteTimeSeriesBatchCommandDto
+                {
+                    DocumentId = _documentId,
+                    Operation = _operation,
+                    FromEtl = _fromEtl
+                };
+            }
+        }
+
+        internal sealed class ExecuteTimeSeriesBatchCommandDto : IReplayableCommandDto<DocumentsOperationContext, DocumentsTransaction, TimeSeriesHandler.ExecuteTimeSeriesBatchCommand>
+        {
+            public string DocumentId { get; set; }
+            public TimeSeriesOperation Operation { get; set; }
+            public bool FromEtl { get; set; }
+
+            public TimeSeriesHandler.ExecuteTimeSeriesBatchCommand ToCommand(DocumentsOperationContext context, DocumentDatabase database)
+            {
+                return new TimeSeriesHandler.ExecuteTimeSeriesBatchCommand(database, DocumentId, Operation, FromEtl);
             }
         }
 
@@ -440,7 +457,139 @@ namespace Raven.Server.Documents.Handlers
             }
             public override IReplayableCommandDto<DocumentsOperationContext, DocumentsTransaction, MergedTransactionCommand<DocumentsOperationContext, DocumentsTransaction>> ToDto(DocumentsOperationContext context)
             {
-                throw new NotImplementedException();
+                // Serialize the accumulated items and deleted ranges so we can faithfully replay this command
+                var dto = new SmugglerTimeSeriesBatchCommandDto
+                {
+                    Dictionary = new Dictionary<string, List<SmugglerTimeSeriesBatchCommandDto.TimeSeriesItemDto>>(StringComparer.OrdinalIgnoreCase),
+                    DeletedRanges = new Dictionary<string, List<SmugglerTimeSeriesBatchCommandDto.TimeSeriesDeletedRangeItemDto>>(StringComparer.OrdinalIgnoreCase)
+                };
+
+                foreach (var kvp in _dictionary)
+                {
+                    var list = new List<SmugglerTimeSeriesBatchCommandDto.TimeSeriesItemDto>(kvp.Value.Count);
+                    foreach (var item in kvp.Value)
+                    {
+                        // capture the segment bytes
+                        var size = item.Segment.NumberOfBytes;
+                        var bytes = new byte[size];
+                        unsafe
+                        {
+                            fixed (byte* dst = bytes)
+                            {
+                                System.Buffer.MemoryCopy(item.Segment.Ptr, dst, size, size);
+                            }
+                        }
+
+                        list.Add(new SmugglerTimeSeriesBatchCommandDto.TimeSeriesItemDto
+                        {
+                            DocId = item.DocId?.ToString(),
+                            Name = item.Name,
+                            Collection = item.Collection?.ToString(),
+                            Baseline = item.Baseline,
+                            SegmentBytesBase64 = Convert.ToBase64String(item.Segment.AsReadOnlySpan())
+                        });
+                    }
+                    dto.Dictionary[kvp.Key] = list;
+                }
+
+                foreach (var kvp in _deletedRanges)
+                {
+                    var list = new List<SmugglerTimeSeriesBatchCommandDto.TimeSeriesDeletedRangeItemDto>(kvp.Value.Count);
+                    foreach (var item in kvp.Value)
+                    {
+                        list.Add(new SmugglerTimeSeriesBatchCommandDto.TimeSeriesDeletedRangeItemDto
+                        {
+                            DocId = item.DocId?.ToString(),
+                            Name = item.Name?.ToString(),
+                            Collection = item.Collection?.ToString(),
+                            From = item.From,
+                            To = item.To
+                        });
+                    }
+                    dto.DeletedRanges[kvp.Key] = list;
+                }
+
+                return dto;
+            }
+        }
+
+        internal sealed class SmugglerTimeSeriesBatchCommandDto : IReplayableCommandDto<DocumentsOperationContext, DocumentsTransaction, TimeSeriesHandler.SmugglerTimeSeriesBatchCommand>
+        {
+            public Dictionary<string, List<TimeSeriesItemDto>> Dictionary { get; set; }
+            public Dictionary<string, List<TimeSeriesDeletedRangeItemDto>> DeletedRanges { get; set; }
+
+            public sealed class TimeSeriesItemDto
+            {
+                public string DocId { get; set; }
+                public string Name { get; set; }
+                public string Collection { get; set; }
+                public DateTime Baseline { get; set; }
+                public string SegmentBytesBase64 { get; set; }
+            }
+
+            public sealed class TimeSeriesDeletedRangeItemDto
+            {
+                public string DocId { get; set; }
+                public string Name { get; set; }
+                public string Collection { get; set; }
+                public DateTime From { get; set; }
+                public DateTime To { get; set; }
+            }
+
+            public TimeSeriesHandler.SmugglerTimeSeriesBatchCommand ToCommand(DocumentsOperationContext context, DocumentDatabase database)
+            {
+                var cmd = new TimeSeriesHandler.SmugglerTimeSeriesBatchCommand(database);
+
+                if (Dictionary != null)
+                {
+                    foreach (var kvp in Dictionary)
+                    {
+                        foreach (var dto in kvp.Value)
+                        {
+                            // Reconstruct TimeSeriesItem
+                            var item = new TimeSeriesItem
+                            {
+                                DocId = context.GetLazyString(dto.DocId),
+                                Name = dto.Name,
+                                Collection = context.GetLazyString(dto.Collection),
+                                Baseline = dto.Baseline
+                            };
+
+                            // allocate and copy the segment bytes into an unmanaged buffer with max capacity
+                            unsafe
+                            {
+                                var memory = context.GetMemory(TimeSeriesStorage.MaxSegmentSize);
+                                byte[] bytes = Convert.FromBase64String(dto.SegmentBytesBase64);
+                                bytes.CopyTo(memory.AsSpan());
+                                item.Segment = new TimeSeriesValuesSegment(memory.Address, TimeSeriesStorage.MaxSegmentSize);
+                                item.SegmentSize = bytes.Length;
+                            }
+
+                            cmd.AddToDictionary(item);
+                        }
+                    }
+                }
+
+                if (DeletedRanges != null)
+                {
+                    foreach (var kvp in DeletedRanges)
+                    {
+                        foreach (var dto in kvp.Value)
+                        {
+                            var range = new TimeSeriesDeletedRangeItemForSmuggler
+                            {
+                                DocId = context.GetLazyString(dto.DocId),
+                                Name = context.GetLazyString(dto.Name),
+                                Collection = context.GetLazyString(dto.Collection),
+                                From = dto.From,
+                                To = dto.To
+                            };
+                            cmd.AddToDeletedRanges(range);
+                        }
+                    }
+                }
+
+                return cmd;
             }
         }
 

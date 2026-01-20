@@ -7,6 +7,7 @@ using Raven.Server.ServerWide.Context;
 using System.Diagnostics.CodeAnalysis;
 using Sparrow.Json;
 using Voron.Impl;
+using Raven.Server.ServerWide;
 
 namespace Raven.Server.Rachis
 {
@@ -185,7 +186,24 @@ namespace Raven.Server.Rachis
 
             public override IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, MergedTransactionCommand<ClusterOperationContext, ClusterTransaction>> ToDto(ClusterOperationContext context)
             {
-                throw new NotImplementedException();
+                // We must persist the command JSON so it can be reconstructed deterministically during replay.
+                // Prefer the already prepared Raw blittable when available, otherwise synthesize it via ToJson.
+                BlittableJsonReaderObject cmdJson;
+                if (Command.Raw != null)
+                {
+                    cmdJson = Command.Raw.Clone(context);
+                }
+                else
+                {
+                    var djv = Command.ToJson(context);
+                    cmdJson = context.ReadObject(djv, "rachis-merged-command");
+                }
+
+                return new RachisMergedCommandDto
+                {
+                    CommandJson = cmdJson,
+                    TimeoutTicks = _timeout.Ticks
+                };
             }
 
             public void Dispose()
@@ -194,6 +212,24 @@ namespace Raven.Server.Rachis
                 Command.Raw = null;
                 BlittableResultWriter?.Dispose();
                 _ctxReturn?.Dispose();
+            }
+        }
+    }
+
+    internal sealed class RachisMergedCommandDto : IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, Leader.RachisMergedCommand>
+    {
+        public BlittableJsonReaderObject CommandJson { get; set; }
+        public long TimeoutTicks { get; set; }
+
+        public Leader.RachisMergedCommand ToCommand(ClusterOperationContext context, ServerStore serverStore)
+        {
+            // Rehydrate the command from its JSON and route it via the current leader
+            using (var cloned = CommandJson?.Clone(context))
+            {
+                var command = CommandBase.CreateFrom(cloned);
+                var leader = serverStore.Engine.CurrentLeader;
+                var timeout = new TimeSpan(TimeoutTicks);
+                return new Leader.RachisMergedCommand(leader, command, timeout);
             }
         }
     }

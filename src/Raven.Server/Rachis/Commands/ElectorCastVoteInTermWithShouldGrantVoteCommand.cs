@@ -1,6 +1,7 @@
 ﻿using System;
 using JetBrains.Annotations;
 using Raven.Server.Documents.TransactionMerger.Commands;
+using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 
 namespace Raven.Server.Rachis.Commands;
@@ -78,6 +79,21 @@ internal sealed class ElectorCastVoteInTermWithShouldGrantVoteCommand : MergedTr
 
     public override IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, MergedTransactionCommand<ClusterOperationContext, ClusterTransaction>> ToDto(ClusterOperationContext context)
     {
-        throw new NotImplementedException();
+        return new ElectorCastVoteInTermWithShouldGrantVoteCommandDto
+        {
+            RequestVote = _requestVote,
+            LastLogIndex = _lastLogIndex
+        };
+    }
+}
+
+internal sealed class ElectorCastVoteInTermWithShouldGrantVoteCommandDto : IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, ElectorCastVoteInTermWithShouldGrantVoteCommand>
+{
+    public RequestVote RequestVote { get; set; }
+    public long LastLogIndex { get; set; }
+
+    public ElectorCastVoteInTermWithShouldGrantVoteCommand ToCommand(ClusterOperationContext context, ServerStore serverStore)
+    {
+        return new ElectorCastVoteInTermWithShouldGrantVoteCommand(serverStore.Engine, RequestVote, LastLogIndex);
     }
 }

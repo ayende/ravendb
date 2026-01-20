@@ -1,6 +1,7 @@
 ﻿using System;
 using JetBrains.Annotations;
 using Raven.Server.Documents.TransactionMerger.Commands;
+using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 
 namespace Raven.Server.Rachis.Commands;
@@ -28,6 +29,21 @@ public sealed class UpdateNodeTagCommand : MergedTransactionCommand<ClusterOpera
 
     public override IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, MergedTransactionCommand<ClusterOperationContext, ClusterTransaction>> ToDto(ClusterOperationContext context)
     {
-        throw new NotImplementedException();
+        return new UpdateNodeTagCommandDto
+        {
+            Tag = _tag,
+            InitialMessage = _initialMessage
+        };
+    }
+}
+
+internal sealed class UpdateNodeTagCommandDto : IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, UpdateNodeTagCommand>
+{
+    public string Tag { get; set; }
+    public RachisHello InitialMessage { get; set; }
+
+    public UpdateNodeTagCommand ToCommand(ClusterOperationContext context, ServerStore serverStore)
+    {
+        return new UpdateNodeTagCommand(serverStore.Engine, Tag, InitialMessage);
     }
 }

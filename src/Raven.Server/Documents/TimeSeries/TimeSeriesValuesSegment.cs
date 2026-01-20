@@ -49,6 +49,8 @@ namespace Raven.Server.Documents.TimeSeries
             return baseline.AddMilliseconds(Header->PreviousTimestamp);
         }
 
+        public ReadOnlySpan<byte> AsReadOnlySpan() => new (_buffer, NumberOfBytes);
+        
         public int NumberOfBytes
         {
             get

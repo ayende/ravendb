@@ -2,6 +2,7 @@
 using System.Diagnostics;
 using JetBrains.Annotations;
 using Raven.Server.Documents.TransactionMerger.Commands;
+using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 
 namespace Raven.Server.Rachis.Commands;
@@ -39,7 +40,24 @@ public sealed class LeaderApplyCommand : MergedTransactionCommand<ClusterOperati
 
     public override IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, MergedTransactionCommand<ClusterOperationContext, ClusterTransaction>> ToDto(ClusterOperationContext context)
     {
-        throw new NotImplementedException();
+        return new LeaderApplyCommandDto
+        {
+            LastCommit = _lastCommit,
+            MaxIndexOnQuorum = _maxIndexOnQuorum
+        };
     }
 
+}
+
+internal sealed class LeaderApplyCommandDto : IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, LeaderApplyCommand>
+{
+    public long LastCommit { get; set; }
+    public long MaxIndexOnQuorum { get; set; }
+
+    public LeaderApplyCommand ToCommand(ClusterOperationContext context, ServerStore serverStore)
+    {
+        var engine = serverStore.Engine!;
+        var leader = engine.CurrentLeader!;
+        return new LeaderApplyCommand(leader, engine, LastCommit, MaxIndexOnQuorum);
+    }
 }

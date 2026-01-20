@@ -224,7 +224,24 @@ namespace Raven.Server.Commercial
 
             public override IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, MergedTransactionCommand<ClusterOperationContext, ClusterTransaction>> ToDto(ClusterOperationContext context)
             {
-                throw new NotImplementedException();
+                return new SetLicenseVersionInformationCommandDto
+                {
+                    LicenseVersionInformation = _licenseVersionInformation.ToJson()
+                };
+            }
+        }
+
+        private sealed class SetLicenseVersionInformationCommandDto : IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, SetLicenseVersionInformationCommand>
+        {
+            public DynamicJsonValue LicenseVersionInformation { get; set; }
+
+            public SetLicenseVersionInformationCommand ToCommand(ClusterOperationContext context, ServerStore serverStore)
+            {
+                using (var bjro = context.ReadObject(LicenseVersionInformation, nameof(LicenseVersionInformation), BlittableJsonDocumentBuilder.UsageMode.ToDisk))
+                {
+                    var lvi = JsonDeserializationServer.LicenseVersionInformation(bjro);
+                    return new SetLicenseVersionInformationCommand(lvi);
+                }
             }
         }
     }
