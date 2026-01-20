@@ -11,7 +11,6 @@ using Raven.Server.Documents.Expiration;
 using Raven.Server.Documents.Handlers;
 using Raven.Server.Documents.Handlers.Batches.Commands;
 using Raven.Server.Documents.Handlers.Processors.BulkInsert;
-using Raven.Server.Documents.Handlers.Admin.Processors.Revisions;
 using Raven.Server.Documents.Handlers.Processors.HiLo;
 using Raven.Server.Documents.Indexes.MapReduce.OutputToCollection;
 using Raven.Server.Documents.Patch;
@@ -29,6 +28,9 @@ using Raven.Server.Smuggler.Documents;
 using Sparrow;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
+using Raven.Server.Rachis;
+using Raven.Server.Rachis.Commands;
+using Raven.Server.Commercial;
 
 namespace Raven.Server.Documents
 {
@@ -36,8 +38,60 @@ namespace Raven.Server.Documents
     {
         internal static async IAsyncEnumerable<ReplayProgress> ReplayAsync(DocumentDatabase database, Stream replayStream)
         {
-            using (var txs = new ReplayTxs())
-            using (database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
+            await foreach (var progress in ReplayAsyncShared(
+                               database.DocumentsStorage.ContextPool,
+                               replayStream,
+                               (ctx, type, cmdReader, pts) => DeserializeCommand(ctx, database, type, cmdReader, pts),
+                               ctx => database.TxMerger.UpdateGlobalReplicationInfoBeforeCommit(ctx),
+                               // begin async commit for documents
+                               (DocumentsOperationContext ctx, DocumentsTransaction tx) => tx.BeginAsyncCommitAndStartNewTransaction(ctx),
+                               (DocumentsTransaction prev) => prev.EndAsyncCommit()))
+            {
+                yield return progress;
+            }
+        }
+
+        internal static async IAsyncEnumerable<ReplayProgress> ReplayAsync(RachisConsensus engine, Stream replayStream)
+        {
+            await foreach (var progress in ReplayAsyncShared(
+                               engine.ContextPool,
+                               replayStream,
+                               (ctx, type, cmdReader, pts) => DeserializeClusterCommand(ctx, engine, type, cmdReader, pts),
+                               ctx => engine.TxMerger.UpdateGlobalReplicationInfoBeforeCommit(ctx),
+                               // begin async commit for cluster
+                               (ClusterOperationContext ctx, ClusterTransaction tx) => tx.BeginAsyncCommitAndStartNewTransaction(ctx),
+                               (ClusterTransaction prev) => prev.EndAsyncCommit()))
+            {
+                yield return progress;
+            }
+        }
+
+        private sealed class ReplayTxsGeneric<TOperationContext, TTransaction> : IDisposable
+            where TOperationContext : TransactionOperationContext<TTransaction>
+            where TTransaction : RavenTransaction
+        {
+            public TOperationContext TxCtx;
+            public TTransaction PrevTx;
+
+            public void Dispose()
+            {
+                TxCtx?.Dispose();
+                PrevTx?.Dispose();
+            }
+        }
+
+        private static async IAsyncEnumerable<ReplayProgress> ReplayAsyncShared<TOperationContext, TTransaction>(
+            JsonContextPoolBase<TOperationContext> contextPool,
+            Stream replayStream,
+            Func<TOperationContext, string, BlittableJsonReaderObject, PeepingTomStream, MergedTransactionCommand<TOperationContext, TTransaction>> deserialize,
+            Action<TOperationContext> updateBeforeCommit,
+            Func<TOperationContext, TTransaction, TTransaction> beginAsyncCommitAndStartNew,
+            Action<TTransaction> endAsyncCommit)
+            where TOperationContext : TransactionOperationContext<TTransaction>
+            where TTransaction : RavenTransaction
+        {
+            using (var txs = new ReplayTxsGeneric<TOperationContext, TTransaction>())
+            using (contextPool.AllocateOperationContext(out TOperationContext context))
             using (context.GetMemoryBuffer(out var buffer))
             await using (var gZipStream = new GZipStream(replayStream, CompressionMode.Decompress, leaveOpen: true))
             {
@@ -64,30 +118,30 @@ namespace Raven.Server.Documents
                                 switch (type)
                                 {
                                     case TxInstruction.BeginTx:
-                                        database.DocumentsStorage.ContextPool.AllocateOperationContext(out txs.TxCtx);
+                                        contextPool.AllocateOperationContext(out txs.TxCtx);
                                         txs.TxCtx.OpenWriteTransaction();
                                         break;
 
                                     case TxInstruction.Commit:
-                                        txs.TxCtx.Transaction.Commit();
+                                        txs.TxCtx!.Transaction.Commit();
                                         break;
 
                                     case TxInstruction.DisposeTx:
-                                        txs.TxCtx.Dispose();
+                                        txs.TxCtx!.Dispose();
                                         txs.TxCtx = null;
                                         break;
 
                                     case TxInstruction.BeginAsyncCommitAndStartNewTransaction:
-                                        txs.PrevTx = txs.TxCtx.Transaction;
-                                        txs.TxCtx.Transaction = txs.TxCtx.Transaction.BeginAsyncCommitAndStartNewTransaction(txs.TxCtx);
+                                        txs.PrevTx = txs.TxCtx!.Transaction;
+                                        txs.TxCtx.Transaction = beginAsyncCommitAndStartNew(txs.TxCtx, txs.TxCtx.Transaction);
                                         break;
 
                                     case TxInstruction.EndAsyncCommit:
-                                        txs.PrevTx.EndAsyncCommit();
+                                        endAsyncCommit(txs.PrevTx);
                                         break;
 
                                     case TxInstruction.DisposePrevTx:
-                                        txs.PrevTx.Dispose();
+                                        txs.PrevTx!.Dispose();
                                         txs.PrevTx = null;
                                         break;
                                 }
@@ -96,9 +150,9 @@ namespace Raven.Server.Documents
 
                             try
                             {
-                                var cmd = DeserializeCommand(context, database, strType, readersItr.Current, peepingTomStream);
+                                var cmd = deserialize(context, strType, readersItr.Current, peepingTomStream);
                                 commandsProgress += cmd.ExecuteDirectly(txs.TxCtx);
-                                database.TxMerger.UpdateGlobalReplicationInfoBeforeCommit(txs.TxCtx);
+                                updateBeforeCommit(txs.TxCtx);
                             }
                             catch (Exception)
                             {
@@ -128,7 +182,7 @@ namespace Raven.Server.Documents
             }
         }
 
-        private static async Task ReadStartRecordingDetailsAsync(IAsyncEnumerator<BlittableJsonReaderObject> iterator, DocumentsOperationContext context, PeepingTomStream peepingTomStream)
+        private static async Task ReadStartRecordingDetailsAsync(IAsyncEnumerator<BlittableJsonReaderObject> iterator, JsonOperationContext context, PeepingTomStream peepingTomStream)
         {
             if (await iterator.MoveNextAsync().ConfigureAwait(false) == false)
             {
@@ -179,6 +233,99 @@ namespace Raven.Server.Documents
                 reader.Initialize(commandReader);
                 var dto = DeserializeCommandDto(type, jsonSerializer, reader, peepingTomStream);
                 return dto.ToCommand(context, database);
+            }
+        }
+
+        private sealed class ReplayClusterTxs : IDisposable
+        {
+            public ClusterOperationContext TxCtx;
+            public ClusterTransaction PrevTx;
+
+            public void Dispose()
+            {
+                TxCtx?.Dispose();
+                PrevTx?.Dispose();
+            }
+        }
+
+        private static MergedTransactionCommand<ClusterOperationContext, ClusterTransaction> DeserializeClusterCommand(
+            ClusterOperationContext context,
+            RachisConsensus engine,
+            string type,
+            BlittableJsonReaderObject wrapCmdReader,
+            PeepingTomStream peepingTomStream)
+        {
+            if (wrapCmdReader.TryGet(nameof(RecordingCommandDetails<ClusterOperationContext, ClusterTransaction>.Command), out BlittableJsonReaderObject commandReader) == false)
+            {
+                throw new ReplayTransactionsException($"Can't read {type} for replay", peepingTomStream);
+            }
+
+            var jsonSerializer = GetJsonSerializer();
+            using (var reader = new BlittableJsonReader(context))
+            {
+                reader.Initialize(commandReader);
+                var dto = DeserializeClusterCommandDto(type, jsonSerializer, reader, peepingTomStream);
+                return dto.ToCommand(context, engine.ServerStore);
+            }
+        }
+
+        private static IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, MergedTransactionCommand<ClusterOperationContext, ClusterTransaction>> DeserializeClusterCommandDto(
+            string type,
+            JsonSerializer jsonSerializer,
+            BlittableJsonReader reader,
+            PeepingTomStream peepingTomStream)
+        {
+            switch (type)
+            {
+                case nameof(LeaderApplyCommand):
+                    return jsonSerializer.Deserialize<LeaderApplyCommandDto>(reader);
+                case nameof(StoreNotificationCommand):
+                    return jsonSerializer.Deserialize<StoreNotificationCommandDto>(reader);
+                case nameof(DeleteNotificationCommand):
+                    return jsonSerializer.Deserialize<DeleteNotificationCommandDto>(reader);
+                case nameof(InitializeSchemaForNotificationsCommand):
+                    return jsonSerializer.Deserialize<InitializeSchemaForNotificationsCommandDto>(reader);
+                case nameof(DeleteTableForNotificationsCommand):
+                    return jsonSerializer.Deserialize<DeleteTableForNotificationsCommandDto>(reader);
+                case nameof(FollowerApplyCommand):
+                    return jsonSerializer.Deserialize<FollowerApplyCommandDto>(reader);
+                case nameof(FollowerReadAndCommitSnapshotCommand):
+                    return jsonSerializer.Deserialize<FollowerReadAndCommitSnapshotCommandDto>(reader);
+                case nameof(CastVoteInTermCommand):
+                    return jsonSerializer.Deserialize<CastVoteInTermCommandDto>(reader);
+                case nameof(CandidateCastVoteInTermCommand):
+                    return jsonSerializer.Deserialize<CandidateCastVoteInTermCommandDto>(reader);
+                case nameof(ElectorCastVoteInTermCommand):
+                    return jsonSerializer.Deserialize<ElectorCastVoteInTermCommandDto>(reader);
+                case nameof(ElectorCastVoteInTermWithShouldGrantVoteCommand):
+                    return jsonSerializer.Deserialize<ElectorCastVoteInTermWithShouldGrantVoteCommandDto>(reader);
+                case nameof(DeleteTopologyCommand):
+                    return jsonSerializer.Deserialize<DeleteTopologyCommandDto>(reader);
+                case nameof(UpdateNodeTagCommand):
+                    return jsonSerializer.Deserialize<UpdateNodeTagCommandDto>(reader);
+                case nameof(LowestIndexUpdateCommand):
+                    return jsonSerializer.Deserialize<LowestIndexUpdateCommandDto>(reader);
+                case nameof(RemoveEntryFromRaftLogCommand):
+                    return jsonSerializer.Deserialize<RemoveEntryFromRaftLogCommandDto>(reader);
+                case nameof(HardResetToNewClusterCommand):
+                    return jsonSerializer.Deserialize<HardResetToNewClusterCommandDto>(reader);
+                case nameof(HardResetToPassiveCommand):
+                    return jsonSerializer.Deserialize<HardResetToPassiveCommandDto>(reader);
+                case nameof(SwitchToSingleLeaderCommand):
+                    return jsonSerializer.Deserialize<SwitchToSingleLeaderCommandDto>(reader);
+                case nameof(Leader.LeaderModifyTopologyCommand):
+                    return jsonSerializer.Deserialize<LeaderModifyTopologyCommandDto>(reader);
+                case nameof(Leader.RachisMergedCommand):
+                    return jsonSerializer.Deserialize<RachisMergedCommandDto>(reader);
+                case nameof(SetNewStateCommand):
+                    return jsonSerializer.Deserialize<SetNewStateCommandDto>(reader);
+                case nameof(UpdateLocalBackupStatusCommand):
+                    return jsonSerializer.Deserialize<UpdateLocalBackupStatusCommandDto>(reader);
+                case nameof(LicenseStorage.SetLicenseVersionInformationCommand):
+                    return jsonSerializer.Deserialize<LicenseStorage.SetLicenseVersionInformationCommandDto>(reader);
+                
+                default:
+                    throw new ReplayTransactionsException($"Can't read {type} for replay", peepingTomStream);
             }
         }
 

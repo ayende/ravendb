@@ -194,7 +194,7 @@ namespace Raven.Server.Commercial
             }
         }
 
-        private class SetLicenseVersionInformationCommand : MergedTransactionCommand<ClusterOperationContext, ClusterTransaction>
+        internal class SetLicenseVersionInformationCommand : MergedTransactionCommand<ClusterOperationContext, ClusterTransaction>
         {
             private readonly LicenseVersionInformation _licenseVersionInformation;
 
@@ -231,7 +231,7 @@ namespace Raven.Server.Commercial
             }
         }
 
-        private sealed class SetLicenseVersionInformationCommandDto : IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, SetLicenseVersionInformationCommand>
+        internal sealed class SetLicenseVersionInformationCommandDto : IReplayableCommandDto<ClusterOperationContext, ClusterTransaction, SetLicenseVersionInformationCommand>
         {
             public DynamicJsonValue LicenseVersionInformation { get; set; }
 
