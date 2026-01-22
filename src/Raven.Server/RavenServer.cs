@@ -81,6 +81,7 @@ using Sparrow.Utils;
 using Voron;
 using DateTime = System.DateTime;
 using Raven.Server.Monitoring.OpenTelemetry;
+using static Raven.Client.ServerWide.Tcp.TcpConnectionHeaderMessage.AuthorizationInfo.AuthorizeMethod;
 using Constants = Sparrow.Global.Constants;
 using TelemetryConstants = Raven.Server.Monitoring.OpenTelemetry.Constants;
 using ClientConstants = Raven.Client.Constants;
@@ -3007,9 +3008,12 @@ namespace Raven.Server
 
                 case AuthenticationStatus.ClusterAdmin:
                 case AuthenticationStatus.Operator:
+                    // For PushReplication (SinkToHub mode), we need to set ReplicationHubAccess
+                    if (EnsureCanProceedIfReplication(header, certificate, isClusterAdmin: true, remoteAddress: null, out msg) == false)
+                        return false;
+
                     msg = "Admin can do it all";
                     return true;
-
                 case AuthenticationStatus.Allowed:
                     switch (header.Operation)
                     {
@@ -3044,46 +3048,89 @@ namespace Raven.Server
                     var info = header.AuthorizeInfo;
                     switch (info?.AuthorizeAs)
                     {
-                        case TcpConnectionHeaderMessage.AuthorizationInfo.AuthorizeMethod.PullReplication:
-                        case TcpConnectionHeaderMessage.AuthorizationInfo.AuthorizeMethod.PushReplication:
-                            using (ServerStore.Engine.ContextPool.AllocateOperationContext(out ClusterOperationContext ctx))
-                            using (ctx.OpenReadTransaction())
-                            {
-                                if (ServerStore.Cluster.TryReadPullReplicationDefinition(header.DatabaseName, info.AuthorizationFor, ctx, out var pullReplication))
-                                {
-                                    var expectedMode = info.AuthorizeAs switch
-                                    {
-                                        TcpConnectionHeaderMessage.AuthorizationInfo.AuthorizeMethod.PullReplication => PullReplicationMode.HubToSink,
-                                        TcpConnectionHeaderMessage.AuthorizationInfo.AuthorizeMethod.PushReplication => PullReplicationMode.SinkToHub,
-                                        _ => PullReplicationMode.None
-                                    };
-
-                                    if ((pullReplication.Mode & expectedMode) != expectedMode || expectedMode == PullReplicationMode.None)
-                                    {
-                                        msg = "The expected replication mode does not match the replication mode on the replication hub";
-                                        return false;
-                                    }
-
-                                    if (ServerStore.Cluster.IsReplicationCertificate(ctx, header.DatabaseName, info.AuthorizationFor, certificate, out header.ReplicationHubAccess))
-                                        return true;
-
-                                    if (ServerStore.Cluster.IsReplicationCertificateByPublicKeyPinningHash(ctx, header.DatabaseName, info.AuthorizationFor, certificate, configuration.Security, out header.ReplicationHubAccess))
-                                    {
-                                        RegisterNewReplicationCertificateWithSamePublicKeyPinningHash(tcpClient.Client.RemoteEndPoint.ToString(), header.DatabaseName, info.AuthorizationFor, header.ReplicationHubAccess, certificate);
-
-                                        return true;
-                                    }
-                                }
-
-                                msg = $"The certificate {certificate.FriendlyName} does not allow access to {header.DatabaseName} for {info.AuthorizationFor} ({info.AuthorizeAs})";
-                                return false;
-                            }
+                        case PullReplication:
+                        case PushReplication:
+                            return EnsureCanProceedIfReplication(header, certificate, isClusterAdmin: false, remoteAddress: tcpClient.Client.RemoteEndPoint.ToString(), out msg);
                         default:
                             throw new ArgumentOutOfRangeException("AuthorizeAs", "Unknown value for AuthorizeAs: " + info?.AuthorizeAs);
                     }
                 default:
                     msg = "Cannot allow access to a certificate with status: " + auth.Status;
                     return false;
+            }
+        }
+
+        /// <summary>
+        /// Checks the <see cref="TcpConnectionHeaderMessage.AuthorizeInfo"/> and checks if it can proceed as replication.
+        /// </summary>
+        private bool EnsureCanProceedIfReplication(
+            TcpConnectionHeaderMessage header,
+            X509Certificate2 certificate,
+            bool isClusterAdmin,
+            string remoteAddress,
+            out string msg)
+        {
+            msg = null;
+            var info = header.AuthorizeInfo;
+
+            if (info?.AuthorizeAs != PullReplication &&
+                info?.AuthorizeAs != PushReplication)
+            {
+                return true; // Not a replication operation, no validation needed
+            }
+
+            using (ServerStore.Engine.ContextPool.AllocateOperationContext(out ClusterOperationContext ctx))
+            using (ctx.OpenReadTransaction())
+            {
+                if (ServerStore.Cluster.TryReadPullReplicationDefinition(header.DatabaseName, info.AuthorizationFor, ctx, out var pullReplication) == false)
+                {
+                    msg = $"The pull replication hub '{info.AuthorizationFor}' does not exist in database '{header.DatabaseName}'";
+                    return false;
+                }
+
+                var expectedMode = info.AuthorizeAs switch
+                {
+                    PullReplication => PullReplicationMode.HubToSink,
+                    PushReplication => PullReplicationMode.SinkToHub,
+                    _ => PullReplicationMode.None
+                };
+
+                if ((pullReplication.Mode & expectedMode) != expectedMode || expectedMode == PullReplicationMode.None)
+                {
+                    msg = "The expected replication mode does not match the replication mode on the replication hub";
+                    return false;
+                }
+
+                if (isClusterAdmin)
+                {
+                    // Create a ReplicationHubAccess that allows full access for admin
+                    header.ReplicationHubAccess = new DetailedReplicationHubAccess
+                    {
+                        Name = "ClusterAdmin",
+                        Thumbprint = certificate.Thumbprint,
+                        Certificate = Convert.ToBase64String(certificate.Export(X509ContentType.Cert)),
+                        NotBefore = certificate.NotBefore,
+                        NotAfter = certificate.NotAfter,
+                        Subject = certificate.Subject,
+                        Issuer = certificate.Issuer,
+                        AllowedHubToSinkPaths = null, // null means all paths allowed
+                        AllowedSinkToHubPaths = null  // null means all paths allowed
+                    };
+                    return true;
+                }
+
+                // For non-admin certificates, check if the certificate is registered
+                if (ServerStore.Cluster.IsReplicationCertificate(ctx, header.DatabaseName, info.AuthorizationFor, certificate, out header.ReplicationHubAccess))
+                    return true;
+
+                if (ServerStore.Cluster.IsReplicationCertificateByPublicKeyPinningHash(ctx, header.DatabaseName, info.AuthorizationFor, certificate, ServerStore.Configuration.Security, out header.ReplicationHubAccess))
+                {
+                    RegisterNewReplicationCertificateWithSamePublicKeyPinningHash(remoteAddress, header.DatabaseName, info.AuthorizationFor, header.ReplicationHubAccess, certificate);
+                    return true;
+                }
+
+                msg = $"The certificate {certificate.FriendlyName} does not allow access to {header.DatabaseName} for {info.AuthorizationFor} ({info.AuthorizeAs})";
+                return false;
             }
         }
 
