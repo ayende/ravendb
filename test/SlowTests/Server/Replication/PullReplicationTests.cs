@@ -979,7 +979,7 @@ namespace SlowTests.Server.Replication
             }
         }
 
-         [RavenFact(RavenTestCategory.Replication)]
+        [RavenFact(RavenTestCategory.Replication)]
         public async Task SinkToHubWithClusterAdminCertificateShouldWork()
         {
             var settings = new Dictionary<string, string>();

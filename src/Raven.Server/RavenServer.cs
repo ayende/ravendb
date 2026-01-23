@@ -2995,6 +2995,7 @@ namespace Raven.Server
             }
 
             var auth = AuthenticateConnectionCertificate(certificate, tcpClient);
+            var info = header.AuthorizeInfo;
 
             switch (auth.Status)
             {
@@ -3008,9 +3009,10 @@ namespace Raven.Server
 
                 case AuthenticationStatus.ClusterAdmin:
                 case AuthenticationStatus.Operator:
-                    // For PushReplication (SinkToHub mode), we need to set ReplicationHubAccess
-                    if (EnsureCanProceedIfReplication(header, certificate, isClusterAdmin: true, remoteAddress: null, out msg) == false)
-                        return false;
+                    if (info?.AuthorizeAs is PullReplication or PushReplication)
+                    {
+                        return CanProceedOnReplication(header, certificate, isClusterAdmin: true, remoteAddress: null, out msg);
+                    }
 
                     msg = "Admin can do it all";
                     return true;
@@ -3045,15 +3047,12 @@ namespace Raven.Server
                     return false;
 
                 case AuthenticationStatus.UnfamiliarCertificate:
-                    var info = header.AuthorizeInfo;
-                    switch (info?.AuthorizeAs)
+                    if (info?.AuthorizeAs is PullReplication or PushReplication)
                     {
-                        case PullReplication:
-                        case PushReplication:
-                            return EnsureCanProceedIfReplication(header, certificate, isClusterAdmin: false, remoteAddress: tcpClient.Client.RemoteEndPoint.ToString(), out msg);
-                        default:
-                            throw new ArgumentOutOfRangeException("AuthorizeAs", "Unknown value for AuthorizeAs: " + info?.AuthorizeAs);
+                        return CanProceedOnReplication(header, certificate, isClusterAdmin: false, remoteAddress: tcpClient.Client.RemoteEndPoint.ToString(), out msg);
                     }
+
+                    throw new ArgumentOutOfRangeException(nameof(info.AuthorizeAs), "Unknown value for AuthorizeAs: " + info?.AuthorizeAs);
                 default:
                     msg = "Cannot allow access to a certificate with status: " + auth.Status;
                     return false;
@@ -3063,7 +3062,7 @@ namespace Raven.Server
         /// <summary>
         /// Checks the <see cref="TcpConnectionHeaderMessage.AuthorizeInfo"/> and checks if it can proceed as replication.
         /// </summary>
-        private bool EnsureCanProceedIfReplication(
+        private bool CanProceedOnReplication(
             TcpConnectionHeaderMessage header,
             X509Certificate2 certificate,
             bool isClusterAdmin,
@@ -3073,11 +3072,7 @@ namespace Raven.Server
             msg = null;
             var info = header.AuthorizeInfo;
 
-            if (info?.AuthorizeAs != PullReplication &&
-                info?.AuthorizeAs != PushReplication)
-            {
-                return true; // Not a replication operation, no validation needed
-            }
+            Debug.Assert(info?.AuthorizeAs is PullReplication or PushReplication, "It should be called only for replication.");
 
             using (ServerStore.Engine.ContextPool.AllocateOperationContext(out ClusterOperationContext ctx))
             using (ctx.OpenReadTransaction())
