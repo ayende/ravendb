@@ -3011,7 +3011,26 @@ namespace Raven.Server
                 case AuthenticationStatus.Operator:
                     if (info?.AuthorizeAs is PullReplication or PushReplication)
                     {
-                        return CanProceedOnReplication(header, certificate, isClusterAdmin: true, remoteAddress: null, out msg);
+                        using (ServerStore.Engine.ContextPool.AllocateOperationContext(out ClusterOperationContext ctx))
+                        using (ctx.OpenReadTransaction())
+                        {
+                            if (CheckPullReplicationMode(null, header, info, out msg) is false)
+                                return false;
+                        }
+                        // Create a ReplicationHubAccess that allows full access for admin
+                        header.ReplicationHubAccess = new DetailedReplicationHubAccess
+                        {
+                            Name = "ClusterAdmin",
+                            Thumbprint = certificate.Thumbprint,
+                            Certificate = Convert.ToBase64String(certificate.Export(X509ContentType.Cert)),
+                            NotBefore = certificate.NotBefore,
+                            NotAfter = certificate.NotAfter,
+                            Subject = certificate.Subject,
+                            Issuer = certificate.Issuer,
+                            AllowedHubToSinkPaths = null, // null means all paths allowed
+                            AllowedSinkToHubPaths = null  // null means all paths allowed
+                        };
+                        return true;
                     }
 
                     msg = "Admin can do it all";
@@ -3049,7 +3068,7 @@ namespace Raven.Server
                 case AuthenticationStatus.UnfamiliarCertificate:
                     if (info?.AuthorizeAs is PullReplication or PushReplication)
                     {
-                        return CanProceedOnReplication(header, certificate, isClusterAdmin: false, remoteAddress: tcpClient.Client.RemoteEndPoint.ToString(), out msg);
+                        return CanProceedOnReplication(header, certificate, remoteAddress: tcpClient.Client.RemoteEndPoint.ToString(), out msg);
                     }
 
                     throw new ArgumentOutOfRangeException(nameof(info.AuthorizeAs), "Unknown value for AuthorizeAs: " + info?.AuthorizeAs);
@@ -3065,7 +3084,6 @@ namespace Raven.Server
         private bool CanProceedOnReplication(
             TcpConnectionHeaderMessage header,
             X509Certificate2 certificate,
-            bool isClusterAdmin,
             string remoteAddress,
             out string msg)
         {
@@ -3073,46 +3091,12 @@ namespace Raven.Server
             var info = header.AuthorizeInfo;
 
             Debug.Assert(info?.AuthorizeAs is PullReplication or PushReplication, "It should be called only for replication.");
-
+            
             using (ServerStore.Engine.ContextPool.AllocateOperationContext(out ClusterOperationContext ctx))
             using (ctx.OpenReadTransaction())
             {
-                if (ServerStore.Cluster.TryReadPullReplicationDefinition(header.DatabaseName, info.AuthorizationFor, ctx, out var pullReplication) == false)
-                {
-                    msg = $"The pull replication hub '{info.AuthorizationFor}' does not exist in database '{header.DatabaseName}'";
+                if (CheckPullReplicationMode(ctx, header, info, out msg) is false) 
                     return false;
-                }
-
-                var expectedMode = info.AuthorizeAs switch
-                {
-                    PullReplication => PullReplicationMode.HubToSink,
-                    PushReplication => PullReplicationMode.SinkToHub,
-                    _ => PullReplicationMode.None
-                };
-
-                if ((pullReplication.Mode & expectedMode) != expectedMode || expectedMode == PullReplicationMode.None)
-                {
-                    msg = "The expected replication mode does not match the replication mode on the replication hub";
-                    return false;
-                }
-
-                if (isClusterAdmin)
-                {
-                    // Create a ReplicationHubAccess that allows full access for admin
-                    header.ReplicationHubAccess = new DetailedReplicationHubAccess
-                    {
-                        Name = "ClusterAdmin",
-                        Thumbprint = certificate.Thumbprint,
-                        Certificate = Convert.ToBase64String(certificate.Export(X509ContentType.Cert)),
-                        NotBefore = certificate.NotBefore,
-                        NotAfter = certificate.NotAfter,
-                        Subject = certificate.Subject,
-                        Issuer = certificate.Issuer,
-                        AllowedHubToSinkPaths = null, // null means all paths allowed
-                        AllowedSinkToHubPaths = null  // null means all paths allowed
-                    };
-                    return true;
-                }
 
                 // For non-admin certificates, check if the certificate is registered
                 if (ServerStore.Cluster.IsReplicationCertificate(ctx, header.DatabaseName, info.AuthorizationFor, certificate, out header.ReplicationHubAccess))
@@ -3127,6 +3111,31 @@ namespace Raven.Server
                 msg = $"The certificate {certificate.FriendlyName} does not allow access to {header.DatabaseName} for {info.AuthorizationFor} ({info.AuthorizeAs})";
                 return false;
             }
+        }
+
+        private bool CheckPullReplicationMode(ClusterOperationContext ctx, TcpConnectionHeaderMessage header, TcpConnectionHeaderMessage.AuthorizationInfo info, out string msg)
+        {
+            if (ServerStore.Cluster.TryReadPullReplicationDefinition(header.DatabaseName, info.AuthorizationFor, ctx, out var pullReplication) == false)
+            {
+                msg = $"The pull replication hub '{info.AuthorizationFor}' does not exist in database '{header.DatabaseName}'";
+                return false;
+            }
+
+            var expectedMode = info.AuthorizeAs switch
+            {
+                PullReplication => PullReplicationMode.HubToSink,
+                PushReplication => PullReplicationMode.SinkToHub,
+                _ => PullReplicationMode.None
+            };
+
+            if ((pullReplication.Mode & expectedMode) != expectedMode || expectedMode == PullReplicationMode.None)
+            {
+                msg = "The expected replication mode does not match the replication mode on the replication hub";
+                return false;
+            }
+
+            msg = null;
+            return true;
         }
 
         private void RegisterNewReplicationCertificateWithSamePublicKeyPinningHash(
