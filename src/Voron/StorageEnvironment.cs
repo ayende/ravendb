@@ -157,13 +157,13 @@ namespace Voron
                     dataPagerState,
                     0,
                     -1,
-                    ImmutableDictionary<long, PageFromScratchBuffer>.Empty, 
-                    default(TreeRootHeader), 
+                    ImmutableDictionary<long, PageFromScratchBuffer>.Empty,
+                    default(TreeRootHeader),
                     -1,
                     (-1, -1),
                     null,
                     null);
-                
+
                 _lastValidPageAfterLoad = dataPagerState.NumberOfAllocatedPages;
                 Debug.Assert(_lastValidPageAfterLoad != 0);
 
@@ -318,7 +318,7 @@ namespace Voron
 
             var fileHeader = _headerAccessor.CopyHeader();
             var nextPageNumber = (txHeader->TransactionId == 0 ? fileHeader.LastPageNumber : txHeader->LastPageNumber) + 1;
-            
+
             _currentStateRecord = _currentStateRecord with
             {
                 TransactionId = txHeader->TransactionId == 0 ? fileHeader.TransactionId : txHeader->TransactionId,
@@ -357,7 +357,7 @@ namespace Voron
                 if (_options.GenerateNewDatabaseId == false)
                 {
                     databaseGuidId = new Guid(buffer);
-                    }
+                }
                 else
                 {
                     databaseGuidId = Guid.NewGuid();
@@ -480,7 +480,7 @@ namespace Voron
             using (var tx = NewLowLevelTransaction(transactionPersistentContext, TransactionFlags.ReadWrite))
             {
                 var root = Tree.Create(tx, null, Constants.RootTreeNameSlice);
-                
+
                 // important to first create the root trees, then set them on the env
                 tx.UpdateRootsIfNeeded(root);
 
@@ -725,8 +725,8 @@ namespace Voron
                 tx = new LowLevelTransaction(this, transactionPersistentContext, flags, _freeSpaceHandling,
                     context);
 
-                tx.CurrentTransactionIdHolder = flags == TransactionFlags.ReadWrite ? 
-                    _currentWriteTransactionIdHolder : 
+                tx.CurrentTransactionIdHolder = flags == TransactionFlags.ReadWrite ?
+                    _currentWriteTransactionIdHolder :
                     Environment.CurrentManagedThreadId;
 
                 ActiveTransactions.Add(tx);
@@ -851,9 +851,9 @@ namespace Voron
                 return;
             }
 
-            if (tx.Committed is false) 
+            if (tx.Committed is false)
                 return;
-            
+
             UpdateStateOnCommit(tx);
         }
 
@@ -887,9 +887,9 @@ namespace Voron
 
                 GlobalFlushingBehavior.GlobalFlusher.Value.MaybeFlushEnvironment(this);
             }
-      
+
             _forTestingPurposes?.OnWriteTransactionCompleted?.Invoke(tx);
-      
+
             // this must occur when we are holding the transaction lock
             Journal.Applicator.OnTransactionCompleted(tx);
 
@@ -923,7 +923,7 @@ namespace Voron
                         case TempBufferType.Scratch:
                             tempBuffers += file.AllocatedSpaceInBytes;
                             break;
-                           default:
+                        default:
                             throw new InvalidOperationException($"Unknown temp file type: {file.Type}");
                     }
                 }
@@ -1029,9 +1029,10 @@ namespace Voron
             }
 
             var globalAllocator = new NewPageAllocator(tx.LowLevelTransaction, tx.LowLevelTransaction.RootObjects);
-            RegisterPages(globalAllocator.GetAllocationStorageFst().AllPages(), "Global/PreAllocatedPages/Bitmaps");
             RegisterPages(globalAllocator.AllPages(), "Global/PreAllocatedPages");
-            RegisterPages(tx.LowLevelTransaction.RootObjects.AllPages(), "RootObjects");
+            // we skip skipNestedFixedSizeTrees for the root objects, we'll iterate over those below
+            RegisterPages(tx.LowLevelTransaction.RootObjects.AllPages(skipNestedFixedSizeTrees: true), "RootObjects");
+            RegisterPages(globalAllocator.GetAllocationStorageFst().AllPages(), "Global/PreAllocatedPages/Bitmaps");
             using (var rootIterator = tx.LowLevelTransaction.RootObjects.Iterate(false))
             {
                 if (rootIterator.Seek(Slices.BeforeAllKeys))
@@ -1046,7 +1047,7 @@ namespace Voron
                             case RootObjectType.VariableSizeTree:
                                 var tree = tx.ReadTree(currentKey);
                                 RegisterPages(tree.AllPages(), name + " (VST)");
-                                ref readonly var treeHeader =  ref tree.ReadHeader();
+                                ref readonly var treeHeader = ref tree.ReadHeader();
                                 if (treeHeader.Flags.HasFlag(TreeFlags.CompactTrees) ||
                                     treeHeader.Flags.HasFlag(TreeFlags.Lookups))
                                 {
@@ -1170,7 +1171,10 @@ namespace Voron
             {
                 foreach (long page in allPages)
                 {
-                    r.Add(page, name);
+                    if (r.TryAdd(page, name) is false)
+                    {
+                        throw new ArgumentException("Page " + page + " is already registered to " + r[page] + ", cannot register it to: " + name);
+                    }
                 }
             }
 
@@ -1617,7 +1621,7 @@ namespace Voron
         {
             throw new InvalidOperationException("Simulation of db creation failure");
         }
-        
+
         internal TestingStuff ForTestingPurposesOnly()
         {
             if (_forTestingPurposes != null)
@@ -1655,14 +1659,14 @@ namespace Voron
         private void UpdateStateOnCommit(LowLevelTransaction tx)
         {
             // we must be running under the write lock
-            Debug.Assert(tx.Flags is TransactionFlags.ReadWrite,"tx.Flags is TransactionFlags.ReadWrite");
+            Debug.Assert(tx.Flags is TransactionFlags.ReadWrite, "tx.Flags is TransactionFlags.ReadWrite");
             Debug.Assert(tx.ModifiedPagesInTransaction != null, "tx.ModifiedPagesInTransaction != null");
             EnvironmentStateRecord currentStateRecord = tx.CurrentStateRecord;
             var updatedState = currentStateRecord with
             {
                 // we may want to update the state of the transaction (scratch table, data pager state, etc)
                 // without incrementing the transaction id, since we didn't commit a transaction to the journal
-                TransactionId = tx.WrittenToJournalNumber == -1 ? currentStateRecord.TransactionId-1 : currentStateRecord.TransactionId,
+                TransactionId = tx.WrittenToJournalNumber == -1 ? currentStateRecord.TransactionId - 1 : currentStateRecord.TransactionId,
                 FlushedToJournal = tx.WrittenToJournalNumber == -1 ? currentStateRecord.FlushedToJournal : tx.WrittenToJournalNumber,
                 ScratchPagesTable = tx.ModifiedPagesInTransaction,
                 NextPageNumber = tx.GetNextPageNumber(),
@@ -1703,7 +1707,7 @@ namespace Voron
 
                     Debug.Assert(record is not null);
 
-                    if(sparseRegions is not null)
+                    if (sparseRegions is not null)
                     {
                         MergeSparseRegions(sparseRegions);
                     }
@@ -1722,7 +1726,7 @@ namespace Voron
                 recordHolder.EnvStateRecord = null; // this way we ensure that _transactionsToFlush won't hold reference in its internal slots preventing GC on EnvironmentStateRecord.ClientState object
 
 
-                if(record.SparseRegions is not null)
+                if (record.SparseRegions is not null)
                 {
                     sparseRegions ??= [];
                     sparseRegions.AddRange(record.SparseRegions);
@@ -1777,20 +1781,20 @@ namespace Voron
         internal void UpdateJournal(long journalNumber, long last4KWrite)
         {
             // this should only happen during recovery, never during active operations
-            Debug.Assert(ActiveTransactions.AllTransactions.Count == 0 , "ActiveTransactions.AllTransactions.Count == 0");
+            Debug.Assert(ActiveTransactions.AllTransactions.Count == 0, "ActiveTransactions.AllTransactions.Count == 0");
             _currentStateRecord = _currentStateRecord with { Journal = (journalNumber, last4KWrite) };
         }
 
         internal void UpdateDataPagerState(Pager.State dataPagerState)
         {
             // this should only happen during recovery, never during active operations
-            Debug.Assert(ActiveTransactions.AllTransactions.Count == 0 , "ActiveTransactions.AllTransactions.Count == 0");
+            Debug.Assert(ActiveTransactions.AllTransactions.Count == 0, "ActiveTransactions.AllTransactions.Count == 0");
             _currentStateRecord = _currentStateRecord with { DataPagerState = dataPagerState };
         }
 
         public bool TryGetClientState<T>(out T value)
         {
-            if(_currentStateRecord.ClientState is T t)
+            if (_currentStateRecord.ClientState is T t)
             {
                 value = t;
                 return true;
@@ -1798,7 +1802,7 @@ namespace Voron
             value = default;
             return false;
         }
-
+        
         internal bool SyncDataFileImmediately()
         {
             using (var operation = new SyncOperation(Journal.Applicator))

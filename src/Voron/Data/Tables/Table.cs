@@ -1118,10 +1118,13 @@ namespace Voron.Data.Tables
             return id;
         }
 
+        [ThreadStatic]
+        public static string CurrentName;
+
         private void InsertIndexValuesFor(long id, ref TableValueReader value)
         {
             AssertWritableTable();
-
+            CurrentName= Name.ToString();
             var pk = _schema.Key;
             using (Slice.External(_tx.Allocator, (byte*)&id, sizeof(long), out Slice idAsSlice))
             {

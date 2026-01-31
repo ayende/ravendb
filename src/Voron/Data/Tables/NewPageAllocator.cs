@@ -252,7 +252,16 @@ namespace Voron.Data.Tables
                 if (isNew)
                     ThrowInvalidNewBuffer();
 
-                PtrBitVector.SetBitInPointer(ptr, positionInBitmap, false);
+                var vec = new PtrBitVector(ptr, _numberOfPagesToAllocate);
+                vec.Set(positionInBitmap, false);
+                if (vec.AllEmpty())
+                {
+                    fst.Delete(pageNumber);
+                    for (int i = 0; i < _numberOfPagesToAllocate; i++)
+                    {
+                        _llt.FreePage(pageNumber + i);
+                    }
+                }
             }
         }
 
@@ -341,17 +350,20 @@ namespace Voron.Data.Tables
                 if (it.Seek(long.MinValue) == false)
                     throw new InvalidOperationException($"Could not seek to the first element of {fst.Name} tree");
 
-                using (it.Value(out Slice slice))
+                do
                 {
-                    byte* ptr = slice.Content.Ptr;
-                    for (int i = 0; i < _numberOfPagesToAllocate; i++)
+                    using (it.Value(out Slice slice))
                     {
-                        if (PtrBitVector.GetBitInPointer(ptr, i) == false)
+                        byte* ptr = slice.Content.Ptr;
+                        for (int i = 0; i < _numberOfPagesToAllocate; i++)
                         {
-                            results.Add(it.CurrentKey + i);
+                            if (PtrBitVector.GetBitInPointer(ptr, i) == false)
+                            {
+                                results.Add(it.CurrentKey + i);
+                            }
                         }
                     }
-                }
+                } while (it.MoveNext());
             }
 
 

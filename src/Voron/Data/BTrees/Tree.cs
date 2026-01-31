@@ -986,17 +986,28 @@ namespace Voron.Data.BTrees
             return true;
         }
 
+        [ThreadStatic]
+        public static string CurrentName;
+        
+
         internal TreePage NewPage(TreePageFlags flags, long nearbyPage)
         {
-            var newPage = _newPageAllocator?.AllocateSinglePage(nearbyPage) ?? _llt.AllocatePage(1);
+            CurrentName = Name.ToString();
+            try
+            {
+                var newPage = _newPageAllocator?.AllocateSinglePage(nearbyPage) ?? _llt.AllocatePage(1);
+                var page = PrepareTreePage(flags, 1, newPage);
 
-            var page = PrepareTreePage(flags, 1, newPage);
+                RecordNewPage(page, 1);
 
-            RecordNewPage(page, 1);
+                PageModified?.Invoke(page.PageNumber, page.Flags);
 
-            PageModified?.Invoke(page.PageNumber, page.Flags);
-
-            return page;
+                return page;
+            }
+            finally
+            {
+                CurrentName = null;
+            }
         }
 
         private static TreePage PrepareTreePage(TreePageFlags flags, int num, Page newPage)
@@ -1268,7 +1279,7 @@ namespace Voron.Data.BTrees
             return (byte*)node + node->KeySize + Constants.Tree.NodeHeaderSize;
         }
 
-        public List<long> AllPages()
+        public List<long> AllPages(bool skipNestedFixedSizeTrees = false)
         {
             ThrowIfDisposedOnDebug(_llt);
 
@@ -1311,7 +1322,8 @@ namespace Voron.Data.BTrees
                         if (_header.RootObjectType == RootObjectType.Table) // tables might have mixed values, fixed size trees inside have dedicated handling
                             continue;
 
-                        if ((_header.Flags & TreeFlags.FixedSizeTrees) == TreeFlags.FixedSizeTrees)
+                        if ((_header.Flags & TreeFlags.FixedSizeTrees) == TreeFlags.FixedSizeTrees && 
+                            skipNestedFixedSizeTrees is false)
                         {
                             var valueReader = GetValueReaderFromHeader(node);
 

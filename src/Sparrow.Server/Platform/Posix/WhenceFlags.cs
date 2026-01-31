@@ -7,6 +7,8 @@ namespace Sparrow.Server.Platform.Posix
     {
         SEEK_SET = 0,
         SEEK_CUR = 1,
-        SEEK_END = 2
+        SEEK_END = 2,
+        SEEK_DATA = 3,
+        SEEK_HOLE = 4
     }
 }
