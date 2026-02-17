@@ -26,6 +26,7 @@ using Raven.Client.Json;
 using Raven.Server.Documents.AI.Settings;
 using Raven.Server.Documents.ETL.Providers.AI;
 using Raven.Server.Documents.Handlers.AI.Agents;
+using Raven.Server.Documents.SchemaValidation.ErrorMessage;
 using Raven.Server.Json;
 using Raven.Server.Utils;
 using Sparrow;
@@ -174,27 +175,15 @@ internal class ChatCompletionClient : IDisposable
         AiUsage usage, CancellationToken token)
     {
         AddDefaultHeaders(request);
-        // we use a small buffer size since we expect those to be "token" level updates, not very big ones
-        const int initialBufferSize = 64;
+        using var streamedPropertyBuffer =  new JsonOperationContextBuffer<byte>(streamingContext);
 
-        using var __ = streamingContext.GetRawMemoryBuffer(initialBufferSize, out var streamedPropertyBuffer);
         var parser = new SseStreamingJsonParser(streamingContext, streamPropertyPath);
         var alreadySeen = 0;
-        var sizeToStream = 0;
         parser.OnStringRead += (e) =>
         {
-            int size = e.SizeInBytes - alreadySeen;
-            if (size > streamedPropertyBuffer.SizeInBytes)
-            {
-                streamingContext.GrowAllocation(streamedPropertyBuffer, size - streamedPropertyBuffer.SizeInBytes);
-            }
-
-            unsafe
-            {
-                var read = e.CopyTo(alreadySeen, streamedPropertyBuffer.Address);
-                alreadySeen += read;
-                sizeToStream += read;
-            }
+            // the `e` we get here is the _full_ string (including past chunks we already saw)
+            // we want to read only the *new* parts, that we didn't see before
+            alreadySeen += streamedPropertyBuffer.Append(alreadySeen, e);
         };
 
         using var response = await SendStreamingRequestAsync(request, token);
@@ -254,10 +243,13 @@ internal class ChatCompletionClient : IDisposable
                     toolCallState.AddAndReset();
 
                     var final = parser.Process(content);
-                    if (sizeToStream is not 0)
+                    if (streamedPropertyBuffer.Length is not 0)
                     {
-                        await streamedPropertyCallback(streamedPropertyBuffer.AsMemory()[..sizeToStream]);
-                        sizeToStream = 0;
+                        // here we send all the data that wasn't sent so far to the client
+                        await streamedPropertyCallback(streamedPropertyBuffer.AsMemory());
+                        // reset the buffer length so we can overwrite the start of the buffer
+                        // and only retain in memory the parts we'll need to send next time
+                        streamedPropertyBuffer.Length = 0;
                     }
 
                     if (final is not null)

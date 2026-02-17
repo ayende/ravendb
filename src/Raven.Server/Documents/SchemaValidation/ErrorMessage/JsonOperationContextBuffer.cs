@@ -4,15 +4,9 @@ using Sparrow.Json;
 
 namespace Raven.Server.Documents.SchemaValidation.ErrorMessage;
 
-public class JsonOperationContextBuffer<T> : AbstractBuffer<T>
+public class JsonOperationContextBuffer<T>(JsonOperationContext context) : AbstractBuffer<T>
 {
-    private readonly JsonOperationContext _context;
     private AllocatedMemoryData _buffer;
-    
-    public JsonOperationContextBuffer(JsonOperationContext context)
-    {
-        _context = context;
-    }
 
     protected override unsafe Span<T> BufferAsSpan()
     {
@@ -24,7 +18,7 @@ public class JsonOperationContextBuffer<T> : AbstractBuffer<T>
         minRequired *= Unsafe.SizeOf<T>();
         if (_buffer == null)
         {
-            _buffer = _context.GetMemory(minRequired);
+            _buffer = context.GetMemory(minRequired);
             return;
         }
 
@@ -32,18 +26,29 @@ public class JsonOperationContextBuffer<T> : AbstractBuffer<T>
         if (minRequired <= _buffer.SizeInBytes)
             return;
         
-        if (_context.GrowAllocation(_buffer, minRequired))
+        if (context.GrowAllocation(_buffer, minRequired))
             return;
 
-        var newBuffer = _context.GetMemory(minRequired);
+        var newBuffer = context.GetMemory(minRequired);
         _buffer.AsSpan().CopyTo(newBuffer.AsSpan());
-        _context.ReturnMemory(_buffer);
+        context.ReturnMemory(_buffer);
         _buffer = newBuffer;
     }
 
     public override void Dispose()
     {
         if (_buffer != null)
-            _context.ReturnMemory(_buffer);
+            context.ReturnMemory(_buffer);
     }
+
+    public unsafe int Append(int alreadySeen, UnmanagedWriteBuffer buffer)
+    {
+        var toAdd = Length - alreadySeen;
+        CheckAndGrow(toAdd);
+        buffer.CopyTo(alreadySeen, _buffer.Address);
+        Length += toAdd;
+        return toAdd;
+    }
+
+    public Memory<byte> AsMemory() => _buffer.AsMemory()[..Length];
 }
