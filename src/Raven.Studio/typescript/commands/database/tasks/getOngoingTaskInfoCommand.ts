@@ -14,7 +14,8 @@ class getOngoingTaskInfoCommand<T extends Raven.Client.Documents.Operations.Ongo
     Raven.Client.Documents.Operations.OngoingTasks.OngoingTaskQueueEtl |
     Raven.Client.Documents.Operations.OngoingTasks.EmbeddingsGeneration |
     Raven.Client.Documents.Operations.OngoingTasks.GenAi |
-    Raven.Client.Documents.Operations.OngoingTasks.OngoingTaskQueueSink> extends commandBase {
+    Raven.Client.Documents.Operations.OngoingTasks.OngoingTaskQueueSink |
+    Raven.Client.Documents.Operations.OngoingTasks.OngoingTaskCdcSink> extends commandBase {
 
     private readonly db: database | string;
     private readonly nodeTag: string;
@@ -123,6 +124,10 @@ class getOngoingTaskInfoCommand<T extends Raven.Client.Documents.Operations.Ongo
 
     static forQueueSink(db: database | string, taskId: number) {
         return new getOngoingTaskInfoCommand<Raven.Client.Documents.Operations.OngoingTasks.OngoingTaskQueueSink>(db, "QueueSink", null, taskId);
+    }
+
+    static forCdcSink(db: database | string, taskId: number) {
+        return new getOngoingTaskInfoCommand<Raven.Client.Documents.Operations.OngoingTasks.OngoingTaskCdcSink>(db, "CdcSink", null, taskId);
     }
 }
 

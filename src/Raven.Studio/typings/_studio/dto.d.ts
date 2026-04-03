@@ -939,6 +939,25 @@ type StudioEtlType = "Raven" | "Sql" | "Snowflake" | "Olap" | "ElasticSearch" | 
 
 type StudioQueueSinkType = "KafkaQueueSink" | "RabbitQueueSink";
 
+declare module Raven.Client.Documents.Operations.OngoingTasks {
+    interface OngoingTaskCdcSink extends Raven.Client.Documents.Operations.OngoingTasks.OngoingTask {
+        Configuration: Raven.Client.Documents.Operations.CdcSink.CdcSinkConfiguration;
+        ConnectionStringName: string;
+        FactoryName: string;
+    }
+}
+
+declare module Raven.Server.Documents.CdcSink.Test {
+    interface TestCdcSinkScript {
+        Configuration: Raven.Client.Documents.Operations.CdcSink.CdcSinkConfiguration;
+        Message: string;
+    }
+    interface TestCdcSinkScriptResult {
+        Actions: any;
+        DebugOutput: Array<string>;
+    }
+}
+
 type FilterOngoingTaskType = Raven.Client.Documents.Operations.ETL.EtlType  | Raven.Client.Documents.Operations.ETL.Queue.QueueBrokerType | "Subscription" | "Replication";
 
 type TaskDestinationType = "Collection" | "Table" | "Queue" | "Topic" | "Index";
