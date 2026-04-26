@@ -24,7 +24,7 @@ public static class RoaringBitmapQuickBench
         int[] counts = { 500, 5_000, 50_000, 500_000 };
         int[] maxValues = { 1_000_000, 1_000_000_000 };
 
-        Console.WriteLine("--- BUILD (Add N values) ---");
+        Console.WriteLine("--- BUILD (Add N values + Finalize) ---");
         Console.WriteLine($"{"Count",10} {"MaxValue",12} {"Roaring",12} {"GrowBitArr",12} {"BCL BitArr",12} {"Roaring MB",12} {"GrowBA MB",12} {"BCL MB",12}");
 
         foreach (int maxVal in maxValues)
@@ -146,6 +146,7 @@ public static class RoaringBitmapQuickBench
         using var ctx2 = new ByteStringContext(SharedMultipleUseFlag.None);
         var bmp2 = new RoaringBitmap(ctx2);
         for (int i = 0; i < values.Length; i++) bmp2.Add(values[i]);
+        bmp2.Finalize(); // sort all unsorted containers — part of build cost
         sw.Stop();
         long nativeAfter = Sparrow.Utils.NativeMemory.CurrentThreadStats?.TotalAllocated ?? 0;
         bmp2.Dispose();
@@ -234,6 +235,8 @@ public static class RoaringBitmapQuickBench
         var b = new RoaringBitmap(ctx);
         for (int i = 0; i < valuesA.Length; i++) a.Add(valuesA[i]);
         for (int i = 0; i < valuesB.Length; i++) b.Add(valuesB[i]);
+        a.Finalize();
+        b.Finalize();
 
         var sw = Stopwatch.StartNew();
         RoaringBitmap result;
@@ -259,6 +262,8 @@ public static class RoaringBitmapQuickBench
         var b = new RoaringBitmap(ctx);
         for (int i = 0; i < valuesA.Length; i++) a.Add(valuesA[i]);
         for (int i = 0; i < valuesB.Length; i++) b.Add(valuesB[i]);
+        a.Finalize();
+        b.Finalize();
 
         var sw = Stopwatch.StartNew();
         switch (op)
