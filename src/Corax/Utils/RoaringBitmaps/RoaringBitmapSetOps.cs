@@ -831,56 +831,62 @@ public static unsafe class RoaringBitmapSetOps
 
     #region SIMD Bitmap Operations
 
-    /// <summary>
-    /// AND two bitmap containers using SIMD. Returns popcount of result.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static int BitmapAndSimd(ulong* a, ulong* b, ulong* dst, int count)
+    // ---- Generic SIMD bitmap operations ----
+    // Each operation (AND, OR, XOR, ANDNOT) is a zero-cost struct implementing IBitmapOp.
+    // The JIT specializes each generic instantiation, eliminating all virtual dispatch.
+    // One method per SIMD width handles all operations — 4 methods instead of 16.
+
+    private interface IBitmapOp
     {
-        if (AdvInstructionSet.IsAcceleratedVector512)
-            return BitmapAndVector512(a, b, dst, count);
-        if (AdvInstructionSet.IsAcceleratedVector256)
-            return BitmapAndVector256(a, b, dst, count);
-        if (AdvInstructionSet.IsAcceleratedVector128)
-            return BitmapAndVector128(a, b, dst, count);
-        return BitmapAndScalar(a, b, dst, count);
+        static abstract ulong Apply(ulong a, ulong b);
+        static abstract Vector128<ulong> Apply(Vector128<ulong> a, Vector128<ulong> b);
+        static abstract Vector256<ulong> Apply(Vector256<ulong> a, Vector256<ulong> b);
+        static abstract Vector512<ulong> Apply(Vector512<ulong> a, Vector512<ulong> b);
+    }
+
+    private struct AndOp : IBitmapOp
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static ulong Apply(ulong a, ulong b) => a & b;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector128<ulong> Apply(Vector128<ulong> a, Vector128<ulong> b) => a & b;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector256<ulong> Apply(Vector256<ulong> a, Vector256<ulong> b) => a & b;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector512<ulong> Apply(Vector512<ulong> a, Vector512<ulong> b) => a & b;
+    }
+
+    private struct OrOp : IBitmapOp
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static ulong Apply(ulong a, ulong b) => a | b;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector128<ulong> Apply(Vector128<ulong> a, Vector128<ulong> b) => a | b;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector256<ulong> Apply(Vector256<ulong> a, Vector256<ulong> b) => a | b;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector512<ulong> Apply(Vector512<ulong> a, Vector512<ulong> b) => a | b;
+    }
+
+    private struct XorOp : IBitmapOp
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static ulong Apply(ulong a, ulong b) => a ^ b;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector128<ulong> Apply(Vector128<ulong> a, Vector128<ulong> b) => a ^ b;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector256<ulong> Apply(Vector256<ulong> a, Vector256<ulong> b) => a ^ b;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector512<ulong> Apply(Vector512<ulong> a, Vector512<ulong> b) => a ^ b;
+    }
+
+    private struct AndNotOp : IBitmapOp
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static ulong Apply(ulong a, ulong b) => a & ~b;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector128<ulong> Apply(Vector128<ulong> a, Vector128<ulong> b) => Vector128.AndNot(a, b);
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector256<ulong> Apply(Vector256<ulong> a, Vector256<ulong> b) => Vector256.AndNot(a, b);
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector512<ulong> Apply(Vector512<ulong> a, Vector512<ulong> b) => Vector512.AndNot(a, b);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static int BitmapOrSimd(ulong* a, ulong* b, ulong* dst, int count)
-    {
-        if (AdvInstructionSet.IsAcceleratedVector512)
-            return BitmapOrVector512(a, b, dst, count);
-        if (AdvInstructionSet.IsAcceleratedVector256)
-            return BitmapOrVector256(a, b, dst, count);
-        if (AdvInstructionSet.IsAcceleratedVector128)
-            return BitmapOrVector128(a, b, dst, count);
-        return BitmapOrScalar(a, b, dst, count);
-    }
+    internal static int BitmapAndSimd(ulong* a, ulong* b, ulong* dst, int count) => BitmapOpDispatch<AndOp>(a, b, dst, count);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static int BitmapXorSimd(ulong* a, ulong* b, ulong* dst, int count)
-    {
-        if (AdvInstructionSet.IsAcceleratedVector512)
-            return BitmapXorVector512(a, b, dst, count);
-        if (AdvInstructionSet.IsAcceleratedVector256)
-            return BitmapXorVector256(a, b, dst, count);
-        if (AdvInstructionSet.IsAcceleratedVector128)
-            return BitmapXorVector128(a, b, dst, count);
-        return BitmapXorScalar(a, b, dst, count);
-    }
+    internal static int BitmapOrSimd(ulong* a, ulong* b, ulong* dst, int count) => BitmapOpDispatch<OrOp>(a, b, dst, count);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static int BitmapAndNotSimd(ulong* a, ulong* b, ulong* dst, int count)
-    {
-        if (AdvInstructionSet.IsAcceleratedVector512)
-            return BitmapAndNotVector512(a, b, dst, count);
-        if (AdvInstructionSet.IsAcceleratedVector256)
-            return BitmapAndNotVector256(a, b, dst, count);
-        if (AdvInstructionSet.IsAcceleratedVector128)
-            return BitmapAndNotVector128(a, b, dst, count);
-        return BitmapAndNotScalar(a, b, dst, count);
-    }
+    internal static int BitmapXorSimd(ulong* a, ulong* b, ulong* dst, int count) => BitmapOpDispatch<XorOp>(a, b, dst, count);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static int BitmapAndNotSimd(ulong* a, ulong* b, ulong* dst, int count) => BitmapOpDispatch<AndNotOp>(a, b, dst, count);
 
     internal static int BitmapNotSimd(ulong* src, ulong* dst, int count)
     {
@@ -893,36 +899,19 @@ public static unsafe class RoaringBitmapSetOps
         return cardinality;
     }
 
-    #region Vector512 Paths
-
-    private static int BitmapAndVector512(ulong* a, ulong* b, ulong* dst, int count)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int BitmapOpDispatch<TOp>(ulong* a, ulong* b, ulong* dst, int count) where TOp : struct, IBitmapOp
     {
-        int N = Vector512<ulong>.Count; // 8 ulongs = 512 bits
-        int cardinality = 0;
-        int i = 0;
-
-        for (; i + N <= count; i += N)
-        {
-            Vector512<ulong> va = Vector512.Load(a + i);
-            Vector512<ulong> vb = Vector512.Load(b + i);
-            Vector512<ulong> result = va & vb;
-            result.Store(dst + i);
-
-            // Popcount the result
-            for (int j = 0; j < N; j++)
-                cardinality += BitOperations.PopCount(dst[i + j]);
-        }
-
-        for (; i < count; i++)
-        {
-            dst[i] = a[i] & b[i];
-            cardinality += BitOperations.PopCount(dst[i]);
-        }
-
-        return cardinality;
+        if (AdvInstructionSet.IsAcceleratedVector512)
+            return BitmapOpVector512<TOp>(a, b, dst, count);
+        if (AdvInstructionSet.IsAcceleratedVector256)
+            return BitmapOpVector256<TOp>(a, b, dst, count);
+        if (AdvInstructionSet.IsAcceleratedVector128)
+            return BitmapOpVector128<TOp>(a, b, dst, count);
+        return BitmapOpScalar<TOp>(a, b, dst, count);
     }
 
-    private static int BitmapOrVector512(ulong* a, ulong* b, ulong* dst, int count)
+    private static int BitmapOpVector512<TOp>(ulong* a, ulong* b, ulong* dst, int count) where TOp : struct, IBitmapOp
     {
         int N = Vector512<ulong>.Count;
         int cardinality = 0;
@@ -930,107 +919,21 @@ public static unsafe class RoaringBitmapSetOps
 
         for (; i + N <= count; i += N)
         {
-            Vector512<ulong> va = Vector512.Load(a + i);
-            Vector512<ulong> vb = Vector512.Load(b + i);
-            Vector512<ulong> result = va | vb;
-            result.Store(dst + i);
-
+            TOp.Apply(Vector512.Load(a + i), Vector512.Load(b + i)).Store(dst + i);
             for (int j = 0; j < N; j++)
                 cardinality += BitOperations.PopCount(dst[i + j]);
         }
 
         for (; i < count; i++)
         {
-            dst[i] = a[i] | b[i];
+            dst[i] = TOp.Apply(a[i], b[i]);
             cardinality += BitOperations.PopCount(dst[i]);
         }
 
         return cardinality;
     }
 
-    private static int BitmapXorVector512(ulong* a, ulong* b, ulong* dst, int count)
-    {
-        int N = Vector512<ulong>.Count;
-        int cardinality = 0;
-        int i = 0;
-
-        for (; i + N <= count; i += N)
-        {
-            Vector512<ulong> va = Vector512.Load(a + i);
-            Vector512<ulong> vb = Vector512.Load(b + i);
-            Vector512<ulong> result = va ^ vb;
-            result.Store(dst + i);
-
-            for (int j = 0; j < N; j++)
-                cardinality += BitOperations.PopCount(dst[i + j]);
-        }
-
-        for (; i < count; i++)
-        {
-            dst[i] = a[i] ^ b[i];
-            cardinality += BitOperations.PopCount(dst[i]);
-        }
-
-        return cardinality;
-    }
-
-    private static int BitmapAndNotVector512(ulong* a, ulong* b, ulong* dst, int count)
-    {
-        int N = Vector512<ulong>.Count;
-        int cardinality = 0;
-        int i = 0;
-
-        for (; i + N <= count; i += N)
-        {
-            Vector512<ulong> va = Vector512.Load(a + i);
-            Vector512<ulong> vb = Vector512.Load(b + i);
-            Vector512<ulong> result = Vector512.AndNot(va, vb); // AndNot(a, b) = a & ~b
-            result.Store(dst + i);
-
-            for (int j = 0; j < N; j++)
-                cardinality += BitOperations.PopCount(dst[i + j]);
-        }
-
-        for (; i < count; i++)
-        {
-            dst[i] = a[i] & ~b[i];
-            cardinality += BitOperations.PopCount(dst[i]);
-        }
-
-        return cardinality;
-    }
-
-    #endregion
-
-    #region Vector256 Paths
-
-    private static int BitmapAndVector256(ulong* a, ulong* b, ulong* dst, int count)
-    {
-        int N = Vector256<ulong>.Count; // 4 ulongs = 256 bits
-        int cardinality = 0;
-        int i = 0;
-
-        for (; i + N <= count; i += N)
-        {
-            Vector256<ulong> va = Vector256.Load(a + i);
-            Vector256<ulong> vb = Vector256.Load(b + i);
-            Vector256<ulong> result = va & vb;
-            result.Store(dst + i);
-
-            for (int j = 0; j < N; j++)
-                cardinality += BitOperations.PopCount(dst[i + j]);
-        }
-
-        for (; i < count; i++)
-        {
-            dst[i] = a[i] & b[i];
-            cardinality += BitOperations.PopCount(dst[i]);
-        }
-
-        return cardinality;
-    }
-
-    private static int BitmapOrVector256(ulong* a, ulong* b, ulong* dst, int count)
+    private static int BitmapOpVector256<TOp>(ulong* a, ulong* b, ulong* dst, int count) where TOp : struct, IBitmapOp
     {
         int N = Vector256<ulong>.Count;
         int cardinality = 0;
@@ -1038,107 +941,21 @@ public static unsafe class RoaringBitmapSetOps
 
         for (; i + N <= count; i += N)
         {
-            Vector256<ulong> va = Vector256.Load(a + i);
-            Vector256<ulong> vb = Vector256.Load(b + i);
-            Vector256<ulong> result = va | vb;
-            result.Store(dst + i);
-
+            TOp.Apply(Vector256.Load(a + i), Vector256.Load(b + i)).Store(dst + i);
             for (int j = 0; j < N; j++)
                 cardinality += BitOperations.PopCount(dst[i + j]);
         }
 
         for (; i < count; i++)
         {
-            dst[i] = a[i] | b[i];
+            dst[i] = TOp.Apply(a[i], b[i]);
             cardinality += BitOperations.PopCount(dst[i]);
         }
 
         return cardinality;
     }
 
-    private static int BitmapXorVector256(ulong* a, ulong* b, ulong* dst, int count)
-    {
-        int N = Vector256<ulong>.Count;
-        int cardinality = 0;
-        int i = 0;
-
-        for (; i + N <= count; i += N)
-        {
-            Vector256<ulong> va = Vector256.Load(a + i);
-            Vector256<ulong> vb = Vector256.Load(b + i);
-            Vector256<ulong> result = va ^ vb;
-            result.Store(dst + i);
-
-            for (int j = 0; j < N; j++)
-                cardinality += BitOperations.PopCount(dst[i + j]);
-        }
-
-        for (; i < count; i++)
-        {
-            dst[i] = a[i] ^ b[i];
-            cardinality += BitOperations.PopCount(dst[i]);
-        }
-
-        return cardinality;
-    }
-
-    private static int BitmapAndNotVector256(ulong* a, ulong* b, ulong* dst, int count)
-    {
-        int N = Vector256<ulong>.Count;
-        int cardinality = 0;
-        int i = 0;
-
-        for (; i + N <= count; i += N)
-        {
-            Vector256<ulong> va = Vector256.Load(a + i);
-            Vector256<ulong> vb = Vector256.Load(b + i);
-            Vector256<ulong> result = Vector256.AndNot(va, vb);
-            result.Store(dst + i);
-
-            for (int j = 0; j < N; j++)
-                cardinality += BitOperations.PopCount(dst[i + j]);
-        }
-
-        for (; i < count; i++)
-        {
-            dst[i] = a[i] & ~b[i];
-            cardinality += BitOperations.PopCount(dst[i]);
-        }
-
-        return cardinality;
-    }
-
-    #endregion
-
-    #region Vector128 Paths
-
-    private static int BitmapAndVector128(ulong* a, ulong* b, ulong* dst, int count)
-    {
-        int N = Vector128<ulong>.Count; // 2 ulongs = 128 bits
-        int cardinality = 0;
-        int i = 0;
-
-        for (; i + N <= count; i += N)
-        {
-            Vector128<ulong> va = Vector128.Load(a + i);
-            Vector128<ulong> vb = Vector128.Load(b + i);
-            Vector128<ulong> result = va & vb;
-            result.Store(dst + i);
-
-            for (int j = 0; j < N; j++)
-                cardinality += BitOperations.PopCount(dst[i + j]);
-        }
-
-        for (; i < count; i++)
-        {
-            dst[i] = a[i] & b[i];
-            cardinality += BitOperations.PopCount(dst[i]);
-        }
-
-        return cardinality;
-    }
-
-    private static int BitmapOrVector128(ulong* a, ulong* b, ulong* dst, int count)
+    private static int BitmapOpVector128<TOp>(ulong* a, ulong* b, ulong* dst, int count) where TOp : struct, IBitmapOp
     {
         int N = Vector128<ulong>.Count;
         int cardinality = 0;
@@ -1146,125 +963,36 @@ public static unsafe class RoaringBitmapSetOps
 
         for (; i + N <= count; i += N)
         {
-            Vector128<ulong> va = Vector128.Load(a + i);
-            Vector128<ulong> vb = Vector128.Load(b + i);
-            Vector128<ulong> result = va | vb;
-            result.Store(dst + i);
-
+            TOp.Apply(Vector128.Load(a + i), Vector128.Load(b + i)).Store(dst + i);
             for (int j = 0; j < N; j++)
                 cardinality += BitOperations.PopCount(dst[i + j]);
         }
 
         for (; i < count; i++)
         {
-            dst[i] = a[i] | b[i];
+            dst[i] = TOp.Apply(a[i], b[i]);
             cardinality += BitOperations.PopCount(dst[i]);
         }
 
         return cardinality;
     }
 
-    private static int BitmapXorVector128(ulong* a, ulong* b, ulong* dst, int count)
-    {
-        int N = Vector128<ulong>.Count;
-        int cardinality = 0;
-        int i = 0;
-
-        for (; i + N <= count; i += N)
-        {
-            Vector128<ulong> va = Vector128.Load(a + i);
-            Vector128<ulong> vb = Vector128.Load(b + i);
-            Vector128<ulong> result = va ^ vb;
-            result.Store(dst + i);
-
-            for (int j = 0; j < N; j++)
-                cardinality += BitOperations.PopCount(dst[i + j]);
-        }
-
-        for (; i < count; i++)
-        {
-            dst[i] = a[i] ^ b[i];
-            cardinality += BitOperations.PopCount(dst[i]);
-        }
-
-        return cardinality;
-    }
-
-    private static int BitmapAndNotVector128(ulong* a, ulong* b, ulong* dst, int count)
-    {
-        int N = Vector128<ulong>.Count;
-        int cardinality = 0;
-        int i = 0;
-
-        for (; i + N <= count; i += N)
-        {
-            Vector128<ulong> va = Vector128.Load(a + i);
-            Vector128<ulong> vb = Vector128.Load(b + i);
-            Vector128<ulong> result = Vector128.AndNot(va, vb);
-            result.Store(dst + i);
-
-            for (int j = 0; j < N; j++)
-                cardinality += BitOperations.PopCount(dst[i + j]);
-        }
-
-        for (; i < count; i++)
-        {
-            dst[i] = a[i] & ~b[i];
-            cardinality += BitOperations.PopCount(dst[i]);
-        }
-
-        return cardinality;
-    }
-
-    #endregion
-
-    #region Scalar Paths
-
-    internal static int BitmapAndScalar(ulong* a, ulong* b, ulong* dst, int count)
+    private static int BitmapOpScalar<TOp>(ulong* a, ulong* b, ulong* dst, int count) where TOp : struct, IBitmapOp
     {
         int cardinality = 0;
         for (int i = 0; i < count; i++)
         {
-            dst[i] = a[i] & b[i];
+            dst[i] = TOp.Apply(a[i], b[i]);
             cardinality += BitOperations.PopCount(dst[i]);
         }
         return cardinality;
     }
 
-    internal static int BitmapOrScalar(ulong* a, ulong* b, ulong* dst, int count)
-    {
-        int cardinality = 0;
-        for (int i = 0; i < count; i++)
-        {
-            dst[i] = a[i] | b[i];
-            cardinality += BitOperations.PopCount(dst[i]);
-        }
-        return cardinality;
-    }
-
-    internal static int BitmapXorScalar(ulong* a, ulong* b, ulong* dst, int count)
-    {
-        int cardinality = 0;
-        for (int i = 0; i < count; i++)
-        {
-            dst[i] = a[i] ^ b[i];
-            cardinality += BitOperations.PopCount(dst[i]);
-        }
-        return cardinality;
-    }
-
-    internal static int BitmapAndNotScalar(ulong* a, ulong* b, ulong* dst, int count)
-    {
-        int cardinality = 0;
-        for (int i = 0; i < count; i++)
-        {
-            dst[i] = a[i] & ~b[i];
-            cardinality += BitOperations.PopCount(dst[i]);
-        }
-        return cardinality;
-    }
-
-    #endregion
+    // Keep named scalar methods for test backward compatibility
+    internal static int BitmapAndScalar(ulong* a, ulong* b, ulong* dst, int count) => BitmapOpScalar<AndOp>(a, b, dst, count);
+    internal static int BitmapOrScalar(ulong* a, ulong* b, ulong* dst, int count) => BitmapOpScalar<OrOp>(a, b, dst, count);
+    internal static int BitmapXorScalar(ulong* a, ulong* b, ulong* dst, int count) => BitmapOpScalar<XorOp>(a, b, dst, count);
+    internal static int BitmapAndNotScalar(ulong* a, ulong* b, ulong* dst, int count) => BitmapOpScalar<AndNotOp>(a, b, dst, count);
 
     #endregion
 
