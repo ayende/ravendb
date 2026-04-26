@@ -260,13 +260,66 @@ public unsafe struct RoaringBitmap : IDisposable
     /// </summary>
     public void Finalize()
     {
+        // Scratch bitmap (8KB) for radix sort: explode unsorted values into bits,
+        // extract back as sorted array. O(n) bit-sets + O(1024) word scan vs O(n log n).
+        // Dedup is free. Reused across all containers. Only for containers above threshold.
+        ulong* scratch = stackalloc ulong[BitmapContainerSizeInUlongs];
+
         int* idx = _index.RawItems;
         for (int k = 0; k < _index.Count; k++)
         {
             int slot = idx[k];
             if (slot >= 0)
-                EnsureSorted(ref _entries[slot]);
+            {
+                ref ContainerEntry entry = ref _entries[slot];
+                if (entry.Type == ContainerType.ArrayUnsorted)
+                {
+                    if (entry.Cardinality >= BitmapSortThreshold)
+                        SortViaBitmapScratch(ref entry, scratch);
+                    else
+                        SortSmallArray(ref entry);
+                }
+            }
         }
+    }
+
+    /// <summary>
+    /// Sort an unsorted array container using a bitmap as radix sort scratch space.
+    /// O(n) bit-sets + O(1024) word scan instead of O(n log n) comparison sort.
+    /// Deduplication is free — setting the same bit twice is a noop.
+    /// </summary>
+    private static void SortViaBitmapScratch(ref ContainerEntry entry, ulong* scratch)
+    {
+        Debug.Assert(entry.Type == ContainerType.ArrayUnsorted);
+
+        ushort* arr = (ushort*)entry.Data;
+        int count = entry.Cardinality;
+
+        // Clear scratch bitmap
+        new Span<byte>(scratch, BitmapContainerSizeInBytes).Clear();
+
+        // Explode: set bits for each value
+        for (int i = 0; i < count; i++)
+        {
+            ushort val = arr[i];
+            scratch[val >> 6] |= 1UL << (val & 63);
+        }
+
+        // Extract: walk bitmap, emit sorted values via TrailingZeroCount
+        int sorted = 0;
+        for (int wordIdx = 0; wordIdx < BitmapContainerSizeInUlongs; wordIdx++)
+        {
+            ulong word = scratch[wordIdx];
+            while (word != 0)
+            {
+                int bit = BitOperations.TrailingZeroCount(word);
+                arr[sorted++] = (ushort)(wordIdx * 64 + bit);
+                word &= word - 1; // clear lowest set bit
+            }
+        }
+
+        entry.Cardinality = sorted; // may be less than count due to dedup
+        entry.Type = ContainerType.Array;
     }
 
     #region In-place Set Operations
@@ -861,14 +914,30 @@ public unsafe struct RoaringBitmap : IDisposable
     /// Sort an ArrayUnsorted container in-place and deduplicate. Converts to Array type.
     /// Uses VxSort for SIMD-accelerated sorting when available.
     /// </summary>
+    // Threshold: bitmap clear costs ~1024 word writes. Below this count,
+    // comparison sort on a tiny array is cheaper than clearing 8KB.
+    private const int BitmapSortThreshold = 128;
+
     private static void SortAndDeduplicateArray(ref ContainerEntry entry)
     {
         Debug.Assert(entry.Type == ContainerType.ArrayUnsorted);
 
+        if (entry.Cardinality >= BitmapSortThreshold)
+        {
+            ulong* scratch = stackalloc ulong[BitmapContainerSizeInUlongs];
+            SortViaBitmapScratch(ref entry, scratch);
+        }
+        else
+        {
+            SortSmallArray(ref entry);
+        }
+    }
+
+    private static void SortSmallArray(ref ContainerEntry entry)
+    {
         ushort* arr = (ushort*)entry.Data;
         int count = entry.Cardinality;
 
-        // VxSort doesn't support ushort, use intrinsic Span.Sort
         new Span<ushort>(arr, count).Sort();
 
         // Deduplicate in-place
