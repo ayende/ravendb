@@ -219,23 +219,6 @@ public unsafe struct RoaringBitmap : IDisposable
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void Remove(long value)
-    {
-        long key = value >> ContainerKeyShift;
-        ushort low = (ushort)(value & ContainerValueMask);
-
-        int slot = GetSlotForKey(key);
-        if (slot < 0)
-            return;
-
-        ref ContainerEntry entry = ref _entries[slot];
-        RemoveFromContainer(ref entry, low);
-
-        if (entry.Cardinality == 0)
-            FreeContainer(key, slot);
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public readonly bool Contains(long value)
     {
         long key = value >> ContainerKeyShift;
@@ -970,44 +953,6 @@ public unsafe struct RoaringBitmap : IDisposable
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void RemoveFromContainer(ref ContainerEntry entry, ushort value)
-    {
-        if (entry.Type == ContainerType.ArrayUnsorted)
-            SortAndDeduplicateArray(ref entry);
-
-        switch (entry.Type)
-        {
-            case ContainerType.Array:
-                ArrayContainerRemove(entry.Data, ref entry.Cardinality, value);
-                break;
-
-            case ContainerType.Bitmap:
-                BitmapContainerRemove(entry.Data, ref entry.Cardinality, value);
-                if (entry.Cardinality <= ArrayContainerMaxCardinality)
-                    ConvertBitmapToArray(ref entry);
-                break;
-
-            case ContainerType.Range:
-                if (value >= entry.Cardinality)
-                    return; // not in range
-                if (value == entry.Cardinality - 1)
-                {
-                    // Removing from the end of the range
-                    entry.Cardinality--;
-                }
-                else
-                {
-                    // Removing from middle — convert to bitmap, then remove
-                    ConvertRangeToBitmap(ref entry);
-                    BitmapContainerRemove(entry.Data, ref entry.Cardinality, value);
-                    if (entry.Cardinality <= ArrayContainerMaxCardinality)
-                        ConvertBitmapToArray(ref entry);
-                }
-                break;
-        }
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool ContainerContains(ref ContainerEntry entry, ushort value)
     {
         if (entry.Type == ContainerType.ArrayUnsorted)
@@ -1088,23 +1033,6 @@ public unsafe struct RoaringBitmap : IDisposable
 
         arr[insertAt] = value;
         cardinality = count + 1;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static void ArrayContainerRemove(byte* data, ref int cardinality, ushort value)
-    {
-        ushort* arr = (ushort*)data;
-        int count = cardinality;
-
-        int idx = ArrayContainerFind(arr, count, value);
-        if (idx < 0)
-            return;
-
-        // Shift left
-        for (int i = idx; i < count - 1; i++)
-            arr[i] = arr[i + 1];
-
-        cardinality = count - 1;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1466,20 +1394,6 @@ public unsafe struct RoaringBitmap : IDisposable
         {
             bitmap[wordIdx] |= mask;
             cardinality++;
-        }
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static void BitmapContainerRemove(byte* data, ref int cardinality, ushort value)
-    {
-        ulong* bitmap = (ulong*)data;
-        int wordIdx = value >> 6;
-        ulong mask = 1UL << (value & 63);
-
-        if ((bitmap[wordIdx] & mask) != 0)
-        {
-            bitmap[wordIdx] &= ~mask;
-            cardinality--;
         }
     }
 
