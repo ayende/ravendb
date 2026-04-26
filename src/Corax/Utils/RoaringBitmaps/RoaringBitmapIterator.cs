@@ -105,7 +105,7 @@ public unsafe struct RoaringBitmapIterator
 
         fixed (long* dst = &buffer[written])
         {
-            // SIMD: widen 4 ushorts → 4 longs at a time, adding baseValue
+            // SIMD: widen 4 ushorts → 4 longs at a time, OR with baseValue (low 16 bits are 0)
             if (AdvInstructionSet.IsAcceleratedVector256 && toCopy >= 4)
             {
                 Vector256<long> vBase = Vector256.Create(baseValue);
