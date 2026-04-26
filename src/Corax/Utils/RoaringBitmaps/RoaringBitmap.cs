@@ -24,9 +24,9 @@ namespace Corax.Utils.RoaringBitmaps;
 public unsafe struct RoaringBitmap : IDisposable
 {
     public const int BitmapContainerSizeInBytes = 8192; // 8KB
-    public const int BitmapContainerSizeInUlongs = BitmapContainerSizeInBytes / sizeof(ulong); // 1024
-    public const int BitsPerContainer = 65536; // 2^16
-    public const int ArrayContainerMaxCardinality = 4096; // crossover point: 4096 * 2 = 8KB
+    public const int BitmapContainerSizeInUlongs = BitmapContainerSizeInBytes / sizeof(ulong);
+    public const int BitsPerContainer = BitmapContainerSizeInBytes * 8; // each byte holds 8 bits
+    public const int ArrayContainerMaxCardinality = BitmapContainerSizeInBytes / sizeof(ushort); // crossover: array at max costs same as bitmap
     public const int NegatedArrayMinCardinality = BitsPerContainer - ArrayContainerMaxCardinality; // 61440
     public const int ContainerKeyShift = 16;
     public const int ContainerValueMask = 0xFFFF;
@@ -144,6 +144,596 @@ public unsafe struct RoaringBitmap : IDisposable
         }
     }
 
+    #region In-place Set Operations
+
+    /// <summary>
+    /// In-place AND: retain only values that also exist in other.
+    /// Containers in this bitmap with no match in other are removed.
+    /// Matching containers are intersected in-place, reusing this bitmap's memory.
+    /// </summary>
+    public void AndWith(ref RoaringBitmap other)
+    {
+        int ai = 0, bi = 0;
+
+        while (ai < _containers.Count && bi < other.ContainerCount)
+        {
+            ref ContainerEntry ac = ref _containers[ai];
+            ref ContainerEntry bc = ref other.GetContainer(bi);
+
+            if (ac.Key < bc.Key)
+            {
+                // Left container has no match in right — remove it
+                RemoveContainerAt(ai);
+                // Don't increment ai — the next container shifted into this position
+            }
+            else if (ac.Key > bc.Key)
+            {
+                bi++;
+            }
+            else
+            {
+                // Same key — intersect in-place
+                AndContainerInPlace(ref ac, ref bc);
+                if (ac.Cardinality == 0)
+                {
+                    RemoveContainerAt(ai);
+                }
+                else
+                {
+                    ai++;
+                }
+                bi++;
+            }
+        }
+
+        // Remove remaining left containers (no match in right)
+        while (ai < _containers.Count)
+            RemoveContainerAt(ai);
+    }
+
+    /// <summary>
+    /// In-place OR: add all values from other into this bitmap.
+    /// Matching containers are unioned in-place. Unmatched containers from other are cloned in.
+    /// Builds a new merged container list to avoid O(n²) insertion shifts.
+    /// </summary>
+    public void OrWith(ref RoaringBitmap other)
+    {
+        if (other.ContainerCount == 0)
+            return;
+
+        var merged = new NativeList<ContainerEntry>();
+        merged.EnsureCapacityFor(_ctx, _containers.Count + other.ContainerCount);
+
+        int ai = 0, bi = 0;
+
+        while (ai < _containers.Count && bi < other.ContainerCount)
+        {
+            ref ContainerEntry ac = ref _containers[ai];
+            ref ContainerEntry bc = ref other.GetContainer(bi);
+
+            if (ac.Key < bc.Key)
+            {
+                merged.AddUnsafe(ac);
+                ai++;
+            }
+            else if (ac.Key > bc.Key)
+            {
+                merged.AddUnsafe(RoaringBitmapSetOps.CloneContainer(_ctx, ref bc));
+                bi++;
+            }
+            else
+            {
+                OrContainerInPlace(ref ac, ref bc);
+                merged.AddUnsafe(ac);
+                ai++;
+                bi++;
+            }
+        }
+
+        while (ai < _containers.Count)
+        {
+            merged.AddUnsafe(_containers[ai]);
+            ai++;
+        }
+        while (bi < other.ContainerCount)
+        {
+            ref ContainerEntry bc = ref other.GetContainer(bi);
+            merged.AddUnsafe(RoaringBitmapSetOps.CloneContainer(_ctx, ref bc));
+            bi++;
+        }
+
+        // Swap: release old container list (but NOT the container data — it was moved into merged)
+        _containers.Dispose(_ctx);
+        _containers = merged;
+    }
+
+    /// <summary>
+    /// In-place XOR: toggle all values from other in this bitmap.
+    /// Builds a new merged container list to avoid O(n²) insertion shifts.
+    /// </summary>
+    public void XorWith(ref RoaringBitmap other)
+    {
+        if (other.ContainerCount == 0)
+            return;
+
+        var merged = new NativeList<ContainerEntry>();
+        merged.EnsureCapacityFor(_ctx, _containers.Count + other.ContainerCount);
+
+        int ai = 0, bi = 0;
+
+        while (ai < _containers.Count && bi < other.ContainerCount)
+        {
+            ref ContainerEntry ac = ref _containers[ai];
+            ref ContainerEntry bc = ref other.GetContainer(bi);
+
+            if (ac.Key < bc.Key)
+            {
+                merged.AddUnsafe(ac);
+                ai++;
+            }
+            else if (ac.Key > bc.Key)
+            {
+                merged.AddUnsafe(RoaringBitmapSetOps.CloneContainer(_ctx, ref bc));
+                bi++;
+            }
+            else
+            {
+                XorContainerInPlace(ref ac, ref bc);
+                if (ac.Cardinality > 0)
+                    merged.AddUnsafe(ac);
+                else if (ac.Storage.HasValue)
+                    _ctx.Release(ref ac.Storage);
+                ai++;
+                bi++;
+            }
+        }
+
+        while (ai < _containers.Count)
+        {
+            merged.AddUnsafe(_containers[ai]);
+            ai++;
+        }
+        while (bi < other.ContainerCount)
+        {
+            ref ContainerEntry bc = ref other.GetContainer(bi);
+            merged.AddUnsafe(RoaringBitmapSetOps.CloneContainer(_ctx, ref bc));
+            bi++;
+        }
+
+        _containers.Dispose(_ctx);
+        _containers = merged;
+    }
+
+    /// <summary>
+    /// In-place ANDNOT: remove all values that exist in other from this bitmap.
+    /// </summary>
+    public void AndNotWith(ref RoaringBitmap other)
+    {
+        int ai = 0, bi = 0;
+
+        while (ai < _containers.Count && bi < other.ContainerCount)
+        {
+            ref ContainerEntry ac = ref _containers[ai];
+            ref ContainerEntry bc = ref other.GetContainer(bi);
+
+            if (ac.Key < bc.Key)
+            {
+                ai++;
+            }
+            else if (ac.Key > bc.Key)
+            {
+                bi++;
+            }
+            else
+            {
+                AndNotContainerInPlace(ref ac, ref bc);
+                if (ac.Cardinality == 0)
+                    RemoveContainerAt(ai);
+                else
+                    ai++;
+                bi++;
+            }
+        }
+        // Left-only containers stay as-is (nothing to subtract)
+    }
+
+    private void AndContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
+    {
+        // Full AND X = X: convert left to a copy of right
+        if (left.Type == ContainerType.Full)
+        {
+            ContainerEntry cloned = RoaringBitmapSetOps.CloneContainer(_ctx, ref right);
+            if (left.Storage.HasValue)
+                _ctx.Release(ref left.Storage);
+            left = cloned;
+            return;
+        }
+        // X AND Full = X: no change
+        if (right.Type == ContainerType.Full)
+            return;
+
+        // Materialize Run/Negated to bitmap first
+        if (left.Type is ContainerType.Run or ContainerType.Negated)
+            MaterializeContainerToBitmap(ref left);
+        if (right.Type is ContainerType.Run or ContainerType.Negated)
+        {
+            // We can't modify right (it belongs to the other bitmap), so materialize to temp
+            ContainerEntry temp = MaterializeToBitmapTemp(ref right);
+            AndContainerInPlace(ref left, ref temp);
+            _ctx.Release(ref temp.Storage);
+            return;
+        }
+
+        switch (left.Type, right.Type)
+        {
+            case (ContainerType.Bitmap, ContainerType.Bitmap):
+                left.Cardinality = RoaringBitmapSetOps.BitmapAndSimd(
+                    (ulong*)left.Data, (ulong*)right.Data, (ulong*)left.Data, BitmapContainerSizeInUlongs);
+                OptimizeContainerType(ref left);
+                break;
+
+            case (ContainerType.Bitmap, ContainerType.Array):
+            {
+                // Result is at most right.Cardinality entries — always an array
+                ushort* arr = (ushort*)right.Data;
+                ulong* bmp = (ulong*)left.Data;
+                _ctx.Allocate(Math.Max(InitialArrayContainerSizeInBytes, right.Cardinality * sizeof(ushort)), out ByteString newStorage);
+                ushort* dst = (ushort*)newStorage.Ptr;
+                int count = 0;
+                for (int i = 0; i < right.Cardinality; i++)
+                {
+                    ushort val = arr[i];
+                    if ((bmp[val >> 6] & (1UL << (val & 63))) != 0)
+                        dst[count++] = val;
+                }
+                _ctx.Release(ref left.Storage);
+                left.Storage = newStorage;
+                left.Data = newStorage.Ptr;
+                left.Type = ContainerType.Array;
+                left.Cardinality = count;
+                break;
+            }
+
+            case (ContainerType.Array, ContainerType.Bitmap):
+            {
+                // Filter left array against right bitmap, in-place
+                ushort* arr = (ushort*)left.Data;
+                ulong* bmp = (ulong*)right.Data;
+                int count = 0;
+                for (int i = 0; i < left.Cardinality; i++)
+                {
+                    ushort val = arr[i];
+                    if ((bmp[val >> 6] & (1UL << (val & 63))) != 0)
+                        arr[count++] = val;
+                }
+                left.Cardinality = count;
+                break;
+            }
+
+            case (ContainerType.Array, ContainerType.Array):
+            {
+                // In-place intersection of two sorted arrays
+                ushort* a = (ushort*)left.Data;
+                ushort* b = (ushort*)right.Data;
+                int count = ArrayContainerAnd(a, left.Cardinality, b, right.Cardinality, a);
+                left.Cardinality = count;
+                break;
+            }
+        }
+    }
+
+    private void OrContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
+    {
+        if (left.Type == ContainerType.Full)
+            return; // Full | X = Full
+        if (right.Type == ContainerType.Full)
+        {
+            if (left.Storage.HasValue)
+                _ctx.Release(ref left.Storage);
+            left.Data = null;
+            left.Storage = default;
+            left.Type = ContainerType.Full;
+            left.Cardinality = BitsPerContainer;
+            return;
+        }
+
+        if (left.Type is ContainerType.Run or ContainerType.Negated)
+            MaterializeContainerToBitmap(ref left);
+        if (right.Type is ContainerType.Run or ContainerType.Negated)
+        {
+            ContainerEntry temp = MaterializeToBitmapTemp(ref right);
+            OrContainerInPlace(ref left, ref temp);
+            _ctx.Release(ref temp.Storage);
+            return;
+        }
+
+        switch (left.Type, right.Type)
+        {
+            case (ContainerType.Bitmap, ContainerType.Bitmap):
+                left.Cardinality = RoaringBitmapSetOps.BitmapOrSimd(
+                    (ulong*)left.Data, (ulong*)right.Data, (ulong*)left.Data, BitmapContainerSizeInUlongs);
+                OptimizeContainerType(ref left);
+                break;
+
+            case (ContainerType.Bitmap, ContainerType.Array):
+            {
+                ulong* bmp = (ulong*)left.Data;
+                ushort* arr = (ushort*)right.Data;
+                for (int i = 0; i < right.Cardinality; i++)
+                {
+                    ushort val = arr[i];
+                    ulong mask = 1UL << (val & 63);
+                    if ((bmp[val >> 6] & mask) == 0)
+                    {
+                        bmp[val >> 6] |= mask;
+                        left.Cardinality++;
+                    }
+                }
+                OptimizeContainerType(ref left);
+                break;
+            }
+
+            case (ContainerType.Array, ContainerType.Array):
+            {
+                int maxResult = left.Cardinality + right.Cardinality;
+                if (maxResult > ArrayContainerMaxCardinality)
+                {
+                    // Result will be a bitmap — convert left, then OR
+                    ConvertArrayToBitmap(ref left);
+                    OrContainerInPlace(ref left, ref right);
+                }
+                else
+                {
+                    // Merge two sorted arrays into a new buffer
+                    _ctx.Allocate(Math.Max(InitialArrayContainerSizeInBytes, maxResult * sizeof(ushort)), out ByteString newStorage);
+                    int count = ArrayContainerOr((ushort*)left.Data, left.Cardinality, (ushort*)right.Data, right.Cardinality, (ushort*)newStorage.Ptr);
+                    _ctx.Release(ref left.Storage);
+                    left.Storage = newStorage;
+                    left.Data = newStorage.Ptr;
+                    left.Cardinality = count;
+                }
+                break;
+            }
+
+            case (ContainerType.Array, ContainerType.Bitmap):
+            {
+                ConvertArrayToBitmap(ref left);
+                OrContainerInPlace(ref left, ref right);
+                break;
+            }
+        }
+    }
+
+    private void XorContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
+    {
+        if (left.Type == ContainerType.Full && right.Type == ContainerType.Full)
+        {
+            // Full ^ Full = empty
+            if (left.Storage.HasValue)
+                _ctx.Release(ref left.Storage);
+            left = default;
+            return;
+        }
+
+        if (left.Type is ContainerType.Run or ContainerType.Negated)
+            MaterializeContainerToBitmap(ref left);
+        if (right.Type is ContainerType.Run or ContainerType.Negated or ContainerType.Full)
+        {
+            ContainerEntry temp = MaterializeToBitmapTemp(ref right);
+            XorContainerInPlace(ref left, ref temp);
+            _ctx.Release(ref temp.Storage);
+            return;
+        }
+        if (left.Type == ContainerType.Full)
+        {
+            // Full ^ bitmap/array: convert Full to bitmap first
+            ConvertFullToBitmap(ref left);
+        }
+
+        switch (left.Type, right.Type)
+        {
+            case (ContainerType.Bitmap, ContainerType.Bitmap):
+                left.Cardinality = RoaringBitmapSetOps.BitmapXorSimd(
+                    (ulong*)left.Data, (ulong*)right.Data, (ulong*)left.Data, BitmapContainerSizeInUlongs);
+                OptimizeContainerType(ref left);
+                break;
+
+            case (ContainerType.Bitmap, ContainerType.Array):
+            {
+                ulong* bmp = (ulong*)left.Data;
+                ushort* arr = (ushort*)right.Data;
+                for (int i = 0; i < right.Cardinality; i++)
+                {
+                    ushort val = arr[i];
+                    ulong mask = 1UL << (val & 63);
+                    if ((bmp[val >> 6] & mask) != 0)
+                        left.Cardinality--;
+                    else
+                        left.Cardinality++;
+                    bmp[val >> 6] ^= mask;
+                }
+                OptimizeContainerType(ref left);
+                break;
+            }
+
+            case (ContainerType.Array, ContainerType.Array):
+            {
+                int maxResult = left.Cardinality + right.Cardinality;
+                if (maxResult > ArrayContainerMaxCardinality)
+                {
+                    ConvertArrayToBitmap(ref left);
+                    XorContainerInPlace(ref left, ref right);
+                }
+                else
+                {
+                    _ctx.Allocate(Math.Max(InitialArrayContainerSizeInBytes, maxResult * sizeof(ushort)), out ByteString newStorage);
+                    int count = ArrayContainerXor((ushort*)left.Data, left.Cardinality, (ushort*)right.Data, right.Cardinality, (ushort*)newStorage.Ptr);
+                    _ctx.Release(ref left.Storage);
+                    left.Storage = newStorage;
+                    left.Data = newStorage.Ptr;
+                    left.Cardinality = count;
+                }
+                break;
+            }
+
+            case (ContainerType.Array, ContainerType.Bitmap):
+            {
+                ConvertArrayToBitmap(ref left);
+                XorContainerInPlace(ref left, ref right);
+                break;
+            }
+        }
+    }
+
+    private void AndNotContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
+    {
+        if (right.Type == ContainerType.Full)
+        {
+            // X & ~Full = empty
+            if (left.Storage.HasValue)
+                _ctx.Release(ref left.Storage);
+            left = default;
+            return;
+        }
+        if (left.Type == ContainerType.Full)
+            ConvertFullToBitmap(ref left);
+
+        if (left.Type is ContainerType.Run or ContainerType.Negated)
+            MaterializeContainerToBitmap(ref left);
+        if (right.Type is ContainerType.Run or ContainerType.Negated)
+        {
+            ContainerEntry temp = MaterializeToBitmapTemp(ref right);
+            AndNotContainerInPlace(ref left, ref temp);
+            _ctx.Release(ref temp.Storage);
+            return;
+        }
+
+        switch (left.Type, right.Type)
+        {
+            case (ContainerType.Bitmap, ContainerType.Bitmap):
+                left.Cardinality = RoaringBitmapSetOps.BitmapAndNotSimd(
+                    (ulong*)left.Data, (ulong*)right.Data, (ulong*)left.Data, BitmapContainerSizeInUlongs);
+                OptimizeContainerType(ref left);
+                break;
+
+            case (ContainerType.Bitmap, ContainerType.Array):
+            {
+                ulong* bmp = (ulong*)left.Data;
+                ushort* arr = (ushort*)right.Data;
+                for (int i = 0; i < right.Cardinality; i++)
+                {
+                    ushort val = arr[i];
+                    ulong mask = 1UL << (val & 63);
+                    if ((bmp[val >> 6] & mask) != 0)
+                    {
+                        bmp[val >> 6] &= ~mask;
+                        left.Cardinality--;
+                    }
+                }
+                OptimizeContainerType(ref left);
+                break;
+            }
+
+            case (ContainerType.Array, ContainerType.Bitmap):
+            {
+                ushort* arr = (ushort*)left.Data;
+                ulong* bmp = (ulong*)right.Data;
+                int count = 0;
+                for (int i = 0; i < left.Cardinality; i++)
+                {
+                    ushort val = arr[i];
+                    if ((bmp[val >> 6] & (1UL << (val & 63))) == 0)
+                        arr[count++] = val;
+                }
+                left.Cardinality = count;
+                break;
+            }
+
+            case (ContainerType.Array, ContainerType.Array):
+            {
+                ushort* a = (ushort*)left.Data;
+                ushort* b = (ushort*)right.Data;
+                int count = ArrayContainerAndNot(a, left.Cardinality, b, right.Cardinality, a);
+                left.Cardinality = count;
+                break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Convert a container to bitmap in-place (for Run/Negated containers).
+    /// </summary>
+    private void MaterializeContainerToBitmap(ref ContainerEntry entry)
+    {
+        if (entry.Type == ContainerType.Run)
+            ConvertRunToBitmap(ref entry);
+        else if (entry.Type == ContainerType.Negated)
+            ConvertNegatedToBitmap(ref entry);
+    }
+
+    /// <summary>
+    /// Create a temporary bitmap from a Run/Negated/Full container (for read-only right-hand side).
+    /// Caller must release the returned storage.
+    /// </summary>
+    private ContainerEntry MaterializeToBitmapTemp(ref ContainerEntry entry)
+    {
+        _ctx.Allocate(BitmapContainerSizeInBytes, out ByteString storage);
+        ulong* bitmap = (ulong*)storage.Ptr;
+
+        switch (entry.Type)
+        {
+            case ContainerType.Run:
+                RunToBitmap(entry.Data, bitmap);
+                break;
+            case ContainerType.Negated:
+            {
+                new Span<byte>(bitmap, BitmapContainerSizeInBytes).Fill(0xFF);
+                int absentCount = BitsPerContainer - entry.Cardinality;
+                ushort* absent = (ushort*)entry.Data;
+                for (int i = 0; i < absentCount; i++)
+                {
+                    ushort val = absent[i];
+                    bitmap[val >> 6] &= ~(1UL << (val & 63));
+                }
+                break;
+            }
+            case ContainerType.Full:
+                new Span<byte>(bitmap, BitmapContainerSizeInBytes).Fill(0xFF);
+                break;
+            default:
+                // Bitmap or Array — shouldn't reach here, but handle gracefully
+                Unsafe.CopyBlockUnaligned(storage.Ptr, entry.Data, BitmapContainerSizeInBytes);
+                break;
+        }
+
+        return new ContainerEntry
+        {
+            Key = entry.Key,
+            Data = storage.Ptr,
+            Cardinality = entry.Cardinality,
+            Storage = storage,
+            Type = ContainerType.Bitmap
+        };
+    }
+
+    /// <summary>
+    /// After in-place modification of a bitmap container, convert to the optimal type.
+    /// </summary>
+    private void OptimizeContainerType(ref ContainerEntry entry)
+    {
+        if (entry.Type != ContainerType.Bitmap)
+            return;
+
+        if (entry.Cardinality == BitsPerContainer)
+            ConvertToFull(ref entry);
+        else if (entry.Cardinality > NegatedArrayMinCardinality)
+            ConvertBitmapToNegated(ref entry);
+        else if (entry.Cardinality <= ArrayContainerMaxCardinality)
+            ConvertBitmapToArray(ref entry);
+    }
+
+    #endregion
+
     #region Container Search
 
     /// <summary>
@@ -248,13 +838,14 @@ public unsafe struct RoaringBitmap : IDisposable
     {
         _containers.EnsureCapacityFor(_ctx, 1);
 
-        // Shift elements right
         int count = _containers.Count;
         _containers.Count = count + 1;
 
+        // Shift elements right using memmove
         ContainerEntry* items = _containers.RawItems;
-        for (int i = count; i > index; i--)
-            items[i] = items[i - 1];
+        int toMove = count - index;
+        if (toMove > 0)
+            new Span<ContainerEntry>(items + index, toMove).CopyTo(new Span<ContainerEntry>(items + index + 1, toMove));
 
         items[index] = entry;
     }
@@ -267,8 +858,9 @@ public unsafe struct RoaringBitmap : IDisposable
 
         int count = _containers.Count;
         ContainerEntry* items = _containers.RawItems;
-        for (int i = index; i < count - 1; i++)
-            items[i] = items[i + 1];
+        int toMove = count - index - 1;
+        if (toMove > 0)
+            new Span<ContainerEntry>(items + index + 1, toMove).CopyTo(new Span<ContainerEntry>(items + index, toMove));
 
         _containers.Count = count - 1;
     }
@@ -351,9 +943,10 @@ public unsafe struct RoaringBitmap : IDisposable
 
             case ContainerType.Full:
                 ConvertFullToNegated(ref entry);
+                EnsureArrayCapacity(ref entry, NegatedContainerAbsentCount(entry.Cardinality) + 1);
                 NegatedContainerRemove(entry.Data, ref entry.Cardinality, value);
-                if (entry.Cardinality <= NegatedArrayMinCardinality)
-                    ConvertNegatedToBitmap(ref entry);
+                // Full had 65536 set bits, removing one gives 65535 — always above NegatedArrayMinCardinality (61440)
+                Debug.Assert(entry.Cardinality > NegatedArrayMinCardinality);
                 break;
         }
     }
@@ -749,18 +1342,6 @@ public unsafe struct RoaringBitmap : IDisposable
 
         if (entry.Cardinality <= ArrayContainerMaxCardinality)
             ConvertBitmapToArray(ref entry);
-    }
-
-    internal static int RunContainerCardinality(byte* data)
-    {
-        ushort* runs = (ushort*)data;
-        int numRuns = runs[0];
-        int cardinality = 0;
-
-        for (int i = 0; i < numRuns; i++)
-            cardinality += runs[1 + i * 2 + 1] + 1;
-
-        return cardinality;
     }
 
     /// <summary>
@@ -1193,8 +1774,13 @@ public enum ContainerType : byte
 public unsafe struct ContainerEntry
 {
     public long Key;            // high 48 bits of value (value >> 16)
-    public byte* Data;          // pointer to container data
+    /// <summary>
+    /// Direct pointer to container data for hot-path access without indirection through ByteString.
+    /// Null for Full containers (which have no data). Kept separate from Storage because Full containers
+    /// have Storage=default (no allocation to release), so we can't rely on Storage.Ptr universally.
+    /// </summary>
+    public byte* Data;
     public int Cardinality;     // number of set bits in this container
-    public ContainerType Type;  // container type
+    public ContainerType Type;
     internal ByteString Storage; // memory handle for disposal
 }
