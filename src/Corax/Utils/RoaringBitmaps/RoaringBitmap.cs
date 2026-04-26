@@ -245,6 +245,13 @@ public unsafe struct RoaringBitmap : IDisposable
 
     #region In-place Set Operations
 
+    // [1] Bitmap→Array conversion after set ops: we intentionally skip this.
+    // Standard roaring bitmaps convert sparse bitmap results back to array containers
+    // to save memory and speed up subsequent operations. But in Corax, these bitmaps
+    // are temporary — built during query evaluation and discarded immediately after.
+    // The 8KB bitmap is already allocated; converting to Array allocates another buffer
+    // and scans 1024 words, costing more than it saves for short-lived data.
+
     /// <summary>
     /// In-place AND: retain only values that also exist in other.
     /// Walks both index arrays; containers in this bitmap with no match in other are freed.
@@ -352,7 +359,7 @@ public unsafe struct RoaringBitmap : IDisposable
             case (ContainerType.Bitmap, ContainerType.Bitmap):
                 left.Cardinality = RoaringBitmapSetOps.BitmapAndSimd(
                     (ulong*)left.Data, (ulong*)right.Data, (ulong*)left.Data, BitmapContainerSizeInUlongs);
-                OptimizeContainerType(ref left);
+                // No Bitmap→Array conversion: these are temporary, discarded after query. See note [1].
                 break;
 
             case (ContainerType.Bitmap, ContainerType.Array):
@@ -424,7 +431,7 @@ public unsafe struct RoaringBitmap : IDisposable
             case (ContainerType.Bitmap, ContainerType.Bitmap):
                 left.Cardinality = RoaringBitmapSetOps.BitmapOrSimd(
                     (ulong*)left.Data, (ulong*)right.Data, (ulong*)left.Data, BitmapContainerSizeInUlongs);
-                OptimizeContainerType(ref left);
+                // No Bitmap→Array conversion: these are temporary, discarded after query. See note [1].
                 break;
 
             case (ContainerType.Bitmap, ContainerType.Array):
@@ -441,7 +448,7 @@ public unsafe struct RoaringBitmap : IDisposable
                         left.Cardinality++;
                     }
                 }
-                OptimizeContainerType(ref left);
+                // No Bitmap→Array conversion: these are temporary, discarded after query. See note [1].
                 break;
             }
 
@@ -496,7 +503,7 @@ public unsafe struct RoaringBitmap : IDisposable
             case (ContainerType.Bitmap, ContainerType.Bitmap):
                 left.Cardinality = RoaringBitmapSetOps.BitmapAndNotSimd(
                     (ulong*)left.Data, (ulong*)right.Data, (ulong*)left.Data, BitmapContainerSizeInUlongs);
-                OptimizeContainerType(ref left);
+                // No Bitmap→Array conversion: these are temporary, discarded after query. See note [1].
                 break;
 
             case (ContainerType.Bitmap, ContainerType.Array):
@@ -513,7 +520,7 @@ public unsafe struct RoaringBitmap : IDisposable
                         left.Cardinality--;
                     }
                 }
-                OptimizeContainerType(ref left);
+                // No Bitmap→Array conversion: these are temporary, discarded after query. See note [1].
                 break;
             }
 
@@ -572,17 +579,6 @@ public unsafe struct RoaringBitmap : IDisposable
         };
     }
 
-    /// <summary>
-    /// After in-place modification of a bitmap container, convert to Array if sparse enough.
-    /// </summary>
-    private void OptimizeContainerType(ref ContainerEntry entry)
-    {
-        if (entry.Type != ContainerType.Bitmap)
-            return;
-
-        if (entry.Cardinality <= ArrayContainerMaxCardinality)
-            ConvertBitmapToArray(ref entry);
-    }
 
     #endregion
 
@@ -1391,8 +1387,12 @@ public enum ContainerType : byte
 public unsafe struct ContainerEntry
 {
     /// <summary>
-    /// Direct pointer to container data. Avoids ByteString.Ptr double-dereference.
-    /// Null for Range containers (no data allocation needed).
+    /// Direct pointer to container data. Null for Range containers (no allocation).
+    /// We pay 8 bytes per entry to cache this instead of going through Storage.Ptr,
+    /// which is a double-dereference (ByteString._pointer->Ptr). Every Contains, Add,
+    /// and iterator step accesses this pointer. The 8 bytes per container is negligible
+    /// compared to container data (64B–8KB each), and it also avoids a null check on
+    /// Storage for Range containers which have Storage=default.
     /// </summary>
     [FieldOffset(0)] public byte* Data;
 
