@@ -8,9 +8,9 @@ using Sparrow.Server;
 namespace Corax.Utils.RoaringBitmaps;
 
 /// <summary>
-/// SIMD-accelerated set operations (AND, OR, XOR, ANDNOT) for roaring bitmaps.
-/// Each operation handles the full container-type combination matrix.
-/// Bitmap-bitmap operations use Vector256/Vector512 for throughput.
+/// SIMD-accelerated set operations (AND, OR, ANDNOT) for roaring bitmaps.
+/// Each operation handles the Array/Bitmap/Range container-type matrix.
+/// Bitmap-bitmap operations use Vector256/Vector512 via IBitmapOp generic dispatch.
 /// </summary>
 public static unsafe class RoaringBitmapSetOps
 {
@@ -18,7 +18,7 @@ public static unsafe class RoaringBitmapSetOps
 
     /// <summary>
     /// Compute the intersection of two roaring bitmaps, producing a new bitmap.
-    /// Walks the shorter bitmap's index and checks each key in the longer one (O(1) per key).
+    /// Iterates the shorter index array, checking each key in the longer one via O(1) lookup.
     /// </summary>
     public static RoaringBitmap And(ByteStringContext ctx, ref RoaringBitmap a, ref RoaringBitmap b)
     {
@@ -297,10 +297,6 @@ public static unsafe class RoaringBitmapSetOps
 
     #endregion
 
-    #region XOR
-
-    #endregion
-
     #region ANDNOT (Difference)
 
     /// <summary>
@@ -451,7 +447,7 @@ public static unsafe class RoaringBitmapSetOps
     #region SIMD Bitmap Operations
 
     // ---- Generic SIMD bitmap operations ----
-    // Each operation (AND, OR, XOR, ANDNOT) is a zero-cost struct implementing IBitmapOp.
+    // Each operation (AND, OR, ANDNOT) is a zero-cost struct implementing IBitmapOp.
     // The JIT specializes each generic instantiation, eliminating all virtual dispatch.
     // One method per SIMD width handles all operations — 4 methods instead of 16.
 
