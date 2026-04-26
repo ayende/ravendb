@@ -79,7 +79,9 @@ public unsafe struct RoaringBitmapIterator
                     break;
             }
 
-            bool containerCompleted = _positionInContainer >= entry.Cardinality;
+            bool containerCompleted = entry.Type == ContainerType.Bitmap
+                ? _bitmapWordIndex >= RoaringBitmap.BitmapContainerSizeInUlongs && _bitmapCurrentWord == 0
+                : _positionInContainer >= entry.Cardinality;
 
             if (containerCompleted)
             {
@@ -142,11 +144,9 @@ public unsafe struct RoaringBitmapIterator
     private int FillFromBitmap(ref ContainerEntry entry, long baseValue, Span<long> buffer, int written)
     {
         ulong* bitmap = (ulong*)entry.Data;
-        int bitmapPopulated = 0;
 
         while (written < buffer.Length && _bitmapWordIndex < RoaringBitmap.BitmapContainerSizeInUlongs)
         {
-            // Load the next word if the current one is exhausted
             if (_bitmapCurrentWord == 0)
             {
                 _bitmapCurrentWord = bitmap[_bitmapWordIndex];
@@ -157,21 +157,17 @@ public unsafe struct RoaringBitmapIterator
                 }
             }
 
-            // Process set bits in the current word
             while (_bitmapCurrentWord != 0 && written < buffer.Length)
             {
                 int bit = BitOperations.TrailingZeroCount(_bitmapCurrentWord);
                 buffer[written++] = baseValue | (uint)(_bitmapWordIndex * 64 + bit);
-                _bitmapCurrentWord &= _bitmapCurrentWord - 1; // clear lowest set bit
-                bitmapPopulated++;
+                _bitmapCurrentWord &= _bitmapCurrentWord - 1;
             }
 
-            // Advance to the next word if this one is fully consumed
             if (_bitmapCurrentWord == 0)
                 _bitmapWordIndex++;
         }
 
-        _positionInContainer += bitmapPopulated;
         return written;
     }
 
