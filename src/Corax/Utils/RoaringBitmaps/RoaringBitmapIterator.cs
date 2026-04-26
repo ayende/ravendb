@@ -67,6 +67,10 @@ public unsafe struct RoaringBitmapIterator
                     written = FillFromBitmap(ref entry, baseValue, buffer, written);
                     break;
 
+                case ContainerType.Negated:
+                    written = FillFromNegated(ref entry, baseValue, buffer, written);
+                    break;
+
                 case ContainerType.Run:
                     written = FillFromRun(ref entry, baseValue, buffer, written);
                     break;
@@ -171,6 +175,36 @@ public unsafe struct RoaringBitmapIterator
         }
 
         _positionInContainer += emitted;
+        return written;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int FillFromNegated(ref ContainerEntry entry, long baseValue, Span<long> buffer, int written)
+    {
+        // Iterate 0..65535 skipping values that appear in the absent list.
+        // _positionInContainer tracks the current value (0..65535).
+        // _runIndex tracks the current position in the absent array.
+        ushort* absent = (ushort*)entry.Data;
+        int absentCount = RoaringBitmap.BitsPerContainer - entry.Cardinality;
+
+        while (written < buffer.Length && _positionInContainer < RoaringBitmap.BitsPerContainer)
+        {
+            // Skip absent values
+            while (_runIndex < absentCount && absent[_runIndex] == (ushort)_positionInContainer)
+            {
+                _positionInContainer++;
+                _runIndex++;
+                if (_positionInContainer >= RoaringBitmap.BitsPerContainer)
+                    return written;
+            }
+
+            if (_positionInContainer < RoaringBitmap.BitsPerContainer)
+            {
+                buffer[written++] = baseValue | (uint)_positionInContainer;
+                _positionInContainer++;
+            }
+        }
+
         return written;
     }
 

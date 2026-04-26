@@ -718,6 +718,214 @@ public class RoaringBitmapTests : NoDisposalNeeded
 
     #endregion
 
+    #region Negated Container Tests
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void NegatedContainerCreatedWhenNearlyFull()
+    {
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+        var bitmap = new RoaringBitmap(ctx);
+        try
+        {
+            // Add enough values to trigger Bitmap, then enough for Negated (> 61440)
+            for (int i = 0; i < 62000; i++)
+                bitmap.Add(i);
+
+            Assert.Equal(62000, bitmap.Cardinality);
+
+            // All values should still be accessible
+            for (int i = 0; i < 62000; i++)
+                Assert.True(bitmap.Contains(i));
+            Assert.False(bitmap.Contains(62000));
+        }
+        finally
+        {
+            bitmap.Dispose();
+        }
+    }
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void NegatedContainerRemoveCreatesAbsentEntry()
+    {
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+        var bitmap = new RoaringBitmap(ctx);
+        try
+        {
+            // Fill container to Full, then remove a few to get Negated
+            for (int i = 0; i < 65536; i++)
+                bitmap.Add(i);
+
+            Assert.Equal(65536, bitmap.Cardinality);
+
+            bitmap.Remove(100);
+            bitmap.Remove(200);
+            bitmap.Remove(300);
+
+            Assert.Equal(65533, bitmap.Cardinality);
+            Assert.False(bitmap.Contains(100));
+            Assert.False(bitmap.Contains(200));
+            Assert.False(bitmap.Contains(300));
+            Assert.True(bitmap.Contains(99));
+            Assert.True(bitmap.Contains(101));
+        }
+        finally
+        {
+            bitmap.Dispose();
+        }
+    }
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void NegatedContainerAddRemovesFromAbsentList()
+    {
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+        var bitmap = new RoaringBitmap(ctx);
+        try
+        {
+            // Create negated container by filling then removing
+            for (int i = 0; i < 65536; i++)
+                bitmap.Add(i);
+
+            bitmap.Remove(500);
+            Assert.False(bitmap.Contains(500));
+
+            // Re-add to remove from absent list
+            bitmap.Add(500);
+            Assert.True(bitmap.Contains(500));
+            Assert.Equal(65536, bitmap.Cardinality);
+        }
+        finally
+        {
+            bitmap.Dispose();
+        }
+    }
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void NegatedContainerIteratesCorrectly()
+    {
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+        var bitmap = new RoaringBitmap(ctx);
+        try
+        {
+            // Fill all, remove a few
+            for (int i = 0; i < 65536; i++)
+                bitmap.Add(i);
+
+            HashSet<int> removed = new() { 100, 500, 1000, 30000, 65000 };
+            foreach (int r in removed)
+                bitmap.Remove(r);
+
+            Assert.Equal(65536 - removed.Count, bitmap.Cardinality);
+
+            // Iterate and verify
+            var iterator = bitmap.GetIterator();
+            long[] buffer = new long[4096];
+            HashSet<long> iterated = new();
+
+            int count;
+            while ((count = bitmap.Fill(buffer, ref iterator)) > 0)
+            {
+                for (int i = 0; i < count; i++)
+                    iterated.Add(buffer[i]);
+            }
+
+            Assert.Equal(65536 - removed.Count, iterated.Count);
+            foreach (int r in removed)
+                Assert.DoesNotContain((long)r, iterated);
+            Assert.Contains(0L, iterated);
+            Assert.Contains(65535L, iterated);
+        }
+        finally
+        {
+            bitmap.Dispose();
+        }
+    }
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void SetOpsWithNegatedContainers()
+    {
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+        var a = new RoaringBitmap(ctx);
+        var b = new RoaringBitmap(ctx);
+        HashSet<long> setA = new();
+        HashSet<long> setB = new();
+
+        try
+        {
+            // a: nearly full container (Negated type)
+            for (int i = 0; i < 63000; i++)
+            {
+                a.Add(i);
+                setA.Add(i);
+            }
+
+            // b: half-full container (Bitmap type)
+            for (int i = 30000; i < 50000; i++)
+            {
+                b.Add(i);
+                setB.Add(i);
+            }
+
+            // AND
+            var andResult = RoaringBitmapSetOps.And(ctx, ref a, ref b);
+            HashSet<long> expectedAnd = new(setA);
+            expectedAnd.IntersectWith(setB);
+            Assert.Equal(expectedAnd.Count, andResult.Cardinality);
+            andResult.Dispose();
+
+            // OR
+            var orResult = RoaringBitmapSetOps.Or(ctx, ref a, ref b);
+            HashSet<long> expectedOr = new(setA);
+            expectedOr.UnionWith(setB);
+            Assert.Equal(expectedOr.Count, orResult.Cardinality);
+            orResult.Dispose();
+
+            // ANDNOT
+            var andNotResult = RoaringBitmapSetOps.AndNot(ctx, ref a, ref b);
+            HashSet<long> expectedAndNot = new(setA);
+            expectedAndNot.ExceptWith(setB);
+            Assert.Equal(expectedAndNot.Count, andNotResult.Cardinality);
+            andNotResult.Dispose();
+        }
+        finally
+        {
+            a.Dispose();
+            b.Dispose();
+        }
+    }
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void NegatedToNegatedTransitionThroughBitmapOnRemove()
+    {
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+        var bitmap = new RoaringBitmap(ctx);
+        try
+        {
+            // Create a nearly-full container (62000 values → Negated)
+            for (int i = 0; i < 62000; i++)
+                bitmap.Add(i);
+
+            Assert.Equal(62000, bitmap.Cardinality);
+
+            // Remove enough to go back through Bitmap threshold (≤ 61440)
+            for (int i = 61999; i >= 61430; i--)
+                bitmap.Remove(i);
+
+            // Should have converted back to Bitmap or Array
+            Assert.Equal(61430, bitmap.Cardinality);
+
+            // Verify values
+            for (int i = 0; i < 61430; i++)
+                Assert.True(bitmap.Contains(i));
+            Assert.False(bitmap.Contains(61430));
+        }
+        finally
+        {
+            bitmap.Dispose();
+        }
+    }
+
+    #endregion
+
     #region SIMD Correctness Verification
 
     [RavenFact(RavenTestCategory.Corax)]

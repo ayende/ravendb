@@ -17,7 +17,8 @@ namespace Corax.Utils.RoaringBitmaps;
 ///
 /// Container types:
 /// - Array: sorted ushort[] for sparse data (cardinality &lt;= 4096, up to 8KB)
-/// - Bitmap: 8KB fixed bitmap (1024 ulongs) for dense data (cardinality &gt; 4096)
+/// - Bitmap: 8KB fixed bitmap (1024 ulongs) for dense data (4097..61440)
+/// - Negated: sorted ushort[] of ABSENT values for nearly-full data (cardinality &gt; 61440)
 /// - Full: all 65536 bits set (no data allocation needed)
 /// </summary>
 public unsafe struct RoaringBitmap : IDisposable
@@ -26,6 +27,7 @@ public unsafe struct RoaringBitmap : IDisposable
     public const int BitmapContainerSizeInUlongs = BitmapContainerSizeInBytes / sizeof(ulong); // 1024
     public const int BitsPerContainer = 65536; // 2^16
     public const int ArrayContainerMaxCardinality = 4096; // crossover point: 4096 * 2 = 8KB
+    public const int NegatedArrayMinCardinality = BitsPerContainer - ArrayContainerMaxCardinality; // 61440
     public const int ContainerKeyShift = 16;
     public const int ContainerValueMask = 0xFFFF;
 
@@ -276,6 +278,12 @@ public unsafe struct RoaringBitmap : IDisposable
 
             case ContainerType.Bitmap:
                 BitmapContainerAdd(entry.Data, ref entry.Cardinality, value);
+                if (entry.Cardinality > NegatedArrayMinCardinality)
+                    ConvertBitmapToNegated(ref entry);
+                break;
+
+            case ContainerType.Negated:
+                NegatedContainerAdd(entry.Data, ref entry.Cardinality, value);
                 if (entry.Cardinality == BitsPerContainer)
                     ConvertToFull(ref entry);
                 break;
@@ -305,15 +313,21 @@ public unsafe struct RoaringBitmap : IDisposable
                     ConvertBitmapToArray(ref entry);
                 break;
 
+            case ContainerType.Negated:
+                NegatedContainerRemove(entry.Data, ref entry.Cardinality, value);
+                if (entry.Cardinality <= NegatedArrayMinCardinality)
+                    ConvertNegatedToBitmap(ref entry);
+                break;
+
             case ContainerType.Run:
                 RunContainerRemove(ref entry, value);
                 break;
 
             case ContainerType.Full:
-                ConvertFullToBitmap(ref entry);
-                BitmapContainerRemove(entry.Data, ref entry.Cardinality, value);
-                if (entry.Cardinality <= ArrayContainerMaxCardinality)
-                    ConvertBitmapToArray(ref entry);
+                ConvertFullToNegated(ref entry);
+                NegatedContainerRemove(entry.Data, ref entry.Cardinality, value);
+                if (entry.Cardinality <= NegatedArrayMinCardinality)
+                    ConvertNegatedToBitmap(ref entry);
                 break;
         }
     }
@@ -325,6 +339,7 @@ public unsafe struct RoaringBitmap : IDisposable
         {
             ContainerType.Array => ArrayContainerContains(entry.Data, entry.Cardinality, value),
             ContainerType.Bitmap => BitmapContainerContains(entry.Data, value),
+            ContainerType.Negated => NegatedContainerContains(entry.Data, entry.Cardinality, value),
             ContainerType.Run => RunContainerContains(entry.Data, entry.Cardinality, value),
             ContainerType.Full => true,
             _ => false
@@ -510,6 +525,74 @@ public unsafe struct RoaringBitmap : IDisposable
             dst[di++] = a[ai++];
 
         return di;
+    }
+
+    #endregion
+
+    #region Negated Container
+
+    // Negated container: stores sorted ushort[] of ABSENT values.
+    // The array length is (BitsPerContainer - Cardinality), i.e. the number of zeros.
+    // Cardinality tracks the number of SET bits (not the array length).
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static bool NegatedContainerContains(byte* data, int cardinality, ushort value)
+    {
+        // Value is present if it is NOT in the absent list
+        int absentCount = BitsPerContainer - cardinality;
+        return ArrayContainerFind((ushort*)data, absentCount, value) < 0;
+    }
+
+    /// <summary>
+    /// Add a value to a negated container (remove it from the absent list).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void NegatedContainerAdd(byte* data, ref int cardinality, ushort value)
+    {
+        int absentCount = BitsPerContainer - cardinality;
+        ushort* arr = (ushort*)data;
+
+        int idx = ArrayContainerFind(arr, absentCount, value);
+        if (idx < 0)
+            return; // already present (not in absent list)
+
+        // Remove from absent list (shift left)
+        for (int i = idx; i < absentCount - 1; i++)
+            arr[i] = arr[i + 1];
+
+        cardinality++;
+    }
+
+    /// <summary>
+    /// Remove a value from a negated container (add it to the absent list).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void NegatedContainerRemove(byte* data, ref int cardinality, ushort value)
+    {
+        int absentCount = BitsPerContainer - cardinality;
+        ushort* arr = (ushort*)data;
+
+        int idx = ArrayContainerFind(arr, absentCount, value);
+        if (idx >= 0)
+            return; // already absent
+
+        int insertAt = ~idx;
+
+        // Insert into absent list (shift right)
+        for (int i = absentCount; i > insertAt; i--)
+            arr[i] = arr[i - 1];
+
+        arr[insertAt] = value;
+        cardinality--;
+    }
+
+    /// <summary>
+    /// Get the number of absent values in a negated container.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static int NegatedContainerAbsentCount(int cardinality)
+    {
+        return BitsPerContainer - cardinality;
     }
 
     #endregion
@@ -900,6 +983,69 @@ public unsafe struct RoaringBitmap : IDisposable
         entry.Type = ContainerType.Array;
     }
 
+    private void ConvertBitmapToNegated(ref ContainerEntry entry)
+    {
+        Debug.Assert(entry.Type == ContainerType.Bitmap);
+        Debug.Assert(entry.Cardinality > NegatedArrayMinCardinality);
+
+        ulong* bitmap = (ulong*)entry.Data;
+        int absentCount = BitsPerContainer - entry.Cardinality;
+
+        _ctx.Allocate(BitmapContainerSizeInBytes, out ByteString newStorage);
+        ushort* arr = (ushort*)newStorage.Ptr;
+
+        // Extract the ABSENT (zero) bits from the bitmap
+        int count = 0;
+        for (int wordIdx = 0; wordIdx < BitmapContainerSizeInUlongs; wordIdx++)
+        {
+            ulong word = ~bitmap[wordIdx]; // invert: zeros become ones
+            while (word != 0)
+            {
+                int bit = BitOperations.TrailingZeroCount(word);
+                arr[count++] = (ushort)(wordIdx * 64 + bit);
+                word &= word - 1;
+            }
+        }
+
+        Debug.Assert(count == absentCount);
+
+        if (entry.Storage.HasValue)
+            _ctx.Release(ref entry.Storage);
+
+        entry.Storage = newStorage;
+        entry.Data = newStorage.Ptr;
+        entry.Type = ContainerType.Negated;
+        // Cardinality stays the same (tracks SET bits)
+    }
+
+    private void ConvertNegatedToBitmap(ref ContainerEntry entry)
+    {
+        Debug.Assert(entry.Type == ContainerType.Negated);
+
+        int absentCount = BitsPerContainer - entry.Cardinality;
+        ushort* absentArr = (ushort*)entry.Data;
+
+        _ctx.Allocate(BitmapContainerSizeInBytes, out ByteString newStorage);
+        ulong* bitmap = (ulong*)newStorage.Ptr;
+
+        // Start with all bits set, then clear the absent ones
+        new Span<byte>(bitmap, BitmapContainerSizeInBytes).Fill(0xFF);
+
+        for (int i = 0; i < absentCount; i++)
+        {
+            ushort val = absentArr[i];
+            bitmap[val >> 6] &= ~(1UL << (val & 63));
+        }
+
+        if (entry.Storage.HasValue)
+            _ctx.Release(ref entry.Storage);
+
+        entry.Storage = newStorage;
+        entry.Data = newStorage.Ptr;
+        entry.Type = ContainerType.Bitmap;
+        // Cardinality stays the same
+    }
+
     private void ConvertToFull(ref ContainerEntry entry)
     {
         if (entry.Storage.HasValue)
@@ -908,6 +1054,20 @@ public unsafe struct RoaringBitmap : IDisposable
         entry.Data = null;
         entry.Storage = default;
         entry.Type = ContainerType.Full;
+        entry.Cardinality = BitsPerContainer;
+    }
+
+    private void ConvertFullToNegated(ref ContainerEntry entry)
+    {
+        Debug.Assert(entry.Type == ContainerType.Full);
+
+        // Full container with one removal → negated with empty absent list
+        _ctx.Allocate(BitmapContainerSizeInBytes, out ByteString newStorage);
+        newStorage.ToSpan<byte>().Clear();
+
+        entry.Storage = newStorage;
+        entry.Data = newStorage.Ptr;
+        entry.Type = ContainerType.Negated;
         entry.Cardinality = BitsPerContainer;
     }
 
@@ -993,7 +1153,14 @@ public enum ContainerType : byte
     Array = 0,
     Bitmap = 1,
     Run = 2,
-    Full = 3
+    Full = 3,
+    /// <summary>
+    /// Negated array: stores the sorted list of values that are NOT set.
+    /// Used when cardinality > NegatedArrayMinCardinality (61440), meaning fewer than 4096 zeros.
+    /// Data format is identical to Array (sorted ushort[]), but the Cardinality field
+    /// tracks the number of SET bits (65536 - absentCount), and the array length is (65536 - Cardinality).
+    /// </summary>
+    Negated = 4
 }
 
 [StructLayout(LayoutKind.Sequential)]
