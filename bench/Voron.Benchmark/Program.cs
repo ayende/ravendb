@@ -20,6 +20,12 @@ namespace Voron.Benchmark
                 return;
             }
 
+            if (args.Length > 0 && args[0] == "trace-roaring")
+            {
+                RoaringBitmapTraceBench.Run();
+                return;
+            }
+
 #if DEBUG
             BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args, new DebugInProcessConfig());
 #else
