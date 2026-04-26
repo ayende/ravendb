@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using Sparrow;
 
@@ -11,22 +12,22 @@ namespace Corax.Utils.RoaringBitmaps;
 /// Maintains iteration state across calls, allowing the bitmap to be consumed in chunks.
 /// </summary>
 /// <summary>
-/// 24 bytes total. _containerIndex and _positionInContainer are shared across all types.
-/// _bitmapWordIndex and _bitmapCurrentWord are only used for Bitmap containers.
-/// Array and Range only use _positionInContainer.
+/// 16 bytes. _containerIndex is shared. _positionInContainer and _positionInContainer
+/// overlap at the same offset — Array/Range use it as an index/value,
+/// Bitmap uses it as the current word index (0..1023).
 /// </summary>
+[StructLayout(LayoutKind.Explicit)]
 public unsafe struct RoaringBitmapIterator
 {
-    private int _containerIndex;       // current key in the index array
-    private int _positionInContainer;  // Array: index into sorted array. Range: current value. Bitmap: emitted count.
-    private int _bitmapWordIndex;      // Bitmap only: current ulong index (0..1023)
-    private ulong _bitmapCurrentWord;  // Bitmap only: remaining bits in current word
+    [FieldOffset(0)]  private int _containerIndex;
+    /// <summary>Array: index into sorted array. Range: current value. Bitmap: current ulong index (0..1023).</summary>
+    [FieldOffset(4)]  private int _positionInContainer;
+    [FieldOffset(8)]  private ulong _bitmapCurrentWord; // Bitmap only: remaining bits in current word
 
     public RoaringBitmapIterator()
     {
         _containerIndex = 0;
         _positionInContainer = 0;
-        _bitmapWordIndex = 0;
         _bitmapCurrentWord = 0;
     }
 
@@ -37,7 +38,6 @@ public unsafe struct RoaringBitmapIterator
     {
         _containerIndex = 0;
         _positionInContainer = 0;
-        _bitmapWordIndex = 0;
         _bitmapCurrentWord = 0;
     }
 
@@ -80,14 +80,14 @@ public unsafe struct RoaringBitmapIterator
             }
 
             bool containerCompleted = entry.Type == ContainerType.Bitmap
-                ? _bitmapWordIndex >= RoaringBitmap.BitmapContainerSizeInUlongs && _bitmapCurrentWord == 0
+                ? _positionInContainer >= RoaringBitmap.BitmapContainerSizeInUlongs && _bitmapCurrentWord == 0
                 : _positionInContainer >= entry.Cardinality;
 
             if (containerCompleted)
             {
                 _containerIndex++;
                 _positionInContainer = 0;
-                _bitmapWordIndex = 0;
+                _positionInContainer = 0;
                 _bitmapCurrentWord = 0;
             }
         }
@@ -145,14 +145,14 @@ public unsafe struct RoaringBitmapIterator
     {
         ulong* bitmap = (ulong*)entry.Data;
 
-        while (written < buffer.Length && _bitmapWordIndex < RoaringBitmap.BitmapContainerSizeInUlongs)
+        while (written < buffer.Length && _positionInContainer < RoaringBitmap.BitmapContainerSizeInUlongs)
         {
             if (_bitmapCurrentWord == 0)
             {
-                _bitmapCurrentWord = bitmap[_bitmapWordIndex];
+                _bitmapCurrentWord = bitmap[_positionInContainer];
                 if (_bitmapCurrentWord == 0)
                 {
-                    _bitmapWordIndex++;
+                    _positionInContainer++;
                     continue;
                 }
             }
@@ -160,12 +160,12 @@ public unsafe struct RoaringBitmapIterator
             while (_bitmapCurrentWord != 0 && written < buffer.Length)
             {
                 int bit = BitOperations.TrailingZeroCount(_bitmapCurrentWord);
-                buffer[written++] = baseValue | (uint)(_bitmapWordIndex * 64 + bit);
+                buffer[written++] = baseValue | (uint)(_positionInContainer * 64 + bit);
                 _bitmapCurrentWord &= _bitmapCurrentWord - 1;
             }
 
             if (_bitmapCurrentWord == 0)
-                _bitmapWordIndex++;
+                _positionInContainer++;
         }
 
         return written;
