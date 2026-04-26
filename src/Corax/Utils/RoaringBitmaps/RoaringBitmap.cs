@@ -177,10 +177,11 @@ public unsafe struct RoaringBitmap : IDisposable
 
     #region Container Management
 
+    private const int InitialArrayContainerSizeInBytes = 64; // 32 entries worth of ushort
+
     private ContainerEntry CreateArrayContainer(long key)
     {
-        // Allocate max array container size upfront (8KB) to avoid reallocation
-        _ctx.Allocate(BitmapContainerSizeInBytes, out ByteString storage);
+        _ctx.Allocate(InitialArrayContainerSizeInBytes, out ByteString storage);
         storage.ToSpan<byte>().Clear();
 
         return new ContainerEntry
@@ -191,6 +192,29 @@ public unsafe struct RoaringBitmap : IDisposable
             Data = storage.Ptr,
             Storage = storage
         };
+    }
+
+    /// <summary>
+    /// Ensure the array/negated container has room for one more entry.
+    /// Doubles the buffer size up to BitmapContainerSizeInBytes.
+    /// </summary>
+    private void EnsureArrayCapacity(ref ContainerEntry entry, int requiredEntries)
+    {
+        int requiredBytes = requiredEntries * sizeof(ushort);
+        if (requiredBytes <= entry.Storage.Length)
+            return;
+
+        int newSize = Math.Max(entry.Storage.Length * 2, requiredBytes);
+        newSize = Math.Min(newSize, BitmapContainerSizeInBytes);
+
+        _ctx.Allocate(newSize, out ByteString newStorage);
+        int copyBytes = entry.Cardinality * sizeof(ushort);
+        if (copyBytes > 0)
+            Unsafe.CopyBlockUnaligned(newStorage.Ptr, entry.Data, (uint)copyBytes);
+
+        _ctx.Release(ref entry.Storage);
+        entry.Storage = newStorage;
+        entry.Data = newStorage.Ptr;
     }
 
     internal ContainerEntry CreateBitmapContainer(long key)
@@ -271,6 +295,7 @@ public unsafe struct RoaringBitmap : IDisposable
         switch (entry.Type)
         {
             case ContainerType.Array:
+                EnsureArrayCapacity(ref entry, entry.Cardinality + 1);
                 ArrayContainerAdd(entry.Data, ref entry.Cardinality, value);
                 if (entry.Cardinality > ArrayContainerMaxCardinality)
                     ConvertArrayToBitmap(ref entry);
@@ -314,6 +339,7 @@ public unsafe struct RoaringBitmap : IDisposable
                 break;
 
             case ContainerType.Negated:
+                EnsureArrayCapacity(ref entry, NegatedContainerAbsentCount(entry.Cardinality) + 1);
                 NegatedContainerRemove(entry.Data, ref entry.Cardinality, value);
                 if (entry.Cardinality <= NegatedArrayMinCardinality)
                     ConvertNegatedToBitmap(ref entry);
@@ -1062,7 +1088,7 @@ public unsafe struct RoaringBitmap : IDisposable
         Debug.Assert(entry.Type == ContainerType.Full);
 
         // Full container with one removal → negated with empty absent list
-        _ctx.Allocate(BitmapContainerSizeInBytes, out ByteString newStorage);
+        _ctx.Allocate(InitialArrayContainerSizeInBytes, out ByteString newStorage);
         newStorage.ToSpan<byte>().Clear();
 
         entry.Storage = newStorage;
@@ -1111,7 +1137,7 @@ public unsafe struct RoaringBitmap : IDisposable
 
     internal ContainerEntry AllocateArrayContainer(long key, int maxCardinality)
     {
-        int bytes = Math.Max(64, maxCardinality * sizeof(ushort));
+        int bytes = Math.Max(InitialArrayContainerSizeInBytes, maxCardinality * sizeof(ushort));
         bytes = Math.Min(bytes, BitmapContainerSizeInBytes);
         _ctx.Allocate(bytes, out ByteString storage);
         storage.ToSpan<byte>().Clear();

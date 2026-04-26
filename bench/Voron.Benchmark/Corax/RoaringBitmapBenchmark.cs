@@ -378,9 +378,11 @@ public class RoaringBitmapSetOpsBenchmark
 }
 
 /// <summary>
-/// Memory footprint comparison: how much memory does each structure use
-/// for the same dataset? Measured by the MemoryDiagnoser on the Add benchmarks.
-/// This benchmark isolates the "build + hold" cost.
+/// Memory footprint comparison including native allocations.
+/// MemoryDiagnoser tracks managed GC allocations.
+/// For native memory (ByteStringContext), we use NativeMemory.ThreadAllocations to measure
+/// the delta before/after building the structure. The native bytes are returned as part of
+/// the benchmark result so they appear in the output.
 /// </summary>
 [MemoryDiagnoser]
 public class RoaringBitmapMemoryBenchmark
@@ -404,37 +406,48 @@ public class RoaringBitmapMemoryBenchmark
         set.CopyTo(_values);
     }
 
+    /// <summary>
+    /// Returns (Cardinality, NativeBytesAllocated). The native bytes show the true
+    /// cost of ByteStringContext allocations that MemoryDiagnoser doesn't capture.
+    /// </summary>
     [Benchmark(Baseline = true)]
-    public long Build_Roaring()
+    public (long Cardinality, long NativeBytes) Build_Roaring()
     {
+        long nativeBefore = Sparrow.Utils.NativeMemory.CurrentThreadStats?.TotalAllocated ?? 0;
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
         var bmp = new RoaringBitmap(ctx);
         for (int i = 0; i < _values.Length; i++)
             bmp.Add(_values[i]);
         long c = bmp.Cardinality;
+        long nativeAfter = Sparrow.Utils.NativeMemory.CurrentThreadStats?.TotalAllocated ?? 0;
+        long nativeUsed = nativeAfter - nativeBefore;
         bmp.Dispose();
-        return c;
+        return (c, nativeUsed);
     }
 
     [Benchmark]
-    public long Build_GrowableBitArray()
+    public (long Cardinality, long NativeBytes) Build_GrowableBitArray()
     {
+        long nativeBefore = Sparrow.Utils.NativeMemory.CurrentThreadStats?.TotalAllocated ?? 0;
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
         long maxVal = Math.Min(MaxValue, int.MaxValue - 1);
         var gba = new GrowableBitArray(ctx, maxVal);
         for (int i = 0; i < _values.Length; i++)
             gba.Add(_values[i]);
+        long nativeAfter = Sparrow.Utils.NativeMemory.CurrentThreadStats?.TotalAllocated ?? 0;
+        long nativeUsed = nativeAfter - nativeBefore;
         gba.Dispose();
-        return _values.Length;
+        return (_values.Length, nativeUsed);
     }
 
     [Benchmark]
-    public int Build_BclBitArray()
+    public (int Count, long NativeBytes) Build_BclBitArray()
     {
+        // BCL BitArray is fully managed — native allocation is 0
         int max = (int)Math.Min(MaxValue, int.MaxValue - 1);
         var ba = new BitArray(max + 1);
         for (int i = 0; i < _values.Length; i++)
             ba.Set((int)_values[i], true);
-        return _values.Length;
+        return (_values.Length, 0);
     }
 }
