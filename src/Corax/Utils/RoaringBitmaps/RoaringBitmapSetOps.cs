@@ -52,7 +52,9 @@ public static unsafe class RoaringBitmapSetOps
 
     private static ContainerEntry AndContainers(ByteStringContext ctx, ref ContainerEntry a, ref ContainerEntry b)
     {
-        // Materialize Range to Bitmap, then re-dispatch
+        RoaringBitmap.EnsureSorted(ref a);
+        RoaringBitmap.EnsureSorted(ref b);
+
         if (a.Type == ContainerType.Range)
             return MaterializeRangeAndRedispatch(ctx, ref a, ref b, AndContainers);
         if (b.Type == ContainerType.Range)
@@ -172,6 +174,9 @@ public static unsafe class RoaringBitmapSetOps
 
     private static ContainerEntry OrContainers(ByteStringContext ctx, ref ContainerEntry a, ref ContainerEntry b)
     {
+        RoaringBitmap.EnsureSorted(ref a);
+        RoaringBitmap.EnsureSorted(ref b);
+
         if (a.Type == ContainerType.Range)
             return MaterializeRangeAndRedispatch(ctx, ref a, ref b, OrContainers);
         if (b.Type == ContainerType.Range)
@@ -337,6 +342,9 @@ public static unsafe class RoaringBitmapSetOps
 
     private static ContainerEntry XorContainers(ByteStringContext ctx, ref ContainerEntry a, ref ContainerEntry b)
     {
+        RoaringBitmap.EnsureSorted(ref a);
+        RoaringBitmap.EnsureSorted(ref b);
+
         if (a.Type == ContainerType.Range)
             return MaterializeRangeAndRedispatch(ctx, ref a, ref b, XorContainers);
         if (b.Type == ContainerType.Range)
@@ -498,6 +506,9 @@ public static unsafe class RoaringBitmapSetOps
 
     private static ContainerEntry AndNotContainers(ByteStringContext ctx, ref ContainerEntry a, ref ContainerEntry b)
     {
+        RoaringBitmap.EnsureSorted(ref a);
+        RoaringBitmap.EnsureSorted(ref b);
+
         if (a.Type == ContainerType.Range)
             return MaterializeRangeAndRedispatch(ctx, ref a, ref b, AndNotContainers);
         if (b.Type == ContainerType.Range)
@@ -830,7 +841,7 @@ public static unsafe class RoaringBitmapSetOps
 
         int dataSize = entry.Type switch
         {
-            ContainerType.Array => Math.Max(64, entry.Cardinality * sizeof(ushort)),
+            ContainerType.Array or ContainerType.ArrayUnsorted => Math.Max(64, entry.Cardinality * sizeof(ushort)),
             ContainerType.Bitmap => RoaringBitmap.BitmapContainerSizeInBytes,
             _ => 0
         };
