@@ -8,13 +8,10 @@ using Sparrow;
 namespace Corax.Utils.RoaringBitmaps;
 
 /// <summary>
-/// Forward iterator for RoaringBitmap that supports Corax's Fill(Span&lt;long&gt;) streaming pattern.
-/// Maintains iteration state across calls, allowing the bitmap to be consumed in chunks.
-/// </summary>
-/// <summary>
-/// 16 bytes. _containerIndex is shared. _positionInContainer and _positionInContainer
-/// overlap at the same offset — Array/Range use it as an index/value,
-/// Bitmap uses it as the current word index (0..1023).
+/// 16 bytes. Forward iterator for RoaringBitmap supporting Fill(Span&lt;long&gt;) streaming.
+/// _positionInContainer is shared: Array uses it as array index, Range as current value,
+/// Bitmap as the current ulong word index (0..1023). _bitmapCurrentWord stores remaining
+/// bits in the current word for bitmap iteration only.
 /// </summary>
 [StructLayout(LayoutKind.Explicit)]
 public unsafe struct RoaringBitmapIterator
@@ -86,7 +83,6 @@ public unsafe struct RoaringBitmapIterator
             if (containerCompleted)
             {
                 _containerIndex++;
-                _positionInContainer = 0;
                 _positionInContainer = 0;
                 _bitmapCurrentWord = 0;
             }

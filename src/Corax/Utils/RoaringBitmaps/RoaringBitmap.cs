@@ -13,8 +13,8 @@ namespace Corax.Utils.RoaringBitmaps;
 /// <summary>
 /// A roaring bitmap implementation optimized for Corax's native memory model.
 /// All memory is allocated through ByteStringContext, ensuring zero managed heap allocations
-/// for the bitmap data. Values are split into container key (value &gt;&gt; 16) and low 16 bits.
-/// Container lookup is O(1) via a flat index array.
+/// for the bitmap data. Non-negative values are split into container key (value &gt;&gt; 16)
+/// and low 16 bits. Container lookup is O(1) via a flat index array sized to the max key.
 ///
 /// Container types:
 /// - Range: contiguous values 0..count-1 (no data allocation). count=65536 means full.
@@ -1314,32 +1314,8 @@ public unsafe struct RoaringBitmap : IDisposable
 
     #endregion
 
-    #region Allocation Helpers
-
-    internal ContainerEntry AllocateArrayContainer(long key, int maxCardinality)
-    {
-        int bytes = Math.Max(InitialArrayContainerSizeInBytes, maxCardinality * sizeof(ushort));
-        bytes = Math.Min(bytes, BitmapContainerSizeInBytes);
-        _ctx.Allocate(bytes, out ByteString storage);
-        storage.ToSpan<byte>().Clear();
-
-        return new ContainerEntry
-        {
-            Type = ContainerType.Array,
-            Cardinality = 0,
-            Data = storage.Ptr,
-            Storage = storage
-        };
-    }
-
-    internal ContainerEntry AllocateBitmapContainer(long key)
-    {
-        return CreateBitmapContainer(key);
-    }
-
     internal ByteStringContext Context => _ctx;
 
-    #endregion
 
     public void Dispose()
     {
@@ -1389,7 +1365,8 @@ public enum ContainerType : byte
 public unsafe struct ContainerEntry
 {
     /// <summary>
-    /// Direct pointer to container data. Null for Range containers (no allocation).
+    /// Direct pointer to container data for Array, ArrayUnsorted, and Bitmap containers.
+    /// Null for Range containers (which require no data allocation).
     /// We pay 8 bytes per entry to cache this instead of going through Storage.Ptr,
     /// which is a double-dereference (ByteString._pointer->Ptr). Every Contains, Add,
     /// and iterator step accesses this pointer. The 8 bytes per container is negligible
