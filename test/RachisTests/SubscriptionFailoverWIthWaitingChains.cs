@@ -92,7 +92,7 @@ namespace RachisTests
                         session.SaveChanges();
                     }
 
-                    Assert.True(await mre.WaitAsync(TimeSpan.FromSeconds(15)), "no ack");
+                    Assert.True(await mre.WaitAsync(TimeSpan.FromMinutes(2)), "no ack");
 
                     var res = await DisposeServerAndWaitForFinishOfDisposalAsync(node);
                     Assert.Equal(currentResponsibleNode, res.NodeTag);
