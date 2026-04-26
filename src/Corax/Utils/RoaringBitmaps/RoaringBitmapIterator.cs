@@ -1,7 +1,6 @@
 using System;
 using System.Numerics;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using Sparrow;
 
@@ -11,26 +10,24 @@ namespace Corax.Utils.RoaringBitmaps;
 /// Forward iterator for RoaringBitmap that supports Corax's Fill(Span&lt;long&gt;) streaming pattern.
 /// Maintains iteration state across calls, allowing the bitmap to be consumed in chunks.
 /// </summary>
-[StructLayout(LayoutKind.Explicit)]
+/// <summary>
+/// 24 bytes total. _containerIndex and _positionInContainer are shared across all types.
+/// _bitmapWordIndex and _bitmapCurrentWord are only used for Bitmap containers.
+/// Array and Range only use _positionInContainer.
+/// </summary>
 public unsafe struct RoaringBitmapIterator
 {
-    [FieldOffset(0)] private int _containerIndex;
-    [FieldOffset(4)] private int _positionInContainer;
-
-    // Container-type-specific state — unioned since only one type is active at a time.
-    // Bitmap: _wordIndex is the current ulong index (0..1023), _currentWord has remaining bits.
-    // Run/Negated: _wordIndex is the current run/absent index, _runPosition is offset within run.
-    [FieldOffset(8)] private int _wordIndex;
-    [FieldOffset(12)] private int _runPosition;
-    [FieldOffset(16)] private ulong _currentWord; // bitmap only — overlaps nothing
+    private int _containerIndex;       // current key in the index array
+    private int _positionInContainer;  // Array: index into sorted array. Range: current value. Bitmap: emitted count.
+    private int _bitmapWordIndex;      // Bitmap only: current ulong index (0..1023)
+    private ulong _bitmapCurrentWord;  // Bitmap only: remaining bits in current word
 
     public RoaringBitmapIterator()
     {
         _containerIndex = 0;
         _positionInContainer = 0;
-        _wordIndex = 0;
-        _runPosition = 0;
-        _currentWord = 0;
+        _bitmapWordIndex = 0;
+        _bitmapCurrentWord = 0;
     }
 
     /// <summary>
@@ -40,9 +37,8 @@ public unsafe struct RoaringBitmapIterator
     {
         _containerIndex = 0;
         _positionInContainer = 0;
-        _wordIndex = 0;
-        _runPosition = 0;
-        _currentWord = 0;
+        _bitmapWordIndex = 0;
+        _bitmapCurrentWord = 0;
     }
 
     /// <summary>
@@ -89,9 +85,8 @@ public unsafe struct RoaringBitmapIterator
             {
                 _containerIndex++;
                 _positionInContainer = 0;
-                _wordIndex = 0;
-                _runPosition = 0;
-                _currentWord = 0;
+                _bitmapWordIndex = 0;
+                _bitmapCurrentWord = 0;
             }
         }
 
@@ -149,31 +144,31 @@ public unsafe struct RoaringBitmapIterator
         ulong* bitmap = (ulong*)entry.Data;
         int bitmapPopulated = 0;
 
-        while (written < buffer.Length && _wordIndex < RoaringBitmap.BitmapContainerSizeInUlongs)
+        while (written < buffer.Length && _bitmapWordIndex < RoaringBitmap.BitmapContainerSizeInUlongs)
         {
             // Load the next word if the current one is exhausted
-            if (_currentWord == 0)
+            if (_bitmapCurrentWord == 0)
             {
-                _currentWord = bitmap[_wordIndex];
-                if (_currentWord == 0)
+                _bitmapCurrentWord = bitmap[_bitmapWordIndex];
+                if (_bitmapCurrentWord == 0)
                 {
-                    _wordIndex++;
+                    _bitmapWordIndex++;
                     continue;
                 }
             }
 
             // Process set bits in the current word
-            while (_currentWord != 0 && written < buffer.Length)
+            while (_bitmapCurrentWord != 0 && written < buffer.Length)
             {
-                int bit = BitOperations.TrailingZeroCount(_currentWord);
-                buffer[written++] = baseValue | (uint)(_wordIndex * 64 + bit);
-                _currentWord &= _currentWord - 1; // clear lowest set bit
+                int bit = BitOperations.TrailingZeroCount(_bitmapCurrentWord);
+                buffer[written++] = baseValue | (uint)(_bitmapWordIndex * 64 + bit);
+                _bitmapCurrentWord &= _bitmapCurrentWord - 1; // clear lowest set bit
                 bitmapPopulated++;
             }
 
             // Advance to the next word if this one is fully consumed
-            if (_currentWord == 0)
-                _wordIndex++;
+            if (_bitmapCurrentWord == 0)
+                _bitmapWordIndex++;
         }
 
         _positionInContainer += bitmapPopulated;
