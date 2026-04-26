@@ -368,37 +368,6 @@ public unsafe struct RoaringBitmap : IDisposable
     }
 
     /// <summary>
-    /// In-place XOR: toggle all values from other in this bitmap.
-    /// </summary>
-    public void XorWith(ref RoaringBitmap other)
-    {
-        if (other.ContainerCount == 0)
-            return;
-
-        int otherLen = other.IndexLength;
-        for (int key = 0; key < otherLen; key++)
-        {
-            int otherSlot = other.GetSlotForKey(key);
-            if (otherSlot < 0)
-                continue;
-
-            ref ContainerEntry otherEntry = ref other.GetEntryBySlot(otherSlot);
-            int mySlot = GetSlotForKey(key);
-
-            if (mySlot >= 0)
-            {
-                XorContainerInPlace(ref _entries[mySlot], ref otherEntry);
-                if (_entries[mySlot].Cardinality == 0)
-                    FreeContainer(key, mySlot);
-            }
-            else
-            {
-                AddNewContainer(key, RoaringBitmapSetOps.CloneContainer(_ctx, ref otherEntry));
-            }
-        }
-    }
-
-    /// <summary>
     /// In-place ANDNOT: remove all values that exist in other from this bitmap.
     /// </summary>
     public void AndNotWith(ref RoaringBitmap other)
@@ -567,74 +536,6 @@ public unsafe struct RoaringBitmap : IDisposable
         }
     }
 
-    private void XorContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
-    {
-        EnsureSorted(ref left);
-
-        if (left.Type == ContainerType.Range)
-            ConvertRangeToBitmap(ref left);
-        if (right.Type == ContainerType.Range)
-        {
-            ContainerEntry temp = MaterializeRangeToBitmapTemp(ref right);
-            XorContainerInPlace(ref left, ref temp);
-            _ctx.Release(ref temp.Storage);
-            return;
-        }
-
-        switch (left.Type, right.Type)
-        {
-            case (ContainerType.Bitmap, ContainerType.Bitmap):
-                left.Cardinality = RoaringBitmapSetOps.BitmapXorSimd(
-                    (ulong*)left.Data, (ulong*)right.Data, (ulong*)left.Data, BitmapContainerSizeInUlongs);
-                OptimizeContainerType(ref left);
-                break;
-
-            case (ContainerType.Bitmap, ContainerType.Array):
-            {
-                ulong* bmp = (ulong*)left.Data;
-                ushort* arr = (ushort*)right.Data;
-                for (int i = 0; i < right.Cardinality; i++)
-                {
-                    ushort val = arr[i];
-                    ulong mask = 1UL << (val & 63);
-                    if ((bmp[val >> 6] & mask) != 0)
-                        left.Cardinality--;
-                    else
-                        left.Cardinality++;
-                    bmp[val >> 6] ^= mask;
-                }
-                OptimizeContainerType(ref left);
-                break;
-            }
-
-            case (ContainerType.Array, ContainerType.Array):
-            {
-                int maxResult = left.Cardinality + right.Cardinality;
-                if (maxResult > ArrayContainerMaxCardinality)
-                {
-                    ConvertArrayToBitmap(ref left);
-                    XorContainerInPlace(ref left, ref right);
-                }
-                else
-                {
-                    _ctx.Allocate(Math.Max(InitialArrayContainerSizeInBytes, maxResult * sizeof(ushort)), out ByteString newStorage);
-                    int count = ArrayContainerXor((ushort*)left.Data, left.Cardinality, (ushort*)right.Data, right.Cardinality, (ushort*)newStorage.Ptr);
-                    _ctx.Release(ref left.Storage);
-                    left.Storage = newStorage;
-                    left.Data = newStorage.Ptr;
-                    left.Cardinality = count;
-                }
-                break;
-            }
-
-            case (ContainerType.Array, ContainerType.Bitmap):
-            {
-                ConvertArrayToBitmap(ref left);
-                XorContainerInPlace(ref left, ref right);
-                break;
-            }
-        }
-    }
 
     private void AndNotContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
     {
@@ -1179,35 +1080,6 @@ public unsafe struct RoaringBitmap : IDisposable
             else
             {
                 dst[di++] = a[ai];
-                ai++;
-                bi++;
-            }
-        }
-
-        while (ai < aLen)
-            dst[di++] = a[ai++];
-        while (bi < bLen)
-            dst[di++] = b[bi++];
-
-        return di;
-    }
-
-    /// <summary>
-    /// Compute XOR of two array containers. dst must have space for aLen + bLen entries.
-    /// Returns the number of elements in the result.
-    /// </summary>
-    internal static int ArrayContainerXor(ushort* a, int aLen, ushort* b, int bLen, ushort* dst)
-    {
-        int ai = 0, bi = 0, di = 0;
-
-        while (ai < aLen && bi < bLen)
-        {
-            if (a[ai] < b[bi])
-                dst[di++] = a[ai++];
-            else if (a[ai] > b[bi])
-                dst[di++] = b[bi++];
-            else
-            {
                 ai++;
                 bi++;
             }

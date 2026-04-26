@@ -233,43 +233,6 @@ public class RoaringBitmapTests : NoDisposalNeeded
     }
 
     [RavenFact(RavenTestCategory.Corax)]
-    public void XorSymmetricDifference()
-    {
-        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        var a = new RoaringBitmap(ctx);
-        var b = new RoaringBitmap(ctx);
-        try
-        {
-            for (int i = 0; i < 1000; i++)
-                a.Add(i);
-            for (int i = 500; i < 1500; i++)
-                b.Add(i);
-
-            var result = RoaringBitmapSetOps.Xor(ctx, ref a, ref b);
-            try
-            {
-                // 0..499 and 1000..1499 = 1000 elements
-                Assert.Equal(1000, result.Cardinality);
-                for (int i = 0; i < 500; i++)
-                    Assert.True(result.Contains(i));
-                for (int i = 500; i < 1000; i++)
-                    Assert.False(result.Contains(i));
-                for (int i = 1000; i < 1500; i++)
-                    Assert.True(result.Contains(i));
-            }
-            finally
-            {
-                result.Dispose();
-            }
-        }
-        finally
-        {
-            a.Dispose();
-            b.Dispose();
-        }
-    }
-
-    [RavenFact(RavenTestCategory.Corax)]
     public void AndNotDifference()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -881,47 +844,6 @@ public class RoaringBitmapTests : NoDisposalNeeded
     }
 
     [RavenFact(RavenTestCategory.Corax)]
-    public unsafe void SimdXorMatchesScalar()
-    {
-        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        int count = RoaringBitmap.BitmapContainerSizeInUlongs;
-
-        ctx.Allocate(RoaringBitmap.BitmapContainerSizeInBytes, out var aStorage);
-        ctx.Allocate(RoaringBitmap.BitmapContainerSizeInBytes, out var bStorage);
-        ctx.Allocate(RoaringBitmap.BitmapContainerSizeInBytes, out var simdResult);
-        ctx.Allocate(RoaringBitmap.BitmapContainerSizeInBytes, out var scalarResult);
-
-        try
-        {
-            ulong* a = (ulong*)aStorage.Ptr;
-            ulong* b = (ulong*)bStorage.Ptr;
-            ulong* sr = (ulong*)simdResult.Ptr;
-            ulong* sc = (ulong*)scalarResult.Ptr;
-
-            Random rng = new(42);
-            for (int i = 0; i < count; i++)
-            {
-                a[i] = (ulong)rng.NextInt64();
-                b[i] = (ulong)rng.NextInt64();
-            }
-
-            int simdCard = RoaringBitmapSetOps.BitmapXorSimd(a, b, sr, count);
-            int scalarCard = RoaringBitmapSetOps.BitmapXorScalar(a, b, sc, count);
-
-            Assert.Equal(scalarCard, simdCard);
-            for (int i = 0; i < count; i++)
-                Assert.Equal(sc[i], sr[i]);
-        }
-        finally
-        {
-            ctx.Release(ref aStorage);
-            ctx.Release(ref bStorage);
-            ctx.Release(ref simdResult);
-            ctx.Release(ref scalarResult);
-        }
-    }
-
-    [RavenFact(RavenTestCategory.Corax)]
     public unsafe void SimdAndNotMatchesScalar()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -1044,13 +966,6 @@ public class RoaringBitmapTests : NoDisposalNeeded
             expectedOr.UnionWith(setB);
             Assert.Equal(expectedOr.Count, orResult.Cardinality);
             orResult.Dispose();
-
-            // XOR
-            var xorResult = RoaringBitmapSetOps.Xor(ctx, ref a, ref b);
-            HashSet<long> expectedXor = new(setA);
-            expectedXor.SymmetricExceptWith(setB);
-            Assert.Equal(expectedXor.Count, xorResult.Cardinality);
-            xorResult.Dispose();
 
             // ANDNOT
             var andNotResult = RoaringBitmapSetOps.AndNot(ctx, ref a, ref b);

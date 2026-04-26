@@ -306,169 +306,6 @@ public static unsafe class RoaringBitmapSetOps
 
     #region XOR
 
-    /// <summary>
-    /// Compute the symmetric difference of two roaring bitmaps.
-    /// </summary>
-    public static RoaringBitmap Xor(ByteStringContext ctx, ref RoaringBitmap a, ref RoaringBitmap b)
-    {
-        var result = new RoaringBitmap(ctx);
-        int maxLen = Math.Max(a.IndexLength, b.IndexLength);
-
-        for (int key = 0; key < maxLen; key++)
-        {
-            int aSlot = a.GetSlotForKey(key);
-            int bSlot = b.GetSlotForKey(key);
-
-            if (aSlot >= 0 && bSlot >= 0)
-            {
-                ContainerEntry rc = XorContainers(ctx, ref a.GetEntryBySlot(aSlot), ref b.GetEntryBySlot(bSlot));
-                if (rc.Cardinality > 0)
-                    result.AddContainer(rc);
-                else if (rc.Storage.HasValue)
-                    ctx.Release(ref rc.Storage);
-            }
-            else if (aSlot >= 0)
-            {
-                result.AddContainer(CloneContainer(ctx, ref a.GetEntryBySlot(aSlot)));
-            }
-            else if (bSlot >= 0)
-            {
-                result.AddContainer(CloneContainer(ctx, ref b.GetEntryBySlot(bSlot)));
-            }
-        }
-
-        return result;
-    }
-
-    private static ContainerEntry XorContainers(ByteStringContext ctx, ref ContainerEntry a, ref ContainerEntry b)
-    {
-        RoaringBitmap.EnsureSorted(ref a);
-        RoaringBitmap.EnsureSorted(ref b);
-
-        if (a.Type == ContainerType.Range)
-            return MaterializeRangeAndRedispatch(ctx, ref a, ref b, XorContainers);
-        if (b.Type == ContainerType.Range)
-            return MaterializeRangeAndRedispatch(ctx, ref b, ref a, (c, ref x, ref y) => XorContainers(c, ref y, ref x));
-
-        return (a.Type, b.Type) switch
-        {
-            (ContainerType.Bitmap, ContainerType.Bitmap) => XorBitmapBitmap(ctx, ref a, ref b),
-            (ContainerType.Array, ContainerType.Array) => XorArrayArray(ctx, ref a, ref b),
-            (ContainerType.Array, ContainerType.Bitmap) => XorArrayBitmap(ctx, ref a, ref b),
-            (ContainerType.Bitmap, ContainerType.Array) => XorArrayBitmap(ctx, ref b, ref a),
-            _ => default
-        };
-    }
-
-    private static ContainerEntry XorBitmapBitmap(ByteStringContext ctx, ref ContainerEntry a, ref ContainerEntry b)
-    {
-        ctx.Allocate(RoaringBitmap.BitmapContainerSizeInBytes, out ByteString storage);
-        ulong* dst = (ulong*)storage.Ptr;
-        ulong* ap = (ulong*)a.Data;
-        ulong* bp = (ulong*)b.Data;
-
-        int cardinality = BitmapXorSimd(ap, bp, dst, RoaringBitmap.BitmapContainerSizeInUlongs);
-
-        var result = new ContainerEntry
-        {
-            Key = a.Key,
-            Data = storage.Ptr,
-            Cardinality = cardinality,
-            Storage = storage,
-            Type = ContainerType.Bitmap
-        };
-
-        OptimizeBitmapResult(ctx, ref result);
-        return result;
-    }
-
-    private static ContainerEntry XorArrayArray(ByteStringContext ctx, ref ContainerEntry a, ref ContainerEntry b)
-    {
-        int maxResult = a.Cardinality + b.Cardinality;
-
-        if (maxResult > RoaringBitmap.ArrayContainerMaxCardinality)
-        {
-            // Result might be a bitmap
-            ctx.Allocate(RoaringBitmap.BitmapContainerSizeInBytes, out ByteString bmpStorage);
-            ulong* bitmap = (ulong*)bmpStorage.Ptr;
-            new Span<byte>(bitmap, RoaringBitmap.BitmapContainerSizeInBytes).Clear();
-
-            ushort* aArr = (ushort*)a.Data;
-            ushort* bArr = (ushort*)b.Data;
-
-            for (int i = 0; i < a.Cardinality; i++)
-            {
-                ushort val = aArr[i];
-                bitmap[val >> 6] ^= 1UL << (val & 63);
-            }
-            for (int i = 0; i < b.Cardinality; i++)
-            {
-                ushort val = bArr[i];
-                bitmap[val >> 6] ^= 1UL << (val & 63);
-            }
-
-            int cardinality = RoaringBitmap.BitmapContainerCardinality((byte*)bitmap);
-
-            var result = new ContainerEntry
-            {
-                Key = a.Key,
-                Data = bmpStorage.Ptr,
-                Cardinality = cardinality,
-                Storage = bmpStorage,
-                Type = ContainerType.Bitmap
-            };
-
-            OptimizeBitmapResult(ctx, ref result);
-            return result;
-        }
-
-        // Small enough for array output
-        ctx.Allocate(Math.Max(64, maxResult * sizeof(ushort)), out ByteString storage);
-        int count = RoaringBitmap.ArrayContainerXor(
-            (ushort*)a.Data, a.Cardinality,
-            (ushort*)b.Data, b.Cardinality,
-            (ushort*)storage.Ptr);
-
-        return new ContainerEntry
-        {
-            Key = a.Key,
-            Data = storage.Ptr,
-            Cardinality = count,
-            Storage = storage,
-            Type = ContainerType.Array
-        };
-    }
-
-    private static ContainerEntry XorArrayBitmap(ByteStringContext ctx, ref ContainerEntry array, ref ContainerEntry bitmap)
-    {
-        // Clone bitmap, XOR bits from array
-        ctx.Allocate(RoaringBitmap.BitmapContainerSizeInBytes, out ByteString storage);
-        Unsafe.CopyBlockUnaligned(storage.Ptr, bitmap.Data, RoaringBitmap.BitmapContainerSizeInBytes);
-
-        ulong* dst = (ulong*)storage.Ptr;
-        ushort* arr = (ushort*)array.Data;
-
-        for (int i = 0; i < array.Cardinality; i++)
-        {
-            ushort val = arr[i];
-            dst[val >> 6] ^= 1UL << (val & 63);
-        }
-
-        int cardinality = RoaringBitmap.BitmapContainerCardinality(storage.Ptr);
-
-        var result = new ContainerEntry
-        {
-            Key = array.Key,
-            Data = storage.Ptr,
-            Cardinality = cardinality,
-            Storage = storage,
-            Type = ContainerType.Bitmap
-        };
-
-        OptimizeBitmapResult(ctx, ref result);
-        return result;
-    }
-
     #endregion
 
     #region ANDNOT (Difference)
@@ -653,14 +490,6 @@ public static unsafe class RoaringBitmapSetOps
         [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector512<ulong> Apply(Vector512<ulong> a, Vector512<ulong> b) => a | b;
     }
 
-    private struct XorOp : IBitmapOp
-    {
-        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static ulong Apply(ulong a, ulong b) => a ^ b;
-        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector128<ulong> Apply(Vector128<ulong> a, Vector128<ulong> b) => a ^ b;
-        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector256<ulong> Apply(Vector256<ulong> a, Vector256<ulong> b) => a ^ b;
-        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector512<ulong> Apply(Vector512<ulong> a, Vector512<ulong> b) => a ^ b;
-    }
-
     private struct AndNotOp : IBitmapOp
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)] public static ulong Apply(ulong a, ulong b) => a & ~b;
@@ -674,9 +503,6 @@ public static unsafe class RoaringBitmapSetOps
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static int BitmapOrSimd(ulong* a, ulong* b, ulong* dst, int count) => BitmapOpDispatch<OrOp>(a, b, dst, count);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static int BitmapXorSimd(ulong* a, ulong* b, ulong* dst, int count) => BitmapOpDispatch<XorOp>(a, b, dst, count);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static int BitmapAndNotSimd(ulong* a, ulong* b, ulong* dst, int count) => BitmapOpDispatch<AndNotOp>(a, b, dst, count);
@@ -784,7 +610,6 @@ public static unsafe class RoaringBitmapSetOps
     // Keep named scalar methods for test backward compatibility
     internal static int BitmapAndScalar(ulong* a, ulong* b, ulong* dst, int count) => BitmapOpScalar<AndOp>(a, b, dst, count);
     internal static int BitmapOrScalar(ulong* a, ulong* b, ulong* dst, int count) => BitmapOpScalar<OrOp>(a, b, dst, count);
-    internal static int BitmapXorScalar(ulong* a, ulong* b, ulong* dst, int count) => BitmapOpScalar<XorOp>(a, b, dst, count);
     internal static int BitmapAndNotScalar(ulong* a, ulong* b, ulong* dst, int count) => BitmapOpScalar<AndNotOp>(a, b, dst, count);
 
     #endregion
