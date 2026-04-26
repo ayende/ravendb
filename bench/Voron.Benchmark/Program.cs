@@ -1,14 +1,24 @@
 ﻿using BenchmarkDotNet.Configs;
 using BenchmarkDotNet.Running;
+using Voron.Benchmark.Corax;
 
 namespace Voron.Benchmark
 {
     public class Program
     {
+        static void Main(string[] args)
+        {
+            if (args.Length > 0 && args[0] == "quick-roaring")
+            {
+                RoaringBitmapQuickBench.Run();
+                return;
+            }
+
 #if DEBUG
-        static void Main(string[] args) => BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args, new DebugInProcessConfig());
+            BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args, new DebugInProcessConfig());
 #else
-        static void Main(string[] args) => BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
+            BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
 #endif
+        }
     }
 }
