@@ -260,9 +260,9 @@ public unsafe struct RoaringBitmap : IDisposable
     /// </summary>
     public void Finalize()
     {
-        // Scratch bitmap (8KB) for radix sort: explode unsorted values into bits,
+        // 8KB scratch bitmap for radix sort: explode unsorted values into bits,
         // extract back as sorted array. O(n) bit-sets + O(1024) word scan vs O(n log n).
-        // Dedup is free. Reused across all containers. Only for containers above threshold.
+        // Dedup is free. Scratch reused across all containers (one clear per container).
         ulong* scratch = stackalloc ulong[BitmapContainerSizeInUlongs];
 
         int* idx = _index.RawItems;
@@ -284,9 +284,8 @@ public unsafe struct RoaringBitmap : IDisposable
     }
 
     /// <summary>
-    /// Sort an unsorted array container using a bitmap as radix sort scratch space.
-    /// O(n) bit-sets + O(1024) word scan instead of O(n log n) comparison sort.
-    /// Deduplication is free — setting the same bit twice is a noop.
+    /// Radix sort using 8KB bitmap scratch space.
+    /// O(n) bit-sets + O(1024) word scan. Dedup is free (duplicate bit-set is noop).
     /// </summary>
     private static void SortViaBitmapScratch(ref ContainerEntry entry, ulong* scratch)
     {
@@ -314,11 +313,11 @@ public unsafe struct RoaringBitmap : IDisposable
             {
                 int bit = BitOperations.TrailingZeroCount(word);
                 arr[sorted++] = (ushort)(wordIdx * 64 + bit);
-                word &= word - 1; // clear lowest set bit
+                word &= word - 1;
             }
         }
 
-        entry.Cardinality = sorted; // may be less than count due to dedup
+        entry.Cardinality = sorted;
         entry.Type = ContainerType.Array;
     }
 
