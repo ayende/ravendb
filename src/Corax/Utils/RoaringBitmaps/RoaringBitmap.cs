@@ -249,6 +249,26 @@ public unsafe struct RoaringBitmap : IDisposable
         return new RoaringBitmapIterator();
     }
 
+    /// <summary>
+    /// Finalize the build phase: sort and deduplicate all unsorted array containers.
+    /// Call this after all Add/AddRange calls and before any read operations (Contains,
+    /// Fill, set ops). This separates the sort cost from the first query, making
+    /// performance more predictable.
+    ///
+    /// For sorted input (e.g., Corax posting lists), this is nearly free since
+    /// the arrays are already in order and dedup finds no duplicates.
+    /// </summary>
+    public void Finalize()
+    {
+        int* idx = _index.RawItems;
+        for (int k = 0; k < _index.Count; k++)
+        {
+            int slot = idx[k];
+            if (slot >= 0)
+                EnsureSorted(ref _entries[slot]);
+        }
+    }
+
     #region In-place Set Operations
 
     // [1] Bitmap→Array conversion after set ops: we intentionally skip this.
