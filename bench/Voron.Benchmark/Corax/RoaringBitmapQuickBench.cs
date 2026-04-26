@@ -72,7 +72,7 @@ public static class RoaringBitmapQuickBench
         }
 
         Console.WriteLine();
-        Console.WriteLine("--- SET OPERATIONS (AND/OR/XOR/ANDNOT on two sets) ---");
+        Console.WriteLine("--- SET OPERATIONS (AND/OR/ANDNOT on two sets) ---");
         Console.WriteLine($"{"Count",10} {"MaxValue",12} {"Density",8} {"Op",8} {"Roaring",12} {"Roaring IP",12} {"BCL BitArr",12}");
 
         // Test matrix: varying density from very dense to very sparse
@@ -108,7 +108,7 @@ public static class RoaringBitmapQuickBench
             long[] valuesB = GenerateValues(count, maxVal, seed: 99);
             string density = $"{(double)count / maxVal * 100:F2}%";
 
-            foreach (string op in new[] { "AND", "OR", "XOR", "ANDNOT" })
+            foreach (string op in new[] { "AND", "OR", "ANDNOT" })
             {
                 double roaringMs = BenchSetOpRoaring(valuesA, valuesB, maxVal, op);
                 double roaringIpMs = BenchSetOpRoaringInPlace(valuesA, valuesB, maxVal, op);
@@ -241,7 +241,6 @@ public static class RoaringBitmapQuickBench
         {
             case "AND": result = RoaringBitmapSetOps.And(ctx, ref a, ref b); break;
             case "OR": result = RoaringBitmapSetOps.Or(ctx, ref a, ref b); break;
-            case "XOR": result = RoaringBitmapSetOps.Xor(ctx, ref a, ref b); break;
             case "ANDNOT": result = RoaringBitmapSetOps.AndNot(ctx, ref a, ref b); break;
             default: throw new ArgumentException(op);
         }
@@ -266,7 +265,6 @@ public static class RoaringBitmapQuickBench
         {
             case "AND": a.AndWith(ref b); break;
             case "OR": a.OrWith(ref b); break;
-            case "XOR": a.XorWith(ref b); break;
             case "ANDNOT": a.AndNotWith(ref b); break;
         }
         long c = a.Cardinality;
@@ -288,7 +286,6 @@ public static class RoaringBitmapQuickBench
         {
             case "AND": a.And(b); break;
             case "OR": a.Or(b); break;
-            case "XOR": a.Xor(b); break;
             case "ANDNOT":
                 var notB = (BitArray)b.Clone();
                 notB.Not();

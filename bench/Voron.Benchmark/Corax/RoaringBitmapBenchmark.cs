@@ -212,8 +212,8 @@ public class RoaringBitmapBenchmark
 }
 
 /// <summary>
-/// Benchmarks focused on set operations (AND, OR, XOR, ANDNOT) between two bitmaps.
-/// BCL BitArray supports AND/OR/XOR natively so we can compare directly.
+/// Benchmarks focused on set operations (AND, OR, ANDNOT) between two bitmaps.
+/// BCL BitArray supports AND/OR natively so we can compare directly.
 /// GrowableBitArray has no set operations, so it's excluded from this benchmark.
 /// </summary>
 [MemoryDiagnoser]
@@ -311,33 +311,6 @@ public class RoaringBitmapSetOpsBenchmark
     {
         var clone = (BitArray)_bclA.Clone();
         clone.Or(_bclB);
-        int count = 0;
-        for (int i = 0; i < clone.Count; i++)
-            if (clone[i]) count++;
-        return count;
-    }
-
-    #endregion
-
-    #region XOR
-
-    [Benchmark(Baseline = true)]
-    [BenchmarkCategory("XOR")]
-    public long Xor_Roaring()
-    {
-        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        var result = RoaringBitmapSetOps.Xor(ctx, ref _roaringA, ref _roaringB);
-        long c = result.Cardinality;
-        result.Dispose();
-        return c;
-    }
-
-    [Benchmark]
-    [BenchmarkCategory("XOR")]
-    public int Xor_BclBitArray()
-    {
-        var clone = (BitArray)_bclA.Clone();
-        clone.Xor(_bclB);
         int count = 0;
         for (int i = 0; i < clone.Count; i++)
             if (clone[i]) count++;
