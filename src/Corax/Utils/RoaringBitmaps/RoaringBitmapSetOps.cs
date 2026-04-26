@@ -616,14 +616,7 @@ public static unsafe class RoaringBitmapSetOps
         ctx.Allocate(RoaringBitmap.BitmapContainerSizeInBytes, out ByteString tempStorage);
         ulong* bitmap = (ulong*)tempStorage.Ptr;
         new Span<byte>(bitmap, RoaringBitmap.BitmapContainerSizeInBytes).Clear();
-
-        int rangeCount = rangeEntry.Cardinality;
-        int fullWords = rangeCount / 64;
-        for (int i = 0; i < fullWords; i++)
-            bitmap[i] = ulong.MaxValue;
-        int remainder = rangeCount & 63;
-        if (remainder > 0)
-            bitmap[fullWords] = (1UL << remainder) - 1;
+        RoaringBitmap.FillBitmapFromRange(bitmap, rangeEntry.Cardinality);
 
         var tempEntry = new ContainerEntry
         {
@@ -683,6 +676,7 @@ public static unsafe class RoaringBitmapSetOps
         ctx.Release(ref entry.Storage);
         entry.Storage = newStorage;
         entry.Data = newStorage.Ptr;
+        entry.Cardinality = count;
         entry.Type = ContainerType.Array;
     }
 

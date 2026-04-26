@@ -13,13 +13,15 @@ namespace Corax.Utils.RoaringBitmaps;
 /// <summary>
 /// A roaring bitmap implementation optimized for Corax's native memory model.
 /// All memory is allocated through ByteStringContext, ensuring zero managed heap allocations
-/// for the bitmap data. Supports 64-bit values by using the high 48 bits as container keys
-/// and the low 16 bits as positions within 8KB containers.
+/// for the bitmap data. Values are split into container key (value &gt;&gt; 16) and low 16 bits.
+/// Container lookup is O(1) via a flat index array.
 ///
 /// Container types:
-/// - Array: sorted ushort[] for sparse data (cardinality &lt;= 4096, up to 8KB)
-/// - Bitmap: 8KB fixed bitmap (1024 ulongs) for dense data (4097..65535)
 /// - Range: contiguous values 0..count-1 (no data allocation). count=65536 means full.
+///   Sequential Add from 0 is O(1). Created automatically for sequential inserts.
+/// - ArrayUnsorted: append-only ushort[]. Add is O(1). Sorted lazily on first read.
+/// - Array: sorted ushort[] for sparse data (cardinality &lt;= 4096, up to 8KB)
+/// - Bitmap: 8KB fixed bitmap (1024 ulongs) for dense data (&gt; 4096 values)
 /// </summary>
 public unsafe struct RoaringBitmap : IDisposable
 {
@@ -82,6 +84,7 @@ public unsafe struct RoaringBitmap : IDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Add(long value)
     {
+        Debug.Assert(value >= 0, "RoaringBitmap only supports non-negative values.");
         long key = value >> ContainerKeyShift;
         ushort low = (ushort)(value & ContainerValueMask);
 
@@ -118,6 +121,7 @@ public unsafe struct RoaringBitmap : IDisposable
 
     public void AddRange(long start, long exclusiveEnd)
     {
+        Debug.Assert(start >= 0, "RoaringBitmap only supports non-negative values.");
         if (start >= exclusiveEnd)
             return;
 
@@ -169,6 +173,7 @@ public unsafe struct RoaringBitmap : IDisposable
                             e.Cardinality = rangeLen;
                         continue;
                     }
+                    EnsureSorted(ref e);
                     if (e.Type == ContainerType.Array)
                         ConvertArrayToBitmap(ref e);
                     ulong* bitmap = (ulong*)e.Data;
@@ -199,6 +204,7 @@ public unsafe struct RoaringBitmap : IDisposable
 
                 ref ContainerEntry e = ref _entries[slot];
 
+                EnsureSorted(ref e);
                 if (e.Type == ContainerType.Array)
                     ConvertArrayToBitmap(ref e);
                 else if (e.Type == ContainerType.Range)
@@ -216,7 +222,7 @@ public unsafe struct RoaringBitmap : IDisposable
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public readonly bool Contains(long value)
+    public bool Contains(long value)
     {
         long key = value >> ContainerKeyShift;
         ushort low = (ushort)(value & ContainerValueMask);
@@ -342,8 +348,14 @@ public unsafe struct RoaringBitmap : IDisposable
     private void AndContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
     {
         EnsureSorted(ref left);
-        // Note: right belongs to another bitmap, but EnsureSorted is safe (just sorts in-place)
+        EnsureSorted(ref right);
 
+        // Range×Range fast paths — no allocation needed
+        if (left.Type == ContainerType.Range && right.Type == ContainerType.Range)
+        {
+            left.Cardinality = Math.Min(left.Cardinality, right.Cardinality); // AND = min
+            return;
+        }
         if (left.Type == ContainerType.Range)
             ConvertRangeToBitmap(ref left);
         if (right.Type == ContainerType.Range)
@@ -415,7 +427,13 @@ public unsafe struct RoaringBitmap : IDisposable
     private void OrContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
     {
         EnsureSorted(ref left);
+        EnsureSorted(ref right);
 
+        if (left.Type == ContainerType.Range && right.Type == ContainerType.Range)
+        {
+            left.Cardinality = Math.Max(left.Cardinality, right.Cardinality); // OR = max
+            return;
+        }
         if (left.Type == ContainerType.Range)
             ConvertRangeToBitmap(ref left);
         if (right.Type == ContainerType.Range)
@@ -487,7 +505,18 @@ public unsafe struct RoaringBitmap : IDisposable
     private void AndNotContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
     {
         EnsureSorted(ref left);
+        EnsureSorted(ref right);
 
+        // Range×Range: values in left not in right. If right covers all of left, empty.
+        if (left.Type == ContainerType.Range && right.Type == ContainerType.Range)
+        {
+            if (right.Cardinality >= left.Cardinality)
+            {
+                left.Cardinality = 0; // right covers everything
+                return;
+            }
+            // Result is values right.Cardinality..left.Cardinality-1 — not contiguous from 0, materialize
+        }
         if (left.Type == ContainerType.Range)
             ConvertRangeToBitmap(ref left);
         if (right.Type == ContainerType.Range)
@@ -561,14 +590,7 @@ public unsafe struct RoaringBitmap : IDisposable
         _ctx.Allocate(BitmapContainerSizeInBytes, out ByteString storage);
         ulong* bitmap = (ulong*)storage.Ptr;
         new Span<byte>(bitmap, BitmapContainerSizeInBytes).Clear();
-
-        int rangeCount = entry.Cardinality;
-        int fullWords = rangeCount / 64;
-        for (int i = 0; i < fullWords; i++)
-            bitmap[i] = ulong.MaxValue;
-        int remainder = rangeCount & 63;
-        if (remainder > 0)
-            bitmap[fullWords] = (1UL << remainder) - 1;
+        FillBitmapFromRange(bitmap, entry.Cardinality);
 
         return new ContainerEntry
         {
@@ -612,7 +634,7 @@ public unsafe struct RoaringBitmap : IDisposable
         if (key >= int.MaxValue - 16)
             throw new ArgumentOutOfRangeException(nameof(key), $"Container key {key} exceeds maximum supported index size.");
 
-        int needed = (int)(key + 1);
+        int needed = checked((int)(key + 1));
         // Grow geometrically (at least double), then align to 16 ints for SIMD scanning
         needed = Math.Max(needed, Math.Min(_index.Count * 2, int.MaxValue - 16));
         needed = Math.Max(needed, 16); // minimum 16 slots
@@ -752,24 +774,27 @@ public unsafe struct RoaringBitmap : IDisposable
     {
         switch (entry.Type)
         {
+            case ContainerType.Array:
+                // Convert sorted → unsorted for O(1) append, then fall through
+                entry.Type = ContainerType.ArrayUnsorted;
+                goto case ContainerType.ArrayUnsorted;
+
             case ContainerType.ArrayUnsorted:
+                if (entry.Cardinality >= ArrayContainerMaxCardinality)
+                {
+                    // At capacity: sort+dedup first to see if we have room after removing duplicates
+                    SortAndDeduplicateArray(ref entry);
+                    if (entry.Cardinality >= ArrayContainerMaxCardinality)
+                    {
+                        // Still full — convert to bitmap
+                        ConvertArrayToBitmap(ref entry);
+                        BitmapContainerAdd(entry.Data, ref entry.Cardinality, value);
+                        break;
+                    }
+                }
                 EnsureArrayCapacity(ref entry, entry.Cardinality + 1);
                 ((ushort*)entry.Data)[entry.Cardinality] = value;
                 entry.Cardinality++;
-                if (entry.Cardinality > ArrayContainerMaxCardinality)
-                {
-                    // Sort+dedup to see if we're still over threshold
-                    SortAndDeduplicateArray(ref entry);
-                    if (entry.Cardinality > ArrayContainerMaxCardinality)
-                        ConvertArrayToBitmap(ref entry);
-                }
-                break;
-
-            case ContainerType.Array:
-                EnsureArrayCapacity(ref entry, entry.Cardinality + 1);
-                ArrayContainerAdd(entry.Data, ref entry.Cardinality, value);
-                if (entry.Cardinality > ArrayContainerMaxCardinality)
-                    ConvertArrayToBitmap(ref entry);
                 break;
 
             case ContainerType.Bitmap:
@@ -814,6 +839,7 @@ public unsafe struct RoaringBitmap : IDisposable
 
     /// <summary>
     /// Sort an ArrayUnsorted container in-place and deduplicate. Converts to Array type.
+    /// Uses VxSort for SIMD-accelerated sorting when available.
     /// </summary>
     private static void SortAndDeduplicateArray(ref ContainerEntry entry)
     {
@@ -822,7 +848,7 @@ public unsafe struct RoaringBitmap : IDisposable
         ushort* arr = (ushort*)entry.Data;
         int count = entry.Cardinality;
 
-        // Sort
+        // VxSort doesn't support ushort, use intrinsic Span.Sort
         new Span<ushort>(arr, count).Sort();
 
         // Deduplicate in-place
@@ -854,27 +880,6 @@ public unsafe struct RoaringBitmap : IDisposable
     #endregion
 
     #region Array Container
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static void ArrayContainerAdd(byte* data, ref int cardinality, ushort value)
-    {
-        ushort* arr = (ushort*)data;
-        int count = cardinality;
-
-        // Binary search for insertion point
-        int idx = ArrayContainerFind(arr, count, value);
-        if (idx >= 0)
-            return; // Already exists
-
-        int insertAt = ~idx;
-
-        // Shift right
-        for (int i = count; i > insertAt; i--)
-            arr[i] = arr[i - 1];
-
-        arr[insertAt] = value;
-        cardinality = count + 1;
-    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static bool ArrayContainerContains(byte* data, int cardinality, ushort value)
@@ -1142,45 +1147,43 @@ public unsafe struct RoaringBitmap : IDisposable
         }
         else
         {
-            // Small enough for array
-            _ctx.Allocate(Math.Max(InitialArrayContainerSizeInBytes, (rangeCount + 1) * sizeof(ushort)), out ByteString storage);
+            // Create unsorted array: copy range values 0..rangeCount-1, then append the new value
+            int newCount = rangeCount + 1;
+            _ctx.Allocate(Math.Max(InitialArrayContainerSizeInBytes, newCount * sizeof(ushort)), out ByteString storage);
             ushort* arr = (ushort*)storage.Ptr;
             for (int i = 0; i < rangeCount; i++)
                 arr[i] = (ushort)i;
+            arr[rangeCount] = value;
 
+            if (entry.Storage.HasValue)
+                _ctx.Release(ref entry.Storage);
             entry.Storage = storage;
             entry.Data = storage.Ptr;
-            entry.Type = ContainerType.Array;
-            // Cardinality stays the same (rangeCount)
-            EnsureArrayCapacity(ref entry, entry.Cardinality + 1);
-            ArrayContainerAdd(entry.Data, ref entry.Cardinality, value);
-            if (entry.Cardinality > ArrayContainerMaxCardinality)
-                ConvertArrayToBitmap(ref entry);
+            entry.Cardinality = newCount;
+            entry.Type = ContainerType.ArrayUnsorted;
         }
     }
 
     /// <summary>
-    /// Convert a Range container to a Bitmap container.
-    /// Sets bits 0..cardinality-1.
+    /// Fill a cleared bitmap buffer with bits 0..rangeCount-1 set.
     /// </summary>
+    internal static void FillBitmapFromRange(ulong* bitmap, int rangeCount)
+    {
+        int fullWords = rangeCount / 64;
+        new Span<ulong>(bitmap, fullWords).Fill(ulong.MaxValue);
+        int remainder = rangeCount & 63;
+        if (remainder > 0)
+            bitmap[fullWords] = (1UL << remainder) - 1;
+    }
+
     private void ConvertRangeToBitmap(ref ContainerEntry entry)
     {
         Debug.Assert(entry.Type == ContainerType.Range);
-        int rangeCount = entry.Cardinality;
 
         _ctx.Allocate(BitmapContainerSizeInBytes, out ByteString storage);
         ulong* bitmap = (ulong*)storage.Ptr;
         new Span<byte>(bitmap, BitmapContainerSizeInBytes).Clear();
-
-        // Set full words
-        int fullWords = rangeCount / 64;
-        for (int i = 0; i < fullWords; i++)
-            bitmap[i] = ulong.MaxValue;
-
-        // Set remaining bits in the last partial word
-        int remainder = rangeCount & 63;
-        if (remainder > 0)
-            bitmap[fullWords] = (1UL << remainder) - 1;
+        FillBitmapFromRange(bitmap, entry.Cardinality);
 
         if (entry.Storage.HasValue)
             _ctx.Release(ref entry.Storage);
@@ -1188,7 +1191,6 @@ public unsafe struct RoaringBitmap : IDisposable
         entry.Storage = storage;
         entry.Data = storage.Ptr;
         entry.Type = ContainerType.Bitmap;
-        // Cardinality stays the same
     }
 
     #endregion
