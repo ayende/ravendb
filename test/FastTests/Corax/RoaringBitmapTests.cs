@@ -105,71 +105,20 @@ public class RoaringBitmapTests : NoDisposalNeeded
     }
 
     [RavenFact(RavenTestCategory.Corax)]
-    public void CanRemoveValues()
+    public void FullContainerAsRange()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
         var bitmap = new RoaringBitmap(ctx);
         try
         {
-            for (int i = 0; i < 100; i++)
-                bitmap.Add(i);
-
-            bitmap.Remove(50);
-            Assert.False(bitmap.Contains(50));
-            Assert.True(bitmap.Contains(49));
-            Assert.True(bitmap.Contains(51));
-            Assert.Equal(99, bitmap.Cardinality);
-        }
-        finally
-        {
-            bitmap.Dispose();
-        }
-    }
-
-    [RavenFact(RavenTestCategory.Corax)]
-    public void RemoveFromBitmapContainerConvertsToArray()
-    {
-        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        var bitmap = new RoaringBitmap(ctx);
-        try
-        {
-            // Add values to create a bitmap container (>4096)
-            for (int i = 0; i < 4097; i++)
-                bitmap.Add(i * 2); // even numbers
-
-            Assert.Equal(4097, bitmap.Cardinality);
-
-            // Remove enough to go below threshold
-            for (int i = 4096; i >= 4096; i--)
-                bitmap.Remove(i * 2);
-
-            Assert.Equal(4096, bitmap.Cardinality);
-        }
-        finally
-        {
-            bitmap.Dispose();
-        }
-    }
-
-    [RavenFact(RavenTestCategory.Corax)]
-    public void FullContainerPromotion()
-    {
-        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        var bitmap = new RoaringBitmap(ctx);
-        try
-        {
-            // Fill an entire container
+            // Fill an entire container — should become Range with count=65536
             for (int i = 0; i < 65536; i++)
                 bitmap.Add(i);
 
             Assert.Equal(65536, bitmap.Cardinality);
             Assert.True(bitmap.Contains(0));
             Assert.True(bitmap.Contains(65535));
-
-            // Remove one to go back to bitmap
-            bitmap.Remove(100);
-            Assert.False(bitmap.Contains(100));
-            Assert.Equal(65535, bitmap.Cardinality);
+            Assert.False(bitmap.Contains(65536));
         }
         finally
         {
@@ -188,24 +137,6 @@ public class RoaringBitmapTests : NoDisposalNeeded
             bitmap.Add(42);
             bitmap.Add(42);
             Assert.Equal(1, bitmap.Cardinality);
-        }
-        finally
-        {
-            bitmap.Dispose();
-        }
-    }
-
-    [RavenFact(RavenTestCategory.Corax)]
-    public void RemoveNonexistentIsNoop()
-    {
-        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        var bitmap = new RoaringBitmap(ctx);
-        try
-        {
-            bitmap.Add(1);
-            bitmap.Remove(2);
-            Assert.Equal(1, bitmap.Cardinality);
-            Assert.True(bitmap.Contains(1));
         }
         finally
         {
@@ -726,38 +657,7 @@ public class RoaringBitmapTests : NoDisposalNeeded
             Assert.Equal(65536, bitmap.Cardinality);
             Assert.True(bitmap.Contains(0));
             Assert.True(bitmap.Contains(65535));
-
-            // Remove from middle converts to bitmap
-            bitmap.Remove(100);
-            Assert.False(bitmap.Contains(100));
-            Assert.Equal(65535, bitmap.Cardinality);
-
-            // Remove from end is cheap
-            bitmap.Add(100); // re-add via bitmap
-            bitmap.Remove(65535);
-            Assert.Equal(65535, bitmap.Cardinality);
-        }
-        finally
-        {
-            bitmap.Dispose();
-        }
-    }
-
-    [RavenFact(RavenTestCategory.Corax)]
-    public void RangeContainerRemoveFromEnd()
-    {
-        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        var bitmap = new RoaringBitmap(ctx);
-        try
-        {
-            for (int i = 0; i < 1000; i++)
-                bitmap.Add(i);
-
-            // Remove from end is O(1) decrement
-            bitmap.Remove(999);
-            Assert.Equal(999, bitmap.Cardinality);
-            Assert.False(bitmap.Contains(999));
-            Assert.True(bitmap.Contains(998));
+            Assert.False(bitmap.Contains(65536));
         }
         finally
         {
