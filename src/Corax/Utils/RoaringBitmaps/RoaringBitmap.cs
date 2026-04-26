@@ -31,29 +31,50 @@ public unsafe struct RoaringBitmap : IDisposable
     public const int ContainerKeyShift = 16;
     public const int ContainerValueMask = 0xFFFF;
 
+    private const int FreeSlotTerminator = -2; // end of free list
+    private const int IndexAbsent = -1;        // key not present in index
+
     private ByteStringContext _ctx;
-    private NativeList<ContainerEntry> _containers;
+    /// <summary>Packed container entries. May have tombstones (gaps reused via free list).</summary>
+    private NativeList<ContainerEntry> _entries;
+    /// <summary>Key → entry slot index. -1 = absent. Length = maxKey + 1.</summary>
+    private NativeList<int> _index;
+    private int _containerCount;
+    /// <summary>Head of free list in _entries. Dead entry's Cardinality field stores next free index; -2 = end.</summary>
+    private int _freeListHead;
 
     public RoaringBitmap(ByteStringContext ctx)
     {
         _ctx = ctx;
-        _containers = new NativeList<ContainerEntry>();
+        _entries = new NativeList<ContainerEntry>();
+        _index = new NativeList<int>();
+        _containerCount = 0;
+        _freeListHead = FreeSlotTerminator;
     }
 
-    public readonly int ContainerCount => _containers.Count;
+    public readonly int ContainerCount => _containerCount;
+
+    /// <summary>Length of the key index — the maximum container key that can be looked up in O(1).</summary>
+    public readonly int IndexLength => _index.Count;
 
     public long Cardinality
     {
         get
         {
             long total = 0;
-            for (int i = 0; i < _containers.Count; i++)
-                total += _containers[i].Cardinality;
+            // Walk the index to find only live entries
+            int* idx = _index.RawItems;
+            for (int k = 0; k < _index.Count; k++)
+            {
+                int slot = idx[k];
+                if (slot >= 0)
+                    total += _entries[slot].Cardinality;
+            }
             return total;
         }
     }
 
-    public readonly bool IsEmpty => _containers.Count == 0;
+    public readonly bool IsEmpty => _containerCount == 0;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Add(long value)
@@ -61,26 +82,92 @@ public unsafe struct RoaringBitmap : IDisposable
         long key = value >> ContainerKeyShift;
         ushort low = (ushort)(value & ContainerValueMask);
 
-        int idx = FindContainer(key);
-        if (idx >= 0)
+        int slot = GetSlotForKey(key);
+        if (slot >= 0)
         {
-            ref ContainerEntry entry = ref _containers[idx];
+            ref ContainerEntry entry = ref _entries[slot];
             AddToContainer(ref entry, low);
         }
         else
         {
-            // Insert new container at the correct sorted position
-            int insertAt = ~idx;
             ContainerEntry newEntry = CreateArrayContainer(key);
             ArrayContainerAdd(newEntry.Data, ref newEntry.Cardinality, low);
-            InsertContainerAt(insertAt, newEntry);
+            AddNewContainer(key, newEntry);
         }
     }
 
-    public void AddRange(long start, long end)
+    public void AddRange(long start, long exclusiveEnd)
     {
-        for (long v = start; v < end; v++)
-            Add(v);
+        if (start >= exclusiveEnd)
+            return;
+
+        long startKey = start >> ContainerKeyShift;
+        long endKey = (exclusiveEnd - 1) >> ContainerKeyShift;
+
+        for (long key = startKey; key <= endKey; key++)
+        {
+            ushort lo = (key == startKey) ? (ushort)(start & ContainerValueMask) : (ushort)0;
+            ushort hi = (key == endKey) ? (ushort)((exclusiveEnd - 1) & ContainerValueMask) : (ushort)(BitsPerContainer - 1);
+
+            if (lo == 0 && hi == BitsPerContainer - 1)
+            {
+                // Entire container is full
+                int slot = GetSlotForKey(key);
+                if (slot >= 0)
+                {
+                    ref ContainerEntry entry = ref _entries[slot];
+                    if (entry.Storage.HasValue)
+                        _ctx.Release(ref entry.Storage);
+                    entry.Data = null;
+                    entry.Storage = default;
+                    entry.Type = ContainerType.Full;
+                    entry.Cardinality = BitsPerContainer;
+                }
+                else
+                {
+                    AddNewContainer(key, new ContainerEntry
+                    {
+                        Key = key,
+                        Type = ContainerType.Full,
+                        Cardinality = BitsPerContainer,
+                        Data = null,
+                        Storage = default
+                    });
+                }
+            }
+            else
+            {
+                // Partial range — ensure a bitmap container and set bits directly
+                int slot = GetSlotForKey(key);
+                if (slot < 0)
+                {
+                    ContainerEntry newEntry = CreateBitmapContainer(key);
+                    slot = AddNewContainer(key, newEntry);
+                }
+
+                ref ContainerEntry e = ref _entries[slot];
+
+                // Convert to bitmap if not already (needed for direct bit setting)
+                if (e.Type == ContainerType.Array)
+                    ConvertArrayToBitmap(ref e);
+                else if (e.Type == ContainerType.Run)
+                    ConvertRunToBitmap(ref e);
+                else if (e.Type == ContainerType.Negated)
+                    ConvertNegatedToBitmap(ref e);
+                else if (e.Type == ContainerType.Full)
+                    continue; // already all set
+
+                ulong* bitmap = (ulong*)e.Data;
+                for (int v = lo; v <= hi; v++)
+                    bitmap[v >> 6] |= 1UL << (v & 63);
+
+                e.Cardinality = BitmapContainerCardinality(e.Data);
+                if (e.Cardinality == BitsPerContainer)
+                    ConvertToFull(ref e);
+                else if (e.Cardinality > NegatedArrayMinCardinality)
+                    ConvertBitmapToNegated(ref e);
+            }
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -89,15 +176,15 @@ public unsafe struct RoaringBitmap : IDisposable
         long key = value >> ContainerKeyShift;
         ushort low = (ushort)(value & ContainerValueMask);
 
-        int idx = FindContainer(key);
-        if (idx < 0)
+        int slot = GetSlotForKey(key);
+        if (slot < 0)
             return;
 
-        ref ContainerEntry entry = ref _containers[idx];
+        ref ContainerEntry entry = ref _entries[slot];
         RemoveFromContainer(ref entry, low);
 
         if (entry.Cardinality == 0)
-            RemoveContainerAt(idx);
+            FreeContainer(key, slot);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -106,11 +193,11 @@ public unsafe struct RoaringBitmap : IDisposable
         long key = value >> ContainerKeyShift;
         ushort low = (ushort)(value & ContainerValueMask);
 
-        int idx = FindContainer(key);
-        if (idx < 0)
+        int slot = GetSlotForKey(key);
+        if (slot < 0)
             return false;
 
-        ref ContainerEntry entry = ref _containers[idx];
+        ref ContainerEntry entry = ref _entries[slot];
         return ContainerContains(ref entry, low);
     }
 
@@ -130,17 +217,17 @@ public unsafe struct RoaringBitmap : IDisposable
 
     public void OptimizeToRun()
     {
-        for (int i = 0; i < _containers.Count; i++)
+        int* idx = _index.RawItems;
+        for (int key = 0; key < _index.Count; key++)
         {
-            ref ContainerEntry entry = ref _containers[i];
+            int slot = idx[key];
+            if (slot < 0) continue;
+
+            ref ContainerEntry entry = ref _entries[slot];
             if (entry.Type == ContainerType.Bitmap)
-            {
                 TryConvertBitmapToRun(ref entry);
-            }
             else if (entry.Type == ContainerType.Array)
-            {
                 TryConvertArrayToRun(ref entry);
-            }
         }
     }
 
@@ -148,160 +235,95 @@ public unsafe struct RoaringBitmap : IDisposable
 
     /// <summary>
     /// In-place AND: retain only values that also exist in other.
-    /// Containers in this bitmap with no match in other are removed.
-    /// Matching containers are intersected in-place, reusing this bitmap's memory.
+    /// Walks both index arrays; containers in this bitmap with no match in other are freed.
     /// </summary>
     public void AndWith(ref RoaringBitmap other)
     {
-        int ai = 0, bi = 0;
+        int* myIdx = _index.RawItems;
+        int myLen = _index.Count;
 
-        while (ai < _containers.Count && bi < other.ContainerCount)
+        for (int key = 0; key < myLen; key++)
         {
-            ref ContainerEntry ac = ref _containers[ai];
-            ref ContainerEntry bc = ref other.GetContainer(bi);
+            int mySlot = myIdx[key];
+            if (mySlot < 0)
+                continue;
 
-            if (ac.Key < bc.Key)
+            int otherSlot = other.GetSlotForKey(key);
+            if (otherSlot < 0)
             {
-                // Left container has no match in right — remove it
-                RemoveContainerAt(ai);
-                // Don't increment ai — the next container shifted into this position
-            }
-            else if (ac.Key > bc.Key)
-            {
-                bi++;
+                // Not in other — remove
+                FreeContainer(key, mySlot);
             }
             else
             {
-                // Same key — intersect in-place
-                AndContainerInPlace(ref ac, ref bc);
-                if (ac.Cardinality == 0)
-                {
-                    RemoveContainerAt(ai);
-                }
-                else
-                {
-                    ai++;
-                }
-                bi++;
+                ref ContainerEntry myEntry = ref _entries[mySlot];
+                ref ContainerEntry otherEntry = ref other.GetEntryBySlot(otherSlot);
+                AndContainerInPlace(ref myEntry, ref otherEntry);
+                if (myEntry.Cardinality == 0)
+                    FreeContainer(key, mySlot);
             }
         }
-
-        // Remove remaining left containers (no match in right)
-        while (ai < _containers.Count)
-            RemoveContainerAt(ai);
     }
 
     /// <summary>
     /// In-place OR: add all values from other into this bitmap.
     /// Matching containers are unioned in-place. Unmatched containers from other are cloned in.
-    /// Builds a new merged container list to avoid O(n²) insertion shifts.
     /// </summary>
     public void OrWith(ref RoaringBitmap other)
     {
         if (other.ContainerCount == 0)
             return;
 
-        var merged = new NativeList<ContainerEntry>();
-        merged.EnsureCapacityFor(_ctx, _containers.Count + other.ContainerCount);
-
-        int ai = 0, bi = 0;
-
-        while (ai < _containers.Count && bi < other.ContainerCount)
+        int otherLen = other.IndexLength;
+        for (int key = 0; key < otherLen; key++)
         {
-            ref ContainerEntry ac = ref _containers[ai];
-            ref ContainerEntry bc = ref other.GetContainer(bi);
+            int otherSlot = other.GetSlotForKey(key);
+            if (otherSlot < 0)
+                continue;
 
-            if (ac.Key < bc.Key)
+            ref ContainerEntry otherEntry = ref other.GetEntryBySlot(otherSlot);
+            int mySlot = GetSlotForKey(key);
+
+            if (mySlot >= 0)
             {
-                merged.AddUnsafe(ac);
-                ai++;
-            }
-            else if (ac.Key > bc.Key)
-            {
-                merged.AddUnsafe(RoaringBitmapSetOps.CloneContainer(_ctx, ref bc));
-                bi++;
+                OrContainerInPlace(ref _entries[mySlot], ref otherEntry);
             }
             else
             {
-                OrContainerInPlace(ref ac, ref bc);
-                merged.AddUnsafe(ac);
-                ai++;
-                bi++;
+                AddNewContainer(key, RoaringBitmapSetOps.CloneContainer(_ctx, ref otherEntry));
             }
         }
-
-        while (ai < _containers.Count)
-        {
-            merged.AddUnsafe(_containers[ai]);
-            ai++;
-        }
-        while (bi < other.ContainerCount)
-        {
-            ref ContainerEntry bc = ref other.GetContainer(bi);
-            merged.AddUnsafe(RoaringBitmapSetOps.CloneContainer(_ctx, ref bc));
-            bi++;
-        }
-
-        // Swap: release old container list (but NOT the container data — it was moved into merged)
-        _containers.Dispose(_ctx);
-        _containers = merged;
     }
 
     /// <summary>
     /// In-place XOR: toggle all values from other in this bitmap.
-    /// Builds a new merged container list to avoid O(n²) insertion shifts.
     /// </summary>
     public void XorWith(ref RoaringBitmap other)
     {
         if (other.ContainerCount == 0)
             return;
 
-        var merged = new NativeList<ContainerEntry>();
-        merged.EnsureCapacityFor(_ctx, _containers.Count + other.ContainerCount);
-
-        int ai = 0, bi = 0;
-
-        while (ai < _containers.Count && bi < other.ContainerCount)
+        int otherLen = other.IndexLength;
+        for (int key = 0; key < otherLen; key++)
         {
-            ref ContainerEntry ac = ref _containers[ai];
-            ref ContainerEntry bc = ref other.GetContainer(bi);
+            int otherSlot = other.GetSlotForKey(key);
+            if (otherSlot < 0)
+                continue;
 
-            if (ac.Key < bc.Key)
+            ref ContainerEntry otherEntry = ref other.GetEntryBySlot(otherSlot);
+            int mySlot = GetSlotForKey(key);
+
+            if (mySlot >= 0)
             {
-                merged.AddUnsafe(ac);
-                ai++;
-            }
-            else if (ac.Key > bc.Key)
-            {
-                merged.AddUnsafe(RoaringBitmapSetOps.CloneContainer(_ctx, ref bc));
-                bi++;
+                XorContainerInPlace(ref _entries[mySlot], ref otherEntry);
+                if (_entries[mySlot].Cardinality == 0)
+                    FreeContainer(key, mySlot);
             }
             else
             {
-                XorContainerInPlace(ref ac, ref bc);
-                if (ac.Cardinality > 0)
-                    merged.AddUnsafe(ac);
-                else if (ac.Storage.HasValue)
-                    _ctx.Release(ref ac.Storage);
-                ai++;
-                bi++;
+                AddNewContainer(key, RoaringBitmapSetOps.CloneContainer(_ctx, ref otherEntry));
             }
         }
-
-        while (ai < _containers.Count)
-        {
-            merged.AddUnsafe(_containers[ai]);
-            ai++;
-        }
-        while (bi < other.ContainerCount)
-        {
-            ref ContainerEntry bc = ref other.GetContainer(bi);
-            merged.AddUnsafe(RoaringBitmapSetOps.CloneContainer(_ctx, ref bc));
-            bi++;
-        }
-
-        _containers.Dispose(_ctx);
-        _containers = merged;
     }
 
     /// <summary>
@@ -309,32 +331,24 @@ public unsafe struct RoaringBitmap : IDisposable
     /// </summary>
     public void AndNotWith(ref RoaringBitmap other)
     {
-        int ai = 0, bi = 0;
+        int myLen = _index.Count;
+        int* myIdx = _index.RawItems;
 
-        while (ai < _containers.Count && bi < other.ContainerCount)
+        for (int key = 0; key < myLen; key++)
         {
-            ref ContainerEntry ac = ref _containers[ai];
-            ref ContainerEntry bc = ref other.GetContainer(bi);
+            int mySlot = myIdx[key];
+            if (mySlot < 0)
+                continue;
 
-            if (ac.Key < bc.Key)
-            {
-                ai++;
-            }
-            else if (ac.Key > bc.Key)
-            {
-                bi++;
-            }
-            else
-            {
-                AndNotContainerInPlace(ref ac, ref bc);
-                if (ac.Cardinality == 0)
-                    RemoveContainerAt(ai);
-                else
-                    ai++;
-                bi++;
-            }
+            int otherSlot = other.GetSlotForKey(key);
+            if (otherSlot < 0)
+                continue; // nothing to subtract
+
+            ref ContainerEntry otherEntry = ref other.GetEntryBySlot(otherSlot);
+            AndNotContainerInPlace(ref _entries[mySlot], ref otherEntry);
+            if (_entries[mySlot].Cardinality == 0)
+                FreeContainer(key, mySlot);
         }
-        // Left-only containers stay as-is (nothing to subtract)
     }
 
     private void AndContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
@@ -734,34 +748,102 @@ public unsafe struct RoaringBitmap : IDisposable
 
     #endregion
 
-    #region Container Search
+    #region Index Operations
 
     /// <summary>
-    /// Binary search for a container by key. Returns index if found, or ~insertionPoint if not found.
+    /// O(1) lookup: returns the entry slot for this key, or -1 if not present.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal readonly int FindContainer(long key)
+    internal readonly int GetSlotForKey(long key)
     {
-        int lo = 0;
-        int hi = _containers.Count - 1;
-
-        while (lo <= hi)
-        {
-            int mid = lo + ((hi - lo) >> 1);
-            long midKey = _containers[mid].Key;
-
-            if (midKey == key)
-                return mid;
-            if (midKey < key)
-                lo = mid + 1;
-            else
-                hi = mid - 1;
-        }
-
-        return ~lo;
+        if (key < 0 || key >= _index.Count)
+            return IndexAbsent;
+        return _index.RawItems[key];
     }
 
-    internal readonly ref ContainerEntry GetContainer(int index) => ref _containers[index];
+    /// <summary>
+    /// Get a direct reference to an entry by its slot index in the entries array.
+    /// </summary>
+    internal readonly ref ContainerEntry GetEntryBySlot(int slot) => ref _entries[slot];
+
+    /// <summary>
+    /// Ensure the index array covers the given key, filling new slots with -1.
+    /// Keeps length aligned to 16 ints (512 bits) for SIMD scanning.
+    /// </summary>
+    private void EnsureIndexCoversKey(long key)
+    {
+        if (key < _index.Count)
+            return;
+
+        int needed = (int)(key + 1);
+        // Align to 16 ints (512 bits / 32 bits per int) for SIMD-friendly scanning
+        needed = (needed + 15) & ~15;
+
+        int oldCount = _index.Count;
+        _index.EnsureCapacityFor(_ctx, needed - oldCount);
+        _index.Count = needed;
+
+        // Fill new slots with -1 (absent)
+        int* ptr = _index.RawItems;
+        new Span<int>(ptr + oldCount, needed - oldCount).Fill(IndexAbsent);
+    }
+
+    /// <summary>
+    /// Add a new container entry and register it in the index. Returns the entry slot.
+    /// </summary>
+    private int AddNewContainer(long key, ContainerEntry entry)
+    {
+        EnsureIndexCoversKey(key);
+
+        int slot;
+        if (_freeListHead != FreeSlotTerminator)
+        {
+            // Reuse a tombstone slot
+            slot = _freeListHead;
+            _freeListHead = _entries[slot].Cardinality; // next pointer stored in Cardinality
+            _entries[slot] = entry;
+        }
+        else
+        {
+            _entries.EnsureCapacityFor(_ctx, 1);
+            slot = _entries.Count;
+            _entries.AddUnsafe(entry);
+        }
+
+        _index.RawItems[key] = slot;
+        _containerCount++;
+        return slot;
+    }
+
+    /// <summary>
+    /// Remove a container: release its storage, mark the index as absent, add slot to free list.
+    /// </summary>
+    private void FreeContainer(long key, int slot)
+    {
+        ref ContainerEntry entry = ref _entries[slot];
+        if (entry.Storage.HasValue)
+            _ctx.Release(ref entry.Storage);
+
+        // Add to free list: store next pointer in Cardinality field of the dead entry
+        entry = default;
+        entry.Cardinality = _freeListHead;
+        _freeListHead = slot;
+
+        _index.RawItems[key] = IndexAbsent;
+        _containerCount--;
+    }
+
+    /// <summary>
+    /// Add a container entry during result-building (set operations). Used when building
+    /// a new bitmap from scratch where keys are added in order.
+    /// </summary>
+    internal void AddContainer(ContainerEntry entry)
+    {
+        if (entry.Cardinality == 0)
+            return;
+
+        AddNewContainer(entry.Key, entry);
+    }
 
     #endregion
 
@@ -834,48 +916,6 @@ public unsafe struct RoaringBitmap : IDisposable
         };
     }
 
-    private void InsertContainerAt(int index, ContainerEntry entry)
-    {
-        _containers.EnsureCapacityFor(_ctx, 1);
-
-        int count = _containers.Count;
-        _containers.Count = count + 1;
-
-        // Shift elements right using memmove
-        ContainerEntry* items = _containers.RawItems;
-        int toMove = count - index;
-        if (toMove > 0)
-            new Span<ContainerEntry>(items + index, toMove).CopyTo(new Span<ContainerEntry>(items + index + 1, toMove));
-
-        items[index] = entry;
-    }
-
-    private void RemoveContainerAt(int index)
-    {
-        ref ContainerEntry entry = ref _containers[index];
-        if (entry.Storage.HasValue)
-            _ctx.Release(ref entry.Storage);
-
-        int count = _containers.Count;
-        ContainerEntry* items = _containers.RawItems;
-        int toMove = count - index - 1;
-        if (toMove > 0)
-            new Span<ContainerEntry>(items + index + 1, toMove).CopyTo(new Span<ContainerEntry>(items + index, toMove));
-
-        _containers.Count = count - 1;
-    }
-
-    /// <summary>
-    /// Add a container entry. Used by set operations to build result bitmaps.
-    /// </summary>
-    internal void AddContainer(ContainerEntry entry)
-    {
-        if (entry.Cardinality == 0)
-            return;
-
-        _containers.EnsureCapacityFor(_ctx, 1);
-        _containers.AddUnsafe(entry);
-    }
 
     #endregion
 
@@ -1744,14 +1784,26 @@ public unsafe struct RoaringBitmap : IDisposable
 
     public void Dispose()
     {
-        for (int i = 0; i < _containers.Count; i++)
+        // Walk the index to find live entries and release their storage
+        if (_index.IsValid)
         {
-            ref ContainerEntry entry = ref _containers[i];
-            if (entry.Storage.HasValue)
-                _ctx.Release(ref entry.Storage);
+            int* idx = _index.RawItems;
+            for (int key = 0; key < _index.Count; key++)
+            {
+                int slot = idx[key];
+                if (slot >= 0)
+                {
+                    ref ContainerEntry entry = ref _entries[slot];
+                    if (entry.Storage.HasValue)
+                        _ctx.Release(ref entry.Storage);
+                }
+            }
+
+            _index.Dispose(_ctx);
         }
 
-        _containers.Dispose(_ctx);
+        if (_entries.IsValid)
+            _entries.Dispose(_ctx);
     }
 }
 

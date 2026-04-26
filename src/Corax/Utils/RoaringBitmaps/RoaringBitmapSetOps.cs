@@ -18,38 +18,33 @@ public static unsafe class RoaringBitmapSetOps
 
     /// <summary>
     /// Compute the intersection of two roaring bitmaps, producing a new bitmap.
+    /// Walks the shorter bitmap's index and checks each key in the longer one (O(1) per key).
     /// </summary>
     public static RoaringBitmap And(ByteStringContext ctx, ref RoaringBitmap a, ref RoaringBitmap b)
     {
         var result = new RoaringBitmap(ctx);
 
-        int ai = 0, bi = 0;
+        // Walk the shorter index for efficiency
+        ref RoaringBitmap shorter = ref (a.IndexLength <= b.IndexLength ? ref a : ref b);
+        ref RoaringBitmap longer = ref (a.IndexLength <= b.IndexLength ? ref b : ref a);
 
-        while (ai < a.ContainerCount && bi < b.ContainerCount)
+        int shortLen = shorter.IndexLength;
+        for (int key = 0; key < shortLen; key++)
         {
-            ref ContainerEntry ac = ref a.GetContainer(ai);
-            ref ContainerEntry bc = ref b.GetContainer(bi);
+            int sSlot = shorter.GetSlotForKey(key);
+            if (sSlot < 0) continue;
 
-            if (ac.Key < bc.Key)
-            {
-                ai++;
-            }
-            else if (ac.Key > bc.Key)
-            {
-                bi++;
-            }
-            else
-            {
-                // Same key - intersect containers
-                ContainerEntry rc = AndContainers(ctx, ref ac, ref bc);
-                if (rc.Cardinality > 0)
-                    result.AddContainer(rc);
-                else if (rc.Storage.HasValue)
-                    ctx.Release(ref rc.Storage);
+            int lSlot = longer.GetSlotForKey(key);
+            if (lSlot < 0) continue;
 
-                ai++;
-                bi++;
-            }
+            ref ContainerEntry sc = ref shorter.GetEntryBySlot(sSlot);
+            ref ContainerEntry lc = ref longer.GetEntryBySlot(lSlot);
+
+            ContainerEntry rc = AndContainers(ctx, ref sc, ref lc);
+            if (rc.Cardinality > 0)
+                result.AddContainer(rc);
+            else if (rc.Storage.HasValue)
+                ctx.Release(ref rc.Storage);
         }
 
         return result;
@@ -161,44 +156,25 @@ public static unsafe class RoaringBitmapSetOps
     public static RoaringBitmap Or(ByteStringContext ctx, ref RoaringBitmap a, ref RoaringBitmap b)
     {
         var result = new RoaringBitmap(ctx);
+        int maxLen = Math.Max(a.IndexLength, b.IndexLength);
 
-        int ai = 0, bi = 0;
-
-        while (ai < a.ContainerCount && bi < b.ContainerCount)
+        for (int key = 0; key < maxLen; key++)
         {
-            ref ContainerEntry ac = ref a.GetContainer(ai);
-            ref ContainerEntry bc = ref b.GetContainer(bi);
+            int aSlot = a.GetSlotForKey(key);
+            int bSlot = b.GetSlotForKey(key);
 
-            if (ac.Key < bc.Key)
+            if (aSlot >= 0 && bSlot >= 0)
             {
-                result.AddContainer(CloneContainer(ctx, ref ac));
-                ai++;
+                result.AddContainer(OrContainers(ctx, ref a.GetEntryBySlot(aSlot), ref b.GetEntryBySlot(bSlot)));
             }
-            else if (ac.Key > bc.Key)
+            else if (aSlot >= 0)
             {
-                result.AddContainer(CloneContainer(ctx, ref bc));
-                bi++;
+                result.AddContainer(CloneContainer(ctx, ref a.GetEntryBySlot(aSlot)));
             }
-            else
+            else if (bSlot >= 0)
             {
-                result.AddContainer(OrContainers(ctx, ref ac, ref bc));
-                ai++;
-                bi++;
+                result.AddContainer(CloneContainer(ctx, ref b.GetEntryBySlot(bSlot)));
             }
-        }
-
-        // Remaining containers from a
-        while (ai < a.ContainerCount)
-        {
-            result.AddContainer(CloneContainer(ctx, ref a.GetContainer(ai)));
-            ai++;
-        }
-
-        // Remaining containers from b
-        while (bi < b.ContainerCount)
-        {
-            result.AddContainer(CloneContainer(ctx, ref b.GetContainer(bi)));
-            bi++;
         }
 
         return result;
@@ -359,47 +335,29 @@ public static unsafe class RoaringBitmapSetOps
     public static RoaringBitmap Xor(ByteStringContext ctx, ref RoaringBitmap a, ref RoaringBitmap b)
     {
         var result = new RoaringBitmap(ctx);
+        int maxLen = Math.Max(a.IndexLength, b.IndexLength);
 
-        int ai = 0, bi = 0;
-
-        while (ai < a.ContainerCount && bi < b.ContainerCount)
+        for (int key = 0; key < maxLen; key++)
         {
-            ref ContainerEntry ac = ref a.GetContainer(ai);
-            ref ContainerEntry bc = ref b.GetContainer(bi);
+            int aSlot = a.GetSlotForKey(key);
+            int bSlot = b.GetSlotForKey(key);
 
-            if (ac.Key < bc.Key)
+            if (aSlot >= 0 && bSlot >= 0)
             {
-                result.AddContainer(CloneContainer(ctx, ref ac));
-                ai++;
-            }
-            else if (ac.Key > bc.Key)
-            {
-                result.AddContainer(CloneContainer(ctx, ref bc));
-                bi++;
-            }
-            else
-            {
-                ContainerEntry rc = XorContainers(ctx, ref ac, ref bc);
+                ContainerEntry rc = XorContainers(ctx, ref a.GetEntryBySlot(aSlot), ref b.GetEntryBySlot(bSlot));
                 if (rc.Cardinality > 0)
                     result.AddContainer(rc);
                 else if (rc.Storage.HasValue)
                     ctx.Release(ref rc.Storage);
-
-                ai++;
-                bi++;
             }
-        }
-
-        while (ai < a.ContainerCount)
-        {
-            result.AddContainer(CloneContainer(ctx, ref a.GetContainer(ai)));
-            ai++;
-        }
-
-        while (bi < b.ContainerCount)
-        {
-            result.AddContainer(CloneContainer(ctx, ref b.GetContainer(bi)));
-            bi++;
+            else if (aSlot >= 0)
+            {
+                result.AddContainer(CloneContainer(ctx, ref a.GetEntryBySlot(aSlot)));
+            }
+            else if (bSlot >= 0)
+            {
+                result.AddContainer(CloneContainer(ctx, ref b.GetEntryBySlot(bSlot)));
+            }
         }
 
         return result;
@@ -556,41 +514,26 @@ public static unsafe class RoaringBitmapSetOps
     public static RoaringBitmap AndNot(ByteStringContext ctx, ref RoaringBitmap a, ref RoaringBitmap b)
     {
         var result = new RoaringBitmap(ctx);
+        int aLen = a.IndexLength;
 
-        int ai = 0, bi = 0;
-
-        while (ai < a.ContainerCount && bi < b.ContainerCount)
+        for (int key = 0; key < aLen; key++)
         {
-            ref ContainerEntry ac = ref a.GetContainer(ai);
-            ref ContainerEntry bc = ref b.GetContainer(bi);
+            int aSlot = a.GetSlotForKey(key);
+            if (aSlot < 0) continue;
 
-            if (ac.Key < bc.Key)
+            int bSlot = b.GetSlotForKey(key);
+            if (bSlot < 0)
             {
-                result.AddContainer(CloneContainer(ctx, ref ac));
-                ai++;
-            }
-            else if (ac.Key > bc.Key)
-            {
-                ai++;
+                result.AddContainer(CloneContainer(ctx, ref a.GetEntryBySlot(aSlot)));
             }
             else
             {
-                ContainerEntry rc = AndNotContainers(ctx, ref ac, ref bc);
+                ContainerEntry rc = AndNotContainers(ctx, ref a.GetEntryBySlot(aSlot), ref b.GetEntryBySlot(bSlot));
                 if (rc.Cardinality > 0)
                     result.AddContainer(rc);
                 else if (rc.Storage.HasValue)
                     ctx.Release(ref rc.Storage);
-
-                ai++;
-                bi++;
             }
-        }
-
-        // Remaining containers from a (nothing to subtract)
-        while (ai < a.ContainerCount)
-        {
-            result.AddContainer(CloneContainer(ctx, ref a.GetContainer(ai)));
-            ai++;
         }
 
         return result;
