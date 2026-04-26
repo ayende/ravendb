@@ -50,11 +50,20 @@ public unsafe struct RoaringBitmapIterator
     public int Fill(ref RoaringBitmap bitmap, Span<long> buffer)
     {
         int written = 0;
+        int indexLength = bitmap.IndexLength;
 
-        while (written < buffer.Length && _containerIndex < bitmap.ContainerCount)
+        while (written < buffer.Length && _containerIndex < indexLength)
         {
-            ref ContainerEntry entry = ref bitmap.GetContainer(_containerIndex);
-            long baseValue = entry.Key << RoaringBitmap.ContainerKeyShift;
+            // Skip absent keys in the index
+            int slot = bitmap.GetSlotForKey(_containerIndex);
+            if (slot < 0)
+            {
+                _containerIndex++;
+                continue;
+            }
+
+            ref ContainerEntry entry = ref bitmap.GetEntryBySlot(slot);
+            long baseValue = (long)_containerIndex << RoaringBitmap.ContainerKeyShift;
 
             switch (entry.Type)
             {
@@ -81,15 +90,12 @@ public unsafe struct RoaringBitmapIterator
 
             bool containerCompleted = entry.Type switch
             {
-                // For Full and Negated, _positionInContainer tracks the current value (0..65535)
                 ContainerType.Full or ContainerType.Negated => _positionInContainer >= RoaringBitmap.BitsPerContainer,
-                // For Array/Bitmap/Run, it tracks emitted count
                 _ => _positionInContainer >= entry.Cardinality
             };
 
             if (containerCompleted)
             {
-                // Move to next container
                 _containerIndex++;
                 _positionInContainer = 0;
                 _wordIndex = 0;
