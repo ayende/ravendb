@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 using Sparrow;
 using Sparrow.Server;
 using Voron.Util;
@@ -1136,9 +1137,83 @@ public unsafe struct RoaringBitmap : IDisposable
 
     /// <summary>
     /// Compute the intersection of two array containers, writing the result to dst.
-    /// Returns the number of elements in the result.
+    /// Uses SIMD galloping when Vector256 is available: broadcasts the smaller side's
+    /// current value and checks 16 elements of the larger side in one comparison.
     /// </summary>
     internal static int ArrayContainerAnd(ushort* a, int aLen, ushort* b, int bLen, ushort* dst)
+    {
+        if (AdvInstructionSet.IsAcceleratedVector256)
+            return ArrayContainerAndVectorized(a, aLen, b, bLen, dst);
+        return ArrayContainerAndScalar(a, aLen, b, bLen, dst);
+    }
+
+    private static int ArrayContainerAndVectorized(ushort* a, int aLen, ushort* b, int bLen, ushort* dst)
+    {
+        // Ensure smaller is the one we iterate element-by-element
+        ushort* smaller, larger;
+        int smallerLen, largerLen;
+        if (aLen <= bLen)
+        {
+            smaller = a; smallerLen = aLen;
+            larger = b; largerLen = bLen;
+        }
+        else
+        {
+            smaller = b; smallerLen = bLen;
+            larger = a; largerLen = aLen;
+        }
+
+        uint N = (uint)Vector256<ushort>.Count; // 16
+        int si = 0, li = 0, di = 0;
+
+        while (si < smallerLen && li + (int)N <= largerLen)
+        {
+            ushort val = smaller[si];
+
+            // Skip blocks in larger that are entirely below val
+            if (val > larger[li + N - 1])
+            {
+                li += (int)N;
+                continue;
+            }
+
+            // Skip smaller values below the current block
+            if (val < larger[li])
+            {
+                si++;
+                continue;
+            }
+
+            // Check if val exists in this block of 16
+            Vector256<ushort> vVal = Vector256.Create(val);
+            Vector256<ushort> vBlock = Vector256.Load(larger + li);
+            if (Vector256.EqualsAny(vVal, vBlock))
+            {
+                dst[di++] = val;
+            }
+
+            si++;
+        }
+
+        // Scalar tail
+        while (si < smallerLen && li < largerLen)
+        {
+            if (smaller[si] < larger[li])
+                si++;
+            else if (smaller[si] > larger[li])
+                li++;
+            else
+            {
+                dst[di++] = smaller[si];
+                si++;
+                li++;
+            }
+        }
+
+        return di;
+    }
+
+    private static int ArrayContainerAndScalar(ushort* a, int aLen, ushort* b, int bLen, ushort* dst)
     {
         int ai = 0, bi = 0, di = 0;
 
@@ -1220,9 +1295,71 @@ public unsafe struct RoaringBitmap : IDisposable
 
     /// <summary>
     /// Compute A AND NOT B for two array containers.
-    /// Returns the number of elements in the result.
+    /// Uses SIMD galloping to skip blocks in B that don't affect A.
     /// </summary>
     internal static int ArrayContainerAndNot(ushort* a, int aLen, ushort* b, int bLen, ushort* dst)
+    {
+        if (AdvInstructionSet.IsAcceleratedVector256)
+            return ArrayContainerAndNotVectorized(a, aLen, b, bLen, dst);
+        return ArrayContainerAndNotScalar(a, aLen, b, bLen, dst);
+    }
+
+    private static int ArrayContainerAndNotVectorized(ushort* a, int aLen, ushort* b, int bLen, ushort* dst)
+    {
+        uint N = (uint)Vector256<ushort>.Count; // 16
+        int ai = 0, bi = 0, di = 0;
+
+        while (ai < aLen && bi + (int)N <= bLen)
+        {
+            ushort val = a[ai];
+
+            // If val is past the current block of B, advance B
+            if (val > b[bi + N - 1])
+            {
+                bi += (int)N;
+                continue;
+            }
+
+            // If val is before the current block of B, it's not in B — keep it
+            if (val < b[bi])
+            {
+                dst[di++] = val;
+                ai++;
+                continue;
+            }
+
+            // Check if val exists in this block of B
+            Vector256<ushort> vVal = Vector256.Create(val);
+            Vector256<ushort> vBlock = Vector256.Load(b + bi);
+            if (!Vector256.EqualsAny(vVal, vBlock))
+            {
+                dst[di++] = val; // Not found in B — keep it
+            }
+
+            ai++;
+        }
+
+        // Scalar tail
+        while (ai < aLen && bi < bLen)
+        {
+            if (a[ai] < b[bi])
+                dst[di++] = a[ai++];
+            else if (a[ai] > b[bi])
+                bi++;
+            else
+            {
+                ai++;
+                bi++;
+            }
+        }
+
+        while (ai < aLen)
+            dst[di++] = a[ai++];
+
+        return di;
+    }
+
+    private static int ArrayContainerAndNotScalar(ushort* a, int aLen, ushort* b, int bLen, ushort* dst)
     {
         int ai = 0, bi = 0, di = 0;
 
