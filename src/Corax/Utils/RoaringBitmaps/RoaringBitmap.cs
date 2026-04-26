@@ -674,8 +674,13 @@ public unsafe struct RoaringBitmap : IDisposable
         if (key < _index.Count)
             return;
 
+        if (key >= int.MaxValue - 16)
+            throw new ArgumentOutOfRangeException(nameof(key), $"Container key {key} exceeds maximum supported index size.");
+
         int needed = (int)(key + 1);
-        // Align to 16 ints (512 bits / 32 bits per int) for SIMD-friendly scanning
+        // Grow geometrically (at least double), then align to 16 ints for SIMD scanning
+        needed = Math.Max(needed, Math.Min(_index.Count * 2, int.MaxValue - 16));
+        needed = Math.Max(needed, 16); // minimum 16 slots
         needed = (needed + 15) & ~15;
 
         int oldCount = _index.Count;
