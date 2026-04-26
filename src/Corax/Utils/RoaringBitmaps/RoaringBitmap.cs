@@ -98,7 +98,6 @@ public unsafe struct RoaringBitmap : IDisposable
             {
                 AddNewContainer(key, new ContainerEntry
                 {
-                    Key = key,
                     Type = ContainerType.Range,
                     Cardinality = 1,
                     Data = null,
@@ -148,7 +147,6 @@ public unsafe struct RoaringBitmap : IDisposable
                 {
                     AddNewContainer(key, new ContainerEntry
                     {
-                        Key = key,
                         Type = ContainerType.Range,
                         Cardinality = BitsPerContainer,
                         Data = null,
@@ -182,7 +180,6 @@ public unsafe struct RoaringBitmap : IDisposable
                 {
                     AddNewContainer(key, new ContainerEntry
                     {
-                        Key = key,
                         Type = ContainerType.Range,
                         Cardinality = rangeLen,
                         Data = null,
@@ -244,63 +241,6 @@ public unsafe struct RoaringBitmap : IDisposable
     public RoaringBitmapIterator GetIterator()
     {
         return new RoaringBitmapIterator();
-    }
-
-    /// <summary>
-    /// Optimize containers: convert Bitmap containers to Range if all set bits are
-    /// contiguous from 0, or to Array if sparse enough.
-    /// </summary>
-    public void Optimize()
-    {
-        int* idx = _index.RawItems;
-        for (int key = 0; key < _index.Count; key++)
-        {
-            int slot = idx[key];
-            if (slot < 0) continue;
-
-            ref ContainerEntry entry = ref _entries[slot];
-            if (entry.Type == ContainerType.Bitmap)
-            {
-                if (TryConvertBitmapToRange(ref entry))
-                    continue;
-                if (entry.Cardinality <= ArrayContainerMaxCardinality)
-                    ConvertBitmapToArray(ref entry);
-            }
-        }
-    }
-
-    private bool TryConvertBitmapToRange(ref ContainerEntry entry)
-    {
-        ulong* bitmap = (ulong*)entry.Data;
-        int cardinality = entry.Cardinality;
-
-        // Check if bits 0..cardinality-1 are all set and everything after is clear
-        int fullWords = cardinality / 64;
-        for (int i = 0; i < fullWords; i++)
-        {
-            if (bitmap[i] != ulong.MaxValue)
-                return false;
-        }
-
-        int remainder = cardinality & 63;
-        if (remainder > 0 && bitmap[fullWords] != (1UL << remainder) - 1)
-            return false;
-
-        // Verify remaining words are zero
-        for (int i = fullWords + (remainder > 0 ? 1 : 0); i < BitmapContainerSizeInUlongs; i++)
-        {
-            if (bitmap[i] != 0)
-                return false;
-        }
-
-        // Convert to Range
-        if (entry.Storage.HasValue)
-            _ctx.Release(ref entry.Storage);
-
-        entry.Data = null;
-        entry.Storage = default;
-        entry.Type = ContainerType.Range;
-        return true;
     }
 
     #region In-place Set Operations
@@ -625,7 +565,6 @@ public unsafe struct RoaringBitmap : IDisposable
 
         return new ContainerEntry
         {
-            Key = entry.Key,
             Data = storage.Ptr,
             Cardinality = entry.Cardinality,
             Storage = storage,
@@ -704,7 +643,8 @@ public unsafe struct RoaringBitmap : IDisposable
         {
             // Reuse a tombstone slot
             slot = _freeListHead;
-            _freeListHead = _entries[slot].Cardinality; // next pointer stored in Cardinality
+            Debug.Assert(_entries[slot].Type == (ContainerType)0xFF, "Expected free entry");
+            _freeListHead = _entries[slot].NextFreeSlot;
             _entries[slot] = entry;
         }
         else
@@ -728,9 +668,10 @@ public unsafe struct RoaringBitmap : IDisposable
         if (entry.Storage.HasValue)
             _ctx.Release(ref entry.Storage);
 
-        // Add to free list: store next pointer in Cardinality field of the dead entry
+        // Mark as free and chain into free list
         entry = default;
-        entry.Cardinality = _freeListHead;
+        entry.Type = (ContainerType)0xFF; // free marker
+        entry.NextFreeSlot = _freeListHead;
         _freeListHead = slot;
 
         _index.RawItems[key] = IndexAbsent;
@@ -741,12 +682,12 @@ public unsafe struct RoaringBitmap : IDisposable
     /// Add a container entry during result-building (set operations). Used when building
     /// a new bitmap from scratch where keys are added in order.
     /// </summary>
-    internal void AddContainer(ContainerEntry entry)
+    internal void AddContainer(long key, ContainerEntry entry)
     {
         if (entry.Cardinality == 0)
             return;
 
-        AddNewContainer(entry.Key, entry);
+        AddNewContainer(key, entry);
     }
 
     #endregion
@@ -762,7 +703,6 @@ public unsafe struct RoaringBitmap : IDisposable
 
         return new ContainerEntry
         {
-            Key = key,
             Type = ContainerType.Array,
             Cardinality = 0,
             Data = storage.Ptr,
@@ -800,7 +740,6 @@ public unsafe struct RoaringBitmap : IDisposable
 
         return new ContainerEntry
         {
-            Key = key,
             Type = ContainerType.Bitmap,
             Cardinality = 0,
             Data = storage.Ptr,
@@ -1388,7 +1327,6 @@ public unsafe struct RoaringBitmap : IDisposable
 
         return new ContainerEntry
         {
-            Key = key,
             Type = ContainerType.Array,
             Cardinality = 0,
             Data = storage.Ptr,
@@ -1449,17 +1387,28 @@ public enum ContainerType : byte
     ArrayUnsorted = 3
 }
 
-[StructLayout(LayoutKind.Sequential)]
+[StructLayout(LayoutKind.Explicit)]
 public unsafe struct ContainerEntry
 {
-    public long Key;            // high 48 bits of value (value >> 16)
     /// <summary>
-    /// Direct pointer to container data for hot-path access without indirection through ByteString.
-    /// Null for Full containers (which have no data). Kept separate from Storage because Full containers
-    /// have Storage=default (no allocation to release), so we can't rely on Storage.Ptr universally.
+    /// Direct pointer to container data. Avoids ByteString.Ptr double-dereference.
+    /// Null for Range containers (no data allocation needed).
     /// </summary>
-    public byte* Data;
-    public int Cardinality;     // number of set bits in this container
-    public ContainerType Type;
-    internal ByteString Storage; // memory handle for disposal
+    [FieldOffset(0)] public byte* Data;
+
+    /// <summary>Memory handle for disposal. Default for Range containers.</summary>
+    [FieldOffset(8)] internal ByteString Storage;
+
+    /// <summary>Number of set bits (0..65536). Also used as free list next pointer when Type == 0xFF.</summary>
+    [FieldOffset(16)] public int Cardinality;
+
+    [FieldOffset(20)] public ContainerType Type;
+
+    // --- Free list union: when Type == 0xFF (Free), NextFreeSlot overlaps Cardinality ---
+    [FieldOffset(16)] internal int NextFreeSlot;
+
+#if DEBUG
+    internal bool IsFree => Type == (ContainerType)0xFF;
+#endif
 }
+// Size: 24 bytes (8 Data + 8 Storage + 4 Cardinality + 1 Type + 3 padding)

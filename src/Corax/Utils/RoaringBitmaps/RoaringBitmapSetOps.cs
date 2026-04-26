@@ -42,7 +42,7 @@ public static unsafe class RoaringBitmapSetOps
 
             ContainerEntry rc = AndContainers(ctx, ref sc, ref lc);
             if (rc.Cardinality > 0)
-                result.AddContainer(rc);
+                result.AddContainer(key, rc);
             else if (rc.Storage.HasValue)
                 ctx.Release(ref rc.Storage);
         }
@@ -81,7 +81,6 @@ public static unsafe class RoaringBitmapSetOps
 
         var result = new ContainerEntry
         {
-            Key = a.Key,
             Data = storage.Ptr,
             Cardinality = cardinality,
             Storage = storage,
@@ -104,7 +103,6 @@ public static unsafe class RoaringBitmapSetOps
 
         return new ContainerEntry
         {
-            Key = a.Key,
             Data = storage.Ptr,
             Cardinality = count,
             Storage = storage,
@@ -130,7 +128,6 @@ public static unsafe class RoaringBitmapSetOps
 
         return new ContainerEntry
         {
-            Key = array.Key,
             Data = storage.Ptr,
             Cardinality = count,
             Storage = storage,
@@ -157,15 +154,15 @@ public static unsafe class RoaringBitmapSetOps
 
             if (aSlot >= 0 && bSlot >= 0)
             {
-                result.AddContainer(OrContainers(ctx, ref a.GetEntryBySlot(aSlot), ref b.GetEntryBySlot(bSlot)));
+                result.AddContainer(key, OrContainers(ctx, ref a.GetEntryBySlot(aSlot), ref b.GetEntryBySlot(bSlot)));
             }
             else if (aSlot >= 0)
             {
-                result.AddContainer(CloneContainer(ctx, ref a.GetEntryBySlot(aSlot)));
+                result.AddContainer(key, CloneContainer(ctx, ref a.GetEntryBySlot(aSlot)));
             }
             else if (bSlot >= 0)
             {
-                result.AddContainer(CloneContainer(ctx, ref b.GetEntryBySlot(bSlot)));
+                result.AddContainer(key, CloneContainer(ctx, ref b.GetEntryBySlot(bSlot)));
             }
         }
 
@@ -203,7 +200,6 @@ public static unsafe class RoaringBitmapSetOps
 
         var result = new ContainerEntry
         {
-            Key = a.Key,
             Data = storage.Ptr,
             Cardinality = cardinality,
             Storage = storage,
@@ -244,7 +240,6 @@ public static unsafe class RoaringBitmapSetOps
 
             var result = new ContainerEntry
             {
-                Key = a.Key,
                 Data = bmpStorage.Ptr,
                 Cardinality = cardinality,
                 Storage = bmpStorage,
@@ -264,7 +259,6 @@ public static unsafe class RoaringBitmapSetOps
 
         return new ContainerEntry
         {
-            Key = a.Key,
             Data = storage.Ptr,
             Cardinality = count,
             Storage = storage,
@@ -291,7 +285,6 @@ public static unsafe class RoaringBitmapSetOps
 
         var result = new ContainerEntry
         {
-            Key = array.Key,
             Data = storage.Ptr,
             Cardinality = cardinality,
             Storage = storage,
@@ -326,13 +319,13 @@ public static unsafe class RoaringBitmapSetOps
             int bSlot = b.GetSlotForKey(key);
             if (bSlot < 0)
             {
-                result.AddContainer(CloneContainer(ctx, ref a.GetEntryBySlot(aSlot)));
+                result.AddContainer(key, CloneContainer(ctx, ref a.GetEntryBySlot(aSlot)));
             }
             else
             {
                 ContainerEntry rc = AndNotContainers(ctx, ref a.GetEntryBySlot(aSlot), ref b.GetEntryBySlot(bSlot));
                 if (rc.Cardinality > 0)
-                    result.AddContainer(rc);
+                    result.AddContainer(key, rc);
                 else if (rc.Storage.HasValue)
                     ctx.Release(ref rc.Storage);
             }
@@ -372,7 +365,6 @@ public static unsafe class RoaringBitmapSetOps
 
         var result = new ContainerEntry
         {
-            Key = a.Key,
             Data = storage.Ptr,
             Cardinality = cardinality,
             Storage = storage,
@@ -394,7 +386,6 @@ public static unsafe class RoaringBitmapSetOps
 
         return new ContainerEntry
         {
-            Key = a.Key,
             Data = storage.Ptr,
             Cardinality = count,
             Storage = storage,
@@ -419,7 +410,6 @@ public static unsafe class RoaringBitmapSetOps
 
         return new ContainerEntry
         {
-            Key = array.Key,
             Data = storage.Ptr,
             Cardinality = count,
             Storage = storage,
@@ -446,7 +436,6 @@ public static unsafe class RoaringBitmapSetOps
 
         var result = new ContainerEntry
         {
-            Key = bitmap.Key,
             Data = storage.Ptr,
             Cardinality = cardinality,
             Storage = storage,
@@ -638,7 +627,6 @@ public static unsafe class RoaringBitmapSetOps
 
         var tempEntry = new ContainerEntry
         {
-            Key = rangeEntry.Key,
             Data = tempStorage.Ptr,
             Cardinality = rangeEntry.Cardinality,
             Storage = tempStorage,
@@ -656,7 +644,6 @@ public static unsafe class RoaringBitmapSetOps
         {
             return new ContainerEntry
             {
-                Key = entry.Key,
                 Type = ContainerType.Range,
                 Cardinality = entry.Cardinality,
                 Data = null,
@@ -679,7 +666,6 @@ public static unsafe class RoaringBitmapSetOps
 
         return new ContainerEntry
         {
-            Key = entry.Key,
             Type = entry.Type,
             Cardinality = entry.Cardinality,
             Data = storage.Ptr,
