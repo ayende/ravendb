@@ -52,21 +52,11 @@ public static unsafe class RoaringBitmapSetOps
 
     private static ContainerEntry AndContainers(ByteStringContext ctx, ref ContainerEntry a, ref ContainerEntry b)
     {
-        // Full AND X = X (clone)
-        if (a.Type == ContainerType.Full)
-            return CloneContainer(ctx, ref b);
-        if (b.Type == ContainerType.Full)
-            return CloneContainer(ctx, ref a);
-
-        // Materialize Run/Negated to Bitmap, then re-dispatch
-        if (a.Type == ContainerType.Run)
-            return MaterializeAndRedispatch(ctx, ref a, ref b, AndContainers);
-        if (b.Type == ContainerType.Run)
-            return MaterializeAndRedispatch(ctx, ref b, ref a, (c, ref x, ref y) => AndContainers(c, ref y, ref x));
-        if (a.Type == ContainerType.Negated)
-            return MaterializeNegatedAndRedispatch(ctx, ref a, ref b, AndContainers);
-        if (b.Type == ContainerType.Negated)
-            return MaterializeNegatedAndRedispatch(ctx, ref b, ref a, (c, ref x, ref y) => AndContainers(c, ref y, ref x));
+        // Materialize Range to Bitmap, then re-dispatch
+        if (a.Type == ContainerType.Range)
+            return MaterializeRangeAndRedispatch(ctx, ref a, ref b, AndContainers);
+        if (b.Type == ContainerType.Range)
+            return MaterializeRangeAndRedispatch(ctx, ref b, ref a, (c, ref x, ref y) => AndContainers(c, ref y, ref x));
 
         return (a.Type, b.Type) switch
         {
@@ -182,28 +172,10 @@ public static unsafe class RoaringBitmapSetOps
 
     private static ContainerEntry OrContainers(ByteStringContext ctx, ref ContainerEntry a, ref ContainerEntry b)
     {
-        // Full OR X = Full
-        if (a.Type == ContainerType.Full || b.Type == ContainerType.Full)
-        {
-            return new ContainerEntry
-            {
-                Key = a.Key,
-                Type = ContainerType.Full,
-                Cardinality = RoaringBitmap.BitsPerContainer,
-                Data = null,
-                Storage = default
-            };
-        }
-
-        // Materialize Run/Negated to Bitmap, then re-dispatch
-        if (a.Type == ContainerType.Run)
-            return MaterializeAndRedispatch(ctx, ref a, ref b, OrContainers);
-        if (b.Type == ContainerType.Run)
-            return MaterializeAndRedispatch(ctx, ref b, ref a, (c, ref x, ref y) => OrContainers(c, ref y, ref x));
-        if (a.Type == ContainerType.Negated)
-            return MaterializeNegatedAndRedispatch(ctx, ref a, ref b, OrContainers);
-        if (b.Type == ContainerType.Negated)
-            return MaterializeNegatedAndRedispatch(ctx, ref b, ref a, (c, ref x, ref y) => OrContainers(c, ref y, ref x));
+        if (a.Type == ContainerType.Range)
+            return MaterializeRangeAndRedispatch(ctx, ref a, ref b, OrContainers);
+        if (b.Type == ContainerType.Range)
+            return MaterializeRangeAndRedispatch(ctx, ref b, ref a, (c, ref x, ref y) => OrContainers(c, ref y, ref x));
 
         return (a.Type, b.Type) switch
         {
@@ -365,25 +337,10 @@ public static unsafe class RoaringBitmapSetOps
 
     private static ContainerEntry XorContainers(ByteStringContext ctx, ref ContainerEntry a, ref ContainerEntry b)
     {
-        // Full XOR Full = Empty
-        if (a.Type == ContainerType.Full && b.Type == ContainerType.Full)
-            return default;
-
-        // Full XOR X = NOT X (complement within container)
-        if (a.Type == ContainerType.Full)
-            return NotContainer(ctx, ref b);
-        if (b.Type == ContainerType.Full)
-            return NotContainer(ctx, ref a);
-
-        // Materialize Run/Negated to Bitmap, then re-dispatch
-        if (a.Type == ContainerType.Run)
-            return MaterializeAndRedispatch(ctx, ref a, ref b, XorContainers);
-        if (b.Type == ContainerType.Run)
-            return MaterializeAndRedispatch(ctx, ref b, ref a, (c, ref x, ref y) => XorContainers(c, ref y, ref x));
-        if (a.Type == ContainerType.Negated)
-            return MaterializeNegatedAndRedispatch(ctx, ref a, ref b, XorContainers);
-        if (b.Type == ContainerType.Negated)
-            return MaterializeNegatedAndRedispatch(ctx, ref b, ref a, (c, ref x, ref y) => XorContainers(c, ref y, ref x));
+        if (a.Type == ContainerType.Range)
+            return MaterializeRangeAndRedispatch(ctx, ref a, ref b, XorContainers);
+        if (b.Type == ContainerType.Range)
+            return MaterializeRangeAndRedispatch(ctx, ref b, ref a, (c, ref x, ref y) => XorContainers(c, ref y, ref x));
 
         return (a.Type, b.Type) switch
         {
@@ -541,29 +498,10 @@ public static unsafe class RoaringBitmapSetOps
 
     private static ContainerEntry AndNotContainers(ByteStringContext ctx, ref ContainerEntry a, ref ContainerEntry b)
     {
-        // X ANDNOT Full = Empty
-        if (b.Type == ContainerType.Full)
-            return default;
-
-        // Full ANDNOT X = NOT X
-        if (a.Type == ContainerType.Full)
-            return NotContainer(ctx, ref b);
-
-        // Materialize Run/Negated to Bitmap, then re-dispatch
-        // For ANDNOT, the order matters: we materialize whichever side needs it
-        if (a.Type == ContainerType.Run)
-            return MaterializeAndRedispatch(ctx, ref a, ref b, AndNotContainers);
-        if (a.Type == ContainerType.Negated)
-            return MaterializeNegatedAndRedispatch(ctx, ref a, ref b, AndNotContainers);
-        if (b.Type == ContainerType.Run)
-        {
-            // Materialize b, keeping a in first position
-            return MaterializeAndRedispatch(ctx, ref b, ref a, (c, ref matB, ref origA) => AndNotContainers(c, ref origA, ref matB));
-        }
-        if (b.Type == ContainerType.Negated)
-        {
-            return MaterializeNegatedAndRedispatch(ctx, ref b, ref a, (c, ref matB, ref origA) => AndNotContainers(c, ref origA, ref matB));
-        }
+        if (a.Type == ContainerType.Range)
+            return MaterializeRangeAndRedispatch(ctx, ref a, ref b, AndNotContainers);
+        if (b.Type == ContainerType.Range)
+            return MaterializeRangeAndRedispatch(ctx, ref b, ref a, (c, ref matB, ref origA) => AndNotContainers(c, ref origA, ref matB));
 
         return (a.Type, b.Type) switch
         {
@@ -669,105 +607,6 @@ public static unsafe class RoaringBitmapSetOps
 
         OptimizeBitmapResult(ctx, ref result);
         return result;
-    }
-
-    #endregion
-
-    #region NOT (Complement within container)
-
-    private static ContainerEntry NotContainer(ByteStringContext ctx, ref ContainerEntry entry)
-    {
-        switch (entry.Type)
-        {
-            case ContainerType.Full:
-                return default; // NOT Full = Empty
-
-            case ContainerType.Array:
-            {
-                // NOT(Array) = Negated with the same data (the set values become the absent values)
-                int newCardinality = RoaringBitmap.BitsPerContainer - entry.Cardinality;
-                int dataSize = Math.Max(64, entry.Cardinality * sizeof(ushort));
-                ctx.Allocate(dataSize, out ByteString storage);
-                Unsafe.CopyBlockUnaligned(storage.Ptr, entry.Data, (uint)(entry.Cardinality * sizeof(ushort)));
-
-                return new ContainerEntry
-                {
-                    Key = entry.Key,
-                    Data = storage.Ptr,
-                    Cardinality = newCardinality,
-                    Storage = storage,
-                    Type = ContainerType.Negated
-                };
-            }
-
-            case ContainerType.Negated:
-            {
-                // NOT(Negated) = Array with the same data (the absent values become the set values)
-                int absentCount = RoaringBitmap.BitsPerContainer - entry.Cardinality;
-                int dataSize = Math.Max(64, absentCount * sizeof(ushort));
-                ctx.Allocate(dataSize, out ByteString storage);
-                Unsafe.CopyBlockUnaligned(storage.Ptr, entry.Data, (uint)(absentCount * sizeof(ushort)));
-
-                return new ContainerEntry
-                {
-                    Key = entry.Key,
-                    Data = storage.Ptr,
-                    Cardinality = absentCount,
-                    Storage = storage,
-                    Type = ContainerType.Array
-                };
-            }
-
-            case ContainerType.Bitmap:
-            {
-                ctx.Allocate(RoaringBitmap.BitmapContainerSizeInBytes, out ByteString storage);
-                ulong* src = (ulong*)entry.Data;
-                ulong* dst = (ulong*)storage.Ptr;
-
-                int cardinality = BitmapNotSimd(src, dst, RoaringBitmap.BitmapContainerSizeInUlongs);
-
-                var result = new ContainerEntry
-                {
-                    Key = entry.Key,
-                    Data = storage.Ptr,
-                    Cardinality = cardinality,
-                    Storage = storage,
-                    Type = ContainerType.Bitmap
-                };
-
-                OptimizeBitmapResult(ctx, ref result);
-                return result;
-            }
-
-            case ContainerType.Run:
-            {
-                ctx.Allocate(RoaringBitmap.BitmapContainerSizeInBytes, out ByteString storage);
-                ulong* bitmap = (ulong*)storage.Ptr;
-                new Span<byte>(bitmap, RoaringBitmap.BitmapContainerSizeInBytes).Fill(0xFF);
-
-                ctx.Allocate(RoaringBitmap.BitmapContainerSizeInBytes, out ByteString tempStorage);
-                ulong* tempBitmap = (ulong*)tempStorage.Ptr;
-                RoaringBitmap.RunToBitmap(entry.Data, tempBitmap);
-
-                int cardinality = BitmapAndNotSimd(bitmap, tempBitmap, bitmap, RoaringBitmap.BitmapContainerSizeInUlongs);
-                ctx.Release(ref tempStorage);
-
-                var result = new ContainerEntry
-                {
-                    Key = entry.Key,
-                    Data = storage.Ptr,
-                    Cardinality = cardinality,
-                    Storage = storage,
-                    Type = ContainerType.Bitmap
-                };
-
-                OptimizeBitmapResult(ctx, ref result);
-                return result;
-            }
-
-            default:
-                return default;
-        }
     }
 
     #endregion
@@ -944,20 +783,28 @@ public static unsafe class RoaringBitmapSetOps
     private delegate ContainerEntry ContainerOp(ByteStringContext ctx, ref ContainerEntry a, ref ContainerEntry b);
 
     /// <summary>
-    /// Materialize a Run container to a temporary Bitmap, run the operation, release the temp.
-    /// The materialized entry is passed as the first argument to the operation.
+    /// Materialize a Range container to a temporary Bitmap, run the operation, release the temp.
     /// </summary>
-    private static ContainerEntry MaterializeAndRedispatch(
-        ByteStringContext ctx, ref ContainerEntry runEntry, ref ContainerEntry other, ContainerOp op)
+    private static ContainerEntry MaterializeRangeAndRedispatch(
+        ByteStringContext ctx, ref ContainerEntry rangeEntry, ref ContainerEntry other, ContainerOp op)
     {
         ctx.Allocate(RoaringBitmap.BitmapContainerSizeInBytes, out ByteString tempStorage);
-        RoaringBitmap.RunToBitmap(runEntry.Data, (ulong*)tempStorage.Ptr);
+        ulong* bitmap = (ulong*)tempStorage.Ptr;
+        new Span<byte>(bitmap, RoaringBitmap.BitmapContainerSizeInBytes).Clear();
+
+        int rangeCount = rangeEntry.Cardinality;
+        int fullWords = rangeCount / 64;
+        for (int i = 0; i < fullWords; i++)
+            bitmap[i] = ulong.MaxValue;
+        int remainder = rangeCount & 63;
+        if (remainder > 0)
+            bitmap[fullWords] = (1UL << remainder) - 1;
 
         var tempEntry = new ContainerEntry
         {
-            Key = runEntry.Key,
+            Key = rangeEntry.Key,
             Data = tempStorage.Ptr,
-            Cardinality = runEntry.Cardinality,
+            Cardinality = rangeEntry.Cardinality,
             Storage = tempStorage,
             Type = ContainerType.Bitmap
         };
@@ -967,29 +814,15 @@ public static unsafe class RoaringBitmapSetOps
         return result;
     }
 
-    /// <summary>
-    /// Materialize a Negated container to a temporary Bitmap, run the operation, release the temp.
-    /// </summary>
-    private static ContainerEntry MaterializeNegatedAndRedispatch(
-        ByteStringContext ctx, ref ContainerEntry negatedEntry, ref ContainerEntry other, ContainerOp op)
-    {
-        var tempEntry = MaterializeNegatedAsBitmap(ctx, ref negatedEntry);
-        var tempStorage = tempEntry.Storage;
-
-        var result = op(ctx, ref tempEntry, ref other);
-        ctx.Release(ref tempStorage);
-        return result;
-    }
-
     internal static ContainerEntry CloneContainer(ByteStringContext ctx, ref ContainerEntry entry)
     {
-        if (entry.Type == ContainerType.Full)
+        if (entry.Type == ContainerType.Range)
         {
             return new ContainerEntry
             {
                 Key = entry.Key,
-                Type = ContainerType.Full,
-                Cardinality = RoaringBitmap.BitsPerContainer,
+                Type = ContainerType.Range,
+                Cardinality = entry.Cardinality,
                 Data = null,
                 Storage = default
             };
@@ -999,8 +832,6 @@ public static unsafe class RoaringBitmapSetOps
         {
             ContainerType.Array => Math.Max(64, entry.Cardinality * sizeof(ushort)),
             ContainerType.Bitmap => RoaringBitmap.BitmapContainerSizeInBytes,
-            ContainerType.Run => GetRunContainerDataSize(entry.Data),
-            ContainerType.Negated => Math.Max(64, RoaringBitmap.NegatedContainerAbsentCount(entry.Cardinality) * sizeof(ushort)),
             _ => 0
         };
 
@@ -1020,12 +851,6 @@ public static unsafe class RoaringBitmapSetOps
         };
     }
 
-    private static int GetRunContainerDataSize(byte* data)
-    {
-        ushort numRuns = *(ushort*)data;
-        return 2 + numRuns * 4; // header + pairs
-    }
-
     private static void ConvertResultBitmapToArray(ByteStringContext ctx, ref ContainerEntry entry)
     {
         ulong* bitmap = (ulong*)entry.Data;
@@ -1039,84 +864,15 @@ public static unsafe class RoaringBitmapSetOps
         entry.Type = ContainerType.Array;
     }
 
-    private static void ConvertResultBitmapToNegated(ByteStringContext ctx, ref ContainerEntry entry)
-    {
-        ulong* bitmap = (ulong*)entry.Data;
-        int absentCount = RoaringBitmap.BitsPerContainer - entry.Cardinality;
-
-        ctx.Allocate(Math.Max(64, absentCount * sizeof(ushort)), out ByteString newStorage);
-        ushort* arr = (ushort*)newStorage.Ptr;
-
-        int count = 0;
-        for (int wordIdx = 0; wordIdx < RoaringBitmap.BitmapContainerSizeInUlongs; wordIdx++)
-        {
-            ulong word = ~bitmap[wordIdx];
-            while (word != 0)
-            {
-                int bit = BitOperations.TrailingZeroCount(word);
-                arr[count++] = (ushort)(wordIdx * 64 + bit);
-                word &= word - 1;
-            }
-        }
-
-        ctx.Release(ref entry.Storage);
-        entry.Storage = newStorage;
-        entry.Data = newStorage.Ptr;
-        entry.Type = ContainerType.Negated;
-    }
-
     /// <summary>
     /// Convert a bitmap result to the optimal container type based on cardinality.
     /// </summary>
     private static void OptimizeBitmapResult(ByteStringContext ctx, ref ContainerEntry entry)
     {
-        if (entry.Cardinality == RoaringBitmap.BitsPerContainer)
-        {
-            ctx.Release(ref entry.Storage);
-            entry.Storage = default;
-            entry.Data = null;
-            entry.Type = ContainerType.Full;
-        }
-        else if (entry.Cardinality > RoaringBitmap.NegatedArrayMinCardinality)
-        {
-            ConvertResultBitmapToNegated(ctx, ref entry);
-        }
-        else if (entry.Cardinality <= RoaringBitmap.ArrayContainerMaxCardinality && entry.Cardinality > 0)
-        {
+        if (entry.Cardinality <= RoaringBitmap.ArrayContainerMaxCardinality && entry.Cardinality > 0)
             ConvertResultBitmapToArray(ctx, ref entry);
-        }
     }
 
-    /// <summary>
-    /// Materialize a Negated container into a temporary bitmap for set operations.
-    /// The caller must release the returned storage when done.
-    /// </summary>
-    private static ContainerEntry MaterializeNegatedAsBitmap(ByteStringContext ctx, ref ContainerEntry negated)
-    {
-        int absentCount = RoaringBitmap.BitsPerContainer - negated.Cardinality;
-        ushort* absentArr = (ushort*)negated.Data;
-
-        ctx.Allocate(RoaringBitmap.BitmapContainerSizeInBytes, out ByteString storage);
-        ulong* bitmap = (ulong*)storage.Ptr;
-
-        // Start with all bits set, then clear the absent ones
-        new Span<byte>(bitmap, RoaringBitmap.BitmapContainerSizeInBytes).Fill(0xFF);
-
-        for (int i = 0; i < absentCount; i++)
-        {
-            ushort val = absentArr[i];
-            bitmap[val >> 6] &= ~(1UL << (val & 63));
-        }
-
-        return new ContainerEntry
-        {
-            Key = negated.Key,
-            Data = storage.Ptr,
-            Cardinality = negated.Cardinality,
-            Storage = storage,
-            Type = ContainerType.Bitmap
-        };
-    }
 
     #endregion
 }

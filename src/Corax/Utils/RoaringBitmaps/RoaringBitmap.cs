@@ -17,9 +17,8 @@ namespace Corax.Utils.RoaringBitmaps;
 ///
 /// Container types:
 /// - Array: sorted ushort[] for sparse data (cardinality &lt;= 4096, up to 8KB)
-/// - Bitmap: 8KB fixed bitmap (1024 ulongs) for dense data (4097..61440)
-/// - Negated: sorted ushort[] of ABSENT values for nearly-full data (cardinality &gt; 61440)
-/// - Full: all 65536 bits set (no data allocation needed)
+/// - Bitmap: 8KB fixed bitmap (1024 ulongs) for dense data (4097..65535)
+/// - Range: contiguous values 0..count-1 (no data allocation). count=65536 means full.
 /// </summary>
 public unsafe struct RoaringBitmap : IDisposable
 {
@@ -27,7 +26,6 @@ public unsafe struct RoaringBitmap : IDisposable
     public const int BitmapContainerSizeInUlongs = BitmapContainerSizeInBytes / sizeof(ulong);
     public const int BitsPerContainer = BitmapContainerSizeInBytes * 8; // each byte holds 8 bits
     public const int ArrayContainerMaxCardinality = BitmapContainerSizeInBytes / sizeof(ushort); // crossover: array at max costs same as bitmap
-    public const int NegatedArrayMinCardinality = BitsPerContainer - ArrayContainerMaxCardinality; // 61440
     public const int ContainerKeyShift = 16;
     public const int ContainerValueMask = 0xFFFF;
 
@@ -90,9 +88,24 @@ public unsafe struct RoaringBitmap : IDisposable
         }
         else
         {
-            ContainerEntry newEntry = CreateArrayContainer(key);
-            ArrayContainerAdd(newEntry.Data, ref newEntry.Cardinality, low);
-            AddNewContainer(key, newEntry);
+            // First value in this container: Range if starting from 0, Array otherwise
+            if (low == 0)
+            {
+                AddNewContainer(key, new ContainerEntry
+                {
+                    Key = key,
+                    Type = ContainerType.Range,
+                    Cardinality = 1,
+                    Data = null,
+                    Storage = default
+                });
+            }
+            else
+            {
+                ContainerEntry newEntry = CreateArrayContainer(key);
+                ArrayContainerAdd(newEntry.Data, ref newEntry.Cardinality, low);
+                AddNewContainer(key, newEntry);
+            }
         }
     }
 
@@ -111,7 +124,7 @@ public unsafe struct RoaringBitmap : IDisposable
 
             if (lo == 0 && hi == BitsPerContainer - 1)
             {
-                // Entire container is full
+                // Entire container becomes a full Range
                 int slot = GetSlotForKey(key);
                 if (slot >= 0)
                 {
@@ -120,7 +133,7 @@ public unsafe struct RoaringBitmap : IDisposable
                         _ctx.Release(ref entry.Storage);
                     entry.Data = null;
                     entry.Storage = default;
-                    entry.Type = ContainerType.Full;
+                    entry.Type = ContainerType.Range;
                     entry.Cardinality = BitsPerContainer;
                 }
                 else
@@ -128,8 +141,42 @@ public unsafe struct RoaringBitmap : IDisposable
                     AddNewContainer(key, new ContainerEntry
                     {
                         Key = key,
-                        Type = ContainerType.Full,
+                        Type = ContainerType.Range,
                         Cardinality = BitsPerContainer,
+                        Data = null,
+                        Storage = default
+                    });
+                }
+            }
+            else if (lo == 0)
+            {
+                // Range from start: use Range container
+                int slot = GetSlotForKey(key);
+                int rangeLen = hi + 1;
+                if (slot >= 0)
+                {
+                    ref ContainerEntry e = ref _entries[slot];
+                    // Convert to bitmap, set bits, optimize back
+                    if (e.Type == ContainerType.Range)
+                    {
+                        if (rangeLen > e.Cardinality)
+                            e.Cardinality = rangeLen;
+                        continue;
+                    }
+                    if (e.Type == ContainerType.Array)
+                        ConvertArrayToBitmap(ref e);
+                    ulong* bitmap = (ulong*)e.Data;
+                    for (int v = lo; v <= hi; v++)
+                        bitmap[v >> 6] |= 1UL << (v & 63);
+                    e.Cardinality = BitmapContainerCardinality(e.Data);
+                }
+                else
+                {
+                    AddNewContainer(key, new ContainerEntry
+                    {
+                        Key = key,
+                        Type = ContainerType.Range,
+                        Cardinality = rangeLen,
                         Data = null,
                         Storage = default
                     });
@@ -137,7 +184,7 @@ public unsafe struct RoaringBitmap : IDisposable
             }
             else
             {
-                // Partial range — ensure a bitmap container and set bits directly
+                // Partial range not from start — use bitmap
                 int slot = GetSlotForKey(key);
                 if (slot < 0)
                 {
@@ -147,25 +194,18 @@ public unsafe struct RoaringBitmap : IDisposable
 
                 ref ContainerEntry e = ref _entries[slot];
 
-                // Convert to bitmap if not already (needed for direct bit setting)
                 if (e.Type == ContainerType.Array)
                     ConvertArrayToBitmap(ref e);
-                else if (e.Type == ContainerType.Run)
-                    ConvertRunToBitmap(ref e);
-                else if (e.Type == ContainerType.Negated)
-                    ConvertNegatedToBitmap(ref e);
-                else if (e.Type == ContainerType.Full)
-                    continue; // already all set
+                else if (e.Type == ContainerType.Range)
+                    ConvertRangeToBitmap(ref e);
 
-                ulong* bitmap = (ulong*)e.Data;
-                for (int v = lo; v <= hi; v++)
-                    bitmap[v >> 6] |= 1UL << (v & 63);
-
-                e.Cardinality = BitmapContainerCardinality(e.Data);
-                if (e.Cardinality == BitsPerContainer)
-                    ConvertToFull(ref e);
-                else if (e.Cardinality > NegatedArrayMinCardinality)
-                    ConvertBitmapToNegated(ref e);
+                if (e.Type == ContainerType.Bitmap)
+                {
+                    ulong* bitmap = (ulong*)e.Data;
+                    for (int v = lo; v <= hi; v++)
+                        bitmap[v >> 6] |= 1UL << (v & 63);
+                    e.Cardinality = BitmapContainerCardinality(e.Data);
+                }
             }
         }
     }
@@ -215,7 +255,11 @@ public unsafe struct RoaringBitmap : IDisposable
         return new RoaringBitmapIterator();
     }
 
-    public void OptimizeToRun()
+    /// <summary>
+    /// Optimize containers: convert Bitmap containers to Range if all set bits are
+    /// contiguous from 0, or to Array if sparse enough.
+    /// </summary>
+    public void Optimize()
     {
         int* idx = _index.RawItems;
         for (int key = 0; key < _index.Count; key++)
@@ -225,10 +269,47 @@ public unsafe struct RoaringBitmap : IDisposable
 
             ref ContainerEntry entry = ref _entries[slot];
             if (entry.Type == ContainerType.Bitmap)
-                TryConvertBitmapToRun(ref entry);
-            else if (entry.Type == ContainerType.Array)
-                TryConvertArrayToRun(ref entry);
+            {
+                if (TryConvertBitmapToRange(ref entry))
+                    continue;
+                if (entry.Cardinality <= ArrayContainerMaxCardinality)
+                    ConvertBitmapToArray(ref entry);
+            }
         }
+    }
+
+    private bool TryConvertBitmapToRange(ref ContainerEntry entry)
+    {
+        ulong* bitmap = (ulong*)entry.Data;
+        int cardinality = entry.Cardinality;
+
+        // Check if bits 0..cardinality-1 are all set and everything after is clear
+        int fullWords = cardinality / 64;
+        for (int i = 0; i < fullWords; i++)
+        {
+            if (bitmap[i] != ulong.MaxValue)
+                return false;
+        }
+
+        int remainder = cardinality & 63;
+        if (remainder > 0 && bitmap[fullWords] != (1UL << remainder) - 1)
+            return false;
+
+        // Verify remaining words are zero
+        for (int i = fullWords + (remainder > 0 ? 1 : 0); i < BitmapContainerSizeInUlongs; i++)
+        {
+            if (bitmap[i] != 0)
+                return false;
+        }
+
+        // Convert to Range
+        if (entry.Storage.HasValue)
+            _ctx.Release(ref entry.Storage);
+
+        entry.Data = null;
+        entry.Storage = default;
+        entry.Type = ContainerType.Range;
+        return true;
     }
 
     #region In-place Set Operations
@@ -353,26 +434,12 @@ public unsafe struct RoaringBitmap : IDisposable
 
     private void AndContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
     {
-        // Full AND X = X: convert left to a copy of right
-        if (left.Type == ContainerType.Full)
+        // Materialize Range to bitmap first
+        if (left.Type == ContainerType.Range)
+            ConvertRangeToBitmap(ref left);
+        if (right.Type == ContainerType.Range)
         {
-            ContainerEntry cloned = RoaringBitmapSetOps.CloneContainer(_ctx, ref right);
-            if (left.Storage.HasValue)
-                _ctx.Release(ref left.Storage);
-            left = cloned;
-            return;
-        }
-        // X AND Full = X: no change
-        if (right.Type == ContainerType.Full)
-            return;
-
-        // Materialize Run/Negated to bitmap first
-        if (left.Type is ContainerType.Run or ContainerType.Negated)
-            MaterializeContainerToBitmap(ref left);
-        if (right.Type is ContainerType.Run or ContainerType.Negated)
-        {
-            // We can't modify right (it belongs to the other bitmap), so materialize to temp
-            ContainerEntry temp = MaterializeToBitmapTemp(ref right);
+            ContainerEntry temp = MaterializeRangeToBitmapTemp(ref right);
             AndContainerInPlace(ref left, ref temp);
             _ctx.Release(ref temp.Storage);
             return;
@@ -438,24 +505,11 @@ public unsafe struct RoaringBitmap : IDisposable
 
     private void OrContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
     {
-        if (left.Type == ContainerType.Full)
-            return; // Full | X = Full
-        if (right.Type == ContainerType.Full)
+        if (left.Type == ContainerType.Range)
+            ConvertRangeToBitmap(ref left);
+        if (right.Type == ContainerType.Range)
         {
-            if (left.Storage.HasValue)
-                _ctx.Release(ref left.Storage);
-            left.Data = null;
-            left.Storage = default;
-            left.Type = ContainerType.Full;
-            left.Cardinality = BitsPerContainer;
-            return;
-        }
-
-        if (left.Type is ContainerType.Run or ContainerType.Negated)
-            MaterializeContainerToBitmap(ref left);
-        if (right.Type is ContainerType.Run or ContainerType.Negated)
-        {
-            ContainerEntry temp = MaterializeToBitmapTemp(ref right);
+            ContainerEntry temp = MaterializeRangeToBitmapTemp(ref right);
             OrContainerInPlace(ref left, ref temp);
             _ctx.Release(ref temp.Storage);
             return;
@@ -520,28 +574,14 @@ public unsafe struct RoaringBitmap : IDisposable
 
     private void XorContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
     {
-        if (left.Type == ContainerType.Full && right.Type == ContainerType.Full)
+        if (left.Type == ContainerType.Range)
+            ConvertRangeToBitmap(ref left);
+        if (right.Type == ContainerType.Range)
         {
-            // Full ^ Full = empty
-            if (left.Storage.HasValue)
-                _ctx.Release(ref left.Storage);
-            left = default;
-            return;
-        }
-
-        if (left.Type is ContainerType.Run or ContainerType.Negated)
-            MaterializeContainerToBitmap(ref left);
-        if (right.Type is ContainerType.Run or ContainerType.Negated or ContainerType.Full)
-        {
-            ContainerEntry temp = MaterializeToBitmapTemp(ref right);
+            ContainerEntry temp = MaterializeRangeToBitmapTemp(ref right);
             XorContainerInPlace(ref left, ref temp);
             _ctx.Release(ref temp.Storage);
             return;
-        }
-        if (left.Type == ContainerType.Full)
-        {
-            // Full ^ bitmap/array: convert Full to bitmap first
-            ConvertFullToBitmap(ref left);
         }
 
         switch (left.Type, right.Type)
@@ -601,22 +641,11 @@ public unsafe struct RoaringBitmap : IDisposable
 
     private void AndNotContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
     {
-        if (right.Type == ContainerType.Full)
+        if (left.Type == ContainerType.Range)
+            ConvertRangeToBitmap(ref left);
+        if (right.Type == ContainerType.Range)
         {
-            // X & ~Full = empty
-            if (left.Storage.HasValue)
-                _ctx.Release(ref left.Storage);
-            left = default;
-            return;
-        }
-        if (left.Type == ContainerType.Full)
-            ConvertFullToBitmap(ref left);
-
-        if (left.Type is ContainerType.Run or ContainerType.Negated)
-            MaterializeContainerToBitmap(ref left);
-        if (right.Type is ContainerType.Run or ContainerType.Negated)
-        {
-            ContainerEntry temp = MaterializeToBitmapTemp(ref right);
+            ContainerEntry temp = MaterializeRangeToBitmapTemp(ref right);
             AndNotContainerInPlace(ref left, ref temp);
             _ctx.Release(ref temp.Storage);
             return;
@@ -675,50 +704,24 @@ public unsafe struct RoaringBitmap : IDisposable
     }
 
     /// <summary>
-    /// Convert a container to bitmap in-place (for Run/Negated containers).
-    /// </summary>
-    private void MaterializeContainerToBitmap(ref ContainerEntry entry)
-    {
-        if (entry.Type == ContainerType.Run)
-            ConvertRunToBitmap(ref entry);
-        else if (entry.Type == ContainerType.Negated)
-            ConvertNegatedToBitmap(ref entry);
-    }
-
-    /// <summary>
-    /// Create a temporary bitmap from a Run/Negated/Full container (for read-only right-hand side).
+    /// Create a temporary bitmap from a Range container (for read-only right-hand side).
     /// Caller must release the returned storage.
     /// </summary>
-    private ContainerEntry MaterializeToBitmapTemp(ref ContainerEntry entry)
+    private ContainerEntry MaterializeRangeToBitmapTemp(ref ContainerEntry entry)
     {
+        Debug.Assert(entry.Type == ContainerType.Range);
+
         _ctx.Allocate(BitmapContainerSizeInBytes, out ByteString storage);
         ulong* bitmap = (ulong*)storage.Ptr;
+        new Span<byte>(bitmap, BitmapContainerSizeInBytes).Clear();
 
-        switch (entry.Type)
-        {
-            case ContainerType.Run:
-                RunToBitmap(entry.Data, bitmap);
-                break;
-            case ContainerType.Negated:
-            {
-                new Span<byte>(bitmap, BitmapContainerSizeInBytes).Fill(0xFF);
-                int absentCount = BitsPerContainer - entry.Cardinality;
-                ushort* absent = (ushort*)entry.Data;
-                for (int i = 0; i < absentCount; i++)
-                {
-                    ushort val = absent[i];
-                    bitmap[val >> 6] &= ~(1UL << (val & 63));
-                }
-                break;
-            }
-            case ContainerType.Full:
-                new Span<byte>(bitmap, BitmapContainerSizeInBytes).Fill(0xFF);
-                break;
-            default:
-                // Bitmap or Array — shouldn't reach here, but handle gracefully
-                Unsafe.CopyBlockUnaligned(storage.Ptr, entry.Data, BitmapContainerSizeInBytes);
-                break;
-        }
+        int rangeCount = entry.Cardinality;
+        int fullWords = rangeCount / 64;
+        for (int i = 0; i < fullWords; i++)
+            bitmap[i] = ulong.MaxValue;
+        int remainder = rangeCount & 63;
+        if (remainder > 0)
+            bitmap[fullWords] = (1UL << remainder) - 1;
 
         return new ContainerEntry
         {
@@ -731,18 +734,14 @@ public unsafe struct RoaringBitmap : IDisposable
     }
 
     /// <summary>
-    /// After in-place modification of a bitmap container, convert to the optimal type.
+    /// After in-place modification of a bitmap container, convert to Array if sparse enough.
     /// </summary>
     private void OptimizeContainerType(ref ContainerEntry entry)
     {
         if (entry.Type != ContainerType.Bitmap)
             return;
 
-        if (entry.Cardinality == BitsPerContainer)
-            ConvertToFull(ref entry);
-        else if (entry.Cardinality > NegatedArrayMinCardinality)
-            ConvertBitmapToNegated(ref entry);
-        else if (entry.Cardinality <= ArrayContainerMaxCardinality)
+        if (entry.Cardinality <= ArrayContainerMaxCardinality)
             ConvertBitmapToArray(ref entry);
     }
 
@@ -904,19 +903,6 @@ public unsafe struct RoaringBitmap : IDisposable
         };
     }
 
-    private static ContainerEntry CreateFullContainer(long key)
-    {
-        return new ContainerEntry
-        {
-            Key = key,
-            Type = ContainerType.Full,
-            Cardinality = BitsPerContainer,
-            Data = null,
-            Storage = default
-        };
-    }
-
-
     #endregion
 
     #region Container Operations
@@ -935,22 +921,23 @@ public unsafe struct RoaringBitmap : IDisposable
 
             case ContainerType.Bitmap:
                 BitmapContainerAdd(entry.Data, ref entry.Cardinality, value);
-                if (entry.Cardinality > NegatedArrayMinCardinality)
-                    ConvertBitmapToNegated(ref entry);
                 break;
 
-            case ContainerType.Negated:
-                NegatedContainerAdd(entry.Data, ref entry.Cardinality, value);
-                if (entry.Cardinality == BitsPerContainer)
-                    ConvertToFull(ref entry);
-                break;
-
-            case ContainerType.Run:
-                RunContainerAdd(ref entry, value);
-                break;
-
-            case ContainerType.Full:
-                // Already contains everything
+            case ContainerType.Range:
+                if (value == entry.Cardinality)
+                {
+                    // Extending the range by one — O(1)
+                    entry.Cardinality++;
+                }
+                else if (value < entry.Cardinality)
+                {
+                    // Already in range — noop
+                }
+                else
+                {
+                    // Gap: convert Range to Array or Bitmap, then add
+                    ConvertRangeForAdd(ref entry, value);
+                }
                 break;
         }
     }
@@ -970,23 +957,22 @@ public unsafe struct RoaringBitmap : IDisposable
                     ConvertBitmapToArray(ref entry);
                 break;
 
-            case ContainerType.Negated:
-                EnsureArrayCapacity(ref entry, NegatedContainerAbsentCount(entry.Cardinality) + 1);
-                NegatedContainerRemove(entry.Data, ref entry.Cardinality, value);
-                if (entry.Cardinality <= NegatedArrayMinCardinality)
-                    ConvertNegatedToBitmap(ref entry);
-                break;
-
-            case ContainerType.Run:
-                RunContainerRemove(ref entry, value);
-                break;
-
-            case ContainerType.Full:
-                ConvertFullToNegated(ref entry);
-                EnsureArrayCapacity(ref entry, NegatedContainerAbsentCount(entry.Cardinality) + 1);
-                NegatedContainerRemove(entry.Data, ref entry.Cardinality, value);
-                // Full had 65536 set bits, removing one gives 65535 — always above NegatedArrayMinCardinality (61440)
-                Debug.Assert(entry.Cardinality > NegatedArrayMinCardinality);
+            case ContainerType.Range:
+                if (value >= entry.Cardinality)
+                    return; // not in range
+                if (value == entry.Cardinality - 1)
+                {
+                    // Removing from the end of the range
+                    entry.Cardinality--;
+                }
+                else
+                {
+                    // Removing from middle — convert to bitmap, then remove
+                    ConvertRangeToBitmap(ref entry);
+                    BitmapContainerRemove(entry.Data, ref entry.Cardinality, value);
+                    if (entry.Cardinality <= ArrayContainerMaxCardinality)
+                        ConvertBitmapToArray(ref entry);
+                }
                 break;
         }
     }
@@ -998,9 +984,7 @@ public unsafe struct RoaringBitmap : IDisposable
         {
             ContainerType.Array => ArrayContainerContains(entry.Data, entry.Cardinality, value),
             ContainerType.Bitmap => BitmapContainerContains(entry.Data, value),
-            ContainerType.Negated => NegatedContainerContains(entry.Data, entry.Cardinality, value),
-            ContainerType.Run => RunContainerContains(entry.Data, entry.Cardinality, value),
-            ContainerType.Full => true,
+            ContainerType.Range => value < entry.Cardinality,
             _ => false
         };
     }
@@ -1188,70 +1172,71 @@ public unsafe struct RoaringBitmap : IDisposable
 
     #endregion
 
-    #region Negated Container
+    #region Range Container
 
-    // Negated container: stores sorted ushort[] of ABSENT values.
-    // The array length is (BitsPerContainer - Cardinality), i.e. the number of zeros.
-    // Cardinality tracks the number of SET bits (not the array length).
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static bool NegatedContainerContains(byte* data, int cardinality, ushort value)
+    /// <summary>
+    /// Convert a Range container to Bitmap or Array to handle an Add outside the contiguous range.
+    /// </summary>
+    private void ConvertRangeForAdd(ref ContainerEntry entry, ushort value)
     {
-        // Value is present if it is NOT in the absent list
-        int absentCount = BitsPerContainer - cardinality;
-        return ArrayContainerFind((ushort*)data, absentCount, value) < 0;
+        Debug.Assert(entry.Type == ContainerType.Range);
+        int rangeCount = entry.Cardinality;
+
+        if (rangeCount + 1 > ArrayContainerMaxCardinality || value >= ArrayContainerMaxCardinality)
+        {
+            // Result will be dense — use bitmap
+            ConvertRangeToBitmap(ref entry);
+            BitmapContainerAdd(entry.Data, ref entry.Cardinality, value);
+        }
+        else
+        {
+            // Small enough for array
+            _ctx.Allocate(Math.Max(InitialArrayContainerSizeInBytes, (rangeCount + 1) * sizeof(ushort)), out ByteString storage);
+            ushort* arr = (ushort*)storage.Ptr;
+            for (int i = 0; i < rangeCount; i++)
+                arr[i] = (ushort)i;
+
+            entry.Storage = storage;
+            entry.Data = storage.Ptr;
+            entry.Type = ContainerType.Array;
+            // Cardinality stays the same (rangeCount)
+            EnsureArrayCapacity(ref entry, entry.Cardinality + 1);
+            ArrayContainerAdd(entry.Data, ref entry.Cardinality, value);
+            if (entry.Cardinality > ArrayContainerMaxCardinality)
+                ConvertArrayToBitmap(ref entry);
+        }
     }
 
     /// <summary>
-    /// Add a value to a negated container (remove it from the absent list).
+    /// Convert a Range container to a Bitmap container.
+    /// Sets bits 0..cardinality-1.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static void NegatedContainerAdd(byte* data, ref int cardinality, ushort value)
+    private void ConvertRangeToBitmap(ref ContainerEntry entry)
     {
-        int absentCount = BitsPerContainer - cardinality;
-        ushort* arr = (ushort*)data;
+        Debug.Assert(entry.Type == ContainerType.Range);
+        int rangeCount = entry.Cardinality;
 
-        int idx = ArrayContainerFind(arr, absentCount, value);
-        if (idx < 0)
-            return; // already present (not in absent list)
+        _ctx.Allocate(BitmapContainerSizeInBytes, out ByteString storage);
+        ulong* bitmap = (ulong*)storage.Ptr;
+        new Span<byte>(bitmap, BitmapContainerSizeInBytes).Clear();
 
-        // Remove from absent list (shift left)
-        for (int i = idx; i < absentCount - 1; i++)
-            arr[i] = arr[i + 1];
+        // Set full words
+        int fullWords = rangeCount / 64;
+        for (int i = 0; i < fullWords; i++)
+            bitmap[i] = ulong.MaxValue;
 
-        cardinality++;
-    }
+        // Set remaining bits in the last partial word
+        int remainder = rangeCount & 63;
+        if (remainder > 0)
+            bitmap[fullWords] = (1UL << remainder) - 1;
 
-    /// <summary>
-    /// Remove a value from a negated container (add it to the absent list).
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static void NegatedContainerRemove(byte* data, ref int cardinality, ushort value)
-    {
-        int absentCount = BitsPerContainer - cardinality;
-        ushort* arr = (ushort*)data;
+        if (entry.Storage.HasValue)
+            _ctx.Release(ref entry.Storage);
 
-        int idx = ArrayContainerFind(arr, absentCount, value);
-        if (idx >= 0)
-            return; // already absent
-
-        int insertAt = ~idx;
-
-        // Insert into absent list (shift right)
-        for (int i = absentCount; i > insertAt; i--)
-            arr[i] = arr[i - 1];
-
-        arr[insertAt] = value;
-        cardinality--;
-    }
-
-    /// <summary>
-    /// Get the number of absent values in a negated container.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static int NegatedContainerAbsentCount(int cardinality)
-    {
-        return BitsPerContainer - cardinality;
+        entry.Storage = storage;
+        entry.Data = storage.Ptr;
+        entry.Type = ContainerType.Bitmap;
+        // Cardinality stays the same
     }
 
     #endregion
@@ -1337,250 +1322,6 @@ public unsafe struct RoaringBitmap : IDisposable
 
     #endregion
 
-    #region Run Container
-
-    // Run container format:
-    // First 2 bytes: ushort numberOfRuns
-    // Then pairs of (ushort start, ushort length) where length means (length+1) values
-    // e.g., (5, 3) means values 5, 6, 7, 8
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static bool RunContainerContains(byte* data, int cardinality, ushort value)
-    {
-        ushort* runs = (ushort*)data;
-        int numRuns = runs[0];
-
-        for (int i = 0; i < numRuns; i++)
-        {
-            ushort start = runs[1 + i * 2];
-            ushort length = runs[1 + i * 2 + 1];
-
-            if (value < start)
-                return false; // runs are sorted
-            if (value <= start + length)
-                return true;
-        }
-
-        return false;
-    }
-
-    private void RunContainerAdd(ref ContainerEntry entry, ushort value)
-    {
-        // Convert to bitmap, add, then back to optimal format
-        // This is simpler than modifying run-length encoding in place
-        ConvertRunToBitmap(ref entry);
-        BitmapContainerAdd(entry.Data, ref entry.Cardinality, value);
-
-        if (entry.Cardinality == BitsPerContainer)
-            ConvertToFull(ref entry);
-    }
-
-    private void RunContainerRemove(ref ContainerEntry entry, ushort value)
-    {
-        ConvertRunToBitmap(ref entry);
-        BitmapContainerRemove(entry.Data, ref entry.Cardinality, value);
-
-        if (entry.Cardinality <= ArrayContainerMaxCardinality)
-            ConvertBitmapToArray(ref entry);
-    }
-
-    /// <summary>
-    /// Convert a run container to a bitmap container.
-    /// </summary>
-    internal static void RunToBitmap(byte* runData, ulong* bitmap)
-    {
-        ushort* runs = (ushort*)runData;
-        int numRuns = runs[0];
-
-        new Span<byte>(bitmap, BitmapContainerSizeInBytes).Clear();
-
-        for (int i = 0; i < numRuns; i++)
-        {
-            ushort start = runs[1 + i * 2];
-            ushort length = runs[1 + i * 2 + 1];
-
-            for (int j = 0; j <= length; j++)
-            {
-                int val = start + j;
-                bitmap[val >> 6] |= 1UL << (val & 63);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Try to convert a bitmap container to a run container if it saves space.
-    /// </summary>
-    private void TryConvertBitmapToRun(ref ContainerEntry entry)
-    {
-        Debug.Assert(entry.Type == ContainerType.Bitmap);
-
-        int numRuns = CountRunsBitmap(entry.Data);
-        int runBytes = 2 + numRuns * 4; // header + pairs
-
-        if (runBytes >= BitmapContainerSizeInBytes)
-            return; // not worth it
-
-        // Also not worth it if the array representation would be smaller
-        int arrayBytes = entry.Cardinality * 2;
-        if (arrayBytes < runBytes && entry.Cardinality <= ArrayContainerMaxCardinality)
-        {
-            ConvertBitmapToArray(ref entry);
-            return;
-        }
-
-        BitmapToRun(ref entry, numRuns);
-    }
-
-    private void TryConvertArrayToRun(ref ContainerEntry entry)
-    {
-        Debug.Assert(entry.Type == ContainerType.Array);
-
-        ushort* arr = (ushort*)entry.Data;
-        int count = entry.Cardinality;
-
-        int numRuns = CountRunsArray(arr, count);
-        int runBytes = 2 + numRuns * 4;
-        int arrayBytes = count * 2;
-
-        if (runBytes >= arrayBytes)
-            return;
-
-        // Convert array to run
-        ArrayToRun(ref entry, numRuns);
-    }
-
-    private static int CountRunsBitmap(byte* data)
-    {
-        ulong* bitmap = (ulong*)data;
-        int runs = 0;
-
-        for (int i = 0; i < BitmapContainerSizeInUlongs; i++)
-        {
-            ulong word = bitmap[i];
-            if (word == 0)
-                continue;
-
-            // Count transitions from 0->1
-            ulong prevBit = (i > 0) ? (bitmap[i - 1] >> 63) : 0;
-            ulong shifted = (word << 1) | prevBit;
-            runs += BitOperations.PopCount(word & ~shifted);
-        }
-
-        return runs;
-    }
-
-    private static int CountRunsArray(ushort* arr, int count)
-    {
-        if (count == 0)
-            return 0;
-
-        int runs = 1;
-        for (int i = 1; i < count; i++)
-        {
-            if (arr[i] != arr[i - 1] + 1)
-                runs++;
-        }
-
-        return runs;
-    }
-
-    private void BitmapToRun(ref ContainerEntry entry, int numRuns)
-    {
-        ulong* bitmap = (ulong*)entry.Data;
-
-        // We need a temporary buffer for the run data since we're reusing the same storage
-        int runDataSize = 2 + numRuns * 4;
-
-        _ctx.Allocate(Math.Max(runDataSize, 64), out ByteString newStorage);
-        ushort* runs = (ushort*)newStorage.Ptr;
-        runs[0] = (ushort)numRuns;
-
-        int runIdx = 0;
-        bool inRun = false;
-        ushort runStart = 0;
-
-        for (int wordIdx = 0; wordIdx < BitmapContainerSizeInUlongs; wordIdx++)
-        {
-            ulong word = bitmap[wordIdx];
-            int baseVal = wordIdx * 64;
-
-            for (int bit = 0; bit < 64; bit++)
-            {
-                bool isSet = (word & (1UL << bit)) != 0;
-                ushort val = (ushort)(baseVal + bit);
-
-                if (isSet && !inRun)
-                {
-                    runStart = val;
-                    inRun = true;
-                }
-                else if (!isSet && inRun)
-                {
-                    runs[1 + runIdx * 2] = runStart;
-                    runs[1 + runIdx * 2 + 1] = (ushort)(val - runStart - 1);
-                    runIdx++;
-                    inRun = false;
-                }
-            }
-        }
-
-        if (inRun)
-        {
-            runs[1 + runIdx * 2] = runStart;
-            runs[1 + runIdx * 2 + 1] = (ushort)(BitsPerContainer - 1 - runStart);
-            runIdx++;
-        }
-
-        if (entry.Storage.HasValue)
-            _ctx.Release(ref entry.Storage);
-
-        entry.Storage = newStorage;
-        entry.Data = newStorage.Ptr;
-        entry.Type = ContainerType.Run;
-    }
-
-    private void ArrayToRun(ref ContainerEntry entry, int numRuns)
-    {
-        ushort* arr = (ushort*)entry.Data;
-        int count = entry.Cardinality;
-
-        int runDataSize = 2 + numRuns * 4;
-        _ctx.Allocate(Math.Max(runDataSize, 64), out ByteString newStorage);
-        ushort* runs = (ushort*)newStorage.Ptr;
-        runs[0] = (ushort)numRuns;
-
-        int runIdx = 0;
-        ushort runStart = arr[0];
-        ushort runEnd = arr[0];
-
-        for (int i = 1; i < count; i++)
-        {
-            if (arr[i] == runEnd + 1)
-            {
-                runEnd = arr[i];
-            }
-            else
-            {
-                runs[1 + runIdx * 2] = runStart;
-                runs[1 + runIdx * 2 + 1] = (ushort)(runEnd - runStart);
-                runIdx++;
-                runStart = arr[i];
-                runEnd = arr[i];
-            }
-        }
-
-        runs[1 + runIdx * 2] = runStart;
-        runs[1 + runIdx * 2 + 1] = (ushort)(runEnd - runStart);
-
-        if (entry.Storage.HasValue)
-            _ctx.Release(ref entry.Storage);
-
-        entry.Storage = newStorage;
-        entry.Data = newStorage.Ptr;
-        entry.Type = ContainerType.Run;
-    }
-
-    #endregion
 
     #region Container Conversions
 
@@ -1630,127 +1371,6 @@ public unsafe struct RoaringBitmap : IDisposable
         entry.Type = ContainerType.Array;
     }
 
-    private void ConvertBitmapToNegated(ref ContainerEntry entry)
-    {
-        Debug.Assert(entry.Type == ContainerType.Bitmap);
-        Debug.Assert(entry.Cardinality > NegatedArrayMinCardinality);
-
-        ulong* bitmap = (ulong*)entry.Data;
-        int absentCount = BitsPerContainer - entry.Cardinality;
-
-        _ctx.Allocate(BitmapContainerSizeInBytes, out ByteString newStorage);
-        ushort* arr = (ushort*)newStorage.Ptr;
-
-        // Extract the ABSENT (zero) bits from the bitmap
-        int count = 0;
-        for (int wordIdx = 0; wordIdx < BitmapContainerSizeInUlongs; wordIdx++)
-        {
-            ulong word = ~bitmap[wordIdx]; // invert: zeros become ones
-            while (word != 0)
-            {
-                int bit = BitOperations.TrailingZeroCount(word);
-                arr[count++] = (ushort)(wordIdx * 64 + bit);
-                word &= word - 1;
-            }
-        }
-
-        Debug.Assert(count == absentCount);
-
-        if (entry.Storage.HasValue)
-            _ctx.Release(ref entry.Storage);
-
-        entry.Storage = newStorage;
-        entry.Data = newStorage.Ptr;
-        entry.Type = ContainerType.Negated;
-        // Cardinality stays the same (tracks SET bits)
-    }
-
-    private void ConvertNegatedToBitmap(ref ContainerEntry entry)
-    {
-        Debug.Assert(entry.Type == ContainerType.Negated);
-
-        int absentCount = BitsPerContainer - entry.Cardinality;
-        ushort* absentArr = (ushort*)entry.Data;
-
-        _ctx.Allocate(BitmapContainerSizeInBytes, out ByteString newStorage);
-        ulong* bitmap = (ulong*)newStorage.Ptr;
-
-        // Start with all bits set, then clear the absent ones
-        new Span<byte>(bitmap, BitmapContainerSizeInBytes).Fill(0xFF);
-
-        for (int i = 0; i < absentCount; i++)
-        {
-            ushort val = absentArr[i];
-            bitmap[val >> 6] &= ~(1UL << (val & 63));
-        }
-
-        if (entry.Storage.HasValue)
-            _ctx.Release(ref entry.Storage);
-
-        entry.Storage = newStorage;
-        entry.Data = newStorage.Ptr;
-        entry.Type = ContainerType.Bitmap;
-        // Cardinality stays the same
-    }
-
-    private void ConvertToFull(ref ContainerEntry entry)
-    {
-        if (entry.Storage.HasValue)
-            _ctx.Release(ref entry.Storage);
-
-        entry.Data = null;
-        entry.Storage = default;
-        entry.Type = ContainerType.Full;
-        entry.Cardinality = BitsPerContainer;
-    }
-
-    private void ConvertFullToNegated(ref ContainerEntry entry)
-    {
-        Debug.Assert(entry.Type == ContainerType.Full);
-
-        // Full container with one removal → negated with empty absent list
-        _ctx.Allocate(InitialArrayContainerSizeInBytes, out ByteString newStorage);
-        newStorage.ToSpan<byte>().Clear();
-
-        entry.Storage = newStorage;
-        entry.Data = newStorage.Ptr;
-        entry.Type = ContainerType.Negated;
-        entry.Cardinality = BitsPerContainer;
-    }
-
-    private void ConvertFullToBitmap(ref ContainerEntry entry)
-    {
-        Debug.Assert(entry.Type == ContainerType.Full);
-
-        _ctx.Allocate(BitmapContainerSizeInBytes, out ByteString newStorage);
-        ulong* bitmap = (ulong*)newStorage.Ptr;
-
-        // Set all bits
-        new Span<byte>(bitmap, BitmapContainerSizeInBytes).Fill(0xFF);
-
-        entry.Storage = newStorage;
-        entry.Data = newStorage.Ptr;
-        entry.Type = ContainerType.Bitmap;
-        entry.Cardinality = BitsPerContainer;
-    }
-
-    private void ConvertRunToBitmap(ref ContainerEntry entry)
-    {
-        Debug.Assert(entry.Type == ContainerType.Run);
-
-        _ctx.Allocate(BitmapContainerSizeInBytes, out ByteString newStorage);
-        ulong* bitmap = (ulong*)newStorage.Ptr;
-
-        RunToBitmap(entry.Data, bitmap);
-
-        if (entry.Storage.HasValue)
-            _ctx.Release(ref entry.Storage);
-
-        entry.Storage = newStorage;
-        entry.Data = newStorage.Ptr;
-        entry.Type = ContainerType.Bitmap;
-        // Cardinality stays the same
-    }
 
     #endregion
 
@@ -1811,15 +1431,12 @@ public enum ContainerType : byte
 {
     Array = 0,
     Bitmap = 1,
-    Run = 2,
-    Full = 3,
     /// <summary>
-    /// Negated array: stores the sorted list of values that are NOT set.
-    /// Used when cardinality > NegatedArrayMinCardinality (61440), meaning fewer than 4096 zeros.
-    /// Data format is identical to Array (sorted ushort[]), but the Cardinality field
-    /// tracks the number of SET bits (65536 - absentCount), and the array length is (65536 - Cardinality).
+    /// Contiguous values 0..Cardinality-1 are set. No data allocation needed.
+    /// Cardinality == BitsPerContainer means all 65536 bits set (full container).
+    /// Sequential Add at the end is O(1) increment.
     /// </summary>
-    Negated = 4
+    Range = 2
 }
 
 [StructLayout(LayoutKind.Sequential)]

@@ -75,24 +75,12 @@ public unsafe struct RoaringBitmapIterator
                     written = FillFromBitmap(ref entry, baseValue, buffer, written);
                     break;
 
-                case ContainerType.Negated:
-                    written = FillFromNegated(ref entry, baseValue, buffer, written);
-                    break;
-
-                case ContainerType.Run:
-                    written = FillFromRun(ref entry, baseValue, buffer, written);
-                    break;
-
-                case ContainerType.Full:
-                    written = FillFromFull(baseValue, buffer, written);
+                case ContainerType.Range:
+                    written = FillFromRange(ref entry, baseValue, buffer, written);
                     break;
             }
 
-            bool containerCompleted = entry.Type switch
-            {
-                ContainerType.Full or ContainerType.Negated => _positionInContainer >= RoaringBitmap.BitsPerContainer,
-                _ => _positionInContainer >= entry.Cardinality
-            };
+            bool containerCompleted = _positionInContainer >= entry.Cardinality;
 
             if (containerCompleted)
             {
@@ -160,69 +148,10 @@ public unsafe struct RoaringBitmapIterator
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private int FillFromRun(ref ContainerEntry entry, long baseValue, Span<long> buffer, int written)
+    private int FillFromRange(ref ContainerEntry entry, long baseValue, Span<long> buffer, int written)
     {
-        ushort* runs = (ushort*)entry.Data;
-        int numRuns = runs[0];
-        int emitted = 0;
-
-        while (written < buffer.Length && _wordIndex < numRuns)
-        {
-            ushort start = runs[1 + _wordIndex * 2];
-            ushort length = runs[1 + _wordIndex * 2 + 1];
-
-            while (written < buffer.Length && _runPosition <= length)
-            {
-                buffer[written++] = baseValue | (uint)(start + _runPosition);
-                _runPosition++;
-                emitted++;
-            }
-
-            if (_runPosition > length)
-            {
-                _wordIndex++;
-                _runPosition = 0;
-            }
-        }
-
-        _positionInContainer += emitted;
-        return written;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private int FillFromNegated(ref ContainerEntry entry, long baseValue, Span<long> buffer, int written)
-    {
-        // Iterate 0..65535 skipping values that appear in the absent list.
-        // _positionInContainer tracks the current value (0..65535).
-        // _wordIndex tracks the current position in the absent array.
-        ushort* absent = (ushort*)entry.Data;
-        int absentCount = RoaringBitmap.BitsPerContainer - entry.Cardinality;
-
-        while (written < buffer.Length && _positionInContainer < RoaringBitmap.BitsPerContainer)
-        {
-            // Skip absent values
-            while (_wordIndex < absentCount && absent[_wordIndex] == (ushort)_positionInContainer)
-            {
-                _positionInContainer++;
-                _wordIndex++;
-                if (_positionInContainer >= RoaringBitmap.BitsPerContainer)
-                    return written;
-            }
-
-            if (_positionInContainer < RoaringBitmap.BitsPerContainer)
-            {
-                buffer[written++] = baseValue | (uint)_positionInContainer;
-                _positionInContainer++;
-            }
-        }
-
-        return written;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private int FillFromFull(long baseValue, Span<long> buffer, int written)
-    {
-        while (written < buffer.Length && _positionInContainer < RoaringBitmap.BitsPerContainer)
+        int rangeEnd = entry.Cardinality;
+        while (written < buffer.Length && _positionInContainer < rangeEnd)
         {
             buffer[written++] = baseValue | (uint)_positionInContainer;
             _positionInContainer++;
