@@ -2,6 +2,8 @@ using System;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
+using Sparrow;
 
 namespace Corax.Utils.RoaringBitmaps;
 
@@ -63,6 +65,7 @@ public unsafe struct RoaringBitmapIterator
             }
 
             ref ContainerEntry entry = ref bitmap.GetEntryBySlot(slot);
+            RoaringBitmap.EnsureSorted(ref entry);
             long baseValue = (long)_containerIndex << RoaringBitmap.ContainerKeyShift;
 
             switch (entry.Type)
@@ -100,14 +103,44 @@ public unsafe struct RoaringBitmapIterator
     {
         ushort* arr = (ushort*)entry.Data;
         int count = entry.Cardinality;
+        int remaining = count - _positionInContainer;
+        int space = buffer.Length - written;
+        int toCopy = Math.Min(remaining, space);
 
-        while (written < buffer.Length && _positionInContainer < count)
+        if (toCopy <= 0)
+            return written;
+
+        fixed (long* dst = &buffer[written])
         {
-            buffer[written++] = baseValue | arr[_positionInContainer];
-            _positionInContainer++;
+            // SIMD: widen 4 ushorts → 4 longs at a time, adding baseValue
+            if (AdvInstructionSet.IsAcceleratedVector256 && toCopy >= 4)
+            {
+                Vector256<long> vBase = Vector256.Create(baseValue);
+                int i = 0;
+                for (; i + 4 <= toCopy; i += 4)
+                {
+                    // Load 4 ushorts, zero-extend to 4 longs
+                    long v0 = arr[_positionInContainer + i];
+                    long v1 = arr[_positionInContainer + i + 1];
+                    long v2 = arr[_positionInContainer + i + 2];
+                    long v3 = arr[_positionInContainer + i + 3];
+                    Vector256<long> vals = Vector256.Create(v0, v1, v2, v3);
+                    (vals | vBase).Store(dst + i);
+                }
+
+                // Scalar remainder
+                for (; i < toCopy; i++)
+                    dst[i] = baseValue | arr[_positionInContainer + i];
+            }
+            else
+            {
+                for (int i = 0; i < toCopy; i++)
+                    dst[i] = baseValue | arr[_positionInContainer + i];
+            }
         }
 
-        return written;
+        _positionInContainer += toCopy;
+        return written + toCopy;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -151,12 +184,51 @@ public unsafe struct RoaringBitmapIterator
     private int FillFromRange(ref ContainerEntry entry, long baseValue, Span<long> buffer, int written)
     {
         int rangeEnd = entry.Cardinality;
-        while (written < buffer.Length && _positionInContainer < rangeEnd)
+        int remaining = rangeEnd - _positionInContainer;
+        int space = buffer.Length - written;
+        int toCopy = Math.Min(remaining, space);
+
+        if (toCopy <= 0)
+            return written;
+
+        fixed (long* dst = &buffer[written])
         {
-            buffer[written++] = baseValue | (uint)_positionInContainer;
-            _positionInContainer++;
+            // SIMD: generate 4 sequential values at a time
+            if (AdvInstructionSet.IsAcceleratedVector256 && toCopy >= 4)
+            {
+                Vector256<long> vCurrent = Vector256.Create(
+                    baseValue + _positionInContainer,
+                    baseValue + _positionInContainer + 1,
+                    baseValue + _positionInContainer + 2,
+                    baseValue + _positionInContainer + 3);
+                Vector256<long> vStep = Vector256.Create(4L);
+
+                int i = 0;
+                for (; i + 4 <= toCopy; i += 4)
+                {
+                    vCurrent.Store(dst + i);
+                    vCurrent += vStep;
+                }
+
+                _positionInContainer += i;
+
+                // Scalar remainder
+                for (; i < toCopy; i++)
+                {
+                    dst[i] = baseValue | (uint)_positionInContainer;
+                    _positionInContainer++;
+                }
+            }
+            else
+            {
+                for (int i = 0; i < toCopy; i++)
+                {
+                    dst[i] = baseValue | (uint)_positionInContainer;
+                    _positionInContainer++;
+                }
+            }
         }
 
-        return written;
+        return written + toCopy;
     }
 }

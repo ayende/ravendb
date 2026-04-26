@@ -60,13 +60,17 @@ public unsafe struct RoaringBitmap : IDisposable
         get
         {
             long total = 0;
-            // Walk the index to find only live entries
             int* idx = _index.RawItems;
             for (int k = 0; k < _index.Count; k++)
             {
                 int slot = idx[k];
                 if (slot >= 0)
-                    total += _entries[slot].Cardinality;
+                {
+                    ref ContainerEntry entry = ref _entries[slot];
+                    if (entry.Type == ContainerType.ArrayUnsorted)
+                        SortAndDeduplicateArray(ref entry);
+                    total += entry.Cardinality;
+                }
             }
             return total;
         }
@@ -102,8 +106,11 @@ public unsafe struct RoaringBitmap : IDisposable
             }
             else
             {
+                // First value not at 0: start as unsorted array for O(1) appends
                 ContainerEntry newEntry = CreateArrayContainer(key);
-                ArrayContainerAdd(newEntry.Data, ref newEntry.Cardinality, low);
+                ((ushort*)newEntry.Data)[0] = low;
+                newEntry.Cardinality = 1;
+                newEntry.Type = ContainerType.ArrayUnsorted;
                 AddNewContainer(key, newEntry);
             }
         }
@@ -434,7 +441,9 @@ public unsafe struct RoaringBitmap : IDisposable
 
     private void AndContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
     {
-        // Materialize Range to bitmap first
+        EnsureSorted(ref left);
+        // Note: right belongs to another bitmap, but EnsureSorted is safe (just sorts in-place)
+
         if (left.Type == ContainerType.Range)
             ConvertRangeToBitmap(ref left);
         if (right.Type == ContainerType.Range)
@@ -505,6 +514,8 @@ public unsafe struct RoaringBitmap : IDisposable
 
     private void OrContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
     {
+        EnsureSorted(ref left);
+
         if (left.Type == ContainerType.Range)
             ConvertRangeToBitmap(ref left);
         if (right.Type == ContainerType.Range)
@@ -574,6 +585,8 @@ public unsafe struct RoaringBitmap : IDisposable
 
     private void XorContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
     {
+        EnsureSorted(ref left);
+
         if (left.Type == ContainerType.Range)
             ConvertRangeToBitmap(ref left);
         if (right.Type == ContainerType.Range)
@@ -641,6 +654,8 @@ public unsafe struct RoaringBitmap : IDisposable
 
     private void AndNotContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
     {
+        EnsureSorted(ref left);
+
         if (left.Type == ContainerType.Range)
             ConvertRangeToBitmap(ref left);
         if (right.Type == ContainerType.Range)
@@ -912,6 +927,19 @@ public unsafe struct RoaringBitmap : IDisposable
     {
         switch (entry.Type)
         {
+            case ContainerType.ArrayUnsorted:
+                EnsureArrayCapacity(ref entry, entry.Cardinality + 1);
+                ((ushort*)entry.Data)[entry.Cardinality] = value;
+                entry.Cardinality++;
+                if (entry.Cardinality > ArrayContainerMaxCardinality)
+                {
+                    // Sort+dedup to see if we're still over threshold
+                    SortAndDeduplicateArray(ref entry);
+                    if (entry.Cardinality > ArrayContainerMaxCardinality)
+                        ConvertArrayToBitmap(ref entry);
+                }
+                break;
+
             case ContainerType.Array:
                 EnsureArrayCapacity(ref entry, entry.Cardinality + 1);
                 ArrayContainerAdd(entry.Data, ref entry.Cardinality, value);
@@ -926,7 +954,6 @@ public unsafe struct RoaringBitmap : IDisposable
             case ContainerType.Range:
                 if (value == entry.Cardinality)
                 {
-                    // Extending the range by one — O(1)
                     entry.Cardinality++;
                 }
                 else if (value < entry.Cardinality)
@@ -935,7 +962,6 @@ public unsafe struct RoaringBitmap : IDisposable
                 }
                 else
                 {
-                    // Gap: convert Range to Array or Bitmap, then add
                     ConvertRangeForAdd(ref entry, value);
                 }
                 break;
@@ -945,6 +971,9 @@ public unsafe struct RoaringBitmap : IDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void RemoveFromContainer(ref ContainerEntry entry, ushort value)
     {
+        if (entry.Type == ContainerType.ArrayUnsorted)
+            SortAndDeduplicateArray(ref entry);
+
         switch (entry.Type)
         {
             case ContainerType.Array:
@@ -978,8 +1007,11 @@ public unsafe struct RoaringBitmap : IDisposable
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool ContainerContains(ref ContainerEntry entry, ushort value)
+    private bool ContainerContains(ref ContainerEntry entry, ushort value)
     {
+        if (entry.Type == ContainerType.ArrayUnsorted)
+            SortAndDeduplicateArray(ref entry);
+
         return entry.Type switch
         {
             ContainerType.Array => ArrayContainerContains(entry.Data, entry.Cardinality, value),
@@ -987,6 +1019,49 @@ public unsafe struct RoaringBitmap : IDisposable
             ContainerType.Range => value < entry.Cardinality,
             _ => false
         };
+    }
+
+    #endregion
+
+    #region Array Sorting
+
+    /// <summary>
+    /// Sort an ArrayUnsorted container in-place and deduplicate. Converts to Array type.
+    /// </summary>
+    private static void SortAndDeduplicateArray(ref ContainerEntry entry)
+    {
+        Debug.Assert(entry.Type == ContainerType.ArrayUnsorted);
+
+        ushort* arr = (ushort*)entry.Data;
+        int count = entry.Cardinality;
+
+        // Sort
+        new Span<ushort>(arr, count).Sort();
+
+        // Deduplicate in-place
+        if (count > 1)
+        {
+            int write = 1;
+            for (int read = 1; read < count; read++)
+            {
+                if (arr[read] != arr[write - 1])
+                    arr[write++] = arr[read];
+            }
+            count = write;
+        }
+
+        entry.Cardinality = count;
+        entry.Type = ContainerType.Array;
+    }
+
+    /// <summary>
+    /// Ensure any ArrayUnsorted container is sorted before use in operations that require sorted data.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void EnsureSorted(ref ContainerEntry entry)
+    {
+        if (entry.Type == ContainerType.ArrayUnsorted)
+            SortAndDeduplicateArray(ref entry);
     }
 
     #endregion
@@ -1429,14 +1504,21 @@ public unsafe struct RoaringBitmap : IDisposable
 
 public enum ContainerType : byte
 {
+    /// <summary>Sorted ushort array. Binary search for Contains. Merge-based set ops.</summary>
     Array = 0,
+    /// <summary>8KB bitmap (1024 ulongs). Direct bit access.</summary>
     Bitmap = 1,
     /// <summary>
     /// Contiguous values 0..Cardinality-1 are set. No data allocation needed.
     /// Cardinality == BitsPerContainer means all 65536 bits set (full container).
     /// Sequential Add at the end is O(1) increment.
     /// </summary>
-    Range = 2
+    Range = 2,
+    /// <summary>
+    /// Unsorted ushort array. Add is O(1) append. On first read (Contains, set ops, iteration),
+    /// sorts and deduplicates, converting to Array. Avoids O(log n + shift) per Add.
+    /// </summary>
+    ArrayUnsorted = 3
 }
 
 [StructLayout(LayoutKind.Sequential)]
