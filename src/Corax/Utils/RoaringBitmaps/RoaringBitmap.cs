@@ -386,7 +386,7 @@ public unsafe struct RoaringBitmap : IDisposable
             }
             else
             {
-                AddNewContainer(key, RoaringBitmapSetOps.CloneContainer(_ctx, ref otherEntry));
+                AddNewContainer(key, CloneContainer(_ctx, ref otherEntry));
             }
         }
     }
@@ -440,7 +440,7 @@ public unsafe struct RoaringBitmap : IDisposable
         switch (left.Type, right.Type)
         {
             case (ContainerType.Bitmap, ContainerType.Bitmap):
-                left.Cardinality = RoaringBitmapSetOps.BitmapAndSimd(
+                left.Cardinality = BitmapAndSimd(
                     left.BitmapData, right.BitmapData, left.BitmapData, BitmapContainerSizeInUlongs);
                 // No Bitmap→Array conversion: these are temporary, discarded after query. See note [1].
                 break;
@@ -518,7 +518,7 @@ public unsafe struct RoaringBitmap : IDisposable
         switch (left.Type, right.Type)
         {
             case (ContainerType.Bitmap, ContainerType.Bitmap):
-                left.Cardinality = RoaringBitmapSetOps.BitmapOrSimd(
+                left.Cardinality = BitmapOrSimd(
                     left.BitmapData, right.BitmapData, left.BitmapData, BitmapContainerSizeInUlongs);
                 // No Bitmap→Array conversion: these are temporary, discarded after query. See note [1].
                 break;
@@ -601,7 +601,7 @@ public unsafe struct RoaringBitmap : IDisposable
         switch (left.Type, right.Type)
         {
             case (ContainerType.Bitmap, ContainerType.Bitmap):
-                left.Cardinality = RoaringBitmapSetOps.BitmapAndNotSimd(
+                left.Cardinality = BitmapAndNotSimd(
                     left.BitmapData, right.BitmapData, left.BitmapData, BitmapContainerSizeInUlongs);
                 // No Bitmap→Array conversion: these are temporary, discarded after query. See note [1].
                 break;
@@ -1391,6 +1391,128 @@ public unsafe struct RoaringBitmap : IDisposable
 
     internal ByteStringContext Context => _ctx;
 
+    #region SIMD Bitmap Operations
+
+    private interface IBitmapOp
+    {
+        static abstract ulong Apply(ulong a, ulong b);
+        static abstract Vector128<ulong> Apply(Vector128<ulong> a, Vector128<ulong> b);
+        static abstract Vector256<ulong> Apply(Vector256<ulong> a, Vector256<ulong> b);
+        static abstract Vector512<ulong> Apply(Vector512<ulong> a, Vector512<ulong> b);
+    }
+
+    private struct AndOp : IBitmapOp
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static ulong Apply(ulong a, ulong b) => a & b;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector128<ulong> Apply(Vector128<ulong> a, Vector128<ulong> b) => a & b;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector256<ulong> Apply(Vector256<ulong> a, Vector256<ulong> b) => a & b;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector512<ulong> Apply(Vector512<ulong> a, Vector512<ulong> b) => a & b;
+    }
+
+    private struct OrOp : IBitmapOp
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static ulong Apply(ulong a, ulong b) => a | b;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector128<ulong> Apply(Vector128<ulong> a, Vector128<ulong> b) => a | b;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector256<ulong> Apply(Vector256<ulong> a, Vector256<ulong> b) => a | b;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector512<ulong> Apply(Vector512<ulong> a, Vector512<ulong> b) => a | b;
+    }
+
+    private struct AndNotOp : IBitmapOp
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static ulong Apply(ulong a, ulong b) => a & ~b;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector128<ulong> Apply(Vector128<ulong> a, Vector128<ulong> b) => Vector128.AndNot(a, b);
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector256<ulong> Apply(Vector256<ulong> a, Vector256<ulong> b) => Vector256.AndNot(a, b);
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector512<ulong> Apply(Vector512<ulong> a, Vector512<ulong> b) => Vector512.AndNot(a, b);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static int BitmapAndSimd(ulong* a, ulong* b, ulong* dst, int count) => BitmapOpDispatch<AndOp>(a, b, dst, count);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static int BitmapOrSimd(ulong* a, ulong* b, ulong* dst, int count) => BitmapOpDispatch<OrOp>(a, b, dst, count);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static int BitmapAndNotSimd(ulong* a, ulong* b, ulong* dst, int count) => BitmapOpDispatch<AndNotOp>(a, b, dst, count);
+
+    // Scalar methods for test verification
+    internal static int BitmapAndScalar(ulong* a, ulong* b, ulong* dst, int count) => BitmapOpScalar<AndOp>(a, b, dst, count);
+    internal static int BitmapOrScalar(ulong* a, ulong* b, ulong* dst, int count) => BitmapOpScalar<OrOp>(a, b, dst, count);
+    internal static int BitmapAndNotScalar(ulong* a, ulong* b, ulong* dst, int count) => BitmapOpScalar<AndNotOp>(a, b, dst, count);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int BitmapOpDispatch<TOp>(ulong* a, ulong* b, ulong* dst, int count) where TOp : struct, IBitmapOp
+    {
+        if (AdvInstructionSet.IsAcceleratedVector512) return BitmapOpVector512<TOp>(a, b, dst, count);
+        if (AdvInstructionSet.IsAcceleratedVector256) return BitmapOpVector256<TOp>(a, b, dst, count);
+        if (AdvInstructionSet.IsAcceleratedVector128) return BitmapOpVector128<TOp>(a, b, dst, count);
+        return BitmapOpScalar<TOp>(a, b, dst, count);
+    }
+
+    private static int BitmapOpVector512<TOp>(ulong* a, ulong* b, ulong* dst, int count) where TOp : struct, IBitmapOp
+    {
+        int N = Vector512<ulong>.Count;
+        int cardinality = 0, i = 0;
+        for (; i + N <= count; i += N)
+        {
+            TOp.Apply(Vector512.Load(a + i), Vector512.Load(b + i)).Store(dst + i);
+            for (int j = 0; j < N; j++) cardinality += BitOperations.PopCount(dst[i + j]);
+        }
+        for (; i < count; i++) { dst[i] = TOp.Apply(a[i], b[i]); cardinality += BitOperations.PopCount(dst[i]); }
+        return cardinality;
+    }
+
+    private static int BitmapOpVector256<TOp>(ulong* a, ulong* b, ulong* dst, int count) where TOp : struct, IBitmapOp
+    {
+        int N = Vector256<ulong>.Count;
+        int cardinality = 0, i = 0;
+        for (; i + N <= count; i += N)
+        {
+            TOp.Apply(Vector256.Load(a + i), Vector256.Load(b + i)).Store(dst + i);
+            for (int j = 0; j < N; j++) cardinality += BitOperations.PopCount(dst[i + j]);
+        }
+        for (; i < count; i++) { dst[i] = TOp.Apply(a[i], b[i]); cardinality += BitOperations.PopCount(dst[i]); }
+        return cardinality;
+    }
+
+    private static int BitmapOpVector128<TOp>(ulong* a, ulong* b, ulong* dst, int count) where TOp : struct, IBitmapOp
+    {
+        int N = Vector128<ulong>.Count;
+        int cardinality = 0, i = 0;
+        for (; i + N <= count; i += N)
+        {
+            TOp.Apply(Vector128.Load(a + i), Vector128.Load(b + i)).Store(dst + i);
+            for (int j = 0; j < N; j++) cardinality += BitOperations.PopCount(dst[i + j]);
+        }
+        for (; i < count; i++) { dst[i] = TOp.Apply(a[i], b[i]); cardinality += BitOperations.PopCount(dst[i]); }
+        return cardinality;
+    }
+
+    private static int BitmapOpScalar<TOp>(ulong* a, ulong* b, ulong* dst, int count) where TOp : struct, IBitmapOp
+    {
+        int cardinality = 0;
+        for (int i = 0; i < count; i++) { dst[i] = TOp.Apply(a[i], b[i]); cardinality += BitOperations.PopCount(dst[i]); }
+        return cardinality;
+    }
+
+    internal static ContainerEntry CloneContainer(ByteStringContext ctx, ref ContainerEntry entry)
+    {
+        if (entry.Type == ContainerType.Range)
+            return new ContainerEntry { Type = ContainerType.Range, Cardinality = entry.Cardinality, Data = null, Storage = default };
+
+        int dataSize = entry.Type switch
+        {
+            ContainerType.Array or ContainerType.ArrayUnsorted => Math.Max(64, entry.Cardinality * sizeof(ushort)),
+            ContainerType.Bitmap => BitmapContainerSizeInBytes,
+            _ => 0
+        };
+        if (dataSize == 0) return default;
+
+        ctx.Allocate(dataSize, out ByteString storage);
+        Unsafe.CopyBlockUnaligned(storage.Ptr, entry.Data, (uint)dataSize);
+        return new ContainerEntry { Type = entry.Type, Cardinality = entry.Cardinality, Data = storage.Ptr, Storage = storage };
+    }
+
+    #endregion
 
     public void Dispose()
     {

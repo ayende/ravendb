@@ -270,6 +270,7 @@ public class RoaringBitmapSetOpsBenchmark
     private RoaringBitmap _roaringA, _roaringB;
     private BitArray _bclA, _bclB;
     private ByteStringContext _ctx;
+    private long[] _valuesA, _valuesB;
 
     [GlobalSetup]
     public void Setup()
@@ -285,10 +286,17 @@ public class RoaringBitmapSetOpsBenchmark
         while (setB.Count < Count)
             setB.Add(rng.NextInt64(0, MaxValue));
 
+        _valuesA = new long[setA.Count];
+        setA.CopyTo(_valuesA);
+        _valuesB = new long[setB.Count];
+        setB.CopyTo(_valuesB);
+
         _roaringA = new RoaringBitmap(_ctx);
         _roaringB = new RoaringBitmap(_ctx);
         foreach (long v in setA) _roaringA.Add(v);
         foreach (long v in setB) _roaringB.Add(v);
+        _roaringA.Finalize();
+        _roaringB.Finalize();
 
         int max = (int)Math.Min(MaxValue, int.MaxValue - 1);
         _bclA = new BitArray(max + 1);
@@ -311,10 +319,14 @@ public class RoaringBitmapSetOpsBenchmark
     [BenchmarkCategory("AND")]
     public long And_Roaring()
     {
+        // In-place on a clone — matches how Corax uses set ops
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        var result = RoaringBitmapSetOps.And(ctx, ref _roaringA, ref _roaringB);
-        long c = result.Cardinality;
-        result.Dispose();
+        var clone = new RoaringBitmap(ctx);
+        for (int i = 0; i < _valuesA.Length; i++) clone.Add(_valuesA[i]);
+        clone.Finalize();
+        clone.AndWith(ref _roaringB);
+        long c = clone.Cardinality;
+        clone.Dispose();
         return c;
     }
 
@@ -341,9 +353,12 @@ public class RoaringBitmapSetOpsBenchmark
     public long Or_Roaring()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        var result = RoaringBitmapSetOps.Or(ctx, ref _roaringA, ref _roaringB);
-        long c = result.Cardinality;
-        result.Dispose();
+        var clone = new RoaringBitmap(ctx);
+        for (int i = 0; i < _valuesA.Length; i++) clone.Add(_valuesA[i]);
+        clone.Finalize();
+        clone.OrWith(ref _roaringB);
+        long c = clone.Cardinality;
+        clone.Dispose();
         return c;
     }
 
@@ -368,9 +383,12 @@ public class RoaringBitmapSetOpsBenchmark
     public long AndNot_Roaring()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        var result = RoaringBitmapSetOps.AndNot(ctx, ref _roaringA, ref _roaringB);
-        long c = result.Cardinality;
-        result.Dispose();
+        var clone = new RoaringBitmap(ctx);
+        for (int i = 0; i < _valuesA.Length; i++) clone.Add(_valuesA[i]);
+        clone.Finalize();
+        clone.AndNotWith(ref _roaringB);
+        long c = clone.Cardinality;
+        clone.Dispose();
         return c;
     }
 

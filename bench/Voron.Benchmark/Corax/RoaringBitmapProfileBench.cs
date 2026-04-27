@@ -60,7 +60,7 @@ public static class RoaringBitmapProfileBench
 
             // AND merge — arrays already sorted now
             var swMerge = Stopwatch.StartNew();
-            var result = RoaringBitmapSetOps.And(ctx, ref a, ref b);
+            a.AndWith(ref b); var result = a;
             swMerge.Stop();
 
             int avgPerContainer = count / Math.Max(containersA, 1);
@@ -95,7 +95,7 @@ public static class RoaringBitmapProfileBench
             int containers = a.ContainerCount;
 
             var swAnd = Stopwatch.StartNew();
-            var result = RoaringBitmapSetOps.And(ctx, ref a, ref b);
+            a.AndWith(ref b); var result = a;
             swAnd.Stop();
 
             // In-place
