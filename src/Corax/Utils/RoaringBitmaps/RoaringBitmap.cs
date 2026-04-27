@@ -254,11 +254,14 @@ public unsafe struct RoaringBitmap : IDisposable
             loWord++;
         }
 
-        // Full words: count existing bits before overwriting
-        for (int w = loWord; w <= hiWord; w++)
+        // Full words: count existing set bits, then overwrite with all-ones
+        int fullWordCount = hiWord - loWord + 1;
+        if (fullWordCount > 0)
         {
-            newBits += 64 - BitOperations.PopCount(bitmap[w]);
-            bitmap[w] = ulong.MaxValue;
+            for (int w = loWord; w <= hiWord; w++)
+                newBits -= BitOperations.PopCount(bitmap[w]);
+            newBits += fullWordCount * 64;
+            new Span<ulong>(bitmap + loWord, fullWordCount).Fill(ulong.MaxValue);
         }
 
         if (lastPartialWord >= 0)
@@ -308,29 +311,13 @@ public unsafe struct RoaringBitmap : IDisposable
     {
         var copy = new RoaringBitmap(_ctx);
 
-        int indexLen = _index.Count;
-        if (indexLen == 0)
-            return copy;
-
-        // Allocate index sized to source and fill with -1 (absent)
-        copy._index.EnsureCapacityFor(_ctx, indexLen);
-        copy._index.Count = indexLen;
-        new Span<int>(copy._index.RawItems, indexLen).Fill(IndexAbsent);
-
-        // Walk entries directly — skip free slots, clone each live entry
+        // Walk entries directly using the Key field — no index indirection needed
         ContainerEntry* entries = _entries.RawItems;
-        int* srcIdx = _index.RawItems;
         int entryCount = _entries.Count;
-
-        // We need to find the key for each live entry. Walk the source index
-        // to get key->slot mappings and clone each live entry.
-        for (int k = 0; k < indexLen; k++)
+        for (int i = 0; i < entryCount; i++)
         {
-            int slot = srcIdx[k];
-            if (slot >= 0 && entries[slot].Type != ContainerType.Free)
-            {
-                copy.AddContainer(k, CloneContainer(_ctx, ref entries[slot]));
-            }
+            if (entries[i].Type != ContainerType.Free)
+                copy.AddContainer(entries[i].Key, CloneContainer(_ctx, ref entries[i]));
         }
         return copy;
     }
@@ -829,6 +816,7 @@ public unsafe struct RoaringBitmap : IDisposable
     private int AddNewContainer(long key, ContainerEntry entry)
     {
         EnsureIndexCoversKey(key);
+        entry.Key = (uint)key;
 
         int slot;
         if (_freeListHead != FreeSlotTerminator)
@@ -1685,7 +1673,10 @@ public unsafe struct ContainerEntry
 
     [FieldOffset(20)] public ContainerType Type;
 
-    // --- Free list union: when Type == 0xFF (Free), NextFreeSlot overlaps Cardinality ---
+    /// <summary>Container key (value >> 16). Allows walking entries without index indirection.</summary>
+    [FieldOffset(24)] public uint Key;
+
+    // --- Free list union: when Type == Free, NextFreeSlot overlaps Cardinality ---
     [FieldOffset(16)] internal int NextFreeSlot;
 
 #if DEBUG
