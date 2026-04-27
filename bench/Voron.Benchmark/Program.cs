@@ -26,6 +26,18 @@ namespace Voron.Benchmark
                 return;
             }
 
+            if (args.Length > 0 && args[0] == "corax-roaring")
+            {
+                RoaringBitmapCoraxBench.Run();
+                return;
+            }
+
+            if (args.Length > 0 && args[0] == "corax-query")
+            {
+                CoraxQueryBitmapBench.Run();
+                return;
+            }
+
 #if DEBUG
             BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args, new DebugInProcessConfig());
 #else

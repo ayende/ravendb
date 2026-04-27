@@ -34,10 +34,10 @@ public static class Program
             try
             {
                 using (var testOutputHelper = new ConsoleTestOutputHelper())
-                await using (var test = new CRUD(testOutputHelper))
+                await using (var test = new    FastTests.Corax.RoaringBitmapTests(testOutputHelper))
                 {
                     DebuggerAttachedTimeout.DisableLongTimespan = true;
-                    test.CRUD_Operations(RavenTestBase.Options.ForMode(RavenDatabaseMode.Single), true);
+                    test.IteratorHandlesBitmapContainers();
                 }
             }
             catch (Exception e)
