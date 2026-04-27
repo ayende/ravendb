@@ -1243,9 +1243,9 @@ public unsafe struct RoaringBitmap : IDisposable
         Debug.Assert(entry.Type == ContainerType.Range);
         int rangeCount = entry.Cardinality;
 
-        if (rangeCount + 1 > ArrayContainerMaxCardinality || value >= ArrayContainerMaxCardinality)
+        if (rangeCount + 1 > ArrayContainerMaxCardinality)
         {
-            // Result will be dense — use bitmap
+            // Too many entries for an array container — use bitmap
             ConvertRangeToBitmap(ref entry);
             BitmapContainerAdd(entry.Data, ref entry.Cardinality, value);
         }
