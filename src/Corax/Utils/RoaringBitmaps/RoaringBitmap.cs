@@ -110,7 +110,7 @@ public unsafe struct RoaringBitmap : IDisposable
             {
                 // First value not at 0: start as unsorted array for O(1) appends
                 ContainerEntry newEntry = CreateArrayContainer(key);
-                ((ushort*)newEntry.Data)[0] = low;
+                (newEntry.ArrayData)[0] = low;
                 newEntry.Cardinality = 1;
                 newEntry.Type = ContainerType.ArrayUnsorted;
                 AddNewContainer(key, newEntry);
@@ -175,7 +175,7 @@ public unsafe struct RoaringBitmap : IDisposable
                     AssertFinalized(ref e);
                     if (e.Type == ContainerType.Array)
                         ConvertArrayToBitmap(ref e);
-                    ulong* bitmap = (ulong*)e.Data;
+                    ulong* bitmap = e.BitmapData;
                     for (int v = lo; v <= hi; v++)
                         bitmap[v >> 6] |= 1UL << (v & 63);
                     e.Cardinality = BitmapContainerCardinality(e.Data);
@@ -211,7 +211,7 @@ public unsafe struct RoaringBitmap : IDisposable
 
                 if (e.Type == ContainerType.Bitmap)
                 {
-                    ulong* bitmap = (ulong*)e.Data;
+                    ulong* bitmap = e.BitmapData;
                     for (int v = lo; v <= hi; v++)
                         bitmap[v >> 6] |= 1UL << (v & 63);
                     e.Cardinality = BitmapContainerCardinality(e.Data);
@@ -290,7 +290,7 @@ public unsafe struct RoaringBitmap : IDisposable
     {
         Debug.Assert(entry.Type == ContainerType.ArrayUnsorted);
 
-        ushort* arr = (ushort*)entry.Data;
+        ushort* arr = entry.ArrayData;
         int count = entry.Cardinality;
 
         // Clear scratch bitmap
@@ -441,15 +441,15 @@ public unsafe struct RoaringBitmap : IDisposable
         {
             case (ContainerType.Bitmap, ContainerType.Bitmap):
                 left.Cardinality = RoaringBitmapSetOps.BitmapAndSimd(
-                    (ulong*)left.Data, (ulong*)right.Data, (ulong*)left.Data, BitmapContainerSizeInUlongs);
+                    left.BitmapData, right.BitmapData, left.BitmapData, BitmapContainerSizeInUlongs);
                 // No Bitmap→Array conversion: these are temporary, discarded after query. See note [1].
                 break;
 
             case (ContainerType.Bitmap, ContainerType.Array):
             {
                 // Result is at most right.Cardinality entries — always an array
-                ushort* arr = (ushort*)right.Data;
-                ulong* bmp = (ulong*)left.Data;
+                ushort* arr = right.ArrayData;
+                ulong* bmp = left.BitmapData;
                 _ctx.Allocate(Math.Max(InitialArrayContainerSizeInBytes, right.Cardinality * sizeof(ushort)), out ByteString newStorage);
                 ushort* dst = (ushort*)newStorage.Ptr;
                 int count = 0;
@@ -470,8 +470,8 @@ public unsafe struct RoaringBitmap : IDisposable
             case (ContainerType.Array, ContainerType.Bitmap):
             {
                 // Filter left array against right bitmap, in-place
-                ushort* arr = (ushort*)left.Data;
-                ulong* bmp = (ulong*)right.Data;
+                ushort* arr = left.ArrayData;
+                ulong* bmp = right.BitmapData;
                 int count = 0;
                 for (int i = 0; i < left.Cardinality; i++)
                 {
@@ -486,8 +486,8 @@ public unsafe struct RoaringBitmap : IDisposable
             case (ContainerType.Array, ContainerType.Array):
             {
                 // In-place intersection of two sorted arrays
-                ushort* a = (ushort*)left.Data;
-                ushort* b = (ushort*)right.Data;
+                ushort* a = left.ArrayData;
+                ushort* b = right.ArrayData;
                 int count = ArrayContainerAnd(a, left.Cardinality, b, right.Cardinality, a);
                 left.Cardinality = count;
                 break;
@@ -519,14 +519,14 @@ public unsafe struct RoaringBitmap : IDisposable
         {
             case (ContainerType.Bitmap, ContainerType.Bitmap):
                 left.Cardinality = RoaringBitmapSetOps.BitmapOrSimd(
-                    (ulong*)left.Data, (ulong*)right.Data, (ulong*)left.Data, BitmapContainerSizeInUlongs);
+                    left.BitmapData, right.BitmapData, left.BitmapData, BitmapContainerSizeInUlongs);
                 // No Bitmap→Array conversion: these are temporary, discarded after query. See note [1].
                 break;
 
             case (ContainerType.Bitmap, ContainerType.Array):
             {
-                ulong* bmp = (ulong*)left.Data;
-                ushort* arr = (ushort*)right.Data;
+                ulong* bmp = left.BitmapData;
+                ushort* arr = right.ArrayData;
                 for (int i = 0; i < right.Cardinality; i++)
                 {
                     ushort val = arr[i];
@@ -554,7 +554,7 @@ public unsafe struct RoaringBitmap : IDisposable
                 {
                     // Merge two sorted arrays into a new buffer
                     _ctx.Allocate(Math.Max(InitialArrayContainerSizeInBytes, maxResult * sizeof(ushort)), out ByteString newStorage);
-                    int count = ArrayContainerOr((ushort*)left.Data, left.Cardinality, (ushort*)right.Data, right.Cardinality, (ushort*)newStorage.Ptr);
+                    int count = ArrayContainerOr(left.ArrayData, left.Cardinality, right.ArrayData, right.Cardinality, (ushort*)newStorage.Ptr);
                     _ctx.Release(ref left.Storage);
                     left.Storage = newStorage;
                     left.Data = newStorage.Ptr;
@@ -602,14 +602,14 @@ public unsafe struct RoaringBitmap : IDisposable
         {
             case (ContainerType.Bitmap, ContainerType.Bitmap):
                 left.Cardinality = RoaringBitmapSetOps.BitmapAndNotSimd(
-                    (ulong*)left.Data, (ulong*)right.Data, (ulong*)left.Data, BitmapContainerSizeInUlongs);
+                    left.BitmapData, right.BitmapData, left.BitmapData, BitmapContainerSizeInUlongs);
                 // No Bitmap→Array conversion: these are temporary, discarded after query. See note [1].
                 break;
 
             case (ContainerType.Bitmap, ContainerType.Array):
             {
-                ulong* bmp = (ulong*)left.Data;
-                ushort* arr = (ushort*)right.Data;
+                ulong* bmp = left.BitmapData;
+                ushort* arr = right.ArrayData;
                 for (int i = 0; i < right.Cardinality; i++)
                 {
                     ushort val = arr[i];
@@ -626,8 +626,8 @@ public unsafe struct RoaringBitmap : IDisposable
 
             case (ContainerType.Array, ContainerType.Bitmap):
             {
-                ushort* arr = (ushort*)left.Data;
-                ulong* bmp = (ulong*)right.Data;
+                ushort* arr = left.ArrayData;
+                ulong* bmp = right.BitmapData;
                 int count = 0;
                 for (int i = 0; i < left.Cardinality; i++)
                 {
@@ -641,8 +641,8 @@ public unsafe struct RoaringBitmap : IDisposable
 
             case (ContainerType.Array, ContainerType.Array):
             {
-                ushort* a = (ushort*)left.Data;
-                ushort* b = (ushort*)right.Data;
+                ushort* a = left.ArrayData;
+                ushort* b = right.ArrayData;
                 int count = ArrayContainerAndNot(a, left.Cardinality, b, right.Cardinality, a);
                 left.Cardinality = count;
                 break;
@@ -865,7 +865,7 @@ public unsafe struct RoaringBitmap : IDisposable
                     }
                 }
                 EnsureArrayCapacity(ref entry, entry.Cardinality + 1);
-                ((ushort*)entry.Data)[entry.Cardinality] = value;
+                (entry.ArrayData)[entry.Cardinality] = value;
                 entry.Cardinality++;
                 break;
 
@@ -932,7 +932,7 @@ public unsafe struct RoaringBitmap : IDisposable
     /// </summary>
     private static void SortSmallArray(ref ContainerEntry entry)
     {
-        ushort* arr = (ushort*)entry.Data;
+        ushort* arr = entry.ArrayData;
         int count = entry.Cardinality;
 
         new Span<ushort>(arr, count).Sort();
@@ -1344,7 +1344,7 @@ public unsafe struct RoaringBitmap : IDisposable
     {
         Debug.Assert(entry.Type == ContainerType.Array);
 
-        ushort* arr = (ushort*)entry.Data;
+        ushort* arr = entry.ArrayData;
         int count = entry.Cardinality;
 
         _ctx.Allocate(BitmapContainerSizeInBytes, out ByteString newStorage);
@@ -1370,7 +1370,7 @@ public unsafe struct RoaringBitmap : IDisposable
         Debug.Assert(entry.Type == ContainerType.Bitmap);
         Debug.Assert(entry.Cardinality <= ArrayContainerMaxCardinality);
 
-        ulong* bitmap = (ulong*)entry.Data;
+        ulong* bitmap = entry.BitmapData;
 
         _ctx.Allocate(BitmapContainerSizeInBytes, out ByteString newStorage);
         ushort* arr = (ushort*)newStorage.Ptr;
@@ -1464,5 +1464,34 @@ public unsafe struct ContainerEntry
 #if DEBUG
     internal bool IsFree => Type == (ContainerType)0xFF;
 #endif
+
+    /// <summary>
+    /// Access container data as ushort array. Debug: Span with bounds checking. Release: raw pointer.
+    /// </summary>
+    public ushort* ArrayData
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get
+        {
+            Debug.Assert(Type is ContainerType.Array or ContainerType.ArrayUnsorted,
+                $"ArrayData accessed on {Type} container");
+            Debug.Assert(Data != null, "ArrayData is null");
+            return (ushort*)Data;
+        }
+    }
+
+    /// <summary>
+    /// Access container data as bitmap (ulong array). Debug: asserts Bitmap type. Release: raw pointer.
+    /// </summary>
+    public ulong* BitmapData
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get
+        {
+            Debug.Assert(Type == ContainerType.Bitmap, $"BitmapData accessed on {Type} container");
+            Debug.Assert(Data != null, "BitmapData is null");
+            return (ulong*)Data;
+        }
+    }
 }
 // Size: 24 bytes (8 Data + 8 Storage + 4 Cardinality + 1 Type + 3 padding)

@@ -74,8 +74,8 @@ public static unsafe class RoaringBitmapSetOps
     {
         ctx.Allocate(RoaringBitmap.BitmapContainerSizeInBytes, out ByteString storage);
         ulong* dst = (ulong*)storage.Ptr;
-        ulong* ap = (ulong*)a.Data;
-        ulong* bp = (ulong*)b.Data;
+        ulong* ap = a.BitmapData;
+        ulong* bp = b.BitmapData;
 
         int cardinality = BitmapAndSimd(ap, bp, dst, RoaringBitmap.BitmapContainerSizeInUlongs);
 
@@ -97,8 +97,8 @@ public static unsafe class RoaringBitmapSetOps
         ctx.Allocate(Math.Max(64, maxResult * sizeof(ushort)), out ByteString storage);
 
         int count = RoaringBitmap.ArrayContainerAnd(
-            (ushort*)a.Data, a.Cardinality,
-            (ushort*)b.Data, b.Cardinality,
+            a.ArrayData, a.Cardinality,
+            b.ArrayData, b.Cardinality,
             (ushort*)storage.Ptr);
 
         return new ContainerEntry
@@ -114,8 +114,8 @@ public static unsafe class RoaringBitmapSetOps
     {
         // Check which bits from the array exist in the bitmap
         ctx.Allocate(Math.Max(64, array.Cardinality * sizeof(ushort)), out ByteString storage);
-        ushort* arr = (ushort*)array.Data;
-        ulong* bmp = (ulong*)bitmap.Data;
+        ushort* arr = array.ArrayData;
+        ulong* bmp = bitmap.BitmapData;
         ushort* dst = (ushort*)storage.Ptr;
 
         int count = 0;
@@ -193,8 +193,8 @@ public static unsafe class RoaringBitmapSetOps
     {
         ctx.Allocate(RoaringBitmap.BitmapContainerSizeInBytes, out ByteString storage);
         ulong* dst = (ulong*)storage.Ptr;
-        ulong* ap = (ulong*)a.Data;
-        ulong* bp = (ulong*)b.Data;
+        ulong* ap = a.BitmapData;
+        ulong* bp = b.BitmapData;
 
         int cardinality = BitmapOrSimd(ap, bp, dst, RoaringBitmap.BitmapContainerSizeInUlongs);
 
@@ -222,8 +222,8 @@ public static unsafe class RoaringBitmapSetOps
             new Span<byte>(bitmap, RoaringBitmap.BitmapContainerSizeInBytes).Clear();
 
             // Set bits from both arrays
-            ushort* aArr = (ushort*)a.Data;
-            ushort* bArr = (ushort*)b.Data;
+            ushort* aArr = a.ArrayData;
+            ushort* bArr = b.ArrayData;
 
             for (int i = 0; i < a.Cardinality; i++)
             {
@@ -253,8 +253,8 @@ public static unsafe class RoaringBitmapSetOps
         // Both are small enough that the result fits in an array
         ctx.Allocate(Math.Max(64, maxResult * sizeof(ushort)), out ByteString storage);
         int count = RoaringBitmap.ArrayContainerOr(
-            (ushort*)a.Data, a.Cardinality,
-            (ushort*)b.Data, b.Cardinality,
+            a.ArrayData, a.Cardinality,
+            b.ArrayData, b.Cardinality,
             (ushort*)storage.Ptr);
 
         return new ContainerEntry
@@ -273,7 +273,7 @@ public static unsafe class RoaringBitmapSetOps
         Unsafe.CopyBlockUnaligned(storage.Ptr, bitmap.Data, RoaringBitmap.BitmapContainerSizeInBytes);
 
         ulong* dst = (ulong*)storage.Ptr;
-        ushort* arr = (ushort*)array.Data;
+        ushort* arr = array.ArrayData;
 
         for (int i = 0; i < array.Cardinality; i++)
         {
@@ -354,8 +354,8 @@ public static unsafe class RoaringBitmapSetOps
     {
         ctx.Allocate(RoaringBitmap.BitmapContainerSizeInBytes, out ByteString storage);
         ulong* dst = (ulong*)storage.Ptr;
-        ulong* ap = (ulong*)a.Data;
-        ulong* bp = (ulong*)b.Data;
+        ulong* ap = a.BitmapData;
+        ulong* bp = b.BitmapData;
 
         int cardinality = BitmapAndNotSimd(ap, bp, dst, RoaringBitmap.BitmapContainerSizeInUlongs);
 
@@ -376,8 +376,8 @@ public static unsafe class RoaringBitmapSetOps
         ctx.Allocate(Math.Max(64, a.Cardinality * sizeof(ushort)), out ByteString storage);
 
         int count = RoaringBitmap.ArrayContainerAndNot(
-            (ushort*)a.Data, a.Cardinality,
-            (ushort*)b.Data, b.Cardinality,
+            a.ArrayData, a.Cardinality,
+            b.ArrayData, b.Cardinality,
             (ushort*)storage.Ptr);
 
         return new ContainerEntry
@@ -392,8 +392,8 @@ public static unsafe class RoaringBitmapSetOps
     private static ContainerEntry AndNotArrayBitmap(ByteStringContext ctx, ref ContainerEntry array, ref ContainerEntry bitmap)
     {
         ctx.Allocate(Math.Max(64, array.Cardinality * sizeof(ushort)), out ByteString storage);
-        ushort* arr = (ushort*)array.Data;
-        ulong* bmp = (ulong*)bitmap.Data;
+        ushort* arr = array.ArrayData;
+        ulong* bmp = bitmap.BitmapData;
         ushort* dst = (ushort*)storage.Ptr;
 
         int count = 0;
@@ -420,7 +420,7 @@ public static unsafe class RoaringBitmapSetOps
         Unsafe.CopyBlockUnaligned(storage.Ptr, bitmap.Data, RoaringBitmap.BitmapContainerSizeInBytes);
 
         ulong* dst = (ulong*)storage.Ptr;
-        ushort* arr = (ushort*)array.Data;
+        ushort* arr = array.ArrayData;
 
         for (int i = 0; i < array.Cardinality; i++)
         {
@@ -664,7 +664,7 @@ public static unsafe class RoaringBitmapSetOps
 
     private static void ConvertResultBitmapToArray(ByteStringContext ctx, ref ContainerEntry entry)
     {
-        ulong* bitmap = (ulong*)entry.Data;
+        ulong* bitmap = entry.BitmapData;
         ctx.Allocate(Math.Max(64, entry.Cardinality * sizeof(ushort)), out ByteString newStorage);
 
         int count = RoaringBitmap.BitmapToArray(bitmap, (ushort*)newStorage.Ptr);
