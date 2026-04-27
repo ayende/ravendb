@@ -190,6 +190,7 @@ public static class RoaringBitmapQuickBench
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
         var bmp = new RoaringBitmap(ctx);
         for (int i = 0; i < buildValues.Length; i++) bmp.Add(buildValues[i]);
+        bmp.PrepareForReading();
 
         var sw = Stopwatch.StartNew();
         int found = 0;
@@ -239,17 +240,15 @@ public static class RoaringBitmapQuickBench
         b.PrepareForReading();
 
         var sw = Stopwatch.StartNew();
-        RoaringBitmap result;
         switch (op)
         {
-            case "AND": a.AndWith(ref b); result = a; break;
-            case "OR": a.OrWith(ref b); result = a; break;
-            case "ANDNOT": a.AndNotWith(ref b); result = a; break;
+            case "AND": a.AndWith(ref b); break;
+            case "OR": a.OrWith(ref b); break;
+            case "ANDNOT": a.AndNotWith(ref b); break;
             default: throw new ArgumentException(op);
         }
-        long c = result.Cardinality;
+        long c = a.Cardinality;
         sw.Stop();
-        result.Dispose();
         a.Dispose();
         b.Dispose();
         return sw.Elapsed.TotalMilliseconds;

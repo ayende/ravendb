@@ -66,8 +66,8 @@ public static class RoaringBitmapTraceBench
         for (int i = 0; i < Math.Min(10000, valuesB.Length); i++)
             if (a.Contains(valuesB[i])) found++;
 
-        // AND (allocating)
-        a.AndWith(ref b); var andResult = a;
+        // AND (in-place)
+        a.AndWith(ref b);
 
         // OR (in-place on a copy)
         var aCopy = new RoaringBitmap(ctx);
@@ -82,17 +82,16 @@ public static class RoaringBitmapTraceBench
         aCopy2.AndNotWith(ref b);
 
         // Iterate
-        var iter = andResult.GetIterator();
+        var iter = a.GetIterator();
         long[] buf = new long[4096];
         int total = 0;
         int read;
-        while ((read = andResult.Fill(buf, ref iter)) > 0)
+        while ((read = a.Fill(buf, ref iter)) > 0)
             total += read;
 
-        andResult.Dispose();
+        a.Dispose();
         aCopy.Dispose();
         aCopy2.Dispose();
-        a.Dispose();
         b.Dispose();
     }
 
