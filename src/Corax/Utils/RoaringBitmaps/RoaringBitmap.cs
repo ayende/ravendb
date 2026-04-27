@@ -208,7 +208,7 @@ public unsafe struct RoaringBitmap : IDisposable
     {
         Debug.Assert(entry.Type == ContainerType.ArrayUnsorted);
 
-        ushort* arr = entry.ArrayData;
+        var arr = entry.ArrayData;
         int count = entry.Cardinality;
 
         Vector256<ulong> dirtyMapVec = Vector256<ulong>.Zero; // 256 chunks in 8KB = 32 bytes in chunk
@@ -379,15 +379,15 @@ public unsafe struct RoaringBitmap : IDisposable
         {
             case (ContainerType.Bitmap, ContainerType.Bitmap):
                 left.Cardinality = BitmapAndSimd(
-                    left.BitmapData, right.BitmapData, left.BitmapData, BitmapContainerSizeInUlongs);
+                    left.BitmapPtr, right.BitmapPtr, left.BitmapPtr, BitmapContainerSizeInUlongs);
                 // No Bitmap→Array conversion: these are temporary, discarded after query. See note [1].
                 break;
 
             case (ContainerType.Bitmap, ContainerType.Array):
                 {
                     // Result is at most right.Cardinality entries — always an array
-                    ushort* arr = right.ArrayData;
-                    ulong* bmp = left.BitmapData;
+                    var arr = right.ArrayData;
+                    var bmp = left.BitmapData;
                     _ctx.Allocate(Math.Max(InitialArrayContainerSizeInBytes, right.Cardinality * sizeof(ushort)), out ByteString newStorage);
                     ushort* dst = (ushort*)newStorage.Ptr;
                     int count = 0;
@@ -408,8 +408,8 @@ public unsafe struct RoaringBitmap : IDisposable
             case (ContainerType.Array, ContainerType.Bitmap):
                 {
                     // Filter left array against right bitmap, in-place
-                    ushort* arr = left.ArrayData;
-                    ulong* bmp = right.BitmapData;
+                    var arr = left.ArrayData;
+                    var bmp = right.BitmapData;
                     int count = 0;
                     for (int i = 0; i < left.Cardinality; i++)
                     {
@@ -424,8 +424,8 @@ public unsafe struct RoaringBitmap : IDisposable
             case (ContainerType.Array, ContainerType.Array):
                 {
                     // In-place intersection of two sorted arrays
-                    ushort* a = left.ArrayData;
-                    ushort* b = right.ArrayData;
+                    ushort* a = left.ArrayPtr;
+                    ushort* b = right.ArrayPtr;
                     int count = ArrayContainerAnd(a, left.Cardinality, b, right.Cardinality, a);
                     left.Cardinality = count;
                     break;
@@ -458,14 +458,14 @@ public unsafe struct RoaringBitmap : IDisposable
         {
             case (ContainerType.Bitmap, ContainerType.Bitmap):
                 left.Cardinality = BitmapOrSimd(
-                    left.BitmapData, right.BitmapData, left.BitmapData, BitmapContainerSizeInUlongs);
+                    left.BitmapPtr, right.BitmapPtr, left.BitmapPtr, BitmapContainerSizeInUlongs);
                 // No Bitmap→Array conversion: these are temporary, discarded after query. See note [1].
                 break;
 
             case (ContainerType.Bitmap, ContainerType.Array):
                 {
-                    ulong* bmp = left.BitmapData;
-                    ushort* arr = right.ArrayData;
+                    var bmp = left.BitmapData;
+                    var arr = right.ArrayData;
                     for (int i = 0; i < right.Cardinality; i++)
                     {
                         ushort val = arr[i];
@@ -493,7 +493,7 @@ public unsafe struct RoaringBitmap : IDisposable
                     {
                         // Merge two sorted arrays into stackalloc (max 8KB), then copy back
                         ushort* tmp = stackalloc ushort[ArrayContainerMaxCardinality];
-                        int count = ArrayContainerOr(left.ArrayData, left.Cardinality, right.ArrayData, right.Cardinality, tmp);
+                        int count = ArrayContainerOr(left.ArrayPtr, left.Cardinality, right.ArrayPtr, right.Cardinality, tmp);
                         EnsureArrayCapacity(ref left, count);
                         Unsafe.CopyBlockUnaligned(left.Data, (byte*)tmp, (uint)(count * sizeof(ushort)));
                         left.Cardinality = count;
@@ -541,14 +541,14 @@ public unsafe struct RoaringBitmap : IDisposable
         {
             case (ContainerType.Bitmap, ContainerType.Bitmap):
                 left.Cardinality = BitmapAndNotSimd(
-                    left.BitmapData, right.BitmapData, left.BitmapData, BitmapContainerSizeInUlongs);
+                    left.BitmapPtr, right.BitmapPtr, left.BitmapPtr, BitmapContainerSizeInUlongs);
                 // No Bitmap→Array conversion: these are temporary, discarded after query. See note [1].
                 break;
 
             case (ContainerType.Bitmap, ContainerType.Array):
                 {
-                    ulong* bmp = left.BitmapData;
-                    ushort* arr = right.ArrayData;
+                    var bmp = left.BitmapData;
+                    var arr = right.ArrayData;
                     for (int i = 0; i < right.Cardinality; i++)
                     {
                         ushort val = arr[i];
@@ -565,8 +565,8 @@ public unsafe struct RoaringBitmap : IDisposable
 
             case (ContainerType.Array, ContainerType.Bitmap):
                 {
-                    ushort* arr = left.ArrayData;
-                    ulong* bmp = right.BitmapData;
+                    var arr = left.ArrayData;
+                    var bmp = right.BitmapData;
                     int count = 0;
                     for (int i = 0; i < left.Cardinality; i++)
                     {
@@ -580,8 +580,8 @@ public unsafe struct RoaringBitmap : IDisposable
 
             case (ContainerType.Array, ContainerType.Array):
                 {
-                    ushort* a = left.ArrayData;
-                    ushort* b = right.ArrayData;
+                    ushort* a = left.ArrayPtr;
+                    ushort* b = right.ArrayPtr;
                     int count = ArrayContainerAndNot(a, left.Cardinality, b, right.Cardinality, a);
                     left.Cardinality = count;
                     break;
@@ -904,10 +904,14 @@ public unsafe struct RoaringBitmap : IDisposable
     /// </summary>
     private static void SortSmallArray(ref ContainerEntry entry)
     {
-        ushort* arr = entry.ArrayData;
+        var arr = entry.ArrayData;
         int count = entry.Cardinality;
 
+#if DEBUG
+        arr.Slice(0, count).Sort();
+#else
         new Span<ushort>(arr, count).Sort();
+#endif
 
         if (count > 1)
         {
@@ -1533,10 +1537,11 @@ public unsafe struct ContainerEntry
     internal bool IsFree => Type == ContainerType.Free;
 #endif
 
+#if DEBUG
     /// <summary>
     /// Access container data as ushort array. Debug: Span with bounds checking. Release: raw pointer.
     /// </summary>
-    public ushort* ArrayData
+    public Span<ushort> ArrayData
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         get
@@ -1544,20 +1549,62 @@ public unsafe struct ContainerEntry
             Debug.Assert(Type is ContainerType.Array or ContainerType.ArrayUnsorted,
                 $"ArrayData accessed on {Type} container");
             Debug.Assert(Data != null, "ArrayData is null");
-            return (ushort*)Data;
+            return new Span<ushort>(Data, Storage.Length / sizeof(ushort));
         }
     }
 
     /// <summary>
-    /// Access container data as bitmap (ulong array). Debug: asserts Bitmap type. Release: raw pointer.
+    /// Access container data as bitmap (ulong array). Debug: Span with bounds checking. Release: raw pointer.
     /// </summary>
-    public ulong* BitmapData
+    public Span<ulong> BitmapData
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         get
         {
             Debug.Assert(Type == ContainerType.Bitmap, $"BitmapData accessed on {Type} container");
             Debug.Assert(Data != null, "BitmapData is null");
+            return new Span<ulong>(Data, RoaringBitmap.BitmapContainerSizeInUlongs);
+        }
+    }
+#else
+    /// <summary>
+    /// Access container data as ushort array. Debug: Span with bounds checking. Release: raw pointer.
+    /// </summary>
+    public ushort* ArrayData
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => (ushort*)Data;
+    }
+
+    /// <summary>
+    /// Access container data as bitmap (ulong array). Debug: Span with bounds checking. Release: raw pointer.
+    /// </summary>
+    public ulong* BitmapData
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => (ulong*)Data;
+    }
+#endif
+
+    /// <summary>Raw ushort pointer for SIMD operations and methods requiring pointers.</summary>
+    public ushort* ArrayPtr
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get
+        {
+            Debug.Assert(Type is ContainerType.Array or ContainerType.ArrayUnsorted,
+                $"ArrayPtr accessed on {Type} container");
+            return (ushort*)Data;
+        }
+    }
+
+    /// <summary>Raw ulong pointer for SIMD operations and methods requiring pointers.</summary>
+    public ulong* BitmapPtr
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get
+        {
+            Debug.Assert(Type == ContainerType.Bitmap, $"BitmapPtr accessed on {Type} container");
             return (ulong*)Data;
         }
     }
