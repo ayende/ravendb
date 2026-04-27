@@ -241,23 +241,20 @@ public unsafe struct RoaringBitmap : IDisposable
             return;
         }
 
-        // First partial word (if lo is not word-aligned)
+        // Sequential memory access order: first partial, full middle, last partial
+        int lastPartialWord = ((hi & 63) != 63) ? hiWord-- : -1;
+
         if ((lo & 63) != 0)
         {
             bitmap[loWord] |= ulong.MaxValue << (lo & 63);
             loWord++;
         }
 
-        // Last partial word (if hi is not at end of word)
-        if ((hi & 63) != 63)
-        {
-            bitmap[hiWord] |= ulong.MaxValue >> (63 - (hi & 63));
-            hiWord--;
-        }
-
-        // Full words in the middle
         if (loWord <= hiWord)
             new Span<ulong>(bitmap + loWord, hiWord - loWord + 1).Fill(ulong.MaxValue);
+
+        if (lastPartialWord >= 0)
+            bitmap[lastPartialWord] |= ulong.MaxValue >> (63 - (hi & 63));
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
