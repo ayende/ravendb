@@ -303,7 +303,9 @@ public unsafe struct RoaringBitmap : IDisposable
 
     /// <summary>
     /// In-place OR: add all values from other into this bitmap.
-    /// Matching containers are unioned in-place. Unmatched containers from other are cloned in.
+    /// Matching containers are unioned in-place. Unmatched containers from other are stolen
+    /// (ownership transferred, zero-copy). This is destructive: other becomes invalid after
+    /// this call and must not be used (except Dispose, which is safe on stolen entries).
     /// </summary>
     public void OrWith(ref RoaringBitmap other)
     {
@@ -326,7 +328,17 @@ public unsafe struct RoaringBitmap : IDisposable
             }
             else
             {
-                AddNewContainer(key, other._types.RawItems[otherSlot], CloneContainer(_ctx, ref otherEntry, other._types.RawItems[otherSlot]));
+                // Steal: take ownership of the entry from other (zero-copy for Array/Bitmap).
+                // Range containers have no allocation, so just copy the struct.
+                ContainerType otherType = other._types.RawItems[otherSlot];
+                ContainerEntry stolen = otherEntry;
+
+                // Clear other's ownership so its Dispose won't release our storage
+                otherEntry.Storage = default;
+                otherEntry.Data = null;
+                otherEntry.Cardinality = 0;
+
+                AddNewContainer(key, otherType, stolen);
             }
         }
     }
