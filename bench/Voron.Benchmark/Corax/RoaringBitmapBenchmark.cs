@@ -14,8 +14,29 @@ namespace Voron.Benchmark.Corax;
 /// across different set sizes and value ranges.
 /// </summary>
 [MemoryDiagnoser]
+[Config(typeof(LongBuildConfig))]
 public class RoaringBitmapBenchmark
 {
+    private class LongBuildConfig : BenchmarkDotNet.Configs.ManualConfig
+    {
+        public LongBuildConfig()
+        {
+            AddJob(new BenchmarkDotNet.Jobs.Job
+            {
+                Run =
+                {
+                    LaunchCount = 1,
+                    WarmupCount = 1,
+                    IterationCount = 3,
+                },
+                Infrastructure =
+                {
+                    Toolchain = BenchmarkDotNet.Toolchains.InProcess.Emit.InProcessEmitToolchain.Instance,
+                }
+            });
+        }
+    }
+
     /// <summary>Number of values to insert/query.</summary>
     [Params(500, 5_000, 50_000, 500_000)]
     public int Count;
@@ -217,8 +238,29 @@ public class RoaringBitmapBenchmark
 /// GrowableBitArray has no set operations, so it's excluded from this benchmark.
 /// </summary>
 [MemoryDiagnoser]
+[Config(typeof(LongBuildConfig))]
 public class RoaringBitmapSetOpsBenchmark
 {
+    private class LongBuildConfig : BenchmarkDotNet.Configs.ManualConfig
+    {
+        public LongBuildConfig()
+        {
+            AddJob(new BenchmarkDotNet.Jobs.Job
+            {
+                Run =
+                {
+                    LaunchCount = 1,
+                    WarmupCount = 1,
+                    IterationCount = 3,
+                },
+                Infrastructure =
+                {
+                    Toolchain = BenchmarkDotNet.Toolchains.InProcess.Emit.InProcessEmitToolchain.Instance,
+                }
+            });
+        }
+    }
+
     [Params(500, 5_000, 50_000, 500_000)]
     public int Count;
 
@@ -358,8 +400,29 @@ public class RoaringBitmapSetOpsBenchmark
 /// the benchmark result so they appear in the output.
 /// </summary>
 [MemoryDiagnoser]
+[Config(typeof(LongBuildConfig))]
 public class RoaringBitmapMemoryBenchmark
 {
+    private class LongBuildConfig : BenchmarkDotNet.Configs.ManualConfig
+    {
+        public LongBuildConfig()
+        {
+            AddJob(new BenchmarkDotNet.Jobs.Job
+            {
+                Run =
+                {
+                    LaunchCount = 1,
+                    WarmupCount = 1,
+                    IterationCount = 3,
+                },
+                Infrastructure =
+                {
+                    Toolchain = BenchmarkDotNet.Toolchains.InProcess.Emit.InProcessEmitToolchain.Instance,
+                }
+            });
+        }
+    }
+
     [Params(1_000, 10_000, 100_000)]
     public int Count;
 
