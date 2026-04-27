@@ -105,30 +105,24 @@ public unsafe struct RoaringBitmapIterator
 
         fixed (long* dst = &buffer[written])
         {
+            ushort* src = arr + _positionInContainer;
+            int i = 0;
+
             // SIMD: widen 4 ushorts → 4 longs, OR with baseValue, store 4 longs.
-            // Uses Vector256 for the OR + store. The ushort→long widening is scalar
-            // because vpmovzxwq (zero-extend) isn't directly available in .NET's
-            // cross-platform Vector API, and Avx2.ConvertToVector256Int64 does
-            // sign-extension which is wrong for ushort > 32767.
             if (AdvInstructionSet.IsAcceleratedVector256 && toCopy >= 4)
             {
                 Vector256<long> vBase = Vector256.Create(baseValue);
-                int i = 0;
-                ushort* src = arr + _positionInContainer;
                 for (; i + 4 <= toCopy; i += 4)
                 {
                     Vector256<long> vals = Vector256.Create(
                         (long)src[i], (long)src[i + 1], (long)src[i + 2], (long)src[i + 3]);
                     (vals | vBase).Store(dst + i);
                 }
-                for (; i < toCopy; i++)
-                    dst[i] = baseValue | src[i];
             }
-            else
-            {
-                for (int i = 0; i < toCopy; i++)
-                    dst[i] = baseValue | arr[_positionInContainer + i];
-            }
+
+            // Scalar remainder (or all, if no SIMD)
+            for (; i < toCopy; i++)
+                dst[i] = baseValue | src[i];
         }
 
         _positionInContainer += toCopy;
@@ -179,6 +173,8 @@ public unsafe struct RoaringBitmapIterator
 
         fixed (long* dst = &buffer[written])
         {
+            int i = 0;
+
             // SIMD: generate 4 sequential values at a time
             if (AdvInstructionSet.IsAcceleratedVector256 && toCopy >= 4)
             {
@@ -189,29 +185,19 @@ public unsafe struct RoaringBitmapIterator
                     baseValue + _positionInContainer + 3);
                 Vector256<long> vStep = Vector256.Create(4L);
 
-                int i = 0;
                 for (; i + 4 <= toCopy; i += 4)
                 {
                     vCurrent.Store(dst + i);
                     vCurrent += vStep;
                 }
-
                 _positionInContainer += i;
-
-                // Scalar remainder
-                for (; i < toCopy; i++)
-                {
-                    dst[i] = baseValue | (uint)_positionInContainer;
-                    _positionInContainer++;
-                }
             }
-            else
+
+            // Scalar remainder (or all, if no SIMD)
+            for (; i < toCopy; i++)
             {
-                for (int i = 0; i < toCopy; i++)
-                {
-                    dst[i] = baseValue | (uint)_positionInContainer;
-                    _positionInContainer++;
-                }
+                dst[i] = baseValue | (uint)_positionInContainer;
+                _positionInContainer++;
             }
         }
 
