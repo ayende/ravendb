@@ -4,28 +4,66 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using Sparrow;
+using Sparrow.Server;
+using Sparrow.Server.Utils.VxSort;
 
 namespace Corax.Utils.RoaringBitmaps;
 
 /// <summary>
-/// 16 bytes. Forward iterator for RoaringBitmap supporting Fill(Span&lt;long&gt;) streaming.
+/// Forward iterator for RoaringBitmap supporting Fill(Span&lt;long&gt;) streaming.
+/// On construction, builds a sorted array of packed (key, slot) ulongs for deterministic traversal.
+/// Each ulong packs: key in upper 32 bits, slot in lower 32 bits.
 /// _positionInContainer is shared: Array uses it as array index, Range as current value,
 /// Bitmap as the current ulong word index (0..1023). _bitmapCurrentWord stores remaining
 /// bits in the current word for bitmap iteration only.
 /// </summary>
-[StructLayout(LayoutKind.Explicit)]
-public unsafe struct RoaringBitmapIterator
+public unsafe struct RoaringBitmapIterator : IDisposable
 {
-    [FieldOffset(0)]  private int _containerIndex;
+    private ByteStringContext _ctx;
+    private ByteString _packedEntries; // array of packed (key << 32) | slot
+    private int _entryCount;
+    private int _containerIndex; // index into _packedEntries
     /// <summary>Array: index into sorted array. Range: current value. Bitmap: current ulong index (0..1023).</summary>
-    [FieldOffset(4)]  private int _positionInContainer;
-    [FieldOffset(8)]  private ulong _bitmapCurrentWord; // Bitmap only: remaining bits in current word
+    private int _positionInContainer;
+    private ulong _bitmapCurrentWord; // Bitmap only: remaining bits in current word
 
-    public RoaringBitmapIterator()
+    public RoaringBitmapIterator(ref RoaringBitmap bitmap, ByteStringContext ctx)
     {
+        _ctx = ctx;
         _containerIndex = 0;
         _positionInContainer = 0;
         _bitmapCurrentWord = 0;
+
+        // Build sorted array of packed (key, slot) ulongs from active containers
+        int containerCount = bitmap.ContainerCount;
+        if (containerCount == 0)
+        {
+            _packedEntries = default;
+            _entryCount = 0;
+            return;
+        }
+
+        int sizeNeeded = containerCount * sizeof(ulong);
+        ctx.Allocate(sizeNeeded, out _packedEntries);
+
+        var packedPtr = (ulong*)_packedEntries.Ptr;
+        _entryCount = 0;
+
+        // Pack all active entries: (key << 32) | slot
+        var entries = bitmap.GetEntriesForIterator();
+        var types = bitmap._types.RawItems;
+        for (int i = 0; i < entries.Length; i++)
+        {
+            if (types[i] != ContainerType.Free)
+            {
+                // Pack: upper 32 bits = key, lower 32 bits = slot
+                packedPtr[_entryCount] = ((ulong)entries[i].Key << 32) | (uint)i;
+                _entryCount++;
+            }
+        }
+
+        // Sort by packed value (key is in upper bits, so sorts by key)
+        Sort.Run(packedPtr, _entryCount);
     }
 
     /// <summary>
@@ -35,22 +73,21 @@ public unsafe struct RoaringBitmapIterator
     public int Fill(ref RoaringBitmap bitmap, Span<long> buffer)
     {
         int written = 0;
-        int indexLength = bitmap.IndexLength;
+        if (_entryCount == 0)
+            return 0;
 
-        while (written < buffer.Length && _containerIndex < indexLength)
+        var packedPtr = (ulong*)_packedEntries.Ptr;
+
+        while (written < buffer.Length && _containerIndex < _entryCount)
         {
-            // Skip absent keys in the index
-            int slot = bitmap.GetSlotForKey(_containerIndex);
-            if (slot < 0)
-            {
-                _containerIndex++;
-                continue;
-            }
+            ulong packed = packedPtr[_containerIndex];
+            int slot = (int)(packed & 0xFFFFFFFF);          // Lower 32 bits = slot
+            uint key = (uint)(packed >> 32);                 // Upper 32 bits = key
 
             ref ContainerEntry entry = ref bitmap.GetEntryBySlot(slot);
             ContainerType type = bitmap._types.RawItems[slot];
             RoaringBitmap.AssertPrepared(type);
-            long baseValue = (long)_containerIndex << RoaringBitmap.ContainerKeyShift;
+            long baseValue = (long)key << RoaringBitmap.ContainerKeyShift;
 
             switch (type)
             {
@@ -196,5 +233,11 @@ public unsafe struct RoaringBitmapIterator
         }
 
         return written + toCopy;
+    }
+
+    public void Dispose()
+    {
+        if (_packedEntries.HasValue)
+            _ctx.Release(ref _packedEntries);
     }
 }
