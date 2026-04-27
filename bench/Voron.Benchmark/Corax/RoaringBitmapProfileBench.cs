@@ -51,23 +51,24 @@ public static class RoaringBitmapProfileBench
 
             // Force sort (simulates first read) — measure separately
             var swSortA = Stopwatch.StartNew();
-            long cardA = a.Cardinality; // triggers EnsureSorted on all unsorted containers
+            a.PrepareForReading();
+            long cardA = a.Cardinality;
             swSortA.Stop();
 
             var swSortB = Stopwatch.StartNew();
+            b.PrepareForReading();
             long cardB = b.Cardinality;
             swSortB.Stop();
 
             // AND merge — arrays already sorted now
             var swMerge = Stopwatch.StartNew();
-            a.AndWith(ref b); var result = a;
+            a.AndWith(ref b);
             swMerge.Stop();
 
             int avgPerContainer = count / Math.Max(containersA, 1);
 
             Console.WriteLine($"{count,7}/{maxVal,-12} {swBuildA.Elapsed.TotalMilliseconds,8:F2}ms {swBuildB.Elapsed.TotalMilliseconds,8:F2}ms {swSortA.Elapsed.TotalMilliseconds,8:F2}ms {swSortB.Elapsed.TotalMilliseconds,8:F2}ms {swMerge.Elapsed.TotalMilliseconds,8:F2}ms {containersA,10} {avgPerContainer,10}");
 
-            result.Dispose();
             a.Dispose();
             b.Dispose();
         }
@@ -90,24 +91,26 @@ public static class RoaringBitmapProfileBench
             for (int i = 0; i < values.Length; i++) a.Add(values[i]);
             var b = new RoaringBitmap(ctx);
             for (int i = 0; i < valuesB.Length; i++) b.Add(valuesB[i]);
+            a.PrepareForReading();
+            b.PrepareForReading();
             swBuild.Stop();
 
             int containers = a.ContainerCount;
 
             var swAnd = Stopwatch.StartNew();
-            a.AndWith(ref b); var result = a;
+            a.AndWith(ref b);
             swAnd.Stop();
 
             // In-place
             var a2 = new RoaringBitmap(ctx);
             for (int i = 0; i < values.Length; i++) a2.Add(values[i]);
+            a2.PrepareForReading();
             var swAndIp = Stopwatch.StartNew();
             a2.AndWith(ref b);
             swAndIp.Stop();
 
             Console.WriteLine($"{count,7}/{maxVal,-12} {swBuild.Elapsed.TotalMilliseconds,8:F2}ms {swAnd.Elapsed.TotalMilliseconds,8:F2}ms {swAndIp.Elapsed.TotalMilliseconds,8:F2}ms {containers,10}");
 
-            result.Dispose();
             a.Dispose();
             a2.Dispose();
             b.Dispose();

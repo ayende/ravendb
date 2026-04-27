@@ -78,15 +78,16 @@ public class RoaringBitmapBenchmark
 
     [Benchmark(Baseline = true)]
     [BenchmarkCategory("Add")]
-    public RoaringBitmap Add_Roaring()
+    public long Add_Roaring()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
         var bmp = new RoaringBitmap(ctx);
         for (int i = 0; i < _valuesA.Length; i++)
             bmp.Add(_valuesA[i]);
-        long c = bmp.Cardinality; // force materialization
+        bmp.PrepareForReading();
+        long c = bmp.Cardinality;
         bmp.Dispose();
-        return bmp;
+        return c;
     }
 
     [Benchmark]
@@ -103,14 +104,15 @@ public class RoaringBitmapBenchmark
 
     [Benchmark]
     [BenchmarkCategory("Add")]
-    public GrowableBitArray Add_GrowableBitArray()
+    public int Add_GrowableBitArray()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
         var gba = new GrowableBitArray(ctx, MaxValue);
         for (int i = 0; i < _valuesA.Length; i++)
             gba.Add(_valuesA[i]);
+        int count = _valuesA.Length;
         gba.Dispose();
-        return gba;
+        return count;
     }
 
     #endregion
@@ -129,6 +131,7 @@ public class RoaringBitmapBenchmark
         _roaringA = new RoaringBitmap(_containsCtx);
         for (int i = 0; i < _valuesA.Length; i++)
             _roaringA.Add(_valuesA[i]);
+        _roaringA.PrepareForReading();
 
         int max = (int)Math.Min(MaxValue, int.MaxValue - 1);
         _bclA = new BitArray(max + 1);
@@ -199,6 +202,7 @@ public class RoaringBitmapBenchmark
         var bmp = new RoaringBitmap(ctx);
         for (int i = 0; i < _sortedA.Length; i++)
             bmp.Add(_sortedA[i]);
+        bmp.PrepareForReading();
 
         var iter = bmp.GetIterator();
         Span<long> buf = stackalloc long[1024];

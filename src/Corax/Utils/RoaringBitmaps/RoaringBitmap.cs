@@ -69,7 +69,7 @@ public unsafe struct RoaringBitmap : IDisposable
             int count = _entries.Count;
             for (int i = 0; i < count; i++)
             {
-                if (entries[i].Type != (ContainerType)0xFF)
+                if (entries[i].Type != ContainerType.Free)
                 {
                     AssertFinalized(ref entries[i]);
                     total += entries[i].Cardinality;
@@ -219,18 +219,45 @@ public unsafe struct RoaringBitmap : IDisposable
     /// <summary>Convert any non-Bitmap container to Bitmap for bulk bit operations.</summary>
     private void EnsureBitmapContainer(ref ContainerEntry e)
     {
-        AssertFinalized(ref e);
         if (e.Type == ContainerType.Array)
             ConvertArrayToBitmap(ref e);
+        else if (e.Type == ContainerType.ArrayUnsorted)
+            ConvertUnsortedArrayToBitmap(ref e);
         else if (e.Type == ContainerType.Range)
             ConvertRangeToBitmap(ref e);
     }
 
-    /// <summary>Set bits lo..hi (inclusive) in a bitmap buffer.</summary>
+    /// <summary>Set bits lo..hi (inclusive) in a bitmap buffer using word-level Fill.</summary>
     private static void SetBitmapBits(ulong* bitmap, ushort lo, ushort hi)
     {
-        for (int v = lo; v <= hi; v++)
-            bitmap[v >> 6] |= 1UL << (v & 63);
+        int loWord = lo >> 6;
+        int hiWord = hi >> 6;
+
+        if (loWord == hiWord)
+        {
+            // All bits in a single word
+            ulong mask = (ulong.MaxValue << (lo & 63)) & (ulong.MaxValue >> (63 - (hi & 63)));
+            bitmap[loWord] |= mask;
+            return;
+        }
+
+        // First partial word (if lo is not word-aligned)
+        if ((lo & 63) != 0)
+        {
+            bitmap[loWord] |= ulong.MaxValue << (lo & 63);
+            loWord++;
+        }
+
+        // Last partial word (if hi is not at end of word)
+        if ((hi & 63) != 63)
+        {
+            bitmap[hiWord] |= ulong.MaxValue >> (63 - (hi & 63));
+            hiWord--;
+        }
+
+        // Full words in the middle
+        if (loWord <= hiWord)
+            new Span<ulong>(bitmap + loWord, hiWord - loWord + 1).Fill(ulong.MaxValue);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -268,14 +295,22 @@ public unsafe struct RoaringBitmap : IDisposable
     public RoaringBitmap Clone()
     {
         var copy = new RoaringBitmap(_ctx);
+
+        // Walk entries directly — more cache-friendly than index indirection.
+        // Rebuild the index from scratch by finding each entry's key from our own index.
         int* idx = _index.RawItems;
-        for (int k = 0; k < _index.Count; k++)
+        int indexLen = _index.Count;
+        ContainerEntry* entries = _entries.RawItems;
+        int entryCount = _entries.Count;
+
+        // First pass: find key for each live entry via reverse lookup from index.
+        // Since entries are few (compared to index), scanning index is acceptable.
+        for (int k = 0; k < indexLen; k++)
         {
             int slot = idx[k];
             if (slot >= 0)
             {
-                ref ContainerEntry entry = ref _entries[slot];
-                copy.AddContainer(k, CloneContainer(_ctx, ref entry));
+                copy.AddContainer(k, CloneContainer(_ctx, ref entries[slot]));
             }
         }
         return copy;
@@ -290,6 +325,7 @@ public unsafe struct RoaringBitmap : IDisposable
     /// For sorted input (e.g., Corax posting lists), this is nearly free since
     /// the arrays are already in order and dedup finds no duplicates.
     /// </summary>
+    [SkipLocalsInit]
     public void PrepareForReading()
     {
         // 8KB scratch bitmap for radix sort: explode unsorted values into bits,
@@ -449,6 +485,7 @@ public unsafe struct RoaringBitmap : IDisposable
         }
     }
 
+    [SkipLocalsInit]
     private void AndContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
     {
         AssertFinalized(ref left);
@@ -528,6 +565,7 @@ public unsafe struct RoaringBitmap : IDisposable
         }
     }
 
+    [SkipLocalsInit]
     private void OrContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
     {
         AssertFinalized(ref left);
@@ -585,12 +623,11 @@ public unsafe struct RoaringBitmap : IDisposable
                 }
                 else
                 {
-                    // Merge two sorted arrays into a new buffer
-                    _ctx.Allocate(Math.Max(InitialArrayContainerSizeInBytes, maxResult * sizeof(ushort)), out ByteString newStorage);
-                    int count = ArrayContainerOr(left.ArrayData, left.Cardinality, right.ArrayData, right.Cardinality, (ushort*)newStorage.Ptr);
-                    _ctx.Release(ref left.Storage);
-                    left.Storage = newStorage;
-                    left.Data = newStorage.Ptr;
+                    // Merge two sorted arrays into stackalloc (max 8KB), then copy back
+                    ushort* tmp = stackalloc ushort[ArrayContainerMaxCardinality];
+                    int count = ArrayContainerOr(left.ArrayData, left.Cardinality, right.ArrayData, right.Cardinality, tmp);
+                    EnsureArrayCapacity(ref left, count);
+                    Unsafe.CopyBlockUnaligned(left.Data, (byte*)tmp, (uint)(count * sizeof(ushort)));
                     left.Cardinality = count;
                 }
                 break;
@@ -606,6 +643,7 @@ public unsafe struct RoaringBitmap : IDisposable
     }
 
 
+    [SkipLocalsInit]
     private void AndNotContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
     {
         AssertFinalized(ref left);
@@ -731,6 +769,9 @@ public unsafe struct RoaringBitmap : IDisposable
     /// </summary>
     private void EnsureIndexCoversKey(long key)
     {
+        if (key < 0)
+            throw new ArgumentOutOfRangeException(nameof(key), $"Container key {key} must be non-negative.");
+
         if (key < _index.Count)
             return;
 
@@ -759,7 +800,7 @@ public unsafe struct RoaringBitmap : IDisposable
         {
             // Reuse a tombstone slot
             slot = _freeListHead;
-            Debug.Assert(_entries[slot].Type == (ContainerType)0xFF, "Expected free entry");
+            Debug.Assert(_entries[slot].Type == ContainerType.Free, "Expected free entry");
             _freeListHead = _entries[slot].NextFreeSlot;
             _entries[slot] = entry;
         }
@@ -785,7 +826,7 @@ public unsafe struct RoaringBitmap : IDisposable
 
         // Mark as free and chain into free list
         entry = default;
-        entry.Type = (ContainerType)0xFF; // free marker
+        entry.Type = ContainerType.Free; // free marker
         entry.NextFreeSlot = _freeListHead;
         _freeListHead = slot;
 
@@ -869,6 +910,7 @@ public unsafe struct RoaringBitmap : IDisposable
 
     #region Container Operations
 
+    [SkipLocalsInit]
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void AddToContainer(ref ContainerEntry entry, ushort value)
     {
@@ -1014,99 +1056,144 @@ public unsafe struct RoaringBitmap : IDisposable
     }
 
     /// <summary>
+    /// Strategy interface for generic array match operations (AND / ANDNOT).
+    /// Both share the same SIMD galloping structure; only the keep/discard logic differs.
+    /// </summary>
+    private interface IArrayMatchStrategy
+    {
+        /// <summary>true for AND (keep matches), false for ANDNOT (discard matches).</summary>
+        static abstract bool KeepOnMatch { get; }
+        /// <summary>false for AND (skip A values not in B), true for ANDNOT (keep A values not in B).</summary>
+        static abstract bool KeepOnMissInSmaller { get; }
+    }
+
+    private struct AndStrategy : IArrayMatchStrategy
+    {
+        public static bool KeepOnMatch => true;
+        public static bool KeepOnMissInSmaller => false;
+    }
+
+    private struct AndNotStrategy : IArrayMatchStrategy
+    {
+        public static bool KeepOnMatch => false;
+        public static bool KeepOnMissInSmaller => true;
+    }
+
+    /// <summary>
     /// Compute the intersection of two array containers, writing the result to dst.
-    /// Uses SIMD galloping when Vector256 is available: broadcasts the smaller side's
-    /// current value and checks 16 elements of the larger side in one comparison.
+    /// Uses SIMD galloping when Vector256 is available.
     /// </summary>
     internal static int ArrayContainerAnd(ushort* a, int aLen, ushort* b, int bLen, ushort* dst)
     {
         if (AdvInstructionSet.IsAcceleratedVector256)
-            return ArrayContainerAndVectorized(a, aLen, b, bLen, dst);
-        return ArrayContainerAndScalar(a, aLen, b, bLen, dst);
+            return ArrayContainerMatchVectorized<AndStrategy>(a, aLen, b, bLen, dst);
+        return ArrayContainerMatchScalar<AndStrategy>(a, aLen, b, bLen, dst);
     }
 
-    private static int ArrayContainerAndVectorized(ushort* a, int aLen, ushort* b, int bLen, ushort* dst)
+    /// <summary>
+    /// Compute A AND NOT B for two array containers.
+    /// Uses SIMD galloping to skip blocks in B that don't affect A.
+    /// </summary>
+    internal static int ArrayContainerAndNot(ushort* a, int aLen, ushort* b, int bLen, ushort* dst)
     {
-        // Ensure smaller is the one we iterate element-by-element
-        ushort* smaller, larger;
-        int smallerLen, largerLen;
-        if (aLen <= bLen)
-        {
-            smaller = a; smallerLen = aLen;
-            larger = b; largerLen = bLen;
-        }
-        else
-        {
-            smaller = b; smallerLen = bLen;
-            larger = a; largerLen = aLen;
-        }
+        if (AdvInstructionSet.IsAcceleratedVector256)
+            return ArrayContainerMatchVectorized<AndNotStrategy>(a, aLen, b, bLen, dst);
+        return ArrayContainerMatchScalar<AndNotStrategy>(a, aLen, b, bLen, dst);
+    }
 
+    private static int ArrayContainerMatchVectorized<TStrategy>(ushort* a, int aLen, ushort* b, int bLen, ushort* dst)
+        where TStrategy : struct, IArrayMatchStrategy
+    {
         uint N = (uint)Vector256<ushort>.Count; // 16
-        int si = 0, li = 0, di = 0;
+        int ai = 0, bi = 0, di = 0;
 
-        while (si < smallerLen && li + (int)N <= largerLen)
+        while (ai < aLen && bi + (int)N <= bLen)
         {
-            ushort val = smaller[si];
+            ushort val = a[ai];
 
-            // Skip blocks in larger that are entirely below val
-            if (val > larger[li + N - 1])
+            // If val is past the current block of B, advance B
+            if (val > b[bi + N - 1])
             {
-                li += (int)N;
+                bi += (int)N;
                 continue;
             }
 
-            // Skip smaller values below the current block
-            if (val < larger[li])
+            // If val is before the current block of B, it's not in B
+            if (val < b[bi])
             {
-                si++;
+                if (TStrategy.KeepOnMissInSmaller)
+                    dst[di++] = val;
+                ai++;
                 continue;
             }
 
-            // Check if val exists in this block of 16
+            // Check if val exists in this block of B
             Vector256<ushort> vVal = Vector256.Create(val);
-            Vector256<ushort> vBlock = Vector256.Load(larger + li);
-            if (Vector256.EqualsAny(vVal, vBlock))
-            {
+            Vector256<ushort> vBlock = Vector256.Load(b + bi);
+            bool found = Vector256.EqualsAny(vVal, vBlock);
+            if (found == TStrategy.KeepOnMatch)
                 dst[di++] = val;
-            }
 
-            si++;
+            ai++;
         }
 
         // Scalar tail
-        while (si < smallerLen && li < largerLen)
+        while (ai < aLen && bi < bLen)
         {
-            if (smaller[si] < larger[li])
-                si++;
-            else if (smaller[si] > larger[li])
-                li++;
+            if (a[ai] < b[bi])
+            {
+                if (TStrategy.KeepOnMissInSmaller)
+                    dst[di++] = a[ai];
+                ai++;
+            }
+            else if (a[ai] > b[bi])
+                bi++;
             else
             {
-                dst[di++] = smaller[si];
-                si++;
-                li++;
+                if (TStrategy.KeepOnMatch)
+                    dst[di++] = a[ai];
+                ai++;
+                bi++;
             }
+        }
+
+        if (TStrategy.KeepOnMissInSmaller)
+        {
+            while (ai < aLen)
+                dst[di++] = a[ai++];
         }
 
         return di;
     }
 
-    private static int ArrayContainerAndScalar(ushort* a, int aLen, ushort* b, int bLen, ushort* dst)
+    private static int ArrayContainerMatchScalar<TStrategy>(ushort* a, int aLen, ushort* b, int bLen, ushort* dst)
+        where TStrategy : struct, IArrayMatchStrategy
     {
         int ai = 0, bi = 0, di = 0;
 
         while (ai < aLen && bi < bLen)
         {
             if (a[ai] < b[bi])
+            {
+                if (TStrategy.KeepOnMissInSmaller)
+                    dst[di++] = a[ai];
                 ai++;
+            }
             else if (a[ai] > b[bi])
                 bi++;
             else
             {
-                dst[di++] = a[ai];
+                if (TStrategy.KeepOnMatch)
+                    dst[di++] = a[ai];
                 ai++;
                 bi++;
             }
+        }
+
+        if (TStrategy.KeepOnMissInSmaller)
+        {
+            while (ai < aLen)
+                dst[di++] = a[ai++];
         }
 
         return di;
@@ -1138,95 +1225,6 @@ public unsafe struct RoaringBitmap : IDisposable
             dst[di++] = a[ai++];
         while (bi < bLen)
             dst[di++] = b[bi++];
-
-        return di;
-    }
-
-    /// <summary>
-    /// Compute A AND NOT B for two array containers.
-    /// Uses SIMD galloping to skip blocks in B that don't affect A.
-    /// </summary>
-    internal static int ArrayContainerAndNot(ushort* a, int aLen, ushort* b, int bLen, ushort* dst)
-    {
-        if (AdvInstructionSet.IsAcceleratedVector256)
-            return ArrayContainerAndNotVectorized(a, aLen, b, bLen, dst);
-        return ArrayContainerAndNotScalar(a, aLen, b, bLen, dst);
-    }
-
-    private static int ArrayContainerAndNotVectorized(ushort* a, int aLen, ushort* b, int bLen, ushort* dst)
-    {
-        uint N = (uint)Vector256<ushort>.Count; // 16
-        int ai = 0, bi = 0, di = 0;
-
-        while (ai < aLen && bi + (int)N <= bLen)
-        {
-            ushort val = a[ai];
-
-            // If val is past the current block of B, advance B
-            if (val > b[bi + N - 1])
-            {
-                bi += (int)N;
-                continue;
-            }
-
-            // If val is before the current block of B, it's not in B — keep it
-            if (val < b[bi])
-            {
-                dst[di++] = val;
-                ai++;
-                continue;
-            }
-
-            // Check if val exists in this block of B
-            Vector256<ushort> vVal = Vector256.Create(val);
-            Vector256<ushort> vBlock = Vector256.Load(b + bi);
-            if (!Vector256.EqualsAny(vVal, vBlock))
-            {
-                dst[di++] = val; // Not found in B — keep it
-            }
-
-            ai++;
-        }
-
-        // Scalar tail
-        while (ai < aLen && bi < bLen)
-        {
-            if (a[ai] < b[bi])
-                dst[di++] = a[ai++];
-            else if (a[ai] > b[bi])
-                bi++;
-            else
-            {
-                ai++;
-                bi++;
-            }
-        }
-
-        while (ai < aLen)
-            dst[di++] = a[ai++];
-
-        return di;
-    }
-
-    private static int ArrayContainerAndNotScalar(ushort* a, int aLen, ushort* b, int bLen, ushort* dst)
-    {
-        int ai = 0, bi = 0, di = 0;
-
-        while (ai < aLen && bi < bLen)
-        {
-            if (a[ai] < b[bi])
-                dst[di++] = a[ai++];
-            else if (a[ai] > b[bi])
-                bi++;
-            else
-            {
-                ai++;
-                bi++;
-            }
-        }
-
-        while (ai < aLen)
-            dst[di++] = a[ai++];
 
         return di;
     }
@@ -1327,16 +1325,18 @@ public unsafe struct RoaringBitmap : IDisposable
         ulong* bitmap = (ulong*)data;
         int count = 0;
 
-        // SIMD popcount: accumulate 4 words at a time then sum
+        // Vector256 load fetches 4 ulongs (32 bytes) per iteration, prefetching the next cache line.
+        // PopCount each element after the load.
         if (AdvInstructionSet.IsAcceleratedVector256)
         {
             int i = 0;
-            for (; i + 4 <= BitmapContainerSizeInUlongs; i += 4)
+            for (; i + Vector256<ulong>.Count <= BitmapContainerSizeInUlongs; i += Vector256<ulong>.Count)
             {
-                count += BitOperations.PopCount(bitmap[i]);
-                count += BitOperations.PopCount(bitmap[i + 1]);
-                count += BitOperations.PopCount(bitmap[i + 2]);
-                count += BitOperations.PopCount(bitmap[i + 3]);
+                Vector256<ulong> vec = Vector256.Load(bitmap + i);
+                count += BitOperations.PopCount(vec.GetElement(0));
+                count += BitOperations.PopCount(vec.GetElement(1));
+                count += BitOperations.PopCount(vec.GetElement(2));
+                count += BitOperations.PopCount(vec.GetElement(3));
             }
             for (; i < BitmapContainerSizeInUlongs; i++)
                 count += BitOperations.PopCount(bitmap[i]);
@@ -1403,6 +1403,28 @@ public unsafe struct RoaringBitmap : IDisposable
         int count = entry.Cardinality;
 
         _ctx.Allocate(BitmapContainerSizeInBytes, out ByteString newStorage);
+        ArrayToBitmap(arr, count, (ulong*)newStorage.Ptr);
+
+        if (entry.Storage.HasValue)
+            _ctx.Release(ref entry.Storage);
+
+        entry.Storage = newStorage;
+        entry.Data = newStorage.Ptr;
+        entry.Type = ContainerType.Bitmap;
+    }
+
+    /// <summary>
+    /// Convert an unsorted array container directly to bitmap without sorting first.
+    /// Sorting is pointless since we set bits regardless of order.
+    /// </summary>
+    private void ConvertUnsortedArrayToBitmap(ref ContainerEntry entry)
+    {
+        Debug.Assert(entry.Type == ContainerType.ArrayUnsorted);
+
+        ushort* arr = (ushort*)entry.Data;
+        int count = entry.Cardinality;
+
+        _ctx.Allocate(BitmapContainerSizeInBytes, out ByteString newStorage);
         ulong* bitmap = (ulong*)newStorage.Ptr;
         ClearBitmap(bitmap);
 
@@ -1412,11 +1434,15 @@ public unsafe struct RoaringBitmap : IDisposable
             bitmap[val >> 6] |= 1UL << (val & 63);
         }
 
+        // Recount since there may be duplicates in unsorted array
+        int cardinality = BitmapContainerCardinality((byte*)bitmap);
+
         if (entry.Storage.HasValue)
             _ctx.Release(ref entry.Storage);
 
         entry.Storage = newStorage;
         entry.Data = newStorage.Ptr;
+        entry.Cardinality = cardinality;
         entry.Type = ContainerType.Bitmap;
     }
 
@@ -1571,26 +1597,23 @@ public unsafe struct RoaringBitmap : IDisposable
 
     public void Dispose()
     {
-        // Walk the index to find live entries and release their storage
-        if (_index.IsValid)
+        // Walk entries directly — more cache-friendly than index indirection.
+        // Skip free entries (Type == Free).
+        if (_entries.IsValid)
         {
-            int* idx = _index.RawItems;
-            for (int key = 0; key < _index.Count; key++)
+            ContainerEntry* entries = _entries.RawItems;
+            int count = _entries.Count;
+            for (int i = 0; i < count; i++)
             {
-                int slot = idx[key];
-                if (slot >= 0)
-                {
-                    ref ContainerEntry entry = ref _entries[slot];
-                    if (entry.Storage.HasValue)
-                        _ctx.Release(ref entry.Storage);
-                }
+                if (entries[i].Type != ContainerType.Free && entries[i].Storage.HasValue)
+                    _ctx.Release(ref entries[i].Storage);
             }
 
-            _index.Dispose(_ctx);
+            _entries.Dispose(_ctx);
         }
 
-        if (_entries.IsValid)
-            _entries.Dispose(_ctx);
+        if (_index.IsValid)
+            _index.Dispose(_ctx);
     }
 }
 
@@ -1610,7 +1633,9 @@ public enum ContainerType : byte
     /// Unsorted ushort array. Add is O(1) append. On first read (Contains, set ops, iteration),
     /// sorts and deduplicates, converting to Array. Avoids O(log n + shift) per Add.
     /// </summary>
-    ArrayUnsorted = 3
+    ArrayUnsorted = 3,
+    /// <summary>Tombstone marker for free-list entries in the entries array.</summary>
+    Free = 0xFF
 }
 
 [StructLayout(LayoutKind.Explicit)]
@@ -1639,7 +1664,7 @@ public unsafe struct ContainerEntry
     [FieldOffset(16)] internal int NextFreeSlot;
 
 #if DEBUG
-    internal bool IsFree => Type == (ContainerType)0xFF;
+    internal bool IsFree => Type == ContainerType.Free;
 #endif
 
     /// <summary>
