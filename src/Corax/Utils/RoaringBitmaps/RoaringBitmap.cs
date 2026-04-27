@@ -320,7 +320,7 @@ public unsafe struct RoaringBitmap : IDisposable
     }
 
     /// <summary>
-    /// Finalize the build phase: sort and deduplicate all unsorted array containers.
+    /// Prepare for reading: sort and deduplicate all unsorted array containers.
     /// Call this after all Add/AddRange calls and before any read operations (Contains,
     /// Fill, set ops). This separates the sort cost from the first query, making
     /// performance more predictable.

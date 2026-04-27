@@ -56,7 +56,7 @@ public static class RoaringBitmapTraceBench
         var b = new RoaringBitmap(ctx);
         for (int i = 0; i < valuesB.Length; i++) b.Add(valuesB[i]);
 
-        // Finalize
+        // PrepareForReading
         a.PrepareForReading();
         b.PrepareForReading();
 
