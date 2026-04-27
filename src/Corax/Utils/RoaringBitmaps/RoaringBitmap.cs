@@ -307,12 +307,25 @@ public unsafe struct RoaringBitmap : IDisposable
     /// (ownership transferred, zero-copy). This is destructive: other becomes invalid after
     /// this call and must not be used (except Dispose, which is safe on stolen entries).
     /// </summary>
+    [SkipLocalsInit]
     public void OrWith(ref RoaringBitmap other)
     {
         if (other.ContainerCount == 0)
             return;
 
+        // Pre-grow: ensure index, entries, and types can hold all of other's containers
+        // without any per-container reallocation in the hot loop.
         int otherLen = other.IndexLength;
+        if (otherLen > 0)
+            EnsureIndexCoversKey(otherLen - 1);
+        _entries.EnsureCapacityFor(_ctx, other.ContainerCount);
+        _types.EnsureCapacityFor(_ctx, other.ContainerCount);
+
+        // Scratch bitmap (8KB) + dirtyMap (4 ulongs = 256 bits for 256 chunks) shared across all container ORs.
+        // Each container merge clears its dirty chunks during extraction, so scratch is clean for the next.
+        ulong* scratch = stackalloc ulong[BitmapContainerSizeInUlongs];
+        ulong* dirtyMap = stackalloc ulong[4];
+
         for (int key = 0; key < otherLen; key++)
         {
             int otherSlot = other.GetSlotForKey(key);
@@ -324,7 +337,8 @@ public unsafe struct RoaringBitmap : IDisposable
 
             if (mySlot >= 0)
             {
-                OrContainerInPlace(ref _entries[mySlot], ref _types.RawItems[mySlot], ref otherEntry, other._types.RawItems[otherSlot]);
+                OrContainerInPlace(ref _entries[mySlot], ref _types.RawItems[mySlot],
+                    ref otherEntry, other._types.RawItems[otherSlot], scratch, dirtyMap);
             }
             else
             {
@@ -450,7 +464,8 @@ public unsafe struct RoaringBitmap : IDisposable
     }
 
     [SkipLocalsInit]
-    private void OrContainerInPlace(ref ContainerEntry left, ref ContainerType leftType, ref ContainerEntry right, ContainerType rightType)
+    private void OrContainerInPlace(ref ContainerEntry left, ref ContainerType leftType,
+        ref ContainerEntry right, ContainerType rightType, ulong* scratch, ulong* dirtyMap)
     {
         AssertPrepared(leftType);
         AssertPrepared(rightType);
@@ -466,64 +481,241 @@ public unsafe struct RoaringBitmap : IDisposable
         {
             ulong* stackBmp = stackalloc ulong[BitmapContainerSizeInUlongs];
             ContainerEntry temp = MaterializeRangeToStack(ref right, stackBmp);
-            OrContainerInPlace(ref left, ref leftType, ref temp, ContainerType.Bitmap);
+            OrContainerInPlace(ref left, ref leftType, ref temp, ContainerType.Bitmap, scratch, dirtyMap);
             return;
         }
 
         switch (leftType, rightType)
         {
             case (ContainerType.Bitmap, ContainerType.Bitmap):
-                {
-                    var count = BitmapOrSimd(
+                left.Cardinality = BitmapOrSimd(
                     left.BitmapPtr, right.BitmapPtr, left.BitmapPtr, BitmapContainerSizeInUlongs);
-                    left.Cardinality = count;
-                    break;
-                }
+                break;
+
             case (ContainerType.Bitmap, ContainerType.Array):
+            {
+                var bmp = left.BitmapData;
+                var arr = right.ArrayData;
+                for (int i = 0; i < right.Cardinality; i++)
                 {
-                    var bmp = left.BitmapData;
-                    var arr = right.ArrayData;
-                    for (int i = 0; i < right.Cardinality; i++)
+                    ushort val = arr[i];
+                    ulong mask = 1UL << (val & 63);
+                    if ((bmp[val >> 6] & mask) == 0)
                     {
-                        ushort val = arr[i];
-                        ulong mask = 1UL << (val & 63);
-                        if ((bmp[val >> 6] & mask) == 0)
-                        {
-                            bmp[val >> 6] |= mask;
-                            left.Cardinality++;
-                        }
+                        bmp[val >> 6] |= mask;
+                        left.Cardinality++;
                     }
-                    // No Bitmap→Array conversion: these are temporary, discarded after query. See note [1].
-                    break;
                 }
+                break;
+            }
 
             case (ContainerType.Array, ContainerType.Array):
+            {
+                int maxResult = left.Cardinality + right.Cardinality;
+                if (maxResult > ArrayContainerMaxCardinality)
                 {
-                    int maxResult = left.Cardinality + right.Cardinality;
-                    if (maxResult > ArrayContainerMaxCardinality)
-                    {
-                        // Result will be a bitmap - convert left, then OR
-                        ConvertArrayToBitmap(ref left, ref leftType);
-                        OrContainerInPlace(ref left, ref leftType, ref right, rightType);
-                    }
-                    else
-                    {
-                        // Merge two sorted arrays into stackalloc (max 8KB), then copy back
-                        ushort* tmp = stackalloc ushort[ArrayContainerMaxCardinality];
-                        int count = ArrayContainerOr(left.ArrayPtr, left.Cardinality, right.ArrayPtr, right.Cardinality, tmp);
-                        EnsureArrayCapacity(ref left, count);
-                        Unsafe.CopyBlockUnaligned(left.Data, (byte*)tmp, (uint)(count * sizeof(ushort)));
-                        left.Cardinality = count;
-                    }
-                    break;
+                    // Result will be a bitmap — convert left, then OR right into it
+                    ConvertArrayToBitmap(ref left, ref leftType);
+                    OrContainerInPlace(ref left, ref leftType, ref right, rightType, scratch, dirtyMap);
                 }
+                else
+                {
+                    // Merge two sorted arrays into stackalloc, then copy back
+                    ushort* tmp = stackalloc ushort[ArrayContainerMaxCardinality];
+                    int count = ArrayContainerOr(left.ArrayPtr, left.Cardinality, right.ArrayPtr, right.Cardinality, tmp);
+                    EnsureArrayCapacity(ref left, count);
+                    Unsafe.CopyBlockUnaligned(left.Data, (byte*)tmp, (uint)(count * sizeof(ushort)));
+                    left.Cardinality = count;
+                }
+                break;
+            }
 
             case (ContainerType.Array, ContainerType.Bitmap):
+            {
+                // Steal right's 8KB buffer if available, otherwise convert left
+                if (right.Storage.HasValue && right.Storage.Length >= BitmapContainerSizeInBytes)
+                {
+                    // Right has 8KB — OR left's array into right's bitmap, then swap ownership
+                    ushort* arr = left.ArrayPtr;
+                    ulong* bmp = right.BitmapPtr;
+                    for (int i = 0; i < left.Cardinality; i++)
+                    {
+                        ushort val = arr[i];
+                        bmp[val >> 6] |= 1UL << (val & 63);
+                    }
+                    // Swap: left takes right's bitmap buffer
+                    if (left.Storage.HasValue)
+                        _ctx.Release(ref left.Storage);
+                    left.Storage = right.Storage;
+                    left.Data = right.Data;
+                    left.Cardinality = BitmapContainerCardinality(left.Data);
+                    leftType = ContainerType.Bitmap;
+                    // Clear right's ownership
+                    right.Storage = default;
+                    right.Data = null;
+                }
+                else
                 {
                     ConvertArrayToBitmap(ref left, ref leftType);
-                    OrContainerInPlace(ref left, ref leftType, ref right, rightType);
-                    break;
+                    OrContainerInPlace(ref left, ref leftType, ref right, rightType, scratch, dirtyMap);
                 }
+                break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// OR two array containers using scratch bitmap with dirtyMap.
+    /// Projects both arrays into the scratch, counts cardinality from dirty chunks only,
+    /// then either copies scratch as bitmap or extracts sorted array.
+    /// Avoids intermediate ConvertArrayToBitmap allocation.
+    /// </summary>
+    [SkipLocalsInit]
+    private void OrArrayArray(ref ContainerEntry left, ref ContainerType leftType,
+        ref ContainerEntry right, ulong* scratch, ulong* dirtyMap)
+    {
+        int combinedMax = left.Cardinality + right.Cardinality;
+
+        // For small arrays where union definitely fits in an array, use sorted merge (no bitmap overhead)
+        if (combinedMax <= ArrayContainerMaxCardinality)
+        {
+            ushort* tmp = stackalloc ushort[ArrayContainerMaxCardinality];
+            int count = ArrayContainerOr(left.ArrayPtr, left.Cardinality, right.ArrayPtr, right.Cardinality, tmp);
+            EnsureArrayCapacity(ref left, count);
+            Unsafe.CopyBlockUnaligned(left.Data, (byte*)tmp, (uint)(count * sizeof(ushort)));
+            left.Cardinality = count;
+            return;
+        }
+
+        // Combined might exceed 4096 — use scratch bitmap to avoid allocation churn.
+        // dirtyMap tracks which 4-ulong chunks are touched (256 chunks in 8KB).
+        new Span<byte>(dirtyMap, 4 * sizeof(ulong)).Clear();
+
+        // Project left array into scratch
+        ushort* leftArr = left.ArrayPtr;
+        for (int i = 0; i < left.Cardinality; i++)
+        {
+            ushort val = leftArr[i];
+            int wordIdx = val >> 6;
+            int chunkIdx = wordIdx >> 2;
+            if ((dirtyMap[chunkIdx >> 6] & (1UL << (chunkIdx & 63))) == 0)
+            {
+                dirtyMap[chunkIdx >> 6] |= 1UL << (chunkIdx & 63);
+                new Span<byte>(scratch + chunkIdx * 4, 4 * sizeof(ulong)).Clear();
+            }
+            scratch[wordIdx] |= 1UL << (val & 63);
+        }
+
+        // Project right array into scratch
+        ushort* rightArr = right.ArrayPtr;
+        for (int i = 0; i < right.Cardinality; i++)
+        {
+            ushort val = rightArr[i];
+            int wordIdx = val >> 6;
+            int chunkIdx = wordIdx >> 2;
+            if ((dirtyMap[chunkIdx >> 6] & (1UL << (chunkIdx & 63))) == 0)
+            {
+                dirtyMap[chunkIdx >> 6] |= 1UL << (chunkIdx & 63);
+                new Span<byte>(scratch + chunkIdx * 4, 4 * sizeof(ulong)).Clear();
+            }
+            scratch[wordIdx] |= 1UL << (val & 63);
+        }
+
+        // Count cardinality from dirty chunks only
+        int cardinality = 0;
+        for (int mapWord = 0; mapWord < 4; mapWord++)
+        {
+            ulong work = dirtyMap[mapWord];
+            while (work != 0)
+            {
+                int chunk = (mapWord << 6) + BitOperations.TrailingZeroCount(work);
+                int start = chunk * 4;
+                for (int w = start; w < start + 4; w++)
+                    cardinality += BitOperations.PopCount(scratch[w]);
+                work &= work - 1;
+            }
+        }
+
+        if (cardinality > ArrayContainerMaxCardinality)
+        {
+            // Result is a bitmap — try to steal right's buffer if 8KB, else use left's or allocate
+            ByteString targetStorage;
+            byte* targetData;
+
+            if (right.Storage.HasValue && right.Storage.Length >= BitmapContainerSizeInBytes)
+            {
+                targetStorage = right.Storage;
+                targetData = right.Data;
+                right.Storage = default;
+                right.Data = null;
+            }
+            else if (left.Storage.HasValue && left.Storage.Length >= BitmapContainerSizeInBytes)
+            {
+                targetStorage = left.Storage;
+                targetData = left.Data;
+            }
+            else
+            {
+                _ctx.Allocate(BitmapContainerSizeInBytes, out targetStorage);
+                targetData = targetStorage.Ptr;
+            }
+
+            // Clear target, then copy only dirty chunks from scratch (non-dirty regions in
+            // scratch may be uninitialized due to SkipLocalsInit). Clean scratch as we go.
+            new Span<byte>(targetData, BitmapContainerSizeInBytes).Clear();
+            for (int mapWord = 0; mapWord < 4; mapWord++)
+            {
+                ulong work = dirtyMap[mapWord];
+                while (work != 0)
+                {
+                    int chunk = (mapWord << 6) + BitOperations.TrailingZeroCount(work);
+                    int start = chunk * 4;
+                    ulong* dst = (ulong*)targetData + start;
+                    dst[0] = scratch[start]; dst[1] = scratch[start + 1];
+                    dst[2] = scratch[start + 2]; dst[3] = scratch[start + 3];
+                    new Span<ulong>(scratch + start, 4).Clear();
+                    work &= work - 1;
+                }
+            }
+
+            // Release old storage if not reused
+            if (targetStorage.Ptr != left.Data && left.Storage.HasValue)
+                _ctx.Release(ref left.Storage);
+
+            left.Storage = targetStorage;
+            left.Data = targetData;
+            left.Cardinality = cardinality;
+            leftType = ContainerType.Bitmap;
+        }
+        else
+        {
+            // Result fits in array — extract sorted values from dirty chunks
+            EnsureArrayCapacity(ref left, cardinality);
+            ushort* dst = left.ArrayPtr;
+            int sorted = 0;
+
+            for (int mapWord = 0; mapWord < 4; mapWord++)
+            {
+                ulong work = dirtyMap[mapWord];
+                while (work != 0)
+                {
+                    int chunk = (mapWord << 6) + BitOperations.TrailingZeroCount(work);
+                    int start = chunk * 4;
+                    for (int w = start; w < start + 4; w++)
+                    {
+                        ulong word = scratch[w];
+                        while (word != 0)
+                        {
+                            int bit = BitOperations.TrailingZeroCount(word);
+                            dst[sorted++] = (ushort)((w << 6) + bit);
+                            word &= word - 1;
+                        }
+                        scratch[w] = 0; // clean for next use
+                    }
+                    work &= work - 1;
+                }
+            }
+            left.Cardinality = sorted;
         }
     }
 
