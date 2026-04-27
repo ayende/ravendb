@@ -52,8 +52,8 @@ public static unsafe class RoaringBitmapSetOps
 
     private static ContainerEntry AndContainers(ByteStringContext ctx, ref ContainerEntry a, ref ContainerEntry b)
     {
-        RoaringBitmap.EnsureSorted(ref a);
-        RoaringBitmap.EnsureSorted(ref b);
+        RoaringBitmap.AssertFinalized(ref a);
+        RoaringBitmap.AssertFinalized(ref b);
 
         if (a.Type == ContainerType.Range)
             return MaterializeRangeAndRedispatch(ctx, ref a, ref b, AndContainers);
@@ -171,8 +171,8 @@ public static unsafe class RoaringBitmapSetOps
 
     private static ContainerEntry OrContainers(ByteStringContext ctx, ref ContainerEntry a, ref ContainerEntry b)
     {
-        RoaringBitmap.EnsureSorted(ref a);
-        RoaringBitmap.EnsureSorted(ref b);
+        RoaringBitmap.AssertFinalized(ref a);
+        RoaringBitmap.AssertFinalized(ref b);
 
         if (a.Type == ContainerType.Range)
             return MaterializeRangeAndRedispatch(ctx, ref a, ref b, OrContainers);
@@ -332,8 +332,8 @@ public static unsafe class RoaringBitmapSetOps
 
     private static ContainerEntry AndNotContainers(ByteStringContext ctx, ref ContainerEntry a, ref ContainerEntry b)
     {
-        RoaringBitmap.EnsureSorted(ref a);
-        RoaringBitmap.EnsureSorted(ref b);
+        RoaringBitmap.AssertFinalized(ref a);
+        RoaringBitmap.AssertFinalized(ref b);
 
         if (a.Type == ContainerType.Range)
             return MaterializeRangeAndRedispatch(ctx, ref a, ref b, AndNotContainers);
