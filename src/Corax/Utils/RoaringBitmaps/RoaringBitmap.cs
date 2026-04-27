@@ -826,8 +826,10 @@ public unsafe struct RoaringBitmap : IDisposable
     }
 
     /// <summary>
-    /// Ensure the array/negated container has room for one more entry.
-    /// Doubles the buffer size up to BitmapContainerSizeInBytes.
+    /// Ensure the array container has room for the given number of entries.
+    /// Doubles the buffer size up to BitmapContainerSizeInBytes (8KB).
+    /// Note: cannot use ByteStringContext.GrowAllocation because it requires
+    /// an InternalScope that we don't track in ContainerEntry.
     /// </summary>
     private void EnsureArrayCapacity(ref ContainerEntry entry, int requiredEntries)
     {
