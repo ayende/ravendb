@@ -193,8 +193,7 @@ public unsafe struct RoaringBitmap : IDisposable
 
         // Existing non-Range container — convert to bitmap and set bits
         EnsureBitmapContainer(ref e);
-        SetBitmapBits(e.BitmapData, 0, hi);
-        e.Cardinality = BitmapContainerCardinality(e.Data);
+        e.Cardinality += SetBitmapBits(e.BitmapData, 0, hi);
     }
 
     private void AddRangePartial(long key, ushort lo, ushort hi)
@@ -208,8 +207,7 @@ public unsafe struct RoaringBitmap : IDisposable
 
         ref ContainerEntry e = ref _entries[slot];
         EnsureBitmapContainer(ref e);
-        SetBitmapBits(e.BitmapData, lo, hi);
-        e.Cardinality = BitmapContainerCardinality(e.Data);
+        e.Cardinality += SetBitmapBits(e.BitmapData, lo, hi);
     }
 
     /// <summary>Convert any non-Bitmap container to Bitmap for bulk bit operations.</summary>
@@ -228,17 +226,20 @@ public unsafe struct RoaringBitmap : IDisposable
     }
 
     /// <summary>Set bits lo..hi (inclusive) in a bitmap buffer using word-level Fill.</summary>
-    private static void SetBitmapBits(ulong* bitmap, ushort lo, ushort hi)
+    /// <summary>Set bits lo..hi (inclusive). Returns the number of newly set bits.</summary>
+    private static int SetBitmapBits(ulong* bitmap, ushort lo, ushort hi)
     {
         int loWord = lo >> 6;
         int hiWord = hi >> 6;
+        int newBits = 0;
 
         if (loWord == hiWord)
         {
-            // All bits in a single word
             ulong mask = (ulong.MaxValue << (lo & 63)) & (ulong.MaxValue >> (63 - (hi & 63)));
-            bitmap[loWord] |= mask;
-            return;
+            ulong before = bitmap[loWord];
+            bitmap[loWord] = before | mask;
+            newBits = BitOperations.PopCount((before | mask) ^ before);
+            return newBits;
         }
 
         // Sequential memory access order: first partial, full middle, last partial
@@ -246,15 +247,29 @@ public unsafe struct RoaringBitmap : IDisposable
 
         if ((lo & 63) != 0)
         {
-            bitmap[loWord] |= ulong.MaxValue << (lo & 63);
+            ulong mask = ulong.MaxValue << (lo & 63);
+            ulong before = bitmap[loWord];
+            bitmap[loWord] = before | mask;
+            newBits += BitOperations.PopCount((before | mask) ^ before);
             loWord++;
         }
 
-        if (loWord <= hiWord)
-            new Span<ulong>(bitmap + loWord, hiWord - loWord + 1).Fill(ulong.MaxValue);
+        // Full words: count existing bits before overwriting
+        for (int w = loWord; w <= hiWord; w++)
+        {
+            newBits += 64 - BitOperations.PopCount(bitmap[w]);
+            bitmap[w] = ulong.MaxValue;
+        }
 
         if (lastPartialWord >= 0)
-            bitmap[lastPartialWord] |= ulong.MaxValue >> (63 - (hi & 63));
+        {
+            ulong mask = ulong.MaxValue >> (63 - (hi & 63));
+            ulong before = bitmap[lastPartialWord];
+            bitmap[lastPartialWord] = before | mask;
+            newBits += BitOperations.PopCount((before | mask) ^ before);
+        }
+
+        return newBits;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
