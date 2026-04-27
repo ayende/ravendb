@@ -105,25 +105,24 @@ public unsafe struct RoaringBitmapIterator
 
         fixed (long* dst = &buffer[written])
         {
-            // SIMD: widen 4 ushorts → 4 longs at a time, OR with baseValue (low 16 bits are 0)
+            // SIMD: widen 4 ushorts → 4 longs, OR with baseValue, store 4 longs.
+            // Uses Vector256 for the OR + store. The ushort→long widening is scalar
+            // because vpmovzxwq (zero-extend) isn't directly available in .NET's
+            // cross-platform Vector API, and Avx2.ConvertToVector256Int64 does
+            // sign-extension which is wrong for ushort > 32767.
             if (AdvInstructionSet.IsAcceleratedVector256 && toCopy >= 4)
             {
                 Vector256<long> vBase = Vector256.Create(baseValue);
                 int i = 0;
+                ushort* src = arr + _positionInContainer;
                 for (; i + 4 <= toCopy; i += 4)
                 {
-                    // Load 4 ushorts, zero-extend to 4 longs
-                    long v0 = arr[_positionInContainer + i];
-                    long v1 = arr[_positionInContainer + i + 1];
-                    long v2 = arr[_positionInContainer + i + 2];
-                    long v3 = arr[_positionInContainer + i + 3];
-                    Vector256<long> vals = Vector256.Create(v0, v1, v2, v3);
+                    Vector256<long> vals = Vector256.Create(
+                        (long)src[i], (long)src[i + 1], (long)src[i + 2], (long)src[i + 3]);
                     (vals | vBase).Store(dst + i);
                 }
-
-                // Scalar remainder
                 for (; i < toCopy; i++)
-                    dst[i] = baseValue | arr[_positionInContainer + i];
+                    dst[i] = baseValue | src[i];
             }
             else
             {
