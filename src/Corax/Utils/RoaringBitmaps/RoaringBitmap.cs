@@ -249,6 +249,26 @@ public unsafe struct RoaringBitmap : IDisposable
     }
 
     /// <summary>
+    /// Create a deep copy of this bitmap. All container data is cloned into the same ByteStringContext.
+    /// The source bitmap is not modified. The clone preserves container types (Range, Array, Bitmap).
+    /// </summary>
+    public RoaringBitmap Clone()
+    {
+        var copy = new RoaringBitmap(_ctx);
+        int* idx = _index.RawItems;
+        for (int k = 0; k < _index.Count; k++)
+        {
+            int slot = idx[k];
+            if (slot >= 0)
+            {
+                ref ContainerEntry entry = ref _entries[slot];
+                copy.AddContainer(k, CloneContainer(_ctx, ref entry));
+            }
+        }
+        return copy;
+    }
+
+    /// <summary>
     /// Finalize the build phase: sort and deduplicate all unsorted array containers.
     /// Call this after all Add/AddRange calls and before any read operations (Contains,
     /// Fill, set ops). This separates the sort cost from the first query, making
@@ -817,7 +837,8 @@ public unsafe struct RoaringBitmap : IDisposable
         if (copyBytes > 0)
             Unsafe.CopyBlockUnaligned(newStorage.Ptr, entry.Data, (uint)copyBytes);
 
-        _ctx.Release(ref entry.Storage);
+        if (entry.Storage.HasValue)
+            _ctx.Release(ref entry.Storage);
         entry.Storage = newStorage;
         entry.Data = newStorage.Ptr;
     }

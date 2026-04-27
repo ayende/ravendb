@@ -15,44 +15,29 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     {
     }
 
-    // Allocating set op helpers for testing: clone left, then mutate in-place.
-    // Keeps original bitmaps intact for subsequent assertions.
+    // Set op helpers for testing: deep-clone left bitmap, then mutate in-place.
+    // Preserves the original bitmap's container structure for subsequent assertions.
     private static RoaringBitmap And(ByteStringContext ctx, ref RoaringBitmap a, ref RoaringBitmap b)
     {
-        var result = Clone(ctx, ref a);
+        var result = a.Clone();
         result.AndWith(ref b);
         return result;
     }
 
     private static RoaringBitmap Or(ByteStringContext ctx, ref RoaringBitmap a, ref RoaringBitmap b)
     {
-        var result = Clone(ctx, ref a);
+        var result = a.Clone();
         result.OrWith(ref b);
         return result;
     }
 
     private static RoaringBitmap AndNot(ByteStringContext ctx, ref RoaringBitmap a, ref RoaringBitmap b)
     {
-        var result = Clone(ctx, ref a);
+        var result = a.Clone();
         result.AndNotWith(ref b);
         return result;
     }
 
-    private static RoaringBitmap Clone(ByteStringContext ctx, ref RoaringBitmap src)
-    {
-        // Build a new bitmap by iterating all values from src
-        var clone = new RoaringBitmap(ctx);
-        var iter = src.GetIterator();
-        Span<long> buf = stackalloc long[1024];
-        int read;
-        while ((read = src.Fill(buf, ref iter)) > 0)
-        {
-            for (int i = 0; i < read; i++)
-                clone.Add(buf[i]);
-        }
-        clone.Finalize();
-        return clone;
-    }
 
     [RavenFact(RavenTestCategory.Corax)]
     public void CanAddAndContainsSingleValue()
@@ -253,33 +238,21 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
         var a = new RoaringBitmap(ctx);
         var b = new RoaringBitmap(ctx);
-        try
-        {
-            for (int i = 0; i < 1000; i++)
-                a.Add(i);
-            for (int i = 500; i < 1500; i++)
-                b.Add(i);
 
-            a.Finalize();
-            b.Finalize();
-            var result = Or(ctx, ref a, ref b);
-            try
-            {
-                Assert.Equal(1500, result.Cardinality);
-                for (int i = 0; i < 1500; i++)
-                    Assert.True(result.Contains(i));
-                Assert.False(result.Contains(1500));
-            }
-            finally
-            {
-                result.Dispose();
-            }
-        }
-        finally
-        {
-            a.Dispose();
-            b.Dispose();
-        }
+        for (int i = 0; i < 1000; i++)
+            a.Add(i);
+        for (int i = 500; i < 1500; i++)
+            b.Add(i);
+
+        a.Finalize();
+        b.Finalize();
+        var result = Or(ctx, ref a, ref b);
+
+        Assert.Equal(1500, result.Cardinality);
+        for (int i = 0; i < 1500; i++)
+            Assert.True(result.Contains(i));
+        Assert.False(result.Contains(1500));
+        // No explicit Dispose — ByteStringContext.Dispose handles all allocations
     }
 
     [RavenFact(RavenTestCategory.Corax)]
