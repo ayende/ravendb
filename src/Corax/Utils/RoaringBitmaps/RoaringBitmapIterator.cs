@@ -94,7 +94,7 @@ public unsafe struct RoaringBitmapIterator
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int FillFromArray(ref ContainerEntry entry, long baseValue, Span<long> buffer, int written)
     {
-        ushort* arr = (ushort*)entry.Data;
+        ushort* arr = entry.ArrayData;
         int count = entry.Cardinality;
         int remaining = count - _positionInContainer;
         int space = buffer.Length - written;
@@ -139,7 +139,7 @@ public unsafe struct RoaringBitmapIterator
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int FillFromBitmap(ref ContainerEntry entry, long baseValue, Span<long> buffer, int written)
     {
-        ulong* bitmap = (ulong*)entry.Data;
+        ulong* bitmap = entry.BitmapData;
 
         while (written < buffer.Length && _positionInContainer < RoaringBitmap.BitmapContainerSizeInUlongs)
         {
