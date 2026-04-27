@@ -26,7 +26,9 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     private static RoaringBitmap Or(ByteStringContext ctx, RoaringBitmap a, RoaringBitmap b)
     {
         var result = a.Clone();
-        result.OrWith(ref b);
+        var bClone = b.Clone();
+        result.OrWith(ref bClone);
+        bClone.Dispose();
         return result;
     }
 
