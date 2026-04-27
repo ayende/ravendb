@@ -58,14 +58,14 @@ public unsafe struct RoaringBitmap : IDisposable
 
     public readonly int ContainerCount => _containerCount;
 
-    /// <summary>Length of the key index — the maximum container key that can be looked up in O(1).</summary>
+    /// <summary>Length of the key index - the maximum container key that can be looked up in O(1).</summary>
     public readonly int IndexLength => _index.Count;
 
     public long Cardinality
     {
         get
         {
-            // Walk entries directly — more cache-friendly than index indirection.
+            // Walk entries directly - more cache-friendly than index indirection.
             // Skip free entries (Type == 0xFF).
             long total = 0;
             ContainerEntry* entries = _entries.RawItems;
@@ -157,7 +157,7 @@ public unsafe struct RoaringBitmap : IDisposable
     {
         var copy = new RoaringBitmap(_ctx);
 
-        // Walk entries directly using the Key field — no index indirection needed
+        // Walk entries directly using the Key field - no index indirection needed
         ContainerEntry* entries = _entries.RawItems;
         ContainerType* types = _types.RawItems;
         int entryCount = _entries.Count;
@@ -265,7 +265,7 @@ public unsafe struct RoaringBitmap : IDisposable
     // [1] Bitmap→Array conversion after set ops: we intentionally skip this.
     // Standard roaring bitmaps convert sparse bitmap results back to array containers
     // to save memory and speed up subsequent operations. But in Corax, these bitmaps
-    // are temporary — built during query evaluation and discarded immediately after.
+    // are temporary - built during query evaluation and discarded immediately after.
     // The 8KB bitmap is already allocated; converting to Array allocates another buffer
     // and scans 1024 words, costing more than it saves for short-lived data.
 
@@ -287,7 +287,7 @@ public unsafe struct RoaringBitmap : IDisposable
             int otherSlot = other.GetSlotForKey(key);
             if (otherSlot < 0)
             {
-                // Not in other — remove
+                // Not in other - remove
                 FreeContainer(key, mySlot);
             }
             else
@@ -374,7 +374,7 @@ public unsafe struct RoaringBitmap : IDisposable
         AssertPrepared(leftType);
         AssertPrepared(rightType);
 
-        // Range×Range fast paths — no allocation needed
+        // Range×Range fast paths - no allocation needed
         if (leftType == ContainerType.Range && rightType == ContainerType.Range)
         {
             left.Cardinality = Math.Min(left.Cardinality, right.Cardinality); // AND = min
@@ -401,7 +401,7 @@ public unsafe struct RoaringBitmap : IDisposable
                 }
             case (ContainerType.Bitmap, ContainerType.Array):
                 {
-                    // Result is at most right.Cardinality entries — always an array
+                    // Result is at most right.Cardinality entries - always an array
                     var arr = right.ArrayData;
                     var bmp = left.BitmapData;
                     _ctx.Allocate(Math.Max(InitialArrayContainerSizeInBytes, right.Cardinality * sizeof(ushort)), out ByteString newStorage);
@@ -502,7 +502,7 @@ public unsafe struct RoaringBitmap : IDisposable
                     int maxResult = left.Cardinality + right.Cardinality;
                     if (maxResult > ArrayContainerMaxCardinality)
                     {
-                        // Result will be a bitmap — convert left, then OR
+                        // Result will be a bitmap - convert left, then OR
                         ConvertArrayToBitmap(ref left, ref leftType);
                         OrContainerInPlace(ref left, ref leftType, ref right, rightType);
                     }
@@ -542,7 +542,7 @@ public unsafe struct RoaringBitmap : IDisposable
                 left.Cardinality = 0; // right covers everything
                 return;
             }
-            // Result is values right.Cardinality..left.Cardinality-1 — not contiguous from 0, materialize
+            // Result is values right.Cardinality..left.Cardinality-1 - not contiguous from 0, materialize
         }
         if (leftType == ContainerType.Range)
             ConvertRangeToBitmap(ref left, ref leftType);
@@ -609,7 +609,7 @@ public unsafe struct RoaringBitmap : IDisposable
     /// <summary>
     /// Create a temporary bitmap on the stack from a Range container.
     /// Returns a ContainerEntry pointing to the stackalloc'd buffer (no ByteStringContext allocation).
-    /// The returned entry has Storage=default — caller must NOT release it.
+    /// The returned entry has Storage=default - caller must NOT release it.
     /// </summary>
     [SkipLocalsInit]
     private static ContainerEntry MaterializeRangeToStack(ref ContainerEntry entry, ulong* stackBitmap)
@@ -657,11 +657,18 @@ public unsafe struct RoaringBitmap : IDisposable
     /// <summary>
     /// Ensure the index array covers the given key, filling new slots with -1.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void EnsureIndexCoversKey(long key)
     {
         if (key < _index.Count)
             return;
 
+        IncreaseIndexCapacity(key);
+    }
+
+
+    private void IncreaseIndexCapacity(long key)
+    {
         if (key < 0 || key >= int.MaxValue - 16)
             throw new ArgumentOutOfRangeException(nameof(key), $"Container key {key} is out of the valid range (0..{int.MaxValue - 17}).");
 
@@ -759,12 +766,18 @@ public unsafe struct RoaringBitmap : IDisposable
     /// Ensure the array container has room for the given number of entries.
     /// Doubles the buffer size up to BitmapContainerSizeInBytes (8KB).
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void EnsureArrayCapacity(ref ContainerEntry entry, int requiredEntries)
     {
         int requiredBytes = requiredEntries * sizeof(ushort);
         if (requiredBytes <= entry.Storage.Length)
             return;
 
+        IncreaseArrayCapacity(ref entry, requiredBytes);
+    }
+
+    private void IncreaseArrayCapacity(ref ContainerEntry entry, int requiredBytes)
+    {
         int newSize = Math.Max(entry.Storage.Length * 2, requiredBytes);
         newSize = Math.Min(newSize, BitmapContainerSizeInBytes);
 
@@ -808,7 +821,7 @@ public unsafe struct RoaringBitmap : IDisposable
                 if (entry.Cardinality > 0 && value >= (entry.ArrayData)[entry.Cardinality - 1])
                 {
                     if (value == (entry.ArrayData)[entry.Cardinality - 1])
-                        break; // duplicate of last element — noop
+                        break; // duplicate of last element - noop
                     if (entry.Cardinality >= ArrayContainerMaxCardinality)
                     {
                         ConvertArrayToBitmap(ref entry, ref type);
@@ -820,7 +833,7 @@ public unsafe struct RoaringBitmap : IDisposable
                     entry.Cardinality++;
                     break;
                 }
-                // Would break sort order — switch to unsorted for O(1) appends
+                // Would break sort order - switch to unsorted for O(1) appends
                 type = ContainerType.ArrayUnsorted;
                 goto case ContainerType.ArrayUnsorted;
 
@@ -850,7 +863,7 @@ public unsafe struct RoaringBitmap : IDisposable
                         BitmapContainerAdd(ref entry, value);
                         break;
                     }
-                    // Has room after dedup — extract sorted array from scratch
+                    // Has room after dedup - extract sorted array from scratch
                     int sorted = 0;
                     for (int wordIdx = 0; wordIdx < BitmapContainerSizeInUlongs; wordIdx++)
                     {
@@ -881,7 +894,7 @@ public unsafe struct RoaringBitmap : IDisposable
                 }
                 else if (value < entry.Cardinality)
                 {
-                    // Already in range — noop
+                    // Already in range - noop
                 }
                 else
                 {
@@ -1173,7 +1186,7 @@ public unsafe struct RoaringBitmap : IDisposable
 
         if (rangeCount >= ArrayContainerMaxCardinality)
         {
-            // Range alone fills an array container — use bitmap
+            // Range alone fills an array container - use bitmap
             ConvertRangeToBitmap(ref entry, ref type);
             BitmapContainerAdd(ref entry, value);
         }
@@ -1491,7 +1504,7 @@ public unsafe struct RoaringBitmap : IDisposable
 
     public void Dispose()
     {
-        // Walk entries directly — more cache-friendly than index indirection.
+        // Walk entries directly - more cache-friendly than index indirection.
         // Skip free entries (Type == Free).
         if (_entries.IsValid)
         {
