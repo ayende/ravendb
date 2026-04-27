@@ -464,9 +464,9 @@ public unsafe struct RoaringBitmap : IDisposable
             ConvertRangeToBitmap(ref left);
         if (right.Type == ContainerType.Range)
         {
-            ContainerEntry temp = MaterializeRangeToBitmapTemp(ref right);
+            ulong* stackBmp = stackalloc ulong[BitmapContainerSizeInUlongs];
+            ContainerEntry temp = MaterializeRangeToStack(ref right, stackBmp);
             AndContainerInPlace(ref left, ref temp);
-            _ctx.Release(ref temp.Storage);
             return;
         }
 
@@ -542,9 +542,9 @@ public unsafe struct RoaringBitmap : IDisposable
             ConvertRangeToBitmap(ref left);
         if (right.Type == ContainerType.Range)
         {
-            ContainerEntry temp = MaterializeRangeToBitmapTemp(ref right);
+            ulong* stackBmp = stackalloc ulong[BitmapContainerSizeInUlongs];
+            ContainerEntry temp = MaterializeRangeToStack(ref right, stackBmp);
             OrContainerInPlace(ref left, ref temp);
-            _ctx.Release(ref temp.Storage);
             return;
         }
 
@@ -625,9 +625,9 @@ public unsafe struct RoaringBitmap : IDisposable
             ConvertRangeToBitmap(ref left);
         if (right.Type == ContainerType.Range)
         {
-            ContainerEntry temp = MaterializeRangeToBitmapTemp(ref right);
+            ulong* stackBmp = stackalloc ulong[BitmapContainerSizeInUlongs];
+            ContainerEntry temp = MaterializeRangeToStack(ref right, stackBmp);
             AndNotContainerInPlace(ref left, ref temp);
-            _ctx.Release(ref temp.Storage);
             return;
         }
 
@@ -684,23 +684,22 @@ public unsafe struct RoaringBitmap : IDisposable
     }
 
     /// <summary>
-    /// Create a temporary bitmap from a Range container (for read-only right-hand side).
-    /// Caller must release the returned storage.
+    /// Create a temporary bitmap on the stack from a Range container.
+    /// Returns a ContainerEntry pointing to the stackalloc'd buffer (no ByteStringContext allocation).
+    /// The returned entry has Storage=default — caller must NOT release it.
     /// </summary>
-    private ContainerEntry MaterializeRangeToBitmapTemp(ref ContainerEntry entry)
+    [SkipLocalsInit]
+    private static ContainerEntry MaterializeRangeToStack(ref ContainerEntry entry, ulong* stackBitmap)
     {
         Debug.Assert(entry.Type == ContainerType.Range);
-
-        _ctx.Allocate(BitmapContainerSizeInBytes, out ByteString storage);
-        ulong* bitmap = (ulong*)storage.Ptr;
-        ClearBitmap(bitmap);
-        FillBitmapFromRange(bitmap, entry.Cardinality);
+        ClearBitmap(stackBitmap);
+        FillBitmapFromRange(stackBitmap, entry.Cardinality);
 
         return new ContainerEntry
         {
-            Data = storage.Ptr,
+            Data = (byte*)stackBitmap,
             Cardinality = entry.Cardinality,
-            Storage = storage,
+            Storage = default, // no allocation to release
             Type = ContainerType.Bitmap
         };
     }
