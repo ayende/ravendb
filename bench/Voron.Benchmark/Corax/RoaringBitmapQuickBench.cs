@@ -24,7 +24,7 @@ public static class RoaringBitmapQuickBench
         int[] counts = { 500, 5_000, 50_000, 500_000 };
         int[] maxValues = { 1_000_000, 1_000_000_000 };
 
-        Console.WriteLine("--- BUILD (Add N values + Finalize) ---");
+        Console.WriteLine("--- BUILD (Add N values + PrepareForReading) ---");
         Console.WriteLine($"{"Count",10} {"MaxValue",12} {"Roaring",12} {"GrowBitArr",12} {"BCL BitArr",12} {"Roaring MB",12} {"GrowBA MB",12} {"BCL MB",12}");
 
         foreach (int maxVal in maxValues)
