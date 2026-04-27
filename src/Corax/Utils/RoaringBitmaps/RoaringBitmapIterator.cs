@@ -29,16 +29,6 @@ public unsafe struct RoaringBitmapIterator
     }
 
     /// <summary>
-    /// Reset the iterator to the beginning.
-    /// </summary>
-    public void Reset()
-    {
-        _containerIndex = 0;
-        _positionInContainer = 0;
-        _bitmapCurrentWord = 0;
-    }
-
-    /// <summary>
     /// Fill the buffer with the next batch of values from the bitmap.
     /// Returns the number of values written.
     /// </summary>
@@ -97,7 +87,7 @@ public unsafe struct RoaringBitmapIterator
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int FillFromArray(ref ContainerEntry entry, long baseValue, Span<long> buffer, int written)
     {
-        ushort* arr = entry.ArrayData;
+        ushort* arr = entry.ArrayPtr;
         int count = entry.Cardinality;
         int remaining = count - _positionInContainer;
         int space = buffer.Length - written;
@@ -135,7 +125,7 @@ public unsafe struct RoaringBitmapIterator
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int FillFromBitmap(ref ContainerEntry entry, long baseValue, Span<long> buffer, int written)
     {
-        ulong* bitmap = entry.BitmapData;
+        var bitmap = entry.BitmapData;
 
         while (written < buffer.Length && _positionInContainer < RoaringBitmap.BitmapContainerSizeInUlongs)
         {
