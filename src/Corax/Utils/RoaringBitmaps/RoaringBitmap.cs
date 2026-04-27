@@ -208,12 +208,8 @@ public unsafe struct RoaringBitmap : IDisposable
 
         ref ContainerEntry e = ref _entries[slot];
         EnsureBitmapContainer(ref e);
-
-        if (e.Type == ContainerType.Bitmap)
-        {
-            SetBitmapBits(e.BitmapData, lo, hi);
-            e.Cardinality = BitmapContainerCardinality(e.Data);
-        }
+        SetBitmapBits(e.BitmapData, lo, hi);
+        e.Cardinality = BitmapContainerCardinality(e.Data);
     }
 
     /// <summary>Convert any non-Bitmap container to Bitmap for bulk bit operations.</summary>
