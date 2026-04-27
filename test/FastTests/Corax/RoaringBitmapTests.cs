@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using Corax.Utils.RoaringBitmaps;
 using Sparrow.Server;
 using Sparrow.Threading;

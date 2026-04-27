@@ -296,19 +296,26 @@ public unsafe struct RoaringBitmap : IDisposable
     {
         var copy = new RoaringBitmap(_ctx);
 
-        // Walk entries directly — more cache-friendly than index indirection.
-        // Rebuild the index from scratch by finding each entry's key from our own index.
-        int* idx = _index.RawItems;
         int indexLen = _index.Count;
+        if (indexLen == 0)
+            return copy;
+
+        // Allocate index sized to source and fill with -1 (absent)
+        copy._index.EnsureCapacityFor(_ctx, indexLen);
+        copy._index.Count = indexLen;
+        new Span<int>(copy._index.RawItems, indexLen).Fill(IndexAbsent);
+
+        // Walk entries directly — skip free slots, clone each live entry
         ContainerEntry* entries = _entries.RawItems;
+        int* srcIdx = _index.RawItems;
         int entryCount = _entries.Count;
 
-        // First pass: find key for each live entry via reverse lookup from index.
-        // Since entries are few (compared to index), scanning index is acceptable.
+        // We need to find the key for each live entry. Walk the source index
+        // to get key->slot mappings and clone each live entry.
         for (int k = 0; k < indexLen; k++)
         {
-            int slot = idx[k];
-            if (slot >= 0)
+            int slot = srcIdx[k];
+            if (slot >= 0 && entries[slot].Type != ContainerType.Free)
             {
                 copy.AddContainer(k, CloneContainer(_ctx, ref entries[slot]));
             }
@@ -765,7 +772,6 @@ public unsafe struct RoaringBitmap : IDisposable
 
     /// <summary>
     /// Ensure the index array covers the given key, filling new slots with -1.
-    /// Keeps length aligned to 16 ints (512 bits) for SIMD scanning.
     /// </summary>
     private void EnsureIndexCoversKey(long key)
     {
@@ -917,7 +923,21 @@ public unsafe struct RoaringBitmap : IDisposable
         switch (entry.Type)
         {
             case ContainerType.Array:
-                // Convert sorted → unsorted for O(1) append, then fall through
+                // If value is greater than the last element, append and stay sorted
+                if (entry.Cardinality > 0 && value > (entry.ArrayData)[entry.Cardinality - 1])
+                {
+                    if (entry.Cardinality >= ArrayContainerMaxCardinality)
+                    {
+                        ConvertArrayToBitmap(ref entry);
+                        BitmapContainerAdd(entry.Data, ref entry.Cardinality, value);
+                        break;
+                    }
+                    EnsureArrayCapacity(ref entry, entry.Cardinality + 1);
+                    (entry.ArrayData)[entry.Cardinality] = value;
+                    entry.Cardinality++;
+                    break;
+                }
+                // Would break sort order — switch to unsorted for O(1) appends
                 entry.Type = ContainerType.ArrayUnsorted;
                 goto case ContainerType.ArrayUnsorted;
 
@@ -1453,7 +1473,8 @@ public unsafe struct RoaringBitmap : IDisposable
 
         ulong* bitmap = entry.BitmapData;
 
-        _ctx.Allocate(BitmapContainerSizeInBytes, out ByteString newStorage);
+        int allocSize = Math.Max(InitialArrayContainerSizeInBytes, entry.Cardinality * sizeof(ushort));
+        _ctx.Allocate(allocSize, out ByteString newStorage);
         ushort* arr = (ushort*)newStorage.Ptr;
 
         int count = BitmapToArray(bitmap, arr);
