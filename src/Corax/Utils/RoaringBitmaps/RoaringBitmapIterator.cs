@@ -58,7 +58,7 @@ public unsafe struct RoaringBitmapIterator
             }
 
             ref ContainerEntry entry = ref bitmap.GetEntryBySlot(slot);
-            RoaringBitmap.EnsureSorted(ref entry);
+            RoaringBitmap.AssertFinalized(ref entry);
             long baseValue = (long)_containerIndex << RoaringBitmap.ContainerKeyShift;
 
             switch (entry.Type)

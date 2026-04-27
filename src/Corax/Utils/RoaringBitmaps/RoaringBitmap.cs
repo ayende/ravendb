@@ -70,8 +70,7 @@ public unsafe struct RoaringBitmap : IDisposable
                 if (slot >= 0)
                 {
                     ref ContainerEntry entry = ref _entries[slot];
-                    if (entry.Type == ContainerType.ArrayUnsorted)
-                        SortAndDeduplicateArray(ref entry);
+                    AssertFinalized(ref entry);
                     total += entry.Cardinality;
                 }
             }
@@ -173,7 +172,7 @@ public unsafe struct RoaringBitmap : IDisposable
                             e.Cardinality = rangeLen;
                         continue;
                     }
-                    EnsureSorted(ref e);
+                    AssertFinalized(ref e);
                     if (e.Type == ContainerType.Array)
                         ConvertArrayToBitmap(ref e);
                     ulong* bitmap = (ulong*)e.Data;
@@ -204,7 +203,7 @@ public unsafe struct RoaringBitmap : IDisposable
 
                 ref ContainerEntry e = ref _entries[slot];
 
-                EnsureSorted(ref e);
+                AssertFinalized(ref e);
                 if (e.Type == ContainerType.Array)
                     ConvertArrayToBitmap(ref e);
                 else if (e.Type == ContainerType.Range)
@@ -419,8 +418,8 @@ public unsafe struct RoaringBitmap : IDisposable
 
     private void AndContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
     {
-        EnsureSorted(ref left);
-        EnsureSorted(ref right);
+        AssertFinalized(ref left);
+        AssertFinalized(ref right);
 
         // Range×Range fast paths — no allocation needed
         if (left.Type == ContainerType.Range && right.Type == ContainerType.Range)
@@ -498,8 +497,8 @@ public unsafe struct RoaringBitmap : IDisposable
 
     private void OrContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
     {
-        EnsureSorted(ref left);
-        EnsureSorted(ref right);
+        AssertFinalized(ref left);
+        AssertFinalized(ref right);
 
         if (left.Type == ContainerType.Range && right.Type == ContainerType.Range)
         {
@@ -576,8 +575,8 @@ public unsafe struct RoaringBitmap : IDisposable
 
     private void AndNotContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
     {
-        EnsureSorted(ref left);
-        EnsureSorted(ref right);
+        AssertFinalized(ref left);
+        AssertFinalized(ref right);
 
         // Range×Range: values in left not in right. If right covers all of left, empty.
         if (left.Type == ContainerType.Range && right.Type == ContainerType.Range)
@@ -854,8 +853,9 @@ public unsafe struct RoaringBitmap : IDisposable
             case ContainerType.ArrayUnsorted:
                 if (entry.Cardinality >= ArrayContainerMaxCardinality)
                 {
-                    // At capacity: sort+dedup first to see if we have room after removing duplicates
-                    SortAndDeduplicateArray(ref entry);
+                    // At capacity: sort+dedup via bitmap scratch to see if we have room
+                    ulong* scratch = stackalloc ulong[BitmapContainerSizeInUlongs];
+                    SortViaBitmapScratch(ref entry, scratch);
                     if (entry.Cardinality >= ArrayContainerMaxCardinality)
                     {
                         // Still full — convert to bitmap
@@ -893,8 +893,7 @@ public unsafe struct RoaringBitmap : IDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool ContainerContains(ref ContainerEntry entry, ushort value)
     {
-        if (entry.Type == ContainerType.ArrayUnsorted)
-            SortAndDeduplicateArray(ref entry);
+        AssertFinalized(ref entry);
 
         return entry.Type switch
         {
@@ -917,21 +916,20 @@ public unsafe struct RoaringBitmap : IDisposable
     // comparison sort on a tiny array is cheaper than clearing 8KB.
     private const int BitmapSortThreshold = 128;
 
-    private static void SortAndDeduplicateArray(ref ContainerEntry entry)
+    /// <summary>
+    /// Assert that a container has been finalized (not ArrayUnsorted).
+    /// Finalize() must be called before any read operation.
+    /// </summary>
+    [Conditional("DEBUG")]
+    internal static void AssertFinalized(ref ContainerEntry entry)
     {
-        Debug.Assert(entry.Type == ContainerType.ArrayUnsorted);
-
-        if (entry.Cardinality >= BitmapSortThreshold)
-        {
-            ulong* scratch = stackalloc ulong[BitmapContainerSizeInUlongs];
-            SortViaBitmapScratch(ref entry, scratch);
-        }
-        else
-        {
-            SortSmallArray(ref entry);
-        }
+        Debug.Assert(entry.Type != ContainerType.ArrayUnsorted,
+            "Container is still unsorted. Call Finalize() after all Add/AddRange calls and before any read operation.");
     }
 
+    /// <summary>
+    /// Comparison sort + dedup for small arrays below the bitmap radix sort threshold.
+    /// </summary>
     private static void SortSmallArray(ref ContainerEntry entry)
     {
         ushort* arr = (ushort*)entry.Data;
@@ -939,7 +937,6 @@ public unsafe struct RoaringBitmap : IDisposable
 
         new Span<ushort>(arr, count).Sort();
 
-        // Deduplicate in-place
         if (count > 1)
         {
             int write = 1;
@@ -953,16 +950,6 @@ public unsafe struct RoaringBitmap : IDisposable
 
         entry.Cardinality = count;
         entry.Type = ContainerType.Array;
-    }
-
-    /// <summary>
-    /// Ensure any ArrayUnsorted container is sorted before use in operations that require sorted data.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static void EnsureSorted(ref ContainerEntry entry)
-    {
-        if (entry.Type == ContainerType.ArrayUnsorted)
-            SortAndDeduplicateArray(ref entry);
     }
 
     #endregion
