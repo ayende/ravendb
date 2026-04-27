@@ -62,16 +62,17 @@ public unsafe struct RoaringBitmap : IDisposable
     {
         get
         {
+            // Walk entries directly — more cache-friendly than index indirection.
+            // Skip free entries (Type == 0xFF).
             long total = 0;
-            int* idx = _index.RawItems;
-            for (int k = 0; k < _index.Count; k++)
+            ContainerEntry* entries = _entries.RawItems;
+            int count = _entries.Count;
+            for (int i = 0; i < count; i++)
             {
-                int slot = idx[k];
-                if (slot >= 0)
+                if (entries[i].Type != (ContainerType)0xFF)
                 {
-                    ref ContainerEntry entry = ref _entries[slot];
-                    AssertFinalized(ref entry);
-                    total += entry.Cardinality;
+                    AssertFinalized(ref entries[i]);
+                    total += entries[i].Cardinality;
                 }
             }
             return total;
