@@ -247,7 +247,7 @@ public static class RoaringBitmapQuickBench
             case "ANDNOT": a.AndNotWith(ref b); break;
             default: throw new ArgumentException(op);
         }
-        long c = a.Cardinality;
+        GC.KeepAlive(a.Cardinality);
         sw.Stop();
         a.Dispose();
         b.Dispose();
@@ -271,7 +271,7 @@ public static class RoaringBitmapQuickBench
             case "OR": a.OrWith(ref b); break;
             case "ANDNOT": a.AndNotWith(ref b); break;
         }
-        long c = a.Cardinality;
+        GC.KeepAlive(a.Cardinality);
         sw.Stop();
         a.Dispose();
         b.Dispose();

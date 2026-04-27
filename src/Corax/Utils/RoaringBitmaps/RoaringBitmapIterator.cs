@@ -74,6 +74,9 @@ public unsafe struct RoaringBitmapIterator
                 case ContainerType.Range:
                     written = FillFromRange(ref entry, baseValue, buffer, written);
                     break;
+
+                case ContainerType.ArrayUnsorted:
+                    throw new InvalidOperationException("Call PrepareForReading() before iterating.");
             }
 
             bool containerCompleted = entry.Type == ContainerType.Bitmap

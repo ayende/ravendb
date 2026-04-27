@@ -9,7 +9,7 @@ namespace Voron.Benchmark.Corax;
 
 /// <summary>
 /// Profiling benchmark that breaks down where time is spent in roaring bitmap operations.
-/// Measures build, sort (EnsureSorted), and merge separately.
+/// Measures build, PrepareForReading (sort+dedup), and merge separately.
 /// </summary>
 public static class RoaringBitmapProfileBench
 {
@@ -52,12 +52,10 @@ public static class RoaringBitmapProfileBench
             // Force sort (simulates first read) — measure separately
             var swSortA = Stopwatch.StartNew();
             a.PrepareForReading();
-            long cardA = a.Cardinality;
             swSortA.Stop();
 
             var swSortB = Stopwatch.StartNew();
             b.PrepareForReading();
-            long cardB = b.Cardinality;
             swSortB.Stop();
 
             // AND merge — arrays already sorted now

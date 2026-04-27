@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Threading;
 using Corax.Utils.RoaringBitmaps;
 using Sparrow.Server;
@@ -61,10 +60,11 @@ public static class RoaringBitmapTraceBench
         a.PrepareForReading();
         b.PrepareForReading();
 
-        // Contains
+        // Contains — found count consumed to prevent dead-code elimination
         int found = 0;
         for (int i = 0; i < Math.Min(10000, valuesB.Length); i++)
             if (a.Contains(valuesB[i])) found++;
+        GC.KeepAlive(found);
 
         // AND (in-place)
         a.AndWith(ref b);
@@ -81,13 +81,14 @@ public static class RoaringBitmapTraceBench
         aCopy2.PrepareForReading();
         aCopy2.AndNotWith(ref b);
 
-        // Iterate
+        // Iterate — total consumed to prevent dead-code elimination
         var iter = a.GetIterator();
         long[] buf = new long[4096];
         int total = 0;
         int read;
         while ((read = a.Fill(buf, ref iter)) > 0)
             total += read;
+        GC.KeepAlive(total);
 
         a.Dispose();
         aCopy.Dispose();
