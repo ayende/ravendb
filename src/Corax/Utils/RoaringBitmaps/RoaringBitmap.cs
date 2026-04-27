@@ -119,162 +119,6 @@ public unsafe struct RoaringBitmap : IDisposable
         }
     }
 
-    public void AddRange(long start, long exclusiveEnd)
-    {
-        Debug.Assert(start >= 0, "RoaringBitmap only supports non-negative values.");
-        if (start >= exclusiveEnd)
-            return;
-
-        long startKey = start >> ContainerKeyShift;
-        long endKey = (exclusiveEnd - 1) >> ContainerKeyShift;
-
-        for (long key = startKey; key <= endKey; key++)
-        {
-            ushort lo = (key == startKey) ? (ushort)(start & ContainerValueMask) : (ushort)0;
-            ushort hi = (key == endKey) ? (ushort)((exclusiveEnd - 1) & ContainerValueMask) : (ushort)(BitsPerContainer - 1);
-
-            if (lo == 0 && hi == BitsPerContainer - 1)
-                AddRangeFullContainer(key);
-            else if (lo == 0)
-                AddRangeFromStart(key, hi);
-            else
-                AddRangePartial(key, lo, hi);
-        }
-    }
-
-    private void AddRangeFullContainer(long key)
-    {
-        int slot = GetSlotForKey(key);
-        if (slot >= 0)
-        {
-            ref ContainerEntry entry = ref _entries[slot];
-            if (entry.Storage.HasValue)
-                _ctx.Release(ref entry.Storage);
-            entry.Data = null;
-            entry.Storage = default;
-            entry.Type = ContainerType.Range;
-            entry.Cardinality = BitsPerContainer;
-        }
-        else
-        {
-            AddNewContainer(key, new ContainerEntry
-            {
-                Type = ContainerType.Range,
-                Cardinality = BitsPerContainer,
-                Data = null,
-                Storage = default
-            });
-        }
-    }
-
-    private void AddRangeFromStart(long key, ushort hi)
-    {
-        int rangeLen = hi + 1;
-        int slot = GetSlotForKey(key);
-        if (slot < 0)
-        {
-            AddNewContainer(key, new ContainerEntry
-            {
-                Type = ContainerType.Range,
-                Cardinality = rangeLen,
-                Data = null,
-                Storage = default
-            });
-            return;
-        }
-
-        ref ContainerEntry e = ref _entries[slot];
-        if (e.Type == ContainerType.Range)
-        {
-            if (rangeLen > e.Cardinality)
-                e.Cardinality = rangeLen;
-            return;
-        }
-
-        // Existing non-Range container — convert to bitmap and set bits
-        EnsureBitmapContainer(ref e);
-        e.Cardinality += SetBitmapBits(e.BitmapData, 0, hi);
-    }
-
-    private void AddRangePartial(long key, ushort lo, ushort hi)
-    {
-        int slot = GetSlotForKey(key);
-        if (slot < 0)
-        {
-            ContainerEntry newEntry = CreateBitmapContainer(key);
-            slot = AddNewContainer(key, newEntry);
-        }
-
-        ref ContainerEntry e = ref _entries[slot];
-        EnsureBitmapContainer(ref e);
-        e.Cardinality += SetBitmapBits(e.BitmapData, lo, hi);
-    }
-
-    /// <summary>Convert any non-Bitmap container to Bitmap for bulk bit operations.</summary>
-    private void EnsureBitmapContainer(ref ContainerEntry e)
-    {
-        switch (e.Type)
-        {
-            case ContainerType.Array:
-            case ContainerType.ArrayUnsorted:
-                ConvertArrayToBitmap(ref e);
-                break;
-            case ContainerType.Range:
-                ConvertRangeToBitmap(ref e);
-                break;
-        }
-    }
-
-    /// <summary>Set bits lo..hi (inclusive) in a bitmap buffer using word-level Fill.</summary>
-    /// <summary>Set bits lo..hi (inclusive). Returns the number of newly set bits.</summary>
-    private static int SetBitmapBits(ulong* bitmap, ushort lo, ushort hi)
-    {
-        int loWord = lo >> 6;
-        int hiWord = hi >> 6;
-        int newBits = 0;
-
-        if (loWord == hiWord)
-        {
-            ulong mask = (ulong.MaxValue << (lo & 63)) & (ulong.MaxValue >> (63 - (hi & 63)));
-            ulong before = bitmap[loWord];
-            bitmap[loWord] = before | mask;
-            newBits = BitOperations.PopCount((before | mask) ^ before);
-            return newBits;
-        }
-
-        // Sequential memory access order: first partial, full middle, last partial
-        int lastPartialWord = ((hi & 63) != 63) ? hiWord-- : -1;
-
-        if ((lo & 63) != 0)
-        {
-            ulong mask = ulong.MaxValue << (lo & 63);
-            ulong before = bitmap[loWord];
-            bitmap[loWord] = before | mask;
-            newBits += BitOperations.PopCount((before | mask) ^ before);
-            loWord++;
-        }
-
-        // Full words: count existing set bits, then overwrite with all-ones
-        int fullWordCount = hiWord - loWord + 1;
-        if (fullWordCount > 0)
-        {
-            for (int w = loWord; w <= hiWord; w++)
-                newBits -= BitOperations.PopCount(bitmap[w]);
-            newBits += fullWordCount * 64;
-            new Span<ulong>(bitmap + loWord, fullWordCount).Fill(ulong.MaxValue);
-        }
-
-        if (lastPartialWord >= 0)
-        {
-            ulong mask = ulong.MaxValue >> (63 - (hi & 63));
-            ulong before = bitmap[lastPartialWord];
-            bitmap[lastPartialWord] = before | mask;
-            newBits += BitOperations.PopCount((before | mask) ^ before);
-        }
-
-        return newBits;
-    }
-
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool Contains(long value)
     {
@@ -324,7 +168,7 @@ public unsafe struct RoaringBitmap : IDisposable
 
     /// <summary>
     /// Prepare for reading: sort and deduplicate all unsorted array containers.
-    /// Call this after all Add/AddRange calls and before any read operations (Contains,
+    /// Call this after all Add calls and before any read operations (Contains,
     /// Fill, set ops). This separates the sort cost from the first query, making
     /// performance more predictable.
     ///
@@ -813,15 +657,13 @@ public unsafe struct RoaringBitmap : IDisposable
     /// <summary>
     /// Add a new container entry and register it in the index. Returns the entry slot.
     /// </summary>
-    private int AddNewContainer(long key, ContainerEntry entry)
+    private int AddNewContainer(long key, in ContainerEntry entry)
     {
         EnsureIndexCoversKey(key);
-        entry.Key = (uint)key;
 
         int slot;
         if (_freeListHead != FreeSlotTerminator)
         {
-            // Reuse a tombstone slot
             slot = _freeListHead;
             Debug.Assert(_entries[slot].Type == ContainerType.Free, "Expected free entry");
             _freeListHead = _entries[slot].NextFreeSlot;
@@ -832,6 +674,7 @@ public unsafe struct RoaringBitmap : IDisposable
             slot = _entries.Count;
             _entries.Add(_ctx, entry);
         }
+        _entries[slot].Key = (uint)key;
 
         _index.RawItems[key] = slot;
         _containerCount++;
@@ -861,7 +704,7 @@ public unsafe struct RoaringBitmap : IDisposable
     /// Add a container entry during result-building (set operations). Used when building
     /// a new bitmap from scratch where keys are added in order.
     /// </summary>
-    internal void AddContainer(long key, ContainerEntry entry)
+    internal void AddContainer(long key, in ContainerEntry entry)
     {
         if (entry.Cardinality == 0)
             return;
@@ -1056,7 +899,7 @@ public unsafe struct RoaringBitmap : IDisposable
     internal static void AssertPrepared(ref ContainerEntry entry)
     {
         Debug.Assert(entry.Type != ContainerType.ArrayUnsorted,
-            "Container is still unsorted. Call PrepareForReading() after all Add/AddRange calls and before any read operation.");
+            "Container is still unsorted. Call PrepareForReading() after all Add calls and before any read operation.");
     }
 
     /// <summary>
