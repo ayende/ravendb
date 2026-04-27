@@ -48,10 +48,11 @@ public unsafe struct RoaringBitmapIterator
             }
 
             ref ContainerEntry entry = ref bitmap.GetEntryBySlot(slot);
-            RoaringBitmap.AssertPrepared(ref entry);
+            ContainerType type = bitmap._types.RawItems[slot];
+            RoaringBitmap.AssertPrepared(type);
             long baseValue = (long)_containerIndex << RoaringBitmap.ContainerKeyShift;
 
-            switch (entry.Type)
+            switch (type)
             {
                 case ContainerType.Array:
                     written = FillFromArray(ref entry, baseValue, buffer, written);
@@ -69,7 +70,7 @@ public unsafe struct RoaringBitmapIterator
                     throw new InvalidOperationException("Call PrepareForReading() before iterating.");
             }
 
-            bool containerCompleted = entry.Type == ContainerType.Bitmap
+            bool containerCompleted = type == ContainerType.Bitmap
                 ? _positionInContainer >= RoaringBitmap.BitmapContainerSizeInUlongs && _bitmapCurrentWord == 0
                 : _positionInContainer >= entry.Cardinality;
 

@@ -38,6 +38,8 @@ public unsafe struct RoaringBitmap : IDisposable
     private ByteStringContext _ctx;
     /// <summary>Packed container entries. May have tombstones (gaps reused via free list).</summary>
     private NativeList<ContainerEntry> _entries;
+    /// <summary>Container types, parallel to _entries. Split to reduce padding in ContainerEntry.</summary>
+    internal NativeList<ContainerType> _types;
     /// <summary>Key → entry slot index. -1 = absent. Length = maxKey + 1.</summary>
     private NativeList<int> _index;
     private int _containerCount;
@@ -48,6 +50,7 @@ public unsafe struct RoaringBitmap : IDisposable
     {
         _ctx = ctx;
         _entries = new NativeList<ContainerEntry>();
+        _types = new NativeList<ContainerType>();
         _index = new NativeList<int>();
         _containerCount = 0;
         _freeListHead = FreeSlotTerminator;
@@ -66,12 +69,13 @@ public unsafe struct RoaringBitmap : IDisposable
             // Skip free entries (Type == 0xFF).
             long total = 0;
             ContainerEntry* entries = _entries.RawItems;
+            ContainerType* types = _types.RawItems;
             int count = _entries.Count;
             for (int i = 0; i < count; i++)
             {
-                if (entries[i].Type != ContainerType.Free)
+                if (types[i] != ContainerType.Free)
                 {
-                    AssertPrepared(ref entries[i]);
+                    AssertPrepared(types[i]);
                     total += entries[i].Cardinality;
                 }
             }
@@ -92,16 +96,15 @@ public unsafe struct RoaringBitmap : IDisposable
         if (slot >= 0)
         {
             ref ContainerEntry entry = ref _entries[slot];
-            AddToContainer(ref entry, low);
+            AddToContainer(ref entry, slot, low);
         }
         else
         {
             // First value in this container: Range if starting from 0, Array otherwise
             if (low == 0)
             {
-                AddNewContainer(key, new ContainerEntry
+                AddNewContainer(key, ContainerType.Range, new ContainerEntry
                 {
-                    Type = ContainerType.Range,
                     Cardinality = 1,
                     Data = null,
                     Storage = default
@@ -113,8 +116,7 @@ public unsafe struct RoaringBitmap : IDisposable
                 ContainerEntry newEntry = CreateArrayContainer(key);
                 (newEntry.ArrayData)[0] = low;
                 newEntry.Cardinality = 1;
-                newEntry.Type = ContainerType.ArrayUnsorted;
-                AddNewContainer(key, newEntry);
+                AddNewContainer(key, ContainerType.ArrayUnsorted, newEntry);
             }
         }
     }
@@ -130,7 +132,7 @@ public unsafe struct RoaringBitmap : IDisposable
             return false;
 
         ref ContainerEntry entry = ref _entries[slot];
-        return ContainerContains(ref entry, low);
+        return ContainerContains(ref entry, _types.RawItems[slot], low);
     }
 
     /// <summary>
@@ -157,11 +159,12 @@ public unsafe struct RoaringBitmap : IDisposable
 
         // Walk entries directly using the Key field — no index indirection needed
         ContainerEntry* entries = _entries.RawItems;
+        ContainerType* types = _types.RawItems;
         int entryCount = _entries.Count;
         for (int i = 0; i < entryCount; i++)
         {
-            if (entries[i].Type != ContainerType.Free)
-                copy.AddContainer(entries[i].Key, CloneContainer(_ctx, ref entries[i]));
+            if (types[i] != ContainerType.Free)
+                copy.AddContainer(entries[i].Key, types[i], CloneContainer(_ctx, ref entries[i], types[i]));
         }
         return copy;
     }
@@ -184,16 +187,17 @@ public unsafe struct RoaringBitmap : IDisposable
         ulong* scratch = stackalloc ulong[BitmapContainerSizeInUlongs];
 
         ContainerEntry* entries = _entries.RawItems;
+        ContainerType* types = _types.RawItems;
         int entryCount = _entries.Count;
         for (int i = 0; i < entryCount; i++)
         {
             ref ContainerEntry entry = ref entries[i];
-            if (entry.Type == ContainerType.ArrayUnsorted)
+            if (types[i] == ContainerType.ArrayUnsorted)
             {
                 if (entry.Cardinality >= BitmapSortThreshold)
-                    SortViaBitmapScratch(ref entry, scratch);
+                    SortViaBitmapScratch(ref entry, ref types[i], scratch);
                 else
-                    SortSmallArray(ref entry);
+                    SortSmallArray(ref entry, ref types[i]);
             }
         }
     }
@@ -204,9 +208,9 @@ public unsafe struct RoaringBitmap : IDisposable
     /// dirtyMap tracks which 4-ulong chunks have been written so extraction only
     /// visits touched chunks, skipping clean regions entirely.
     /// </summary>
-    private static void SortViaBitmapScratch(ref ContainerEntry entry, ulong* scratch)
+    private static void SortViaBitmapScratch(ref ContainerEntry entry, ref ContainerType type, ulong* scratch)
     {
-        Debug.Assert(entry.Type == ContainerType.ArrayUnsorted);
+        Debug.Assert(type == ContainerType.ArrayUnsorted);
 
         var arr = entry.ArrayData;
         int count = entry.Cardinality;
@@ -252,9 +256,8 @@ public unsafe struct RoaringBitmap : IDisposable
                 currentWork &= currentWork - 1;
             }
         }
-
         entry.Cardinality = sorted;
-        entry.Type = ContainerType.Array;
+        type = ContainerType.Array;
     }
 
     #region In-place Set Operations
@@ -291,7 +294,7 @@ public unsafe struct RoaringBitmap : IDisposable
             {
                 ref ContainerEntry myEntry = ref _entries[mySlot];
                 ref ContainerEntry otherEntry = ref other.GetEntryBySlot(otherSlot);
-                AndContainerInPlace(ref myEntry, ref otherEntry);
+                AndContainerInPlace(ref myEntry, ref _types.RawItems[mySlot], ref otherEntry, other._types.RawItems[otherSlot]);
                 if (myEntry.Cardinality == 0)
                     FreeContainer(key, mySlot);
             }
@@ -319,11 +322,11 @@ public unsafe struct RoaringBitmap : IDisposable
 
             if (mySlot >= 0)
             {
-                OrContainerInPlace(ref _entries[mySlot], ref otherEntry);
+                OrContainerInPlace(ref _entries[mySlot], ref _types.RawItems[mySlot], ref otherEntry, other._types.RawItems[otherSlot]);
             }
             else
             {
-                AddNewContainer(key, CloneContainer(_ctx, ref otherEntry));
+                AddNewContainer(key, other._types.RawItems[otherSlot], CloneContainer(_ctx, ref otherEntry, other._types.RawItems[otherSlot]));
             }
         }
     }
@@ -347,42 +350,43 @@ public unsafe struct RoaringBitmap : IDisposable
                 continue; // nothing to subtract
 
             ref ContainerEntry otherEntry = ref other.GetEntryBySlot(otherSlot);
-            AndNotContainerInPlace(ref _entries[mySlot], ref otherEntry);
+            AndNotContainerInPlace(ref _entries[mySlot], ref _types.RawItems[mySlot], ref otherEntry, other._types.RawItems[otherSlot]);
             if (_entries[mySlot].Cardinality == 0)
                 FreeContainer(key, mySlot);
         }
     }
 
     [SkipLocalsInit]
-    private void AndContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
+    private void AndContainerInPlace(ref ContainerEntry left, ref ContainerType leftType, ref ContainerEntry right, ContainerType rightType)
     {
-        AssertPrepared(ref left);
-        AssertPrepared(ref right);
+        AssertPrepared(leftType);
+        AssertPrepared(rightType);
 
         // Range×Range fast paths — no allocation needed
-        if (left.Type == ContainerType.Range && right.Type == ContainerType.Range)
+        if (leftType == ContainerType.Range && rightType == ContainerType.Range)
         {
             left.Cardinality = Math.Min(left.Cardinality, right.Cardinality); // AND = min
             return;
         }
-        if (left.Type == ContainerType.Range)
-            ConvertRangeToBitmap(ref left);
-        if (right.Type == ContainerType.Range)
+        if (leftType == ContainerType.Range)
+            ConvertRangeToBitmap(ref left, ref leftType);
+        if (rightType == ContainerType.Range)
         {
             ulong* stackBmp = stackalloc ulong[BitmapContainerSizeInUlongs];
             ContainerEntry temp = MaterializeRangeToStack(ref right, stackBmp);
-            AndContainerInPlace(ref left, ref temp);
+            AndContainerInPlace(ref left, ref leftType, ref temp, ContainerType.Bitmap);
             return;
         }
 
-        switch (left.Type, right.Type)
+        switch (leftType, rightType)
         {
             case (ContainerType.Bitmap, ContainerType.Bitmap):
-                left.Cardinality = BitmapAndSimd(
+                {
+                    var count = BitmapAndSimd(
                     left.BitmapPtr, right.BitmapPtr, left.BitmapPtr, BitmapContainerSizeInUlongs);
-                // No Bitmap→Array conversion: these are temporary, discarded after query. See note [1].
-                break;
-
+                    left.Cardinality = count;
+                    break;
+                }
             case (ContainerType.Bitmap, ContainerType.Array):
                 {
                     // Result is at most right.Cardinality entries — always an array
@@ -400,7 +404,7 @@ public unsafe struct RoaringBitmap : IDisposable
                     _ctx.Release(ref left.Storage);
                     left.Storage = newStorage;
                     left.Data = newStorage.Ptr;
-                    left.Type = ContainerType.Array;
+                    leftType = ContainerType.Array;
                     left.Cardinality = count;
                     break;
                 }
@@ -434,34 +438,35 @@ public unsafe struct RoaringBitmap : IDisposable
     }
 
     [SkipLocalsInit]
-    private void OrContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
+    private void OrContainerInPlace(ref ContainerEntry left, ref ContainerType leftType, ref ContainerEntry right, ContainerType rightType)
     {
-        AssertPrepared(ref left);
-        AssertPrepared(ref right);
+        AssertPrepared(leftType);
+        AssertPrepared(rightType);
 
-        if (left.Type == ContainerType.Range && right.Type == ContainerType.Range)
+        if (leftType == ContainerType.Range && rightType == ContainerType.Range)
         {
             left.Cardinality = Math.Max(left.Cardinality, right.Cardinality); // OR = max
             return;
         }
-        if (left.Type == ContainerType.Range)
-            ConvertRangeToBitmap(ref left);
-        if (right.Type == ContainerType.Range)
+        if (leftType == ContainerType.Range)
+            ConvertRangeToBitmap(ref left, ref leftType);
+        if (rightType == ContainerType.Range)
         {
             ulong* stackBmp = stackalloc ulong[BitmapContainerSizeInUlongs];
             ContainerEntry temp = MaterializeRangeToStack(ref right, stackBmp);
-            OrContainerInPlace(ref left, ref temp);
+            OrContainerInPlace(ref left, ref leftType, ref temp, ContainerType.Bitmap);
             return;
         }
 
-        switch (left.Type, right.Type)
+        switch (leftType, rightType)
         {
             case (ContainerType.Bitmap, ContainerType.Bitmap):
-                left.Cardinality = BitmapOrSimd(
+                {
+                    var count = BitmapOrSimd(
                     left.BitmapPtr, right.BitmapPtr, left.BitmapPtr, BitmapContainerSizeInUlongs);
-                // No Bitmap→Array conversion: these are temporary, discarded after query. See note [1].
-                break;
-
+                    left.Cardinality = count;
+                    break;
+                }
             case (ContainerType.Bitmap, ContainerType.Array):
                 {
                     var bmp = left.BitmapData;
@@ -486,8 +491,8 @@ public unsafe struct RoaringBitmap : IDisposable
                     if (maxResult > ArrayContainerMaxCardinality)
                     {
                         // Result will be a bitmap — convert left, then OR
-                        ConvertArrayToBitmap(ref left);
-                        OrContainerInPlace(ref left, ref right);
+                        ConvertArrayToBitmap(ref left, ref leftType);
+                        OrContainerInPlace(ref left, ref leftType, ref right, rightType);
                     }
                     else
                     {
@@ -503,8 +508,8 @@ public unsafe struct RoaringBitmap : IDisposable
 
             case (ContainerType.Array, ContainerType.Bitmap):
                 {
-                    ConvertArrayToBitmap(ref left);
-                    OrContainerInPlace(ref left, ref right);
+                    ConvertArrayToBitmap(ref left, ref leftType);
+                    OrContainerInPlace(ref left, ref leftType, ref right, rightType);
                     break;
                 }
         }
@@ -512,13 +517,13 @@ public unsafe struct RoaringBitmap : IDisposable
 
 
     [SkipLocalsInit]
-    private void AndNotContainerInPlace(ref ContainerEntry left, ref ContainerEntry right)
+    private void AndNotContainerInPlace(ref ContainerEntry left, ref ContainerType leftType, ref ContainerEntry right, ContainerType rightType)
     {
-        AssertPrepared(ref left);
-        AssertPrepared(ref right);
+        AssertPrepared(leftType);
+        AssertPrepared(rightType);
 
         // Range×Range: values in left not in right. If right covers all of left, empty.
-        if (left.Type == ContainerType.Range && right.Type == ContainerType.Range)
+        if (leftType == ContainerType.Range && rightType == ContainerType.Range)
         {
             if (right.Cardinality >= left.Cardinality)
             {
@@ -527,24 +532,25 @@ public unsafe struct RoaringBitmap : IDisposable
             }
             // Result is values right.Cardinality..left.Cardinality-1 — not contiguous from 0, materialize
         }
-        if (left.Type == ContainerType.Range)
-            ConvertRangeToBitmap(ref left);
-        if (right.Type == ContainerType.Range)
+        if (leftType == ContainerType.Range)
+            ConvertRangeToBitmap(ref left, ref leftType);
+        if (rightType == ContainerType.Range)
         {
             ulong* stackBmp = stackalloc ulong[BitmapContainerSizeInUlongs];
             ContainerEntry temp = MaterializeRangeToStack(ref right, stackBmp);
-            AndNotContainerInPlace(ref left, ref temp);
+            AndNotContainerInPlace(ref left, ref leftType, ref temp, ContainerType.Bitmap);
             return;
         }
 
-        switch (left.Type, right.Type)
+        switch (leftType, rightType)
         {
             case (ContainerType.Bitmap, ContainerType.Bitmap):
-                left.Cardinality = BitmapAndNotSimd(
+                {
+                    var count = BitmapAndNotSimd(
                     left.BitmapPtr, right.BitmapPtr, left.BitmapPtr, BitmapContainerSizeInUlongs);
-                // No Bitmap→Array conversion: these are temporary, discarded after query. See note [1].
-                break;
-
+                    left.Cardinality = count;
+                    break;
+                }
             case (ContainerType.Bitmap, ContainerType.Array):
                 {
                     var bmp = left.BitmapData;
@@ -559,7 +565,6 @@ public unsafe struct RoaringBitmap : IDisposable
                             left.Cardinality--;
                         }
                     }
-                    // No Bitmap→Array conversion: these are temporary, discarded after query. See note [1].
                     break;
                 }
 
@@ -597,7 +602,6 @@ public unsafe struct RoaringBitmap : IDisposable
     [SkipLocalsInit]
     private static ContainerEntry MaterializeRangeToStack(ref ContainerEntry entry, ulong* stackBitmap)
     {
-        Debug.Assert(entry.Type == ContainerType.Range);
         ClearBitmap(stackBitmap);
         FillBitmapFromRange(stackBitmap, entry.Cardinality);
 
@@ -605,8 +609,7 @@ public unsafe struct RoaringBitmap : IDisposable
         {
             Data = (byte*)stackBitmap,
             Cardinality = entry.Cardinality,
-            Storage = default, // no allocation to release
-            Type = ContainerType.Bitmap
+            Storage = default // no allocation to release
         };
     }
 
@@ -655,23 +658,26 @@ public unsafe struct RoaringBitmap : IDisposable
     /// <summary>
     /// Add a new container entry and register it in the index. Returns the entry slot.
     /// </summary>
-    private int AddNewContainer(long key, in ContainerEntry entry)
+    private int AddNewContainer(long key, ContainerType type, in ContainerEntry entry)
     {
         EnsureIndexCoversKey(key);
 
         int slot;
-        if (_freeListHead != FreeSlotTerminator)
+        if (_freeListHead > 0)
         {
             slot = _freeListHead;
-            Debug.Assert(_entries[slot].Type == ContainerType.Free, "Expected free entry");
-            _freeListHead = _entries[slot].NextFreeSlot;
+            Debug.Assert(_types.RawItems[slot] == ContainerType.Free, "Expected free entry");
+            _freeListHead = (int)_entries[slot].NextFreeSlot;
             _entries[slot] = entry;
+            _types.RawItems[slot] = type;
         }
         else
         {
             slot = _entries.Count;
             _entries.Add(_ctx, entry);
+            _types.Add(_ctx, type);
         }
+        // we checked size of key in EnsureIndexCoversKey, so this cast is safe
         _entries[slot].Key = (uint)key;
 
         _index.RawItems[key] = slot;
@@ -690,8 +696,8 @@ public unsafe struct RoaringBitmap : IDisposable
 
         // Mark as free and chain into free list
         entry = default;
-        entry.Type = ContainerType.Free; // free marker
-        entry.NextFreeSlot = _freeListHead;
+        _types.RawItems[slot] = ContainerType.Free;
+        entry.NextFreeSlot = (uint)_freeListHead;
         _freeListHead = slot;
 
         _index.RawItems[key] = IndexAbsent;
@@ -702,12 +708,12 @@ public unsafe struct RoaringBitmap : IDisposable
     /// Add a container entry during result-building (set operations). Used when building
     /// a new bitmap from scratch where keys are added in order.
     /// </summary>
-    internal void AddContainer(long key, in ContainerEntry entry)
+    internal void AddContainer(long key, ContainerType type, in ContainerEntry entry)
     {
         if (entry.Cardinality == 0)
             return;
 
-        AddNewContainer(key, entry);
+        AddNewContainer(key, type, entry);
     }
 
     #endregion
@@ -723,7 +729,6 @@ public unsafe struct RoaringBitmap : IDisposable
 
         return new ContainerEntry
         {
-            Type = ContainerType.Array,
             Cardinality = 0,
             Data = storage.Ptr,
             Storage = storage
@@ -761,7 +766,6 @@ public unsafe struct RoaringBitmap : IDisposable
 
         return new ContainerEntry
         {
-            Type = ContainerType.Bitmap,
             Cardinality = 0,
             Data = storage.Ptr,
             Storage = storage
@@ -774,9 +778,10 @@ public unsafe struct RoaringBitmap : IDisposable
 
     [SkipLocalsInit]
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void AddToContainer(ref ContainerEntry entry, ushort value)
+    private void AddToContainer(ref ContainerEntry entry, int slot, ushort value)
     {
-        switch (entry.Type)
+        ref ContainerType type = ref _types.RawItems[slot];
+        switch (type)
         {
             case ContainerType.Array:
                 // If value is >= the last element, append (or noop for duplicate) and stay sorted
@@ -786,8 +791,8 @@ public unsafe struct RoaringBitmap : IDisposable
                         break; // duplicate of last element — noop
                     if (entry.Cardinality >= ArrayContainerMaxCardinality)
                     {
-                        ConvertArrayToBitmap(ref entry);
-                        BitmapContainerAdd(entry.Data, ref entry.Cardinality, value);
+                        ConvertArrayToBitmap(ref entry, ref type);
+                        BitmapContainerAdd(ref entry, value);
                         break;
                     }
                     EnsureArrayCapacity(ref entry, entry.Cardinality + 1);
@@ -796,7 +801,7 @@ public unsafe struct RoaringBitmap : IDisposable
                     break;
                 }
                 // Would break sort order — switch to unsorted for O(1) appends
-                entry.Type = ContainerType.ArrayUnsorted;
+                type = ContainerType.ArrayUnsorted;
                 goto case ContainerType.ArrayUnsorted;
 
             case ContainerType.ArrayUnsorted:
@@ -818,11 +823,11 @@ public unsafe struct RoaringBitmap : IDisposable
                         Unsafe.CopyBlockUnaligned(bmpStorage.Ptr, (byte*)scratch, BitmapContainerSizeInBytes);
                         if (entry.Storage.HasValue)
                             _ctx.Release(ref entry.Storage);
-                        entry.Storage = bmpStorage;
-                        entry.Data = bmpStorage.Ptr;
-                        entry.Type = ContainerType.Bitmap;
-                        entry.Cardinality = uniqueCount;
-                        BitmapContainerAdd(entry.Data, ref entry.Cardinality, value);
+                            entry.Storage = bmpStorage;
+                            entry.Data = bmpStorage.Ptr;
+                            type = ContainerType.Bitmap;
+                            entry.Cardinality = uniqueCount;
+                        BitmapContainerAdd(ref entry, value);
                         break;
                     }
                     // Has room after dedup — extract sorted array from scratch
@@ -838,7 +843,7 @@ public unsafe struct RoaringBitmap : IDisposable
                         }
                     }
                     entry.Cardinality = sorted;
-                    entry.Type = ContainerType.Array;
+                    type = ContainerType.Array;
                 }
                 EnsureArrayCapacity(ref entry, entry.Cardinality + 1);
                 (entry.ArrayData)[entry.Cardinality] = value;
@@ -846,7 +851,7 @@ public unsafe struct RoaringBitmap : IDisposable
                 break;
 
             case ContainerType.Bitmap:
-                BitmapContainerAdd(entry.Data, ref entry.Cardinality, value);
+                BitmapContainerAdd(ref entry, value);
                 break;
 
             case ContainerType.Range:
@@ -860,18 +865,18 @@ public unsafe struct RoaringBitmap : IDisposable
                 }
                 else
                 {
-                    ConvertRangeForAdd(ref entry, value);
+                    ConvertRangeForAdd(ref entry, ref type, value);
                 }
                 break;
         }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool ContainerContains(ref ContainerEntry entry, ushort value)
+    private bool ContainerContains(ref ContainerEntry entry, ContainerType type, ushort value)
     {
-        AssertPrepared(ref entry);
+        AssertPrepared(type);
 
-        return entry.Type switch
+        return type switch
         {
             ContainerType.Array => ArrayContainerContains(entry.Data, entry.Cardinality, value),
             ContainerType.Bitmap => BitmapContainerContains(entry.Data, value),
@@ -893,16 +898,16 @@ public unsafe struct RoaringBitmap : IDisposable
     /// PrepareForReading() must be called before any read operation.
     /// </summary>
     [Conditional("DEBUG")]
-    internal static void AssertPrepared(ref ContainerEntry entry)
+    internal static void AssertPrepared(ContainerType type)
     {
-        Debug.Assert(entry.Type != ContainerType.ArrayUnsorted,
+        Debug.Assert(type != ContainerType.ArrayUnsorted,
             "Container is still unsorted. Call PrepareForReading() after all Add calls and before any read operation.");
     }
 
     /// <summary>
     /// Comparison sort + dedup for small arrays below the bitmap radix sort threshold.
     /// </summary>
-    private static void SortSmallArray(ref ContainerEntry entry)
+    private static void SortSmallArray(ref ContainerEntry entry, ref ContainerType type)
     {
         var arr = entry.ArrayData;
         int count = entry.Cardinality;
@@ -925,7 +930,7 @@ public unsafe struct RoaringBitmap : IDisposable
         }
 
         entry.Cardinality = count;
-        entry.Type = ContainerType.Array;
+        type = ContainerType.Array;
     }
 
     #endregion
@@ -1141,16 +1146,16 @@ public unsafe struct RoaringBitmap : IDisposable
     /// <summary>
     /// Convert a Range container to Bitmap or Array to handle an Add outside the contiguous range.
     /// </summary>
-    private void ConvertRangeForAdd(ref ContainerEntry entry, ushort value)
+    private void ConvertRangeForAdd(ref ContainerEntry entry, ref ContainerType type, ushort value)
     {
-        Debug.Assert(entry.Type == ContainerType.Range);
+        Debug.Assert(type == ContainerType.Range);
         int rangeCount = entry.Cardinality;
 
         if (rangeCount >= ArrayContainerMaxCardinality)
         {
             // Range alone fills an array container — use bitmap
-            ConvertRangeToBitmap(ref entry);
-            BitmapContainerAdd(entry.Data, ref entry.Cardinality, value);
+            ConvertRangeToBitmap(ref entry, ref type);
+            BitmapContainerAdd(ref entry, value);
         }
         else
         {
@@ -1167,7 +1172,7 @@ public unsafe struct RoaringBitmap : IDisposable
             entry.Storage = storage;
             entry.Data = storage.Ptr;
             entry.Cardinality = newCount;
-            entry.Type = ContainerType.ArrayUnsorted;
+            type = ContainerType.ArrayUnsorted;
         }
     }
 
@@ -1183,9 +1188,9 @@ public unsafe struct RoaringBitmap : IDisposable
             bitmap[fullWords] = (1UL << remainder) - 1;
     }
 
-    private void ConvertRangeToBitmap(ref ContainerEntry entry)
+    private void ConvertRangeToBitmap(ref ContainerEntry entry, ref ContainerType type)
     {
-        Debug.Assert(entry.Type == ContainerType.Range);
+        Debug.Assert(type == ContainerType.Range);
 
         _ctx.Allocate(BitmapContainerSizeInBytes, out ByteString storage);
         ulong* bitmap = (ulong*)storage.Ptr;
@@ -1197,7 +1202,7 @@ public unsafe struct RoaringBitmap : IDisposable
 
         entry.Storage = storage;
         entry.Data = storage.Ptr;
-        entry.Type = ContainerType.Bitmap;
+        type = ContainerType.Bitmap;
     }
 
     #endregion
@@ -1205,16 +1210,16 @@ public unsafe struct RoaringBitmap : IDisposable
     #region Bitmap Container
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static void BitmapContainerAdd(byte* data, ref int cardinality, ushort value)
+    internal static void BitmapContainerAdd(ref ContainerEntry e, ushort value)
     {
-        ulong* bitmap = (ulong*)data;
+        var bitmap = e.BitmapData;
         int wordIdx = value >> 6;
         ulong mask = 1UL << (value & 63);
 
         if ((bitmap[wordIdx] & mask) == 0)
         {
             bitmap[wordIdx] |= mask;
-            cardinality++;
+            e.Cardinality++;
         }
     }
 
@@ -1304,11 +1309,11 @@ public unsafe struct RoaringBitmap : IDisposable
     /// Convert an array container (sorted or unsorted) to bitmap.
     /// For unsorted arrays with possible duplicates, cardinality is recounted via popcount.
     /// </summary>
-    private void ConvertArrayToBitmap(ref ContainerEntry entry)
+    private void ConvertArrayToBitmap(ref ContainerEntry entry, ref ContainerType type)
     {
-        Debug.Assert(entry.Type is ContainerType.Array or ContainerType.ArrayUnsorted);
+        Debug.Assert(type is ContainerType.Array or ContainerType.ArrayUnsorted);
 
-        bool unsorted = entry.Type == ContainerType.ArrayUnsorted;
+        bool unsorted = type == ContainerType.ArrayUnsorted;
         ushort* arr = (ushort*)entry.Data;
         int count = entry.Cardinality;
 
@@ -1316,14 +1321,16 @@ public unsafe struct RoaringBitmap : IDisposable
         ArrayToBitmap(arr, count, (ulong*)newStorage.Ptr);
 
         if (unsorted)
-            entry.Cardinality = BitmapContainerCardinality(newStorage.Ptr);
-
+        {
+            var updatedCount = BitmapContainerCardinality(newStorage.Ptr);
+            entry.Cardinality = updatedCount;
+        }
         if (entry.Storage.HasValue)
             _ctx.Release(ref entry.Storage);
 
         entry.Storage = newStorage;
         entry.Data = newStorage.Ptr;
-        entry.Type = ContainerType.Bitmap;
+        type = ContainerType.Bitmap;
     }
 
 
@@ -1446,10 +1453,10 @@ public unsafe struct RoaringBitmap : IDisposable
         return cardinality;
     }
 
-    internal static ContainerEntry CloneContainer(ByteStringContext ctx, ref ContainerEntry entry)
+    internal static ContainerEntry CloneContainer(ByteStringContext ctx, ref ContainerEntry entry, ContainerType type)
     {
-        if (entry.Type == ContainerType.Range)
-            return new ContainerEntry { Type = ContainerType.Range, Cardinality = entry.Cardinality, Data = null, Storage = default };
+        if (type == ContainerType.Range)
+            return new ContainerEntry { Cardinality = entry.Cardinality, Data = null, Storage = default };
 
         if (!entry.Storage.HasValue)
             return default;
@@ -1457,7 +1464,7 @@ public unsafe struct RoaringBitmap : IDisposable
         int dataSize = entry.Storage.Length;
         ctx.Allocate(dataSize, out ByteString storage);
         Unsafe.CopyBlockUnaligned(storage.Ptr, entry.Data, (uint)dataSize);
-        return new ContainerEntry { Type = entry.Type, Cardinality = entry.Cardinality, Data = storage.Ptr, Storage = storage };
+        return new ContainerEntry { Cardinality = entry.Cardinality, Data = storage.Ptr, Storage = storage };
     }
 
     #endregion
@@ -1469,15 +1476,19 @@ public unsafe struct RoaringBitmap : IDisposable
         if (_entries.IsValid)
         {
             ContainerEntry* entries = _entries.RawItems;
+            ContainerType* types = _types.RawItems;
             int count = _entries.Count;
             for (int i = 0; i < count; i++)
             {
-                if (entries[i].Type != ContainerType.Free && entries[i].Storage.HasValue)
+                if (types[i] != ContainerType.Free && entries[i].Storage.HasValue)
                     _ctx.Release(ref entries[i].Storage);
             }
 
             _entries.Dispose(_ctx);
         }
+
+        if (_types.IsValid)
+            _types.Dispose(_ctx);
 
         if (_index.IsValid)
             _index.Dispose(_ctx);
@@ -1505,7 +1516,6 @@ public enum ContainerType : byte
     Free = 0xFF
 }
 
-[StructLayout(LayoutKind.Explicit)]
 public unsafe struct ContainerEntry
 {
     /// <summary>
@@ -1517,25 +1527,31 @@ public unsafe struct ContainerEntry
     /// compared to container data (64B–8KB each), and it also avoids a null check on
     /// Storage for Range containers which have Storage=default.
     /// </summary>
-    [FieldOffset(0)] public byte* Data;
+    public byte* Data;
 
     /// <summary>Memory handle for disposal. Default for Range containers.</summary>
-    [FieldOffset(8)] internal ByteString Storage;
+    internal ByteString Storage;
 
-    /// <summary>Number of set bits (0..65536). Also used as free list next pointer when Type == 0xFF.</summary>
-    [FieldOffset(16)] public int Cardinality;
+    /// <summary>Number of set bits (0..65536)..</summary>
+    public int Cardinality;
 
-    [FieldOffset(20)] public ContainerType Type;
+    /// <summary>
+    /// Container key (value >> 16). Allows walking entries without index indirection.
+    /// The key allows us to have ~140 T containers in the bitmap (2^47), bit engouh
+    /// </summary>
+    public uint Key;
 
-    /// <summary>Container key (value >> 16). Allows walking entries without index indirection.</summary>
-    [FieldOffset(24)] public uint Key;
+    /// <summary>
+    /// This is to reuse the Key field in a clearer manner
+    /// </summary>
+    internal uint NextFreeSlot
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => Key;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        set => Key = value;
+    }
 
-    // --- Free list union: when Type == Free, NextFreeSlot overlaps Cardinality ---
-    [FieldOffset(16)] internal int NextFreeSlot;
-
-#if DEBUG
-    internal bool IsFree => Type == ContainerType.Free;
-#endif
 
 #if DEBUG
     /// <summary>
@@ -1546,8 +1562,6 @@ public unsafe struct ContainerEntry
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         get
         {
-            Debug.Assert(Type is ContainerType.Array or ContainerType.ArrayUnsorted,
-                $"ArrayData accessed on {Type} container");
             Debug.Assert(Data != null, "ArrayData is null");
             return new Span<ushort>(Data, Storage.Length / sizeof(ushort));
         }
@@ -1561,7 +1575,6 @@ public unsafe struct ContainerEntry
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         get
         {
-            Debug.Assert(Type == ContainerType.Bitmap, $"BitmapData accessed on {Type} container");
             Debug.Assert(Data != null, "BitmapData is null");
             return new Span<ulong>(Data, RoaringBitmap.BitmapContainerSizeInUlongs);
         }
@@ -1590,23 +1603,13 @@ public unsafe struct ContainerEntry
     public ushort* ArrayPtr
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        get
-        {
-            Debug.Assert(Type is ContainerType.Array or ContainerType.ArrayUnsorted,
-                $"ArrayPtr accessed on {Type} container");
-            return (ushort*)Data;
-        }
+        get => (ushort*)Data;
     }
 
     /// <summary>Raw ulong pointer for SIMD operations and methods requiring pointers.</summary>
     public ulong* BitmapPtr
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        get
-        {
-            Debug.Assert(Type == ContainerType.Bitmap, $"BitmapPtr accessed on {Type} container");
-            return (ulong*)Data;
-        }
+        get => (ulong*)Data;
     }
 }
-// Size: 24 bytes (8 Data + 8 Storage + 4 Cardinality + 1 Type + 3 padding)
