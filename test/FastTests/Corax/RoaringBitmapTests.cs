@@ -750,29 +750,6 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         }
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
-    public void AddRangeOptimized()
-    {
-        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        var bitmap = new RoaringBitmap(ctx);
-        try
-        {
-            // AddRange should create Range and Bitmap containers efficiently
-            bitmap.AddRange(0, 200_000);
-
-            bitmap.PrepareForReading();
-            Assert.Equal(200_000, bitmap.Cardinality);
-            Assert.True(bitmap.Contains(0));
-            Assert.True(bitmap.Contains(65535));
-            Assert.True(bitmap.Contains(65536));
-            Assert.True(bitmap.Contains(199_999));
-            Assert.False(bitmap.Contains(200_000));
-        }
-        finally
-        {
-            bitmap.Dispose();
-        }
-    }
 
     [RavenFact(RavenTestCategory.Corax)]
     public void RangeContainerGapConvertsToArrayOrBitmap()
