@@ -146,7 +146,7 @@ public static class RoaringBitmapQuickBench
         using var ctx2 = new ByteStringContext(SharedMultipleUseFlag.None);
         var bmp2 = new RoaringBitmap(ctx2);
         for (int i = 0; i < values.Length; i++) bmp2.Add(values[i]);
-        bmp2.Finalize(); // sort all unsorted containers — part of build cost
+        bmp2.PrepareForReading(); // sort all unsorted containers — part of build cost
         sw.Stop();
         long nativeAfter = Sparrow.Utils.NativeMemory.CurrentThreadStats?.TotalAllocated ?? 0;
         bmp2.Dispose();
@@ -235,8 +235,8 @@ public static class RoaringBitmapQuickBench
         var b = new RoaringBitmap(ctx);
         for (int i = 0; i < valuesA.Length; i++) a.Add(valuesA[i]);
         for (int i = 0; i < valuesB.Length; i++) b.Add(valuesB[i]);
-        a.Finalize();
-        b.Finalize();
+        a.PrepareForReading();
+        b.PrepareForReading();
 
         var sw = Stopwatch.StartNew();
         RoaringBitmap result;
@@ -262,8 +262,8 @@ public static class RoaringBitmapQuickBench
         var b = new RoaringBitmap(ctx);
         for (int i = 0; i < valuesA.Length; i++) a.Add(valuesA[i]);
         for (int i = 0; i < valuesB.Length; i++) b.Add(valuesB[i]);
-        a.Finalize();
-        b.Finalize();
+        a.PrepareForReading();
+        b.PrepareForReading();
 
         var sw = Stopwatch.StartNew();
         switch (op)

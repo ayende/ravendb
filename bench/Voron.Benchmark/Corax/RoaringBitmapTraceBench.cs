@@ -58,8 +58,8 @@ public static class RoaringBitmapTraceBench
         for (int i = 0; i < valuesB.Length; i++) b.Add(valuesB[i]);
 
         // Finalize
-        a.Finalize();
-        b.Finalize();
+        a.PrepareForReading();
+        b.PrepareForReading();
 
         // Contains
         int found = 0;
@@ -72,13 +72,13 @@ public static class RoaringBitmapTraceBench
         // OR (in-place on a copy)
         var aCopy = new RoaringBitmap(ctx);
         for (int i = 0; i < valuesA.Length; i++) aCopy.Add(valuesA[i]);
-        aCopy.Finalize();
+        aCopy.PrepareForReading();
         aCopy.OrWith(ref b);
 
         // ANDNOT (in-place)
         var aCopy2 = new RoaringBitmap(ctx);
         for (int i = 0; i < valuesA.Length; i++) aCopy2.Add(valuesA[i]);
-        aCopy2.Finalize();
+        aCopy2.PrepareForReading();
         aCopy2.AndNotWith(ref b);
 
         // Iterate

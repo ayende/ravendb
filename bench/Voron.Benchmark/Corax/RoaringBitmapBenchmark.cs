@@ -295,8 +295,8 @@ public class RoaringBitmapSetOpsBenchmark
         _roaringB = new RoaringBitmap(_ctx);
         foreach (long v in setA) _roaringA.Add(v);
         foreach (long v in setB) _roaringB.Add(v);
-        _roaringA.Finalize();
-        _roaringB.Finalize();
+        _roaringA.PrepareForReading();
+        _roaringB.PrepareForReading();
 
         int max = (int)Math.Min(MaxValue, int.MaxValue - 1);
         _bclA = new BitArray(max + 1);
@@ -323,7 +323,7 @@ public class RoaringBitmapSetOpsBenchmark
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
         var clone = new RoaringBitmap(ctx);
         for (int i = 0; i < _valuesA.Length; i++) clone.Add(_valuesA[i]);
-        clone.Finalize();
+        clone.PrepareForReading();
         clone.AndWith(ref _roaringB);
         long c = clone.Cardinality;
         clone.Dispose();
@@ -355,7 +355,7 @@ public class RoaringBitmapSetOpsBenchmark
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
         var clone = new RoaringBitmap(ctx);
         for (int i = 0; i < _valuesA.Length; i++) clone.Add(_valuesA[i]);
-        clone.Finalize();
+        clone.PrepareForReading();
         clone.OrWith(ref _roaringB);
         long c = clone.Cardinality;
         clone.Dispose();
@@ -385,7 +385,7 @@ public class RoaringBitmapSetOpsBenchmark
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
         var clone = new RoaringBitmap(ctx);
         for (int i = 0; i < _valuesA.Length; i++) clone.Add(_valuesA[i]);
-        clone.Finalize();
+        clone.PrepareForReading();
         clone.AndNotWith(ref _roaringB);
         long c = clone.Cardinality;
         clone.Dispose();
