@@ -146,7 +146,7 @@ public unsafe struct RoaringBitmap : IDisposable
 
     public RoaringBitmapIterator GetIterator()
     {
-        return new RoaringBitmapIterator();
+        return new RoaringBitmapIterator(ref this, _ctx);
     }
 
     /// <summary>
@@ -633,6 +633,14 @@ public unsafe struct RoaringBitmap : IDisposable
     /// Get a direct reference to an entry by its slot index in the entries array.
     /// </summary>
     internal readonly ref ContainerEntry GetEntryBySlot(int slot) => ref _entries[slot];
+
+    /// <summary>
+    /// Get entries array pointer and count for iterator construction.
+    /// </summary>
+    internal readonly ReadOnlySpan<ContainerEntry> GetEntriesForIterator()
+    {
+        return new ReadOnlySpan<ContainerEntry>(_entries.RawItems, _entries.Count);
+    }
 
     /// <summary>
     /// Ensure the index array covers the given key, filling new slots with -1.
