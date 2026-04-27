@@ -242,9 +242,9 @@ public static class RoaringBitmapQuickBench
         RoaringBitmap result;
         switch (op)
         {
-            case "AND": result = RoaringBitmapSetOps.And(ctx, ref a, ref b); break;
-            case "OR": result = RoaringBitmapSetOps.Or(ctx, ref a, ref b); break;
-            case "ANDNOT": result = RoaringBitmapSetOps.AndNot(ctx, ref a, ref b); break;
+            case "AND": a.AndWith(ref b); result = a; break;
+            case "OR": a.OrWith(ref b); result = a; break;
+            case "ANDNOT": a.AndNotWith(ref b); result = a; break;
             default: throw new ArgumentException(op);
         }
         long c = result.Cardinality;

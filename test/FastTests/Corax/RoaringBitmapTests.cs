@@ -9,10 +9,49 @@ using Xunit;
 
 namespace FastTests.Corax;
 
-public class RoaringBitmapTests : NoDisposalNeeded
+public unsafe class RoaringBitmapTests : NoDisposalNeeded
 {
     public RoaringBitmapTests(ITestOutputHelper output) : base(output)
     {
+    }
+
+    // Allocating set op helpers for testing: clone left, then mutate in-place.
+    // Keeps original bitmaps intact for subsequent assertions.
+    private static RoaringBitmap And(ByteStringContext ctx, ref RoaringBitmap a, ref RoaringBitmap b)
+    {
+        var result = Clone(ctx, ref a);
+        result.AndWith(ref b);
+        return result;
+    }
+
+    private static RoaringBitmap Or(ByteStringContext ctx, ref RoaringBitmap a, ref RoaringBitmap b)
+    {
+        var result = Clone(ctx, ref a);
+        result.OrWith(ref b);
+        return result;
+    }
+
+    private static RoaringBitmap AndNot(ByteStringContext ctx, ref RoaringBitmap a, ref RoaringBitmap b)
+    {
+        var result = Clone(ctx, ref a);
+        result.AndNotWith(ref b);
+        return result;
+    }
+
+    private static RoaringBitmap Clone(ByteStringContext ctx, ref RoaringBitmap src)
+    {
+        // Build a new bitmap by iterating all values from src
+        var clone = new RoaringBitmap(ctx);
+        var iter = src.GetIterator();
+        Span<long> buf = stackalloc long[1024];
+        int read;
+        while ((read = src.Fill(buf, ref iter)) > 0)
+        {
+            for (int i = 0; i < read; i++)
+                clone.Add(buf[i]);
+        }
+        clone.Finalize();
+        return clone;
     }
 
     [RavenFact(RavenTestCategory.Corax)]
@@ -187,7 +226,7 @@ public class RoaringBitmapTests : NoDisposalNeeded
 
             a.Finalize();
             b.Finalize();
-            var result = RoaringBitmapSetOps.And(ctx, ref a, ref b);
+            var result = And(ctx, ref a, ref b);
             try
             {
                 Assert.Equal(500, result.Cardinality);
@@ -223,7 +262,7 @@ public class RoaringBitmapTests : NoDisposalNeeded
 
             a.Finalize();
             b.Finalize();
-            var result = RoaringBitmapSetOps.Or(ctx, ref a, ref b);
+            var result = Or(ctx, ref a, ref b);
             try
             {
                 Assert.Equal(1500, result.Cardinality);
@@ -258,7 +297,7 @@ public class RoaringBitmapTests : NoDisposalNeeded
 
             a.Finalize();
             b.Finalize();
-            var result = RoaringBitmapSetOps.AndNot(ctx, ref a, ref b);
+            var result = AndNot(ctx, ref a, ref b);
             try
             {
                 Assert.Equal(500, result.Cardinality);
@@ -294,7 +333,7 @@ public class RoaringBitmapTests : NoDisposalNeeded
 
             a.Finalize();
             b.Finalize();
-            var result = RoaringBitmapSetOps.And(ctx, ref a, ref b);
+            var result = And(ctx, ref a, ref b);
             try
             {
                 Assert.Equal(0, result.Cardinality);
@@ -327,14 +366,14 @@ public class RoaringBitmapTests : NoDisposalNeeded
                 b.Add(i * 2 + 1); // odds 1..19999
 
             // AND should be empty (no overlap)
-            var andResult = RoaringBitmapSetOps.And(ctx, ref a, ref b);
+            var andResult = And(ctx, ref a, ref b);
             Assert.Equal(0, andResult.Cardinality);
             andResult.Dispose();
 
             // OR should have all 20000
             a.Finalize();
             b.Finalize();
-            var orResult = RoaringBitmapSetOps.Or(ctx, ref a, ref b);
+            var orResult = Or(ctx, ref a, ref b);
             Assert.Equal(20000, orResult.Cardinality);
             orResult.Dispose();
         }
@@ -364,7 +403,7 @@ public class RoaringBitmapTests : NoDisposalNeeded
             // AND: sparse values that exist in dense
             sparse.Finalize();
             dense.Finalize();
-            var andResult = RoaringBitmapSetOps.And(ctx, ref sparse, ref dense);
+            var andResult = And(ctx, ref sparse, ref dense);
             try
             {
                 // Values 0, 10, 20, ..., 490 (up to 4990 but dense only goes to 4999)
@@ -410,7 +449,7 @@ public class RoaringBitmapTests : NoDisposalNeeded
 
             a.Finalize();
             b.Finalize();
-            var orResult = RoaringBitmapSetOps.Or(ctx, ref a, ref b);
+            var orResult = Or(ctx, ref a, ref b);
             try
             {
                 Assert.Equal(200 + 200 + 100, orResult.Cardinality); // container0(200) + container1(200 union) + container2(100)
@@ -420,7 +459,7 @@ public class RoaringBitmapTests : NoDisposalNeeded
                 orResult.Dispose();
             }
 
-            var andResult = RoaringBitmapSetOps.And(ctx, ref a, ref b);
+            var andResult = And(ctx, ref a, ref b);
             try
             {
                 Assert.Equal(100, andResult.Cardinality); // only container1 intersection
@@ -712,21 +751,21 @@ public class RoaringBitmapTests : NoDisposalNeeded
             // AND
             a.Finalize();
             b.Finalize();
-            var andResult = RoaringBitmapSetOps.And(ctx, ref a, ref b);
+            var andResult = And(ctx, ref a, ref b);
             HashSet<long> expectedAnd = new(setA);
             expectedAnd.IntersectWith(setB);
             Assert.Equal(expectedAnd.Count, andResult.Cardinality);
             andResult.Dispose();
 
             // OR
-            var orResult = RoaringBitmapSetOps.Or(ctx, ref a, ref b);
+            var orResult = Or(ctx, ref a, ref b);
             HashSet<long> expectedOr = new(setA);
             expectedOr.UnionWith(setB);
             Assert.Equal(expectedOr.Count, orResult.Cardinality);
             orResult.Dispose();
 
             // ANDNOT
-            var andNotResult = RoaringBitmapSetOps.AndNot(ctx, ref a, ref b);
+            var andNotResult = AndNot(ctx, ref a, ref b);
             HashSet<long> expectedAndNot = new(setA);
             expectedAndNot.ExceptWith(setB);
             Assert.Equal(expectedAndNot.Count, andNotResult.Cardinality);
@@ -821,8 +860,8 @@ public class RoaringBitmapTests : NoDisposalNeeded
                 b[i] = (ulong)rng.NextInt64();
             }
 
-            int simdCard = RoaringBitmapSetOps.BitmapAndSimd(a, b, sr, count);
-            int scalarCard = RoaringBitmapSetOps.BitmapAndScalar(a, b, sc, count);
+            int simdCard = RoaringBitmap.BitmapAndSimd(a, b, sr, count);
+            int scalarCard = RoaringBitmap.BitmapAndScalar(a, b, sc, count);
 
             Assert.Equal(scalarCard, simdCard);
             for (int i = 0; i < count; i++)
@@ -862,8 +901,8 @@ public class RoaringBitmapTests : NoDisposalNeeded
                 b[i] = (ulong)rng.NextInt64();
             }
 
-            int simdCard = RoaringBitmapSetOps.BitmapOrSimd(a, b, sr, count);
-            int scalarCard = RoaringBitmapSetOps.BitmapOrScalar(a, b, sc, count);
+            int simdCard = RoaringBitmap.BitmapOrSimd(a, b, sr, count);
+            int scalarCard = RoaringBitmap.BitmapOrScalar(a, b, sc, count);
 
             Assert.Equal(scalarCard, simdCard);
             for (int i = 0; i < count; i++)
@@ -903,8 +942,8 @@ public class RoaringBitmapTests : NoDisposalNeeded
                 b[i] = (ulong)rng.NextInt64();
             }
 
-            int simdCard = RoaringBitmapSetOps.BitmapAndNotSimd(a, b, sr, count);
-            int scalarCard = RoaringBitmapSetOps.BitmapAndNotScalar(a, b, sc, count);
+            int simdCard = RoaringBitmap.BitmapAndNotSimd(a, b, sr, count);
+            int scalarCard = RoaringBitmap.BitmapAndNotScalar(a, b, sc, count);
 
             Assert.Equal(scalarCard, simdCard);
             for (int i = 0; i < count; i++)
@@ -990,7 +1029,7 @@ public class RoaringBitmapTests : NoDisposalNeeded
             // AND
             a.Finalize();
             b.Finalize();
-            var andResult = RoaringBitmapSetOps.And(ctx, ref a, ref b);
+            var andResult = And(ctx, ref a, ref b);
             HashSet<long> expectedAnd = new(setA);
             expectedAnd.IntersectWith(setB);
             Assert.Equal(expectedAnd.Count, andResult.Cardinality);
@@ -999,14 +1038,14 @@ public class RoaringBitmapTests : NoDisposalNeeded
             andResult.Dispose();
 
             // OR
-            var orResult = RoaringBitmapSetOps.Or(ctx, ref a, ref b);
+            var orResult = Or(ctx, ref a, ref b);
             HashSet<long> expectedOr = new(setA);
             expectedOr.UnionWith(setB);
             Assert.Equal(expectedOr.Count, orResult.Cardinality);
             orResult.Dispose();
 
             // ANDNOT
-            var andNotResult = RoaringBitmapSetOps.AndNot(ctx, ref a, ref b);
+            var andNotResult = AndNot(ctx, ref a, ref b);
             HashSet<long> expectedAndNot = new(setA);
             expectedAndNot.ExceptWith(setB);
             Assert.Equal(expectedAndNot.Count, andNotResult.Cardinality);

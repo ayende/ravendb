@@ -67,7 +67,7 @@ public static class RoaringBitmapTraceBench
             if (a.Contains(valuesB[i])) found++;
 
         // AND (allocating)
-        var andResult = RoaringBitmapSetOps.And(ctx, ref a, ref b);
+        a.AndWith(ref b); var andResult = a;
 
         // OR (in-place on a copy)
         var aCopy = new RoaringBitmap(ctx);
