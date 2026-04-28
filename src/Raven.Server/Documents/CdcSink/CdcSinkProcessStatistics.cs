@@ -52,6 +52,9 @@ public class CdcSinkProcessStatistics
 
         LastConsumeErrorTime = SystemTime.UtcNow;
 
+        if (ConsumeErrors < 100)
+            return;
+
         if (ConsumeErrors <= ConsumeSuccesses)
             return;
 
