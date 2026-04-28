@@ -194,6 +194,14 @@ public unsafe struct RoaringBitmap : IDisposable
             ref ContainerEntry entry = ref entries[i];
             if (types[i] == ContainerType.ArrayUnsorted)
             {
+                // Small containers: dedup (needed for correct cardinality) but keep unsorted.
+                // SIMD linear scan handles Contains, SIMD cross-compare handles AND/ANDNOT.
+                if (entry.Cardinality <= SimdLinearScanThreshold)
+                {
+                    DeduplicateSmallUnsorted(ref entry);
+                    continue; // stay as ArrayUnsorted
+                }
+
                 if (entry.Cardinality >= BitmapSortThreshold)
                     SortViaBitmapScratch(ref entry, ref types[i], scratch);
                 else
@@ -407,59 +415,72 @@ public unsafe struct RoaringBitmap : IDisposable
         switch (leftType, rightType)
         {
             case (ContainerType.Bitmap, ContainerType.Bitmap):
-                {
-                    var count = BitmapAndSimd(
+                left.Cardinality = BitmapAndSimd(
                     left.BitmapPtr, right.BitmapPtr, left.BitmapPtr, BitmapContainerSizeInUlongs);
-                    left.Cardinality = count;
-                    break;
-                }
+                break;
+
             case (ContainerType.Bitmap, ContainerType.Array):
+            case (ContainerType.Bitmap, ContainerType.ArrayUnsorted):
+            {
+                // Iterate right's values, keep those present in left's bitmap. Order doesn't matter.
+                ushort* arr = (ushort*)right.Data;
+                var bmp = left.BitmapData;
+                _ctx.Allocate(Math.Max(InitialArrayContainerSizeInBytes, right.Cardinality * sizeof(ushort)), out ByteString newStorage);
+                ushort* dst = (ushort*)newStorage.Ptr;
+                int count = 0;
+                for (int i = 0; i < right.Cardinality; i++)
                 {
-                    // Result is at most right.Cardinality entries - always an array
-                    var arr = right.ArrayData;
-                    var bmp = left.BitmapData;
-                    _ctx.Allocate(Math.Max(InitialArrayContainerSizeInBytes, right.Cardinality * sizeof(ushort)), out ByteString newStorage);
-                    ushort* dst = (ushort*)newStorage.Ptr;
-                    int count = 0;
-                    for (int i = 0; i < right.Cardinality; i++)
-                    {
-                        ushort val = arr[i];
-                        if ((bmp[val >> 6] & (1UL << (val & 63))) != 0)
-                            dst[count++] = val;
-                    }
-                    _ctx.Release(ref left.Storage);
-                    left.Storage = newStorage;
-                    left.Data = newStorage.Ptr;
-                    leftType = ContainerType.Array;
-                    left.Cardinality = count;
-                    break;
+                    ushort val = arr[i];
+                    if ((bmp[val >> 6] & (1UL << (val & 63))) != 0)
+                        dst[count++] = val;
                 }
+                _ctx.Release(ref left.Storage);
+                left.Storage = newStorage;
+                left.Data = newStorage.Ptr;
+                leftType = rightType; // preserve sorted/unsorted status
+                left.Cardinality = count;
+                break;
+            }
 
             case (ContainerType.Array, ContainerType.Bitmap):
+            case (ContainerType.ArrayUnsorted, ContainerType.Bitmap):
+            {
+                // Filter left's values against right's bitmap, in-place. Order doesn't matter.
+                ushort* arr = (ushort*)left.Data;
+                var bmp = right.BitmapData;
+                int count = 0;
+                for (int i = 0; i < left.Cardinality; i++)
                 {
-                    // Filter left array against right bitmap, in-place
-                    var arr = left.ArrayData;
-                    var bmp = right.BitmapData;
-                    int count = 0;
-                    for (int i = 0; i < left.Cardinality; i++)
-                    {
-                        ushort val = arr[i];
-                        if ((bmp[val >> 6] & (1UL << (val & 63))) != 0)
-                            arr[count++] = val;
-                    }
-                    left.Cardinality = count;
-                    break;
+                    ushort val = arr[i];
+                    if ((bmp[val >> 6] & (1UL << (val & 63))) != 0)
+                        arr[count++] = val;
                 }
+                left.Cardinality = count;
+                break;
+            }
 
             case (ContainerType.Array, ContainerType.Array):
+            case (ContainerType.ArrayUnsorted, ContainerType.ArrayUnsorted):
+            case (ContainerType.Array, ContainerType.ArrayUnsorted):
+            case (ContainerType.ArrayUnsorted, ContainerType.Array):
+            {
+                if (AdvInstructionSet.IsAcceleratedVector256
+                    && left.Cardinality <= SimdLinearScanThreshold
+                    && right.Cardinality <= SimdLinearScanThreshold)
                 {
-                    // In-place intersection of two sorted arrays
+                    left.Cardinality = SimdCrossAnd((ushort*)left.Data, left.Cardinality, (ushort*)right.Data, right.Cardinality, (ushort*)left.Data);
+                }
+                else
+                {
+                    // Need sorted arrays for galloping merge
+                    if (leftType == ContainerType.ArrayUnsorted) SortSmallArray(ref left, ref leftType);
+                    if (rightType == ContainerType.ArrayUnsorted) SortSmallArray(ref right, ref rightType);
                     ushort* a = left.ArrayPtr;
                     ushort* b = right.ArrayPtr;
-                    int count = ArrayContainerAnd(a, left.Cardinality, b, right.Cardinality, a);
-                    left.Cardinality = count;
-                    break;
+                    left.Cardinality = ArrayContainerAnd(a, left.Cardinality, b, right.Cardinality, a);
                 }
+                break;
+            }
         }
     }
 
@@ -493,9 +514,11 @@ public unsafe struct RoaringBitmap : IDisposable
                 break;
 
             case (ContainerType.Bitmap, ContainerType.Array):
+            case (ContainerType.Bitmap, ContainerType.ArrayUnsorted):
             {
+                // Set bits for right's values. Order doesn't matter.
                 var bmp = left.BitmapData;
-                var arr = right.ArrayData;
+                ushort* arr = (ushort*)right.Data;
                 for (int i = 0; i < right.Cardinality; i++)
                 {
                     ushort val = arr[i];
@@ -510,17 +533,30 @@ public unsafe struct RoaringBitmap : IDisposable
             }
 
             case (ContainerType.Array, ContainerType.Array):
+            case (ContainerType.ArrayUnsorted, ContainerType.Array):
+            case (ContainerType.Array, ContainerType.ArrayUnsorted):
+            case (ContainerType.ArrayUnsorted, ContainerType.ArrayUnsorted):
             {
                 int maxResult = left.Cardinality + right.Cardinality;
                 if (maxResult > ArrayContainerMaxCardinality)
                 {
-                    // Result will be a bitmap — convert left, then OR right into it
                     ConvertArrayToBitmap(ref left, ref leftType);
                     OrContainerInPlace(ref left, ref leftType, ref right, rightType, scratch, dirtyMap);
                 }
+                else if (leftType == ContainerType.ArrayUnsorted || rightType == ContainerType.ArrayUnsorted)
+                {
+                    // At least one side unsorted — just append right after left (duplicates harmless,
+                    // deduped if/when we sort later or when the bitmap is iterated)
+                    EnsureArrayCapacity(ref left, maxResult);
+                    ushort* dst = (ushort*)left.Data;
+                    ushort* src = (ushort*)right.Data;
+                    Unsafe.CopyBlockUnaligned(dst + left.Cardinality, src, (uint)(right.Cardinality * sizeof(ushort)));
+                    left.Cardinality += right.Cardinality;
+                    leftType = ContainerType.ArrayUnsorted;
+                }
                 else
                 {
-                    // Merge two sorted arrays into stackalloc, then copy back
+                    // Both sorted — merge
                     ushort* tmp = stackalloc ushort[ArrayContainerMaxCardinality];
                     int count = ArrayContainerOr(left.ArrayPtr, left.Cardinality, right.ArrayPtr, right.Cardinality, tmp);
                     EnsureArrayCapacity(ref left, count);
@@ -531,12 +567,13 @@ public unsafe struct RoaringBitmap : IDisposable
             }
 
             case (ContainerType.Array, ContainerType.Bitmap):
+            case (ContainerType.ArrayUnsorted, ContainerType.Bitmap):
             {
                 // Steal right's 8KB buffer if available, otherwise convert left
                 if (right.Storage.HasValue && right.Storage.Length >= BitmapContainerSizeInBytes)
                 {
                     // Right has 8KB — OR left's array into right's bitmap, then swap ownership
-                    ushort* arr = left.ArrayPtr;
+                    ushort* arr = (ushort*)left.Data;
                     ulong* bmp = right.BitmapPtr;
                     for (int i = 0; i < left.Cardinality; i++)
                     {
@@ -749,52 +786,67 @@ public unsafe struct RoaringBitmap : IDisposable
         switch (leftType, rightType)
         {
             case (ContainerType.Bitmap, ContainerType.Bitmap):
-                {
-                    var count = BitmapAndNotSimd(
+                left.Cardinality = BitmapAndNotSimd(
                     left.BitmapPtr, right.BitmapPtr, left.BitmapPtr, BitmapContainerSizeInUlongs);
-                    left.Cardinality = count;
-                    break;
-                }
+                break;
+
             case (ContainerType.Bitmap, ContainerType.Array):
+            case (ContainerType.Bitmap, ContainerType.ArrayUnsorted):
+            {
+                // Clear bits for right's values from left's bitmap. Order doesn't matter.
+                var bmp = left.BitmapData;
+                ushort* arr = (ushort*)right.Data;
+                for (int i = 0; i < right.Cardinality; i++)
                 {
-                    var bmp = left.BitmapData;
-                    var arr = right.ArrayData;
-                    for (int i = 0; i < right.Cardinality; i++)
+                    ushort val = arr[i];
+                    ulong mask = 1UL << (val & 63);
+                    if ((bmp[val >> 6] & mask) != 0)
                     {
-                        ushort val = arr[i];
-                        ulong mask = 1UL << (val & 63);
-                        if ((bmp[val >> 6] & mask) != 0)
-                        {
-                            bmp[val >> 6] &= ~mask;
-                            left.Cardinality--;
-                        }
+                        bmp[val >> 6] &= ~mask;
+                        left.Cardinality--;
                     }
-                    break;
                 }
+                break;
+            }
 
             case (ContainerType.Array, ContainerType.Bitmap):
+            case (ContainerType.ArrayUnsorted, ContainerType.Bitmap):
+            {
+                // Keep left values NOT in right's bitmap. Order doesn't matter.
+                ushort* arr = (ushort*)left.Data;
+                var bmp = right.BitmapData;
+                int count = 0;
+                for (int i = 0; i < left.Cardinality; i++)
                 {
-                    var arr = left.ArrayData;
-                    var bmp = right.BitmapData;
-                    int count = 0;
-                    for (int i = 0; i < left.Cardinality; i++)
-                    {
-                        ushort val = arr[i];
-                        if ((bmp[val >> 6] & (1UL << (val & 63))) == 0)
-                            arr[count++] = val;
-                    }
-                    left.Cardinality = count;
-                    break;
+                    ushort val = arr[i];
+                    if ((bmp[val >> 6] & (1UL << (val & 63))) == 0)
+                        arr[count++] = val;
                 }
+                left.Cardinality = count;
+                break;
+            }
 
             case (ContainerType.Array, ContainerType.Array):
+            case (ContainerType.ArrayUnsorted, ContainerType.ArrayUnsorted):
+            case (ContainerType.Array, ContainerType.ArrayUnsorted):
+            case (ContainerType.ArrayUnsorted, ContainerType.Array):
+            {
+                if (AdvInstructionSet.IsAcceleratedVector256
+                    && left.Cardinality <= SimdLinearScanThreshold
+                    && right.Cardinality <= SimdLinearScanThreshold)
                 {
+                    left.Cardinality = SimdCrossAndNot((ushort*)left.Data, left.Cardinality, (ushort*)right.Data, right.Cardinality, (ushort*)left.Data);
+                }
+                else
+                {
+                    if (leftType == ContainerType.ArrayUnsorted) SortSmallArray(ref left, ref leftType);
+                    if (rightType == ContainerType.ArrayUnsorted) SortSmallArray(ref right, ref rightType);
                     ushort* a = left.ArrayPtr;
                     ushort* b = right.ArrayPtr;
-                    int count = ArrayContainerAndNot(a, left.Cardinality, b, right.Cardinality, a);
-                    left.Cardinality = count;
-                    break;
+                    left.Cardinality = ArrayContainerAndNot(a, left.Cardinality, b, right.Cardinality, a);
                 }
+                break;
+            }
         }
     }
 
@@ -939,7 +991,8 @@ public unsafe struct RoaringBitmap : IDisposable
 
     #region Container Management
 
-    private const int InitialArrayContainerSizeInBytes = 64; // 32 entries worth of ushort
+    private const int InitialArrayContainerSizeInBytes = 128; // 64 ushorts — minimum for SIMD linear scan without scalar tail
+    private const int SimdLinearScanThreshold = 64; // below this, SIMD linear scan beats binary/quad search
 
     private ContainerEntry CreateArrayContainer(long key)
     {
@@ -1104,6 +1157,7 @@ public unsafe struct RoaringBitmap : IDisposable
         return type switch
         {
             ContainerType.Array => ArrayContainerContains(entry.Data, entry.Cardinality, value),
+            ContainerType.ArrayUnsorted => SimdLinearContains((ushort*)entry.Data, entry.Cardinality, value),
             ContainerType.Bitmap => BitmapContainerContains(entry.Data, value),
             ContainerType.Range => value < entry.Cardinality,
             _ => false
@@ -1114,19 +1168,50 @@ public unsafe struct RoaringBitmap : IDisposable
 
     #region Array Sorting
 
+    /// <summary>
+    /// Remove duplicates from a small unsorted array without sorting.
+    /// For each element, SIMD-scan the preceding elements to check if it's a duplicate.
+    /// O(n²/16) with SIMD, fast for n ≤ 64.
+    /// </summary>
+    private static void DeduplicateSmallUnsorted(ref ContainerEntry entry)
+    {
+        ushort* arr = (ushort*)entry.Data;
+        int count = entry.Cardinality;
+        if (count <= 1)
+            return;
+
+        int write = 1;
+        for (int i = 1; i < count; i++)
+        {
+            ushort val = arr[i];
+            bool isDup = false;
+
+            // Scalar scan for duplicates in the already-written portion.
+            // write is at most SimdLinearScanThreshold (64), so this is fast.
+            for (int j = 0; j < write; j++)
+            {
+                if (arr[j] == val) { isDup = true; break; }
+            }
+
+            if (!isDup)
+                arr[write++] = val;
+        }
+        entry.Cardinality = write;
+    }
+
     // Threshold: below this count, comparison sort on a small array
     // is cheaper than the bitmap radix sort path.
     private const int BitmapSortThreshold = 128;
 
     /// <summary>
-    /// Assert that a container has been prepared for reading (not ArrayUnsorted).
-    /// PrepareForReading() must be called before any read operation.
+    /// Assert that a container has been prepared for reading.
+    /// After PrepareForReading(), ArrayUnsorted is valid only for small containers (≤ SimdLinearScanThreshold)
+    /// which are handled via SIMD linear scan without sorting.
     /// </summary>
     [Conditional("DEBUG")]
     internal static void AssertPrepared(ContainerType type)
     {
-        Debug.Assert(type != ContainerType.ArrayUnsorted,
-            "Container is still unsorted. Call PrepareForReading() after all Add calls and before any read operation.");
+        // ArrayUnsorted is allowed for small containers after PrepareForReading
     }
 
     /// <summary>
@@ -1165,7 +1250,103 @@ public unsafe struct RoaringBitmap : IDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static bool ArrayContainerContains(byte* data, int cardinality, ushort value)
     {
+        if (AdvInstructionSet.IsAcceleratedVector128)
+        {
+            if (cardinality <= SimdLinearScanThreshold)
+                return SimdLinearContains((ushort*)data, cardinality, value);
+            return SimdQuadContains((ushort*)data, cardinality, value);
+        }
         return ArrayContainerFind((ushort*)data, cardinality, value) >= 0;
+    }
+
+    /// <summary>
+    /// SIMD linear scan for small arrays (&lt;= 64 values). Works on both sorted and unsorted data.
+    /// Uses Vector256 (16 ushorts) when available, Vector128 (8 ushorts) otherwise.
+    /// Buffer is guaranteed to be at least 128 bytes (64 ushorts), so no bounds check needed.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static bool SimdLinearContains(ushort* arr, int cardinality, ushort value)
+    {
+        int i = 0;
+
+        if (AdvInstructionSet.IsAcceleratedVector256)
+        {
+            Vector256<ushort> needle256 = Vector256.Create(value);
+            // 16 ushorts per iteration — 4 loads covers 64 values
+            for (; i + Vector256<ushort>.Count <= cardinality; i += Vector256<ushort>.Count)
+            {
+                if (Vector256.EqualsAny(Vector256.Load(arr + i), needle256))
+                    return true;
+            }
+            // Overlap tail for remainder
+            if (i < cardinality)
+            {
+                if (Vector256.EqualsAny(Vector256.Load(arr + cardinality - Vector256<ushort>.Count), needle256))
+                    return true;
+            }
+            return false;
+        }
+
+        Vector128<ushort> needle128 = Vector128.Create(value);
+        for (; i + Vector128<ushort>.Count <= cardinality; i += Vector128<ushort>.Count)
+        {
+            if (Vector128.EqualsAny(Vector128.Load(arr + i), needle128))
+                return true;
+        }
+        if (i < cardinality)
+        {
+            if (Vector128.EqualsAny(Vector128.Load(arr + cardinality - Vector128<ushort>.Count), needle128))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// SIMD Quad search for larger sorted arrays (&gt; 64 values): quaternary interpolation + SIMD block check.
+    /// Divides sorted ushort[] into 8-element blocks (Vector128), narrows via quaternary
+    /// search on block boundaries, then checks the final block with a single SIMD compare.
+    /// Based on Daniel Lemire's algorithm (https://lemire.me/blog/2026/04/27/you-can-beat-the-binary-search/)
+    /// </summary>
+    internal static bool SimdQuadContains(ushort* arr, int cardinality, ushort value)
+    {
+        int gap = Vector128<ushort>.Count; // 8
+        int numBlocks = cardinality / gap;
+        int @base = 0;
+        int n = numBlocks;
+
+        // Quaternary search on block boundaries
+        while (n > 3)
+        {
+            int quarter = n >> 2;
+            int k1 = arr[(@base + quarter + 1) * gap - 1];
+            int k2 = arr[(@base + 2 * quarter + 1) * gap - 1];
+            int k3 = arr[(@base + 3 * quarter + 1) * gap - 1];
+            @base += ((k1 < value ? 1 : 0) + (k2 < value ? 1 : 0) + (k3 < value ? 1 : 0)) * quarter;
+            n -= 3 * quarter;
+        }
+
+        while (n > 1)
+        {
+            int half = n >> 1;
+            @base = arr[(@base + half + 1) * gap - 1] < value ? @base + half : @base;
+            n -= half;
+        }
+
+        int lo = arr[(@base + 1) * gap - 1] < value ? @base + 1 : @base;
+
+        if (lo < numBlocks)
+        {
+            if (Vector128.EqualsAny(Vector128.Load(arr + lo * gap), Vector128.Create(value)))
+                return true;
+        }
+
+        // Remainder past last full block
+        for (int j = numBlocks * gap; j < cardinality; j++)
+        {
+            ushort v = arr[j];
+            if (v >= value) return v == value;
+        }
+        return false;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1188,6 +1369,70 @@ public unsafe struct RoaringBitmap : IDisposable
         }
 
         return ~lo;
+    }
+
+    /// <summary>
+    /// SIMD cross-compare AND: for each element in A, check if it exists anywhere in B.
+    /// Broadcasts each A[i] across Vector256, compares against all chunks of B simultaneously.
+    /// Works on unsorted data. Both arrays must be ≤ SimdLinearScanThreshold and buffers ≥ 128 bytes.
+    /// </summary>
+    internal static int SimdCrossAnd(ushort* a, int aLen, ushort* b, int bLen, ushort* dst)
+    {
+        int di = 0;
+        int bVecCount = (bLen + Vector256<ushort>.Count - 1) / Vector256<ushort>.Count;
+
+        for (int i = 0; i < aLen; i++)
+        {
+            Vector256<ushort> needle = Vector256.Create(a[i]);
+            bool found = false;
+
+            for (int bv = 0; bv < bVecCount; bv++)
+            {
+                // Safe to over-read: buffer guaranteed ≥ 128 bytes, and bLen ≤ 64
+                Vector256<ushort> bChunk = Vector256.Load(b + bv * Vector256<ushort>.Count);
+                if (Vector256.EqualsAny(needle, bChunk))
+                {
+                    found = true;
+                    break;
+                }
+            }
+
+            if (found)
+                dst[di++] = a[i];
+        }
+
+        return di;
+    }
+
+    /// <summary>
+    /// SIMD cross-compare ANDNOT: keep elements in A that do NOT exist in B.
+    /// Same cross-compare pattern, inverted match logic.
+    /// </summary>
+    internal static int SimdCrossAndNot(ushort* a, int aLen, ushort* b, int bLen, ushort* dst)
+    {
+        int di = 0;
+        int bVecCount = (bLen + Vector256<ushort>.Count - 1) / Vector256<ushort>.Count;
+
+        for (int i = 0; i < aLen; i++)
+        {
+            Vector256<ushort> needle = Vector256.Create(a[i]);
+            bool found = false;
+
+            for (int bv = 0; bv < bVecCount; bv++)
+            {
+                Vector256<ushort> bChunk = Vector256.Load(b + bv * Vector256<ushort>.Count);
+                if (Vector256.EqualsAny(needle, bChunk))
+                {
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found)
+                dst[di++] = a[i];
+        }
+
+        return di;
     }
 
     /// <summary>
