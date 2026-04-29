@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.CompilerServices;
+using Corax.Querying.Matches;
 using Corax.Utils;
 using Corax.Utils.RoaringBitmaps;
 using Voron;
@@ -121,5 +122,102 @@ public static class QueryPrimitives
         long bitmapCount = bitmap.Count;
         return bitmapCount < 32_000
             && bitmapCount * 64 < sortFieldTotalEntries;
+    }
+
+    /// <summary>
+    /// Entry scan: iterate bitmap, read each entry's stored field data via
+    /// EntryTermsReader, evaluate predicates with early exit.
+    /// Same pattern as MultiUnaryMatch.Fill() but driven from a bitmap iterator.
+    /// </summary>
+    public static int ScanAndFilter(ref RoaringBitmap bitmap, IndexSearcher searcher,
+        MultiUnaryItem[] predicates, Span<long> output, int limit, ref int skip)
+    {
+        if (predicates == null || predicates.Length == 0)
+        {
+            // No predicates — just iterate
+            bitmap.PrepareForReading();
+            var iter = bitmap.GetIterator();
+            return iter.Fill(ref bitmap, output);
+        }
+
+        bitmap.PrepareForReading();
+        var iterator = bitmap.GetIterator();
+        Span<long> batch = stackalloc long[256];
+        int matched = 0;
+        Page lastPage = default;
+
+        // Cache field root pages for faster lookup
+        Span<long> fieldRootPages = predicates.Length > 128
+            ? new long[predicates.Length]
+            : stackalloc long[predicates.Length];
+
+        for (int p = 0; p < predicates.Length; p++)
+        {
+            fieldRootPages[p] = searcher.FieldCache.GetLookupRootPage(predicates[p].Binding.FieldName);
+        }
+
+        int read;
+        while ((read = iterator.Fill(ref bitmap, batch)) > 0)
+        {
+            for (int i = 0; i < read; i++)
+            {
+                if (skip > 0)
+                {
+                    skip--;
+                    continue;
+                }
+
+                long entryId = batch[i];
+                var reader = searcher.GetEntryTermsReader(entryId, ref lastPage);
+                bool documentMatched = true;
+
+                for (int p = 0; p < predicates.Length; p++)
+                {
+                    ref var predicate = ref predicates[p];
+                    long fieldRootPage = fieldRootPages[p];
+
+                    bool isAccepted = predicate.Mode == MultiUnaryItem.UnaryMode.All;
+                    reader.Reset();
+
+                    while (reader.FindNext(fieldRootPage))
+                    {
+                        bool cmpResult = predicate.Type switch
+                        {
+                            MultiUnaryItem.DataType.Slice => predicate.CompareLiteral(reader),
+                            MultiUnaryItem.DataType.Long => predicate.CompareNumerical(reader),
+                            MultiUnaryItem.DataType.Double => predicate.CompareNumerical(reader),
+                            _ => throw new ArgumentOutOfRangeException()
+                        };
+
+                        if (predicate.Mode == MultiUnaryItem.UnaryMode.All && !cmpResult)
+                        {
+                            isAccepted = false;
+                            break;
+                        }
+
+                        if (predicate.Mode == MultiUnaryItem.UnaryMode.Any && cmpResult)
+                        {
+                            isAccepted = true;
+                            break;
+                        }
+                    }
+
+                    if (!isAccepted)
+                    {
+                        documentMatched = false;
+                        break;
+                    }
+                }
+
+                if (documentMatched)
+                {
+                    output[matched++] = entryId;
+                    if (matched >= limit || matched >= output.Length)
+                        return matched;
+                }
+            }
+        }
+
+        return matched;
     }
 }
