@@ -170,11 +170,31 @@ public static class QueryILEmitter
                         return read;
                     }
 
-                    // TODO: SortWithFilter, OrderedRangeScan, VectorRank, SpatialFilter,
-                    //       SortByScore, SortByDistance, ScanAndFilter, ScanAndFilterInPlace,
-                    //       FillFromRange
+                    case PlanOpKind.ScanAndFilter:
+                    {
+                        var predicates = entryScanPredicates[op.GotoLabelIndex];
+                        bitmap.PrepareForReading();
+                        int result = QueryPrimitives.ScanAndFilter(ref bitmap, ctx.Searcher,
+                            predicates, output, ctx.Limit, ref skip);
+                        bitmap.Dispose();
+                        tempBitmap.Dispose();
+                        return result;
+                    }
+
+                    case PlanOpKind.FillFromRange:
+                    case PlanOpKind.SortWithFilter:
+                    case PlanOpKind.OrderedRangeScan:
+                    case PlanOpKind.VectorRank:
+                    case PlanOpKind.SpatialFilter:
+                    case PlanOpKind.SortByScore:
+                    case PlanOpKind.SortByDistance:
+                    case PlanOpKind.ScanAndFilterInPlace:
+                        throw new NotSupportedException(
+                            $"PlanOp {op.Kind} not yet implemented in Corax 2.0 executor. " +
+                            "See docs/implementation-notes.md for deferred features.");
+
                     default:
-                        throw new NotImplementedException($"PlanOp {op.Kind} not yet implemented");
+                        throw new InvalidOperationException($"Unknown PlanOp kind: {op.Kind}");
                 }
             }
 
@@ -215,7 +235,7 @@ public static class QueryILEmitter
                 PlanOpKind.CheckAndMaybeEntryScan => $"    if (ShouldSwitchToEntryScan(ref bitmap, postingList[{op.ParamIndex}])) goto EntryScan_{op.GotoLabelIndex};",
                 PlanOpKind.IterateInto => "    return Primitives.IterateInto(ref bitmap, output, ref skip);",
                 PlanOpKind.DirectIterate => $"    return postingList[{op.ParamIndex}].Iterator.Fill(output);",
-                _ => $"    // TODO: {op.Kind}"
+                _ => $"    // {op.Kind} (not yet in EXPLAIN renderer)"
             };
             sb.AppendLine(line);
         }
