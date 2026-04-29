@@ -25,17 +25,18 @@ This file is a running log — entries are appended as work progresses.
 - WP5: QueryILEmitter (closure-based interpreter, EXPLAIN generation) — committed
 - Baseline benchmarks: 3 runs at 10K/100K/1M/10M scale — committed
 
-### In Progress
-- WP7: Integration into CoraxIndexReadOperation (seam identified at line 650)
-- Expanded benchmarks (complex queries, multi-sort, LIMIT variations in run 3)
+### Completed (continued)
+- WP7: Integration into CoraxIndexReadOperation
+  - CompiledQueryMatch bridges bitmap pipeline into IQueryMatch interface
+  - QueryPlanBuilder.ResolveMatches uses existing IndexSearcher methods
+  - Wired in at line 650 behind Indexing.Corax.UseBitmapPipeline config flag
+  - Falls back to old path on NotSupportedException
+- Integration tests: 3 end-to-end tests (term, AND, OR) through full server path
+- Full Corax test suite: 632 pass, 2 skip, 0 fail (no regressions)
 
-### TODO
-- WP4 expansion: range/between/IN/negation/method expressions
-- WP2 expansion: SortWithFilter, OrderedRangeScan, FillFromRange, VectorRank, SpatialFilter
-- WP7: Wire new path into CoraxIndexReadOperation
-- WP8: Delete old code, make RoaringBitmap ref struct
-- Full test suite validation
-- Post-implementation benchmarks
+### Remaining
+- WP8: Delete old code, make RoaringBitmap ref struct (after full validation)
+- Post-implementation benchmarks + comparison
 - Optimization pass
 
 ### Benchmark expansion needed (after run 1-3 baseline)
