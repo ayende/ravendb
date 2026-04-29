@@ -3,10 +3,12 @@ using System.Collections.Generic;
 using System.Threading;
 using Corax.Querying;
 using Corax.Querying.Matches;
+using Corax.Querying.Matches.Meta;
 using Corax.Querying.Planning;
 using Raven.Server.Documents.Queries;
 using Raven.Server.Documents.Queries.AST;
 using Sparrow.Json;
+using Constants = Corax.Constants;
 using Sparrow.Server;
 using IndexSearcher = Corax.Querying.IndexSearcher;
 
@@ -540,5 +542,91 @@ internal static class QueryPlanBuilder
         public long Cardinality = -1;
         public int OriginalIndex;
         public bool IsNegated;
+    }
+
+    /// <summary>
+    /// Resolve clause infos to IQueryMatch instances for execution.
+    /// Uses existing IndexSearcher methods (TermQuery, etc.) which handle
+    /// all the complexity of analyzer application, CompactKey encoding,
+    /// posting list resolution, etc.
+    /// </summary>
+    public static IQueryMatch[] ResolveMatches(QueryPlan plan, IndexSearcher indexSearcher)
+    {
+        var clauses = plan.Clauses;
+        if (clauses == null || clauses.Length == 0)
+            return Array.Empty<IQueryMatch>();
+
+        var matches = new IQueryMatch[clauses.Length];
+        for (int i = 0; i < clauses.Length; i++)
+        {
+            var clause = (ClauseInfo)clauses[i];
+            matches[i] = ResolveClause(clause, indexSearcher);
+        }
+        return matches;
+    }
+
+    private static IQueryMatch ResolveClause(ClauseInfo clause, IndexSearcher indexSearcher)
+    {
+        var fieldMeta = indexSearcher.FieldMetadataBuilder(clause.FieldName);
+
+        switch (clause.ClauseType)
+        {
+            case ClauseType.Equals:
+            case ClauseType.NotEquals:
+                return indexSearcher.TermQuery(fieldMeta, clause.TermValue);
+
+            case ClauseType.GreaterThan:
+                return indexSearcher.GreaterThanQuery(fieldMeta, clause.TermValue);
+
+            case ClauseType.GreaterThanOrEqual:
+                // GreaterThanOrEqual = Between(value, max)
+                return indexSearcher.BetweenQuery(fieldMeta, clause.TermValue, (string)null,
+                    UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual);
+
+            case ClauseType.LessThan:
+                return indexSearcher.LessThanQuery(fieldMeta, clause.TermValue);
+
+            case ClauseType.LessThanOrEqual:
+                return indexSearcher.LessThanOrEqualsQuery(fieldMeta, clause.TermValue);
+
+            case ClauseType.Between:
+                return indexSearcher.BetweenQuery(fieldMeta, clause.TermValue, clause.TermValue2);
+
+            case ClauseType.In:
+                return indexSearcher.InQuery(fieldMeta, clause.InTerms);
+
+            case ClauseType.AllIn:
+                if (clause.InTerms == null || clause.InTerms.Count == 0)
+                    return TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
+                IQueryMatch allInMatch = indexSearcher.TermQuery(fieldMeta, clause.InTerms[0]);
+                for (int j = 1; j < clause.InTerms.Count; j++)
+                {
+                    var next = indexSearcher.TermQuery(fieldMeta, clause.InTerms[j]);
+                    allInMatch = indexSearcher.And(allInMatch, next);
+                }
+                return allInMatch;
+
+            case ClauseType.Exists:
+                return indexSearcher.ExistsQuery(fieldMeta);
+
+            case ClauseType.StartsWith:
+                return indexSearcher.StartWithQuery(fieldMeta, clause.TermValue);
+
+            case ClauseType.EndsWith:
+                return indexSearcher.EndsWithQuery(fieldMeta, clause.TermValue);
+
+            case ClauseType.Search:
+                // Search with default OR operator and single term
+                return indexSearcher.SearchQuery(fieldMeta,
+                    new[] { clause.TermValue },
+                    Constants.Search.Operator.Or);
+
+            case ClauseType.Regex:
+                return indexSearcher.RegexQuery(fieldMeta,
+                    new System.Text.RegularExpressions.Regex(clause.TermValue));
+
+            default:
+                throw new NotSupportedException($"ClauseType {clause.ClauseType} not supported.");
+        }
     }
 }

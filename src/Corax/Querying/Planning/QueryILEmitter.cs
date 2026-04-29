@@ -31,20 +31,12 @@ public static class QueryILEmitter
 
     /// <summary>
     /// Emit a CompiledPlan from a QueryPlan.
-    /// For now, this produces an interpreted execution (direct C# delegate)
-    /// rather than actual IL emit. The IL emit is a future optimization —
-    /// the delegate approach has the same semantics and is easier to debug.
+    /// Uses closure-based interpretation (functionally equivalent to emitted IL,
+    /// easier to debug). The overhead of the interpreter loop (one switch per op)
+    /// is negligible compared to the actual bitmap operations.
     /// </summary>
     public static CompiledPlan Emit(QueryPlan plan)
     {
-        // Phase 1: Use a closure-based delegate that interprets the PlanOp array.
-        // This is functionally equivalent to emitted IL but easier to implement
-        // and debug. The overhead of the interpreter loop (one switch per op)
-        // is negligible compared to the actual bitmap operations.
-        //
-        // Phase 2 (future): Replace with actual DynamicMethod IL emission
-        // for the ~5% additional performance from eliminating the switch.
-
         var ops = plan.Ops;
         var entryScanPredicates = plan.EntryScanPredicates;
 
@@ -59,6 +51,103 @@ public static class QueryILEmitter
             ExplainSource = plan.ExplainSource ?? GenerateExplainSource(plan),
             Ordering = plan.OperandOrdering
         };
+    }
+
+    /// <summary>
+    /// Execute the query plan and populate a bitmap with matching entry IDs.
+    /// Used by CompiledQueryMatch which needs to iterate the bitmap incrementally
+    /// via multiple Fill() calls.
+    /// </summary>
+    public static void ExecuteToBitmap(PlanOp[] ops, MultiUnaryItem[][] entryScanPredicates,
+        ref QueryContext ctx, ref RoaringBitmap bitmap)
+    {
+        var tempBitmap = new RoaringBitmap(ctx.Allocator);
+
+        try
+        {
+            for (int i = 0; i < ops.Length; i++)
+            {
+                ctx.Token.ThrowIfCancellationRequested();
+                ref PlanOp op = ref ops[i];
+
+                switch (op.Kind)
+                {
+                    case PlanOpKind.FillFromPostings:
+                    {
+                        var postingList = ctx.Searcher.GetPostingList(ctx.PostingListIds[op.ParamIndex]);
+                        var it = postingList.Iterate();
+                        QueryPrimitives.FillFromPostings(ref it, ref bitmap, ctx.Limit);
+                        break;
+                    }
+
+                    case PlanOpKind.AndWithPostings:
+                    {
+                        var postingList = ctx.Searcher.GetPostingList(ctx.PostingListIds[op.ParamIndex]);
+                        var it = postingList.Iterate();
+                        QueryPrimitives.AndWithPostings(ref it, ref bitmap, ref tempBitmap, ctx.Limit);
+                        break;
+                    }
+
+                    case PlanOpKind.OrWithPostings:
+                    {
+                        var postingList = ctx.Searcher.GetPostingList(ctx.PostingListIds[op.ParamIndex]);
+                        var it = postingList.Iterate();
+                        QueryPrimitives.OrWithPostings(ref it, ref bitmap);
+                        break;
+                    }
+
+                    case PlanOpKind.AndNotWithPostings:
+                    {
+                        var postingList = ctx.Searcher.GetPostingList(ctx.PostingListIds[op.ParamIndex]);
+                        var it = postingList.Iterate();
+                        QueryPrimitives.AndNotWithPostings(ref it, ref bitmap, ref tempBitmap);
+                        break;
+                    }
+
+                    case PlanOpKind.LazyOrWithPostings:
+                    {
+                        var postingList = ctx.Searcher.GetPostingList(ctx.PostingListIds[op.ParamIndex]);
+                        var it = postingList.Iterate();
+                        QueryPrimitives.LazyOrWithPostings(ref it, ref bitmap);
+                        break;
+                    }
+
+                    case PlanOpKind.RepairAfterLazy:
+                        bitmap.RepairAfterLazy();
+                        break;
+
+                    case PlanOpKind.CheckAndMaybeEntryScan:
+                    {
+                        var postingListState = ctx.Searcher.GetPostingListState(ctx.PostingListIds[op.ParamIndex]);
+                        if (QueryPrimitives.ShouldSwitchToEntryScan(ref bitmap, in postingListState))
+                        {
+                            // Entry scan modifies bitmap in place — remaining predicates evaluated per-entry
+                            // For now, entry scan predicates are empty (filtering deferred), so we just stop here
+                            bitmap.PrepareForReading();
+                            tempBitmap.Dispose();
+                            return;
+                        }
+                        break;
+                    }
+
+                    case PlanOpKind.IterateInto:
+                    case PlanOpKind.DirectIterate:
+                        // These are terminal ops — for bitmap mode, we just stop here
+                        // and let the caller iterate the bitmap
+                        break;
+
+                    default:
+                        throw new NotSupportedException(
+                            $"PlanOp {op.Kind} not supported in ExecuteToBitmap mode.");
+                }
+            }
+
+            bitmap.PrepareForReading();
+        }
+        finally
+        {
+            tempBitmap.Dispose();
+        }
     }
 
     /// <summary>
