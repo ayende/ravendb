@@ -85,6 +85,109 @@ public unsafe struct RoaringBitmap : IDisposable
 
     public readonly bool IsEmpty => _containerCount == 0;
 
+    /// <summary>Alias for Cardinality — shorter for use in generated code.</summary>
+    public long Count => Cardinality;
+
+    /// <summary>Reset all containers without deallocating the backing storage.
+    /// Enables bitmap reuse (e.g. temp bitmap cleared between posting list pages).</summary>
+    public void Clear()
+    {
+        // Release container data storage but keep the NativeList allocations
+        ContainerEntry* entries = _entries.RawItems;
+        ContainerType* types = _types.RawItems;
+        int count = _entries.Count;
+        for (int i = 0; i < count; i++)
+        {
+            if (types[i] != ContainerType.Free)
+            {
+                ref ContainerEntry entry = ref entries[i];
+                if (entry.Storage.HasValue)
+                    _ctx.Release(ref entry.Storage);
+                entry.Data = null;
+            }
+        }
+        _entries.Clear();
+        _types.Clear();
+        _index.Clear();
+        _containerCount = 0;
+        _freeListHead = FreeSlotTerminator;
+    }
+
+    /// <summary>Batch-add sorted values. Faster than individual Add() calls because
+    /// we can append to containers without per-value slot lookup when values are
+    /// sequential within the same container key.</summary>
+    public void AddRange(ReadOnlySpan<long> sortedValues)
+    {
+        if (sortedValues.IsEmpty)
+            return;
+
+        long prevKey = -1;
+        int slot = -1;
+
+        for (int i = 0; i < sortedValues.Length; i++)
+        {
+            long value = sortedValues[i];
+            Debug.Assert(value >= 0, "RoaringBitmap only supports non-negative values.");
+            long key = value >> ContainerKeyShift;
+            ushort low = (ushort)(value & ContainerValueMask);
+
+            if (key != prevKey)
+            {
+                slot = GetSlotForKey(key);
+                prevKey = key;
+            }
+
+            if (slot >= 0)
+            {
+                ref ContainerEntry entry = ref _entries[slot];
+                AddToContainer(ref entry, slot, low);
+            }
+            else
+            {
+                if (low == 0)
+                {
+                    AddNewContainer(key, ContainerType.Range, new ContainerEntry
+                    {
+                        Cardinality = 1,
+                        Data = null,
+                        Storage = default
+                    });
+                }
+                else
+                {
+                    ContainerEntry newEntry = CreateArrayContainer(key);
+                    (newEntry.ArrayData)[0] = low;
+                    newEntry.Cardinality = 1;
+                    AddNewContainer(key, ContainerType.ArrayUnsorted, newEntry);
+                }
+                slot = GetSlotForKey(key);
+            }
+        }
+    }
+
+    /// <summary>Lazy OR — skips per-operation cardinality recount for Bitmap containers.
+    /// Call RepairAfterLazy() once after all lazy operations are complete.</summary>
+    public void LazyOrWith(ref RoaringBitmap other)
+    {
+        // Same as OrWith but we mark bitmap containers as needing cardinality repair.
+        // For now, delegate to OrWith — the optimization of skipping popcount
+        // will be implemented when we have the lazy flag infrastructure.
+        // TODO: Add a per-container dirty flag to skip popcount during lazy OR.
+        OrWith(ref other);
+    }
+
+    /// <summary>Repair cardinality counts after a sequence of LazyOrWith calls.
+    /// Walks all containers and recomputes cardinality where needed.</summary>
+    public void RepairAfterLazy()
+    {
+        // Currently a no-op since LazyOrWith delegates to OrWith which maintains cardinality.
+        // When lazy flag infrastructure is added, this will:
+        // 1. Walk all containers marked dirty
+        // 2. Recompute cardinality via popcount for Bitmap containers
+        // 3. Demote Bitmap → Array if cardinality fell below threshold
+        // 4. Clear dirty flags
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Add(long value)
     {

@@ -819,4 +819,172 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     }
 
     #endregion
+
+    #region WP1: New methods (Clear, Count, AddRange, LazyOrWith, RepairAfterLazy)
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void Count_EqualsCardinality()
+    {
+        using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
+        var bitmap = new RoaringBitmap(bsc);
+        for (int i = 0; i < 1000; i++)
+            bitmap.Add(i);
+        bitmap.PrepareForReading();
+
+        Assert.Equal(bitmap.Cardinality, bitmap.Count);
+        Assert.Equal(1000, bitmap.Count);
+        bitmap.Dispose();
+    }
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void Clear_ResetsToEmpty()
+    {
+        using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
+        var bitmap = new RoaringBitmap(bsc);
+        for (int i = 0; i < 100_000; i++)
+            bitmap.Add(i);
+        bitmap.PrepareForReading();
+        Assert.True(bitmap.Cardinality > 0);
+
+        bitmap.Clear();
+        Assert.Equal(0, bitmap.Cardinality);
+        Assert.True(bitmap.IsEmpty);
+        Assert.Equal(0, bitmap.ContainerCount);
+
+        // Can reuse after clear
+        bitmap.Add(42);
+        bitmap.PrepareForReading();
+        Assert.Equal(1, bitmap.Cardinality);
+        Assert.True(bitmap.Contains(42));
+        bitmap.Dispose();
+    }
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void Clear_RepeatedClearAndReuse()
+    {
+        using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
+        var bitmap = new RoaringBitmap(bsc);
+
+        for (int round = 0; round < 10; round++)
+        {
+            for (int i = round * 1000; i < (round + 1) * 1000; i++)
+                bitmap.Add(i);
+            bitmap.PrepareForReading();
+            Assert.Equal(1000, bitmap.Cardinality);
+            bitmap.Clear();
+            Assert.Equal(0, bitmap.Cardinality);
+        }
+        bitmap.Dispose();
+    }
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void AddRange_SortedValues()
+    {
+        using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
+        var bitmap = new RoaringBitmap(bsc);
+        var values = new long[10_000];
+        for (int i = 0; i < values.Length; i++)
+            values[i] = i * 3; // sparse but sorted
+        bitmap.AddRange(values);
+        bitmap.PrepareForReading();
+
+        Assert.Equal(10_000, bitmap.Cardinality);
+        Assert.True(bitmap.Contains(0));
+        Assert.True(bitmap.Contains(3));
+        Assert.True(bitmap.Contains(29997));
+        Assert.False(bitmap.Contains(1));
+        Assert.False(bitmap.Contains(2));
+        bitmap.Dispose();
+    }
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void AddRange_MatchesIndividualAdds()
+    {
+        using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
+        var values = new long[50_000];
+        var rng = new Random(42);
+        var set = new HashSet<long>();
+        for (int i = 0; i < values.Length; i++)
+        {
+            long v = rng.NextInt64(0, 1_000_000);
+            values[i] = v;
+            set.Add(v);
+        }
+        Array.Sort(values);
+        // Remove duplicates for AddRange (expects sorted, unique not required but let's test)
+        var unique = new List<long>();
+        long prev = -1;
+        foreach (var v in values)
+        {
+            if (v != prev) unique.Add(v);
+            prev = v;
+        }
+
+        var bitmapRange = new RoaringBitmap(bsc);
+        bitmapRange.AddRange(unique.ToArray());
+        bitmapRange.PrepareForReading();
+
+        var bitmapSingle = new RoaringBitmap(bsc);
+        foreach (var v in set)
+            bitmapSingle.Add(v);
+        bitmapSingle.PrepareForReading();
+
+        Assert.Equal(bitmapSingle.Cardinality, bitmapRange.Cardinality);
+
+        // Spot-check containment
+        int checked_ = 0;
+        foreach (var v in set)
+        {
+            if (++checked_ > 100) break;
+            Assert.True(bitmapRange.Contains(v));
+        }
+
+        bitmapRange.Dispose();
+        bitmapSingle.Dispose();
+    }
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void AddRange_EmptySpan()
+    {
+        using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
+        var bitmap = new RoaringBitmap(bsc);
+        bitmap.AddRange(ReadOnlySpan<long>.Empty);
+        Assert.True(bitmap.IsEmpty);
+        bitmap.Dispose();
+    }
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void LazyOrWith_ProducesSameResultAsOrWith()
+    {
+        using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
+        var a = new RoaringBitmap(bsc);
+        var b = new RoaringBitmap(bsc);
+        for (int i = 0; i < 10_000; i++) a.Add(i * 2);     // evens
+        for (int i = 0; i < 10_000; i++) b.Add(i * 2 + 1); // odds
+        a.PrepareForReading();
+        b.PrepareForReading();
+
+        // Lazy OR
+        var lazyResult = a.Clone();
+        var bClone = b.Clone();
+        lazyResult.LazyOrWith(ref bClone);
+        lazyResult.RepairAfterLazy();
+
+        // Regular OR
+        var regularResult = a.Clone();
+        var bClone2 = b.Clone();
+        regularResult.OrWith(ref bClone2);
+
+        Assert.Equal(regularResult.Cardinality, lazyResult.Cardinality);
+        Assert.Equal(20_000, lazyResult.Cardinality);
+
+        lazyResult.Dispose();
+        regularResult.Dispose();
+        a.Dispose();
+        b.Dispose();
+        bClone.Dispose();
+        bClone2.Dispose();
+    }
+
+    #endregion
 }
