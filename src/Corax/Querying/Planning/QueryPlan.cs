@@ -97,4 +97,8 @@ public class QueryPlan
 
     /// <summary>Number of AND operands (for cache key sizing).</summary>
     public int OperandCount;
+
+    /// <summary>Clause info for execution-time posting list resolution.
+    /// Set by QueryPlanBuilder, consumed by the execution engine.</summary>
+    public object[] Clauses;
 }
