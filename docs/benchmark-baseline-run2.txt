@@ -1,0 +1,269 @@
+=== Corax Full Query Benchmark ===
+Runtime: .NET 10.0.5
+Date: 2026-04-29 21:26:46 UTC
+Warmup: 5, Iterations: 100
+
+############################################################
+# 10,000 DOCUMENTS
+############################################################
+
+Indexing 10,000 documents...
+Index time: 1.3s
+Index size on disk: 13.1 MB
+
+Feature                                                 Avg ms       P50 ms       P99 ms       Results      Managed KB  
+--------------------------------------------------------------------------------------------------------------
+--- Single Term ---
+Term: Status='active' (50%)                                0.023ms    0.023ms    0.034ms      5,000       434
+Term: Category='category_0' (10%)                          0.006ms    0.005ms    0.016ms      1,000       434
+Term: Tag='tag_0' (1%)                                     0.010ms    0.010ms    0.017ms        100       434
+Term: Region='region_0' (0.1%)                             0.013ms    0.013ms    0.020ms         10       434
+
+--- AND ---
+AND: Status∩Category (50%∩10%)                             0.046ms    0.046ms    0.155ms      1,000      1189
+AND: Category∩Tag (10%∩1%)                                 0.017ms    0.016ms    0.107ms        100      1189
+AND: Category∩Region (10%∩0.1%)                            0.035ms    0.034ms    0.053ms         10      1181
+AND: 3-way Tag∩Category∩Status                             0.059ms    0.061ms    0.185ms        100      1944
+
+--- OR ---
+OR: Cat0∪Cat1 (10%∪10%)                                    0.078ms    0.072ms    0.441ms      2,000      1189
+OR: Tag0∪Tag1 (1%∪1%)                                      0.033ms    0.034ms    0.125ms        200      1189
+
+--- ANDNOT ---
+ANDNOT: Status-Category (50%-10%)                          0.136ms    0.129ms    0.393ms      4,000      1197
+ANDNOT: Category-Tag (10%-1%)                              0.032ms    0.025ms    0.209ms        900      1197
+
+--- Mixed ---
+(Cat0 OR Cat1) AND Status                                  0.143ms    0.153ms    0.327ms      1,000      1944
+(Tag0 OR Tag1) AND Cat AND Status                          0.112ms    0.110ms    0.284ms        100      2787
+
+--- IN ---
+IN: Category in (0,1,2)                                    0.117ms    0.114ms    0.301ms      3,000      1976
+
+--- StartsWith ---
+StartsWith: Name starts 'name_000001'                      0.012ms    0.012ms    0.019ms          0       739
+
+--- Exists ---
+Exists: Name field                                         0.422ms    0.358ms    1.025ms     10,000      3020
+
+--- Numeric Range ---
+Range: Price > 500 (~50%)                                  0.517ms    0.508ms    0.822ms      4,990      2763
+Range: Price BETWEEN 200..400 (~20%)                       0.242ms    0.303ms    0.420ms      2,010      2723
+Range: Price BETWEEN 990..999 (~1%)                        0.041ms    0.037ms    0.158ms        100      2723
+
+--- AND + Range ---
+Tag∩(Price>500): 1%∩50%                                    0.448ms    0.297ms    1.230ms         40      3157
+Region∩(Price 200..400): 0.1%∩20%                          0.327ms    0.340ms    0.537ms          0      3069
+
+--- ORDER BY ---
+Category='cat_0' ORDER BY Name LIMIT 25                    1.229ms    1.456ms    7.875ms         25       939
+Category='cat_0' ORDER BY Price LIMIT 25                   1.267ms    1.138ms   29.841ms         25       425
+Tag='tag_0' ORDER BY Name (no limit)                       0.213ms    0.259ms    0.406ms        100       867
+
+--- Bitmap (prototype) ---
+Bitmap AND: Status∩Category                                0.191ms    0.202ms    0.835ms      1,000       739
+Bitmap OR: Cat0∪Cat1                                       0.171ms    0.171ms    0.457ms      2,000       723
+Bitmap ANDNOT: Status-Category                             0.291ms    0.292ms    0.367ms      4,000       723
+Bitmap (Cat0∪Cat1)∩Status                                  0.204ms    0.179ms    0.502ms      1,000      1084
+
+--- All Entries ---
+AllEntries (full scan)                                     0.289ms    0.383ms    0.409ms     10,000        48
+
+############################################################
+# 100,000 DOCUMENTS
+############################################################
+
+Indexing 100,000 documents...
+Index time: 3.1s
+Index size on disk: 76.1 MB
+
+Feature                                                 Avg ms       P50 ms       P99 ms       Results      Managed KB  
+--------------------------------------------------------------------------------------------------------------
+--- Single Term ---
+Term: Status='active' (50%)                                0.048ms    0.048ms    0.064ms     50,000       456
+Term: Category='category_0' (10%)                          0.014ms    0.013ms    0.023ms     10,000       449
+Term: Tag='tag_0' (1%)                                     0.005ms    0.006ms    0.016ms      1,000       441
+Term: Region='region_0' (0.1%)                             0.004ms    0.004ms    0.007ms        100       441
+
+--- AND ---
+AND: Status∩Category (50%∩10%)                             0.329ms    0.377ms    0.408ms     10,000      2272
+AND: Category∩Tag (10%∩1%)                                 0.051ms    0.044ms    0.109ms      1,000      1444
+AND: Category∩Region (10%∩0.1%)                            0.050ms    0.051ms    0.072ms        100      1444
+AND: 3-way Tag∩Category∩Status                             0.118ms    0.123ms    0.166ms      1,000      1974
+
+--- OR ---
+OR: Cat0∪Cat1 (10%∪10%)                                    0.122ms    0.109ms    0.171ms     20,000      1533
+OR: Tag0∪Tag1 (1%∪1%)                                      0.024ms    0.018ms    0.052ms      2,000      1189
+
+--- ANDNOT ---
+ANDNOT: Status-Category (50%-10%)                          0.320ms    0.277ms    0.503ms     40,000      2183
+ANDNOT: Category-Tag (10%-1%)                              0.056ms    0.049ms    0.105ms      9,000      1381
+
+--- Mixed ---
+(Cat0 OR Cat1) AND Status                                  1.360ms    1.358ms    1.657ms     10,000      2617
+(Tag0 OR Tag1) AND Cat AND Status                          0.232ms    0.234ms    0.292ms      1,000      2827
+
+--- IN ---
+IN: Category in (0,1,2)                                    0.348ms    0.363ms    0.553ms     30,000      3131
+
+--- StartsWith ---
+StartsWith: Name starts 'name_000001'                    152.642ms  136.210ms  368.601ms     10,000      1664
+
+--- Exists ---
+Exists: Name field                                         2.913ms    1.422ms   33.691ms    100,000      1332
+
+--- Numeric Range ---
+Range: Price > 500 (~50%)                                  0.728ms    0.673ms    0.919ms     49,900      3793
+Range: Price BETWEEN 200..400 (~20%)                       0.382ms    0.378ms    0.950ms     20,100      3107
+Range: Price BETWEEN 990..999 (~1%)                        0.024ms    0.023ms    0.057ms      1,000      2705
+
+--- AND + Range ---
+Tag∩(Price>500): 1%∩50%                                    0.882ms    0.889ms    1.255ms        400      3161
+Region∩(Price 200..400): 0.1%∩20%                          0.361ms    0.344ms    0.493ms          0      3048
+
+--- ORDER BY ---
+Category='cat_0' ORDER BY Name LIMIT 25                    0.944ms    0.716ms    2.295ms         25       931
+Category='cat_0' ORDER BY Price LIMIT 25                   2.098ms    1.784ms    5.079ms         25       947
+Tag='tag_0' ORDER BY Name (no limit)                       0.445ms    0.407ms    9.603ms      1,000       947
+
+--- Bitmap (prototype) ---
+Bitmap AND: Status∩Category                                0.987ms    0.809ms    1.639ms     10,000       819
+Bitmap OR: Cat0∪Cat1                                       0.354ms    0.287ms    0.771ms     20,000       811
+Bitmap ANDNOT: Status-Category                             0.794ms    0.619ms    1.720ms     40,000       811
+Bitmap (Cat0∪Cat1)∩Status                                  1.399ms    1.057ms    3.737ms     10,000      1252
+
+--- All Entries ---
+AllEntries (full scan)                                     0.347ms    0.203ms   14.423ms    100,000        48
+
+############################################################
+# 1,000,000 DOCUMENTS
+############################################################
+
+Indexing 1,000,000 documents...
+Index time: 17.6s
+Index size on disk: 560.0 MB
+
+Feature                                                 Avg ms       P50 ms       P99 ms       Results      Managed KB  
+--------------------------------------------------------------------------------------------------------------
+--- Single Term ---
+Term: Status='active' (50%)                                0.485ms    0.486ms    0.670ms    500,000       724
+Term: Category='category_0' (10%)                          0.080ms    0.081ms    0.108ms    100,000       449
+Term: Tag='tag_0' (1%)                                     0.013ms    0.012ms    0.107ms     10,000       441
+Term: Region='region_0' (0.1%)                             0.007ms    0.007ms    0.018ms      1,000       433
+
+--- AND ---
+AND: Status∩Category (50%∩10%)                             4.148ms    3.377ms   35.610ms    100,000      1645
+AND: Category∩Tag (10%∩1%)                                 0.296ms    0.296ms    0.326ms     10,000      3244
+AND: Category∩Region (10%∩0.1%)                            0.137ms    0.139ms    0.165ms      1,000      3236
+AND: 3-way Tag∩Category∩Status                             9.090ms    8.888ms   11.632ms     10,000      2456
+
+--- OR ---
+OR: Cat0∪Cat1 (10%∪10%)                                    0.803ms    0.527ms   27.738ms    200,000      1023
+OR: Tag0∪Tag1 (1%∪1%)                                      0.059ms    0.055ms    0.104ms     20,000      1533
+
+--- ANDNOT ---
+ANDNOT: Status-Category (50%-10%)                          3.889ms    3.418ms   28.627ms    400,000      2854
+ANDNOT: Category-Tag (10%-1%)                              0.326ms    0.325ms    0.461ms     90,000      3155
+
+--- Mixed ---
+(Cat0 OR Cat1) AND Status                                 11.068ms   10.336ms   35.642ms    100,000      4026
+(Tag0 OR Tag1) AND Cat AND Status                         10.091ms    9.590ms   38.869ms     10,000      1114
+
+--- IN ---
+IN: Category in (0,1,2)                                    2.015ms    1.026ms   33.081ms    300,000      1097
+
+--- StartsWith ---
+StartsWith: Name starts 'name_000001'                    287.926ms  138.114ms  690.004ms     10,000      1380
+
+--- Exists ---
+Exists: Name field                                        14.999ms   12.649ms   48.325ms  1,000,000       208
+
+--- Numeric Range ---
+Range: Price > 500 (~50%)                                  5.787ms    4.781ms   38.393ms    499,000      1210
+Range: Price BETWEEN 200..400 (~20%)                       2.333ms    2.040ms   30.742ms    201,000      2920
+Range: Price BETWEEN 990..999 (~1%)                        0.146ms    0.144ms    0.175ms     10,000      2901
+
+--- AND + Range ---
+Tag∩(Price>500): 1%∩50%                                   11.684ms   11.052ms   18.234ms      4,000       289
+Region∩(Price 200..400): 0.1%∩20%                          2.122ms    2.091ms    2.841ms          0      3074
+
+--- ORDER BY ---
+Category='cat_0' ORDER BY Name LIMIT 25                    0.567ms    0.581ms    0.941ms         25      1004
+Category='cat_0' ORDER BY Price LIMIT 25                   0.968ms    0.986ms    1.253ms         25       964
+Tag='tag_0' ORDER BY Name (no limit)                       5.385ms    5.742ms    7.106ms     10,000      1068
+
+--- Bitmap (prototype) ---
+Bitmap AND: Status∩Category                                9.304ms    8.944ms   25.154ms    100,000      1550
+Bitmap OR: Cat0∪Cat1                                       2.916ms    2.224ms    5.531ms    200,000      1661
+Bitmap ANDNOT: Status-Category                             8.401ms    6.197ms   15.746ms    400,000      1397
+Bitmap (Cat0∪Cat1)∩Status                                  9.399ms    7.841ms   22.977ms    100,000      2817
+
+--- All Entries ---
+AllEntries (full scan)                                     1.975ms    1.917ms    2.378ms  1,000,000        56
+
+############################################################
+# 10,000,000 DOCUMENTS
+############################################################
+
+Indexing 10,000,000 documents...
+Index time: 199.1s
+Index size on disk: 4352.0 MB
+
+Feature                                                 Avg ms       P50 ms       P99 ms       Results      Managed KB  
+--------------------------------------------------------------------------------------------------------------
+--- Single Term ---
+Term: Status='active' (50%)                                5.921ms    5.887ms    9.033ms  5,000,000       481
+Term: Category='category_0' (10%)                          1.073ms    1.037ms    1.363ms  1,000,000       449
+Term: Tag='tag_0' (1%)                                     0.143ms    0.128ms    0.745ms    100,000       441
+Term: Region='region_0' (0.1%)                             0.016ms    0.016ms    0.023ms     10,000       441
+
+--- AND ---
+AND: Status∩Category (50%∩10%)                           128.797ms  116.841ms  218.123ms  1,000,000      1010
+AND: Category∩Tag (10%∩1%)                                 7.388ms    5.626ms   49.091ms    100,000       761
+AND: Category∩Region (10%∩0.1%)                            5.651ms    3.264ms   66.544ms     10,000       703
+AND: 3-way Tag∩Category∩Status                           133.766ms  121.301ms  365.989ms    100,000      1157
+
+--- OR ---
+OR: Cat0∪Cat1 (10%∪10%)                                    7.161ms    5.889ms   40.440ms  2,000,000      4115
+OR: Tag0∪Tag1 (1%∪1%)                                      0.910ms    0.579ms   32.792ms    200,000      1021
+
+--- ANDNOT ---
+ANDNOT: Status-Category (50%-10%)                        184.494ms  173.859ms  306.611ms  4,000,000       876
+ANDNOT: Category-Tag (10%-1%)                              7.807ms    5.983ms   42.151ms    900,000       380
+
+--- Mixed ---
+(Cat0 OR Cat1) AND Status                                370.015ms  359.930ms  642.167ms  1,000,000      2004
+(Tag0 OR Tag1) AND Cat AND Status                        135.312ms  133.252ms  185.282ms    100,000      3743
+
+--- IN ---
+IN: Category in (0,1,2)                                   18.901ms    9.938ms   50.624ms  3,000,000       452
+
+--- StartsWith ---
+StartsWith: Name starts 'name_000001'                    132.327ms  124.520ms  295.915ms     10,000      1311
+
+--- Exists ---
+Exists: Name field                                       153.398ms  159.586ms  189.366ms 10,000,000      4053
+
+--- Numeric Range ---
+Range: Price > 500 (~50%)                                 53.463ms   42.545ms  112.466ms  4,990,000       607
+Range: Price BETWEEN 200..400 (~20%)                      24.432ms   18.211ms   90.037ms  2,010,000       662
+Range: Price BETWEEN 990..999 (~1%)                        1.360ms    0.694ms   66.614ms    100,000       976
+
+--- AND + Range ---
+Tag∩(Price>500): 1%∩50%                                  152.993ms  148.538ms  239.046ms     40,000      2136
+Region∩(Price 200..400): 0.1%∩20%                         53.563ms   50.987ms  190.521ms          0      3863
+
+--- ORDER BY ---
+Category='cat_0' ORDER BY Name LIMIT 25                    2.492ms    2.324ms    6.402ms         25       932
+Category='cat_0' ORDER BY Price LIMIT 25                   2.769ms    2.478ms    7.415ms         25       956
+Tag='tag_0' ORDER BY Name (no limit)                      65.566ms   68.862ms   83.330ms    100,000      2312
+
+--- Bitmap (prototype) ---
+Bitmap AND: Status∩Category                              104.378ms  105.531ms  263.885ms  1,000,000      5805
+Bitmap OR: Cat0∪Cat1                                      42.655ms   43.687ms   56.036ms  2,000,000      5931
+Bitmap ANDNOT: Status-Category                           106.897ms  107.028ms  244.161ms  4,000,000      6890
+Bitmap (Cat0∪Cat1)∩Status                                174.982ms  168.956ms  422.518ms  1,000,000     10162
+
+--- All Entries ---
+AllEntries (skipped >1M)                                N/A         
+

@@ -38,6 +38,13 @@ namespace Voron.Benchmark
                 return;
             }
 
+            if (args.Length > 0 && args[0] == "corax-full-bench")
+            {
+                var outputFile = args.Length > 1 ? args[1] : "/tmp/corax-full-bench-results.txt";
+                CoraxFullBenchmark.Run(outputFile);
+                return;
+            }
+
             if (args.Length > 0 && args[0] == "contains-bench")
             {
                 ContainsArrayBench.Run();
