@@ -647,8 +647,32 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
                         using (closeServerTransaction)
                         {
-                            if ((queryMatch = CoraxQueryBuilder.BuildQuery(builderParameters, out orderByFields)) is null)
-                                yield break;
+                            // Corax 2.0: try the new bitmap-based compiled path first
+                            if (_index.Configuration.CoraxUseBitmapPipeline)
+                            {
+                                try
+                                {
+                                    var plan = QueryPlanBuilder.BuildPlan(
+                                        IndexSearcher, query.Metadata,
+                                        query.QueryParameters, token);
+                                    var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, IndexSearcher);
+                                    queryMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
+                                        plan, resolvedMatches, IndexSearcher, _allocator,
+                                        (int)take, token);
+                                    orderByFields = null; // sorting not yet in bitmap path
+                                }
+                                catch (NotSupportedException)
+                                {
+                                    // Fall back to the old path for unsupported query types
+                                    if ((queryMatch = CoraxQueryBuilder.BuildQuery(builderParameters, out orderByFields)) is null)
+                                        yield break;
+                                }
+                            }
+                            else
+                            {
+                                if ((queryMatch = CoraxQueryBuilder.BuildQuery(builderParameters, out orderByFields)) is null)
+                                    yield break;
+                            }
                         }
 
                     }
