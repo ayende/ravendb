@@ -70,6 +70,9 @@ This file is a running log — entries are appended as work progresses.
 ### Lazy OR optimisation
 LazyOrWith currently delegates to OrWith (maintains cardinality eagerly). The popcount-skip optimisation would add a per-container dirty flag to skip popcount during multi-term IN chains, then recompute in one pass via RepairAfterLazy. This saves N-1 popcount passes over 8KB Bitmap containers for an N-term IN clause. Estimated impact: 10-30% on large IN clauses with dense containers.
 
+### Standalone NotEquals (Status != "active")
+The bitmap pipeline doesn't handle standalone `!=` yet. It requires: fill AllEntries into bitmap, then ANDNOT with the negated term. The plan emitter currently treats `!=` like `=` with an `IsNegated` flag, but only uses that flag for AND chains (where it emits AndNotWithPostings). For a standalone `!=` (no other AND operands), the emitter needs to first fill AllEntries then ANDNOT. The old path handles this via `AndNot(AllEntries, term)`.
+
 ### MultiUnaryItem conversion in entry-scan goto labels
 CheckAndMaybeEntryScan currently passes empty MultiUnaryItem[] arrays for the entry-scan labels. Converting the remaining clause types (range, between, etc.) to MultiUnaryItem predicates requires mapping ClauseType to UnaryMatchOperation and resolving comparison values. This is needed for the goto pattern to actually filter entries correctly — currently it just returns all entries in the bitmap without filtering.
 
