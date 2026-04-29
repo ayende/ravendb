@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using Corax.Querying;
 using Corax.Querying.Matches;
@@ -440,6 +441,13 @@ internal static class QueryPlanBuilder
                 ParamIndex = 0,
                 EstimatedCardinality = clauses[0].Cardinality
             });
+        }
+        else if (clauses.Any(c => c.ClauseType == ClauseType.NotEquals && !isOr))
+        {
+            // Standalone NotEquals or AND chain with NotEquals
+            // NotEquals requires AllEntries - term, which is not yet in the bitmap path
+            throw new NotSupportedException(
+                "Standalone NotEquals (!=) not yet supported in Corax 2.0 bitmap pipeline.");
         }
         else
         {
