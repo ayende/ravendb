@@ -15,6 +15,29 @@ This file is a running log — entries are appended as work progresses.
 - Memory tracking: managed heap delta (native tracking deferred — would need ByteStringContext instrumentation)
 - RuntimeFrameworkVersion changed from 10.0.6 to 10.0.5 across all csproj files (installed runtime)
 
+## Implementation Progress
+
+### Completed
+- WP1: RoaringBitmap extensions (Clear, Count, AddRange, LazyOrWith, RepairAfterLazy) — committed
+- WP2 Phase 1: QueryPrimitives (FillFromPostings, AndWithPostings, OrWithPostings, AndNotWithPostings, LazyOrWithPostings, IterateInto, ScanAndFilter, ShouldSwitchToEntryScan, ShouldHeapSortDirectly) — committed
+- WP3: QueryPlan data structures (PlanOp, QueryPlan, CompiledPlan, QueryContext, PlanCache) — committed
+- WP4: QueryPlanBuilder basic (AND/OR of term equality, cardinality estimation, operand reordering, goto check insertion) — committed
+- WP5: QueryILEmitter (closure-based interpreter, EXPLAIN generation) — committed
+- Baseline benchmarks: 3 runs at 10K/100K/1M/10M scale — committed
+
+### In Progress
+- WP7: Integration into CoraxIndexReadOperation (seam identified at line 650)
+- Expanded benchmarks (complex queries, multi-sort, LIMIT variations in run 3)
+
+### TODO
+- WP4 expansion: range/between/IN/negation/method expressions
+- WP2 expansion: SortWithFilter, OrderedRangeScan, FillFromRange, VectorRank, SpatialFilter
+- WP7: Wire new path into CoraxIndexReadOperation
+- WP8: Delete old code, make RoaringBitmap ref struct
+- Full test suite validation
+- Post-implementation benchmarks
+- Optimization pass
+
 ### Benchmark expansion needed (after run 1-3 baseline)
 - Vector search, full-text search, phrase queries, spatial queries, faceted queries
 - Complex AND chains (4-9 clauses)
