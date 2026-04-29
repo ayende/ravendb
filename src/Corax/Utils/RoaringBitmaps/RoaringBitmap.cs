@@ -165,27 +165,23 @@ public unsafe struct RoaringBitmap : IDisposable
         }
     }
 
-    /// <summary>Lazy OR — skips per-operation cardinality recount for Bitmap containers.
-    /// Call RepairAfterLazy() once after all lazy operations are complete.</summary>
+    /// <summary>Lazy OR — delegates to OrWith for correctness.
+    /// The popcount-skip optimisation (skipping per-op cardinality recount for
+    /// Bitmap containers during multi-term IN chains) is a future performance
+    /// improvement that requires a per-container dirty flag.
+    /// See docs/implementation-notes.md "Lazy OR optimisation" for details.</summary>
     public void LazyOrWith(ref RoaringBitmap other)
     {
-        // Same as OrWith but we mark bitmap containers as needing cardinality repair.
-        // For now, delegate to OrWith — the optimization of skipping popcount
-        // will be implemented when we have the lazy flag infrastructure.
-        // TODO: Add a per-container dirty flag to skip popcount during lazy OR.
         OrWith(ref other);
     }
 
     /// <summary>Repair cardinality counts after a sequence of LazyOrWith calls.
-    /// Walks all containers and recomputes cardinality where needed.</summary>
+    /// Currently a no-op since LazyOrWith maintains cardinality eagerly.
+    /// When the lazy flag optimisation is implemented, this will walk dirty
+    /// containers and recompute cardinality in one pass.</summary>
     public void RepairAfterLazy()
     {
-        // Currently a no-op since LazyOrWith delegates to OrWith which maintains cardinality.
-        // When lazy flag infrastructure is added, this will:
-        // 1. Walk all containers marked dirty
-        // 2. Recompute cardinality via popcount for Bitmap containers
-        // 3. Demote Bitmap → Array if cardinality fell below threshold
-        // 4. Clear dirty flags
+        // No-op: LazyOrWith currently maintains cardinality eagerly via OrWith.
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

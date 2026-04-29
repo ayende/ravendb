@@ -48,6 +48,30 @@ This file is a running log — entries are appended as work progresses.
 - NOTE: vector/spatial/facet/full-text require server-level or specialized IndexSearcher setup
   that goes beyond simple TermQuery. Will expand benchmark after baseline runs complete.
 
+## Deferred Features (not in MVP, implement after core pipeline works)
+
+### Primitives not yet implemented
+- **FillFromRange**: Range scan on CompactTree into bitmap. Needed for BETWEEN, >, <, >=, <= queries when used as standalone predicates (not via entry-scan).
+- **SortWithFilter**: Combined sort + optional entry-scan filter. Needed for ORDER BY queries.
+- **OrderedRangeScan**: Sort-skip path (WHERE field = ORDER BY field with LIMIT).
+- **VectorRank**: Vector similarity search (exact for small bitmaps, HNSW for large).
+- **SpatialFilter**: Geospatial filter via geohash term generation.
+- **SortByScore**: BM25 scoring with PriorityQueue.
+- **SortByDistance**: Vector/spatial distance sort.
+- **ScanAndFilterInPlace**: In-place bitmap filtering for pre-vector/spatial steps.
+
+### QueryPlanBuilder expression types that throw NotSupportedException
+- Spatial queries (spatial.within, spatial.contains, spatial.disjoint, spatial.intersects)
+- Vector search
+- MoreLikeThis
+- When expressions
+
+### Lazy OR optimisation
+LazyOrWith currently delegates to OrWith (maintains cardinality eagerly). The popcount-skip optimisation would add a per-container dirty flag to skip popcount during multi-term IN chains, then recompute in one pass via RepairAfterLazy. This saves N-1 popcount passes over 8KB Bitmap containers for an N-term IN clause. Estimated impact: 10-30% on large IN clauses with dense containers.
+
+### MultiUnaryItem conversion in entry-scan goto labels
+CheckAndMaybeEntryScan currently passes empty MultiUnaryItem[] arrays for the entry-scan labels. Converting the remaining clause types (range, between, etc.) to MultiUnaryItem predicates requires mapping ClauseType to UnaryMatchOperation and resolving comparison values. This is needed for the goto pattern to actually filter entries correctly — currently it just returns all entries in the bitmap without filtering.
+
 ## Post-implementation Tasks (deferred)
 
 1. **Compound field + unary filter optimisation**: For compound fields like (UserId, Date), a query `WHERE UserId = $id AND Published = true ORDER BY Date DESC` should use compound field sort-skip for UserId+Date, then filter Published via unary (entry scan). Currently compound fields only work with a single WHERE condition. The planner should detect when secondary WHERE filters can be promoted to unary mode to enable compound field optimisation.
