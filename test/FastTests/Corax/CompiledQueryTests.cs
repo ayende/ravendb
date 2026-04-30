@@ -839,6 +839,63 @@ public class CompiledQueryTests : RavenTestBase
         }
     }
 
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public async Task Pagination_BitmapPipeline()
+    {
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+        options.ModifyDatabaseRecord += record =>
+        {
+            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
+        };
+        using var store = GetDocumentStore(options);
+
+        using (var session = store.OpenAsyncSession())
+        {
+            for (int i = 0; i < 100; i++)
+            {
+                await session.StoreAsync(new TestDoc
+                {
+                    Name = $"doc-{i:D5}",
+                    Category = "cat-0",
+                    Status = "active"
+                });
+            }
+            await session.SaveChangesAsync();
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        // Page 1: skip 0, take 10
+        using (var session = store.OpenAsyncSession())
+        {
+            var page1 = await session.Query<TestDoc>()
+                .Where(x => x.Category == "cat-0")
+                .Skip(0).Take(10)
+                .ToListAsync();
+            Assert.Equal(10, page1.Count);
+        }
+
+        // Page 2: skip 10, take 10
+        using (var session = store.OpenAsyncSession())
+        {
+            var page2 = await session.Query<TestDoc>()
+                .Where(x => x.Category == "cat-0")
+                .Skip(10).Take(10)
+                .ToListAsync();
+            Assert.Equal(10, page2.Count);
+        }
+
+        // Page 10: skip 90, take 10
+        using (var session = store.OpenAsyncSession())
+        {
+            var page10 = await session.Query<TestDoc>()
+                .Where(x => x.Category == "cat-0")
+                .Skip(90).Take(10)
+                .ToListAsync();
+            Assert.Equal(10, page10.Count);
+        }
+    }
+
     [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying, Skip = "search() requires analyzer setup — falls back to old path")]
     public async Task SearchQuery_BitmapPipeline()
     {
