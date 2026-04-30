@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
 using Corax;
@@ -402,39 +403,16 @@ public static class CoraxFullBenchmark
                 return q;
             });
 
-        // ===== 16. BITMAP (existing prototype) =====
+        // ===== 16. BITMAP (Corax 2.0 CompiledQueryMatch) =====
         log("");
-        log("--- Bitmap (prototype) ---");
-        Bench("Bitmap AND: Status∩Category", ids, log,
-            () =>
-            {
-                var q1 = searcher.TermQuery("Status", "active");
-                var q2 = searcher.TermQuery("Category", "category_0");
-                return searcher.BitmapAnd(ref q1, ref q2);
-            });
-        Bench("Bitmap OR: Cat0∪Cat1", ids, log,
-            () =>
-            {
-                var q1 = searcher.TermQuery("Category", "category_0");
-                var q2 = searcher.TermQuery("Category", "category_1");
-                return searcher.BitmapOr(ref q1, ref q2);
-            });
-        Bench("Bitmap ANDNOT: Status-Category", ids, log,
-            () =>
-            {
-                var q1 = searcher.TermQuery("Status", "active");
-                var q2 = searcher.TermQuery("Category", "category_0");
-                return searcher.BitmapAndNot(ref q1, ref q2);
-            });
-        Bench("Bitmap (Cat0∪Cat1)∩Status", ids, log,
-            () =>
-            {
-                var q1 = searcher.TermQuery("Category", "category_0");
-                var q2 = searcher.TermQuery("Category", "category_1");
-                var qOr = searcher.BitmapOr(ref q1, ref q2);
-                var qS = searcher.TermQuery("Status", "active");
-                return searcher.BitmapAnd(ref qOr, ref qS);
-            });
+        log("--- Bitmap (Corax 2.0) ---");
+        BenchBitmap("Bitmap2 AND: Status∩Category", ids, log, bsc, searcher,
+            new[] { ("Status", "active"), ("Category", "category_0") }, isAnd: true);
+        BenchBitmap("Bitmap2 OR: Cat0∪Cat1", ids, log, bsc, searcher,
+            new[] { ("Category", "category_0"), ("Category", "category_1") }, isAnd: false);
+        BenchBitmap("Bitmap2 (Cat0∪Cat1)∩Status", ids, log, bsc, searcher,
+            new[] { ("Category", "category_0"), ("Category", "category_1"), ("Status", "active") },
+            isAnd: false, andWithLast: true);
 
         // ===== 13. ALL ENTRIES =====
         log("");
@@ -558,6 +536,111 @@ public static class CoraxFullBenchmark
             .AddBinding(FldRating, ratingSlice)
             .AddBinding(FldName, nameSlice);
         return builder.Build();
+    }
+
+    private static void BenchBitmap(string name, long[] ids, Action<string> log,
+        ByteStringContext bsc, IndexSearcher searcher,
+        (string field, string term)[] operands, bool isAnd,
+        bool andWithLast = false)
+    {
+        GC.Collect(2, GCCollectionMode.Forced, true, true);
+        GC.WaitForPendingFinalizers();
+        GC.Collect(2, GCCollectionMode.Forced, true, true);
+
+        long managedBefore = GC.GetTotalMemory(true);
+
+        // Warmup
+        for (int w = 0; w < Warmup; w++)
+        {
+            RunBitmapQuery(bsc, searcher, operands, isAnd, andWithLast, ids);
+        }
+
+        var times = new double[Iterations];
+        int totalResults = 0;
+
+        for (int i = 0; i < Iterations; i++)
+        {
+            var sw = Stopwatch.StartNew();
+            int read = RunBitmapQuery(bsc, searcher, operands, isAnd, andWithLast, ids);
+            sw.Stop();
+            times[i] = sw.Elapsed.TotalMilliseconds;
+            totalResults += read;
+        }
+
+        long managedAfter = GC.GetTotalMemory(false);
+        long managedDelta = Math.Max(0, managedAfter - managedBefore);
+
+        Array.Sort(times);
+        double avg = times.Average();
+        double p50 = times[Iterations / 2];
+        double p99 = times[(int)(Iterations * 0.99)];
+        int avgResults = totalResults / Iterations;
+
+        log($"{name,-55} {avg,8:F3}ms {p50,8:F3}ms {p99,8:F3}ms {avgResults,10:N0} {managedDelta / 1024.0,9:F0}");
+    }
+
+    private static int RunBitmapQuery(ByteStringContext bsc, IndexSearcher searcher,
+        (string field, string term)[] operands, bool isAnd, bool andWithLast, long[] ids)
+    {
+        using var bitmap = new global::Corax.Utils.RoaringBitmaps.RoaringBitmap(bsc);
+        Span<long> buffer = stackalloc long[4096];
+
+        if (isAnd)
+        {
+            // AND chain: fill first, AND rest
+            var match0 = searcher.TermQuery(operands[0].field, operands[0].term);
+            int read0;
+            while ((read0 = match0.Fill(buffer)) > 0)
+                bitmap.AddRange(buffer.Slice(0, read0));
+
+            using var tempBitmap = new global::Corax.Utils.RoaringBitmaps.RoaringBitmap(bsc);
+            for (int i = 1; i < operands.Length; i++)
+            {
+                tempBitmap.Clear();
+                var matchI = searcher.TermQuery(operands[i].field, operands[i].term);
+                int readI;
+                while ((readI = matchI.Fill(buffer)) > 0)
+                    tempBitmap.AddRange(buffer.Slice(0, readI));
+                bitmap.AndWith(ref Unsafe.AsRef(in tempBitmap));
+            }
+        }
+        else if (andWithLast)
+        {
+            // OR first N-1, AND with last
+            for (int i = 0; i < operands.Length - 1; i++)
+            {
+                var matchI = searcher.TermQuery(operands[i].field, operands[i].term);
+                int readI;
+                while ((readI = matchI.Fill(buffer)) > 0)
+                    bitmap.AddRange(buffer.Slice(0, readI));
+            }
+
+            using var tempBitmap = new global::Corax.Utils.RoaringBitmaps.RoaringBitmap(bsc);
+            var matchLast = searcher.TermQuery(operands[^1].field, operands[^1].term);
+            int readLast;
+            while ((readLast = matchLast.Fill(buffer)) > 0)
+                tempBitmap.AddRange(buffer.Slice(0, readLast));
+            bitmap.AndWith(ref Unsafe.AsRef(in tempBitmap));
+        }
+        else
+        {
+            // OR chain: fill all into same bitmap
+            for (int i = 0; i < operands.Length; i++)
+            {
+                var matchI = searcher.TermQuery(operands[i].field, operands[i].term);
+                int readI;
+                while ((readI = matchI.Fill(buffer)) > 0)
+                    bitmap.AddRange(buffer.Slice(0, readI));
+            }
+        }
+
+        bitmap.PrepareForReading();
+        var iterator = bitmap.GetIterator();
+        int total = 0;
+        int read;
+        while ((read = iterator.Fill(ref Unsafe.AsRef(in bitmap), ids)) > 0)
+            total += read;
+        return total;
     }
 
     private static void DeleteStorage()

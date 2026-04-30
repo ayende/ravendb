@@ -32,11 +32,7 @@ namespace Voron.Benchmark
                 return;
             }
 
-            if (args.Length > 0 && args[0] == "corax-query")
-            {
-                CoraxQueryBitmapBench.Run();
-                return;
-            }
+            // Old corax-query benchmark removed — use corax-full-bench instead
 
             if (args.Length > 0 && args[0] == "corax-full-bench")
             {

@@ -3,56 +3,11 @@ using System.Threading;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Matches.SpatialMatch;
-using Corax.Utils.RoaringBitmaps;
 
 namespace Corax.Querying;
 
 public partial class IndexSearcher
 {
-    /// <summary>
-    /// Bitmap-based AND: materialize both sides into RoaringBitmaps, intersect, return as match.
-    /// Faster than streaming merge for large result sets. Both matches are fully consumed.
-    /// </summary>
-    public RoaringBitmapMatch BitmapAnd<TInner, TOuter>(ref TInner inner, ref TOuter outer)
-        where TInner : IQueryMatch
-        where TOuter : IQueryMatch
-    {
-        var bmpInner = RoaringBitmapMatch.MaterializeToRoaringBitmap(Allocator, ref inner);
-        var bmpOuter = RoaringBitmapMatch.MaterializeToRoaringBitmap(Allocator, ref outer);
-        bmpInner.AndWith(ref bmpOuter);
-        bmpOuter.Dispose();
-        return new RoaringBitmapMatch(bmpInner);
-    }
-
-    /// <summary>
-    /// Bitmap-based OR: materialize both sides into RoaringBitmaps, union, return as match.
-    /// Destructive: steals containers from outer bitmap (zero-copy for unmatched containers).
-    /// </summary>
-    public RoaringBitmapMatch BitmapOr<TInner, TOuter>(ref TInner inner, ref TOuter outer)
-        where TInner : IQueryMatch
-        where TOuter : IQueryMatch
-    {
-        var bmpInner = RoaringBitmapMatch.MaterializeToRoaringBitmap(Allocator, ref inner);
-        var bmpOuter = RoaringBitmapMatch.MaterializeToRoaringBitmap(Allocator, ref outer);
-        bmpInner.OrWith(ref bmpOuter);
-        bmpOuter.Dispose();
-        return new RoaringBitmapMatch(bmpInner);
-    }
-
-    /// <summary>
-    /// Bitmap-based ANDNOT: materialize both sides, subtract outer from inner.
-    /// </summary>
-    public RoaringBitmapMatch BitmapAndNot<TInner, TOuter>(ref TInner inner, ref TOuter outer)
-        where TInner : IQueryMatch
-        where TOuter : IQueryMatch
-    {
-        var bmpInner = RoaringBitmapMatch.MaterializeToRoaringBitmap(Allocator, ref inner);
-        var bmpOuter = RoaringBitmapMatch.MaterializeToRoaringBitmap(Allocator, ref outer);
-        bmpInner.AndNotWith(ref bmpOuter);
-        bmpOuter.Dispose();
-        return new RoaringBitmapMatch(bmpInner);
-    }
-
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public BinaryMatch And<TInner, TOuter>(in TInner innerSet, in TOuter outerSet, in CancellationToken token = default)
         where TInner : IQueryMatch
@@ -75,7 +30,7 @@ public partial class IndexSearcher
                 QueryBuilderHelper.QueryType.SpatialMatchNoBoosting => OuterGenericMatcher((SpatialMatch<NoBoosting>)(object)firstInnerSet, firstOuterSet, token),
                 QueryBuilderHelper.QueryType.SpatialMatchHasBoosting => OuterGenericMatcher((SpatialMatch<HasBoosting>)(object)firstInnerSet, firstOuterSet, token),
                 QueryBuilderHelper.QueryType.MultiUnaryMatch => OuterGenericMatcher((MultiUnaryMatch)(object)firstInnerSet, firstOuterSet, token),
-                QueryBuilderHelper.QueryType.RoaringBitmapMatch => OuterGenericMatcher((RoaringBitmapMatch)(object)firstInnerSet, firstOuterSet, token),
+                QueryBuilderHelper.QueryType.CompiledQueryMatch => OuterGenericMatcher((CompiledQueryMatch)(object)firstInnerSet, firstOuterSet, token),
                 _ => OuterGenericMatcher(firstInnerSet, firstOuterSet, token),
             };
 
@@ -92,7 +47,7 @@ public partial class IndexSearcher
                 QueryBuilderHelper.QueryType.SpatialMatchNoBoosting => Build(secondInnerSet, (SpatialMatch<NoBoosting>)(object)secondOuterSet, token),
                 QueryBuilderHelper.QueryType.SpatialMatchHasBoosting => Build(secondInnerSet, (SpatialMatch<HasBoosting>)(object)secondOuterSet, token),
                 QueryBuilderHelper.QueryType.MultiUnaryMatch => Build(secondInnerSet, (MultiUnaryMatch)(object)secondOuterSet, token),
-                QueryBuilderHelper.QueryType.RoaringBitmapMatch => Build(secondInnerSet, (RoaringBitmapMatch)(object)secondOuterSet, token),
+                QueryBuilderHelper.QueryType.CompiledQueryMatch => Build(secondInnerSet, (CompiledQueryMatch)(object)secondOuterSet, token),
                 _ => Build(secondInnerSet, secondOuterSet, token),
             };
 
