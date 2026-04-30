@@ -1433,7 +1433,7 @@ public static partial class CoraxQueryBuilder
         return sortArray[0..sortIndex];
     }
 
-    private static IQueryMatch OrderBy(Parameters builderParameters, IQueryMatch match, in OrderMetadata[] orderMetadataSource, bool hasEmptySortingMatches)
+    internal static IQueryMatch OrderBy(Parameters builderParameters, IQueryMatch match, in OrderMetadata[] orderMetadataSource, bool hasEmptySortingMatches)
     {
         RuntimeHelpers.EnsureSufficientExecutionStack();
         var indexSearcher = builderParameters.IndexSearcher;

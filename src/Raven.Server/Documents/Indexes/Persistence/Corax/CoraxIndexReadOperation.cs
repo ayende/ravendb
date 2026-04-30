@@ -652,9 +652,6 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                             {
                                 try
                                 {
-                                    // Bitmap path doesn't handle ORDER BY yet — fall back
-                                    if (query.Metadata.OrderBy is { Length: > 0 })
-                                        throw new NotSupportedException("ORDER BY not yet in bitmap path");
                                     // Bitmap path doesn't handle boosting/scoring yet
                                     if (query.Metadata.HasBoost)
                                         throw new NotSupportedException("Boost/scoring not yet in bitmap path");
@@ -666,7 +663,14 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                                     queryMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
                                         plan, resolvedMatches, IndexSearcher, _allocator,
                                         (int)take, token);
-                                    orderByFields = null;
+
+                                    // Apply sorting via the existing OrderBy infrastructure
+                                    orderByFields = CoraxQueryBuilder.GetSortMetadata(builderParameters, out _);
+                                    if (orderByFields != null)
+                                    {
+                                        queryMatch = CoraxQueryBuilder.OrderBy(
+                                            builderParameters, queryMatch, orderByFields, false);
+                                    }
                                 }
                                 catch (NotSupportedException)
                                 {

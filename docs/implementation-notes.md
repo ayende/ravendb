@@ -34,10 +34,25 @@ This file is a running log — entries are appended as work progresses.
 - Integration tests: 3 end-to-end tests (term, AND, OR) through full server path
 - Full Corax test suite: 632 pass, 2 skip, 0 fail (no regressions)
 
+### Completed (continued 2)
+- Numeric type coercion for range queries (long.TryParse/double.TryParse)
+- Standalone NotEquals via AllEntries + ANDNOT
+- BETWEEN query support (numeric type detection)
+- 9 integration tests all passing: term, AND, OR, 3-way AND, AND+range,
+  IN clause, NotEquals, BETWEEN, large result set (1000 docs)
+- Post-implementation benchmark + comparison (no regressions)
+- Pushed to origin/RavenDB-25281
+
 ### Remaining
-- WP8: Delete old code, make RoaringBitmap ref struct (after full validation)
-- Post-implementation benchmarks + comparison
-- Optimization pass
+- WP8: Delete old code, make RoaringBitmap ref struct
+- ORDER BY support in bitmap path
+- Boost/scoring in bitmap path
+- Spatial, vector queries in bitmap path
+- Phrase queries
+- Compound field sort-skip
+- Optimization: galloping page-scan for AndWithPostings
+- Optimization: lazy OR popcount-skip
+- Expanded benchmark covering all feature areas
 
 ### Benchmark expansion needed (after run 1-3 baseline)
 - Vector search, full-text search, phrase queries, spatial queries, faceted queries
