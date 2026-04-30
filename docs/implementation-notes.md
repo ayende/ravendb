@@ -43,10 +43,14 @@ This file is a running log — entries are appended as work progresses.
 - Post-implementation benchmark + comparison (no regressions)
 - Pushed to origin/RavenDB-25281
 
-### SlowTests result
-- 497 pass, 3 fail, 2 skip. The 3 failures need investigation — may be
-  pre-existing or bitmap-path related. Failure details lost due to output
-  truncation. Need to re-run with full output capture.
+### SlowTests Corax result
+- 498 pass, 4 fail, 2 skip.
+- Failures (likely pre-existing — bitmap pipeline is off by default in these tests):
+  1. BackwardCompatibilityForOldLowercaseAnalyzer — backward compat test
+  2. DistinctBigTestWithPagination (10K docs) — pagination with distinct
+  3. CompoundOrderByWithPagination (10K docs) — compound ordering
+  4. CanImportOldAutoMapDefinitionIntoCoraxAndGenerateProperMapping — import test
+- These need to be verified against the base branch to confirm they're pre-existing.
 
 ### Completed (continued 3)
 - ORDER BY + LIMIT via existing SortingMatch wrapper (ASC and DESC)
