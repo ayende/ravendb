@@ -23,11 +23,16 @@ public ref struct QueryScanContext
     /// <summary>Pre-resolved field root pages for entry scan predicates.</summary>
     public Span<long> FieldRootPages;
 
-    /// <summary>Typed parameter values for numeric entry scan comparisons.
+    /// <summary>Typed parameter values for entry scan comparisons.
     /// The emitted IL reads by index (baked constant) and compares directly
-    /// against reader.CurrentLong / reader.CurrentDouble.</summary>
+    /// against reader.CurrentLong / reader.CurrentDouble / reader.Current.Decoded().</summary>
     public Span<long> LongParams;
     public Span<double> DoubleParams;
+
+    /// <summary>Pre-encoded comparison Slices for string predicates.
+    /// Created per-query via searcher.EncodeAndApplyAnalyzer(). The emitted IL
+    /// calls Slice.AsReadOnlySpan() + SequenceCompareTo directly — no MultiUnaryItem.</summary>
+    public Span<Voron.Slice> SliceParams;
 
     public CancellationToken Token;
 }
