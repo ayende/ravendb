@@ -649,6 +649,93 @@ public class CompiledQueryTests : RavenTestBase
         }
     }
 
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public async Task EndsWith_BitmapPipeline()
+    {
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+        options.ModifyDatabaseRecord += record =>
+        {
+            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
+        };
+        using var store = GetDocumentStore(options);
+
+        using (var session = store.OpenAsyncSession())
+        {
+            for (int i = 0; i < 50; i++)
+            {
+                await session.StoreAsync(new TestDoc
+                {
+                    Name = i % 2 == 0 ? $"item-{i}-alpha" : $"item-{i}-beta",
+                    Category = $"cat-{i % 5}",
+                    Status = "active"
+                });
+            }
+            await session.SaveChangesAsync();
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        using (var session = store.OpenAsyncSession())
+        {
+            var results = await session.Advanced.AsyncRawQuery<TestDoc>(
+                "from TestDocs where endsWith(Name, 'alpha')")
+                .ToListAsync();
+
+            Assert.Equal(25, results.Count);
+            Assert.All(results, r => Assert.EndsWith("alpha", r.Name));
+        }
+    }
+
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public async Task FiveWayAnd_BitmapPipeline()
+    {
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+        options.ModifyDatabaseRecord += record =>
+        {
+            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
+        };
+        using var store = GetDocumentStore(options);
+
+        using (var session = store.OpenAsyncSession())
+        {
+            for (int i = 0; i < 500; i++)
+            {
+                await session.StoreAsync(new TestDoc
+                {
+                    Name = $"doc-{i:D5}",
+                    Category = $"cat-{i % 5}",
+                    Status = i % 2 == 0 ? "active" : "inactive",
+                    Tag = $"tag-{i % 10}",
+                    Price = i * 3
+                });
+            }
+            await session.SaveChangesAsync();
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        // 5-way AND: Category=cat-0 AND Status=active AND Tag=tag-0 AND Price>500 AND startsWith(Name, 'doc-0')
+        using (var session = store.OpenAsyncSession())
+        {
+            var results = await session.Advanced.AsyncRawQuery<TestDoc>(
+                "from TestDocs where Category = 'cat-0' and Status = 'active' and Tag = 'tag-0' and Price > 500 and startsWith(Name, 'doc-0')")
+                .ToListAsync();
+
+            // cat-0: i%5==0, active: i%2==0, tag-0: i%10==0 → i%10==0 AND i%2==0 → i%10==0
+            // Price > 500: i*3 > 500 → i > 166
+            // startsWith doc-0: i < 100000 (all match with 5-digit padding)
+            // Combined: i%10==0 AND i>166 → 170,180,190,...,490 → 33 items
+            Assert.True(results.Count > 0);
+            Assert.All(results, r =>
+            {
+                Assert.Equal("cat-0", r.Category);
+                Assert.Equal("active", r.Status);
+                Assert.Equal("tag-0", r.Tag);
+                Assert.True(r.Price > 500);
+            });
+        }
+    }
+
     [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying, Skip = "search() requires analyzer setup — falls back to old path")]
     public async Task SearchQuery_BitmapPipeline()
     {
