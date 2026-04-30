@@ -53,14 +53,15 @@ This file is a running log — entries are appended as work progresses.
 
 ### Remaining
 - WP8: Delete old code, make RoaringBitmap ref struct
-- Boost/scoring in bitmap path
-- Spatial, vector queries in bitmap path
-- Phrase queries
+- Boost/scoring in bitmap path (BM25 frequency collection)
+- search() queries (analyzer setup)
+- Spatial, vector queries (separate primitives)
+- Phrase queries (term position checking)
 - Compound field sort-skip
-- Optimization: galloping page-scan for AndWithPostings
-- Optimization: lazy OR popcount-skip
+- Optimization: galloping page-scan for AndWithPostings (needs direct PostingList path)
+- Optimization: LIMIT-aware FillFromPostings for no-ORDER-BY queries
 - DynamicMethod IL emit (replacing interpreter)
-- Expanded benchmark with bitmap path enabled
+- Expanded benchmark with bitmap path enabled for comparison
 
 ### Benchmark expansion needed (after run 1-3 baseline)
 - Vector search, full-text search, phrase queries, spatial queries, faceted queries
