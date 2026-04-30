@@ -566,7 +566,7 @@ public class CompiledQueryTests : RavenTestBase
         }
     }
 
-    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying, Skip = "NotEquals in AND chain returns wrong results — needs investigation")]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying, Skip = "NotEquals in AND chain — bitmap ANDNOT resolution bug, old path works correctly")]
     public async Task NotEqualsInAndChain_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
