@@ -1386,7 +1386,7 @@ public unsafe struct RoaringBitmap : IDisposable
     /// <summary>
     /// SIMD linear scan for small arrays (&lt;= 64 values). Works on both sorted and unsorted data.
     /// Uses Vector256 (16 ushorts) when available, Vector128 (8 ushorts) otherwise.
-    /// Buffer is guaranteed to be at least 128 bytes (64 ushorts), so no bounds check needed.
+    /// For cardinality smaller than the vector width, falls back to scalar linear scan.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static bool SimdLinearContains(ushort* arr, int cardinality, ushort value)
@@ -1395,19 +1395,33 @@ public unsafe struct RoaringBitmap : IDisposable
 
         if (AdvInstructionSet.IsAcceleratedVector256)
         {
+            // Guard: if cardinality < vector width, scalar scan to avoid reading before buffer
+            if (cardinality < Vector256<ushort>.Count)
+            {
+                for (int j = 0; j < cardinality; j++)
+                    if (arr[j] == value) return true;
+                return false;
+            }
+
             Vector256<ushort> needle256 = Vector256.Create(value);
-            // 16 ushorts per iteration — 4 loads covers 64 values
             for (; i + Vector256<ushort>.Count <= cardinality; i += Vector256<ushort>.Count)
             {
                 if (Vector256.EqualsAny(Vector256.Load(arr + i), needle256))
                     return true;
             }
-            // Overlap tail for remainder
             if (i < cardinality)
             {
                 if (Vector256.EqualsAny(Vector256.Load(arr + cardinality - Vector256<ushort>.Count), needle256))
                     return true;
             }
+            return false;
+        }
+
+        // Guard: if cardinality < vector width, scalar scan
+        if (cardinality < Vector128<ushort>.Count)
+        {
+            for (int j = 0; j < cardinality; j++)
+                if (arr[j] == value) return true;
             return false;
         }
 
