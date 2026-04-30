@@ -177,7 +177,7 @@ public class CompiledQueryTests : RavenTestBase
         }
     }
 
-    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying, Skip = "Numeric range type coercion not yet in bitmap path — string vs numeric comparison")]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
     public async Task AndWithRange_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
@@ -212,13 +212,13 @@ public class CompiledQueryTests : RavenTestBase
                 .ToListAsync();
 
             // cat-0: indices 0,5,10,15,20,...,95 (20 total)
-            // Price > 200 (or >= depending on auto-index behavior)
-            // Expect 15-16 results (boundary may vary)
-            Assert.InRange(results.Count, 15, 16);
+            // Price > 200: i*10 > 200 → i > 20
+            // cat-0 indices > 20: 25,30,35,40,45,50,55,60,65,70,75,80,85,90,95 → 15
+            Assert.Equal(15, results.Count);
             Assert.All(results, r =>
             {
                 Assert.Equal("cat-0", r.Category);
-                Assert.True(r.Price >= 200);
+                Assert.True(r.Price > 200);
             });
         }
     }
