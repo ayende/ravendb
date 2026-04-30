@@ -656,11 +656,36 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                                     if (query.Metadata.HasBoost)
                                         throw new NotSupportedException("Boost/scoring not yet in bitmap path");
 
-                                    var plan = QueryPlanBuilder.BuildPlan(
-                                        IndexSearcher, query.Metadata,
-                                        query.QueryParameters, token);
+                                    var plan = QueryPlanBuilder.BuildPlan(new QueryPlanBuilder.PlanParameters
+                                    {
+                                        IndexSearcher = IndexSearcher,
+                                        Metadata = query.Metadata,
+                                        QueryParameters = query.QueryParameters,
+                                        Index = _index,
+                                        IndexFieldsMapping = _fieldMappings,
+                                        FieldsToFetch = fieldsToFetch,
+                                        Allocator = _allocator,
+                                        Token = token,
+                                        HasDynamics = builderParameters.HasDynamics,
+                                        DynamicFields = builderParameters.DynamicFields,
+                                        HasBoost = builderParameters.HasBoost
+                                    });
                                     // Resolve matches fresh each execution (posting lists may change)
-                                    var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, IndexSearcher);
+                                    var planParams = new QueryPlanBuilder.PlanParameters
+                                    {
+                                        IndexSearcher = IndexSearcher,
+                                        Metadata = query.Metadata,
+                                        QueryParameters = query.QueryParameters,
+                                        Index = _index,
+                                        IndexFieldsMapping = _fieldMappings,
+                                        FieldsToFetch = fieldsToFetch,
+                                        Allocator = _allocator,
+                                        Token = token,
+                                        HasDynamics = builderParameters.HasDynamics,
+                                        DynamicFields = builderParameters.DynamicFields,
+                                        HasBoost = builderParameters.HasBoost
+                                    };
+                                    var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, IndexSearcher, planParams);
                                     queryMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
                                         plan, resolvedMatches, IndexSearcher, _allocator,
                                         (int)take, token);
