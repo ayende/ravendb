@@ -422,13 +422,42 @@ public class CompiledQueryTests : RavenTestBase
         }
     }
 
-    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying, Skip = "exists() test needs dynamic collection + field absence — complex auto-index behavior")]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
     public async Task ExistsQuery_BitmapPipeline()
     {
-        // Skipped: testing exists() with auto-indexes requires careful setup where
-        // some documents genuinely lack the field (not just null value).
-        // The bitmap pipeline itself handles exists() correctly via ExistsQuery.
-        await Task.CompletedTask;
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+        options.ModifyDatabaseRecord += record =>
+        {
+            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
+        };
+        using var store = GetDocumentStore(options);
+
+        // Store docs — all have Category, so exists(Category) should return all
+        using (var session = store.OpenAsyncSession())
+        {
+            for (int i = 0; i < 30; i++)
+            {
+                await session.StoreAsync(new TestDoc
+                {
+                    Name = $"doc-{i}",
+                    Category = $"cat-{i % 3}",
+                    Status = "active"
+                });
+            }
+            await session.SaveChangesAsync();
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        // exists(Category) — all 30 docs have it
+        using (var session = store.OpenAsyncSession())
+        {
+            var results = await session.Advanced.AsyncRawQuery<TestDoc>(
+                "from TestDocs where exists(Category)")
+                .ToListAsync();
+
+            Assert.Equal(30, results.Count);
+        }
     }
 
     [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
