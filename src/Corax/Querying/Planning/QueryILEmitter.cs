@@ -81,6 +81,32 @@ public static class QueryILEmitter
         typeof(QueryScanContext).GetField(nameof(QueryScanContext.LongParams))!;
     private static readonly FieldInfo s_ctxDoubleParams =
         typeof(QueryScanContext).GetField(nameof(QueryScanContext.DoubleParams))!;
+    private static readonly FieldInfo s_ctxSliceParams =
+        typeof(QueryScanContext).GetField(nameof(QueryScanContext.SliceParams))!;
+
+    // CompactKey.Decoded() → ReadOnlySpan<byte>
+    private static readonly FieldInfo s_readerCurrent =
+        typeof(EntryTermsReader).GetField(nameof(EntryTermsReader.Current))!;
+    private static readonly MethodInfo s_compactKeyDecoded =
+        typeof(Voron.Data.CompactTrees.CompactKey).GetMethod("Decoded", Type.EmptyTypes)!;
+
+    // Slice.AsReadOnlySpan() → ReadOnlySpan<byte>
+    private static readonly MethodInfo s_sliceAsReadOnlySpan =
+        typeof(Voron.Slice).GetMethod(nameof(Voron.Slice.AsReadOnlySpan))!;
+
+    // Span<Slice> indexer
+    private static readonly MethodInfo s_spanSliceIndexer =
+        typeof(Span<Voron.Slice>).GetProperty("Item")!.GetGetMethod()!;
+
+    // ReadOnlySpan<byte>.SequenceCompareTo(ReadOnlySpan<byte>) — for ordered comparisons
+    private static readonly MethodInfo s_sequenceCompareTo =
+        typeof(MemoryExtensions).GetMethod(nameof(MemoryExtensions.SequenceCompareTo),
+            new[] { typeof(ReadOnlySpan<byte>), typeof(ReadOnlySpan<byte>) })!;
+
+    // ReadOnlySpan<byte>.SequenceEqual(ReadOnlySpan<byte>) — for equality
+    private static readonly MethodInfo s_sequenceEqual =
+        typeof(MemoryExtensions).GetMethod(nameof(MemoryExtensions.SequenceEqual),
+            new[] { typeof(ReadOnlySpan<byte>), typeof(ReadOnlySpan<byte>) })!;
 
     // Span<double> indexer
     private static readonly MethodInfo s_spanDoubleIndexer =
@@ -341,13 +367,7 @@ public static class QueryILEmitter
                     il.Emit(OpCodes.Brfalse, nextEntry);
                     break;
                 case ScanValueType.Slice:
-                    // String comparison — fall back to MultiUnaryItem.CompareLiteral
-                    il.Emit(OpCodes.Ldarg_0);
-                    il.Emit(OpCodes.Ldflda, s_ctxScanPredicates);
-                    EmitLdcI4(il, pred.ParamIndex);
-                    il.Emit(OpCodes.Call, s_predicateSpanIndexer); // ref MultiUnaryItem
-                    il.Emit(OpCodes.Ldloc, readerLocal);
-                    il.Emit(OpCodes.Call, s_compareLiteral);
+                    EmitSliceComparison(il, pred, readerLocal);
                     il.Emit(OpCodes.Brfalse, nextEntry);
                     break;
             }
@@ -456,6 +476,67 @@ public static class QueryILEmitter
         il.Emit(OpCodes.Ldfld, s_readerCurrentDouble);
         EmitLoadDoubleParam(il, pred.ParamIndex);
         EmitCompareOp(il, pred.CompareOp);
+    }
+
+    /// <summary>Emit: reader.Current.Decoded() [op] ctx.SliceParams[paramIndex].AsReadOnlySpan() → bool on stack.
+    /// Direct byte comparison — no MultiUnaryItem, no delegate indirection.
+    /// For Equals: SequenceEqual. For ordered: SequenceCompareTo [op] 0.</summary>
+    private static void EmitSliceComparison(ILGenerator il, in ScanPredicateInfo pred, LocalBuilder readerLocal)
+    {
+        // decoded = reader.Current.Decoded()
+        il.Emit(OpCodes.Ldloca, readerLocal);
+        il.Emit(OpCodes.Ldfld, s_readerCurrent);    // CompactKey
+        il.Emit(OpCodes.Callvirt, s_compactKeyDecoded); // ReadOnlySpan<byte>
+
+        // expected = ctx.SliceParams[paramIndex].AsReadOnlySpan()
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Ldflda, s_ctxSliceParams);
+        EmitLdcI4(il, pred.ParamIndex);
+        il.Emit(OpCodes.Call, s_spanSliceIndexer);    // ref Slice
+        il.Emit(OpCodes.Call, s_sliceAsReadOnlySpan); // ReadOnlySpan<byte>
+
+        if (pred.CompareOp == ScanCompareOp.Equal)
+        {
+            // SequenceEqual — returns bool directly
+            il.Emit(OpCodes.Call, s_sequenceEqual);
+        }
+        else if (pred.CompareOp == ScanCompareOp.NotEqual)
+        {
+            il.Emit(OpCodes.Call, s_sequenceEqual);
+            il.Emit(OpCodes.Ldc_I4_0);
+            il.Emit(OpCodes.Ceq); // negate
+        }
+        else
+        {
+            // SequenceCompareTo → int, then compare to 0
+            il.Emit(OpCodes.Call, s_sequenceCompareTo);
+            il.Emit(OpCodes.Ldc_I4_0);
+            EmitIntCompareOp(il, pred.CompareOp);
+        }
+    }
+
+    /// <summary>Emit int comparison for SequenceCompareTo result vs 0.</summary>
+    private static void EmitIntCompareOp(ILGenerator il, ScanCompareOp op)
+    {
+        switch (op)
+        {
+            case ScanCompareOp.GreaterThan:
+                il.Emit(OpCodes.Cgt);
+                break;
+            case ScanCompareOp.GreaterThanOrEqual:
+                il.Emit(OpCodes.Clt);
+                il.Emit(OpCodes.Ldc_I4_0);
+                il.Emit(OpCodes.Ceq); // !(result < 0) = result >= 0
+                break;
+            case ScanCompareOp.LessThan:
+                il.Emit(OpCodes.Clt);
+                break;
+            case ScanCompareOp.LessThanOrEqual:
+                il.Emit(OpCodes.Cgt);
+                il.Emit(OpCodes.Ldc_I4_0);
+                il.Emit(OpCodes.Ceq); // !(result > 0) = result <= 0
+                break;
+        }
     }
 
     /// <summary>Load ctx.LongParams[index] → long on stack.</summary>
