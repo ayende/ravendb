@@ -299,6 +299,85 @@ public class CompiledQueryTests : RavenTestBase
         }
     }
 
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public async Task BetweenQuery_BitmapPipeline()
+    {
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+        options.ModifyDatabaseRecord += record =>
+        {
+            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
+        };
+        using var store = GetDocumentStore(options);
+
+        using (var session = store.OpenAsyncSession())
+        {
+            for (int i = 0; i < 100; i++)
+            {
+                await session.StoreAsync(new TestDoc
+                {
+                    Name = $"doc-{i}",
+                    Category = $"cat-{i % 5}",
+                    Status = i % 2 == 0 ? "active" : "inactive",
+                    Price = i * 10
+                });
+            }
+            await session.SaveChangesAsync();
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        // BETWEEN: Category=cat-0 AND Price between 100 and 500
+        using (var session = store.OpenAsyncSession())
+        {
+            var results = await session.Advanced.AsyncRawQuery<TestDoc>(
+                "from TestDocs where Category = 'cat-0' and Price between 100 and 500")
+                .ToListAsync();
+
+            // cat-0: 0,5,10,15,20,25,30,35,40,45,50,...
+            // Price 100-500: i=10..50 → cat-0 in that range: 10,15,20,25,30,35,40,45,50 → 9
+            Assert.Equal(9, results.Count);
+        }
+    }
+
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public async Task LargeResultSet_BitmapPipeline()
+    {
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+        options.ModifyDatabaseRecord += record =>
+        {
+            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
+        };
+        using var store = GetDocumentStore(options);
+
+        using (var session = store.OpenAsyncSession())
+        {
+            for (int i = 0; i < 1000; i++)
+            {
+                await session.StoreAsync(new TestDoc
+                {
+                    Name = $"doc-{i}",
+                    Category = $"cat-{i % 3}",
+                    Status = i % 2 == 0 ? "active" : "inactive"
+                });
+            }
+            await session.SaveChangesAsync();
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        // Large AND: 500 active ∩ 334 cat-0 = ~167
+        using (var session = store.OpenAsyncSession())
+        {
+            var results = await session.Query<TestDoc>()
+                .Where(x => x.Status == "active" && x.Category == "cat-0")
+                .ToListAsync();
+
+            // active: even indices, cat-0: i%3==0
+            // Both: i%2==0 AND i%3==0 → i%6==0 → 0,6,12,...,996 → 167
+            Assert.Equal(167, results.Count);
+        }
+    }
+
     private class TestDoc
     {
         public string Id { get; set; }
