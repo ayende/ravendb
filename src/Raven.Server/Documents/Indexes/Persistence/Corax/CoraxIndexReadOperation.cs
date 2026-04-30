@@ -695,11 +695,11 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                                         (int)take, token);
 
                                     // Apply sorting via the existing OrderBy infrastructure
-                                    orderByFields = CoraxQueryBuilder.GetSortMetadata(builderParameters, out _);
+                                    orderByFields = CoraxQueryBuilder.GetSortMetadata(builderParameters, out bool hasEmptySorts);
                                     if (orderByFields != null)
                                     {
                                         queryMatch = CoraxQueryBuilder.OrderBy(
-                                            builderParameters, queryMatch, orderByFields, false);
+                                            builderParameters, queryMatch, orderByFields, hasEmptySorts);
                                     }
                                 }
                                 catch (NotSupportedException)

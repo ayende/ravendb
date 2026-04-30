@@ -21,7 +21,6 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
     private readonly PlanOp[] _ops;
     private readonly IQueryMatch[] _resolvedMatches;
     private readonly string _explainSource;
-    private readonly IndexSearcher _searcher;
     private readonly ByteStringContext _allocator;
     private readonly int _limit;
     private readonly CancellationToken _token;
@@ -37,7 +36,6 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
         _ops = plan.Ops;
         _resolvedMatches = resolvedMatches;
         _explainSource = plan.ExplainSource;
-        _searcher = searcher;
         _allocator = allocator;
         _limit = limit;
         _token = token;
@@ -181,7 +179,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
 
             DoneProcessing:
             _bitmap.PrepareForReading();
-            _count = _bitmap.Cardinality;
+            _count = _bitmap.Count;
             _iterator = _bitmap.GetIterator();
         }
         finally

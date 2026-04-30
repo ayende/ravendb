@@ -1,11 +1,7 @@
 using System;
-using System.Reflection;
-using System.Reflection.Emit;
-using System.Runtime.CompilerServices;
 using System.Text;
 using Corax.Querying.Matches;
 using Corax.Querying.Primitives;
-using Corax.Utils;
 using Corax.Utils.RoaringBitmaps;
 
 namespace Corax.Querying.Planning;
@@ -20,15 +16,6 @@ namespace Corax.Querying.Planning;
 /// </summary>
 public static class QueryILEmitter
 {
-    // Cached MethodInfo references for primitives — resolved once at startup.
-    private static readonly MethodInfo _fillFromPostings = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.FillFromPostings))!;
-    private static readonly MethodInfo _andWithPostings = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.AndWithPostings))!;
-    private static readonly MethodInfo _orWithPostings = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.OrWithPostings))!;
-    private static readonly MethodInfo _andNotWithPostings = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.AndNotWithPostings))!;
-    private static readonly MethodInfo _lazyOrWithPostings = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.LazyOrWithPostings))!;
-    private static readonly MethodInfo _iterateInto = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.IterateInto))!;
-    private static readonly MethodInfo _shouldSwitchToEntryScan = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.ShouldSwitchToEntryScan))!;
-
     /// <summary>
     /// Emit a CompiledPlan from a QueryPlan.
     /// Uses closure-based interpretation (functionally equivalent to emitted IL,
@@ -121,11 +108,9 @@ public static class QueryILEmitter
                         var postingListState = ctx.Searcher.GetPostingListState(ctx.PostingListIds[op.ParamIndex]);
                         if (QueryPrimitives.ShouldSwitchToEntryScan(ref bitmap, in postingListState))
                         {
-                            // Entry scan modifies bitmap in place — remaining predicates evaluated per-entry
-                            // For now, entry scan predicates are empty (filtering deferred), so we just stop here
+                            // Stop here — let caller iterate the bitmap with entry-scan predicates
                             bitmap.PrepareForReading();
-                            tempBitmap.Dispose();
-                            return;
+                            return; // finally block handles tempBitmap disposal
                         }
                         break;
                     }
@@ -220,18 +205,14 @@ public static class QueryILEmitter
 
                     case PlanOpKind.CheckAndMaybeEntryScan:
                     {
-                        // Runtime check: should we switch to entry scan?
                         var postingListState = ctx.Searcher.GetPostingListState(ctx.PostingListIds[op.ParamIndex]);
                         if (QueryPrimitives.ShouldSwitchToEntryScan(ref bitmap, in postingListState))
                         {
-                            // Jump to entry scan with remaining predicates
                             var predicates = entryScanPredicates[op.GotoLabelIndex];
                             bitmap.PrepareForReading();
-                            int result = QueryPrimitives.ScanAndFilter(ref bitmap, ctx.Searcher,
+                            return QueryPrimitives.ScanAndFilter(ref bitmap, ctx.Searcher,
                                 predicates, output, ctx.Limit, ref skip);
-                            bitmap.Dispose();
-                            tempBitmap.Dispose();
-                            return result;
+                            // finally handles disposal
                         }
                         break;
                     }
@@ -239,35 +220,29 @@ public static class QueryILEmitter
                     case PlanOpKind.IterateInto:
                     {
                         bitmap.PrepareForReading();
-                        int result = iterator.Fill(ref bitmap, output);
-                        bitmap.Dispose();
-                        tempBitmap.Dispose();
-                        return result;
+                        iterator = bitmap.GetIterator(); // re-init after bitmap is populated
+                        return iterator.Fill(ref bitmap, output);
+                        // finally handles disposal
                     }
 
                     case PlanOpKind.DirectIterate:
                     {
-                        // Single operand, no bitmap — iterate posting list directly
                         var postingList = ctx.Searcher.GetPostingList(ctx.PostingListIds[op.ParamIndex]);
                         var it = postingList.Iterate();
-                        Span<long> buffer = output;
-                        it.Fill(buffer, out int read);
+                        it.Fill(output, out int read);
                         if (read > 0)
-                            EntryIdEncodings.DecodeAndDiscardFrequency(buffer, read);
-                        bitmap.Dispose();
-                        tempBitmap.Dispose();
+                            Corax.Utils.EntryIdEncodings.DecodeAndDiscardFrequency(output, read);
                         return read;
+                        // finally handles disposal
                     }
 
                     case PlanOpKind.ScanAndFilter:
                     {
                         var predicates = entryScanPredicates[op.GotoLabelIndex];
                         bitmap.PrepareForReading();
-                        int result = QueryPrimitives.ScanAndFilter(ref bitmap, ctx.Searcher,
+                        return QueryPrimitives.ScanAndFilter(ref bitmap, ctx.Searcher,
                             predicates, output, ctx.Limit, ref skip);
-                        bitmap.Dispose();
-                        tempBitmap.Dispose();
-                        return result;
+                        // finally handles disposal
                     }
 
                     case PlanOpKind.FillFromRange:

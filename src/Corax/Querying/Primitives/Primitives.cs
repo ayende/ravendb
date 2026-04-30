@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using Corax.Querying.Matches;
 using Corax.Utils;
 using Corax.Utils.RoaringBitmaps;
@@ -22,6 +23,7 @@ public static class QueryPrimitives
     /// adds entries to the bitmap via batch AddRange.
     /// Respects limit — stops after enough entries.
     /// </summary>
+    [SkipLocalsInit]
     public static void FillFromPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, int limit = int.MaxValue)
     {
         Span<long> buffer = stackalloc long[FillBufferSize];
@@ -62,6 +64,7 @@ public static class QueryPrimitives
     /// OR the bitmap with a posting list. Walks all leaf pages, sets bits.
     /// Idempotent — setting an already-set bit is a no-op.
     /// </summary>
+    [SkipLocalsInit]
     public static void OrWithPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap)
     {
         Span<long> buffer = stackalloc long[FillBufferSize];

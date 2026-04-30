@@ -85,7 +85,7 @@ public class RoaringBitmapBenchmark
         for (int i = 0; i < _valuesA.Length; i++)
             bmp.Add(_valuesA[i]);
         bmp.PrepareForReading();
-        long c = bmp.Cardinality;
+        long c = bmp.Count;
         bmp.Dispose();
         return c;
     }
@@ -329,7 +329,7 @@ public class RoaringBitmapSetOpsBenchmark
         for (int i = 0; i < _valuesA.Length; i++) clone.Add(_valuesA[i]);
         clone.PrepareForReading();
         clone.AndWith(ref _roaringB);
-        long c = clone.Cardinality;
+        long c = clone.Count;
         clone.Dispose();
         return c;
     }
@@ -361,7 +361,7 @@ public class RoaringBitmapSetOpsBenchmark
         for (int i = 0; i < _valuesA.Length; i++) clone.Add(_valuesA[i]);
         clone.PrepareForReading();
         clone.OrWith(ref _roaringB);
-        long c = clone.Cardinality;
+        long c = clone.Count;
         clone.Dispose();
         return c;
     }
@@ -391,7 +391,7 @@ public class RoaringBitmapSetOpsBenchmark
         for (int i = 0; i < _valuesA.Length; i++) clone.Add(_valuesA[i]);
         clone.PrepareForReading();
         clone.AndNotWith(ref _roaringB);
-        long c = clone.Cardinality;
+        long c = clone.Count;
         clone.Dispose();
         return c;
     }
@@ -471,7 +471,7 @@ public class RoaringBitmapMemoryBenchmark
         var bmp = new RoaringBitmap(ctx);
         for (int i = 0; i < _values.Length; i++)
             bmp.Add(_values[i]);
-        long c = bmp.Cardinality;
+        long c = bmp.Count;
         bmp.Dispose();
         return c;
     }

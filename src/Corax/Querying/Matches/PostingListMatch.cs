@@ -54,8 +54,7 @@ public struct PostingListMatch : IQueryMatch
 
     public int AndWith(Span<long> buffer, int matches)
     {
-        // Not optimized — fall back to standard pattern
-        return matches;
+        throw new NotSupportedException("PostingListMatch is for bitmap materialization only, not streaming AND.");
     }
 
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)
