@@ -111,6 +111,18 @@ public unsafe struct RoaringBitmap : IDisposable
         _freeListHead = FreeSlotTerminator;
     }
 
+    /// <summary>Swap the internal state of two bitmaps. O(1) — just swaps pointers and counts.
+    /// Used after entry scan to swap the filtered results into the main bitmap.</summary>
+    public void SwapContents(ref RoaringBitmap other)
+    {
+        (_entries, other._entries) = (other._entries, _entries);
+        (_types, other._types) = (other._types, _types);
+        (_index, other._index) = (other._index, _index);
+        (_containerCount, other._containerCount) = (other._containerCount, _containerCount);
+        (_freeListHead, other._freeListHead) = (other._freeListHead, _freeListHead);
+        // _ctx is shared (same allocator), no need to swap
+    }
+
     /// <summary>Batch-add sorted values. Groups values by container key and adds
     /// them in bulk per container. For large runs within a single container (>4096),
     /// switches directly to bitmap. For sequential-from-0, extends Range container.</summary>

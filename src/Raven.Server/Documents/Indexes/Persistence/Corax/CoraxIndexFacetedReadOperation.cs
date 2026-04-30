@@ -121,7 +121,8 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
                 }
                 var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, _indexSearcher, planParams, parameters);
                 baseQuery = new global::Corax.Querying.Matches.CompiledQueryMatch(
-                    plan, compiledPlan, resolvedMatches, _indexSearcher, _allocator, long.MaxValue, token);
+                    plan, compiledPlan, resolvedMatches, System.Array.Empty<global::Corax.Querying.Matches.MultiUnaryItem>(),
+                    _indexSearcher, _allocator, long.MaxValue, token);
             }
             else
             {
@@ -308,7 +309,8 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
             };
             var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, _indexSearcher, planParams, parameters);
             baseQuery = new global::Corax.Querying.Matches.CompiledQueryMatch(
-                plan, compiledPlan, resolvedMatches, _indexSearcher, _allocator, long.MaxValue, token);
+                plan, compiledPlan, resolvedMatches, System.Array.Empty<global::Corax.Querying.Matches.MultiUnaryItem>(),
+                _indexSearcher, _allocator, long.MaxValue, token);
         }
         else
         {
