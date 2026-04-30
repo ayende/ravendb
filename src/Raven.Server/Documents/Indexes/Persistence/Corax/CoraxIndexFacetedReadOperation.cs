@@ -90,7 +90,6 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
                 deduplicationDisabled: true, token: token);
 
             IQueryMatch baseQuery;
-            if (_index.Configuration.CoraxUseBitmapPipeline)
             {
                 var planParams = new QueryPlanBuilder.PlanParameters
                 {
@@ -126,10 +125,6 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
                     compiledPlan, resolvedMatches,
                     longParams, doubleParams, sliceParams, fieldRootPages,
                     _indexSearcher, _allocator, long.MaxValue, token);
-            }
-            else
-            {
-                baseQuery = CoraxQueryBuilder.BuildQuery(parameters, out _);
             }
             queryTimings?.SetQueryPlan(baseQuery.Inspect());
             var maxMatchingIds = _indexSearcher.MaxMemoizationSizeInBytes / sizeof(long);
@@ -288,7 +283,7 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
             _fieldMappings, null, null, -1, deduplicationDisabled: false, token: token, queryTime: queryTime);
 
         IQueryMatch baseQuery;
-        if (_index.Configuration.CoraxUseBitmapPipeline && query.Metadata.Query.Where != null)
+        if (query.Metadata.Query.Where != null)
         {
             var planParams = new QueryPlanBuilder.PlanParameters
             {
@@ -320,7 +315,7 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
         }
         else
         {
-            baseQuery = CoraxQueryBuilder.BuildQuery(parameters, out _);
+            baseQuery = _indexSearcher.AllEntries();
         }
 
         var coraxPageSize = CoraxBufferSize(_indexSearcher, facetQuery.Query.PageSize, query);

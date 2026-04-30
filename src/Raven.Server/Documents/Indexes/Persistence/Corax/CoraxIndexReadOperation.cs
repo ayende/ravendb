@@ -647,62 +647,49 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
                         using (closeServerTransaction)
                         {
-                            // Corax 2.0: try the new bitmap-based compiled path first
-                            if (_index.Configuration.CoraxUseBitmapPipeline)
+                            var planParams = new QueryPlanBuilder.PlanParameters
                             {
-                                // Bitmap path: build plan, check cache, emit or reuse delegate
-                                var planParams = new QueryPlanBuilder.PlanParameters
+                                IndexSearcher = IndexSearcher,
+                                Metadata = query.Metadata,
+                                QueryParameters = query.QueryParameters,
+                                Index = _index,
+                                IndexFieldsMapping = _fieldMappings,
+                                FieldsToFetch = fieldsToFetch,
+                                Allocator = _allocator,
+                                Token = token,
+                                HasDynamics = builderParameters.HasDynamics,
+                                DynamicFields = builderParameters.DynamicFields,
+                                HasBoost = builderParameters.HasBoost
+                            };
+                            var plan = QueryPlanBuilder.BuildPlan(planParams);
+
+                            string queryText = query.Metadata.Query.QueryText;
+                            var planCache = IndexSearcher.PlanCache;
+                            var compiledPlan = planCache.Get(queryText, plan.OperandOrdering);
+                            if (compiledPlan == null)
+                            {
+                                compiledPlan = new global::Corax.Querying.Planning.CompiledPlan
                                 {
-                                    IndexSearcher = IndexSearcher,
-                                    Metadata = query.Metadata,
-                                    QueryParameters = query.QueryParameters,
-                                    Index = _index,
-                                    IndexFieldsMapping = _fieldMappings,
-                                    FieldsToFetch = fieldsToFetch,
-                                    Allocator = _allocator,
-                                    Token = token,
-                                    HasDynamics = builderParameters.HasDynamics,
-                                    DynamicFields = builderParameters.DynamicFields,
-                                    HasBoost = builderParameters.HasBoost
+                                    CompiledDelegate = global::Corax.Querying.Planning.QueryILEmitter.EmitDelegate(plan),
+                                    ExplainSource = plan.ExplainSource ?? global::Corax.Querying.Planning.QueryILEmitter.GenerateExplainSource(plan),
+                                    Ordering = plan.OperandOrdering
                                 };
-                                var plan = QueryPlanBuilder.BuildPlan(planParams);
-
-                                // Check plan cache — reuse compiled delegate if available
-                                string queryText = query.Metadata.Query.QueryText;
-                                var planCache = IndexSearcher.PlanCache;
-                                var compiledPlan = planCache.Get(queryText, plan.OperandOrdering);
-                                if (compiledPlan == null)
-                                {
-                                    // Cache miss — emit DynamicMethod delegate and cache it
-                                    compiledPlan = new global::Corax.Querying.Planning.CompiledPlan
-                                    {
-                                        CompiledDelegate = global::Corax.Querying.Planning.QueryILEmitter.EmitDelegate(plan),
-                                        ExplainSource = plan.ExplainSource ?? global::Corax.Querying.Planning.QueryILEmitter.GenerateExplainSource(plan),
-                                        Ordering = plan.OperandOrdering
-                                    };
-                                    planCache.Add(queryText, compiledPlan);
-                                }
-
-                                // Resolve matches and scan parameters fresh each execution
-                                var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, IndexSearcher, planParams, builderParameters);
-                                QueryPlanBuilder.ExtractScanParameters(plan, IndexSearcher,
-                                    out var longParams, out var doubleParams, out var sliceParams, out var fieldRootPages);
-                                queryMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
-                                    compiledPlan, resolvedMatches,
-                                    longParams, doubleParams, sliceParams, fieldRootPages,
-                                    IndexSearcher, _allocator, take, token);
-
-                                orderByFields = CoraxQueryBuilder.GetSortMetadata(builderParameters, out bool hasEmptySorts);
-                                if (orderByFields != null)
-                                {
-                                    queryMatch = CoraxQueryBuilder.OrderBy(
-                                        builderParameters, queryMatch, orderByFields, hasEmptySorts);
-                                }
+                                planCache.Add(queryText, compiledPlan);
                             }
-                            else
+
+                            var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, IndexSearcher, planParams, builderParameters);
+                            QueryPlanBuilder.ExtractScanParameters(plan, IndexSearcher,
+                                out var longParams, out var doubleParams, out var sliceParams, out var fieldRootPages);
+                            queryMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
+                                compiledPlan, resolvedMatches,
+                                longParams, doubleParams, sliceParams, fieldRootPages,
+                                IndexSearcher, _allocator, take, token);
+
+                            orderByFields = CoraxQueryBuilder.GetSortMetadata(builderParameters, out bool hasEmptySorts);
+                            if (orderByFields != null)
                             {
-                                if ((queryMatch = CoraxQueryBuilder.BuildQuery(builderParameters, out orderByFields)) is null)
-                                    yield break;
+                                queryMatch = CoraxQueryBuilder.OrderBy(
+                                    builderParameters, queryMatch, orderByFields, hasEmptySorts);
                             }
                         }
 
@@ -1335,8 +1322,42 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
             IQueryMatch queryMatch;
             var builderParameters = new CoraxQueryBuilder.Parameters(IndexSearcher, _allocator, null, documentsContext, query, _index, query.QueryParameters, QueryBuilderFactories, _fieldMappings, null, null, -1, deduplicationDisabled: false, indexReadOperation: this, token: token);
-            if ((queryMatch = CoraxQueryBuilder.BuildQuery(builderParameters, out _)) is null)
-                yield break;
+            {
+                var planParams = new QueryPlanBuilder.PlanParameters
+                {
+                    IndexSearcher = IndexSearcher,
+                    Metadata = query.Metadata,
+                    QueryParameters = query.QueryParameters,
+                    Index = _index,
+                    IndexFieldsMapping = _fieldMappings,
+                    Allocator = _allocator,
+                    Token = token,
+                    HasDynamics = builderParameters.HasDynamics,
+                    DynamicFields = builderParameters.DynamicFields,
+                    HasBoost = builderParameters.HasBoost
+                };
+                var plan = QueryPlanBuilder.BuildPlan(planParams);
+                string queryText = query.Metadata.Query.QueryText;
+                var planCache = IndexSearcher.PlanCache;
+                var compiledPlan = planCache.Get(queryText, plan.OperandOrdering);
+                if (compiledPlan == null)
+                {
+                    compiledPlan = new global::Corax.Querying.Planning.CompiledPlan
+                    {
+                        CompiledDelegate = global::Corax.Querying.Planning.QueryILEmitter.EmitDelegate(plan),
+                        ExplainSource = plan.ExplainSource ?? global::Corax.Querying.Planning.QueryILEmitter.GenerateExplainSource(plan),
+                        Ordering = plan.OperandOrdering
+                    };
+                    planCache.Add(queryText, compiledPlan);
+                }
+                var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, IndexSearcher, planParams, builderParameters);
+                QueryPlanBuilder.ExtractScanParameters(plan, IndexSearcher,
+                    out var longParams, out var doubleParams, out var sliceParams, out var fieldRootPages);
+                queryMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
+                    compiledPlan, resolvedMatches,
+                    longParams, doubleParams, sliceParams, fieldRootPages,
+                    IndexSearcher, _allocator, take, token);
+            }
 
             var ids = QueryPool.Rent(CoraxBufferSize(IndexSearcher, take, query));
             int docsToLoad = CoraxBufferSize(IndexSearcher, pageSize, query);

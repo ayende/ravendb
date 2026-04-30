@@ -2,7 +2,6 @@ using System;
 using System.Linq;
 using System.Threading.Tasks;
 using Raven.Client.Documents;
-using Raven.Server.Config;
 using Tests.Infrastructure;
 using Xunit;
 
@@ -18,10 +17,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task SimpleTermQuery_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -55,10 +51,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task AndQuery_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -97,10 +90,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task OrQuery_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -134,10 +124,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task ThreeWayAnd_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -180,10 +167,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task AndWithRange_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -226,10 +210,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task InClause_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -264,10 +245,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task NotEquals_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -302,10 +280,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task BetweenQuery_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -342,10 +317,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task LargeResultSet_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -381,10 +353,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task StartsWith_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -425,10 +394,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task ExistsQuery_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         // Store docs — all have Category, so exists(Category) should return all
@@ -463,10 +429,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task AndWithStartsWith_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -501,10 +464,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task OrderByScore_BitmapPath()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -533,10 +493,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task RegexQuery_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -571,10 +528,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task NotEqualsInAndChain_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -624,10 +578,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task MixedAndOr_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -667,10 +618,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task OrderBy_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -711,10 +659,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task ComplexAndOrWithSort_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -760,10 +705,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task EndsWith_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -797,10 +739,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task FiveWayAnd_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -847,10 +786,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task NestedOrWithAnd_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -903,10 +839,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task EmptyResultSet_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -950,10 +883,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task Pagination_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -1007,10 +937,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task TrueOrConstantFolding_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -1044,10 +971,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task OrderByDesc_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -1085,10 +1009,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task SingleDocResult_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -1117,10 +1038,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task SearchQuery_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -1149,10 +1067,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task NoWhereClause_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())
@@ -1186,10 +1101,7 @@ public class CompiledQueryTests : RavenTestBase
     public async Task NoWhereClauseWithOrderBy_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        options.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var store = GetDocumentStore(options);
 
         using (var session = store.OpenAsyncSession())

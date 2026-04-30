@@ -37,7 +37,6 @@ public partial class CoraxQueryBuilder
         public readonly bool HasBoost;
         public readonly bool DeduplicationDisabled;
         public readonly IndexReadOperationBase IndexReadOperation;
-        public StreamingOptimization StreamingDisabled;
         public readonly bool IsVectorSingleClause;
         public readonly QueryTimeScope QueryTime;
 

@@ -4,7 +4,6 @@ using System.Linq;
 using System.Threading.Tasks;
 using Raven.Client.Documents;
 using Raven.Client.Documents.Queries;
-using Raven.Server.Config;
 using Tests.Infrastructure;
 using Xunit;
 
@@ -33,10 +32,7 @@ public class CompiledQueryBenchmark : RavenTestBase
 
         // Setup store WITH bitmap
         var optionsNew = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
-        optionsNew.ModifyDatabaseRecord += record =>
-        {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
-        };
+
         using var storeNew = GetDocumentStore(optionsNew);
         await SeedData(storeNew, docCount);
 
