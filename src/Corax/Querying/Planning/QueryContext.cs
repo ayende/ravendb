@@ -18,15 +18,14 @@ public ref struct QueryScanContext
     public Span<Matches.Meta.IQueryMatch> Matches;
 
     /// <summary>Pre-created MultiUnaryItem predicates for entry scan.
-    /// Each group corresponds to an AND operand. OrGroups have multiple items.
     /// Created per-query from parameter values. The emitted IL calls
     /// CompareNumerical/CompareLiteral directly — the boolean structure is baked in IL.</summary>
     public Span<MultiUnaryItem> ScanPredicates;
 
-    /// <summary>Number of scan predicates that are "simple" (entry-scannable).
-    /// Complex clauses (regex, vector, spatial) have indices >= SimplePredicateCount
-    /// in the Matches span and are AND'd via bitmap after entry scan.</summary>
-    public int SimplePredicateCount;
+    /// <summary>Pre-resolved field root pages for entry scan predicates.
+    /// Indexed by predicate index (baked in IL). Resolved per-query by the caller
+    /// from the plan's ScanPredicateInfo field names.</summary>
+    public Span<long> FieldRootPages;
 
     public CancellationToken Token;
 }

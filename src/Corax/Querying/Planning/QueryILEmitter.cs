@@ -72,10 +72,8 @@ public static class QueryILEmitter
     private static readonly MethodInfo s_compareLiteral = typeof(MultiUnaryItem).GetMethod(nameof(MultiUnaryItem.CompareLiteral))!;
 
     // FieldCache
-    private static readonly MethodInfo s_getLookupRootPage =
-        typeof(Utils.FieldsCache).GetMethod(nameof(Utils.FieldsCache.GetLookupRootPage), new[] { typeof(string) })!;
-    private static readonly PropertyInfo s_fieldCache =
-        typeof(IndexSearcher).GetProperty(nameof(IndexSearcher.FieldCache))!;
+    private static readonly FieldInfo s_ctxFieldRootPages =
+        typeof(QueryScanContext).GetField(nameof(QueryScanContext.FieldRootPages))!;
 
     public static CompiledExecuteDelegate EmitDelegate(QueryPlan plan)
     {
@@ -236,11 +234,6 @@ public static class QueryILEmitter
         var iLocal = il.DeclareLocal(typeof(int));                   // loop index i
         var entryIdLocal = il.DeclareLocal(typeof(long));
 
-        // Field root page locals — one per predicate, resolved once
-        var fieldRootLocals = new LocalBuilder[predicates.Length];
-        for (int p = 0; p < predicates.Length; p++)
-            fieldRootLocals[p] = il.DeclareLocal(typeof(long));
-
         // PrepareForReading + GetIterator
         EmitLoadBitmapRef(il, s_ctxBitmap);
         il.Emit(OpCodes.Call, s_prepareForReading);
@@ -261,18 +254,6 @@ public static class QueryILEmitter
         EmitLdcI4(il, ScanBatchSize);
         il.Emit(OpCodes.Newobj, s_spanCtor);
         il.Emit(OpCodes.Stloc, batchLocal);
-
-        // Resolve field root pages once
-        for (int p = 0; p < predicates.Length; p++)
-        {
-            // fieldRootLocals[p] = ctx.Searcher.FieldCache.GetLookupRootPage("FieldName")
-            il.Emit(OpCodes.Ldarg_0);
-            il.Emit(OpCodes.Ldfld, s_ctxSearcher);
-            il.Emit(OpCodes.Callvirt, s_fieldCache.GetGetMethod()!);
-            il.Emit(OpCodes.Ldstr, predicates[p].FieldName);
-            il.Emit(OpCodes.Callvirt, s_getLookupRootPage);
-            il.Emit(OpCodes.Stloc, fieldRootLocals[p]);
-        }
 
         // Outer loop: while ((read = iter.Fill(ref bitmap, batch)) > 0)
         var outerLoopStart = il.DefineLabel();
@@ -325,9 +306,13 @@ public static class QueryILEmitter
             il.Emit(OpCodes.Ldloca, readerLocal);
             il.Emit(OpCodes.Call, s_readerReset);
 
-            // if (!reader.FindNext(fieldRoot)) goto nextEntry
+            // if (!reader.FindNext(ctx.FieldRootPages[p])) goto nextEntry
             il.Emit(OpCodes.Ldloca, readerLocal);
-            il.Emit(OpCodes.Ldloc, fieldRootLocals[p]);
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Ldflda, s_ctxFieldRootPages);
+            EmitLdcI4(il, p);
+            il.Emit(OpCodes.Call, s_spanLongIndexer);
+            il.Emit(OpCodes.Ldind_I8);
             il.Emit(OpCodes.Call, s_readerFindNext);
             il.Emit(OpCodes.Brfalse, nextEntry);
 
