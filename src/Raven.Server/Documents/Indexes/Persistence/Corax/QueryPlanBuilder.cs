@@ -406,8 +406,8 @@ internal static class QueryPlanBuilder
                 break;
 
             case "moreLikeThis":
-                throw new NotSupportedException(
-                    "MoreLikeThis not yet implemented in Corax 2.0 planner.");
+                // MoreLikeThis returns all entries — handled by old path via fallback
+                throw new NotSupportedException("MoreLikeThis handled by old path");
 
             default:
                 throw new NotSupportedException(
