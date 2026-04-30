@@ -600,6 +600,55 @@ public class CompiledQueryTests : RavenTestBase
         }
     }
 
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public async Task ComplexAndOrWithSort_BitmapPipeline()
+    {
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+        options.ModifyDatabaseRecord += record =>
+        {
+            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
+        };
+        using var store = GetDocumentStore(options);
+
+        using (var session = store.OpenAsyncSession())
+        {
+            for (int i = 0; i < 200; i++)
+            {
+                await session.StoreAsync(new TestDoc
+                {
+                    Name = $"item-{i:D5}",
+                    Category = $"cat-{i % 5}",
+                    Status = i % 2 == 0 ? "active" : "inactive",
+                    Tag = $"tag-{i % 10}",
+                    Price = i * 5
+                });
+            }
+            await session.SaveChangesAsync();
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        // Complex: (cat-0 OR cat-1) AND active, ORDER BY Name LIMIT 10
+        using (var session = store.OpenAsyncSession())
+        {
+            var results = await session.Advanced.AsyncRawQuery<TestDoc>(
+                "from TestDocs where (Category = 'cat-0' or Category = 'cat-1') and Status = 'active' order by Name limit 10")
+                .ToListAsync();
+
+            Assert.Equal(10, results.Count);
+            Assert.All(results, r =>
+            {
+                Assert.True(r.Category is "cat-0" or "cat-1");
+                Assert.Equal("active", r.Status);
+            });
+            // Verify sorting
+            for (int i = 1; i < results.Count; i++)
+            {
+                Assert.True(string.Compare(results[i - 1].Name, results[i].Name, System.StringComparison.Ordinal) <= 0);
+            }
+        }
+    }
+
     [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying, Skip = "search() requires analyzer setup — falls back to old path")]
     public async Task SearchQuery_BitmapPipeline()
     {
