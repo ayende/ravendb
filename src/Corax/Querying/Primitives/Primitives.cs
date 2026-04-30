@@ -16,6 +16,9 @@ namespace Corax.Querying.Primitives;
 /// </summary>
 public static class QueryPrimitives
 {
+    // Buffer size for stackalloc Fill operations. Benchmark different values
+    // (1024, 2048, 4096, 8192) with the optimized AddRange to find the sweet spot.
+    // Larger buffers reduce Fill() call overhead but increase stack usage.
     private const int FillBufferSize = 4096;
 
     /// <summary>
