@@ -47,7 +47,7 @@ public static class QueryPrimitives
     /// accumulator's set bits, skipping pages that can't contribute matches.
     /// Cost proportional to posting list pages that intersect the accumulator.
     /// </summary>
-    public static void AndWithPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap, int limit = int.MaxValue)
+    public static void AndWithPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap)
     {
         if (bitmap.IsEmpty)
             return;
