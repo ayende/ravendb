@@ -110,54 +110,107 @@ public unsafe struct RoaringBitmap : IDisposable
         _freeListHead = FreeSlotTerminator;
     }
 
-    /// <summary>Batch-add sorted values. Faster than individual Add() calls because
-    /// we can append to containers without per-value slot lookup when values are
-    /// sequential within the same container key.</summary>
+    /// <summary>Batch-add sorted values. Groups values by container key and adds
+    /// them in bulk per container. For large runs within a single container (>4096),
+    /// switches directly to bitmap. For sequential-from-0, extends Range container.</summary>
     public void AddRange(ReadOnlySpan<long> sortedValues)
     {
         if (sortedValues.IsEmpty)
             return;
 
-        long prevKey = -1;
-        int slot = -1;
-
-        for (int i = 0; i < sortedValues.Length; i++)
+        int i = 0;
+        while (i < sortedValues.Length)
         {
             long value = sortedValues[i];
             Debug.Assert(value >= 0, "RoaringBitmap only supports non-negative values.");
             long key = value >> ContainerKeyShift;
-            ushort low = (ushort)(value & ContainerValueMask);
 
-            if (key != prevKey)
-            {
-                slot = GetSlotForKey(key);
-                prevKey = key;
-            }
+            // Find the end of values in this container key range
+            int start = i;
+            i++;
+            while (i < sortedValues.Length && (sortedValues[i] >> ContainerKeyShift) == key)
+                i++;
+            int countInContainer = i - start;
 
-            if (slot >= 0)
+            int slot = GetSlotForKey(key);
+            if (slot < 0)
             {
-                ref ContainerEntry entry = ref _entries[slot];
-                AddToContainer(ref entry, slot, low);
-            }
-            else
-            {
-                if (low == 0)
+                // New container — check if it starts from 0 (Range candidate)
+                ushort firstLow = (ushort)(sortedValues[start] & ContainerValueMask);
+                if (firstLow == 0 && countInContainer > 0)
                 {
-                    AddNewContainer(key, ContainerType.Range, new ContainerEntry
+                    // Check if sequential from 0
+                    bool isSequential = true;
+                    for (int j = 1; j < countInContainer && isSequential; j++)
                     {
-                        Cardinality = 1,
-                        Data = null,
-                        Storage = default
+                        if ((ushort)(sortedValues[start + j] & ContainerValueMask) != j)
+                            isSequential = false;
+                    }
+
+                    if (isSequential)
+                    {
+                        AddNewContainer(key, ContainerType.Range, new ContainerEntry
+                        {
+                            Cardinality = countInContainer,
+                            Data = null,
+                            Storage = default
+                        });
+                        continue;
+                    }
+                }
+
+                // Create array or bitmap based on count
+                if (countInContainer > ArrayContainerMaxCardinality)
+                {
+                    // Directly create bitmap container
+                    _ctx.Allocate(BitmapContainerSizeInBytes, out ByteString storage);
+                    new Span<byte>(storage.Ptr, BitmapContainerSizeInBytes).Clear();
+                    var bitmapPtr = (ulong*)storage.Ptr;
+                    int card = 0;
+                    for (int j = start; j < start + countInContainer; j++)
+                    {
+                        ushort low = (ushort)(sortedValues[j] & ContainerValueMask);
+                        ulong mask = 1UL << (low & 63);
+                        if ((bitmapPtr[low >> 6] & mask) == 0)
+                        {
+                            bitmapPtr[low >> 6] |= mask;
+                            card++;
+                        }
+                    }
+                    AddNewContainer(key, ContainerType.Bitmap, new ContainerEntry
+                    {
+                        Cardinality = card,
+                        Data = storage.Ptr,
+                        Storage = storage
                     });
                 }
                 else
                 {
-                    ContainerEntry newEntry = CreateArrayContainer(key);
-                    (newEntry.ArrayData)[0] = low;
-                    newEntry.Cardinality = 1;
+                    // Create array container with enough space and fill
+                    int neededBytes = Math.Max(InitialArrayContainerSizeInBytes, countInContainer * sizeof(ushort));
+                    _ctx.Allocate(neededBytes, out ByteString storage);
+                    storage.ToSpan<byte>().Clear();
+                    var newEntry = new ContainerEntry
+                    {
+                        Cardinality = countInContainer,
+                        Data = storage.Ptr,
+                        Storage = storage
+                    };
+                    ushort* arr = (ushort*)storage.Ptr;
+                    for (int j = 0; j < countInContainer; j++)
+                        arr[j] = (ushort)(sortedValues[start + j] & ContainerValueMask);
                     AddNewContainer(key, ContainerType.ArrayUnsorted, newEntry);
                 }
-                slot = GetSlotForKey(key);
+            }
+            else
+            {
+                // Existing container — add values one by one (container type may change)
+                for (int j = start; j < start + countInContainer; j++)
+                {
+                    ushort low = (ushort)(sortedValues[j] & ContainerValueMask);
+                    ref ContainerEntry entry = ref _entries[slot];
+                    AddToContainer(ref entry, slot, low);
+                }
             }
         }
     }
