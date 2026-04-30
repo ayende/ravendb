@@ -880,7 +880,11 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 Done:
                 // Since some primitives are lazily initialized, we must call Inspect after at least one Fill call.
                 queryTimings?.SetQueryPlan(queryMatch.Inspect());
-                
+
+                // Dispose CompiledQueryMatch if it holds bitmap allocations
+                if (queryMatch is IDisposable disposableMatch)
+                    disposableMatch.Dispose();
+
                 QueryPool.Return(ids);
                 if (sortingData.IncludeScores)
                     ScorePool.Return(sortingData.ScoresBuffer);

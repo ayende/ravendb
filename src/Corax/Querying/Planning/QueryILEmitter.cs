@@ -71,7 +71,7 @@ public static class QueryILEmitter
                     {
                         var postingList = ctx.Searcher.GetPostingList(ctx.PostingListIds[op.ParamIndex]);
                         var it = postingList.Iterate();
-                        QueryPrimitives.AndWithPostings(ref it, ref bitmap, ref tempBitmap, ctx.Limit);
+                        QueryPrimitives.AndWithPostings(ref it, ref bitmap, ref tempBitmap);
                         break;
                     }
 
@@ -169,7 +169,7 @@ public static class QueryILEmitter
                     {
                         var postingList = ctx.Searcher.GetPostingList(ctx.PostingListIds[op.ParamIndex]);
                         var it = postingList.Iterate();
-                        QueryPrimitives.AndWithPostings(ref it, ref bitmap, ref tempBitmap, ctx.Limit);
+                        QueryPrimitives.AndWithPostings(ref it, ref bitmap, ref tempBitmap);
                         break;
                     }
 
