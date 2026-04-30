@@ -566,7 +566,7 @@ public class CompiledQueryTests : RavenTestBase
         }
     }
 
-    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying, Skip = "NotEquals in AND chain — bitmap ANDNOT resolution bug, old path works correctly")]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying, Skip = "ANDNOT in bitmap path returns wrong results — needs step debugger investigation")]
     public async Task NotEqualsInAndChain_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
@@ -593,22 +593,19 @@ public class CompiledQueryTests : RavenTestBase
         Indexes.WaitForIndexing(store);
 
         // AND with !=: Category=cat-0 AND Status != 'active'
-        // Test result correctness — the bitmap path should ANDNOT the active entries
         using (var session = store.OpenAsyncSession())
         {
             var results = await session.Advanced.AsyncRawQuery<TestDoc>(
                 "from TestDocs where Category = 'cat-0' and Status != 'active'")
                 .ToListAsync();
 
-            // cat-0: 0,5,10,...,95 (20 total)
-            // Status != 'active': odd indices are inactive
-            // cat-0 ∩ inactive: 5,15,25,35,45,55,65,75,85,95 → 10
+            // Expect inactive cat-0 docs
             Assert.Equal(10, results.Count);
-            // Verify they're actually inactive
             foreach (var r in results)
             {
                 Assert.Equal("cat-0", r.Category);
-                Assert.NotEqual("active", r.Status);
+                // Check that Status is "inactive"
+                Assert.Equal("inactive", r.Status);
             }
         }
     }
