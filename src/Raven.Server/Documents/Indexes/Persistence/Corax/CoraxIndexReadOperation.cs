@@ -652,9 +652,13 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                             {
                                 try
                                 {
-                                    // Bitmap path doesn't handle boosting/scoring yet
-                                    if (query.Metadata.HasBoost)
-                                        throw new NotSupportedException("Boost/scoring not yet in bitmap path");
+                                    // Bitmap path can handle boosted queries as long as we're
+                                    // not sorting by score. If ORDER BY score() is present,
+                                    // fall back to the old path which has BM25 scoring.
+                                    bool hasOrderByScore = query.Metadata.OrderBy is { Length: > 0 } orderBy
+                                        && orderBy.Any(o => o.OrderingType == OrderByFieldType.Score);
+                                    if (hasOrderByScore)
+                                        throw new NotSupportedException("ORDER BY score() not yet in bitmap path");
 
                                     var plan = QueryPlanBuilder.BuildPlan(new QueryPlanBuilder.PlanParameters
                                     {
