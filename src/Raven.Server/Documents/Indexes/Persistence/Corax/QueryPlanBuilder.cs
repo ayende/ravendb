@@ -298,8 +298,10 @@ internal static class QueryPlanBuilder
         switch (methodName)
         {
             case "search":
-                // search() requires analyzer setup that's complex — fall back
-                throw new NotSupportedException("search() queries need analyzer setup — falling back to old path");
+                // search() requires complex analyzer setup (field metadata with analyzer,
+                // wildcard adjustments, operator resolution). Falls back to old path
+                // which has HandleSearch with all the necessary infrastructure.
+                throw new NotSupportedException("search() requires analyzer setup from CoraxQueryBuilder");
 
             case "startsWith":
                 ParsePrefixMethod(method, clauses, queryParameters, ClauseType.StartsWith);
