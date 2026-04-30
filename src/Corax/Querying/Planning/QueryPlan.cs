@@ -1,4 +1,3 @@
-using System;
 using Corax.Querying.Matches;
 
 namespace Corax.Querying.Planning;

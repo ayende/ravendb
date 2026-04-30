@@ -61,7 +61,7 @@ public unsafe struct RoaringBitmap : IDisposable
     /// <summary>Length of the key index - the maximum container key that can be looked up in O(1).</summary>
     public readonly int IndexLength => _index.Count;
 
-    public long Cardinality
+    public long Count
     {
         get
         {
@@ -84,9 +84,6 @@ public unsafe struct RoaringBitmap : IDisposable
     }
 
     public readonly bool IsEmpty => _containerCount == 0;
-
-    /// <summary>Alias for Cardinality — shorter for use in generated code.</summary>
-    public long Count => Cardinality;
 
     /// <summary>Reset all containers without deallocating the backing storage.
     /// Enables bitmap reuse (e.g. temp bitmap cleared between posting list pages).</summary>

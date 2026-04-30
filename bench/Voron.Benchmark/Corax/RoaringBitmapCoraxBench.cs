@@ -173,7 +173,7 @@ public static class RoaringBitmapCoraxBench
             case "OR": a.OrWith(ref b); break;
             case "ANDNOT": a.AndNotWith(ref b); break;
         }
-        GC.KeepAlive(a.Cardinality);
+        GC.KeepAlive(a.Count);
         swOp.Stop();
 
         a.Dispose(); b.Dispose();
@@ -232,7 +232,7 @@ public static class RoaringBitmapCoraxBench
         var result = bitmaps[0]; // accumulate into first
         for (int t = 1; t < bitmaps.Length; t++)
             result.OrWith(ref bitmaps[t]);
-        GC.KeepAlive(result.Cardinality);
+        GC.KeepAlive(result.Count);
         sw.Stop();
 
         // Dispose (result owns all stolen containers, others are empty shells)

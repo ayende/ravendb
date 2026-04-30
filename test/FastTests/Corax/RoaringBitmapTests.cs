@@ -49,7 +49,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmap.PrepareForReading();
         Assert.True(bitmap.Contains(42));
         Assert.False(bitmap.Contains(43));
-        Assert.Equal(1, bitmap.Cardinality);
+        Assert.Equal(1, bitmap.Count);
     }
 
     [RavenFact(RavenTestCategory.Corax)]
@@ -65,7 +65,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
 
         bitmap.PrepareForReading();
         Assert.False(bitmap.Contains(1000));
-        Assert.Equal(1000, bitmap.Cardinality);
+        Assert.Equal(1000, bitmap.Count);
     }
 
     [RavenFact(RavenTestCategory.Corax)]
@@ -85,7 +85,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         Assert.True(bitmap.Contains(131072));
         Assert.True(bitmap.Contains(1_000_000));
         Assert.False(bitmap.Contains(1));
-        Assert.Equal(4, bitmap.Cardinality);
+        Assert.Equal(4, bitmap.Count);
         Assert.Equal(4, bitmap.ContainerCount);
     }
 
@@ -99,7 +99,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
             bitmap.Add(i);
 
         bitmap.PrepareForReading();
-        Assert.Equal(5000, bitmap.Cardinality);
+        Assert.Equal(5000, bitmap.Count);
 
         for (int i = 0; i < 5000; i++)
             Assert.True(bitmap.Contains(i));
@@ -115,7 +115,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
             bitmap.Add(i);
 
         bitmap.PrepareForReading();
-        Assert.Equal(65536, bitmap.Cardinality);
+        Assert.Equal(65536, bitmap.Count);
         Assert.True(bitmap.Contains(0));
         Assert.True(bitmap.Contains(65535));
         Assert.False(bitmap.Contains(65536));
@@ -130,7 +130,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmap.Add(42);
         bitmap.Add(42);
         bitmap.PrepareForReading();
-        Assert.Equal(1, bitmap.Cardinality);
+        Assert.Equal(1, bitmap.Count);
     }
 
     [RavenFact(RavenTestCategory.Corax)]
@@ -143,7 +143,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmap.PrepareForReading();
         Assert.True(bitmap.Contains(largeValue));
         Assert.False(bitmap.Contains(largeValue + 1));
-        Assert.Equal(1, bitmap.Cardinality);
+        Assert.Equal(1, bitmap.Count);
     }
 
     #region Set Operations
@@ -164,7 +164,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         var result = And(ctx, a, b);
         try
         {
-            Assert.Equal(500, result.Cardinality);
+            Assert.Equal(500, result.Count);
             for (int i = 500; i < 1000; i++)
                 Assert.True(result.Contains(i));
             Assert.False(result.Contains(499));
@@ -192,7 +192,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         b.PrepareForReading();
         var result = Or(ctx, a, b);
 
-        Assert.Equal(1500, result.Cardinality);
+        Assert.Equal(1500, result.Count);
         for (int i = 0; i < 1500; i++)
             Assert.True(result.Contains(i));
         Assert.False(result.Contains(1500));
@@ -214,7 +214,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         var result = AndNot(ctx, a, b);
         try
         {
-            Assert.Equal(500, result.Cardinality);
+            Assert.Equal(500, result.Count);
             for (int i = 0; i < 500; i++)
                 Assert.True(result.Contains(i));
             for (int i = 500; i < 1000; i++)
@@ -242,7 +242,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         var result = And(ctx, a, b);
         try
         {
-            Assert.Equal(0, result.Cardinality);
+            Assert.Equal(0, result.Count);
             Assert.True(result.IsEmpty);
         }
         finally
@@ -265,14 +265,14 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
 
         // AND should be empty (no overlap)
         var andResult = And(ctx, a, b);
-        Assert.Equal(0, andResult.Cardinality);
+        Assert.Equal(0, andResult.Count);
         andResult.Dispose();
 
         // OR should have all 20000
         a.PrepareForReading();
         b.PrepareForReading();
         var orResult = Or(ctx, a, b);
-        Assert.Equal(20000, orResult.Cardinality);
+        Assert.Equal(20000, orResult.Count);
         orResult.Dispose();
     }
 
@@ -303,7 +303,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
                 if (i * 10 < 5000)
                     expected++;
             }
-            Assert.Equal(expected, andResult.Cardinality);
+            Assert.Equal(expected, andResult.Count);
         }
         finally
         {
@@ -334,7 +334,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         var orResult = Or(ctx, a, b);
         try
         {
-            Assert.Equal(200 + 200 + 100, orResult.Cardinality); // container0(200) + container1(200 union) + container2(100)
+            Assert.Equal(200 + 200 + 100, orResult.Count); // container0(200) + container1(200 union) + container2(100)
         }
         finally
         {
@@ -344,7 +344,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         var andResult = And(ctx, a, b);
         try
         {
-            Assert.Equal(100, andResult.Cardinality); // only container1 intersection
+            Assert.Equal(100, andResult.Count); // only container1 intersection
         }
         finally
         {
@@ -494,7 +494,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
             bitmap.Add(i);
 
         bitmap.PrepareForReading();
-        Assert.Equal(1000, bitmap.Cardinality);
+        Assert.Equal(1000, bitmap.Count);
         for (int i = 0; i < 1000; i++)
             Assert.True(bitmap.Contains(i));
         Assert.False(bitmap.Contains(1000));
@@ -510,7 +510,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
             bitmap.Add(i);
 
         bitmap.PrepareForReading();
-        Assert.Equal(65536, bitmap.Cardinality);
+        Assert.Equal(65536, bitmap.Count);
         Assert.True(bitmap.Contains(0));
         Assert.True(bitmap.Contains(65535));
         Assert.False(bitmap.Contains(65536));
@@ -565,21 +565,21 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         var andResult = And(ctx, a, b);
         HashSet<long> expectedAnd = new(setA);
         expectedAnd.IntersectWith(setB);
-        Assert.Equal(expectedAnd.Count, andResult.Cardinality);
+        Assert.Equal(expectedAnd.Count, andResult.Count);
         andResult.Dispose();
 
         // OR
         var orResult = Or(ctx, a, b);
         HashSet<long> expectedOr = new(setA);
         expectedOr.UnionWith(setB);
-        Assert.Equal(expectedOr.Count, orResult.Cardinality);
+        Assert.Equal(expectedOr.Count, orResult.Count);
         orResult.Dispose();
 
         // ANDNOT
         var andNotResult = AndNot(ctx, a, b);
         HashSet<long> expectedAndNot = new(setA);
         expectedAndNot.ExceptWith(setB);
-        Assert.Equal(expectedAndNot.Count, andNotResult.Cardinality);
+        Assert.Equal(expectedAndNot.Count, andNotResult.Count);
         andNotResult.Dispose();
     }
 
@@ -594,12 +594,12 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
             bitmap.Add(i);
 
         bitmap.PrepareForReading();
-        Assert.Equal(100, bitmap.Cardinality);
+        Assert.Equal(100, bitmap.Count);
 
         // Add a value with a gap — should convert from Range to ArrayUnsorted
         bitmap.Add(200);
         bitmap.PrepareForReading();
-        Assert.Equal(101, bitmap.Cardinality);
+        Assert.Equal(101, bitmap.Count);
         Assert.True(bitmap.Contains(0));
         Assert.True(bitmap.Contains(99));
         Assert.True(bitmap.Contains(200));
@@ -754,7 +754,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         }
 
         bitmap.PrepareForReading();
-        Assert.Equal(expected.Count, bitmap.Cardinality);
+        Assert.Equal(expected.Count, bitmap.Count);
 
         // Verify all values via iteration
         var iterator = bitmap.GetIterator();
@@ -798,7 +798,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         var andResult = And(ctx, a, b);
         HashSet<long> expectedAnd = new(setA);
         expectedAnd.IntersectWith(setB);
-        Assert.Equal(expectedAnd.Count, andResult.Cardinality);
+        Assert.Equal(expectedAnd.Count, andResult.Count);
         foreach (long v in expectedAnd)
             Assert.True(andResult.Contains(v));
         andResult.Dispose();
@@ -807,14 +807,14 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         var orResult = Or(ctx, a, b);
         HashSet<long> expectedOr = new(setA);
         expectedOr.UnionWith(setB);
-        Assert.Equal(expectedOr.Count, orResult.Cardinality);
+        Assert.Equal(expectedOr.Count, orResult.Count);
         orResult.Dispose();
 
         // ANDNOT
         var andNotResult = AndNot(ctx, a, b);
         HashSet<long> expectedAndNot = new(setA);
         expectedAndNot.ExceptWith(setB);
-        Assert.Equal(expectedAndNot.Count, andNotResult.Cardinality);
+        Assert.Equal(expectedAndNot.Count, andNotResult.Count);
         andNotResult.Dispose();
     }
 
@@ -831,7 +831,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
             bitmap.Add(i);
         bitmap.PrepareForReading();
 
-        Assert.Equal(bitmap.Cardinality, bitmap.Count);
+        Assert.Equal(bitmap.Count, bitmap.Count);
         Assert.Equal(1000, bitmap.Count);
         bitmap.Dispose();
     }
@@ -844,17 +844,17 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         for (int i = 0; i < 100_000; i++)
             bitmap.Add(i);
         bitmap.PrepareForReading();
-        Assert.True(bitmap.Cardinality > 0);
+        Assert.True(bitmap.Count > 0);
 
         bitmap.Clear();
-        Assert.Equal(0, bitmap.Cardinality);
+        Assert.Equal(0, bitmap.Count);
         Assert.True(bitmap.IsEmpty);
         Assert.Equal(0, bitmap.ContainerCount);
 
         // Can reuse after clear
         bitmap.Add(42);
         bitmap.PrepareForReading();
-        Assert.Equal(1, bitmap.Cardinality);
+        Assert.Equal(1, bitmap.Count);
         Assert.True(bitmap.Contains(42));
         bitmap.Dispose();
     }
@@ -870,9 +870,9 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
             for (int i = round * 1000; i < (round + 1) * 1000; i++)
                 bitmap.Add(i);
             bitmap.PrepareForReading();
-            Assert.Equal(1000, bitmap.Cardinality);
+            Assert.Equal(1000, bitmap.Count);
             bitmap.Clear();
-            Assert.Equal(0, bitmap.Cardinality);
+            Assert.Equal(0, bitmap.Count);
         }
         bitmap.Dispose();
     }
@@ -888,7 +888,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmap.AddRange(values);
         bitmap.PrepareForReading();
 
-        Assert.Equal(10_000, bitmap.Cardinality);
+        Assert.Equal(10_000, bitmap.Count);
         Assert.True(bitmap.Contains(0));
         Assert.True(bitmap.Contains(3));
         Assert.True(bitmap.Contains(29997));
@@ -929,7 +929,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
             bitmapSingle.Add(v);
         bitmapSingle.PrepareForReading();
 
-        Assert.Equal(bitmapSingle.Cardinality, bitmapRange.Cardinality);
+        Assert.Equal(bitmapSingle.Count, bitmapRange.Count);
 
         // Spot-check containment
         int checked_ = 0;
@@ -975,8 +975,8 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         var bClone2 = b.Clone();
         regularResult.OrWith(ref bClone2);
 
-        Assert.Equal(regularResult.Cardinality, lazyResult.Cardinality);
-        Assert.Equal(20_000, lazyResult.Cardinality);
+        Assert.Equal(regularResult.Count, lazyResult.Count);
+        Assert.Equal(20_000, lazyResult.Count);
 
         lazyResult.Dispose();
         regularResult.Dispose();
