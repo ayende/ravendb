@@ -624,38 +624,103 @@ internal static class QueryPlanBuilder
             }
             else
             {
-                ops.Add(new PlanOp
-                {
-                    Kind = PlanOpKind.FillFromPostings,
-                    ParamIndex = 0,
-                    EstimatedCardinality = clauses[0].Cardinality
-                });
                 startIndex = 1;
             }
 
+            // Build match index mapping — OrGroups expand to multiple matches
+            // First, compute match index for clause 0
+            int matchIndex = 0;
+            if (!firstIsNegated)
+            {
+                if (clauses[0].ClauseType == ClauseType.OrGroup && clauses[0].OrSubClauses != null)
+                {
+                    // First clause is an OrGroup — OR all sub-clauses into bitmap[0]
+                    var subClauses = clauses[0].OrSubClauses;
+                    for (int s = 0; s < subClauses.Count; s++)
+                    {
+                        ops.Add(new PlanOp
+                        {
+                            Kind = s == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
+                            ParamIndex = matchIndex + s,
+                            BitmapLocal = 0,
+                            EstimatedCardinality = subClauses[s].Cardinality
+                        });
+                    }
+                    matchIndex += subClauses.Count;
+                }
+                else
+                {
+                    ops.Add(new PlanOp
+                    {
+                        Kind = PlanOpKind.FillFromPostings,
+                        ParamIndex = 0,
+                        EstimatedCardinality = clauses[0].Cardinality
+                    });
+                    matchIndex = 1;
+                }
+            }
             for (int i = startIndex; i < clauses.Count; i++)
             {
                 // Goto check before each AND step
                 ops.Add(new PlanOp
                 {
                     Kind = PlanOpKind.CheckAndMaybeEntryScan,
-                    ParamIndex = i,
+                    ParamIndex = matchIndex,
                     GotoLabelIndex = entryScanPredicates.Count
                 });
-
-                // Remaining predicates for this goto label
-                // (currently empty — MultiUnaryItem conversion deferred to execution)
                 entryScanPredicates.Add(Array.Empty<MultiUnaryItem>());
 
-                // Determine AND op kind based on clause type
-                var isNegated = clauses[i].IsNegated || clauses[i].ClauseType == ClauseType.NotEquals;
-                var andKind = isNegated ? PlanOpKind.AndNotWithPostings : PlanOpKind.AndWithPostings;
-                ops.Add(new PlanOp
+                if (clauses[i].ClauseType == ClauseType.OrGroup && clauses[i].OrSubClauses != null)
                 {
-                    Kind = andKind,
-                    ParamIndex = i,
-                    EstimatedCardinality = clauses[i].Cardinality
-                });
+                    // OrGroup: OR sub-clauses into bitmap[1], then AND with bitmap[0]
+                    var subClauses = clauses[i].OrSubClauses;
+
+                    // Clear bitmap[1] (OR accumulator)
+                    ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 1 });
+
+                    // Fill each sub-clause into bitmap[1]
+                    for (int s = 0; s < subClauses.Count; s++)
+                    {
+                        ops.Add(new PlanOp
+                        {
+                            Kind = PlanOpKind.OrWithPostings,
+                            ParamIndex = matchIndex + s,
+                            BitmapLocal = 1, // target bitmap[1]
+                            EstimatedCardinality = subClauses[s].Cardinality
+                        });
+                    }
+
+                    // AND bitmap[1] into bitmap[0]
+                    ops.Add(new PlanOp
+                    {
+                        Kind = PlanOpKind.AndBitmaps,
+                        BitmapLocal = 0,   // target
+                        ParamIndex2 = 1    // source (reuse ParamIndex2 for source bitmap)
+                    });
+
+                    // Early exit check
+                    ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
+
+                    matchIndex += subClauses.Count;
+                }
+                else
+                {
+                    // Simple clause: AND or ANDNOT with bitmap[0]
+                    var isNegated = clauses[i].IsNegated || clauses[i].ClauseType == ClauseType.NotEquals;
+                    var andKind = isNegated ? PlanOpKind.AndNotWithPostings : PlanOpKind.AndWithPostings;
+                    ops.Add(new PlanOp
+                    {
+                        Kind = andKind,
+                        ParamIndex = matchIndex,
+                        BitmapLocal = 0,
+                        EstimatedCardinality = clauses[i].Cardinality
+                    });
+
+                    if (!isNegated)
+                        ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
+
+                    matchIndex++;
+                }
             }
 
             ops.Add(new PlanOp { Kind = PlanOpKind.IterateInto });
@@ -1017,16 +1082,36 @@ internal static class QueryPlanBuilder
             };
         }
 
-        // When all clauses are negated, append AllEntries at the end
-        int extraSlots = plan.AllNegated ? 1 : 0;
-        var matches = new IQueryMatch[clauses.Length + extraSlots];
+        // Flatten OrGroups: each sub-clause becomes a separate match.
+        // Count total matches needed.
+        int totalMatches = 0;
         for (int i = 0; i < clauses.Length; i++)
         {
             var clause = (ClauseInfo)clauses[i];
-            matches[i] = ResolveClause(clause, indexSearcher, parameters, builderParams);
+            if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
+                totalMatches += clause.OrSubClauses.Count;
+            else
+                totalMatches++;
+        }
+        int extraSlots = plan.AllNegated ? 1 : 0;
+        var matches = new IQueryMatch[totalMatches + extraSlots];
+        int matchIdx = 0;
+        for (int i = 0; i < clauses.Length; i++)
+        {
+            var clause = (ClauseInfo)clauses[i];
+            if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
+            {
+                // Expand: each sub-clause is a separate match
+                foreach (var sub in clause.OrSubClauses)
+                    matches[matchIdx++] = ResolveClause(sub, indexSearcher, parameters, builderParams);
+            }
+            else
+            {
+                matches[matchIdx++] = ResolveClause(clause, indexSearcher, parameters, builderParams);
+            }
         }
         if (plan.AllNegated)
-            matches[clauses.Length] = indexSearcher.AllEntries();
+            matches[matchIdx] = indexSearcher.AllEntries();
         return matches;
     }
 
@@ -1156,15 +1241,10 @@ internal static class QueryPlanBuilder
             }
 
             case ClauseType.OrGroup:
-                if (clause.OrSubClauses == null || clause.OrSubClauses.Count == 0)
-                    return TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
-                IQueryMatch orResult = ResolveClause(clause.OrSubClauses[0], indexSearcher, parameters, builderParams);
-                for (int j = 1; j < clause.OrSubClauses.Count; j++)
-                {
-                    var next = ResolveClause(clause.OrSubClauses[j], indexSearcher, parameters, builderParams);
-                    orResult = indexSearcher.Or(orResult, next);
-                }
-                return orResult;
+                // OrGroup sub-clauses are expanded into separate matches by ResolveMatches.
+                // This case should not be reached — OrGroups are handled at the ResolveMatches level.
+                throw new InvalidOperationException(
+                    "OrGroup should be expanded by ResolveMatches, not resolved as a single clause.");
 
             default:
                 throw new InvalidOperationException($"Unexpected ClauseType {clause.ClauseType} in ResolveClause.");

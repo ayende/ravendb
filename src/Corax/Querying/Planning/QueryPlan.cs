@@ -22,6 +22,12 @@ public enum PlanOpKind : byte
     SortByDistance,
     IterateInto,
     DirectIterate,
+    /// <summary>Clear a specific bitmap slot. BitmapLocal = slot index.</summary>
+    ClearBitmap,
+    /// <summary>AND two bitmap slots. BitmapLocal = target, ParamIndex2 = source.</summary>
+    AndBitmaps,
+    /// <summary>Check if bitmap is empty. BitmapLocal = slot. If empty, goto done.</summary>
+    CheckEmpty,
 }
 
 public struct PlanOp
@@ -83,6 +89,11 @@ public class QueryPlan
     public object[] Clauses;
     public bool IsAllEntries;
     public bool AllNegated;
+
+    /// <summary>Number of bitmaps needed for execution.
+    /// [0] = main result, [1] = primary scratch, [2+] = nested OR/AND scratch.
+    /// Statically determined from the query's nesting depth.</summary>
+    public int BitmapCount = 2;
 
     /// <summary>Metadata for entry scan predicates. Used by the IL emitter to generate
     /// direct comparison calls. Parallel to the MultiUnaryItem[] created at execution time.

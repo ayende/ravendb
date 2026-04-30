@@ -20,6 +20,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
     private readonly string _explainSource;
     private readonly ByteStringContext _allocator;
     private readonly IndexSearcher _searcher;
+    private readonly int _bitmapCount;
     private readonly long _limit;
     private readonly CancellationToken _token;
 
@@ -28,12 +29,13 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
     private bool _executed;
     private long _count;
 
-    public CompiledQueryMatch(CompiledPlan compiledPlan,
+    public CompiledQueryMatch(CompiledPlan compiledPlan, int bitmapCount,
         IQueryMatch[] resolvedMatches,
         long[] longParams, double[] doubleParams, Slice[] sliceParams, long[] fieldRootPages,
         IndexSearcher searcher, ByteStringContext allocator, long limit, CancellationToken token)
     {
         _compiledDelegate = compiledPlan.CompiledDelegate;
+        _bitmapCount = bitmapCount;
         _resolvedMatches = resolvedMatches;
         _longParams = longParams;
         _doubleParams = doubleParams;
@@ -141,16 +143,19 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
         if (_executed) return;
         _executed = true;
 
-        var tempBitmap = new RoaringBitmap(_allocator);
+        // Allocate bitmap pool: [0] = main, [1..N] = scratch
+        var bitmaps = new RoaringBitmap[_bitmapCount];
+        bitmaps[0] = _bitmap; // main bitmap (owned by this struct)
+        for (int i = 1; i < bitmaps.Length; i++)
+            bitmaps[i] = new RoaringBitmap(_allocator);
+
         try
         {
             var ctx = new QueryScanContext
             {
-                Bitmap = ref _bitmap,
-                TempBitmap = ref tempBitmap,
+                Bitmaps = bitmaps.AsSpan(),
                 Searcher = _searcher,
                 Matches = _resolvedMatches.AsSpan(),
-                ScanPredicates = Span<MultiUnaryItem>.Empty, // not used — direct comparisons in IL
                 FieldRootPages = _fieldRootPages.AsSpan(),
                 LongParams = _longParams.AsSpan(),
                 DoubleParams = _doubleParams.AsSpan(),
@@ -160,13 +165,17 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
 
             _compiledDelegate(ref ctx);
 
+            // Take ownership of bitmaps[0] (may have been swapped during entry scan)
+            _bitmap = bitmaps[0];
             _bitmap.PrepareForReading();
             _count = _bitmap.Count;
             _iterator = _bitmap.GetIterator();
         }
         finally
         {
-            tempBitmap.Dispose();
+            // Dispose scratch bitmaps only (not [0], which is _bitmap)
+            for (int i = 1; i < bitmaps.Length; i++)
+                bitmaps[i].Dispose();
         }
     }
 
