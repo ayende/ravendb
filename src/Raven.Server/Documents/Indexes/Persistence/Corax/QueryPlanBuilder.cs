@@ -497,7 +497,8 @@ internal static class QueryPlanBuilder
                 entryScanPredicates.Add(Array.Empty<MultiUnaryItem>());
 
                 // Determine AND op kind based on clause type
-                var andKind = clauses[i].IsNegated ? PlanOpKind.AndNotWithPostings : PlanOpKind.AndWithPostings;
+                var isNegated = clauses[i].IsNegated || clauses[i].ClauseType == ClauseType.NotEquals;
+                var andKind = isNegated ? PlanOpKind.AndNotWithPostings : PlanOpKind.AndWithPostings;
                 ops.Add(new PlanOp
                 {
                     Kind = andKind,
