@@ -29,11 +29,8 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 /// - TrueExpression (constant folding)
 /// - MethodExpression (search, startsWith, endsWith, exists, boost, exact, regex)
 ///
-/// Not yet handled (throws NotSupportedException):
-/// - Spatial queries (spatial_within, etc.)
-/// - Vector search
-/// - When expressions
-/// - MoreLikeThis
+/// MoreLikeThis is handled by a separate execution path (Index.cs → reader.MoreLikeThis())
+/// and never reaches this planner.
 /// </summary>
 internal static class QueryPlanBuilder
 {
@@ -79,7 +76,7 @@ internal static class QueryPlanBuilder
         var token = p.Token;
         var metadata = p.Metadata;
         if (query.Where == null)
-            throw new NotSupportedException("No WHERE clause — old path handles all-entries queries");
+            return BuildAllEntriesPlan();
 
         // Parse WHERE clause into intermediate clause list
         var clauses = new List<ClauseInfo>();
@@ -89,7 +86,7 @@ internal static class QueryPlanBuilder
         // Mixed AND/OR trees are handled via OrGroup clauses
 
         if (rootOp == BooleanOp.True)
-            throw new NotSupportedException("All-entries query (true OR X folded to true) — old path is efficient for full scans");
+            return BuildAllEntriesPlan();
         if (rootOp == BooleanOp.False)
             return BuildEmptyPlan();
         if (clauses.Count == 0)
@@ -105,9 +102,20 @@ internal static class QueryPlanBuilder
         // Determine top-level operation
         bool isOr = rootOp == BooleanOp.Or;
 
-        // Sort AND operands by ascending cardinality
+        // Sort AND operands: non-negated first (ascending cardinality), then negated.
+        // Negated clauses (NotEquals, IsNegated) can only subtract from an existing
+        // bitmap via ANDNOT — they must never be the seed (first) operand.
         if (!isOr)
-            clauses.Sort((a, b) => a.Cardinality.CompareTo(b.Cardinality));
+        {
+            clauses.Sort((a, b) =>
+            {
+                bool aNeg = a.IsNegated || a.ClauseType == ClauseType.NotEquals;
+                bool bNeg = b.IsNegated || b.ClauseType == ClauseType.NotEquals;
+                if (aNeg != bNeg)
+                    return aNeg ? 1 : -1; // non-negated first
+                return a.Cardinality.CompareTo(b.Cardinality);
+            });
+        }
 
         // Build PlanOp array
         return EmitPlan(clauses, isOr);
@@ -147,8 +155,8 @@ internal static class QueryPlanBuilder
                 return BooleanOp.Leaf;
 
             default:
-                throw new NotSupportedException(
-                    $"Expression type {expr.GetType().Name} is not supported in Corax 2.0 query planner.");
+                throw new InvalidOperationException(
+                    $"Unexpected expression type {expr.GetType().Name} in WHERE clause.");
         }
     }
 
@@ -217,6 +225,9 @@ internal static class QueryPlanBuilder
             }
 
             case OperatorType.Equal:
+                ParseComparison(be, clauses, queryParameters);
+                return BooleanOp.Leaf;
+
             case OperatorType.NotEqual:
                 ParseComparison(be, clauses, queryParameters);
                 return BooleanOp.Leaf;
@@ -229,8 +240,8 @@ internal static class QueryPlanBuilder
                 return BooleanOp.Leaf;
 
             default:
-                throw new NotSupportedException(
-                    $"Binary operator {be.Operator} is not supported in Corax 2.0 query planner.");
+                throw new InvalidOperationException(
+                    $"Unexpected binary operator {be.Operator} in WHERE clause.");
         }
     }
 
@@ -406,16 +417,29 @@ internal static class QueryPlanBuilder
                 break;
 
             case "moreLikeThis":
-                // MoreLikeThis returns all entries — handled by old path via fallback
-                throw new NotSupportedException("MoreLikeThis handled by old path");
+                // MoreLikeThis is routed to reader.MoreLikeThis() at Index.cs level —
+                // it never reaches the query planner through normal execution.
+                throw new InvalidOperationException(
+                    "moreLikeThis() should not reach the query planner — it has a separate execution path.");
 
             case "when":
-                // when(condition, expr) — conditional query. Falls back to old path.
-                throw new NotSupportedException("when() conditional queries fall back to old path");
+            {
+                // when(condition, expr) — evaluate the constant condition at plan time.
+                // If false, produce no clause (empty result for this branch).
+                // If true, recurse into the inner expression.
+                if (method.Arguments.Count != 2)
+                    break;
+                var conditionResult = QueryBuilderHelper.EvaluateConstantExpressionForWhenQuery(
+                    (BinaryExpression)method.Arguments[0], queryParameters);
+                if (conditionResult)
+                    ParseExpression(method.Arguments[1], indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
+                // If false, we simply don't add any clause — the branch is eliminated.
+                break;
+            }
 
             default:
-                throw new NotSupportedException(
-                    $"Method '{methodName}' not supported in Corax 2.0 query planner.");
+                throw new InvalidOperationException(
+                    $"Unexpected method '{methodName}' in WHERE clause.");
         }
     }
 
@@ -580,15 +604,36 @@ internal static class QueryPlanBuilder
         }
         else
         {
-            // AND chain: Fill smallest, then AndWith with goto checks
-            ops.Add(new PlanOp
-            {
-                Kind = PlanOpKind.FillFromPostings,
-                ParamIndex = 0,
-                EstimatedCardinality = clauses[0].Cardinality
-            });
+            // AND chain: Fill smallest non-negated, then AndWith/AndNotWith remaining.
+            // If the first clause is negated (all clauses are negated), we need to
+            // start from AllEntries and ANDNOT each one.
+            bool firstIsNegated = clauses[0].IsNegated || clauses[0].ClauseType == ClauseType.NotEquals;
+            int startIndex;
 
-            for (int i = 1; i < clauses.Count; i++)
+            if (firstIsNegated)
+            {
+                // All clauses are negated — start from all entries.
+                // AllEntries match is appended at index clauses.Count by ResolveMatches.
+                ops.Add(new PlanOp
+                {
+                    Kind = PlanOpKind.FillFromPostings,
+                    ParamIndex = clauses.Count, // Index of AllEntries in resolved matches
+                    EstimatedCardinality = long.MaxValue
+                });
+                startIndex = 0; // Process all clauses as ANDNOT
+            }
+            else
+            {
+                ops.Add(new PlanOp
+                {
+                    Kind = PlanOpKind.FillFromPostings,
+                    ParamIndex = 0,
+                    EstimatedCardinality = clauses[0].Cardinality
+                });
+                startIndex = 1;
+            }
+
+            for (int i = startIndex; i < clauses.Count; i++)
             {
                 // Goto check before each AND step
                 ops.Add(new PlanOp
@@ -621,13 +666,18 @@ internal static class QueryPlanBuilder
         for (int i = 0; i < Math.Min(clauses.Count, 10); i++)
             ordering |= (clauses[i].OriginalIndex & 0x7) << (i * 3);
 
+        // Check if all clauses are negated (first clause after sort is negated)
+        bool allNegated = clauses.Count > 0
+            && (clauses[0].IsNegated || clauses[0].ClauseType == ClauseType.NotEquals);
+
         var plan = new QueryPlan
         {
             Ops = ops.ToArray(),
             EntryScanPredicates = entryScanPredicates.ToArray(),
             OperandOrdering = ordering,
             OperandCount = clauses.Count,
-            Clauses = clauses.ToArray()
+            Clauses = clauses.ToArray(),
+            AllNegated = allNegated
         };
 
         // Generate EXPLAIN source
@@ -669,11 +719,14 @@ internal static class QueryPlanBuilder
 
     private static QueryPlan BuildAllEntriesPlan()
     {
+        // No bitmap needed — AllEntries already implements IQueryMatch.Fill(),
+        // so we iterate it directly without materializing into a bitmap first.
         return new QueryPlan
         {
-            Ops = new[] { new PlanOp { Kind = PlanOpKind.IterateInto } },
+            Ops = new[] { new PlanOp { Kind = PlanOpKind.DirectIterate, ParamIndex = 0 } },
             EntryScanPredicates = Array.Empty<MultiUnaryItem[]>(),
-            Clauses = Array.Empty<ClauseInfo>()
+            Clauses = Array.Empty<ClauseInfo>(),
+            IsAllEntries = true
         };
     }
 
@@ -732,6 +785,10 @@ internal static class QueryPlanBuilder
     public static IQueryMatch[] ResolveMatches(QueryPlan plan, IndexSearcher indexSearcher,
         PlanParameters parameters = null, CoraxQueryBuilder.Parameters builderParams = null)
     {
+        // All-entries plan: no clauses, single AllEntries match
+        if (plan.IsAllEntries)
+            return new IQueryMatch[] { indexSearcher.AllEntries() };
+
         var clauses = plan.Clauses;
         if (clauses == null || clauses.Length == 0)
             return Array.Empty<IQueryMatch>();
@@ -747,12 +804,16 @@ internal static class QueryPlanBuilder
             };
         }
 
-        var matches = new IQueryMatch[clauses.Length];
+        // When all clauses are negated, append AllEntries at the end
+        int extraSlots = plan.AllNegated ? 1 : 0;
+        var matches = new IQueryMatch[clauses.Length + extraSlots];
         for (int i = 0; i < clauses.Length; i++)
         {
             var clause = (ClauseInfo)clauses[i];
             matches[i] = ResolveClause(clause, indexSearcher, parameters, builderParams);
         }
+        if (plan.AllNegated)
+            matches[clauses.Length] = indexSearcher.AllEntries();
         return matches;
     }
 
@@ -867,7 +928,7 @@ internal static class QueryPlanBuilder
             case ClauseType.Spatial:
             {
                 if (builderParams == null || clause.MethodExpression == null)
-                    throw new NotSupportedException("Spatial resolution requires builder parameters");
+                    throw new InvalidOperationException("Spatial resolution requires builder parameters");
                 var spatialMethod = QueryMethod.GetMethodType(clause.MethodExpression.Name.Value);
                 return CoraxQueryBuilder.HandleSpatial(builderParams, clause.MethodExpression, spatialMethod);
             }
@@ -875,7 +936,7 @@ internal static class QueryPlanBuilder
             case ClauseType.Vector:
             {
                 if (builderParams == null || clause.MethodExpression == null)
-                    throw new NotSupportedException("Vector resolution requires builder parameters");
+                    throw new InvalidOperationException("Vector resolution requires builder parameters");
                 var vectorItem = CoraxQueryBuilder.HandleVector(builderParams, clause.MethodExpression, false);
                 // Materialize with null inner — the bitmap provides the candidate set
                 return vectorItem.Materialize(null);
@@ -884,16 +945,16 @@ internal static class QueryPlanBuilder
             case ClauseType.OrGroup:
                 if (clause.OrSubClauses == null || clause.OrSubClauses.Count == 0)
                     return TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
-                IQueryMatch orResult = ResolveClause(clause.OrSubClauses[0], indexSearcher);
+                IQueryMatch orResult = ResolveClause(clause.OrSubClauses[0], indexSearcher, parameters, builderParams);
                 for (int j = 1; j < clause.OrSubClauses.Count; j++)
                 {
-                    var next = ResolveClause(clause.OrSubClauses[j], indexSearcher);
+                    var next = ResolveClause(clause.OrSubClauses[j], indexSearcher, parameters, builderParams);
                     orResult = indexSearcher.Or(orResult, next);
                 }
                 return orResult;
 
             default:
-                throw new NotSupportedException($"ClauseType {clause.ClauseType} not supported.");
+                throw new InvalidOperationException($"Unexpected ClauseType {clause.ClauseType} in ResolveClause.");
         }
     }
 }

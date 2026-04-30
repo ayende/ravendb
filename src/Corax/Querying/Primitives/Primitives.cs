@@ -43,25 +43,55 @@ public static class QueryPrimitives
     }
 
     /// <summary>
-    /// AND the bitmap with a posting list using the galloping page-scan pattern.
-    /// Fills temp bitmap from posting list, SIMD ANDs with the accumulator.
+    /// AND bitmap with posting list using galloping page-scan.
+    /// Uses bitmap's container key range to bound the posting list scan:
+    /// Seek() jumps past entries below the bitmap's min, and pruneGreaterThan
+    /// stops reading past the bitmap's max. Only posting list pages that overlap
+    /// with the bitmap's entry ID range are read.
     ///
-    /// Optimization: uses Seek() to jump to pages that overlap with the
-    /// accumulator's set bits, skipping pages that can't contribute matches.
-    /// Cost proportional to posting list pages that intersect the accumulator.
+    /// For a 50K bitmap vs 10M posting list, this reads only the pages covering
+    /// the 50K range instead of all 10M entries.
     /// </summary>
-    /// <summary>
-    /// AND bitmap with posting list. Materializes posting list into temp bitmap, SIMD AND.
-    /// Note: Clear() on the temp bitmap walks and releases container storage, same cost as
-    /// Dispose()+new(). Keeping the temp bitmap avoids NativeList reallocation.
-    /// </summary>
+    [SkipLocalsInit]
     public static void AndWithPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap)
     {
         if (bitmap.IsEmpty)
             return;
 
         tempBitmap.Clear();
-        FillFromPostings(ref iterator, ref tempBitmap);
+
+        // Bound the posting list scan to the bitmap's container key range.
+        // Each container key covers 65536 entry IDs.
+        long minKey = bitmap.MinContainerKey;
+        long maxKey = bitmap.MaxContainerKey;
+        if (minKey < 0)
+            return; // bitmap is empty (shouldn't happen after IsEmpty check, but defensive)
+
+        long seekFrom = minKey * RoaringBitmap.ContainerSize;
+        long pruneAfter = (maxKey + 1) * RoaringBitmap.ContainerSize - 1;
+
+        // Seek past all posting list entries below the bitmap's range
+        if (!iterator.Seek(seekFrom))
+        {
+            // No entries at or after seekFrom — nothing to AND
+            bitmap.Clear();
+            return;
+        }
+
+        // Fill only entries within the bitmap's range
+        Span<long> buffer = stackalloc long[FillBufferSize];
+        int read;
+        bool hasMore;
+        do
+        {
+            hasMore = iterator.Fill(buffer, out read, pruneAfter);
+            if (read > 0)
+            {
+                EntryIdEncodings.DecodeAndDiscardFrequency(buffer, read);
+                tempBitmap.AddRange(buffer.Slice(0, read));
+            }
+        } while (hasMore && read > 0);
+
         bitmap.AndWith(ref tempBitmap);
     }
 
@@ -81,13 +111,41 @@ public static class QueryPrimitives
     }
 
     /// <summary>
-    /// ANDNOT the bitmap with a posting list. Same galloping shape as AndWith
-    /// but clears bits instead of keeping them.
+    /// ANDNOT the bitmap with a posting list. Same galloping bounds as AndWith —
+    /// only reads posting list pages that overlap with the bitmap's container range.
     /// </summary>
+    [SkipLocalsInit]
     public static void AndNotWithPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap)
     {
+        if (bitmap.IsEmpty)
+            return;
+
         tempBitmap.Clear();
-        FillFromPostings(ref iterator, ref tempBitmap);
+
+        long minKey = bitmap.MinContainerKey;
+        long maxKey = bitmap.MaxContainerKey;
+        if (minKey < 0)
+            return;
+
+        long seekFrom = minKey * RoaringBitmap.ContainerSize;
+        long pruneAfter = (maxKey + 1) * RoaringBitmap.ContainerSize - 1;
+
+        if (!iterator.Seek(seekFrom))
+            return; // No entries in range — nothing to subtract
+
+        Span<long> buffer = stackalloc long[FillBufferSize];
+        int read;
+        bool hasMore;
+        do
+        {
+            hasMore = iterator.Fill(buffer, out read, pruneAfter);
+            if (read > 0)
+            {
+                EntryIdEncodings.DecodeAndDiscardFrequency(buffer, read);
+                tempBitmap.AddRange(buffer.Slice(0, read));
+            }
+        } while (hasMore && read > 0);
+
         bitmap.AndNotWith(ref tempBitmap);
     }
 
@@ -148,90 +206,116 @@ public static class QueryPrimitives
     {
         if (predicates == null || predicates.Length == 0)
         {
-            // No predicates — just iterate
+            // No predicates — iterate with skip/limit
             bitmap.PrepareForReading();
             var iter = bitmap.GetIterator();
-            return iter.Fill(ref bitmap, output);
+            try
+            {
+                if (skip > 0)
+                {
+                    Span<long> skipBuf = stackalloc long[Math.Min(skip, 1024)];
+                    while (skip > 0)
+                    {
+                        int toSkip = Math.Min(skip, skipBuf.Length);
+                        int skipped = iter.Fill(ref bitmap, skipBuf.Slice(0, toSkip));
+                        if (skipped == 0) return 0;
+                        skip -= skipped;
+                    }
+                }
+                int maxOutput = (int)Math.Min(output.Length, limit);
+                return iter.Fill(ref bitmap, output.Slice(0, maxOutput));
+            }
+            finally
+            {
+                iter.Dispose();
+            }
         }
 
         bitmap.PrepareForReading();
         var iterator = bitmap.GetIterator();
-        Span<long> batch = stackalloc long[256];
-        int matched = 0;
-        Page lastPage = default;
 
-        // Cache field root pages for faster lookup
-        Span<long> fieldRootPages = predicates.Length > 128
-            ? new long[predicates.Length]
-            : stackalloc long[predicates.Length];
-
-        for (int p = 0; p < predicates.Length; p++)
+        try
         {
-            fieldRootPages[p] = searcher.FieldCache.GetLookupRootPage(predicates[p].Binding.FieldName);
-        }
+            Span<long> batch = stackalloc long[256];
+            int matched = 0;
+            Page lastPage = default;
 
-        int read;
-        while ((read = iterator.Fill(ref bitmap, batch)) > 0)
-        {
-            for (int i = 0; i < read; i++)
+            Span<long> fieldRootPages = predicates.Length > 128
+                ? new long[predicates.Length]
+                : stackalloc long[predicates.Length];
+
+            for (int p = 0; p < predicates.Length; p++)
             {
-                if (skip > 0)
+                fieldRootPages[p] = searcher.FieldCache.GetLookupRootPage(predicates[p].Binding.FieldName);
+            }
+
+            int read;
+            while ((read = iterator.Fill(ref bitmap, batch)) > 0)
+            {
+                for (int i = 0; i < read; i++)
                 {
-                    skip--;
-                    continue;
-                }
-
-                long entryId = batch[i];
-                var reader = searcher.GetEntryTermsReader(entryId, ref lastPage);
-                bool documentMatched = true;
-
-                for (int p = 0; p < predicates.Length; p++)
-                {
-                    ref var predicate = ref predicates[p];
-                    long fieldRootPage = fieldRootPages[p];
-
-                    bool isAccepted = predicate.Mode == MultiUnaryItem.UnaryMode.All;
-                    reader.Reset();
-
-                    while (reader.FindNext(fieldRootPage))
+                    if (skip > 0)
                     {
-                        bool cmpResult = predicate.Type switch
-                        {
-                            MultiUnaryItem.DataType.Slice => predicate.CompareLiteral(reader),
-                            MultiUnaryItem.DataType.Long => predicate.CompareNumerical(reader),
-                            MultiUnaryItem.DataType.Double => predicate.CompareNumerical(reader),
-                            _ => throw new ArgumentOutOfRangeException()
-                        };
+                        skip--;
+                        continue;
+                    }
 
-                        if (predicate.Mode == MultiUnaryItem.UnaryMode.All && !cmpResult)
+                    long entryId = batch[i];
+                    var reader = searcher.GetEntryTermsReader(entryId, ref lastPage);
+                    bool documentMatched = true;
+
+                    for (int p = 0; p < predicates.Length; p++)
+                    {
+                        ref var predicate = ref predicates[p];
+                        long fieldRootPage = fieldRootPages[p];
+
+                        bool isAccepted = predicate.Mode == MultiUnaryItem.UnaryMode.All;
+                        reader.Reset();
+
+                        while (reader.FindNext(fieldRootPage))
                         {
-                            isAccepted = false;
-                            break;
+                            bool cmpResult = predicate.Type switch
+                            {
+                                MultiUnaryItem.DataType.Slice => predicate.CompareLiteral(reader),
+                                MultiUnaryItem.DataType.Long => predicate.CompareNumerical(reader),
+                                MultiUnaryItem.DataType.Double => predicate.CompareNumerical(reader),
+                                _ => throw new ArgumentOutOfRangeException()
+                            };
+
+                            if (predicate.Mode == MultiUnaryItem.UnaryMode.All && !cmpResult)
+                            {
+                                isAccepted = false;
+                                break;
+                            }
+
+                            if (predicate.Mode == MultiUnaryItem.UnaryMode.Any && cmpResult)
+                            {
+                                isAccepted = true;
+                                break;
+                            }
                         }
 
-                        if (predicate.Mode == MultiUnaryItem.UnaryMode.Any && cmpResult)
+                        if (!isAccepted)
                         {
-                            isAccepted = true;
+                            documentMatched = false;
                             break;
                         }
                     }
 
-                    if (!isAccepted)
+                    if (documentMatched)
                     {
-                        documentMatched = false;
-                        break;
+                        output[matched++] = entryId;
+                        if (matched >= limit || matched >= output.Length)
+                            return matched;
                     }
-                }
-
-                if (documentMatched)
-                {
-                    output[matched++] = entryId;
-                    if (matched >= limit || matched >= output.Length)
-                        return matched;
                 }
             }
-        }
 
-        return matched;
+            return matched;
+        }
+        finally
+        {
+            iterator.Dispose();
+        }
     }
 }

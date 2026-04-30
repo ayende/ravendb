@@ -30,6 +30,7 @@ public unsafe struct RoaringBitmap : IDisposable
     public const int BitsPerContainer = BitmapContainerSizeInBytes * 8; // each byte holds 8 bits
     public const int ArrayContainerMaxCardinality = BitmapContainerSizeInBytes / sizeof(ushort); // crossover: array at max costs same as bitmap
     public const int ContainerKeyShift = 16;
+    public const int ContainerSize = 1 << ContainerKeyShift; // 65536 entry IDs per container
     public const int ContainerValueMask = 0xFFFF;
 
     private const int FreeSlotTerminator = -2; // end of free list
@@ -118,6 +119,8 @@ public unsafe struct RoaringBitmap : IDisposable
         if (sortedValues.IsEmpty)
             return;
 
+        AssertSorted(sortedValues);
+
         int i = 0;
         while (i < sortedValues.Length)
         {
@@ -125,92 +128,183 @@ public unsafe struct RoaringBitmap : IDisposable
             Debug.Assert(value >= 0, "RoaringBitmap only supports non-negative values.");
             long key = value >> ContainerKeyShift;
 
-            // Find the end of values in this container key range
+            // Galloping search to find the end of values in this container key range.
+            // Start with exponential jumps, then binary search within the last interval.
             int start = i;
             i++;
-            while (i < sortedValues.Length && (sortedValues[i] >> ContainerKeyShift) == key)
-                i++;
+            long nextKeyStart = (key + 1) << ContainerKeyShift;
+            int jump = 1;
+            while (i + jump < sortedValues.Length && sortedValues[i + jump] < nextKeyStart)
+                jump <<= 1;
+            int lo = i + (jump >> 1);
+            int hi = Math.Min(i + jump, sortedValues.Length);
+            while (lo < hi)
+            {
+                int mid = lo + ((hi - lo) >> 1);
+                if (sortedValues[mid] < nextKeyStart)
+                    lo = mid + 1;
+                else
+                    hi = mid;
+            }
+            i = lo;
             int countInContainer = i - start;
 
             int slot = GetSlotForKey(key);
             if (slot < 0)
             {
-                // New container — check if it starts from 0 (Range candidate)
+                // New container — check if it's a contiguous range starting from 0
                 ushort firstLow = (ushort)(sortedValues[start] & ContainerValueMask);
-                if (firstLow == 0 && countInContainer > 0)
-                {
-                    // Check if sequential from 0
-                    bool isSequential = true;
-                    for (int j = 1; j < countInContainer && isSequential; j++)
-                    {
-                        if ((ushort)(sortedValues[start + j] & ContainerValueMask) != j)
-                            isSequential = false;
-                    }
+                ushort lastLow = (ushort)(sortedValues[start + countInContainer - 1] & ContainerValueMask);
+                bool isRange = firstLow == 0 && (lastLow - firstLow) == countInContainer - 1;
 
-                    if (isSequential)
+                if (isRange)
+                {
+                    AddNewContainer(key, ContainerType.Range, new ContainerEntry
                     {
-                        AddNewContainer(key, ContainerType.Range, new ContainerEntry
-                        {
-                            Cardinality = countInContainer,
-                            Data = null,
-                            Storage = default
-                        });
-                        continue;
-                    }
+                        Cardinality = countInContainer,
+                        Data = null,
+                        Storage = default
+                    });
+                    continue;
                 }
 
-                // Create array or bitmap based on count
                 if (countInContainer > ArrayContainerMaxCardinality)
                 {
-                    // Directly create bitmap container
-                    _ctx.Allocate(BitmapContainerSizeInBytes, out ByteString storage);
-                    new Span<byte>(storage.Ptr, BitmapContainerSizeInBytes).Clear();
-                    var bitmapPtr = (ulong*)storage.Ptr;
-                    int card = 0;
-                    for (int j = start; j < start + countInContainer; j++)
-                    {
-                        ushort low = (ushort)(sortedValues[j] & ContainerValueMask);
-                        ulong mask = 1UL << (low & 63);
-                        if ((bitmapPtr[low >> 6] & mask) == 0)
-                        {
-                            bitmapPtr[low >> 6] |= mask;
-                            card++;
-                        }
-                    }
-                    AddNewContainer(key, ContainerType.Bitmap, new ContainerEntry
-                    {
-                        Cardinality = card,
-                        Data = storage.Ptr,
-                        Storage = storage
-                    });
+                    CreateBitmapContainerFromSorted(key, sortedValues, start, countInContainer);
                 }
                 else
                 {
-                    // Create array container with enough space and fill
-                    int neededBytes = Math.Max(InitialArrayContainerSizeInBytes, countInContainer * sizeof(ushort));
-                    _ctx.Allocate(neededBytes, out ByteString storage);
-                    storage.ToSpan<byte>().Clear();
-                    var newEntry = new ContainerEntry
-                    {
-                        Cardinality = countInContainer,
-                        Data = storage.Ptr,
-                        Storage = storage
-                    };
-                    ushort* arr = (ushort*)storage.Ptr;
-                    for (int j = 0; j < countInContainer; j++)
-                        arr[j] = (ushort)(sortedValues[start + j] & ContainerValueMask);
-                    AddNewContainer(key, ContainerType.ArrayUnsorted, newEntry);
+                    CreateArrayContainerFromSorted(key, sortedValues, start, countInContainer);
                 }
             }
             else
             {
-                // Existing container — add values one by one (container type may change)
-                for (int j = start; j < start + countInContainer; j++)
+                // Existing container — batch add via AddRangeToContainer
+                AddRangeToContainer(slot, sortedValues, start, countInContainer);
+            }
+        }
+    }
+
+    /// <summary>Create a new bitmap container from sorted values. Branchless bit setting.</summary>
+    private void CreateBitmapContainerFromSorted(long key, ReadOnlySpan<long> sortedValues, int start, int count)
+    {
+        _ctx.Allocate(BitmapContainerSizeInBytes, out ByteString storage);
+        new Span<byte>(storage.Ptr, BitmapContainerSizeInBytes).Clear();
+        var bitmapPtr = (ulong*)storage.Ptr;
+
+        // Branchless: accumulate bits per word, flush when word index changes
+        for (int j = start; j < start + count; j++)
+        {
+            ushort low = (ushort)(sortedValues[j] & ContainerValueMask);
+            bitmapPtr[low >> 6] |= 1UL << (low & 63);
+        }
+
+        // Count is exactly the input count (sorted values from posting lists have no duplicates)
+        AddNewContainer(key, ContainerType.Bitmap, new ContainerEntry
+        {
+            Cardinality = count,
+            Data = storage.Ptr,
+            Storage = storage
+        });
+    }
+
+    /// <summary>Create a new array container from sorted values with SIMD-friendly allocation.</summary>
+    private void CreateArrayContainerFromSorted(long key, ReadOnlySpan<long> sortedValues, int start, int count)
+    {
+        // Allocate SIMD-aligned: at least InitialArrayContainerSizeInBytes for SIMD operations
+        int neededBytes = Math.Max(InitialArrayContainerSizeInBytes, count * sizeof(ushort));
+        _ctx.Allocate(neededBytes, out ByteString storage);
+        new Span<byte>(storage.Ptr, storage.Length).Clear();
+
+        ushort* arr = (ushort*)storage.Ptr;
+        NarrowLongToUshort(sortedValues, start, count, arr);
+
+        AddNewContainer(key, ContainerType.ArrayUnsorted, new ContainerEntry
+        {
+            Cardinality = count,
+            Data = storage.Ptr,
+            Storage = storage
+        });
+    }
+
+    /// <summary>Batch-add sorted values into an existing container.</summary>
+    private void AddRangeToContainer(int slot, ReadOnlySpan<long> sortedValues, int start, int count)
+    {
+        ref ContainerEntry entry = ref _entries[slot];
+        ContainerType type = _types.RawItems[slot];
+
+        switch (type)
+        {
+            case ContainerType.Bitmap:
+            {
+                // Set bits directly — no allocation needed
+                var bitmapPtr = (ulong*)entry.Data;
+                int added = 0;
+                for (int j = start; j < start + count; j++)
                 {
                     ushort low = (ushort)(sortedValues[j] & ContainerValueMask);
-                    ref ContainerEntry entry = ref _entries[slot];
-                    AddToContainer(ref entry, slot, low);
+                    ulong mask = 1UL << (low & 63);
+                    ulong word = bitmapPtr[low >> 6];
+                    if ((word & mask) == 0)
+                    {
+                        bitmapPtr[low >> 6] = word | mask;
+                        added++;
+                    }
                 }
+                entry.Cardinality += added;
+                break;
+            }
+
+            case ContainerType.Range:
+            {
+                // Check if all new values extend the range
+                ushort firstLow = (ushort)(sortedValues[start] & ContainerValueMask);
+                ushort lastLow = (ushort)(sortedValues[start + count - 1] & ContainerValueMask);
+                if (firstLow == entry.Cardinality && lastLow - firstLow == count - 1)
+                {
+                    // Perfect extension
+                    entry.Cardinality += count;
+                }
+                else
+                {
+                    // Can't extend range — convert to bitmap and add
+                    ConvertRangeToBitmap(ref entry, ref _types.RawItems[slot]);
+                    goto case ContainerType.Bitmap;
+                }
+                break;
+            }
+
+            case ContainerType.Array:
+            case ContainerType.ArrayUnsorted:
+            {
+                int newTotal = entry.Cardinality + count;
+                if (newTotal > ArrayContainerMaxCardinality)
+                {
+                    // Convert to bitmap and add
+                    ConvertArrayToBitmap(ref entry, ref _types.RawItems[slot]);
+                    goto case ContainerType.Bitmap;
+                }
+
+                // Ensure enough space
+                int neededBytes = Math.Max(InitialArrayContainerSizeInBytes, newTotal * sizeof(ushort));
+                if (entry.Storage.Length < neededBytes)
+                {
+                    _ctx.Allocate(neededBytes, out ByteString newStorage);
+                    new Span<byte>(newStorage.Ptr, newStorage.Length).Clear();
+                    new Span<byte>(entry.Data, entry.Cardinality * sizeof(ushort))
+                        .CopyTo(new Span<byte>(newStorage.Ptr, newStorage.Length));
+                    _ctx.Release(ref entry.Storage);
+                    entry.Data = newStorage.Ptr;
+                    entry.Storage = newStorage;
+                }
+
+                // Append new values
+                ushort* arr = (ushort*)entry.Data;
+                for (int j = 0; j < count; j++)
+                    arr[entry.Cardinality + j] = (ushort)(sortedValues[start + j] & ContainerValueMask);
+                entry.Cardinality = newTotal;
+                _types.RawItems[slot] = ContainerType.ArrayUnsorted;
+                break;
             }
         }
     }
@@ -594,22 +688,26 @@ public unsafe struct RoaringBitmap : IDisposable
             case (ContainerType.Bitmap, ContainerType.Array):
             case (ContainerType.Bitmap, ContainerType.ArrayUnsorted):
             {
-                // Iterate right's values, keep those present in left's bitmap. Order doesn't matter.
+                // AND bitmap with array: use a temp bitmap on the stack to collect
+                // the intersection, then copy back. This avoids heap allocation.
                 ushort* arr = (ushort*)right.Data;
                 var bmp = left.BitmapData;
-                _ctx.Allocate(Math.Max(InitialArrayContainerSizeInBytes, right.Cardinality * sizeof(ushort)), out ByteString newStorage);
-                ushort* dst = (ushort*)newStorage.Ptr;
+                ulong* scratch = stackalloc ulong[BitmapContainerSizeInUlongs];
+                new Span<byte>(scratch, BitmapContainerSizeInBytes).Clear();
+
                 int count = 0;
                 for (int i = 0; i < right.Cardinality; i++)
                 {
                     ushort val = arr[i];
                     if ((bmp[val >> 6] & (1UL << (val & 63))) != 0)
-                        dst[count++] = val;
+                    {
+                        scratch[val >> 6] |= 1UL << (val & 63);
+                        count++;
+                    }
                 }
-                _ctx.Release(ref left.Storage);
-                left.Storage = newStorage;
-                left.Data = newStorage.Ptr;
-                leftType = rightType; // preserve sorted/unsorted status
+
+                new Span<byte>(scratch, BitmapContainerSizeInBytes)
+                    .CopyTo(new Span<byte>(left.Data, BitmapContainerSizeInBytes));
                 left.Cardinality = count;
                 break;
             }
@@ -1386,6 +1484,16 @@ public unsafe struct RoaringBitmap : IDisposable
         // ArrayUnsorted is allowed for small containers after PrepareForReading
     }
 
+    [Conditional("DEBUG")]
+    private static void AssertSorted(ReadOnlySpan<long> values)
+    {
+        for (int i = 1; i < values.Length; i++)
+        {
+            Debug.Assert(values[i] >= values[i - 1],
+                $"AddRange requires sorted input: values[{i - 1}]={values[i - 1]} > values[{i}]={values[i]}");
+        }
+    }
+
     /// <summary>
     /// Comparison sort + dedup for small arrays below the bitmap radix sort threshold.
     /// </summary>
@@ -2028,6 +2136,69 @@ public unsafe struct RoaringBitmap : IDisposable
         [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector128<ulong> Apply(Vector128<ulong> a, Vector128<ulong> b) => Vector128.AndNot(a, b);
         [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector256<ulong> Apply(Vector256<ulong> a, Vector256<ulong> b) => Vector256.AndNot(a, b);
         [MethodImpl(MethodImplOptions.AggressiveInlining)] public static Vector512<ulong> Apply(Vector512<ulong> a, Vector512<ulong> b) => Vector512.AndNot(a, b);
+    }
+
+    /// <summary>
+    /// Narrow long values to ushort (extract low 16 bits) using SIMD when available.
+    /// Uses Vector256.IsHardwareAccelerated for cross-platform support (x86 + ARM).
+    /// </summary>
+    internal static void NarrowLongToUshort(ReadOnlySpan<long> source, int start, int count, ushort* destination)
+    {
+        int j = 0;
+
+        // Process 16 elements at a time using 256-bit registers.
+        // Load 8 longs (2 vectors), mask to 32-bit, narrow to 16-bit.
+        if (Vector256.IsHardwareAccelerated && count >= 16)
+        {
+            var mask32 = Vector256.Create((uint)ContainerValueMask);
+
+            for (; j <= count - 16; j += 16)
+            {
+                // Load 4+4 longs, truncate to uint (low 32 bits)
+                var lo0 = Vector256.Create(
+                    (uint)source[start + j], (uint)source[start + j + 1],
+                    (uint)source[start + j + 2], (uint)source[start + j + 3],
+                    (uint)source[start + j + 4], (uint)source[start + j + 5],
+                    (uint)source[start + j + 6], (uint)source[start + j + 7]);
+                var lo1 = Vector256.Create(
+                    (uint)source[start + j + 8], (uint)source[start + j + 9],
+                    (uint)source[start + j + 10], (uint)source[start + j + 11],
+                    (uint)source[start + j + 12], (uint)source[start + j + 13],
+                    (uint)source[start + j + 14], (uint)source[start + j + 15]);
+
+                // Mask to 16-bit range
+                lo0 &= mask32;
+                lo1 &= mask32;
+
+                // Narrow uint→ushort: pack 8 uints into 8 ushorts
+                var narrow0 = Vector256.Narrow(lo0, lo1); // 16 ushorts
+                narrow0.StoreUnsafe(ref *destination, (nuint)j);
+            }
+        }
+        else if (Vector128.IsHardwareAccelerated && count >= 8)
+        {
+            var mask32 = Vector128.Create((uint)ContainerValueMask);
+
+            for (; j <= count - 8; j += 8)
+            {
+                var lo0 = Vector128.Create(
+                    (uint)source[start + j], (uint)source[start + j + 1],
+                    (uint)source[start + j + 2], (uint)source[start + j + 3]);
+                var lo1 = Vector128.Create(
+                    (uint)source[start + j + 4], (uint)source[start + j + 5],
+                    (uint)source[start + j + 6], (uint)source[start + j + 7]);
+
+                lo0 &= mask32;
+                lo1 &= mask32;
+
+                var narrow0 = Vector128.Narrow(lo0, lo1);
+                narrow0.StoreUnsafe(ref *destination, (nuint)j);
+            }
+        }
+
+        // Scalar tail
+        for (; j < count; j++)
+            destination[j] = (ushort)(source[start + j] & ContainerValueMask);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

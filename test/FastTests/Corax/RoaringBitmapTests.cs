@@ -823,17 +823,20 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     #region WP1: New methods (Clear, Count, AddRange, LazyOrWith, RepairAfterLazy)
 
     [RavenFact(RavenTestCategory.Corax)]
-    public void Count_EqualsCardinality()
+    public void Count_ReturnsCorrectValue()
     {
         using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
-        var bitmap = new RoaringBitmap(bsc);
+        using var bitmap = new RoaringBitmap(bsc);
+        Assert.Equal(0, bitmap.Count);
+
         for (int i = 0; i < 1000; i++)
             bitmap.Add(i);
         bitmap.PrepareForReading();
-
-        Assert.Equal(bitmap.Count, bitmap.Count);
         Assert.Equal(1000, bitmap.Count);
-        bitmap.Dispose();
+
+        // Verify after clear
+        bitmap.Clear();
+        Assert.Equal(0, bitmap.Count);
     }
 
     [RavenFact(RavenTestCategory.Corax)]
