@@ -343,40 +343,68 @@ public static class QueryILEmitter
 
         // Emit each predicate check — comparison kind baked at emit time.
         // Numeric: direct field access + comparison instruction (no delegate).
-        // String: MultiUnaryItem.CompareLiteral fallback (encoding-aware).
+        // Slice: SequenceCompareTo / SequenceEqual — direct byte comparison.
+        // OR groups: branch on first matching sub-predicate.
+        int fieldRootIndex = 0;
         for (int p = 0; p < predicates.Length; p++)
         {
             ref var pred = ref predicates[p];
 
-            // reader.Reset()
-            il.Emit(OpCodes.Ldloca, readerLocal);
-            il.Emit(OpCodes.Call, s_readerReset);
-
-            // if (!reader.FindNext(ctx.FieldRootPages[p])) goto nextEntry
-            il.Emit(OpCodes.Ldloca, readerLocal);
-            il.Emit(OpCodes.Ldarg_0);
-            il.Emit(OpCodes.Ldflda, s_ctxFieldRootPages);
-            EmitLdcI4(il, p);
-            il.Emit(OpCodes.Call, s_spanLongIndexer);
-            il.Emit(OpCodes.Ldind_I8);
-            il.Emit(OpCodes.Call, s_readerFindNext);
-            il.Emit(OpCodes.Brfalse, nextEntry);
-
-            // Emit the comparison based on value type (baked at emit time)
-            switch (pred.ValueType)
+            if (pred.OrBranches != null && pred.OrBranches.Length > 0)
             {
-                case ScanValueType.Long:
-                    EmitLongComparison(il, pred, readerLocal);
-                    il.Emit(OpCodes.Brfalse, nextEntry);
-                    break;
-                case ScanValueType.Double:
-                    EmitDoubleComparison(il, pred, readerLocal);
-                    il.Emit(OpCodes.Brfalse, nextEntry);
-                    break;
-                case ScanValueType.Slice:
-                    EmitSliceComparison(il, pred, readerLocal);
-                    il.Emit(OpCodes.Brfalse, nextEntry);
-                    break;
+                // OR group: succeed on first matching branch
+                var orPassed = il.DefineLabel();
+
+                for (int b = 0; b < pred.OrBranches.Length; b++)
+                {
+                    ref var branch = ref pred.OrBranches[b];
+                    var tryNextBranch = (b < pred.OrBranches.Length - 1)
+                        ? il.DefineLabel()
+                        : nextEntry; // last branch fails → entry fails
+
+                    il.Emit(OpCodes.Ldloca, readerLocal);
+                    il.Emit(OpCodes.Call, s_readerReset);
+
+                    // FindNext(fieldRootPages[fieldRootIndex])
+                    il.Emit(OpCodes.Ldloca, readerLocal);
+                    il.Emit(OpCodes.Ldarg_0);
+                    il.Emit(OpCodes.Ldflda, s_ctxFieldRootPages);
+                    EmitLdcI4(il, fieldRootIndex);
+                    il.Emit(OpCodes.Call, s_spanLongIndexer);
+                    il.Emit(OpCodes.Ldind_I8);
+                    il.Emit(OpCodes.Call, s_readerFindNext);
+                    il.Emit(OpCodes.Brfalse, tryNextBranch);
+
+                    EmitSingleComparison(il, branch, readerLocal);
+                    il.Emit(OpCodes.Brtrue, orPassed); // match → OR succeeds
+
+                    if (b < pred.OrBranches.Length - 1)
+                        il.MarkLabel(tryNextBranch);
+
+                    fieldRootIndex++;
+                }
+
+                il.MarkLabel(orPassed);
+            }
+            else
+            {
+                // Simple AND predicate
+                il.Emit(OpCodes.Ldloca, readerLocal);
+                il.Emit(OpCodes.Call, s_readerReset);
+
+                il.Emit(OpCodes.Ldloca, readerLocal);
+                il.Emit(OpCodes.Ldarg_0);
+                il.Emit(OpCodes.Ldflda, s_ctxFieldRootPages);
+                EmitLdcI4(il, fieldRootIndex);
+                il.Emit(OpCodes.Call, s_spanLongIndexer);
+                il.Emit(OpCodes.Ldind_I8);
+                il.Emit(OpCodes.Call, s_readerFindNext);
+                il.Emit(OpCodes.Brfalse, nextEntry);
+
+                EmitSingleComparison(il, pred, readerLocal);
+                il.Emit(OpCodes.Brfalse, nextEntry);
+
+                fieldRootIndex++;
             }
         }
 
@@ -410,6 +438,23 @@ public static class QueryILEmitter
         // Clear the now-unused TempBitmap
         EmitLoadBitmapRef(il, s_ctxTempBitmap);
         il.Emit(OpCodes.Call, s_clear);
+    }
+
+    /// <summary>Emit a single predicate comparison — dispatches to Long/Double/Slice.</summary>
+    private static void EmitSingleComparison(ILGenerator il, in ScanPredicateInfo pred, LocalBuilder readerLocal)
+    {
+        switch (pred.ValueType)
+        {
+            case ScanValueType.Long:
+                EmitLongComparison(il, pred, readerLocal);
+                break;
+            case ScanValueType.Double:
+                EmitDoubleComparison(il, pred, readerLocal);
+                break;
+            case ScanValueType.Slice:
+                EmitSliceComparison(il, pred, readerLocal);
+                break;
+        }
     }
 
     /// <summary>Emit: reader.CurrentLong [op] ctx.LongParams[paramIndex] → bool on stack.
