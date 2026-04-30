@@ -1,11 +1,11 @@
-﻿using System;
+using System;
 using Corax.Mappings;
 using Corax.Querying.Matches.Meta;
 using Corax.Utils;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryOptimizer;
 
-public sealed class CoraxVectorItem(CoraxQueryBuilder.Parameters parameters) : IQueryMatch, ICoraxClause
+public sealed class CoraxVectorItem(CoraxQueryBuilder.Parameters parameters) : IQueryMatch
 {
     private bool _isEmpty;
     private FieldMetadata _field;
@@ -34,7 +34,7 @@ public sealed class CoraxVectorItem(CoraxQueryBuilder.Parameters parameters) : I
     {
         return new CoraxVectorItem(parameters){_isEmpty = true};
     }
-    
+
     public static CoraxVectorItem BuildSingleVector(CoraxQueryBuilder.Parameters parameters, FieldMetadata field, VectorValue vectorToSearch, in int numberOfCandidates, in float minimumDistance, in bool isExact)
     {
         return new(parameters)
