@@ -298,8 +298,8 @@ internal static class QueryPlanBuilder
         switch (methodName)
         {
             case "search":
-                ParseSearchMethod(method, clauses, queryParameters);
-                break;
+                // search() requires analyzer setup that's complex — fall back
+                throw new NotSupportedException("search() queries need analyzer setup — falling back to old path");
 
             case "startsWith":
                 ParsePrefixMethod(method, clauses, queryParameters, ClauseType.StartsWith);

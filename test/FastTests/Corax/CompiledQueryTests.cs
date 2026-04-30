@@ -600,6 +600,38 @@ public class CompiledQueryTests : RavenTestBase
         }
     }
 
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying, Skip = "search() requires analyzer setup — falls back to old path")]
+    public async Task SearchQuery_BitmapPipeline()
+    {
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+        options.ModifyDatabaseRecord += record =>
+        {
+            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
+        };
+        using var store = GetDocumentStore(options);
+
+        using (var session = store.OpenAsyncSession())
+        {
+            await session.StoreAsync(new TestDoc { Name = "hello world", Category = "cat-0", Status = "active" });
+            await session.StoreAsync(new TestDoc { Name = "hello there", Category = "cat-0", Status = "active" });
+            await session.StoreAsync(new TestDoc { Name = "goodbye world", Category = "cat-1", Status = "inactive" });
+            await session.StoreAsync(new TestDoc { Name = "foo bar", Category = "cat-2", Status = "active" });
+            await session.SaveChangesAsync();
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        // search() query without boost — should use bitmap path
+        using (var session = store.OpenAsyncSession())
+        {
+            var results = await session.Advanced.AsyncRawQuery<TestDoc>(
+                "from TestDocs where search(Name, 'hello')")
+                .ToListAsync();
+
+            Assert.Equal(2, results.Count);
+        }
+    }
+
     private class TestDoc
     {
         public string Id { get; set; }
