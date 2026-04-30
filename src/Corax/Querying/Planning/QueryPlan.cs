@@ -36,24 +36,41 @@ public struct PlanOp
 }
 
 /// <summary>Describes a single entry-scan predicate for IL emission.
-/// The emitter uses this to generate direct calls to CompareNumerical/CompareLiteral
-/// without a type switch.</summary>
+/// For numeric predicates, the emitter generates direct comparisons
+/// (reader.CurrentLong > ctx.LongParams[i]) — no delegate call, no MultiUnaryItem.
+/// For string predicates, falls back to MultiUnaryItem.CompareLiteral.</summary>
 public struct ScanPredicateInfo
 {
-    /// <summary>Field name for GetLookupRootPage.</summary>
+    /// <summary>Field name — used by caller to resolve root page into FieldRootPages span.</summary>
     public string FieldName;
-    /// <summary>Index into the ScanPredicates span in QueryScanContext.</summary>
-    public int PredicateIndex;
-    /// <summary>Which comparison method to call.</summary>
-    public ScanCompareKind CompareKind;
+    /// <summary>What type of value to compare.</summary>
+    public ScanValueType ValueType;
+    /// <summary>The comparison operation.</summary>
+    public ScanCompareOp CompareOp;
+    /// <summary>Index into LongParams/DoubleParams/ScanPredicates span depending on ValueType.</summary>
+    public int ParamIndex;
+    /// <summary>For Between: second value index in the same typed span.</summary>
+    public int ParamIndex2;
     /// <summary>For OR groups: sub-predicates. null for simple AND predicates.</summary>
     public ScanPredicateInfo[] OrBranches;
 }
 
-public enum ScanCompareKind : byte
+public enum ScanValueType : byte
 {
-    Numerical,  // CompareNumerical — long or double
-    Literal,    // CompareLiteral — string/slice
+    Long,    // reader.CurrentLong vs ctx.LongParams[i]
+    Double,  // reader.CurrentDouble vs ctx.DoubleParams[i]
+    Slice,   // MultiUnaryItem.CompareLiteral fallback
+}
+
+public enum ScanCompareOp : byte
+{
+    Equal,
+    NotEqual,
+    GreaterThan,
+    GreaterThanOrEqual,
+    LessThan,
+    LessThanOrEqual,
+    Between,
 }
 
 public class QueryPlan
