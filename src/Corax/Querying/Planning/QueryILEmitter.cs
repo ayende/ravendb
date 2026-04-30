@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
 using System.Text;
@@ -61,7 +62,8 @@ public static class QueryILEmitter
 
     // IndexSearcher — for entry scan
     private static readonly MethodInfo s_getEntryTermsReader =
-        typeof(IndexSearcher).GetMethod(nameof(IndexSearcher.GetEntryTermsReader), new[] { typeof(long), typeof(Page).MakeByRefType() })!;
+        typeof(IndexSearcher).GetMethod(nameof(IndexSearcher.GetEntryTermsReader),
+            new[] { typeof(long), typeof(Page).MakeByRefType(), typeof(Voron.Data.CompactTrees.CompactKey) })!;
 
     // EntryTermsReader
     private static readonly MethodInfo s_readerReset = typeof(EntryTermsReader).GetMethod(nameof(EntryTermsReader.Reset))!;
@@ -98,15 +100,19 @@ public static class QueryILEmitter
     private static readonly MethodInfo s_spanSliceIndexer =
         typeof(Span<Voron.Slice>).GetProperty("Item")!.GetGetMethod()!;
 
-    // ReadOnlySpan<byte>.SequenceCompareTo(ReadOnlySpan<byte>) — for ordered comparisons
+    // MemoryExtensions.SequenceCompareTo<byte>(ReadOnlySpan<byte>, ReadOnlySpan<byte>)
     private static readonly MethodInfo s_sequenceCompareTo =
-        typeof(MemoryExtensions).GetMethod(nameof(MemoryExtensions.SequenceCompareTo),
-            new[] { typeof(ReadOnlySpan<byte>), typeof(ReadOnlySpan<byte>) })!;
+        typeof(MemoryExtensions).GetMethods()
+            .First(m => m.Name == nameof(MemoryExtensions.SequenceCompareTo) && m.IsGenericMethod
+                && m.GetParameters().Length == 2)
+            .MakeGenericMethod(typeof(byte));
 
-    // ReadOnlySpan<byte>.SequenceEqual(ReadOnlySpan<byte>) — for equality
+    // MemoryExtensions.SequenceEqual<byte>(ReadOnlySpan<byte>, ReadOnlySpan<byte>)
     private static readonly MethodInfo s_sequenceEqual =
-        typeof(MemoryExtensions).GetMethod(nameof(MemoryExtensions.SequenceEqual),
-            new[] { typeof(ReadOnlySpan<byte>), typeof(ReadOnlySpan<byte>) })!;
+        typeof(MemoryExtensions).GetMethods()
+            .First(m => m.Name == nameof(MemoryExtensions.SequenceEqual) && m.IsGenericMethod
+                && m.GetParameters().Length == 2)
+            .MakeGenericMethod(typeof(byte));
 
     // Span<double> indexer
     private static readonly MethodInfo s_spanDoubleIndexer =
@@ -326,11 +332,12 @@ public static class QueryILEmitter
         il.Emit(OpCodes.Ldind_I8);
         il.Emit(OpCodes.Stloc, entryIdLocal);
 
-        // reader = searcher.GetEntryTermsReader(entryId, ref lastPage)
+        // reader = searcher.GetEntryTermsReader(entryId, ref lastPage, null)
         il.Emit(OpCodes.Ldarg_0);
         il.Emit(OpCodes.Ldfld, s_ctxSearcher);
         il.Emit(OpCodes.Ldloc, entryIdLocal);
         il.Emit(OpCodes.Ldloca, pageLocal);
+        il.Emit(OpCodes.Ldnull);                  // CompactKey key = null
         il.Emit(OpCodes.Call, s_getEntryTermsReader);
         il.Emit(OpCodes.Stloc, readerLocal);
 

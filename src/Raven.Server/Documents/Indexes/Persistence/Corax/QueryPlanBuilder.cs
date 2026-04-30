@@ -670,6 +670,25 @@ internal static class QueryPlanBuilder
         bool allNegated = clauses.Count > 0
             && (clauses[0].IsNegated || clauses[0].ClauseType == ClauseType.NotEquals);
 
+        // Build scan predicate infos for entry scan — only for AND chains with simple clauses
+        ScanPredicateInfo[] scanPredicateInfos = null;
+        if (!isOr && clauses.Count > 1)
+        {
+            var scanPreds = new List<ScanPredicateInfo>();
+            int longIndex = 0, doubleIndex = 0, sliceIndex = 0;
+
+            // Start from clause 1 (clause 0 is the fill operand)
+            for (int i = 1; i < clauses.Count; i++)
+            {
+                var pred = BuildScanPredicateInfo(clauses[i], ref longIndex, ref doubleIndex, ref sliceIndex);
+                if (pred != null)
+                    scanPreds.Add(pred.Value);
+            }
+
+            if (scanPreds.Count > 0)
+                scanPredicateInfos = scanPreds.ToArray();
+        }
+
         var plan = new QueryPlan
         {
             Ops = ops.ToArray(),
@@ -677,7 +696,8 @@ internal static class QueryPlanBuilder
             OperandOrdering = ordering,
             OperandCount = clauses.Count,
             Clauses = clauses.ToArray(),
-            AllNegated = allNegated
+            AllNegated = allNegated,
+            ScanPredicateInfos = scanPredicateInfos
         };
 
         // Generate EXPLAIN source
@@ -715,6 +735,199 @@ internal static class QueryPlanBuilder
             sb.AppendLine($"//   {op.Kind} (param={op.ParamIndex}, est={op.EstimatedCardinality:N0})");
         }
         return sb.ToString();
+    }
+
+    /// <summary>Extract typed parameter values from clauses for entry scan.
+    /// Called per-query at execution time. The values populate the QueryScanContext spans.</summary>
+    public static void ExtractScanParameters(QueryPlan plan, IndexSearcher indexSearcher,
+        out long[] longParams, out double[] doubleParams, out Voron.Slice[] sliceParams, out long[] fieldRootPages)
+    {
+        var predicates = plan.ScanPredicateInfos;
+        if (predicates == null || predicates.Length == 0)
+        {
+            longParams = Array.Empty<long>();
+            doubleParams = Array.Empty<double>();
+            sliceParams = Array.Empty<Voron.Slice>();
+            fieldRootPages = Array.Empty<long>();
+            return;
+        }
+
+        var clauses = plan.Clauses;
+        var longs = new List<long>();
+        var doubles = new List<double>();
+        var slices = new List<Voron.Slice>();
+        var roots = new List<long>();
+
+        foreach (var pred in predicates)
+        {
+            ExtractParamsFromPredicate(pred, clauses, indexSearcher, longs, doubles, slices, roots);
+        }
+
+        longParams = longs.Count > 0 ? longs.ToArray() : Array.Empty<long>();
+        doubleParams = doubles.Count > 0 ? doubles.ToArray() : Array.Empty<double>();
+        sliceParams = slices.Count > 0 ? slices.ToArray() : Array.Empty<Voron.Slice>();
+        fieldRootPages = roots.Count > 0 ? roots.ToArray() : Array.Empty<long>();
+    }
+
+    private static void ExtractParamsFromPredicate(ScanPredicateInfo pred, object[] clauses,
+        IndexSearcher indexSearcher, List<long> longs, List<double> doubles,
+        List<Voron.Slice> slices, List<long> roots)
+    {
+        if (pred.OrBranches != null)
+        {
+            foreach (var branch in pred.OrBranches)
+                ExtractParamsFromPredicate(branch, clauses, indexSearcher, longs, doubles, slices, roots);
+            return;
+        }
+
+        // Resolve field root page
+        roots.Add(indexSearcher.FieldCache.GetLookupRootPage(pred.FieldName));
+
+        // The values are in the clauses — find the matching clause.
+        // The scan predicates correspond to clauses 1..N (skipping clause 0 which is the fill).
+        // We need to find the clause for this predicate by field name.
+        ClauseInfo matchingClause = null;
+        if (clauses != null)
+        {
+            for (int i = 0; i < clauses.Length; i++)
+            {
+                if (clauses[i] is ClauseInfo ci && ci.FieldName == pred.FieldName)
+                {
+                    matchingClause = ci;
+                    break;
+                }
+            }
+        }
+
+        if (matchingClause == null)
+            return;
+
+        switch (pred.ValueType)
+        {
+            case ScanValueType.Long:
+                if (long.TryParse(matchingClause.TermValue, out long lv))
+                    longs.Add(lv);
+                if (matchingClause.TermValue2 != null && long.TryParse(matchingClause.TermValue2, out long lv2))
+                    longs.Add(lv2);
+                break;
+            case ScanValueType.Double:
+                if (double.TryParse(matchingClause.TermValue,
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out double dv))
+                    doubles.Add(dv);
+                if (matchingClause.TermValue2 != null && double.TryParse(matchingClause.TermValue2,
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out double dv2))
+                    doubles.Add(dv2);
+                break;
+            case ScanValueType.Slice:
+                var fieldMeta = indexSearcher.FieldMetadataBuilder(matchingClause.FieldName);
+                slices.Add(indexSearcher.EncodeAndApplyAnalyzer(fieldMeta, matchingClause.TermValue));
+                if (matchingClause.TermValue2 != null)
+                    slices.Add(indexSearcher.EncodeAndApplyAnalyzer(fieldMeta, matchingClause.TermValue2));
+                break;
+        }
+    }
+
+    /// <summary>Convert a ClauseInfo to a ScanPredicateInfo for entry scan IL emission.
+    /// Returns null for complex clauses that can't be entry-scanned.</summary>
+    private static ScanPredicateInfo? BuildScanPredicateInfo(ClauseInfo clause,
+        ref int longIndex, ref int doubleIndex, ref int sliceIndex)
+    {
+        // Complex clauses can't be entry-scanned
+        switch (clause.ClauseType)
+        {
+            case ClauseType.Search:
+            case ClauseType.Regex:
+            case ClauseType.Spatial:
+            case ClauseType.Vector:
+            case ClauseType.In:
+            case ClauseType.AllIn:
+            case ClauseType.Exists:
+            case ClauseType.StartsWith:
+            case ClauseType.EndsWith:
+                return null;
+
+            case ClauseType.OrGroup:
+            {
+                if (clause.OrSubClauses == null || clause.OrSubClauses.Count == 0)
+                    return null;
+                var branches = new List<ScanPredicateInfo>();
+                int li = longIndex, di = doubleIndex, si = sliceIndex;
+                foreach (var sub in clause.OrSubClauses)
+                {
+                    var subPred = BuildScanPredicateInfo(sub, ref li, ref di, ref si);
+                    if (subPred == null)
+                        return null; // Any complex sub-clause → can't entry-scan the whole group
+                    branches.Add(subPred.Value);
+                }
+                longIndex = li; doubleIndex = di; sliceIndex = si;
+                return new ScanPredicateInfo
+                {
+                    FieldName = clause.OrSubClauses[0].FieldName,
+                    OrBranches = branches.ToArray()
+                };
+            }
+        }
+
+        // Determine value type and comparison op
+        ScanCompareOp compareOp = clause.ClauseType switch
+        {
+            ClauseType.Equals => ScanCompareOp.Equal,
+            ClauseType.NotEquals => ScanCompareOp.NotEqual,
+            ClauseType.GreaterThan => ScanCompareOp.GreaterThan,
+            ClauseType.GreaterThanOrEqual => ScanCompareOp.GreaterThanOrEqual,
+            ClauseType.LessThan => ScanCompareOp.LessThan,
+            ClauseType.LessThanOrEqual => ScanCompareOp.LessThanOrEqual,
+            ClauseType.Between => ScanCompareOp.Between,
+            _ => ScanCompareOp.Equal
+        };
+
+        // Determine the value type from the term value
+        if (clause.TermValue != null && long.TryParse(clause.TermValue, out _))
+        {
+            int paramIdx = longIndex++;
+            int paramIdx2 = clause.ClauseType == ClauseType.Between && clause.TermValue2 != null
+                ? longIndex++ : -1;
+            return new ScanPredicateInfo
+            {
+                FieldName = clause.FieldName,
+                ValueType = ScanValueType.Long,
+                CompareOp = compareOp,
+                ParamIndex = paramIdx,
+                ParamIndex2 = paramIdx2
+            };
+        }
+
+        if (clause.TermValue != null && double.TryParse(clause.TermValue,
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out _))
+        {
+            int paramIdx = doubleIndex++;
+            int paramIdx2 = clause.ClauseType == ClauseType.Between && clause.TermValue2 != null
+                ? doubleIndex++ : -1;
+            return new ScanPredicateInfo
+            {
+                FieldName = clause.FieldName,
+                ValueType = ScanValueType.Double,
+                CompareOp = compareOp,
+                ParamIndex = paramIdx,
+                ParamIndex2 = paramIdx2
+            };
+        }
+
+        // String/Slice comparison
+        int sliceIdx = sliceIndex++;
+        int sliceIdx2 = clause.ClauseType == ClauseType.Between && clause.TermValue2 != null
+            ? sliceIndex++ : -1;
+        return new ScanPredicateInfo
+        {
+            FieldName = clause.FieldName,
+            ValueType = ScanValueType.Slice,
+            CompareOp = compareOp,
+            ParamIndex = sliceIdx,
+            ParamIndex2 = sliceIdx2
+        };
     }
 
     private static QueryPlan BuildAllEntriesPlan()

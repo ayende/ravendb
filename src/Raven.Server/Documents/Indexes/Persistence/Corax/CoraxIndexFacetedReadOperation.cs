@@ -120,8 +120,11 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
                     planCache.Add(queryText, compiledPlan);
                 }
                 var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, _indexSearcher, planParams, parameters);
+                QueryPlanBuilder.ExtractScanParameters(plan, _indexSearcher,
+                    out var longParams, out var doubleParams, out var sliceParams, out var fieldRootPages);
                 baseQuery = new global::Corax.Querying.Matches.CompiledQueryMatch(
-                    plan, compiledPlan, resolvedMatches, System.Array.Empty<global::Corax.Querying.Matches.MultiUnaryItem>(),
+                    compiledPlan, resolvedMatches,
+                    longParams, doubleParams, sliceParams, fieldRootPages,
                     _indexSearcher, _allocator, long.MaxValue, token);
             }
             else
@@ -308,8 +311,11 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
                 Ordering = plan.OperandOrdering
             };
             var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, _indexSearcher, planParams, parameters);
+            QueryPlanBuilder.ExtractScanParameters(plan, _indexSearcher,
+                out var longParams2, out var doubleParams2, out var sliceParams2, out var fieldRootPages2);
             baseQuery = new global::Corax.Querying.Matches.CompiledQueryMatch(
-                plan, compiledPlan, resolvedMatches, System.Array.Empty<global::Corax.Querying.Matches.MultiUnaryItem>(),
+                compiledPlan, resolvedMatches,
+                longParams2, doubleParams2, sliceParams2, fieldRootPages2,
                 _indexSearcher, _allocator, long.MaxValue, token);
         }
         else
