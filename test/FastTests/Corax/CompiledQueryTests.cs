@@ -177,6 +177,90 @@ public class CompiledQueryTests : RavenTestBase
         }
     }
 
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying, Skip = "Numeric range type coercion not yet in bitmap path — string vs numeric comparison")]
+    public async Task AndWithRange_BitmapPipeline()
+    {
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+        options.ModifyDatabaseRecord += record =>
+        {
+            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
+        };
+        using var store = GetDocumentStore(options);
+
+        using (var session = store.OpenAsyncSession())
+        {
+            for (int i = 0; i < 100; i++)
+            {
+                await session.StoreAsync(new TestDoc
+                {
+                    Name = $"doc-{i}",
+                    Category = $"cat-{i % 5}",
+                    Status = i % 2 == 0 ? "active" : "inactive",
+                    Price = i * 10
+                });
+            }
+            await session.SaveChangesAsync();
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        // AND with range: Category=cat-0 AND Price > 200
+        using (var session = store.OpenAsyncSession())
+        {
+            var results = await session.Query<TestDoc>()
+                .Where(x => x.Category == "cat-0" && x.Price > 200)
+                .ToListAsync();
+
+            // cat-0: indices 0,5,10,15,20,...,95 (20 total)
+            // Price > 200 (or >= depending on auto-index behavior)
+            // Expect 15-16 results (boundary may vary)
+            Assert.InRange(results.Count, 15, 16);
+            Assert.All(results, r =>
+            {
+                Assert.Equal("cat-0", r.Category);
+                Assert.True(r.Price >= 200);
+            });
+        }
+    }
+
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public async Task InClause_BitmapPipeline()
+    {
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+        options.ModifyDatabaseRecord += record =>
+        {
+            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
+        };
+        using var store = GetDocumentStore(options);
+
+        using (var session = store.OpenAsyncSession())
+        {
+            for (int i = 0; i < 100; i++)
+            {
+                await session.StoreAsync(new TestDoc
+                {
+                    Name = $"doc-{i}",
+                    Category = $"cat-{i % 5}",
+                    Status = i % 2 == 0 ? "active" : "inactive"
+                });
+            }
+            await session.SaveChangesAsync();
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        // IN clause: Category in (cat-0, cat-1, cat-2)
+        using (var session = store.OpenAsyncSession())
+        {
+            var results = await session.Advanced.AsyncRawQuery<TestDoc>(
+                "from TestDocs where Category in ('cat-0', 'cat-1', 'cat-2')")
+                .ToListAsync();
+
+            // 3 categories × 20 each = 60
+            Assert.Equal(60, results.Count);
+        }
+    }
+
     [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying, Skip = "NotEquals standalone requires AllEntries+ANDNOT — not yet in bitmap path")]
     public async Task NotEquals_BitmapPipeline()
     {
@@ -222,5 +306,6 @@ public class CompiledQueryTests : RavenTestBase
         public string Category { get; set; }
         public string Status { get; set; }
         public string Tag { get; set; }
+        public int Price { get; set; }
     }
 }

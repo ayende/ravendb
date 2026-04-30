@@ -70,6 +70,9 @@ This file is a running log — entries are appended as work progresses.
 ### Lazy OR optimisation
 LazyOrWith currently delegates to OrWith (maintains cardinality eagerly). The popcount-skip optimisation would add a per-container dirty flag to skip popcount during multi-term IN chains, then recompute in one pass via RepairAfterLazy. This saves N-1 popcount passes over 8KB Bitmap containers for an N-term IN clause. Estimated impact: 10-30% on large IN clauses with dense containers.
 
+### Numeric range type coercion
+Range queries (>, >=, <, <=, BETWEEN) currently pass term values as strings to IndexSearcher.GreaterThanQuery etc. For numeric fields (int, long, double), this results in lexicographic comparison instead of numeric comparison ("50" > "200" = true). The QueryPlanBuilder needs to detect the field type from the index schema and pass the appropriate typed value (long, double) to the range query methods. This mirrors the type detection logic in CoraxBooleanItem's constructor (lines 56-72, checking `term is long`, `term is double`).
+
 ### Standalone NotEquals (Status != "active")
 The bitmap pipeline doesn't handle standalone `!=` yet. It requires: fill AllEntries into bitmap, then ANDNOT with the negated term. The plan emitter currently treats `!=` like `=` with an `IsNegated` flag, but only uses that flag for AND chains (where it emits AndNotWithPostings). For a standalone `!=` (no other AND operands), the emitter needs to first fill AllEntries then ANDNOT. The old path handles this via `AndNot(AllEntries, term)`.
 
