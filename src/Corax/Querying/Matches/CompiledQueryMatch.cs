@@ -8,17 +8,14 @@ using Sparrow.Server;
 
 namespace Corax.Querying.Matches;
 
-/// <summary>
-/// Bridges the Corax 2.0 compiled execution path into the existing IQueryMatch interface.
-/// On first Fill() call, invokes the compiled DynamicMethod delegate to populate a
-/// RoaringBitmap, then iterates it across subsequent Fill() calls.
-/// </summary>
 public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
 {
     private readonly QueryILEmitter.CompiledExecuteDelegate _compiledDelegate;
     private readonly IQueryMatch[] _resolvedMatches;
+    private readonly MultiUnaryItem[] _scanPredicates;
     private readonly string _explainSource;
     private readonly ByteStringContext _allocator;
+    private readonly IndexSearcher _searcher;
     private readonly long _limit;
     private readonly CancellationToken _token;
 
@@ -28,13 +25,15 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
     private long _count;
 
     public CompiledQueryMatch(QueryPlan plan, CompiledPlan compiledPlan,
-        IQueryMatch[] resolvedMatches,
+        IQueryMatch[] resolvedMatches, MultiUnaryItem[] scanPredicates,
         IndexSearcher searcher, ByteStringContext allocator, long limit, CancellationToken token)
     {
         _compiledDelegate = compiledPlan.CompiledDelegate;
         _resolvedMatches = resolvedMatches;
+        _scanPredicates = scanPredicates;
         _explainSource = compiledPlan.ExplainSource;
         _allocator = allocator;
+        _searcher = searcher;
         _limit = limit;
         _token = token;
         _bitmap = new RoaringBitmap(allocator);
@@ -80,10 +79,6 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
     public int AndWith(Span<long> buffer, int matches)
     {
         if (!_executed) Execute();
-
-        // Buffer is sorted. Group by container key and skip entire containers
-        // that don't exist in the bitmap. For containers that do exist, use
-        // per-entry Contains (which is O(1) within a container).
         int kept = 0;
         int i = 0;
         while (i < matches)
@@ -93,14 +88,12 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
 
             if (containerSlot < 0)
             {
-                // Container doesn't exist — skip all entries in this container range
                 long nextContainerStart = (containerKey + 1) << RoaringBitmap.ContainerKeyShift;
                 while (i < matches && buffer[i] < nextContainerStart)
                     i++;
                 continue;
             }
 
-            // Container exists — check individual entries until we leave this container
             long containerEnd = (containerKey + 1) << RoaringBitmap.ContainerKeyShift;
             while (i < matches && buffer[i] < containerEnd)
             {
@@ -143,8 +136,17 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
         var tempBitmap = new RoaringBitmap(_allocator);
         try
         {
-            // Single call — the DynamicMethod delegate IS the query
-            _compiledDelegate(_resolvedMatches, ref _bitmap, ref tempBitmap, _token);
+            var ctx = new QueryScanContext
+            {
+                Bitmap = ref _bitmap,
+                TempBitmap = ref tempBitmap,
+                Searcher = _searcher,
+                Matches = _resolvedMatches.AsSpan(),
+                ScanPredicates = _scanPredicates.AsSpan(),
+                Token = _token
+            };
+
+            _compiledDelegate(ref ctx);
 
             _bitmap.PrepareForReading();
             _count = _bitmap.Count;

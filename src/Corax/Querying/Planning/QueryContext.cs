@@ -1,36 +1,32 @@
+using System;
 using System.Threading;
-using Corax.Utils;
-using Sparrow.Server;
-using Voron;
+using Corax.Querying.Matches;
+using Corax.Utils.RoaringBitmaps;
 
 namespace Corax.Querying.Planning;
 
 /// <summary>
-/// Runtime state bag passed to compiled query functions.
-/// Contains the IndexSearcher, allocator, parameters, and sort metadata.
-/// Field IDs are resolved at plan time and baked into the IL as constants.
+/// Execution context passed to compiled query delegates.
+/// Ref struct — lives on the stack, holds refs to bitmaps and spans of parameters.
+/// Single argument to the delegate, avoiding signature changes as features are added.
 /// </summary>
-public ref struct QueryContext
+public ref struct QueryScanContext
 {
-    /// <summary>The Corax index searcher for this query.</summary>
+    public ref RoaringBitmap Bitmap;
+    public ref RoaringBitmap TempBitmap;
     public IndexSearcher Searcher;
+    public Span<Matches.Meta.IQueryMatch> Matches;
 
-    /// <summary>Allocator for bitmap and temp allocations.</summary>
-    public ByteStringContext Allocator;
+    /// <summary>Pre-created MultiUnaryItem predicates for entry scan.
+    /// Each group corresponds to an AND operand. OrGroups have multiple items.
+    /// Created per-query from parameter values. The emitted IL calls
+    /// CompareNumerical/CompareLiteral directly — the boolean structure is baked in IL.</summary>
+    public Span<MultiUnaryItem> ScanPredicates;
 
-    /// <summary>Sort specification (may be null for unsorted queries).</summary>
-    public OrderMetadata[] OrderBy;
+    /// <summary>Number of scan predicates that are "simple" (entry-scannable).
+    /// Complex clauses (regex, vector, spatial) have indices >= SimplePredicateCount
+    /// in the Matches span and are AND'd via bitmap after entry scan.</summary>
+    public int SimplePredicateCount;
 
-    /// <summary>Maximum results to return. int.MaxValue if no LIMIT.</summary>
-    public int Limit;
-
-    /// <summary>Cancellation token for long-running queries.</summary>
     public CancellationToken Token;
-
-    /// <summary>Resolved parameter values as Slices. Indexed by ParamIndex in PlanOps.
-    /// Populated by the planner before execution.</summary>
-    public Slice[] ParamSlices;
-
-    /// <summary>Resolved posting list container IDs. Indexed by ParamIndex in PlanOps.</summary>
-    public long[] PostingListIds;
 }

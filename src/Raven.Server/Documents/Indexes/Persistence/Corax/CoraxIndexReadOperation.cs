@@ -686,8 +686,8 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                                 // Resolve matches fresh each execution — posting lists change between transactions
                                 var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, IndexSearcher, planParams, builderParameters);
                                 queryMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
-                                    plan, compiledPlan, resolvedMatches, IndexSearcher, _allocator,
-                                    take, token);
+                                    plan, compiledPlan, resolvedMatches, System.Array.Empty<global::Corax.Querying.Matches.MultiUnaryItem>(),
+                                    IndexSearcher, _allocator, take, token);
 
                                 orderByFields = CoraxQueryBuilder.GetSortMetadata(builderParameters, out bool hasEmptySorts);
                                 if (orderByFields != null)

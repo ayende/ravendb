@@ -35,6 +35,27 @@ public struct PlanOp
     public long EstimatedCardinality;
 }
 
+/// <summary>Describes a single entry-scan predicate for IL emission.
+/// The emitter uses this to generate direct calls to CompareNumerical/CompareLiteral
+/// without a type switch.</summary>
+public struct ScanPredicateInfo
+{
+    /// <summary>Field name for GetLookupRootPage.</summary>
+    public string FieldName;
+    /// <summary>Index into the ScanPredicates span in QueryScanContext.</summary>
+    public int PredicateIndex;
+    /// <summary>Which comparison method to call.</summary>
+    public ScanCompareKind CompareKind;
+    /// <summary>For OR groups: sub-predicates. null for simple AND predicates.</summary>
+    public ScanPredicateInfo[] OrBranches;
+}
+
+public enum ScanCompareKind : byte
+{
+    Numerical,  // CompareNumerical — long or double
+    Literal,    // CompareLiteral — string/slice
+}
+
 public class QueryPlan
 {
     public PlanOp[] Ops;
@@ -45,4 +66,9 @@ public class QueryPlan
     public object[] Clauses;
     public bool IsAllEntries;
     public bool AllNegated;
+
+    /// <summary>Metadata for entry scan predicates. Used by the IL emitter to generate
+    /// direct comparison calls. Parallel to the MultiUnaryItem[] created at execution time.
+    /// null if no entry scan is possible.</summary>
+    public ScanPredicateInfo[] ScanPredicateInfos;
 }
