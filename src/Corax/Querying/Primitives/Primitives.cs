@@ -47,7 +47,12 @@ public static class QueryPrimitives
     /// </summary>
     public static void AndWithPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap, int limit = int.MaxValue)
     {
-        // Build temp bitmap from posting list
+        if (bitmap.IsEmpty)
+            return;
+
+        // Fill temp bitmap from posting list, then SIMD AND with accumulator.
+        // Future optimization: use Seek() + pruneGreaterThan to skip posting list
+        // pages outside the bitmap's container key range.
         tempBitmap.Clear();
         FillFromPostings(ref iterator, ref tempBitmap);
         bitmap.AndWith(ref tempBitmap);
