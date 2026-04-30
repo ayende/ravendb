@@ -18,7 +18,7 @@ public partial class IndexSearcher
             SpatialMatchNoBoosting,
             SpatialMatchHasBoosting,
             MultiUnaryMatch,
-            RoaringBitmapMatch,
+            CompiledQueryMatch,
             IQueryMatch
         }
 
@@ -49,8 +49,8 @@ public partial class IndexSearcher
             if (type == typeof(MultiUnaryMatch))
                 return QueryType.MultiUnaryMatch;
 
-            if (type == typeof(RoaringBitmapMatch))
-                return QueryType.RoaringBitmapMatch;
+            if (type == typeof(CompiledQueryMatch))
+                return QueryType.CompiledQueryMatch;
 
             return QueryType.IQueryMatch;
         }
