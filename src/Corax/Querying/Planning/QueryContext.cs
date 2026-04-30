@@ -1,7 +1,9 @@
 using System;
 using System.Threading;
 using Corax.Querying.Matches;
+using Corax.Querying.Matches.Meta;
 using Corax.Utils.RoaringBitmaps;
+using Voron;
 
 namespace Corax.Querying.Planning;
 
@@ -11,28 +13,21 @@ namespace Corax.Querying.Planning;
 /// </summary>
 public ref struct QueryScanContext
 {
-    public ref RoaringBitmap Bitmap;
-    public ref RoaringBitmap TempBitmap;
-    public IndexSearcher Searcher;
-    public Span<Matches.Meta.IQueryMatch> Matches;
+    /// <summary>Bitmap pool. [0] = main result, [1..N] = scratch.
+    /// Size is statically determined by the plan's nesting depth.
+    /// The emitter bakes bitmap indices as constants in the IL.</summary>
+    public Span<RoaringBitmap> Bitmaps;
 
-    /// <summary>Pre-created MultiUnaryItem predicates for string/slice comparisons
-    /// in entry scan. Numeric comparisons use LongParams/DoubleParams directly.</summary>
-    public Span<MultiUnaryItem> ScanPredicates;
+    public IndexSearcher Searcher;
+    public Span<IQueryMatch> Matches;
 
     /// <summary>Pre-resolved field root pages for entry scan predicates.</summary>
     public Span<long> FieldRootPages;
 
-    /// <summary>Typed parameter values for entry scan comparisons.
-    /// The emitted IL reads by index (baked constant) and compares directly
-    /// against reader.CurrentLong / reader.CurrentDouble / reader.Current.Decoded().</summary>
+    /// <summary>Typed parameter values for entry scan comparisons.</summary>
     public Span<long> LongParams;
     public Span<double> DoubleParams;
-
-    /// <summary>Pre-encoded comparison Slices for string predicates.
-    /// Created per-query via searcher.EncodeAndApplyAnalyzer(). The emitted IL
-    /// calls Slice.AsReadOnlySpan() + SequenceCompareTo directly — no MultiUnaryItem.</summary>
-    public Span<Voron.Slice> SliceParams;
+    public Span<Slice> SliceParams;
 
     public CancellationToken Token;
 }

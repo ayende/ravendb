@@ -681,7 +681,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                             QueryPlanBuilder.ExtractScanParameters(plan, IndexSearcher,
                                 out var longParams, out var doubleParams, out var sliceParams, out var fieldRootPages);
                             queryMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
-                                compiledPlan, resolvedMatches,
+                                compiledPlan, plan.BitmapCount, resolvedMatches,
                                 longParams, doubleParams, sliceParams, fieldRootPages,
                                 IndexSearcher, _allocator, take, token);
 
@@ -1354,7 +1354,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 QueryPlanBuilder.ExtractScanParameters(plan, IndexSearcher,
                     out var longParams, out var doubleParams, out var sliceParams, out var fieldRootPages);
                 queryMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
-                    compiledPlan, resolvedMatches,
+                    compiledPlan, plan.BitmapCount, resolvedMatches,
                     longParams, doubleParams, sliceParams, fieldRootPages,
                     IndexSearcher, _allocator, take, token);
             }

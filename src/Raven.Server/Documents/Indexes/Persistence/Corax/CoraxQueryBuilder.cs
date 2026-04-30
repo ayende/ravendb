@@ -118,7 +118,7 @@ public static partial class CoraxQueryBuilder
         QueryPlanBuilder.ExtractScanParameters(plan, builderParameters.IndexSearcher,
             out var longParams, out var doubleParams, out var sliceParams, out var fieldRootPages);
         return new global::Corax.Querying.Matches.CompiledQueryMatch(
-            compiledPlan, resolvedMatches,
+            compiledPlan, plan.BitmapCount, resolvedMatches,
             longParams, doubleParams, sliceParams, fieldRootPages,
             builderParameters.IndexSearcher, builderParameters.Allocator, long.MaxValue, builderParameters.Token);
     }
