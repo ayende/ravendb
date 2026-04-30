@@ -386,14 +386,24 @@ internal static class QueryPlanBuilder
             case "spatial.contains":
             case "spatial.disjoint":
             case "spatial.intersects":
-                throw new NotSupportedException(
-                    $"Spatial queries ({methodName}) not yet implemented in Corax 2.0 planner. " +
-                    "Deferred to post-MVP. See docs/implementation-notes.md.");
+                // Spatial queries are resolved at execution time via the existing
+                // CoraxQueryBuilder.HandleSpatial infrastructure.
+                clauses.Add(new ClauseInfo
+                {
+                    ClauseType = ClauseType.Spatial,
+                    MethodExpression = method,
+                    OriginalIndex = clauses.Count
+                });
+                break;
 
             case "vector.search":
-                throw new NotSupportedException(
-                    $"Vector search not yet implemented in Corax 2.0 planner. " +
-                    "Deferred to post-MVP. See docs/implementation-notes.md.");
+                clauses.Add(new ClauseInfo
+                {
+                    ClauseType = ClauseType.Vector,
+                    MethodExpression = method,
+                    OriginalIndex = clauses.Count
+                });
+                break;
 
             case "moreLikeThis":
                 throw new NotSupportedException(
@@ -480,6 +490,11 @@ internal static class QueryPlanBuilder
                 foreach (var term in clause.InTerms)
                     sum += indexSearcher.NumberOfDocumentsUnderSpecificTerm(meta, term);
                 return Math.Min(sum, indexSearcher.NumberOfEntries);
+
+            case ClauseType.Spatial:
+            case ClauseType.Vector:
+                // Spatial and vector can't be estimated cheaply — use field total as upper bound
+                return indexSearcher.NumberOfEntries;
 
             case ClauseType.OrGroup:
                 long orSum = 0;
@@ -685,6 +700,8 @@ internal static class QueryPlanBuilder
         EndsWith,
         Search,
         Regex,
+        Spatial,
+        Vector,
         OrGroup, // A group of OR'd sub-clauses
     }
 
@@ -695,6 +712,7 @@ internal static class QueryPlanBuilder
         public string TermValue2; // for BETWEEN
         public List<string> InTerms; // for IN
         public List<ClauseInfo> OrSubClauses; // for OrGroup
+        public MethodExpression MethodExpression; // for Spatial, Vector
         public ClauseType ClauseType;
         public long Cardinality = -1;
         public int OriginalIndex;
@@ -707,7 +725,8 @@ internal static class QueryPlanBuilder
     /// all the complexity of analyzer application, CompactKey encoding,
     /// posting list resolution, etc.
     /// </summary>
-    public static IQueryMatch[] ResolveMatches(QueryPlan plan, IndexSearcher indexSearcher, PlanParameters parameters = null)
+    public static IQueryMatch[] ResolveMatches(QueryPlan plan, IndexSearcher indexSearcher,
+        PlanParameters parameters = null, CoraxQueryBuilder.Parameters builderParams = null)
     {
         var clauses = plan.Clauses;
         if (clauses == null || clauses.Length == 0)
@@ -728,12 +747,13 @@ internal static class QueryPlanBuilder
         for (int i = 0; i < clauses.Length; i++)
         {
             var clause = (ClauseInfo)clauses[i];
-            matches[i] = ResolveClause(clause, indexSearcher, parameters);
+            matches[i] = ResolveClause(clause, indexSearcher, parameters, builderParams);
         }
         return matches;
     }
 
-    private static IQueryMatch ResolveClause(ClauseInfo clause, IndexSearcher indexSearcher, PlanParameters parameters = null)
+    private static IQueryMatch ResolveClause(ClauseInfo clause, IndexSearcher indexSearcher,
+        PlanParameters parameters = null, CoraxQueryBuilder.Parameters builderParams = null)
     {
         var fieldMeta = indexSearcher.FieldMetadataBuilder(clause.FieldName);
 
@@ -839,6 +859,23 @@ internal static class QueryPlanBuilder
             case ClauseType.Regex:
                 return indexSearcher.RegexQuery(fieldMeta,
                     new System.Text.RegularExpressions.Regex(clause.TermValue));
+
+            case ClauseType.Spatial:
+            {
+                if (builderParams == null || clause.MethodExpression == null)
+                    throw new NotSupportedException("Spatial resolution requires builder parameters");
+                var spatialMethod = QueryMethod.GetMethodType(clause.MethodExpression.Name.Value);
+                return CoraxQueryBuilder.HandleSpatial(builderParams, clause.MethodExpression, spatialMethod);
+            }
+
+            case ClauseType.Vector:
+            {
+                if (builderParams == null || clause.MethodExpression == null)
+                    throw new NotSupportedException("Vector resolution requires builder parameters");
+                var vectorItem = CoraxQueryBuilder.HandleVector(builderParams, clause.MethodExpression, false);
+                // Materialize with null inner — the bitmap provides the candidate set
+                return vectorItem.Materialize(null);
+            }
 
             case ClauseType.OrGroup:
                 if (clause.OrSubClauses == null || clause.OrSubClauses.Count == 0)

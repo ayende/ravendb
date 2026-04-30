@@ -1189,7 +1189,7 @@ public static partial class CoraxQueryBuilder
         }
     }
 
-    private static IQueryMatch HandleSpatial(Parameters builderParameters, MethodExpression expression, MethodType spatialMethod)
+    internal static IQueryMatch HandleSpatial(Parameters builderParameters, MethodExpression expression, MethodType spatialMethod)
     {
         var metadata = builderParameters.Metadata;
         var queryParameters = builderParameters.QueryParameters;
