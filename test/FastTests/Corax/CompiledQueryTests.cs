@@ -1,3 +1,4 @@
+using System;
 using System.Linq;
 using System.Threading.Tasks;
 using Raven.Client.Documents;
@@ -566,7 +567,7 @@ public class CompiledQueryTests : RavenTestBase
         }
     }
 
-    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying, Skip = "ANDNOT in bitmap path returns wrong results — needs step debugger investigation")]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
     public async Task NotEqualsInAndChain_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
@@ -593,18 +594,27 @@ public class CompiledQueryTests : RavenTestBase
         Indexes.WaitForIndexing(store);
 
         // AND with !=: Category=cat-0 AND Status != 'active'
+        // First verify old path returns correct results
+        using (var session = store.OpenAsyncSession())
+        {
+            var oldPathResults = await session.Advanced.AsyncRawQuery<TestDoc>(
+                "from TestDocs where Category = 'cat-0' and Status = 'inactive'")
+                .ToListAsync();
+            Assert.Equal(10, oldPathResults.Count);
+            Assert.All(oldPathResults, r => Assert.Equal("inactive", r.Status));
+        }
+
+        // Now test != through bitmap path
         using (var session = store.OpenAsyncSession())
         {
             var results = await session.Advanced.AsyncRawQuery<TestDoc>(
                 "from TestDocs where Category = 'cat-0' and Status != 'active'")
                 .ToListAsync();
 
-            // Expect inactive cat-0 docs
             Assert.Equal(10, results.Count);
             foreach (var r in results)
             {
                 Assert.Equal("cat-0", r.Category);
-                // Check that Status is "inactive"
                 Assert.Equal("inactive", r.Status);
             }
         }
@@ -1132,6 +1142,86 @@ public class CompiledQueryTests : RavenTestBase
                 .ToListAsync();
 
             Assert.Equal(2, results.Count);
+        }
+    }
+
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public async Task NoWhereClause_BitmapPipeline()
+    {
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+        options.ModifyDatabaseRecord += record =>
+        {
+            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
+        };
+        using var store = GetDocumentStore(options);
+
+        using (var session = store.OpenAsyncSession())
+        {
+            for (int i = 0; i < 30; i++)
+            {
+                await session.StoreAsync(new TestDoc
+                {
+                    Name = $"doc-{i}",
+                    Category = $"cat-{i % 3}",
+                    Status = i % 2 == 0 ? "active" : "inactive"
+                });
+            }
+            await session.SaveChangesAsync();
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        // No WHERE clause — should return all documents
+        using (var session = store.OpenAsyncSession())
+        {
+            var results = await session.Advanced.AsyncRawQuery<TestDoc>(
+                "from TestDocs")
+                .ToListAsync();
+
+            Assert.Equal(30, results.Count);
+        }
+    }
+
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public async Task NoWhereClauseWithOrderBy_BitmapPipeline()
+    {
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+        options.ModifyDatabaseRecord += record =>
+        {
+            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
+        };
+        using var store = GetDocumentStore(options);
+
+        using (var session = store.OpenAsyncSession())
+        {
+            for (int i = 0; i < 20; i++)
+            {
+                await session.StoreAsync(new TestDoc
+                {
+                    Name = $"doc-{i:D2}",
+                    Category = $"cat-{i % 5}",
+                    Status = "active"
+                });
+            }
+            await session.SaveChangesAsync();
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        // No WHERE clause with ORDER BY — bitmap path should handle sorting
+        using (var session = store.OpenAsyncSession())
+        {
+            var results = await session.Advanced.AsyncRawQuery<TestDoc>(
+                "from TestDocs order by Name")
+                .ToListAsync();
+
+            Assert.Equal(20, results.Count);
+            // Verify ordering
+            for (int i = 1; i < results.Count; i++)
+            {
+                Assert.True(string.Compare(results[i - 1].Name, results[i].Name, StringComparison.Ordinal) <= 0,
+                    $"Expected {results[i - 1].Name} <= {results[i].Name}");
+            }
         }
     }
 

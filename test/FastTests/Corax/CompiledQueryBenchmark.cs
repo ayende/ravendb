@@ -19,7 +19,7 @@ public class CompiledQueryBenchmark : RavenTestBase
 {
     public CompiledQueryBenchmark(Xunit.ITestOutputHelper output) : base(output) { }
 
-    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying, Skip = "Benchmark — too slow for CI. Run manually.")]
     public async Task CompareStreamingVsBitmap()
     {
         const int docCount = 10_000;

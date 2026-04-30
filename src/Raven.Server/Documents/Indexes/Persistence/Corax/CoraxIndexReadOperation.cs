@@ -650,60 +650,33 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                             // Corax 2.0: try the new bitmap-based compiled path first
                             if (_index.Configuration.CoraxUseBitmapPipeline)
                             {
-                                try
+                                // Bitmap path: build plan, resolve matches, execute via CompiledQueryMatch
+                                var planParams = new QueryPlanBuilder.PlanParameters
                                 {
-                                    // Bitmap path supports scoring: CompiledQueryMatch.Score()
-                                    // delegates to resolved matches which collected frequencies
-                                    // during Fill. ORDER BY score() uses SortingMatch with
-                                    // EntryComparerByScore which calls Score().
+                                    IndexSearcher = IndexSearcher,
+                                    Metadata = query.Metadata,
+                                    QueryParameters = query.QueryParameters,
+                                    Index = _index,
+                                    IndexFieldsMapping = _fieldMappings,
+                                    FieldsToFetch = fieldsToFetch,
+                                    Allocator = _allocator,
+                                    Token = token,
+                                    HasDynamics = builderParameters.HasDynamics,
+                                    DynamicFields = builderParameters.DynamicFields,
+                                    HasBoost = builderParameters.HasBoost
+                                };
+                                var plan = QueryPlanBuilder.BuildPlan(planParams);
 
-                                    var plan = QueryPlanBuilder.BuildPlan(new QueryPlanBuilder.PlanParameters
-                                    {
-                                        IndexSearcher = IndexSearcher,
-                                        Metadata = query.Metadata,
-                                        QueryParameters = query.QueryParameters,
-                                        Index = _index,
-                                        IndexFieldsMapping = _fieldMappings,
-                                        FieldsToFetch = fieldsToFetch,
-                                        Allocator = _allocator,
-                                        Token = token,
-                                        HasDynamics = builderParameters.HasDynamics,
-                                        DynamicFields = builderParameters.DynamicFields,
-                                        HasBoost = builderParameters.HasBoost
-                                    });
-                                    // Resolve matches fresh each execution (posting lists may change)
-                                    var planParams = new QueryPlanBuilder.PlanParameters
-                                    {
-                                        IndexSearcher = IndexSearcher,
-                                        Metadata = query.Metadata,
-                                        QueryParameters = query.QueryParameters,
-                                        Index = _index,
-                                        IndexFieldsMapping = _fieldMappings,
-                                        FieldsToFetch = fieldsToFetch,
-                                        Allocator = _allocator,
-                                        Token = token,
-                                        HasDynamics = builderParameters.HasDynamics,
-                                        DynamicFields = builderParameters.DynamicFields,
-                                        HasBoost = builderParameters.HasBoost
-                                    };
-                                    var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, IndexSearcher, planParams, builderParameters);
-                                    queryMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
-                                        plan, resolvedMatches, IndexSearcher, _allocator,
-                                        (int)take, token);
+                                var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, IndexSearcher, planParams, builderParameters);
+                                queryMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
+                                    plan, resolvedMatches, IndexSearcher, _allocator,
+                                    take, token);
 
-                                    // Apply sorting via the existing OrderBy infrastructure
-                                    orderByFields = CoraxQueryBuilder.GetSortMetadata(builderParameters, out bool hasEmptySorts);
-                                    if (orderByFields != null)
-                                    {
-                                        queryMatch = CoraxQueryBuilder.OrderBy(
-                                            builderParameters, queryMatch, orderByFields, hasEmptySorts);
-                                    }
-                                }
-                                catch (NotSupportedException)
+                                orderByFields = CoraxQueryBuilder.GetSortMetadata(builderParameters, out bool hasEmptySorts);
+                                if (orderByFields != null)
                                 {
-                                    // Fall back to the old path for unsupported query types
-                                    if ((queryMatch = CoraxQueryBuilder.BuildQuery(builderParameters, out orderByFields)) is null)
-                                        yield break;
+                                    queryMatch = CoraxQueryBuilder.OrderBy(
+                                        builderParameters, queryMatch, orderByFields, hasEmptySorts);
                                 }
                             }
                             else

@@ -1,13 +1,13 @@
 using System;
 using System.Collections.Concurrent;
+using System.Numerics;
 
 namespace Corax.Querying.Planning;
 
 /// <summary>
 /// Caches compiled query plans per index instance.
-/// Key: (query text, operand ordering). Value: array of CompiledPlan.
 /// Lives on IndexSearcher — GC'd when the index is replaced.
-/// Cap: 32 plans per query text (different orderings for different cardinality profiles).
+/// Cap: 32 plans per query text.
 /// </summary>
 public class PlanCache
 {
@@ -15,10 +15,6 @@ public class PlanCache
 
     private readonly ConcurrentDictionary<string, CompiledPlan[]> _cache = new();
 
-    /// <summary>
-    /// Look up a compiled plan for the given query text and operand ordering.
-    /// Returns null on cache miss.
-    /// </summary>
     public CompiledPlan Get(string queryText, int ordering)
     {
         if (!_cache.TryGetValue(queryText, out var plans))
@@ -33,9 +29,6 @@ public class PlanCache
         return null;
     }
 
-    /// <summary>
-    /// Add a compiled plan to the cache. Thread-safe via ConcurrentDictionary.AddOrUpdate.
-    /// </summary>
     public void Add(string queryText, CompiledPlan plan)
     {
         _cache.AddOrUpdate(
@@ -43,22 +36,8 @@ public class PlanCache
             _ => new[] { plan },
             (_, existing) =>
             {
-                // Check if this ordering already exists
-                for (int i = 0; i < existing.Length; i++)
-                {
-                    if (existing[i].Ordering == plan.Ordering)
-                    {
-                        // Replace existing plan with same ordering
-                        var updated = new CompiledPlan[existing.Length];
-                        Array.Copy(existing, updated, existing.Length);
-                        updated[i] = plan;
-                        return updated;
-                    }
-                }
-
-                // New ordering — add if under cap
                 if (existing.Length >= MaxPlansPerQuery)
-                    return existing; // At cap, don't add (closest match used at lookup time)
+                    return existing;
 
                 var expanded = new CompiledPlan[existing.Length + 1];
                 Array.Copy(existing, expanded, existing.Length);
@@ -68,46 +47,15 @@ public class PlanCache
     }
 
     /// <summary>
-    /// Find the plan with the closest operand ordering to the target.
-    /// Used when the exact ordering isn't cached and the cap is reached.
-    /// "Closest" = most matching prefix positions.
+    /// Score how well two orderings match. Uses XOR + popcount:
+    /// identical orderings XOR to 0 (score = 30 for 10 operands),
+    /// completely different orderings have many set bits (low score).
     /// </summary>
-    public CompiledPlan GetClosest(string queryText, int targetOrdering, int operandCount)
+    public static int MatchScore(int a, int b)
     {
-        if (!_cache.TryGetValue(queryText, out var plans) || plans.Length == 0)
-            return null;
-
-        CompiledPlan best = plans[0];
-        int bestScore = MatchScore(best.Ordering, targetOrdering, operandCount);
-
-        for (int i = 1; i < plans.Length; i++)
-        {
-            int score = MatchScore(plans[i].Ordering, targetOrdering, operandCount);
-            if (score > bestScore)
-            {
-                bestScore = score;
-                best = plans[i];
-            }
-        }
-
-        return best;
-    }
-
-    /// <summary>
-    /// Count how many operand positions match between two orderings.
-    /// Each position is 3 bits in the packed int.
-    /// </summary>
-    private static int MatchScore(int a, int b, int operandCount)
-    {
-        int score = 0;
-        for (int i = 0; i < operandCount; i++)
-        {
-            int posA = (a >> (i * 3)) & 0x7;
-            int posB = (b >> (i * 3)) & 0x7;
-            if (posA == posB)
-                score++;
-        }
-        return score;
+        int diff = a ^ b;
+        // 30 bits max (10 operands × 3 bits each) — higher score = better match
+        return 30 - BitOperations.PopCount((uint)diff);
     }
 
     /// <summary>Pack operand positions into an int. 3 bits per position, up to 10 operands.</summary>
