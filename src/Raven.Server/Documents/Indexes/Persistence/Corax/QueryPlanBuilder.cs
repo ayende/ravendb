@@ -568,7 +568,7 @@ internal static class QueryPlanBuilder
         for (int i = 0; i < Math.Min(clauses.Count, 10); i++)
             ordering |= (clauses[i].OriginalIndex & 0x7) << (i * 3);
 
-        return new QueryPlan
+        var plan = new QueryPlan
         {
             Ops = ops.ToArray(),
             EntryScanPredicates = entryScanPredicates.ToArray(),
@@ -576,6 +576,42 @@ internal static class QueryPlanBuilder
             OperandCount = clauses.Count,
             Clauses = clauses.ToArray()
         };
+
+        // Generate EXPLAIN source
+        plan.ExplainSource = GenerateExplain(plan, clauses);
+        return plan;
+    }
+
+    private static string GenerateExplain(QueryPlan plan, List<ClauseInfo> clauses)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("// Corax 2.0 Bitmap Query Plan");
+        sb.AppendLine("// Clauses (sorted by cardinality):");
+        foreach (var c in clauses)
+        {
+            string type = c.ClauseType.ToString();
+            string detail = c.ClauseType switch
+            {
+                ClauseType.Equals => $"{c.FieldName} = '{c.TermValue}'",
+                ClauseType.NotEquals => $"{c.FieldName} != '{c.TermValue}'",
+                ClauseType.GreaterThan => $"{c.FieldName} > {c.TermValue}",
+                ClauseType.LessThan => $"{c.FieldName} < {c.TermValue}",
+                ClauseType.Between => $"{c.FieldName} BETWEEN {c.TermValue}..{c.TermValue2}",
+                ClauseType.In => $"{c.FieldName} IN ({c.InTerms?.Count ?? 0} terms)",
+                ClauseType.StartsWith => $"startsWith({c.FieldName}, '{c.TermValue}')",
+                ClauseType.EndsWith => $"endsWith({c.FieldName}, '{c.TermValue}')",
+                ClauseType.OrGroup => $"OR group ({c.OrSubClauses?.Count ?? 0} sub-clauses)",
+                _ => $"{c.FieldName} {type} '{c.TermValue}'"
+            };
+            sb.AppendLine($"//   [{c.Cardinality:N0} est] {detail}");
+        }
+        sb.AppendLine("//");
+        sb.AppendLine("// Operations:");
+        foreach (var op in plan.Ops)
+        {
+            sb.AppendLine($"//   {op.Kind} (param={op.ParamIndex}, est={op.EstimatedCardinality:N0})");
+        }
+        return sb.ToString();
     }
 
     private static QueryPlan BuildAllEntriesPlan()
