@@ -371,14 +371,9 @@ public unsafe struct RoaringBitmap : IDisposable
             ref ContainerEntry entry = ref entries[i];
             if (types[i] == ContainerType.ArrayUnsorted)
             {
-                // Small containers: dedup (needed for correct cardinality) but keep unsorted.
-                // SIMD linear scan handles Contains, SIMD cross-compare handles AND/ANDNOT.
-                if (entry.Cardinality <= SimdLinearScanThreshold)
-                {
-                    DeduplicateSmallUnsorted(ref entry);
-                    continue; // stay as ArrayUnsorted
-                }
-
+                // All unsorted containers must be sorted for correct iteration order.
+                // Contains() can use SIMD linear scan on unsorted data, but
+                // Fill() (iteration) must emit entry IDs in ascending order.
                 if (entry.Cardinality >= BitmapSortThreshold)
                     SortViaBitmapScratch(ref entry, ref types[i], scratch);
                 else
