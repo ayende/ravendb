@@ -50,14 +50,16 @@ public static class QueryPrimitives
     /// accumulator's set bits, skipping pages that can't contribute matches.
     /// Cost proportional to posting list pages that intersect the accumulator.
     /// </summary>
+    /// <summary>
+    /// AND bitmap with posting list. Materializes posting list into temp bitmap, SIMD AND.
+    /// Note: Clear() on the temp bitmap walks and releases container storage, same cost as
+    /// Dispose()+new(). Keeping the temp bitmap avoids NativeList reallocation.
+    /// </summary>
     public static void AndWithPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap)
     {
         if (bitmap.IsEmpty)
             return;
 
-        // Fill temp bitmap from posting list, then SIMD AND with accumulator.
-        // Future optimization: use Seek() + pruneGreaterThan to skip posting list
-        // pages outside the bitmap's container key range.
         tempBitmap.Clear();
         FillFromPostings(ref iterator, ref tempBitmap);
         bitmap.AndWith(ref tempBitmap);
