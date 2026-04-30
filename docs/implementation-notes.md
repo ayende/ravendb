@@ -43,16 +43,24 @@ This file is a running log — entries are appended as work progresses.
 - Post-implementation benchmark + comparison (no regressions)
 - Pushed to origin/RavenDB-25281
 
+### Completed (continued 3)
+- ORDER BY + LIMIT via existing SortingMatch wrapper
+- Mixed AND/OR tree support via OrGroup clauses
+- Plan cache infrastructure on IndexSearcher
+- Proper fallback for ORDER BY, boost, spatial, vector
+- 15 integration tests (13 pass, 2 skip)
+- Full Corax suite: 642 pass, 4 skip, 0 fail
+
 ### Remaining
 - WP8: Delete old code, make RoaringBitmap ref struct
-- ORDER BY support in bitmap path
 - Boost/scoring in bitmap path
 - Spatial, vector queries in bitmap path
 - Phrase queries
 - Compound field sort-skip
 - Optimization: galloping page-scan for AndWithPostings
 - Optimization: lazy OR popcount-skip
-- Expanded benchmark covering all feature areas
+- DynamicMethod IL emit (replacing interpreter)
+- Expanded benchmark with bitmap path enabled
 
 ### Benchmark expansion needed (after run 1-3 baseline)
 - Vector search, full-text search, phrase queries, spatial queries, faceted queries
