@@ -43,7 +43,7 @@ internal static class QueryPlanBuilder
     {
         var query = metadata.Query;
         if (query.Where == null)
-            return BuildAllEntriesPlan();
+            throw new NotSupportedException("No WHERE clause — old path handles all-entries queries");
 
         // Parse WHERE clause into intermediate clause list
         var clauses = new List<ClauseInfo>();
@@ -53,7 +53,7 @@ internal static class QueryPlanBuilder
         // Mixed AND/OR trees are handled via OrGroup clauses
 
         if (rootOp == BooleanOp.True)
-            return BuildAllEntriesPlan();
+            throw new NotSupportedException("All-entries query (true OR X folded to true) — old path is efficient for full scans");
         if (rootOp == BooleanOp.False)
             return BuildEmptyPlan();
         if (clauses.Count == 0)
