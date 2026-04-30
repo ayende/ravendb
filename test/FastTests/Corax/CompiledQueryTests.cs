@@ -261,7 +261,7 @@ public class CompiledQueryTests : RavenTestBase
         }
     }
 
-    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying, Skip = "NotEquals standalone requires AllEntries+ANDNOT — not yet in bitmap path")]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
     public async Task NotEquals_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
