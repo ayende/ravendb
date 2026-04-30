@@ -686,7 +686,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                                         DynamicFields = builderParameters.DynamicFields,
                                         HasBoost = builderParameters.HasBoost
                                     };
-                                    var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, IndexSearcher, planParams);
+                                    var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, IndexSearcher, planParams, builderParameters);
                                     queryMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
                                         plan, resolvedMatches, IndexSearcher, _allocator,
                                         (int)take, token);

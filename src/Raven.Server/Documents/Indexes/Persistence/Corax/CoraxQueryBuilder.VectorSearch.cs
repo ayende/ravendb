@@ -21,7 +21,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 
 public static partial class CoraxQueryBuilder
 {
-    private static CoraxVectorItem HandleVector(Parameters builderParameters, MethodExpression me, bool exact)
+    internal static CoraxVectorItem HandleVector(Parameters builderParameters, MethodExpression me, bool exact)
     {
         var metadata = builderParameters.Metadata;
         IndexField indexField;
