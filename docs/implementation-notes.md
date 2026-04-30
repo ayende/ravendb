@@ -43,6 +43,11 @@ This file is a running log — entries are appended as work progresses.
 - Post-implementation benchmark + comparison (no regressions)
 - Pushed to origin/RavenDB-25281
 
+### SlowTests result
+- 497 pass, 3 fail, 2 skip. The 3 failures need investigation — may be
+  pre-existing or bitmap-path related. Failure details lost due to output
+  truncation. Need to re-run with full output capture.
+
 ### Completed (continued 3)
 - ORDER BY + LIMIT via existing SortingMatch wrapper
 - Mixed AND/OR tree support via OrGroup clauses
