@@ -140,6 +140,7 @@ public static class QueryPrimitives
     /// EntryTermsReader, evaluate predicates with early exit.
     /// Same pattern as MultiUnaryMatch.Fill() but driven from a bitmap iterator.
     /// </summary>
+    [SkipLocalsInit]
     public static int ScanAndFilter(ref RoaringBitmap bitmap, IndexSearcher searcher,
         MultiUnaryItem[] predicates, Span<long> output, int limit, ref int skip)
     {
