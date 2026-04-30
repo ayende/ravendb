@@ -117,6 +117,12 @@ LazyOrWith currently delegates to OrWith (maintains cardinality eagerly). The po
 ### Numeric range type coercion
 Range queries (>, >=, <, <=, BETWEEN) currently pass term values as strings to IndexSearcher.GreaterThanQuery etc. For numeric fields (int, long, double), this results in lexicographic comparison instead of numeric comparison ("50" > "200" = true). The QueryPlanBuilder needs to detect the field type from the index schema and pass the appropriate typed value (long, double) to the range query methods. This mirrors the type detection logic in CoraxBooleanItem's constructor (lines 56-72, checking `term is long`, `term is double`).
 
+### NotEquals in AND chain (Category='cat-0' AND Status!='active')
+This test returns 10 results with Status='active' instead of Status='inactive'.
+The issue persists even through the old path (fallback). This might be a
+pre-existing behavior with how `!=` is handled in Corax auto-indexes.
+Needs investigation independent of the bitmap path.
+
 ### Standalone NotEquals (Status != "active")
 The bitmap pipeline doesn't handle standalone `!=` yet. It requires: fill AllEntries into bitmap, then ANDNOT with the negated term. The plan emitter currently treats `!=` like `=` with an `IsNegated` flag, but only uses that flag for AND chains (where it emits AndNotWithPostings). For a standalone `!=` (no other AND operands), the emitter needs to first fill AllEntries then ANDNOT. The old path handles this via `AndNot(AllEntries, term)`.
 

@@ -498,7 +498,7 @@ public class CompiledQueryTests : RavenTestBase
         }
     }
 
-    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying, Skip = "LINQ != translation needs investigation — may not generate Corax NotEquals")]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying, Skip = "NotEquals in AND chain returns wrong results — needs investigation")]
     public async Task NotEqualsInAndChain_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
@@ -525,20 +525,23 @@ public class CompiledQueryTests : RavenTestBase
         Indexes.WaitForIndexing(store);
 
         // AND with !=: Category=cat-0 AND Status != 'active'
+        // Test result correctness — the bitmap path should ANDNOT the active entries
         using (var session = store.OpenAsyncSession())
         {
-            var results = await session.Query<TestDoc>()
-                .Where(x => x.Category == "cat-0" && x.Status != "active")
+            var results = await session.Advanced.AsyncRawQuery<TestDoc>(
+                "from TestDocs where Category = 'cat-0' and Status != 'active'")
                 .ToListAsync();
 
             // cat-0: 0,5,10,...,95 (20 total)
-            // inactive: odd indices → 5,15,25,35,45,55,65,75,85,95 → 10
+            // Status != 'active': odd indices are inactive
+            // cat-0 ∩ inactive: 5,15,25,35,45,55,65,75,85,95 → 10
             Assert.Equal(10, results.Count);
-            Assert.All(results, r =>
+            // Verify they're actually inactive
+            foreach (var r in results)
             {
                 Assert.Equal("cat-0", r.Category);
-                Assert.Equal("inactive", r.Status);
-            });
+                Assert.NotEqual("active", r.Status);
+            }
         }
     }
 
