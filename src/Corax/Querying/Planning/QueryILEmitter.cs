@@ -67,13 +67,24 @@ public static class QueryILEmitter
     private static readonly MethodInfo s_readerReset = typeof(EntryTermsReader).GetMethod(nameof(EntryTermsReader.Reset))!;
     private static readonly MethodInfo s_readerFindNext = typeof(EntryTermsReader).GetMethod(nameof(EntryTermsReader.FindNext))!;
 
-    // MultiUnaryItem comparison
-    private static readonly MethodInfo s_compareNumerical = typeof(MultiUnaryItem).GetMethod(nameof(MultiUnaryItem.CompareNumerical))!;
+    // MultiUnaryItem comparison — fallback for string/slice predicates
     private static readonly MethodInfo s_compareLiteral = typeof(MultiUnaryItem).GetMethod(nameof(MultiUnaryItem.CompareLiteral))!;
 
-    // FieldCache
+    // EntryTermsReader numeric fields — for direct comparison
+    private static readonly FieldInfo s_readerCurrentLong = typeof(EntryTermsReader).GetField(nameof(EntryTermsReader.CurrentLong))!;
+    private static readonly FieldInfo s_readerCurrentDouble = typeof(EntryTermsReader).GetField(nameof(EntryTermsReader.CurrentDouble))!;
+
+    // QueryScanContext typed parameter spans
     private static readonly FieldInfo s_ctxFieldRootPages =
         typeof(QueryScanContext).GetField(nameof(QueryScanContext.FieldRootPages))!;
+    private static readonly FieldInfo s_ctxLongParams =
+        typeof(QueryScanContext).GetField(nameof(QueryScanContext.LongParams))!;
+    private static readonly FieldInfo s_ctxDoubleParams =
+        typeof(QueryScanContext).GetField(nameof(QueryScanContext.DoubleParams))!;
+
+    // Span<double> indexer
+    private static readonly MethodInfo s_spanDoubleIndexer =
+        typeof(Span<double>).GetProperty("Item")!.GetGetMethod()!;
 
     public static CompiledExecuteDelegate EmitDelegate(QueryPlan plan)
     {
@@ -297,7 +308,9 @@ public static class QueryILEmitter
         il.Emit(OpCodes.Call, s_getEntryTermsReader);
         il.Emit(OpCodes.Stloc, readerLocal);
 
-        // Emit each predicate check — direct call, no loop, no type switch
+        // Emit each predicate check — comparison kind baked at emit time.
+        // Numeric: direct field access + comparison instruction (no delegate).
+        // String: MultiUnaryItem.CompareLiteral fallback (encoding-aware).
         for (int p = 0; p < predicates.Length; p++)
         {
             ref var pred = ref predicates[p];
@@ -316,17 +329,28 @@ public static class QueryILEmitter
             il.Emit(OpCodes.Call, s_readerFindNext);
             il.Emit(OpCodes.Brfalse, nextEntry);
 
-            // Call the right comparison method (baked at emit time)
-            // scanPredicates[p].CompareNumerical(reader) or .CompareLiteral(reader)
-            il.Emit(OpCodes.Ldarg_0);
-            il.Emit(OpCodes.Ldflda, s_ctxScanPredicates);
-            EmitLdcI4(il, pred.PredicateIndex);
-            il.Emit(OpCodes.Call, s_predicateSpanIndexer);  // ref MultiUnaryItem
-            il.Emit(OpCodes.Ldloc, readerLocal);
-            il.Emit(OpCodes.Call, pred.CompareKind == ScanCompareKind.Numerical
-                ? s_compareNumerical
-                : s_compareLiteral);
-            il.Emit(OpCodes.Brfalse, nextEntry);
+            // Emit the comparison based on value type (baked at emit time)
+            switch (pred.ValueType)
+            {
+                case ScanValueType.Long:
+                    EmitLongComparison(il, pred, readerLocal);
+                    il.Emit(OpCodes.Brfalse, nextEntry);
+                    break;
+                case ScanValueType.Double:
+                    EmitDoubleComparison(il, pred, readerLocal);
+                    il.Emit(OpCodes.Brfalse, nextEntry);
+                    break;
+                case ScanValueType.Slice:
+                    // String comparison — fall back to MultiUnaryItem.CompareLiteral
+                    il.Emit(OpCodes.Ldarg_0);
+                    il.Emit(OpCodes.Ldflda, s_ctxScanPredicates);
+                    EmitLdcI4(il, pred.ParamIndex);
+                    il.Emit(OpCodes.Call, s_predicateSpanIndexer); // ref MultiUnaryItem
+                    il.Emit(OpCodes.Ldloc, readerLocal);
+                    il.Emit(OpCodes.Call, s_compareLiteral);
+                    il.Emit(OpCodes.Brfalse, nextEntry);
+                    break;
+            }
         }
 
         // All predicates passed — add to TempBitmap
@@ -359,6 +383,131 @@ public static class QueryILEmitter
         // Clear the now-unused TempBitmap
         EmitLoadBitmapRef(il, s_ctxTempBitmap);
         il.Emit(OpCodes.Call, s_clear);
+    }
+
+    /// <summary>Emit: reader.CurrentLong [op] ctx.LongParams[paramIndex] → bool on stack.
+    /// For Between: reader.CurrentLong >= LongParams[paramIndex] AND reader.CurrentLong <= LongParams[paramIndex2].</summary>
+    private static void EmitLongComparison(ILGenerator il, in ScanPredicateInfo pred, LocalBuilder readerLocal)
+    {
+        if (pred.CompareOp == ScanCompareOp.Between)
+        {
+            // reader.CurrentLong >= LongParams[p1] AND reader.CurrentLong <= LongParams[p2]
+            var betweenFail = il.DefineLabel();
+            var betweenDone = il.DefineLabel();
+
+            // reader.CurrentLong >= LongParams[p1]
+            il.Emit(OpCodes.Ldloca, readerLocal);
+            il.Emit(OpCodes.Ldfld, s_readerCurrentLong);
+            EmitLoadLongParam(il, pred.ParamIndex);
+            il.Emit(OpCodes.Blt, betweenFail);
+
+            // reader.CurrentLong <= LongParams[p2]
+            il.Emit(OpCodes.Ldloca, readerLocal);
+            il.Emit(OpCodes.Ldfld, s_readerCurrentLong);
+            EmitLoadLongParam(il, pred.ParamIndex2);
+            il.Emit(OpCodes.Bgt, betweenFail);
+
+            il.Emit(OpCodes.Ldc_I4_1);
+            il.Emit(OpCodes.Br, betweenDone);
+            il.MarkLabel(betweenFail);
+            il.Emit(OpCodes.Ldc_I4_0);
+            il.MarkLabel(betweenDone);
+            return;
+        }
+
+        // Load reader.CurrentLong
+        il.Emit(OpCodes.Ldloca, readerLocal);
+        il.Emit(OpCodes.Ldfld, s_readerCurrentLong);
+
+        // Load ctx.LongParams[paramIndex]
+        EmitLoadLongParam(il, pred.ParamIndex);
+
+        // Emit comparison → push 1 or 0
+        EmitCompareOp(il, pred.CompareOp);
+    }
+
+    /// <summary>Emit: reader.CurrentDouble [op] ctx.DoubleParams[paramIndex] → bool on stack.</summary>
+    private static void EmitDoubleComparison(ILGenerator il, in ScanPredicateInfo pred, LocalBuilder readerLocal)
+    {
+        if (pred.CompareOp == ScanCompareOp.Between)
+        {
+            var betweenFail = il.DefineLabel();
+            var betweenDone = il.DefineLabel();
+
+            il.Emit(OpCodes.Ldloca, readerLocal);
+            il.Emit(OpCodes.Ldfld, s_readerCurrentDouble);
+            EmitLoadDoubleParam(il, pred.ParamIndex);
+            il.Emit(OpCodes.Blt_Un, betweenFail);
+
+            il.Emit(OpCodes.Ldloca, readerLocal);
+            il.Emit(OpCodes.Ldfld, s_readerCurrentDouble);
+            EmitLoadDoubleParam(il, pred.ParamIndex2);
+            il.Emit(OpCodes.Bgt_Un, betweenFail);
+
+            il.Emit(OpCodes.Ldc_I4_1);
+            il.Emit(OpCodes.Br, betweenDone);
+            il.MarkLabel(betweenFail);
+            il.Emit(OpCodes.Ldc_I4_0);
+            il.MarkLabel(betweenDone);
+            return;
+        }
+
+        il.Emit(OpCodes.Ldloca, readerLocal);
+        il.Emit(OpCodes.Ldfld, s_readerCurrentDouble);
+        EmitLoadDoubleParam(il, pred.ParamIndex);
+        EmitCompareOp(il, pred.CompareOp);
+    }
+
+    /// <summary>Load ctx.LongParams[index] → long on stack.</summary>
+    private static void EmitLoadLongParam(ILGenerator il, int index)
+    {
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Ldflda, s_ctxLongParams);
+        EmitLdcI4(il, index);
+        il.Emit(OpCodes.Call, s_spanLongIndexer);
+        il.Emit(OpCodes.Ldind_I8);
+    }
+
+    /// <summary>Load ctx.DoubleParams[index] → double on stack.</summary>
+    private static void EmitLoadDoubleParam(ILGenerator il, int index)
+    {
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Ldflda, s_ctxDoubleParams);
+        EmitLdcI4(il, index);
+        il.Emit(OpCodes.Call, s_spanDoubleIndexer);
+        il.Emit(OpCodes.Ldind_R8);
+    }
+
+    /// <summary>Emit comparison op. Stack has [value, comparand]. Pushes 1 or 0.</summary>
+    private static void EmitCompareOp(ILGenerator il, ScanCompareOp op)
+    {
+        switch (op)
+        {
+            case ScanCompareOp.Equal:
+                il.Emit(OpCodes.Ceq);
+                break;
+            case ScanCompareOp.NotEqual:
+                il.Emit(OpCodes.Ceq);
+                il.Emit(OpCodes.Ldc_I4_0);
+                il.Emit(OpCodes.Ceq); // negate
+                break;
+            case ScanCompareOp.GreaterThan:
+                il.Emit(OpCodes.Cgt);
+                break;
+            case ScanCompareOp.GreaterThanOrEqual:
+                il.Emit(OpCodes.Clt);
+                il.Emit(OpCodes.Ldc_I4_0);
+                il.Emit(OpCodes.Ceq); // !(a < b) = a >= b
+                break;
+            case ScanCompareOp.LessThan:
+                il.Emit(OpCodes.Clt);
+                break;
+            case ScanCompareOp.LessThanOrEqual:
+                il.Emit(OpCodes.Cgt);
+                il.Emit(OpCodes.Ldc_I4_0);
+                il.Emit(OpCodes.Ceq); // !(a > b) = a <= b
+                break;
+        }
     }
 
     private static void EmitFillLoop(ILGenerator il, int paramIndex,
