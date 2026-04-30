@@ -50,8 +50,7 @@ internal static class QueryPlanBuilder
         bool hasMixedAndOr = false;
         var rootOp = ParseExpression(query.Where, indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
 
-        if (hasMixedAndOr)
-            throw new NotSupportedException("Mixed AND/OR trees not yet supported in Corax 2.0 bitmap pipeline.");
+        // Mixed AND/OR trees are handled via OrGroup clauses
 
         if (rootOp == BooleanOp.True)
             return BuildAllEntriesPlan();
@@ -128,11 +127,41 @@ internal static class QueryPlanBuilder
         {
             case OperatorType.And:
             {
-                var left = ParseExpression(be.Left, indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
-                var right = ParseExpression(be.Right, indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
-                // Detect mixed trees: AND containing OR sub-expressions
-                if (left == BooleanOp.Or || right == BooleanOp.Or)
-                    hasMixedAndOr = true;
+                // For AND, handle OR sub-expressions as grouped clauses
+                BooleanOp left, right;
+
+                if (be.Left is BinaryExpression { Operator: OperatorType.Or })
+                {
+                    // Left side is OR — parse into a separate clause list and group them
+                    var orClauses = new List<ClauseInfo>();
+                    left = ParseExpression(be.Left, indexSearcher, orClauses, queryParameters, ref hasMixedAndOr);
+                    clauses.Add(new ClauseInfo
+                    {
+                        ClauseType = ClauseType.OrGroup,
+                        OrSubClauses = orClauses,
+                        OriginalIndex = clauses.Count
+                    });
+                }
+                else
+                {
+                    left = ParseExpression(be.Left, indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
+                }
+
+                if (be.Right is BinaryExpression { Operator: OperatorType.Or })
+                {
+                    var orClauses = new List<ClauseInfo>();
+                    right = ParseExpression(be.Right, indexSearcher, orClauses, queryParameters, ref hasMixedAndOr);
+                    clauses.Add(new ClauseInfo
+                    {
+                        ClauseType = ClauseType.OrGroup,
+                        OrSubClauses = orClauses,
+                        OriginalIndex = clauses.Count
+                    });
+                }
+                else
+                {
+                    right = ParseExpression(be.Right, indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
+                }
                 // Constant folding
                 if (left == BooleanOp.True) return right;
                 if (right == BooleanOp.True) return left;
@@ -416,6 +445,19 @@ internal static class QueryPlanBuilder
                     sum += indexSearcher.NumberOfDocumentsUnderSpecificTerm(meta, term);
                 return Math.Min(sum, indexSearcher.NumberOfEntries);
 
+            case ClauseType.OrGroup:
+                long orSum = 0;
+                if (clause.OrSubClauses != null)
+                {
+                    foreach (var sub in clause.OrSubClauses)
+                    {
+                        if (sub.Cardinality < 0)
+                            sub.Cardinality = EstimateCardinality(sub, indexSearcher);
+                        orSum += sub.Cardinality;
+                    }
+                }
+                return Math.Min(orSum, indexSearcher.NumberOfEntries);
+
             default:
                 return indexSearcher.NumberOfEntries;
         }
@@ -571,6 +613,7 @@ internal static class QueryPlanBuilder
         EndsWith,
         Search,
         Regex,
+        OrGroup, // A group of OR'd sub-clauses
     }
 
     internal class ClauseInfo
@@ -579,6 +622,7 @@ internal static class QueryPlanBuilder
         public string TermValue;
         public string TermValue2; // for BETWEEN
         public List<string> InTerms; // for IN
+        public List<ClauseInfo> OrSubClauses; // for OrGroup
         public ClauseType ClauseType;
         public long Cardinality = -1;
         public int OriginalIndex;
@@ -701,6 +745,17 @@ internal static class QueryPlanBuilder
             case ClauseType.Regex:
                 return indexSearcher.RegexQuery(fieldMeta,
                     new System.Text.RegularExpressions.Regex(clause.TermValue));
+
+            case ClauseType.OrGroup:
+                if (clause.OrSubClauses == null || clause.OrSubClauses.Count == 0)
+                    return TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
+                IQueryMatch orResult = ResolveClause(clause.OrSubClauses[0], indexSearcher);
+                for (int j = 1; j < clause.OrSubClauses.Count; j++)
+                {
+                    var next = ResolveClause(clause.OrSubClauses[j], indexSearcher);
+                    orResult = indexSearcher.Or(orResult, next);
+                }
+                return orResult;
 
             default:
                 throw new NotSupportedException($"ClauseType {clause.ClauseType} not supported.");

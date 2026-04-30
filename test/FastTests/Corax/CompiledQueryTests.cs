@@ -514,6 +514,49 @@ public class CompiledQueryTests : RavenTestBase
     }
 
     [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public async Task MixedAndOr_BitmapPipeline()
+    {
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+        options.ModifyDatabaseRecord += record =>
+        {
+            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
+        };
+        using var store = GetDocumentStore(options);
+
+        using (var session = store.OpenAsyncSession())
+        {
+            for (int i = 0; i < 100; i++)
+            {
+                await session.StoreAsync(new TestDoc
+                {
+                    Name = $"doc-{i}",
+                    Category = $"cat-{i % 5}",
+                    Status = i % 2 == 0 ? "active" : "inactive"
+                });
+            }
+            await session.SaveChangesAsync();
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        // Mixed: (Category=cat-0 OR Category=cat-1) AND Status=active
+        using (var session = store.OpenAsyncSession())
+        {
+            var results = await session.Advanced.AsyncRawQuery<TestDoc>(
+                "from TestDocs where (Category = 'cat-0' or Category = 'cat-1') and Status = 'active'")
+                .ToListAsync();
+
+            // (cat-0 ∪ cat-1) = 40, active = 50, intersection = 20
+            Assert.Equal(20, results.Count);
+            Assert.All(results, r =>
+            {
+                Assert.True(r.Category is "cat-0" or "cat-1");
+                Assert.Equal("active", r.Status);
+            });
+        }
+    }
+
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
     public async Task OrderBy_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
