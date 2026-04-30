@@ -683,10 +683,13 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                                     planCache.Add(queryText, compiledPlan);
                                 }
 
-                                // Resolve matches fresh each execution — posting lists change between transactions
+                                // Resolve matches and scan parameters fresh each execution
                                 var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, IndexSearcher, planParams, builderParameters);
+                                QueryPlanBuilder.ExtractScanParameters(plan, IndexSearcher,
+                                    out var longParams, out var doubleParams, out var sliceParams, out var fieldRootPages);
                                 queryMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
-                                    plan, compiledPlan, resolvedMatches, System.Array.Empty<global::Corax.Querying.Matches.MultiUnaryItem>(),
+                                    compiledPlan, resolvedMatches,
+                                    longParams, doubleParams, sliceParams, fieldRootPages,
                                     IndexSearcher, _allocator, take, token);
 
                                 orderByFields = CoraxQueryBuilder.GetSortMetadata(builderParameters, out bool hasEmptySorts);

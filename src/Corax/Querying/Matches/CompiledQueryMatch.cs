@@ -5,6 +5,7 @@ using Corax.Querying.Matches.Meta;
 using Corax.Querying.Planning;
 using Corax.Utils.RoaringBitmaps;
 using Sparrow.Server;
+using Voron;
 
 namespace Corax.Querying.Matches;
 
@@ -12,7 +13,10 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
 {
     private readonly QueryILEmitter.CompiledExecuteDelegate _compiledDelegate;
     private readonly IQueryMatch[] _resolvedMatches;
-    private readonly MultiUnaryItem[] _scanPredicates;
+    private readonly long[] _longParams;
+    private readonly double[] _doubleParams;
+    private readonly Slice[] _sliceParams;
+    private readonly long[] _fieldRootPages;
     private readonly string _explainSource;
     private readonly ByteStringContext _allocator;
     private readonly IndexSearcher _searcher;
@@ -24,13 +28,17 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
     private bool _executed;
     private long _count;
 
-    public CompiledQueryMatch(QueryPlan plan, CompiledPlan compiledPlan,
-        IQueryMatch[] resolvedMatches, MultiUnaryItem[] scanPredicates,
+    public CompiledQueryMatch(CompiledPlan compiledPlan,
+        IQueryMatch[] resolvedMatches,
+        long[] longParams, double[] doubleParams, Slice[] sliceParams, long[] fieldRootPages,
         IndexSearcher searcher, ByteStringContext allocator, long limit, CancellationToken token)
     {
         _compiledDelegate = compiledPlan.CompiledDelegate;
         _resolvedMatches = resolvedMatches;
-        _scanPredicates = scanPredicates;
+        _longParams = longParams;
+        _doubleParams = doubleParams;
+        _sliceParams = sliceParams;
+        _fieldRootPages = fieldRootPages;
         _explainSource = compiledPlan.ExplainSource;
         _allocator = allocator;
         _searcher = searcher;
@@ -142,7 +150,11 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
                 TempBitmap = ref tempBitmap,
                 Searcher = _searcher,
                 Matches = _resolvedMatches.AsSpan(),
-                ScanPredicates = _scanPredicates.AsSpan(),
+                ScanPredicates = Span<MultiUnaryItem>.Empty, // not used — direct comparisons in IL
+                FieldRootPages = _fieldRootPages.AsSpan(),
+                LongParams = _longParams.AsSpan(),
+                DoubleParams = _doubleParams.AsSpan(),
+                SliceParams = _sliceParams.AsSpan(),
                 Token = _token
             };
 
