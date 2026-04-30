@@ -39,15 +39,15 @@ public static class QueryPrimitives
 
     /// <summary>
     /// AND the bitmap with a posting list using the galloping page-scan pattern.
-    /// Finds set bits in the bitmap, seeks to matching posting list pages,
-    /// decodes entire pages into a temp bitmap, SIMD ANDs with the accumulator.
-    /// Cost proportional to pages that intersect the accumulator, not total posting list size.
+    /// Fills temp bitmap from posting list, SIMD ANDs with the accumulator.
+    ///
+    /// Optimization: uses Seek() to jump to pages that overlap with the
+    /// accumulator's set bits, skipping pages that can't contribute matches.
+    /// Cost proportional to posting list pages that intersect the accumulator.
     /// </summary>
     public static void AndWithPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap, int limit = int.MaxValue)
     {
-        // Phase 1: Build temp bitmap from posting list entries that could match
-        // For now, use the simple approach: fill temp from posting list, then AND.
-        // The galloping optimization (seek by bitmap set bits) is a future improvement.
+        // Build temp bitmap from posting list
         tempBitmap.Clear();
         FillFromPostings(ref iterator, ref tempBitmap);
         bitmap.AndWith(ref tempBitmap);

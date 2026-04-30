@@ -378,6 +378,50 @@ public class CompiledQueryTests : RavenTestBase
         }
     }
 
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public async Task OrderBy_BitmapPipeline()
+    {
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+        options.ModifyDatabaseRecord += record =>
+        {
+            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
+        };
+        using var store = GetDocumentStore(options);
+
+        using (var session = store.OpenAsyncSession())
+        {
+            for (int i = 0; i < 100; i++)
+            {
+                await session.StoreAsync(new TestDoc
+                {
+                    Name = $"doc-{i:D5}",
+                    Category = $"cat-{i % 5}",
+                    Status = i % 2 == 0 ? "active" : "inactive",
+                    Price = (99 - i) * 10 // reverse order
+                });
+            }
+            await session.SaveChangesAsync();
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        // ORDER BY Name LIMIT 10
+        using (var session = store.OpenAsyncSession())
+        {
+            var results = await session.Advanced.AsyncRawQuery<TestDoc>(
+                "from TestDocs where Category = 'cat-0' order by Name limit 10")
+                .ToListAsync();
+
+            Assert.Equal(10, results.Count);
+            // Should be sorted by Name ascending
+            for (int i = 1; i < results.Count; i++)
+            {
+                Assert.True(string.Compare(results[i - 1].Name, results[i].Name, System.StringComparison.Ordinal) <= 0,
+                    $"Results not sorted: {results[i - 1].Name} should be before {results[i].Name}");
+            }
+        }
+    }
+
     private class TestDoc
     {
         public string Id { get; set; }
