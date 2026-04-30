@@ -27,12 +27,13 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
     private bool _executed;
     private long _count;
 
-    public CompiledQueryMatch(QueryPlan plan, IQueryMatch[] resolvedMatches,
+    public CompiledQueryMatch(QueryPlan plan, CompiledPlan compiledPlan,
+        IQueryMatch[] resolvedMatches,
         IndexSearcher searcher, ByteStringContext allocator, long limit, CancellationToken token)
     {
-        _compiledDelegate = QueryILEmitter.EmitDelegate(plan);
+        _compiledDelegate = compiledPlan.CompiledDelegate;
         _resolvedMatches = resolvedMatches;
-        _explainSource = plan.ExplainSource ?? QueryILEmitter.GenerateExplainSource(plan);
+        _explainSource = compiledPlan.ExplainSource;
         _allocator = allocator;
         _limit = limit;
         _token = token;
