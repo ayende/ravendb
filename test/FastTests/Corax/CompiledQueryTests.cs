@@ -974,6 +974,38 @@ public class CompiledQueryTests : RavenTestBase
         }
     }
 
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public async Task SingleDocResult_BitmapPipeline()
+    {
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+        options.ModifyDatabaseRecord += record =>
+        {
+            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
+        };
+        using var store = GetDocumentStore(options);
+
+        using (var session = store.OpenAsyncSession())
+        {
+            await session.StoreAsync(new TestDoc { Name = "unique-doc", Category = "unique-cat", Status = "active" });
+            for (int i = 0; i < 99; i++)
+                await session.StoreAsync(new TestDoc { Name = $"doc-{i}", Category = "common-cat", Status = "active" });
+            await session.SaveChangesAsync();
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        // Single result — tests cardinality-1 path
+        using (var session = store.OpenAsyncSession())
+        {
+            var results = await session.Query<TestDoc>()
+                .Where(x => x.Category == "unique-cat")
+                .ToListAsync();
+
+            Assert.Equal(1, results.Count);
+            Assert.Equal("unique-doc", results[0].Name);
+        }
+    }
+
     [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying, Skip = "search() requires analyzer setup — falls back to old path")]
     public async Task SearchQuery_BitmapPipeline()
     {
