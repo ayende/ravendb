@@ -442,12 +442,36 @@ internal static class QueryPlanBuilder
                 EstimatedCardinality = clauses[0].Cardinality
             });
         }
-        else if (clauses.Any(c => c.ClauseType == ClauseType.NotEquals))
+        else if (clauses.Count == 1 && clauses[0].ClauseType == ClauseType.NotEquals)
         {
-            throw new NotSupportedException(
-                "NotEquals (!=) not yet supported in Corax 2.0 bitmap pipeline.");
+            // Standalone NotEquals: AllEntries ANDNOT term
+            // ParamIndex 0 = the AllEntries match, ParamIndex 1 = the negated term
+            ops.Add(new PlanOp
+            {
+                Kind = PlanOpKind.FillFromPostings,
+                ParamIndex = 0, // Will be resolved to AllEntries
+                EstimatedCardinality = long.MaxValue // AllEntries — exact count not needed for plan
+            });
+            ops.Add(new PlanOp
+            {
+                Kind = PlanOpKind.AndNotWithPostings,
+                ParamIndex = 1, // Will be resolved to the negated term
+                EstimatedCardinality = clauses[0].Cardinality
+            });
+            ops.Add(new PlanOp { Kind = PlanOpKind.IterateInto });
+
+            // Mark clause so ResolveMatches produces [AllEntries, TermMatch]
+            clauses[0].IsNegated = true;
+
+            return new QueryPlan
+            {
+                Ops = ops.ToArray(),
+                EntryScanPredicates = Array.Empty<MultiUnaryItem[]>(),
+                OperandOrdering = 0,
+                OperandCount = 1,
+                Clauses = clauses.ToArray()
+            };
         }
-        // Range queries are handled — ResolveClause now does numeric type coercion
         else
         {
             // AND chain: Fill smallest, then AndWith with goto checks
@@ -562,6 +586,17 @@ internal static class QueryPlanBuilder
         var clauses = plan.Clauses;
         if (clauses == null || clauses.Length == 0)
             return Array.Empty<IQueryMatch>();
+
+        // Check for standalone NotEquals pattern: plan has Fill(AllEntries) + ANDNOT(term)
+        if (clauses.Length == 1 && ((ClauseInfo)clauses[0]).IsNegated)
+        {
+            var clause = (ClauseInfo)clauses[0];
+            return new IQueryMatch[]
+            {
+                indexSearcher.AllEntries(),
+                indexSearcher.TermQuery(indexSearcher.FieldMetadataBuilder(clause.FieldName), clause.TermValue)
+            };
+        }
 
         var matches = new IQueryMatch[clauses.Length];
         for (int i = 0; i < clauses.Length; i++)
