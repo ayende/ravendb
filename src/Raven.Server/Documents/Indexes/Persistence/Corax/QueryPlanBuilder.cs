@@ -634,7 +634,6 @@ internal static class QueryPlanBuilder
             {
                 if (clauses[0].ClauseType == ClauseType.OrGroup && clauses[0].OrSubClauses != null)
                 {
-                    // First clause is an OrGroup — OR all sub-clauses into bitmap[0]
                     var subClauses = clauses[0].OrSubClauses;
                     for (int s = 0; s < subClauses.Count; s++)
                     {
@@ -647,6 +646,30 @@ internal static class QueryPlanBuilder
                         });
                     }
                     matchIndex += subClauses.Count;
+                }
+                else if (clauses[0].ClauseType == ClauseType.AllIn && clauses[0].InTerms != null)
+                {
+                    // First clause is AllIn — fill first term, AND remaining
+                    var terms = clauses[0].InTerms;
+                    ops.Add(new PlanOp
+                    {
+                        Kind = PlanOpKind.FillFromPostings,
+                        ParamIndex = matchIndex,
+                        BitmapLocal = 0,
+                        EstimatedCardinality = clauses[0].Cardinality / terms.Count
+                    });
+                    for (int t = 1; t < terms.Count; t++)
+                    {
+                        ops.Add(new PlanOp
+                        {
+                            Kind = PlanOpKind.AndWithPostings,
+                            ParamIndex = matchIndex + t,
+                            BitmapLocal = 0,
+                            EstimatedCardinality = clauses[0].Cardinality / terms.Count
+                        });
+                        ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
+                    }
+                    matchIndex += terms.Count;
                 }
                 else
                 {
@@ -702,6 +725,23 @@ internal static class QueryPlanBuilder
                     ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
 
                     matchIndex += subClauses.Count;
+                }
+                else if (clauses[i].ClauseType == ClauseType.AllIn && clauses[i].InTerms != null)
+                {
+                    // AllIn: AND each term's posting list with bitmap[0]
+                    var terms = clauses[i].InTerms;
+                    for (int t = 0; t < terms.Count; t++)
+                    {
+                        ops.Add(new PlanOp
+                        {
+                            Kind = PlanOpKind.AndWithPostings,
+                            ParamIndex = matchIndex + t,
+                            BitmapLocal = 0,
+                            EstimatedCardinality = clauses[i].Cardinality / terms.Count
+                        });
+                        ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
+                    }
+                    matchIndex += terms.Count;
                 }
                 else
                 {
@@ -1082,14 +1122,15 @@ internal static class QueryPlanBuilder
             };
         }
 
-        // Flatten OrGroups: each sub-clause becomes a separate match.
-        // Count total matches needed.
+        // Flatten OrGroups and AllIn: each sub-clause/term becomes a separate match.
         int totalMatches = 0;
         for (int i = 0; i < clauses.Length; i++)
         {
             var clause = (ClauseInfo)clauses[i];
             if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
                 totalMatches += clause.OrSubClauses.Count;
+            else if (clause.ClauseType == ClauseType.AllIn && clause.InTerms != null)
+                totalMatches += clause.InTerms.Count;
             else
                 totalMatches++;
         }
@@ -1101,9 +1142,15 @@ internal static class QueryPlanBuilder
             var clause = (ClauseInfo)clauses[i];
             if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
             {
-                // Expand: each sub-clause is a separate match
                 foreach (var sub in clause.OrSubClauses)
                     matches[matchIdx++] = ResolveClause(sub, indexSearcher, parameters, builderParams);
+            }
+            else if (clause.ClauseType == ClauseType.AllIn && clause.InTerms != null)
+            {
+                // Expand: each term is a separate TermQuery
+                var fieldMeta = indexSearcher.FieldMetadataBuilder(clause.FieldName);
+                foreach (var term in clause.InTerms)
+                    matches[matchIdx++] = indexSearcher.TermQuery(fieldMeta, term);
             }
             else
             {
@@ -1172,15 +1219,9 @@ internal static class QueryPlanBuilder
                 return indexSearcher.InQuery(fieldMeta, clause.InTerms);
 
             case ClauseType.AllIn:
-                if (clause.InTerms == null || clause.InTerms.Count == 0)
-                    return TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
-                IQueryMatch allInMatch = indexSearcher.TermQuery(fieldMeta, clause.InTerms[0]);
-                for (int j = 1; j < clause.InTerms.Count; j++)
-                {
-                    var next = indexSearcher.TermQuery(fieldMeta, clause.InTerms[j]);
-                    allInMatch = indexSearcher.And(allInMatch, next);
-                }
-                return allInMatch;
+                // AllIn sub-terms are expanded into separate matches by ResolveMatches.
+                throw new InvalidOperationException(
+                    "AllIn should be expanded by ResolveMatches, not resolved as a single clause.");
 
             case ClauseType.Exists:
                 return indexSearcher.ExistsQuery(fieldMeta);
