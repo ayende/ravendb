@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using Corax;
 using Corax.Mappings;
+using IQueryMatch = Corax.Querying.Matches.Meta.IQueryMatch;
 using Corax.Utils;
 using Raven.Client.Documents.Indexes;
 using Raven.Client.Documents.Queries.Facets;
@@ -87,7 +88,45 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
             var parameters = new CoraxQueryBuilder.Parameters(_indexSearcher, _allocator, null, null, query, _index,
                 query.QueryParameters, _queryBuilderFactories, _fieldMappings, null, null, -1,
                 deduplicationDisabled: true, token: token);
-            var baseQuery = CoraxQueryBuilder.BuildQuery(parameters, out _);
+
+            IQueryMatch baseQuery;
+            if (_index.Configuration.CoraxUseBitmapPipeline)
+            {
+                var planParams = new QueryPlanBuilder.PlanParameters
+                {
+                    IndexSearcher = _indexSearcher,
+                    Metadata = query.Metadata,
+                    QueryParameters = query.QueryParameters,
+                    Index = _index,
+                    IndexFieldsMapping = _fieldMappings,
+                    Allocator = _allocator,
+                    Token = token,
+                    HasDynamics = parameters.HasDynamics,
+                    DynamicFields = parameters.DynamicFields,
+                    HasBoost = parameters.HasBoost
+                };
+                var plan = QueryPlanBuilder.BuildPlan(planParams);
+                var queryText = query.Metadata.Query.QueryText;
+                var planCache = _indexSearcher.PlanCache;
+                var compiledPlan = planCache.Get(queryText, plan.OperandOrdering);
+                if (compiledPlan == null)
+                {
+                    compiledPlan = new global::Corax.Querying.Planning.CompiledPlan
+                    {
+                        CompiledDelegate = global::Corax.Querying.Planning.QueryILEmitter.EmitDelegate(plan),
+                        ExplainSource = plan.ExplainSource ?? global::Corax.Querying.Planning.QueryILEmitter.GenerateExplainSource(plan),
+                        Ordering = plan.OperandOrdering
+                    };
+                    planCache.Add(queryText, compiledPlan);
+                }
+                var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, _indexSearcher, planParams, parameters);
+                baseQuery = new global::Corax.Querying.Matches.CompiledQueryMatch(
+                    plan, compiledPlan, resolvedMatches, _indexSearcher, _allocator, long.MaxValue, token);
+            }
+            else
+            {
+                baseQuery = CoraxQueryBuilder.BuildQuery(parameters, out _);
+            }
             queryTimings?.SetQueryPlan(baseQuery.Inspect());
             var maxMatchingIds = _indexSearcher.MaxMemoizationSizeInBytes / sizeof(long);
             baseQueryMatchingIds = new HashSet<long>();
@@ -243,7 +282,38 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
 
         var parameters = new CoraxQueryBuilder.Parameters(_indexSearcher, _allocator, null, null, query, _index, query.QueryParameters, _queryBuilderFactories,
             _fieldMappings, null, null, -1, deduplicationDisabled: false, token: token, queryTime: queryTime);
-        var baseQuery = CoraxQueryBuilder.BuildQuery(parameters, out _);
+
+        IQueryMatch baseQuery;
+        if (_index.Configuration.CoraxUseBitmapPipeline && query.Metadata.Query.Where != null)
+        {
+            var planParams = new QueryPlanBuilder.PlanParameters
+            {
+                IndexSearcher = _indexSearcher,
+                Metadata = query.Metadata,
+                QueryParameters = query.QueryParameters,
+                Index = _index,
+                IndexFieldsMapping = _fieldMappings,
+                Allocator = _allocator,
+                Token = token,
+                HasDynamics = parameters.HasDynamics,
+                DynamicFields = parameters.DynamicFields,
+                HasBoost = parameters.HasBoost
+            };
+            var plan = QueryPlanBuilder.BuildPlan(planParams);
+            var compiledPlan = new global::Corax.Querying.Planning.CompiledPlan
+            {
+                CompiledDelegate = global::Corax.Querying.Planning.QueryILEmitter.EmitDelegate(plan),
+                ExplainSource = plan.ExplainSource ?? global::Corax.Querying.Planning.QueryILEmitter.GenerateExplainSource(plan),
+                Ordering = plan.OperandOrdering
+            };
+            var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, _indexSearcher, planParams, parameters);
+            baseQuery = new global::Corax.Querying.Matches.CompiledQueryMatch(
+                plan, compiledPlan, resolvedMatches, _indexSearcher, _allocator, long.MaxValue, token);
+        }
+        else
+        {
+            baseQuery = CoraxQueryBuilder.BuildQuery(parameters, out _);
+        }
 
         var coraxPageSize = CoraxBufferSize(_indexSearcher, facetQuery.Query.PageSize, query);
         var ids = CoraxIndexReadOperation.QueryPool.Rent(coraxPageSize);

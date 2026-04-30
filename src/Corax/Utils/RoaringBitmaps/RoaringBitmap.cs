@@ -185,21 +185,41 @@ public unsafe struct RoaringBitmap : IDisposable
         }
     }
 
-    /// <summary>Create a new bitmap container from sorted values. Branchless bit setting.</summary>
+    /// <summary>Create a new bitmap container from sorted values.
+    /// Accumulates bits per word and flushes once per word boundary,
+    /// reducing memory writes from N to the number of distinct words touched.</summary>
     private void CreateBitmapContainerFromSorted(long key, ReadOnlySpan<long> sortedValues, int start, int count)
     {
         _ctx.Allocate(BitmapContainerSizeInBytes, out ByteString storage);
         new Span<byte>(storage.Ptr, BitmapContainerSizeInBytes).Clear();
         var bitmapPtr = (ulong*)storage.Ptr;
 
-        // Branchless: accumulate bits per word, flush when word index changes
-        for (int j = start; j < start + count; j++)
+        // Accumulate mask per word, flush when word index changes.
+        // Sorted input means consecutive values often share the same word —
+        // one store per word instead of one per bit.
+        ushort firstLow = (ushort)(sortedValues[start] & ContainerValueMask);
+        int currentWordIndex = firstLow >> 6;
+        ulong currentMask = 1UL << (firstLow & 63);
+
+        for (int j = start + 1; j < start + count; j++)
         {
             ushort low = (ushort)(sortedValues[j] & ContainerValueMask);
-            bitmapPtr[low >> 6] |= 1UL << (low & 63);
-        }
+            int wordIndex = low >> 6;
 
-        // Count is exactly the input count (sorted values from posting lists have no duplicates)
+            if (wordIndex == currentWordIndex)
+            {
+                currentMask |= 1UL << (low & 63);
+            }
+            else
+            {
+                bitmapPtr[currentWordIndex] = currentMask;
+                currentWordIndex = wordIndex;
+                currentMask = 1UL << (low & 63);
+            }
+        }
+        bitmapPtr[currentWordIndex] = currentMask; // flush last word
+
+        // Count is exactly the input count — sorted values from posting lists have no duplicates
         AddNewContainer(key, ContainerType.Bitmap, new ContainerEntry
         {
             Cardinality = count,
@@ -212,7 +232,7 @@ public unsafe struct RoaringBitmap : IDisposable
     private void CreateArrayContainerFromSorted(long key, ReadOnlySpan<long> sortedValues, int start, int count)
     {
         // Allocate SIMD-aligned: at least InitialArrayContainerSizeInBytes for SIMD operations
-        int neededBytes = Math.Max(InitialArrayContainerSizeInBytes, count * sizeof(ushort));
+        int neededBytes = AlignForSimd(count * sizeof(ushort));
         _ctx.Allocate(neededBytes, out ByteString storage);
         new Span<byte>(storage.Ptr, storage.Length).Clear();
 
@@ -286,7 +306,7 @@ public unsafe struct RoaringBitmap : IDisposable
                 }
 
                 // Ensure enough space
-                int neededBytes = Math.Max(InitialArrayContainerSizeInBytes, newTotal * sizeof(ushort));
+                int neededBytes = AlignForSimd(newTotal * sizeof(ushort));
                 if (entry.Storage.Length < neededBytes)
                 {
                     _ctx.Allocate(neededBytes, out ByteString newStorage);
@@ -309,23 +329,132 @@ public unsafe struct RoaringBitmap : IDisposable
         }
     }
 
-    /// <summary>Lazy OR — delegates to OrWith for correctness.
-    /// The popcount-skip optimisation (skipping per-op cardinality recount for
-    /// Bitmap containers during multi-term IN chains) is a future performance
-    /// improvement that requires a per-container dirty flag.
-    /// See docs/implementation-notes.md "Lazy OR optimisation" for details.</summary>
+    private const int LazyCardinality = -1;
+
+    /// <summary>Lazy OR — same as OrWith but skips per-container cardinality tracking.
+    /// Bitmap containers get Cardinality = -1 (dirty). Call RepairAfterLazy() once
+    /// after all lazy OR operations to recompute cardinality in a single popcount pass.</summary>
+    [SkipLocalsInit]
     public void LazyOrWith(ref RoaringBitmap other)
     {
-        OrWith(ref other);
+        if (other.ContainerCount == 0)
+            return;
+
+        int otherLen = other.IndexLength;
+        if (otherLen > 0)
+            EnsureIndexCoversKey(otherLen - 1);
+        _entries.EnsureCapacityFor(_ctx, other.ContainerCount);
+        _types.EnsureCapacityFor(_ctx, other.ContainerCount);
+
+        for (int key = 0; key < otherLen; key++)
+        {
+            int otherSlot = other.GetSlotForKey(key);
+            if (otherSlot < 0)
+                continue;
+
+            ref ContainerEntry otherEntry = ref other.GetEntryBySlot(otherSlot);
+            int mySlot = GetSlotForKey(key);
+
+            if (mySlot >= 0)
+            {
+                LazyOrContainerInPlace(ref _entries[mySlot], ref _types.RawItems[mySlot],
+                    ref otherEntry, other._types.RawItems[otherSlot]);
+            }
+            else
+            {
+                // Steal container from other (zero-copy)
+                ContainerType otherType = other._types.RawItems[otherSlot];
+                ContainerEntry stolen = otherEntry;
+                otherEntry.Storage = default;
+                otherEntry.Data = null;
+                otherEntry.Cardinality = 0;
+                AddNewContainer(key, otherType, stolen);
+            }
+        }
     }
 
-    /// <summary>Repair cardinality counts after a sequence of LazyOrWith calls.
-    /// Currently a no-op since LazyOrWith maintains cardinality eagerly.
-    /// When the lazy flag optimisation is implemented, this will walk dirty
-    /// containers and recompute cardinality in one pass.</summary>
+    /// <summary>Lazy OR for a single container pair. Skips popcount — marks bitmap
+    /// containers with Cardinality = -1.</summary>
+    [SkipLocalsInit]
+    private void LazyOrContainerInPlace(ref ContainerEntry left, ref ContainerType leftType,
+        ref ContainerEntry right, ContainerType rightType)
+    {
+        if (leftType == ContainerType.Range && rightType == ContainerType.Range)
+        {
+            left.Cardinality = Math.Max(left.Cardinality, right.Cardinality);
+            return;
+        }
+        if (leftType == ContainerType.Range)
+            ConvertRangeToBitmap(ref left, ref leftType);
+        if (rightType == ContainerType.Range)
+        {
+            ulong* stackBmp = stackalloc ulong[BitmapContainerSizeInUlongs];
+            ContainerEntry temp = MaterializeRangeToStack(ref right, stackBmp);
+            LazyOrContainerInPlace(ref left, ref leftType, ref temp, ContainerType.Bitmap);
+            return;
+        }
+
+        switch (leftType, rightType)
+        {
+            case (ContainerType.Bitmap, ContainerType.Bitmap):
+                // OR bitmaps without popcount — just bitwise OR
+                BitmapOrNoPop(left.BitmapPtr, right.BitmapPtr, left.BitmapPtr, BitmapContainerSizeInUlongs);
+                left.Cardinality = LazyCardinality; // mark dirty
+                break;
+
+            case (ContainerType.Bitmap, ContainerType.Array):
+            case (ContainerType.Bitmap, ContainerType.ArrayUnsorted):
+            {
+                // Set bits unconditionally — no per-bit cardinality check
+                var bmp = left.BitmapData;
+                ushort* arr = (ushort*)right.Data;
+                for (int i = 0; i < right.Cardinality; i++)
+                {
+                    ushort val = arr[i];
+                    bmp[val >> 6] |= 1UL << (val & 63);
+                }
+                left.Cardinality = LazyCardinality;
+                break;
+            }
+
+            default:
+            {
+                // Array×Array: same as eager path (small containers, popcount is trivial)
+                ulong* scratch = stackalloc ulong[BitmapContainerSizeInUlongs];
+                ulong* dirtyMap = stackalloc ulong[4];
+                OrContainerInPlace(ref left, ref leftType, ref right, rightType, scratch, dirtyMap);
+                break;
+            }
+        }
+    }
+
+    /// <summary>Bitmap OR without popcount — just bitwise OR the words.</summary>
+    private static void BitmapOrNoPop(ulong* a, ulong* b, ulong* dst, int count)
+    {
+        for (int i = 0; i < count; i++)
+            dst[i] = a[i] | b[i];
+    }
+
+    /// <summary>Recompute cardinality for all containers marked dirty (Cardinality == -1)
+    /// after a sequence of LazyOrWith calls. Single popcount pass.</summary>
     public void RepairAfterLazy()
     {
-        // No-op: LazyOrWith currently maintains cardinality eagerly via OrWith.
+        for (int i = 0; i < _entries.Count; i++)
+        {
+            if (_entries[i].Cardinality == LazyCardinality)
+            {
+                ref ContainerEntry entry = ref _entries[i];
+                ContainerType type = _types.RawItems[i];
+                if (type == ContainerType.Bitmap)
+                {
+                    int card = 0;
+                    var bmp = entry.BitmapData;
+                    for (int w = 0; w < BitmapContainerSizeInUlongs; w++)
+                        card += BitOperations.PopCount(bmp[w]);
+                    entry.Cardinality = card;
+                }
+            }
+        }
     }
 
     /// <summary>Returns the minimum container key in the bitmap, or -1 if empty.</summary>
@@ -1262,7 +1391,16 @@ public unsafe struct RoaringBitmap : IDisposable
     #region Container Management
 
     private const int InitialArrayContainerSizeInBytes = 128; // 64 ushorts — minimum for SIMD linear scan without scalar tail
+    private const int SimdAlignment = 32; // Vector256 width in bytes
     private const int SimdLinearScanThreshold = 64; // below this, SIMD linear scan beats binary/quad search
+
+    /// <summary>Round up to SIMD-aligned size. Ensures all array allocations
+    /// are multiples of 32 bytes so Vector256 operations don't need bounds checking.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int AlignForSimd(int bytes)
+    {
+        return Math.Max(InitialArrayContainerSizeInBytes, (bytes + SimdAlignment - 1) & ~(SimdAlignment - 1));
+    }
 
     private ContainerEntry CreateArrayContainer(long key)
     {
@@ -1547,18 +1685,19 @@ public unsafe struct RoaringBitmap : IDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static bool SimdLinearContains(ushort* arr, int cardinality, ushort value)
     {
+        // All array containers are allocated with AlignForSimd (≥128 bytes = 64 ushorts),
+        // so Vector256/128 loads from arr+0 through arr+capacity are always safe.
+        // For small cardinalities, the extra bytes beyond cardinality are zeroed and
+        // can't match a non-zero value (ushort values are 0-65535, zero is a valid value
+        // but only matches if actually present in the set).
+        // Guard: for cardinality == 0, skip entirely.
+        if (cardinality == 0)
+            return false;
+
         int i = 0;
 
         if (AdvInstructionSet.IsAcceleratedVector256)
         {
-            // Guard: if cardinality < vector width, scalar scan to avoid reading before buffer
-            if (cardinality < Vector256<ushort>.Count)
-            {
-                for (int j = 0; j < cardinality; j++)
-                    if (arr[j] == value) return true;
-                return false;
-            }
-
             Vector256<ushort> needle256 = Vector256.Create(value);
             for (; i + Vector256<ushort>.Count <= cardinality; i += Vector256<ushort>.Count)
             {
@@ -1567,17 +1706,17 @@ public unsafe struct RoaringBitmap : IDisposable
             }
             if (i < cardinality)
             {
-                if (Vector256.EqualsAny(Vector256.Load(arr + cardinality - Vector256<ushort>.Count), needle256))
-                    return true;
+                // Tail overlap load — safe because allocation is SIMD-aligned.
+                // May read beyond cardinality into zeroed padding. If value is 0,
+                // we might false-positive on padding, so check the found index.
+                var tail = Vector256.Load(arr + cardinality - Vector256<ushort>.Count);
+                if (Vector256.EqualsAny(tail, needle256))
+                {
+                    // Verify the match is within cardinality (not in padding)
+                    for (int j = i; j < cardinality; j++)
+                        if (arr[j] == value) return true;
+                }
             }
-            return false;
-        }
-
-        // Guard: if cardinality < vector width, scalar scan
-        if (cardinality < Vector128<ushort>.Count)
-        {
-            for (int j = 0; j < cardinality; j++)
-                if (arr[j] == value) return true;
             return false;
         }
 
@@ -1589,8 +1728,12 @@ public unsafe struct RoaringBitmap : IDisposable
         }
         if (i < cardinality)
         {
-            if (Vector128.EqualsAny(Vector128.Load(arr + cardinality - Vector128<ushort>.Count), needle128))
-                return true;
+            var tail = Vector128.Load(arr + cardinality - Vector128<ushort>.Count);
+            if (Vector128.EqualsAny(tail, needle128))
+            {
+                for (int j = i; j < cardinality; j++)
+                    if (arr[j] == value) return true;
+            }
         }
         return false;
     }
@@ -1925,7 +2068,7 @@ public unsafe struct RoaringBitmap : IDisposable
         {
             // Create unsorted array: copy range values 0..rangeCount-1, then append the new value
             int newCount = rangeCount + 1;
-            _ctx.Allocate(Math.Max(InitialArrayContainerSizeInBytes, newCount * sizeof(ushort)), out ByteString storage);
+            _ctx.Allocate(AlignForSimd(newCount * sizeof(ushort)), out ByteString storage);
             ushort* arr = (ushort*)storage.Ptr;
             for (int i = 0; i < rangeCount; i++)
                 arr[i] = (ushort)i;

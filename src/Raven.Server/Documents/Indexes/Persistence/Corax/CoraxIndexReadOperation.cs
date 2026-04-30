@@ -650,7 +650,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                             // Corax 2.0: try the new bitmap-based compiled path first
                             if (_index.Configuration.CoraxUseBitmapPipeline)
                             {
-                                // Bitmap path: build plan, resolve matches, execute via CompiledQueryMatch
+                                // Bitmap path: build plan, check cache, emit or reuse delegate
                                 var planParams = new QueryPlanBuilder.PlanParameters
                                 {
                                     IndexSearcher = IndexSearcher,
@@ -667,9 +667,26 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                                 };
                                 var plan = QueryPlanBuilder.BuildPlan(planParams);
 
+                                // Check plan cache — reuse compiled delegate if available
+                                string queryText = query.Metadata.Query.QueryText;
+                                var planCache = IndexSearcher.PlanCache;
+                                var compiledPlan = planCache.Get(queryText, plan.OperandOrdering);
+                                if (compiledPlan == null)
+                                {
+                                    // Cache miss — emit DynamicMethod delegate and cache it
+                                    compiledPlan = new global::Corax.Querying.Planning.CompiledPlan
+                                    {
+                                        CompiledDelegate = global::Corax.Querying.Planning.QueryILEmitter.EmitDelegate(plan),
+                                        ExplainSource = plan.ExplainSource ?? global::Corax.Querying.Planning.QueryILEmitter.GenerateExplainSource(plan),
+                                        Ordering = plan.OperandOrdering
+                                    };
+                                    planCache.Add(queryText, compiledPlan);
+                                }
+
+                                // Resolve matches fresh each execution — posting lists change between transactions
                                 var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, IndexSearcher, planParams, builderParameters);
                                 queryMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
-                                    plan, resolvedMatches, IndexSearcher, _allocator,
+                                    plan, compiledPlan, resolvedMatches, IndexSearcher, _allocator,
                                     take, token);
 
                                 orderByFields = CoraxQueryBuilder.GetSortMetadata(builderParameters, out bool hasEmptySorts);

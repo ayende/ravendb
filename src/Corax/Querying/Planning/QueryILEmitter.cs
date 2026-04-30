@@ -54,6 +54,10 @@ public static class QueryILEmitter
         typeof(RoaringBitmap).GetProperty(nameof(RoaringBitmap.IsEmpty))!.GetGetMethod()!;
     private static readonly MethodInfo s_repairAfterLazy =
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.RepairAfterLazy))!;
+    private static readonly MethodInfo s_bitmapCountGetter =
+        typeof(RoaringBitmap).GetProperty(nameof(RoaringBitmap.Count))!.GetGetMethod()!;
+    private static readonly MethodInfo s_matchCountGetter =
+        typeof(IQueryMatch).GetProperty(nameof(IQueryMatch.Count))!.GetGetMethod()!;
     private static readonly MethodInfo s_throwIfCancelled =
         typeof(CancellationToken).GetMethod(nameof(CancellationToken.ThrowIfCancellationRequested))!;
     private static readonly ConstructorInfo s_spanCtor =
@@ -187,11 +191,45 @@ public static class QueryILEmitter
                 }
 
                 case PlanOpKind.CheckAndMaybeEntryScan:
-                    // No-op for now — entry scan predicates are empty.
-                    // When populated, this becomes:
-                    //   if (ShouldSwitchToEntryScan(ref bitmap, postingListState))
-                    //       brtrue ENTRY_SCAN_K
+                {
+                    // Runtime check: if bitmap is small relative to the next operand's
+                    // cardinality, skip the remaining AND steps — the bitmap is already
+                    // small enough to iterate directly. This is the dynamic unary promotion.
+                    //
+                    // if (bitmap.Count * 64 < matches[paramIndex].Count && bitmap.Count < 32000)
+                    //     goto done;  // skip remaining ANDs
+
+                    var skipCheck = il.DefineLabel();
+
+                    // bitmap.Count
+                    il.Emit(OpCodes.Ldarg_1);               // ref bitmap
+                    il.Emit(OpCodes.Call, s_bitmapCountGetter);
+                    il.Emit(OpCodes.Conv_I8);                // ensure long
+
+                    // Check bitmap.Count < 32000 first (cheap check)
+                    il.Emit(OpCodes.Ldc_I8, 32000L);
+                    il.Emit(OpCodes.Bge, skipCheck);         // if bitmap.Count >= 32K, skip (too large for entry scan)
+
+                    // bitmap.Count * 64
+                    il.Emit(OpCodes.Ldarg_1);
+                    il.Emit(OpCodes.Call, s_bitmapCountGetter);
+                    il.Emit(OpCodes.Conv_I8);
+                    il.Emit(OpCodes.Ldc_I4, 64);
+                    il.Emit(OpCodes.Conv_I8);
+                    il.Emit(OpCodes.Mul);
+
+                    // matches[paramIndex].Count
+                    il.Emit(OpCodes.Ldarg_0);               // matches array
+                    EmitLdcI4(il, op.ParamIndex);
+                    il.Emit(OpCodes.Ldelem_Ref);
+                    il.Emit(OpCodes.Callvirt, s_matchCountGetter);
+
+                    // if (bitmap.Count * 64 < match.Count) goto done
+                    il.Emit(OpCodes.Blt, doneLabel);
+
+                    il.MarkLabel(skipCheck);
                     break;
+                }
 
                 case PlanOpKind.IterateInto:
                     il.Emit(OpCodes.Br, doneLabel);
