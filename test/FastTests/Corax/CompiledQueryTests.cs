@@ -498,6 +498,76 @@ public class CompiledQueryTests : RavenTestBase
         }
     }
 
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public async Task OrderByScore_FallsBackToOldPath()
+    {
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+        options.ModifyDatabaseRecord += record =>
+        {
+            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
+        };
+        using var store = GetDocumentStore(options);
+
+        using (var session = store.OpenAsyncSession())
+        {
+            await session.StoreAsync(new TestDoc { Name = "hello world foo", Category = "cat-0", Status = "active" });
+            await session.StoreAsync(new TestDoc { Name = "hello", Category = "cat-0", Status = "active" });
+            await session.StoreAsync(new TestDoc { Name = "world", Category = "cat-1", Status = "inactive" });
+            await session.SaveChangesAsync();
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        // ORDER BY score() should fall back to old path and work correctly
+        using (var session = store.OpenAsyncSession())
+        {
+            var results = await session.Advanced.AsyncRawQuery<TestDoc>(
+                "from TestDocs where search(Name, 'hello') order by score()")
+                .ToListAsync();
+
+            // Should find docs with 'hello' in Name, ordered by relevance
+            Assert.True(results.Count >= 1);
+        }
+    }
+
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public async Task RegexQuery_BitmapPipeline()
+    {
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+        options.ModifyDatabaseRecord += record =>
+        {
+            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
+        };
+        using var store = GetDocumentStore(options);
+
+        using (var session = store.OpenAsyncSession())
+        {
+            for (int i = 0; i < 50; i++)
+            {
+                await session.StoreAsync(new TestDoc
+                {
+                    Name = i % 2 == 0 ? $"alpha-{i}" : $"beta-{i}",
+                    Category = "cat-0",
+                    Status = "active"
+                });
+            }
+            await session.SaveChangesAsync();
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        // regex query
+        using (var session = store.OpenAsyncSession())
+        {
+            var results = await session.Advanced.AsyncRawQuery<TestDoc>(
+                "from TestDocs where regex(Name, '^alpha')")
+                .ToListAsync();
+
+            Assert.Equal(25, results.Count);
+            Assert.All(results, r => Assert.StartsWith("alpha", r.Name));
+        }
+    }
+
     [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying, Skip = "NotEquals in AND chain returns wrong results — needs investigation")]
     public async Task NotEqualsInAndChain_BitmapPipeline()
     {
