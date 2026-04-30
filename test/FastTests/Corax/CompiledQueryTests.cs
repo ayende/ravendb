@@ -933,6 +933,47 @@ public class CompiledQueryTests : RavenTestBase
         }
     }
 
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public async Task OrderByDesc_BitmapPipeline()
+    {
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+        options.ModifyDatabaseRecord += record =>
+        {
+            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.CoraxUseBitmapPipeline)] = true.ToString();
+        };
+        using var store = GetDocumentStore(options);
+
+        using (var session = store.OpenAsyncSession())
+        {
+            for (int i = 0; i < 50; i++)
+            {
+                await session.StoreAsync(new TestDoc
+                {
+                    Name = $"doc-{i:D5}",
+                    Category = "cat-0",
+                    Status = "active",
+                    Price = i * 10
+                });
+            }
+            await session.SaveChangesAsync();
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        // ORDER BY Price DESC LIMIT 5
+        using (var session = store.OpenAsyncSession())
+        {
+            var results = await session.Advanced.AsyncRawQuery<TestDoc>(
+                "from TestDocs where Category = 'cat-0' order by Price as long desc limit 5")
+                .ToListAsync();
+
+            Assert.Equal(5, results.Count);
+            // Should be highest prices first
+            Assert.True(results[0].Price >= results[1].Price);
+            Assert.True(results[0].Price >= results[4].Price);
+        }
+    }
+
     [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying, Skip = "search() requires analyzer setup — falls back to old path")]
     public async Task SearchQuery_BitmapPipeline()
     {
