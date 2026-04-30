@@ -203,6 +203,12 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
         int read;
         while ((read = match.Fill(buffer)) > 0)
         {
+            // Entry IDs from Fill() may have frequency bits encoded in high bits.
+            // Decode before adding to bitmap to get clean entry IDs.
+            // Note: some match types (like TermMatch) already decode internally,
+            // but others may not. Always safe to decode.
+            // Actually, IQueryMatch.Fill() returns decoded entry IDs — the
+            // frequency encoding is internal to TermMatch and decoded during Fill.
             bitmap.AddRange(buffer.Slice(0, read));
         }
     }
