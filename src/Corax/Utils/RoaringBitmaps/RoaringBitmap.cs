@@ -184,6 +184,34 @@ public unsafe struct RoaringBitmap : IDisposable
         // No-op: LazyOrWith currently maintains cardinality eagerly via OrWith.
     }
 
+    /// <summary>Returns the minimum container key in the bitmap, or -1 if empty.</summary>
+    public long MinContainerKey
+    {
+        get
+        {
+            if (_containerCount == 0) return -1;
+            for (int i = 0; i < _index.Count; i++)
+            {
+                if (_index[i] != IndexAbsent) return i;
+            }
+            return -1;
+        }
+    }
+
+    /// <summary>Returns the maximum container key in the bitmap, or -1 if empty.</summary>
+    public long MaxContainerKey
+    {
+        get
+        {
+            if (_containerCount == 0) return -1;
+            for (int i = _index.Count - 1; i >= 0; i--)
+            {
+                if (_index[i] != IndexAbsent) return i;
+            }
+            return -1;
+        }
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Add(long value)
     {
