@@ -659,6 +659,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                                     var plan = QueryPlanBuilder.BuildPlan(
                                         IndexSearcher, query.Metadata,
                                         query.QueryParameters, token);
+                                    // Resolve matches fresh each execution (posting lists may change)
                                     var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, IndexSearcher);
                                     queryMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
                                         plan, resolvedMatches, IndexSearcher, _allocator,
