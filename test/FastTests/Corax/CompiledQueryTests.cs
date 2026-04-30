@@ -1,8 +1,6 @@
 using System.Linq;
 using System.Threading.Tasks;
 using Raven.Client.Documents;
-using Raven.Client.Documents.Indexes;
-using Raven.Client.Documents.Queries;
 using Raven.Server.Config;
 using Tests.Infrastructure;
 using Xunit;
