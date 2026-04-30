@@ -49,12 +49,23 @@ This file is a running log — entries are appended as work progresses.
   truncation. Need to re-run with full output capture.
 
 ### Completed (continued 3)
-- ORDER BY + LIMIT via existing SortingMatch wrapper
+- ORDER BY + LIMIT via existing SortingMatch wrapper (ASC and DESC)
 - Mixed AND/OR tree support via OrGroup clauses
 - Plan cache infrastructure on IndexSearcher
-- Proper fallback for ORDER BY, boost, spatial, vector
-- 15 integration tests (13 pass, 2 skip)
-- Full Corax suite: 642 pass, 4 skip, 0 fail
+- Proper fallback for ORDER BY, boost, spatial, vector, search, all-entries
+- TrueExpression constant folding (falls back to old path for all-entries)
+- OR optimization: direct materialization into main bitmap (no temp needed)
+- AND optimization: early exit when bitmap becomes empty
+- Numeric type coercion for range queries (long/double/string)
+- Standalone NotEquals via AllEntries + ANDNOT
+- endsWith, startsWith, regex, IN clause support
+- Nested OR within AND: (A OR B) AND (C OR D)
+- Pagination (Skip/Take) works correctly
+- EXPLAIN source generation with clause details and cardinalities
+- 24 integration tests (21 pass, 3 skip)
+- Full FastTests Corax suite: 650 pass, 5 skip, 0 fail
+- 34 commits on RavenDB-25281, pushed to origin
+- PR #4714 open on ayende/ravendb
 
 ### Remaining
 - WP8: Delete old code, make RoaringBitmap ref struct
