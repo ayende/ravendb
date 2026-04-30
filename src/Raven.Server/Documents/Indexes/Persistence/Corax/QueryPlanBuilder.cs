@@ -447,13 +447,7 @@ internal static class QueryPlanBuilder
             throw new NotSupportedException(
                 "NotEquals (!=) not yet supported in Corax 2.0 bitmap pipeline.");
         }
-        else if (clauses.Any(c => c.ClauseType is ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
-                     or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between))
-        {
-            // Range queries need numeric type coercion — not yet implemented
-            throw new NotSupportedException(
-                "Range queries not yet supported in Corax 2.0 bitmap pipeline (numeric type coercion needed).");
-        }
+        // Range queries are handled — ResolveClause now does numeric type coercion
         else
         {
             // AND chain: Fill smallest, then AndWith with goto checks
@@ -589,20 +583,45 @@ internal static class QueryPlanBuilder
                 return indexSearcher.TermQuery(fieldMeta, clause.TermValue);
 
             case ClauseType.GreaterThan:
+                if (long.TryParse(clause.TermValue, out long gtLong))
+                    return indexSearcher.GreaterThanQuery(fieldMeta, gtLong);
+                if (double.TryParse(clause.TermValue, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out double gtDouble))
+                    return indexSearcher.GreaterThanQuery(fieldMeta, gtDouble);
                 return indexSearcher.GreaterThanQuery(fieldMeta, clause.TermValue);
 
             case ClauseType.GreaterThanOrEqual:
-                // GreaterThanOrEqual = Between(value, max)
+                if (long.TryParse(clause.TermValue, out long gteLong))
+                    return indexSearcher.BetweenQuery(fieldMeta, gteLong, long.MaxValue,
+                        UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual);
                 return indexSearcher.BetweenQuery(fieldMeta, clause.TermValue, (string)null,
                     UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual);
 
             case ClauseType.LessThan:
+                if (long.TryParse(clause.TermValue, out long ltLong))
+                    return indexSearcher.LessThanQuery(fieldMeta, ltLong);
+                if (double.TryParse(clause.TermValue, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out double ltDouble))
+                    return indexSearcher.LessThanQuery(fieldMeta, ltDouble);
                 return indexSearcher.LessThanQuery(fieldMeta, clause.TermValue);
 
             case ClauseType.LessThanOrEqual:
+                if (long.TryParse(clause.TermValue, out long lteLong))
+                    return indexSearcher.LessThanOrEqualsQuery(fieldMeta, lteLong);
+                if (double.TryParse(clause.TermValue, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out double lteDouble))
+                    return indexSearcher.LessThanOrEqualsQuery(fieldMeta, lteDouble);
                 return indexSearcher.LessThanOrEqualsQuery(fieldMeta, clause.TermValue);
 
             case ClauseType.Between:
+                if (long.TryParse(clause.TermValue, out long btwLowLong) &&
+                    long.TryParse(clause.TermValue2, out long btwHighLong))
+                    return indexSearcher.BetweenQuery(fieldMeta, btwLowLong, btwHighLong);
+                if (double.TryParse(clause.TermValue, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out double btwLowDouble) &&
+                    double.TryParse(clause.TermValue2, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out double btwHighDouble))
+                    return indexSearcher.BetweenQuery(fieldMeta, btwLowDouble, btwHighDouble);
                 return indexSearcher.BetweenQuery(fieldMeta, clause.TermValue, clause.TermValue2);
 
             case ClauseType.In:
