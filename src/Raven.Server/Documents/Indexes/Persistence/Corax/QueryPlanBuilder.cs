@@ -409,6 +409,10 @@ internal static class QueryPlanBuilder
                 // MoreLikeThis returns all entries — handled by old path via fallback
                 throw new NotSupportedException("MoreLikeThis handled by old path");
 
+            case "when":
+                // when(condition, expr) — conditional query. Falls back to old path.
+                throw new NotSupportedException("when() conditional queries fall back to old path");
+
             default:
                 throw new NotSupportedException(
                     $"Method '{methodName}' not supported in Corax 2.0 query planner.");
