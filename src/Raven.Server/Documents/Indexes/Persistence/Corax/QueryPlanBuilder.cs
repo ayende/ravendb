@@ -442,12 +442,17 @@ internal static class QueryPlanBuilder
                 EstimatedCardinality = clauses[0].Cardinality
             });
         }
-        else if (clauses.Any(c => c.ClauseType == ClauseType.NotEquals && !isOr))
+        else if (clauses.Any(c => c.ClauseType == ClauseType.NotEquals))
         {
-            // Standalone NotEquals or AND chain with NotEquals
-            // NotEquals requires AllEntries - term, which is not yet in the bitmap path
             throw new NotSupportedException(
-                "Standalone NotEquals (!=) not yet supported in Corax 2.0 bitmap pipeline.");
+                "NotEquals (!=) not yet supported in Corax 2.0 bitmap pipeline.");
+        }
+        else if (clauses.Any(c => c.ClauseType is ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
+                     or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between))
+        {
+            // Range queries need numeric type coercion — not yet implemented
+            throw new NotSupportedException(
+                "Range queries not yet supported in Corax 2.0 bitmap pipeline (numeric type coercion needed).");
         }
         else
         {
