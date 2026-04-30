@@ -6,6 +6,8 @@ using Corax.Querying;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Planning;
+using Corax.Mappings;
+using Raven.Server.Documents.Indexes;
 using Raven.Server.Documents.Queries;
 using Raven.Server.Documents.Queries.AST;
 using Sparrow.Json;
@@ -35,13 +37,47 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 /// </summary>
 internal static class QueryPlanBuilder
 {
+    /// <summary>
+    /// Parameters needed by the planner for field metadata resolution,
+    /// analyzer setup, and cardinality estimation.
+    /// </summary>
+    internal class PlanParameters
+    {
+        public IndexSearcher IndexSearcher;
+        public QueryMetadata Metadata;
+        public BlittableJsonReaderObject QueryParameters;
+        public Raven.Server.Documents.Indexes.Index Index;
+        public global::Corax.Mappings.IndexFieldsMapping IndexFieldsMapping;
+        public FieldsToFetch FieldsToFetch;
+        public ByteStringContext Allocator;
+        public CancellationToken Token;
+        public bool HasDynamics;
+        public Lazy<List<string>> DynamicFields;
+        public bool HasBoost;
+    }
+
     public static QueryPlan BuildPlan(
         IndexSearcher indexSearcher,
         QueryMetadata metadata,
         BlittableJsonReaderObject queryParameters,
         CancellationToken token)
     {
-        var query = metadata.Query;
+        return BuildPlan(new PlanParameters
+        {
+            IndexSearcher = indexSearcher,
+            Metadata = metadata,
+            QueryParameters = queryParameters,
+            Token = token
+        });
+    }
+
+    public static QueryPlan BuildPlan(PlanParameters p)
+    {
+        var query = p.Metadata.Query;
+        var indexSearcher = p.IndexSearcher;
+        var queryParameters = p.QueryParameters;
+        var token = p.Token;
+        var metadata = p.Metadata;
         if (query.Where == null)
             throw new NotSupportedException("No WHERE clause — old path handles all-entries queries");
 
@@ -298,10 +334,8 @@ internal static class QueryPlanBuilder
         switch (methodName)
         {
             case "search":
-                // search() requires complex analyzer setup (field metadata with analyzer,
-                // wildcard adjustments, operator resolution). Falls back to old path
-                // which has HandleSearch with all the necessary infrastructure.
-                throw new NotSupportedException("search() requires analyzer setup from CoraxQueryBuilder");
+                ParseSearchMethod(method, clauses, queryParameters);
+                break;
 
             case "startsWith":
                 ParsePrefixMethod(method, clauses, queryParameters, ClauseType.StartsWith);
@@ -673,7 +707,7 @@ internal static class QueryPlanBuilder
     /// all the complexity of analyzer application, CompactKey encoding,
     /// posting list resolution, etc.
     /// </summary>
-    public static IQueryMatch[] ResolveMatches(QueryPlan plan, IndexSearcher indexSearcher)
+    public static IQueryMatch[] ResolveMatches(QueryPlan plan, IndexSearcher indexSearcher, PlanParameters parameters = null)
     {
         var clauses = plan.Clauses;
         if (clauses == null || clauses.Length == 0)
@@ -694,12 +728,12 @@ internal static class QueryPlanBuilder
         for (int i = 0; i < clauses.Length; i++)
         {
             var clause = (ClauseInfo)clauses[i];
-            matches[i] = ResolveClause(clause, indexSearcher);
+            matches[i] = ResolveClause(clause, indexSearcher, parameters);
         }
         return matches;
     }
 
-    private static IQueryMatch ResolveClause(ClauseInfo clause, IndexSearcher indexSearcher)
+    private static IQueryMatch ResolveClause(ClauseInfo clause, IndexSearcher indexSearcher, PlanParameters parameters = null)
     {
         var fieldMeta = indexSearcher.FieldMetadataBuilder(clause.FieldName);
 
@@ -775,10 +809,32 @@ internal static class QueryPlanBuilder
                 return indexSearcher.EndsWithQuery(fieldMeta, clause.TermValue);
 
             case ClauseType.Search:
-                // Search with default OR operator and single term
-                return indexSearcher.SearchQuery(fieldMeta,
+            {
+                // Search needs proper field metadata with analyzer
+                FieldMetadata searchMeta;
+                if (parameters?.Index != null && parameters.IndexFieldsMapping != null)
+                {
+                    string searchFieldName = clause.FieldName;
+                    if (parameters.Metadata.IsDynamic)
+                        searchFieldName = AutoIndexField.GetSearchAutoIndexFieldName(searchFieldName);
+
+                    searchMeta = QueryBuilderHelper.GetFieldMetadata(
+                        parameters.Allocator, searchFieldName, parameters.Index,
+                        parameters.IndexFieldsMapping, parameters.FieldsToFetch,
+                        parameters.HasDynamics, parameters.DynamicFields,
+                        handleSearch: true, hasBoost: parameters.HasBoost);
+                }
+                else
+                {
+                    searchMeta = fieldMeta;
+                }
+
+                var searchQueryOptions = IndexSearcher.SearchQueryOptions.PhraseQueryWithWildcardAdjustments;
+                return indexSearcher.SearchQuery(searchMeta,
                     new[] { clause.TermValue },
-                    Constants.Search.Operator.Or);
+                    Constants.Search.Operator.Or,
+                    searchQueryOptions);
+            }
 
             case ClauseType.Regex:
                 return indexSearcher.RegexQuery(fieldMeta,

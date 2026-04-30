@@ -1006,7 +1006,7 @@ public class CompiledQueryTests : RavenTestBase
         }
     }
 
-    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying, Skip = "search() requires analyzer setup — falls back to old path")]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
     public async Task SearchQuery_BitmapPipeline()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
