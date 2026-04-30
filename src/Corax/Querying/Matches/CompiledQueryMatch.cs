@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Planning;
@@ -55,7 +56,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
     }
 
     public QueryCountConfidence Confidence => _executed ? QueryCountConfidence.High : QueryCountConfidence.Normal;
-    public bool IsBoosting => false;
+    public bool IsBoosting => _resolvedMatches != null && _resolvedMatches.Any(m => m.IsBoosting);
     public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
 
     public int Fill(Span<long> matches)
@@ -78,7 +79,16 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
 
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)
     {
-        // Scoring handled separately in compiled path.
+        // Delegate scoring to the resolved matches that collected frequencies during Fill.
+        // Each resolved match's Score() looks up the frequency for each entry ID and
+        // computes BM25. Scores accumulate via += across all boosted matches.
+        if (_resolvedMatches == null)
+            return;
+
+        foreach (var match in _resolvedMatches)
+        {
+            match.Score(matches, scores, boostFactor);
+        }
     }
 
     public QueryInspectionNode Inspect()

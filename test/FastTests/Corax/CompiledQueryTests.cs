@@ -499,7 +499,7 @@ public class CompiledQueryTests : RavenTestBase
     }
 
     [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
-    public async Task OrderByScore_FallsBackToOldPath()
+    public async Task OrderByScore_BitmapPath()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
         options.ModifyDatabaseRecord += record =>
