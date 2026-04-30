@@ -47,7 +47,11 @@ internal static class QueryPlanBuilder
 
         // Parse WHERE clause into intermediate clause list
         var clauses = new List<ClauseInfo>();
-        var rootOp = ParseExpression(query.Where, indexSearcher, clauses, queryParameters);
+        bool hasMixedAndOr = false;
+        var rootOp = ParseExpression(query.Where, indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
+
+        if (hasMixedAndOr)
+            throw new NotSupportedException("Mixed AND/OR trees not yet supported in Corax 2.0 bitmap pipeline.");
 
         if (rootOp == BooleanOp.True)
             return BuildAllEntriesPlan();
@@ -80,12 +84,13 @@ internal static class QueryPlanBuilder
         QueryExpression expr,
         IndexSearcher indexSearcher,
         List<ClauseInfo> clauses,
-        BlittableJsonReaderObject queryParameters)
+        BlittableJsonReaderObject queryParameters,
+        ref bool hasMixedAndOr)
     {
         switch (expr)
         {
             case BinaryExpression be:
-                return ParseBinaryExpression(be, indexSearcher, clauses, queryParameters);
+                return ParseBinaryExpression(be, indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
 
             case BetweenExpression between:
                 ParseBetween(between, clauses, queryParameters);
@@ -96,14 +101,14 @@ internal static class QueryPlanBuilder
                 return BooleanOp.Leaf;
 
             case NegatedExpression negated:
-                ParseNegated(negated, indexSearcher, clauses, queryParameters);
+                ParseNegated(negated, indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
                 return BooleanOp.Leaf;
 
             case TrueExpression:
                 return BooleanOp.True;
 
             case MethodExpression method:
-                ParseMethod(method, indexSearcher, clauses, queryParameters);
+                ParseMethod(method, indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
                 return BooleanOp.Leaf;
 
             default:
@@ -116,14 +121,18 @@ internal static class QueryPlanBuilder
         BinaryExpression be,
         IndexSearcher indexSearcher,
         List<ClauseInfo> clauses,
-        BlittableJsonReaderObject queryParameters)
+        BlittableJsonReaderObject queryParameters,
+        ref bool hasMixedAndOr)
     {
         switch (be.Operator)
         {
             case OperatorType.And:
             {
-                var left = ParseExpression(be.Left, indexSearcher, clauses, queryParameters);
-                var right = ParseExpression(be.Right, indexSearcher, clauses, queryParameters);
+                var left = ParseExpression(be.Left, indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
+                var right = ParseExpression(be.Right, indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
+                // Detect mixed trees: AND containing OR sub-expressions
+                if (left == BooleanOp.Or || right == BooleanOp.Or)
+                    hasMixedAndOr = true;
                 // Constant folding
                 if (left == BooleanOp.True) return right;
                 if (right == BooleanOp.True) return left;
@@ -133,8 +142,8 @@ internal static class QueryPlanBuilder
 
             case OperatorType.Or:
             {
-                var left = ParseExpression(be.Left, indexSearcher, clauses, queryParameters);
-                var right = ParseExpression(be.Right, indexSearcher, clauses, queryParameters);
+                var left = ParseExpression(be.Left, indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
+                var right = ParseExpression(be.Right, indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
                 // Constant folding
                 if (left == BooleanOp.True || right == BooleanOp.True) return BooleanOp.True;
                 if (left == BooleanOp.False) return right;
@@ -240,11 +249,11 @@ internal static class QueryPlanBuilder
     }
 
     private static void ParseNegated(NegatedExpression negated, IndexSearcher indexSearcher,
-        List<ClauseInfo> clauses, BlittableJsonReaderObject queryParameters)
+        List<ClauseInfo> clauses, BlittableJsonReaderObject queryParameters, ref bool hasMixedAndOr)
     {
         // NOT expr → ANDNOT with all entries
         var innerClauses = new List<ClauseInfo>();
-        ParseExpression(negated.Expression, indexSearcher, innerClauses, queryParameters);
+        ParseExpression(negated.Expression, indexSearcher, innerClauses, queryParameters, ref hasMixedAndOr);
 
         foreach (var inner in innerClauses)
         {
@@ -254,7 +263,7 @@ internal static class QueryPlanBuilder
     }
 
     private static void ParseMethod(MethodExpression method, IndexSearcher indexSearcher,
-        List<ClauseInfo> clauses, BlittableJsonReaderObject queryParameters)
+        List<ClauseInfo> clauses, BlittableJsonReaderObject queryParameters, ref bool hasMixedAndOr)
     {
         string methodName = method.Name.Value;
         switch (methodName)
@@ -286,13 +295,13 @@ internal static class QueryPlanBuilder
             case "exact":
                 // exact(expr) → recurse with exact flag
                 if (method.Arguments.Count > 0)
-                    ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters);
+                    ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
                 break;
 
             case "boost":
                 // boost(expr, factor) → recurse, mark as boosted
                 if (method.Arguments.Count > 0)
-                    ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters);
+                    ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
                 break;
 
             case "regex":
