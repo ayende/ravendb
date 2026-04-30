@@ -129,22 +129,25 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
 
                     case PlanOpKind.AndWithPostings:
                     {
-                        // Materialize into temp, AND with main
+                        // Materialize the other operand into temp, AND with main
                         tempBitmap.Clear();
                         var match = _resolvedMatches[op.ParamIndex];
                         MaterializeIntoBitmap(ref match, ref tempBitmap, buffer);
                         _bitmap.AndWith(ref tempBitmap);
+
+                        // Early exit: if bitmap is empty after AND, no need to continue
+                        if (_bitmap.IsEmpty)
+                            goto DoneProcessing;
                         break;
                     }
 
                     case PlanOpKind.OrWithPostings:
                     case PlanOpKind.LazyOrWithPostings:
                     {
-                        // Materialize into temp, OR with main
-                        tempBitmap.Clear();
+                        // OR: materialize directly into main bitmap (OR is idempotent —
+                        // adding already-set bits is a no-op, so no temp bitmap needed)
                         var match = _resolvedMatches[op.ParamIndex];
-                        MaterializeIntoBitmap(ref match, ref tempBitmap, buffer);
-                        _bitmap.OrWith(ref tempBitmap);
+                        MaterializeIntoBitmap(ref match, ref _bitmap, buffer);
                         break;
                     }
 
