@@ -86,7 +86,6 @@ public unsafe struct RoaringBitmapIterator : IDisposable
 
             ref ContainerEntry entry = ref bitmap.GetEntryBySlot(slot);
             ContainerType type = bitmap._types.RawItems[slot];
-            RoaringBitmap.AssertPrepared(type);
             long baseValue = (long)key << RoaringBitmap.ContainerKeyShift;
 
             switch (type)
@@ -123,7 +122,7 @@ public unsafe struct RoaringBitmapIterator : IDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int FillFromArray(ref ContainerEntry entry, long baseValue, Span<long> buffer, int written)
     {
-        ushort* arr = entry.ArrayPtr;
+        ushort* arr = (ushort*)entry.ArrayData;
         int count = entry.Cardinality;
         int remaining = count - _positionInContainer;
         int space = buffer.Length - written;
