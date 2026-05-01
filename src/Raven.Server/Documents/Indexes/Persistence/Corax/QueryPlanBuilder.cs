@@ -502,9 +502,18 @@ internal static class QueryPlanBuilder
             var value = ve.GetValue(queryParameters);
             if (value is bool b)
                 return b ? "true" : "false"; // Corax stores booleans as lowercase
-            // For parameters, detect the actual type
+            // For parameters, detect the actual type from the resolved value
             if (valueType == ValueTokenType.Parameter && value != null)
-                valueType = QueryBuilderHelper.GetValueTokenType(value, null, queryParameters);
+            {
+                if (value is bool)
+                    valueType = (bool)value ? ValueTokenType.True : ValueTokenType.False;
+                else if (value is long or int)
+                    valueType = ValueTokenType.Long;
+                else if (value is double or float or decimal)
+                    valueType = ValueTokenType.Double;
+                else
+                    valueType = ValueTokenType.String;
+            }
             return value?.ToString();
         }
         valueType = ValueTokenType.Null;
