@@ -184,8 +184,18 @@ public struct VectorSearchMatch : IQueryMatch
         if (_resultsPersisted == false)
             FillAndPersistResults();
 
-        // In the bitmap pipeline, AndWith is not called — bitmap AND handles intersection.
-        throw new InvalidOperationException("VectorSearchMatch.AndWith is not used in the bitmap pipeline.");
+        // Simple sorted intersection without MergeHelper
+        var results = _matches.Results;
+        int kept = 0;
+        int ri = 0;
+        for (int i = 0; i < matches && ri < results.Length; i++)
+        {
+            while (ri < results.Length && results[ri] < buffer[i])
+                ri++;
+            if (ri < results.Length && results[ri] == buffer[i])
+                buffer[kept++] = buffer[i];
+        }
+        return kept;
     }
 
     private int FillDiscardSimilarity(Span<long> matches)

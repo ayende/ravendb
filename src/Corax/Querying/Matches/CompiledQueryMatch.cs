@@ -143,7 +143,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
         if (_entryScanTakenAtOp >= 0)
             parameters["EntryScanAt"] = _entryScanTakenAtOp.ToString();
 
-        if (_timings != null)
+        if (_timings != null && _timings.Length > 0)
         {
             double tickFreq = System.Diagnostics.Stopwatch.Frequency / 1000.0; // ticks per ms
             for (int i = 0; i < _timings.Length; i++)
@@ -172,8 +172,10 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
 
         try
         {
-            _timings = _opCount > 0 ? new long[_opCount] : Array.Empty<long>();
-            _resultCounts = _opCount > 0 ? new long[_opCount] : Array.Empty<long>();
+            // Only allocate timing arrays when telemetry is requested (opCount > 0).
+            // Caller passes opCount = 0 to skip allocation.
+            _timings = _opCount > 0 ? new long[_opCount] : null;
+            _resultCounts = _opCount > 0 ? new long[_opCount] : null;
 
             var ctx = new QueryScanContext
             {
@@ -186,8 +188,8 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
                 DoubleParams = _doubleParams.AsSpan(),
                 SliceParams = _sliceParams.AsSpan(),
                 Token = _token,
-                Timings = _timings.AsSpan(),
-                ResultCounts = _resultCounts.AsSpan(),
+                Timings = _timings != null ? _timings.AsSpan() : Span<long>.Empty,
+                ResultCounts = _resultCounts != null ? _resultCounts.AsSpan() : Span<long>.Empty,
                 EntryScanTakenAtOp = -1
             };
 

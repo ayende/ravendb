@@ -300,13 +300,20 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
                 HasBoost = parameters.HasBoost
             };
             var plan = QueryPlanBuilder.BuildPlan(planParams);
-            var compiledPlan = new global::Corax.Querying.Planning.CompiledPlan
+            var queryText2 = query.Metadata.Query.QueryText;
+            var planCache2 = _indexSearcher.PlanCache;
+            var compiledPlan = planCache2.Get(queryText2, plan.OperandOrdering, plan.TypeSignature);
+            if (compiledPlan == null)
             {
-                CompiledDelegate = global::Corax.Querying.Planning.QueryILEmitter.EmitDelegate(plan),
-                ExplainSource = plan.ExplainSource ?? global::Corax.Querying.Planning.QueryILEmitter.GenerateExplainSource(plan),
-                Ordering = plan.OperandOrdering,
+                compiledPlan = new global::Corax.Querying.Planning.CompiledPlan
+                {
+                    CompiledDelegate = global::Corax.Querying.Planning.QueryILEmitter.EmitDelegate(plan),
+                    ExplainSource = plan.ExplainSource ?? global::Corax.Querying.Planning.QueryILEmitter.GenerateExplainSource(plan),
+                    Ordering = plan.OperandOrdering,
                     TypeSignature = plan.TypeSignature
-            };
+                };
+                planCache2.Add(queryText2, compiledPlan);
+            }
             var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, _indexSearcher, planParams, parameters);
             QueryPlanBuilder.ExtractScanParameters(plan, _indexSearcher,
                 out var longParams2, out var doubleParams2, out var sliceParams2, out var fieldRootPages2);
