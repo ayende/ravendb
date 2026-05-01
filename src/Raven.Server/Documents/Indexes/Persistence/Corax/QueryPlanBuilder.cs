@@ -312,6 +312,7 @@ internal static class QueryPlanBuilder
             return;
 
         var terms = new List<string>();
+        bool hasTime = false;
         foreach (var value in inExpr.Values)
         {
             if (value is ValueExpression ve)
@@ -319,22 +320,15 @@ internal static class QueryPlanBuilder
                 var resolvedValue = ve.GetValue(queryParameters);
                 if (resolvedValue is Sparrow.Json.BlittableJsonReaderArray arr)
                 {
-                    // Array parameter — expand each element
                     for (int a = 0; a < arr.Length; a++)
                     {
                         var elem = arr[a];
-                        if (elem is bool b)
-                            terms.Add(b ? "true" : "false");
-                        else
-                            terms.Add(elem?.ToString());
+                        terms.Add(ConvertInValue(elem, ref hasTime));
                     }
                 }
                 else
                 {
-                    if (resolvedValue is bool b)
-                        terms.Add(b ? "true" : "false");
-                    else
-                        terms.Add(resolvedValue?.ToString());
+                    terms.Add(ConvertInValue(resolvedValue, ref hasTime));
                 }
             }
         }
@@ -506,6 +500,36 @@ internal static class QueryPlanBuilder
             ClauseType = type,
             OriginalIndex = clauses.Count
         });
+    }
+
+    /// <summary>Convert an IN value to its string representation, handling booleans and dates.</summary>
+    private static string ConvertInValue(object value, ref bool hasTime)
+    {
+        if (value == null)
+            return null;
+        if (value is bool b)
+            return b ? "true" : "false";
+        // Check for date/time values — convert to ticks string for Corax
+        if (value is DateTime dt)
+        {
+            hasTime = true;
+            return dt.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        if (value is DateTimeOffset dto)
+        {
+            hasTime = true;
+            return dto.UtcDateTime.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        // LazyStringValue from Blittable — might be a date string
+        var str = value.ToString();
+        if (str != null && str.Length > 18 && str.Length < 35 && str.Contains('T')
+            && DateTime.TryParse(str, System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.RoundtripKind, out var parsed))
+        {
+            hasTime = true;
+            return parsed.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        return str;
     }
 
     /// <summary>Split search term value respecting quoted phrases.
