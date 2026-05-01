@@ -681,6 +681,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                             var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, IndexSearcher, planParams, builderParameters);
                             QueryPlanBuilder.ExtractScanParameters(plan, IndexSearcher,
                                 out var longParams, out var doubleParams, out var sliceParams, out var fieldRootPages);
+                            QueryPlanBuilder.PopulateHighlightingTerms(plan, highlightings.Terms, query.Metadata);
                             var compiledMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
                                 compiledPlan, plan.BitmapCount, plan.Ops?.Length ?? 0, resolvedMatches,
                                 longParams, doubleParams, sliceParams, fieldRootPages,
