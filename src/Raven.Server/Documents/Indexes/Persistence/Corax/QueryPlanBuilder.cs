@@ -1227,13 +1227,11 @@ internal static class QueryPlanBuilder
 
             case ClauseType.GreaterThanOrEqual:
                 if (long.TryParse(clause.TermValue, out long gteLong))
-                    return indexSearcher.BetweenQuery(fieldMeta, gteLong, long.MaxValue,
-                        UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual);
+                    return indexSearcher.GreatThanOrEqualsQuery(fieldMeta, gteLong);
                 if (double.TryParse(clause.TermValue, System.Globalization.NumberStyles.Float,
                     System.Globalization.CultureInfo.InvariantCulture, out double gteDouble))
                     return indexSearcher.GreatThanOrEqualsQuery(fieldMeta, gteDouble);
-                return indexSearcher.BetweenQuery(fieldMeta, clause.TermValue, (string)null,
-                    UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual);
+                return indexSearcher.GreatThanOrEqualsQuery(fieldMeta, clause.TermValue);
 
             case ClauseType.LessThan:
                 if (long.TryParse(clause.TermValue, out long ltLong))
