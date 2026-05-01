@@ -1,6 +1,5 @@
 using System;
 using System.Threading;
-using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
 using Corax.Utils.RoaringBitmaps;
 using Voron;
@@ -14,12 +13,20 @@ namespace Corax.Querying.Planning;
 public ref struct QueryScanContext
 {
     /// <summary>Bitmap pool. [0] = main result, [1..N] = scratch.
-    /// Size is statically determined by the plan's nesting depth.
-    /// The emitter bakes bitmap indices as constants in the IL.</summary>
+    /// Size is statically determined by the plan's nesting depth.</summary>
     public Span<RoaringBitmap> Bitmaps;
 
     public IndexSearcher Searcher;
-    public Span<IQueryMatch> Matches;
+
+    /// <summary>Direct sources — matches that produce entry IDs via Fill().
+    /// TermMatch, MultiTermMatch, AllEntriesMatch, SpatialMatch, VectorSearchMatch.</summary>
+    public Span<IQueryMatch> DirectSources;
+
+    /// <summary>Term providers — iterate CompactTree terms, each yielding a posting list.
+    /// The emitted IL iterates providers in a batch loop, OR-ing each term's
+    /// posting list directly into the bitmap. Reserved for future use when
+    /// MultiTermMatch internals are refactored.</summary>
+    public Span<ITermProvider> TermProviders;
 
     /// <summary>Pre-resolved field root pages for entry scan predicates.</summary>
     public Span<long> FieldRootPages;
