@@ -206,7 +206,17 @@ public struct MultiVectorSearchMatch : IQueryMatch
         if (_isEmpty)
             return 0;
 
-        throw new InvalidOperationException("MultiVectorSearchMatch.AndWith is not used in the bitmap pipeline.");
+        var results = _matches.Results;
+        int kept = 0;
+        int ri = 0;
+        for (int i = 0; i < matches && ri < results.Length; i++)
+        {
+            while (ri < results.Length && results[ri] < buffer[i])
+                ri++;
+            if (ri < results.Length && results[ri] == buffer[i])
+                buffer[kept++] = buffer[i];
+        }
+        return kept;
     }
 
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)
