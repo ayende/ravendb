@@ -398,10 +398,23 @@ internal static class QueryPlanBuilder
             }
 
             case MethodType.Boost:
-                // boost(expr, factor) → recurse, mark as boosted
+            {
+                // boost(expr, factor) → recurse, then set boost factor on new clauses
+                int beforeCount = clauses.Count;
                 if (method.Arguments.Count > 0)
                     ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+                float boostFactor = 1f;
+                if (method.Arguments.Count > 1)
+                {
+                    var factorStr = GetTermValue(method.Arguments[1], queryParameters);
+                    if (factorStr != null)
+                        float.TryParse(factorStr, System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture, out boostFactor);
+                }
+                for (int c = beforeCount; c < clauses.Count; c++)
+                    clauses[c].BoostFactor = boostFactor;
                 break;
+            }
 
             case MethodType.Regex:
                 if (method.Arguments.Count >= 2 && method.Arguments[0] is FieldExpression regexField)
@@ -1236,6 +1249,7 @@ internal static class QueryPlanBuilder
         public int OriginalIndex;
         public bool IsNegated;
         public bool IsExact;
+        public float BoostFactor;
     }
 
     /// <summary>
@@ -1287,18 +1301,25 @@ internal static class QueryPlanBuilder
             if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
             {
                 foreach (var sub in clause.OrSubClauses)
-                    matches[matchIdx++] = ResolveClause(sub, indexSearcher, parameters, builderParams);
+                {
+                    var match = ResolveClause(sub, indexSearcher, parameters, builderParams);
+                    if (sub.BoostFactor > 0)
+                        match = indexSearcher.Boost(match, sub.BoostFactor);
+                    matches[matchIdx++] = match;
+                }
             }
             else if (clause.ClauseType == ClauseType.AllIn && clause.InTerms != null)
             {
-                // Expand: each term is a separate TermQuery
                 var fieldMeta = indexSearcher.FieldMetadataBuilder(clause.FieldName);
                 foreach (var term in clause.InTerms)
                     matches[matchIdx++] = indexSearcher.TermQuery(fieldMeta, term);
             }
             else
             {
-                matches[matchIdx++] = ResolveClause(clause, indexSearcher, parameters, builderParams);
+                var match = ResolveClause(clause, indexSearcher, parameters, builderParams);
+                if (clause.BoostFactor > 0)
+                    match = indexSearcher.Boost(match, clause.BoostFactor);
+                matches[matchIdx++] = match;
             }
         }
         if (plan.AllNegated)
