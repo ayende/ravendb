@@ -1209,7 +1209,24 @@ internal static class QueryPlanBuilder
     private static IQueryMatch ResolveClause(ClauseInfo clause, IndexSearcher indexSearcher,
         PlanParameters parameters = null, CoraxQueryBuilder.Parameters builderParams = null)
     {
-        var fieldMeta = indexSearcher.FieldMetadataBuilder(clause.FieldName);
+        // Use proper field metadata from the index schema when available.
+        // This ensures correct analyzer application for static index fields.
+        // Requires all of: Allocator, Index, IndexFieldsMapping to be non-null.
+        // Use proper field metadata from the index schema for simple clauses.
+        // Spatial/Vector/Search have their own field resolution paths.
+        FieldMetadata fieldMeta;
+        bool useBuilderParams = builderParams != null
+            && clause.ClauseType != ClauseType.Spatial
+            && clause.ClauseType != ClauseType.Vector
+            && clause.ClauseType != ClauseType.Search;
+        if (useBuilderParams)
+        {
+            fieldMeta = QueryBuilderHelper.GetFieldMetadata(in builderParams, clause.FieldName);
+        }
+        else
+        {
+            fieldMeta = indexSearcher.FieldMetadataBuilder(clause.FieldName);
+        }
 
         switch (clause.ClauseType)
         {
