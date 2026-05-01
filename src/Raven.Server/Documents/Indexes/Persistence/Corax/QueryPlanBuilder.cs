@@ -623,6 +623,14 @@ internal static class QueryPlanBuilder
                     valueType = ValueTokenType.Long;
                 else if (value is double or float or decimal)
                     valueType = ValueTokenType.Double;
+                else if (value is Sparrow.Json.LazyNumberValue lnv)
+                {
+                    // LazyNumberValue wraps JSON numbers — try long first, then double
+                    if (lnv.TryParseLong(out _))
+                        valueType = ValueTokenType.Long;
+                    else
+                        valueType = ValueTokenType.Double;
+                }
                 else
                     valueType = ValueTokenType.String;
             }
@@ -828,16 +836,36 @@ internal static class QueryPlanBuilder
                     matchIndex = 1;
                 }
             }
+            // Precheck: can all remaining clauses be converted to entry scan predicates?
+            // If any clause (In, AllIn, Spatial, Vector, Search, etc.) can't be scanned,
+            // we must not emit CheckAndMaybeEntryScan — entry scan would skip them entirely.
+            bool allScanEligible = true;
+            {
+                int dummyL = 0, dummyD = 0, dummyS = 0;
+                for (int j = startIndex; j < clauses.Count; j++)
+                {
+                    if (BuildScanPredicateInfo(clauses[j], ref dummyL, ref dummyD, ref dummyS) == null)
+                    {
+                        allScanEligible = false;
+                        break;
+                    }
+                }
+            }
+
             for (int i = startIndex; i < clauses.Count; i++)
             {
-                // Goto check before each AND step
-                ops.Add(new PlanOp
+                // Goto check before each AND step — only if all remaining clauses
+                // can be handled by entry scan predicates
+                if (allScanEligible)
                 {
-                    Kind = PlanOpKind.CheckAndMaybeEntryScan,
-                    ParamIndex = matchIndex,
-                    GotoLabelIndex = entryScanPredicates.Count
-                });
-                entryScanPredicates.Add(Array.Empty<MultiUnaryItem>());
+                    ops.Add(new PlanOp
+                    {
+                        Kind = PlanOpKind.CheckAndMaybeEntryScan,
+                        ParamIndex = matchIndex,
+                        GotoLabelIndex = entryScanPredicates.Count
+                    });
+                    entryScanPredicates.Add(Array.Empty<MultiUnaryItem>());
+                }
 
                 if (clauses[i].ClauseType == ClauseType.OrGroup && clauses[i].OrSubClauses != null)
                 {
@@ -1087,6 +1115,77 @@ internal static class QueryPlanBuilder
                     slices.Add(indexSearcher.EncodeAndApplyAnalyzer(fieldMeta, matchingClause.TermValue2));
                 break;
         }
+    }
+
+    /// <summary>
+    /// Populate the highlighting terms dictionary from the plan's clauses.
+    /// The old CoraxQueryBuilder did this as a side effect during query building.
+    /// The bitmap pipeline must do it explicitly after plan building.
+    /// </summary>
+    public static void PopulateHighlightingTerms(QueryPlan plan, Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms, QueryMetadata metadata)
+    {
+        if (highlightingTerms == null || plan.Clauses == null)
+            return;
+
+        foreach (var clauseObj in plan.Clauses)
+        {
+            if (clauseObj is not ClauseInfo clause || clause.FieldName == null)
+                continue;
+
+            PopulateHighlightingForClause(clause, highlightingTerms, metadata);
+
+            // Also handle OrGroup sub-clauses
+            if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
+            {
+                foreach (var sub in clause.OrSubClauses)
+                    PopulateHighlightingForClause(sub, highlightingTerms, metadata);
+            }
+        }
+    }
+
+    private static void PopulateHighlightingForClause(ClauseInfo clause, Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms, QueryMetadata metadata)
+    {
+        string fieldName = clause.FieldName;
+        if (fieldName == null)
+            return;
+
+        if (highlightingTerms.TryGetValue(fieldName, out var existingTerm))
+        {
+            // Already populated (e.g., multiple clauses on same field) — update values if needed
+            if (existingTerm.Values == null)
+                existingTerm.Values = GetHighlightingValues(clause);
+            return;
+        }
+
+        var term = new CoraxHighlightingTermIndex
+        {
+            FieldName = fieldName,
+            Values = GetHighlightingValues(clause)
+        };
+
+        if (metadata.IsDynamic && clause.ClauseType == ClauseType.Search)
+            term.DynamicFieldName = AutoIndexField.GetSearchAutoIndexFieldName(fieldName);
+        else if (metadata.IsDynamic && clause.IsExact)
+            term.DynamicFieldName = AutoIndexField.GetExactAutoIndexFieldName(fieldName);
+
+        highlightingTerms[fieldName] = term;
+
+        // For dynamic indexes, also add the dynamic field name variant
+        if (term.DynamicFieldName != null)
+            highlightingTerms[term.DynamicFieldName] = term;
+    }
+
+    private static object GetHighlightingValues(ClauseInfo clause)
+    {
+        return clause.ClauseType switch
+        {
+            ClauseType.Between => clause.TermValue != null && clause.TermValue2 != null
+                ? new Tuple<string, string>(clause.TermValue, clause.TermValue2)
+                : clause.TermValue,
+            ClauseType.In when clause.InTerms != null => clause.InTerms,
+            ClauseType.Search => clause.TermValue,
+            _ => clause.TermValue
+        };
     }
 
     /// <summary>Convert a ClauseInfo to a ScanPredicateInfo for entry scan IL emission.
@@ -1346,11 +1445,11 @@ internal static class QueryPlanBuilder
             // For exact queries on auto-indexes, use the _exact field variant
             if (clause.IsExact && builderParams.Metadata.IsDynamic)
                 resolvedFieldName = AutoIndexField.GetExactAutoIndexFieldName(resolvedFieldName);
-            fieldMeta = QueryBuilderHelper.GetFieldMetadata(in builderParams, resolvedFieldName, exact: clause.IsExact);
+            fieldMeta = QueryBuilderHelper.GetFieldMetadata(in builderParams, resolvedFieldName, exact: clause.IsExact, hasBoost: builderParams.HasBoost);
         }
         else
         {
-            fieldMeta = indexSearcher.FieldMetadataBuilder(clause.FieldName);
+            fieldMeta = indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);
         }
 
         switch (clause.ClauseType)
