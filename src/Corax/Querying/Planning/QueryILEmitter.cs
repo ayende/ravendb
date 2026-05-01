@@ -418,10 +418,25 @@ public static class QueryILEmitter
                 il.Emit(OpCodes.Call, s_spanLongIndexer);
                 il.Emit(OpCodes.Ldind_I8);
                 il.Emit(OpCodes.Call, s_readerFindNext);
-                il.Emit(OpCodes.Brfalse, nextEntry);
 
-                EmitSingleComparison(il, pred, readerLocal);
-                il.Emit(OpCodes.Brfalse, nextEntry);
+                if (pred.CompareOp == ScanCompareOp.NotEqual)
+                {
+                    // NotEquals: field not found → predicate passes (entry doesn't have the value)
+                    var fieldFound = il.DefineLabel();
+                    var predPassed = il.DefineLabel();
+                    il.Emit(OpCodes.Brtrue, fieldFound);
+                    il.Emit(OpCodes.Br, predPassed); // skip comparison, predicate passes
+                    il.MarkLabel(fieldFound);
+                    EmitSingleComparison(il, pred, readerLocal);
+                    il.Emit(OpCodes.Brfalse, nextEntry);
+                    il.MarkLabel(predPassed);
+                }
+                else
+                {
+                    il.Emit(OpCodes.Brfalse, nextEntry); // field not found → predicate fails
+                    EmitSingleComparison(il, pred, readerLocal);
+                    il.Emit(OpCodes.Brfalse, nextEntry);
+                }
 
                 fieldRootIndex++;
             }
