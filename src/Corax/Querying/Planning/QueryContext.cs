@@ -37,4 +37,16 @@ public ref struct QueryScanContext
     public Span<Slice> SliceParams;
 
     public CancellationToken Token;
+
+    /// <summary>Per-op timing in Stopwatch ticks. One slot per PlanOp.
+    /// Emitted IL writes Stopwatch.GetTimestamp() before/after each clause.
+    /// null/empty if timings not requested.</summary>
+    public Span<long> Timings;
+
+    /// <summary>Bitmap count after each op. Tracks cardinality reduction through the plan.</summary>
+    public Span<long> ResultCounts;
+
+    /// <summary>Op index where entry scan was triggered, or -1 if not taken.
+    /// Set by emitted IL when CheckAndMaybeEntryScan fires.</summary>
+    public int EntryScanTakenAtOp;
 }
