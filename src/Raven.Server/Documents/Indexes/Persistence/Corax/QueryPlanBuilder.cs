@@ -250,13 +250,14 @@ internal static class QueryPlanBuilder
     {
         if (be.Left is not FieldExpression field)
             return;
-        string fieldName = field.FieldValue;
-        string termValue = GetTermValue(be.Right, queryParameters);
+        string fieldName = GetFieldName(field);
+        string termValue = GetTermValue(be.Right, queryParameters, out var valueType);
 
         clauses.Add(new ClauseInfo
         {
             FieldName = fieldName,
             TermValue = termValue,
+            TermValueType = valueType,
             ClauseType = be.Operator == OperatorType.NotEqual ? ClauseType.NotEquals : ClauseType.Equals,
             OriginalIndex = clauses.Count
         });
@@ -267,7 +268,7 @@ internal static class QueryPlanBuilder
     {
         if (be.Left is not FieldExpression field)
             return;
-        string fieldName = field.FieldValue;
+        string fieldName = GetFieldName(field);
         string termValue = GetTermValue(be.Right, queryParameters);
 
         clauses.Add(new ClauseInfo
@@ -294,7 +295,7 @@ internal static class QueryPlanBuilder
 
         clauses.Add(new ClauseInfo
         {
-            FieldName = field.FieldValue,
+            FieldName = GetFieldName(field),
             TermValue = GetTermValue(between.Min, queryParameters),
             TermValue2 = GetTermValue(between.Max, queryParameters),
             ClauseType = ClauseType.Between,
@@ -317,7 +318,7 @@ internal static class QueryPlanBuilder
 
         clauses.Add(new ClauseInfo
         {
-            FieldName = field.FieldValue,
+            FieldName = GetFieldName(field),
             InTerms = terms,
             ClauseType = inExpr.All ? ClauseType.AllIn : ClauseType.In,
             OriginalIndex = clauses.Count
@@ -361,7 +362,7 @@ internal static class QueryPlanBuilder
                 {
                     clauses.Add(new ClauseInfo
                     {
-                        FieldName = existsField.FieldValue,
+                        FieldName = GetFieldName(existsField),
                         ClauseType = ClauseType.Exists,
                         OriginalIndex = clauses.Count
                     });
@@ -385,7 +386,7 @@ internal static class QueryPlanBuilder
                 {
                     clauses.Add(new ClauseInfo
                     {
-                        FieldName = regexField.FieldValue,
+                        FieldName = GetFieldName(regexField),
                         TermValue = GetTermValue(method.Arguments[1], queryParameters),
                         ClauseType = ClauseType.Regex,
                         OriginalIndex = clauses.Count
@@ -454,7 +455,7 @@ internal static class QueryPlanBuilder
 
         clauses.Add(new ClauseInfo
         {
-            FieldName = searchField.FieldValue,
+            FieldName = GetFieldName(searchField),
             TermValue = GetTermValue(method.Arguments[1], queryParameters),
             ClauseType = ClauseType.Search,
             OriginalIndex = clauses.Count
@@ -472,17 +473,41 @@ internal static class QueryPlanBuilder
 
         clauses.Add(new ClauseInfo
         {
-            FieldName = field.FieldValue,
+            FieldName = GetFieldName(field),
             TermValue = GetTermValue(method.Arguments[1], queryParameters),
             ClauseType = type,
             OriginalIndex = clauses.Count
         });
     }
 
+    /// <summary>Extract field name from a FieldExpression, stripping the alias if present.
+    /// "r.Text" → "Text", "Name" → "Name".</summary>
+    private static string GetFieldName(FieldExpression field)
+    {
+        return string.IsNullOrEmpty(field.FieldValueWithoutAlias)
+            ? field.FieldValue
+            : field.FieldValueWithoutAlias;
+    }
+
     private static string GetTermValue(QueryExpression expr, BlittableJsonReaderObject queryParameters)
     {
+        return GetTermValue(expr, queryParameters, out _);
+    }
+
+    private static string GetTermValue(QueryExpression expr, BlittableJsonReaderObject queryParameters, out ValueTokenType valueType)
+    {
         if (expr is ValueExpression ve)
-            return ve.GetValue(queryParameters)?.ToString();
+        {
+            valueType = ve.Value;
+            var value = ve.GetValue(queryParameters);
+            if (value is bool b)
+                return b ? "true" : "false"; // Corax stores booleans as lowercase
+            // For parameters, detect the actual type
+            if (valueType == ValueTokenType.Parameter && value != null)
+                valueType = QueryBuilderHelper.GetValueTokenType(value, null, queryParameters);
+            return value?.ToString();
+        }
+        valueType = ValueTokenType.Null;
         return null;
     }
 
@@ -1093,6 +1118,7 @@ internal static class QueryPlanBuilder
     {
         public string FieldName;
         public string TermValue;
+        public ValueTokenType TermValueType; // for type-aware comparison resolution
         public string TermValue2; // for BETWEEN
         public List<string> InTerms; // for IN
         public List<ClauseInfo> OrSubClauses; // for OrGroup
@@ -1180,6 +1206,15 @@ internal static class QueryPlanBuilder
         {
             case ClauseType.Equals:
             case ClauseType.NotEquals:
+                // Use the value type to determine the right TermQuery overload
+                if (clause.TermValueType == ValueTokenType.Long
+                    && long.TryParse(clause.TermValue, out long eqLong))
+                    return indexSearcher.TermQuery(fieldMeta, eqLong);
+                if (clause.TermValueType == ValueTokenType.Double
+                    && double.TryParse(clause.TermValue,
+                        System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out double eqDouble))
+                    return indexSearcher.TermQuery(fieldMeta, eqDouble);
                 return indexSearcher.TermQuery(fieldMeta, clause.TermValue);
 
             case ClauseType.GreaterThan:
