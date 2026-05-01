@@ -21,7 +21,7 @@ public static class QueryILEmitter
 
     // QueryScanContext fields
     private static readonly FieldInfo s_ctxBitmaps = typeof(QueryScanContext).GetField(nameof(QueryScanContext.Bitmaps))!;
-    private static readonly FieldInfo s_ctxMatches = typeof(QueryScanContext).GetField(nameof(QueryScanContext.Matches))!;
+    private static readonly FieldInfo s_ctxDirectSources = typeof(QueryScanContext).GetField(nameof(QueryScanContext.DirectSources))!;
     private static readonly FieldInfo s_ctxSearcher = typeof(QueryScanContext).GetField(nameof(QueryScanContext.Searcher))!;
     private static readonly FieldInfo s_ctxToken = typeof(QueryScanContext).GetField(nameof(QueryScanContext.Token))!;
 
@@ -706,7 +706,7 @@ public static class QueryILEmitter
     private static void EmitLoadMatch(ILGenerator il, int index)
     {
         il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Ldflda, s_ctxMatches);
+        il.Emit(OpCodes.Ldflda, s_ctxDirectSources);
         EmitLdcI4(il, index);
         il.Emit(OpCodes.Call, s_matchSpanIndexer);
         il.Emit(OpCodes.Ldind_Ref);

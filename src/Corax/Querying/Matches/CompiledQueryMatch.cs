@@ -155,7 +155,8 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
             {
                 Bitmaps = bitmaps.AsSpan(),
                 Searcher = _searcher,
-                Matches = _resolvedMatches.AsSpan(),
+                DirectSources = _resolvedMatches.AsSpan(),
+                TermProviders = Span<ITermProvider>.Empty,
                 FieldRootPages = _fieldRootPages.AsSpan(),
                 LongParams = _longParams.AsSpan(),
                 DoubleParams = _doubleParams.AsSpan(),
