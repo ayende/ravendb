@@ -440,10 +440,10 @@ internal static class QueryPlanBuilder
                 break;
 
             case MethodType.MoreLikeThis:
-                // MoreLikeThis is routed to reader.MoreLikeThis() at Index.cs level —
-                // it never reaches the query planner through normal execution.
-                throw new InvalidOperationException(
-                    "moreLikeThis() should not reach the query planner — it has a separate execution path.");
+                // MoreLikeThis method in a WHERE clause acts as "all entries" —
+                // the actual MLT logic is in the separate reader.MoreLikeThis() path.
+                // When it appears in a filter expression, treat as no-op (all entries match).
+                break;
 
             case MethodType.When:
             {
