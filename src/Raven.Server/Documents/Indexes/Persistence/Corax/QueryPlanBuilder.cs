@@ -81,7 +81,7 @@ internal static class QueryPlanBuilder
         // Parse WHERE clause into intermediate clause list
         var clauses = new List<ClauseInfo>();
         bool hasMixedAndOr = false;
-        var rootOp = ParseExpression(query.Where, indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
+        var rootOp = ParseExpression(query.Where, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
 
         // Mixed AND/OR trees are handled via OrGroup clauses
 
@@ -128,30 +128,31 @@ internal static class QueryPlanBuilder
         IndexSearcher indexSearcher,
         List<ClauseInfo> clauses,
         BlittableJsonReaderObject queryParameters,
+        QueryMetadata metadata,
         ref bool hasMixedAndOr)
     {
         switch (expr)
         {
             case BinaryExpression be:
-                return ParseBinaryExpression(be, indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
+                return ParseBinaryExpression(be, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
 
             case BetweenExpression between:
-                ParseBetween(between, clauses, queryParameters);
+                ParseBetween(between, clauses, queryParameters, metadata);
                 return BooleanOp.Leaf;
 
             case InExpression inExpr:
-                ParseIn(inExpr, clauses, queryParameters);
+                ParseIn(inExpr, clauses, queryParameters, metadata);
                 return BooleanOp.Leaf;
 
             case NegatedExpression negated:
-                ParseNegated(negated, indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
+                ParseNegated(negated, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
                 return BooleanOp.Leaf;
 
             case TrueExpression:
                 return BooleanOp.True;
 
             case MethodExpression method:
-                ParseMethod(method, indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
+                ParseMethod(method, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
                 return BooleanOp.Leaf;
 
             default:
@@ -165,6 +166,7 @@ internal static class QueryPlanBuilder
         IndexSearcher indexSearcher,
         List<ClauseInfo> clauses,
         BlittableJsonReaderObject queryParameters,
+        QueryMetadata metadata,
         ref bool hasMixedAndOr)
     {
         switch (be.Operator)
@@ -178,7 +180,7 @@ internal static class QueryPlanBuilder
                 {
                     // Left side is OR — parse into a separate clause list and group them
                     var orClauses = new List<ClauseInfo>();
-                    left = ParseExpression(be.Left, indexSearcher, orClauses, queryParameters, ref hasMixedAndOr);
+                    left = ParseExpression(be.Left, indexSearcher, orClauses, queryParameters, metadata, ref hasMixedAndOr);
                     clauses.Add(new ClauseInfo
                     {
                         ClauseType = ClauseType.OrGroup,
@@ -188,13 +190,13 @@ internal static class QueryPlanBuilder
                 }
                 else
                 {
-                    left = ParseExpression(be.Left, indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
+                    left = ParseExpression(be.Left, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
                 }
 
                 if (be.Right is BinaryExpression { Operator: OperatorType.Or })
                 {
                     var orClauses = new List<ClauseInfo>();
-                    right = ParseExpression(be.Right, indexSearcher, orClauses, queryParameters, ref hasMixedAndOr);
+                    right = ParseExpression(be.Right, indexSearcher, orClauses, queryParameters, metadata, ref hasMixedAndOr);
                     clauses.Add(new ClauseInfo
                     {
                         ClauseType = ClauseType.OrGroup,
@@ -204,7 +206,7 @@ internal static class QueryPlanBuilder
                 }
                 else
                 {
-                    right = ParseExpression(be.Right, indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
+                    right = ParseExpression(be.Right, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
                 }
                 // Constant folding
                 if (left == BooleanOp.True) return right;
@@ -215,8 +217,8 @@ internal static class QueryPlanBuilder
 
             case OperatorType.Or:
             {
-                var left = ParseExpression(be.Left, indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
-                var right = ParseExpression(be.Right, indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
+                var left = ParseExpression(be.Left, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+                var right = ParseExpression(be.Right, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
                 // Constant folding
                 if (left == BooleanOp.True || right == BooleanOp.True) return BooleanOp.True;
                 if (left == BooleanOp.False) return right;
@@ -225,18 +227,18 @@ internal static class QueryPlanBuilder
             }
 
             case OperatorType.Equal:
-                ParseComparison(be, clauses, queryParameters);
+                ParseComparison(be, clauses, queryParameters, metadata);
                 return BooleanOp.Leaf;
 
             case OperatorType.NotEqual:
-                ParseComparison(be, clauses, queryParameters);
+                ParseComparison(be, clauses, queryParameters, metadata);
                 return BooleanOp.Leaf;
 
             case OperatorType.LessThan:
             case OperatorType.LessThanEqual:
             case OperatorType.GreaterThan:
             case OperatorType.GreaterThanEqual:
-                ParseRangeComparison(be, clauses, queryParameters);
+                ParseRangeComparison(be, clauses, queryParameters, metadata);
                 return BooleanOp.Leaf;
 
             default:
@@ -246,11 +248,11 @@ internal static class QueryPlanBuilder
     }
 
     private static void ParseComparison(BinaryExpression be, List<ClauseInfo> clauses,
-        BlittableJsonReaderObject queryParameters)
+        BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
     {
         if (be.Left is not FieldExpression field)
             return;
-        string fieldName = GetFieldName(field);
+        string fieldName = GetFieldName(field, metadata, queryParameters);
         string termValue = GetTermValue(be.Right, queryParameters, out var valueType);
 
         clauses.Add(new ClauseInfo
@@ -264,11 +266,11 @@ internal static class QueryPlanBuilder
     }
 
     private static void ParseRangeComparison(BinaryExpression be, List<ClauseInfo> clauses,
-        BlittableJsonReaderObject queryParameters)
+        BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
     {
         if (be.Left is not FieldExpression field)
             return;
-        string fieldName = GetFieldName(field);
+        string fieldName = GetFieldName(field, metadata, queryParameters);
         string termValue = GetTermValue(be.Right, queryParameters);
 
         clauses.Add(new ClauseInfo
@@ -288,14 +290,14 @@ internal static class QueryPlanBuilder
     }
 
     private static void ParseBetween(BetweenExpression between, List<ClauseInfo> clauses,
-        BlittableJsonReaderObject queryParameters)
+        BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
     {
         if (between.Source is not FieldExpression field)
             return;
 
         clauses.Add(new ClauseInfo
         {
-            FieldName = GetFieldName(field),
+            FieldName = GetFieldName(field, metadata, queryParameters),
             TermValue = GetTermValue(between.Min, queryParameters),
             TermValue2 = GetTermValue(between.Max, queryParameters),
             ClauseType = ClauseType.Between,
@@ -304,7 +306,7 @@ internal static class QueryPlanBuilder
     }
 
     private static void ParseIn(InExpression inExpr, List<ClauseInfo> clauses,
-        BlittableJsonReaderObject queryParameters)
+        BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
     {
         if (inExpr.Source is not FieldExpression field)
             return;
@@ -339,7 +341,7 @@ internal static class QueryPlanBuilder
 
         clauses.Add(new ClauseInfo
         {
-            FieldName = GetFieldName(field),
+            FieldName = GetFieldName(field, metadata, queryParameters),
             InTerms = terms,
             ClauseType = inExpr.All ? ClauseType.AllIn : ClauseType.In,
             OriginalIndex = clauses.Count
@@ -347,11 +349,11 @@ internal static class QueryPlanBuilder
     }
 
     private static void ParseNegated(NegatedExpression negated, IndexSearcher indexSearcher,
-        List<ClauseInfo> clauses, BlittableJsonReaderObject queryParameters, ref bool hasMixedAndOr)
+        List<ClauseInfo> clauses, BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ref bool hasMixedAndOr)
     {
         // NOT expr → ANDNOT with all entries
         var innerClauses = new List<ClauseInfo>();
-        ParseExpression(negated.Expression, indexSearcher, innerClauses, queryParameters, ref hasMixedAndOr);
+        ParseExpression(negated.Expression, indexSearcher, innerClauses, queryParameters, metadata, ref hasMixedAndOr);
 
         foreach (var inner in innerClauses)
         {
@@ -361,21 +363,21 @@ internal static class QueryPlanBuilder
     }
 
     private static void ParseMethod(MethodExpression method, IndexSearcher indexSearcher,
-        List<ClauseInfo> clauses, BlittableJsonReaderObject queryParameters, ref bool hasMixedAndOr)
+        List<ClauseInfo> clauses, BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ref bool hasMixedAndOr)
     {
         var methodType = QueryMethod.GetMethodType(method.Name.Value);
         switch (methodType)
         {
             case MethodType.Search:
-                ParseSearchMethod(method, clauses, queryParameters);
+                ParseSearchMethod(method, clauses, queryParameters, metadata);
                 break;
 
             case MethodType.StartsWith:
-                ParsePrefixMethod(method, clauses, queryParameters, ClauseType.StartsWith);
+                ParsePrefixMethod(method, clauses, queryParameters, metadata, ClauseType.StartsWith);
                 break;
 
             case MethodType.EndsWith:
-                ParsePrefixMethod(method, clauses, queryParameters, ClauseType.EndsWith);
+                ParsePrefixMethod(method, clauses, queryParameters, metadata, ClauseType.EndsWith);
                 break;
 
             case MethodType.Exists:
@@ -383,7 +385,7 @@ internal static class QueryPlanBuilder
                 {
                     clauses.Add(new ClauseInfo
                     {
-                        FieldName = GetFieldName(existsField),
+                        FieldName = GetFieldName(existsField, metadata, queryParameters),
                         ClauseType = ClauseType.Exists,
                         OriginalIndex = clauses.Count
                     });
@@ -395,7 +397,7 @@ internal static class QueryPlanBuilder
                 // exact(expr) → recurse, then mark all new clauses as exact
                 int beforeCount = clauses.Count;
                 if (method.Arguments.Count > 0)
-                    ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
+                    ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
                 for (int c = beforeCount; c < clauses.Count; c++)
                     clauses[c].IsExact = true;
                 break;
@@ -404,7 +406,7 @@ internal static class QueryPlanBuilder
             case MethodType.Boost:
                 // boost(expr, factor) → recurse, mark as boosted
                 if (method.Arguments.Count > 0)
-                    ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
+                    ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
                 break;
 
             case MethodType.Regex:
@@ -412,7 +414,7 @@ internal static class QueryPlanBuilder
                 {
                     clauses.Add(new ClauseInfo
                     {
-                        FieldName = GetFieldName(regexField),
+                        FieldName = GetFieldName(regexField, metadata, queryParameters),
                         TermValue = GetTermValue(method.Arguments[1], queryParameters),
                         ClauseType = ClauseType.Regex,
                         OriginalIndex = clauses.Count
@@ -459,7 +461,7 @@ internal static class QueryPlanBuilder
                 var conditionResult = QueryBuilderHelper.EvaluateConstantExpressionForWhenQuery(
                     (BinaryExpression)method.Arguments[0], queryParameters);
                 if (conditionResult)
-                    ParseExpression(method.Arguments[1], indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
+                    ParseExpression(method.Arguments[1], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
                 // If false, we simply don't add any clause — the branch is eliminated.
                 break;
             }
@@ -471,7 +473,7 @@ internal static class QueryPlanBuilder
     }
 
     private static void ParseSearchMethod(MethodExpression method, List<ClauseInfo> clauses,
-        BlittableJsonReaderObject queryParameters)
+        BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
     {
         if (method.Arguments.Count < 2)
             return;
@@ -481,7 +483,7 @@ internal static class QueryPlanBuilder
 
         clauses.Add(new ClauseInfo
         {
-            FieldName = GetFieldName(searchField),
+            FieldName = GetFieldName(searchField, metadata, queryParameters),
             TermValue = GetTermValue(method.Arguments[1], queryParameters),
             ClauseType = ClauseType.Search,
             OriginalIndex = clauses.Count
@@ -489,7 +491,7 @@ internal static class QueryPlanBuilder
     }
 
     private static void ParsePrefixMethod(MethodExpression method, List<ClauseInfo> clauses,
-        BlittableJsonReaderObject queryParameters, ClauseType type)
+        BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ClauseType type)
     {
         if (method.Arguments.Count < 2)
             return;
@@ -499,20 +501,27 @@ internal static class QueryPlanBuilder
 
         clauses.Add(new ClauseInfo
         {
-            FieldName = GetFieldName(field),
+            FieldName = GetFieldName(field, metadata, queryParameters),
             TermValue = GetTermValue(method.Arguments[1], queryParameters),
             ClauseType = type,
             OriginalIndex = clauses.Count
         });
     }
 
-    /// <summary>Extract field name from a FieldExpression, stripping the alias if present.
-    /// "r.Text" → "Text", "Name" → "Name".</summary>
+    /// <summary>Extract field name from a FieldExpression.
+    /// Uses the full compound path (Date.Year stays Date.Year).
+    /// When metadata is available, uses GetIndexFieldName for proper alias resolution.</summary>
     private static string GetFieldName(FieldExpression field)
     {
-        return string.IsNullOrEmpty(field.FieldValueWithoutAlias)
-            ? field.FieldValue
-            : field.FieldValueWithoutAlias;
+        return field.FieldValue;
+    }
+
+    /// <summary>Extract field name with proper alias resolution using query metadata.</summary>
+    private static string GetFieldName(FieldExpression field, QueryMetadata metadata, BlittableJsonReaderObject queryParameters)
+    {
+        if (metadata != null)
+            return metadata.GetIndexFieldName(field, queryParameters).Value;
+        return field.FieldValue;
     }
 
     private static string GetTermValue(QueryExpression expr, BlittableJsonReaderObject queryParameters)
