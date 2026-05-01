@@ -159,3 +159,5 @@ src/.cache/
 src/Raven.Server/embeddings/
 test/FastTests/TestResults/
 test/**/TestResults/
+Temp/
+.dbg/
