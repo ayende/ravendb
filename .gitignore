@@ -158,3 +158,4 @@ src/Sparrow.Server/Utils/VxSort/codegen/__pycache__/
 src/.cache/
 src/Raven.Server/embeddings/
 test/FastTests/TestResults/
+test/**/TestResults/
