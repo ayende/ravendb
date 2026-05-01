@@ -30,7 +30,7 @@ public static class Program
         for (int i = 0; i < 1; i++)
         {
             Console.WriteLine($"Starting to run {i}");
-            
+
             try
             {
                 using (var testOutputHelper = new ConsoleTestOutputHelper())
