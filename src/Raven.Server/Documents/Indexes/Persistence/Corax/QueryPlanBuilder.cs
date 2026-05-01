@@ -313,7 +313,28 @@ internal static class QueryPlanBuilder
         foreach (var value in inExpr.Values)
         {
             if (value is ValueExpression ve)
-                terms.Add(GetTermValue(ve, queryParameters));
+            {
+                var resolvedValue = ve.GetValue(queryParameters);
+                if (resolvedValue is Sparrow.Json.BlittableJsonReaderArray arr)
+                {
+                    // Array parameter — expand each element
+                    for (int a = 0; a < arr.Length; a++)
+                    {
+                        var elem = arr[a];
+                        if (elem is bool b)
+                            terms.Add(b ? "true" : "false");
+                        else
+                            terms.Add(elem?.ToString());
+                    }
+                }
+                else
+                {
+                    if (resolvedValue is bool b)
+                        terms.Add(b ? "true" : "false");
+                    else
+                        terms.Add(resolvedValue?.ToString());
+                }
+            }
         }
 
         clauses.Add(new ClauseInfo
@@ -1238,16 +1259,21 @@ internal static class QueryPlanBuilder
         {
             case ClauseType.Equals:
             case ClauseType.NotEquals:
+            {
                 // Use the value type to determine the right TermQuery overload
+                IQueryMatch eqMatch;
                 if (clause.TermValueType == ValueTokenType.Long
                     && long.TryParse(clause.TermValue, out long eqLong))
-                    return indexSearcher.TermQuery(fieldMeta, eqLong);
-                if (clause.TermValueType == ValueTokenType.Double
+                    eqMatch = indexSearcher.TermQuery(fieldMeta, eqLong);
+                else if (clause.TermValueType == ValueTokenType.Double
                     && double.TryParse(clause.TermValue,
                         System.Globalization.NumberStyles.Float,
                         System.Globalization.CultureInfo.InvariantCulture, out double eqDouble))
-                    return indexSearcher.TermQuery(fieldMeta, eqDouble);
-                return indexSearcher.TermQuery(fieldMeta, clause.TermValue);
+                    eqMatch = indexSearcher.TermQuery(fieldMeta, eqDouble);
+                else
+                    eqMatch = indexSearcher.TermQuery(fieldMeta, clause.TermValue);
+                return eqMatch;
+            }
 
             case ClauseType.GreaterThan:
                 if (long.TryParse(clause.TermValue, out long gtLong))
@@ -1293,7 +1319,31 @@ internal static class QueryPlanBuilder
                 return indexSearcher.BetweenQuery(fieldMeta, clause.TermValue, clause.TermValue2);
 
             case ClauseType.In:
+            {
+                // Check if terms are numeric — InQuery only handles string terms correctly.
+                // For numeric IN values, we need to use TermQuery<long> per term and OR them.
+                if (clause.InTerms != null && clause.InTerms.Count > 0
+                    && long.TryParse(clause.InTerms[0], out _))
+                {
+                    // Numeric IN — OR the individual TermQuery<long> results
+                    IQueryMatch inMatch = null;
+                    foreach (var term in clause.InTerms)
+                    {
+                        IQueryMatch termMatch;
+                        if (long.TryParse(term, out long inLong))
+                            termMatch = indexSearcher.TermQuery(fieldMeta, inLong);
+                        else if (double.TryParse(term, System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture, out double inDouble))
+                            termMatch = indexSearcher.TermQuery(fieldMeta, inDouble);
+                        else
+                            termMatch = indexSearcher.TermQuery(fieldMeta, term);
+
+                        inMatch = inMatch == null ? termMatch : indexSearcher.Or(inMatch, termMatch);
+                    }
+                    return inMatch ?? TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
+                }
                 return indexSearcher.InQuery(fieldMeta, clause.InTerms);
+            }
 
             case ClauseType.AllIn:
                 // AllIn sub-terms are expanded into separate matches by ResolveMatches.
