@@ -594,10 +594,6 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         return new IncludeNonExistingMatch<TInner>(this, inner, field, forward, nullFirsts);
     }
 
-    public DeduplicationMatch<TInner> DeduplicationMatch<TInner>(in TInner inner, bool forceHashset = false) 
-        where TInner : IQueryMatch 
-        => new(this, inner, forceHashset);
-    
     private void InitializeSpecialTermsMarkers()
     {
         if (_nullTermsMarkersLoaded == false)

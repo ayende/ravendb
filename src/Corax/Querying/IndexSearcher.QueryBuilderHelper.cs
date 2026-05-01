@@ -1,4 +1,4 @@
-﻿using Corax.Querying.Matches;
+using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Matches.SpatialMatch;
 
@@ -30,22 +30,22 @@ public partial class IndexSearcher
 
             if (type == typeof(BinaryMatch))
                 return QueryType.BinaryMatch;
-            
+
             if (type == typeof(MultiTermMatch))
                 return QueryType.MultiTermMatch;
-            
+
             if (type == typeof(AndNotMatch))
                 return QueryType.AndNotMatch;
-            
+
             if (type == typeof(BoostingMatch))
                 return QueryType.BoostingMatch;
-            
+
             if (type == typeof(SpatialMatch<NoBoosting>))
                 return QueryType.SpatialMatchNoBoosting;
-            
+
             if (type == typeof(SpatialMatch<HasBoosting>))
                 return QueryType.SpatialMatchHasBoosting;
-            
+
             if (type == typeof(MultiUnaryMatch))
                 return QueryType.MultiUnaryMatch;
 

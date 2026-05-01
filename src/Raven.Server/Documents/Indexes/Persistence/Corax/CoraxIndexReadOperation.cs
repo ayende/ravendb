@@ -1228,32 +1228,60 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
             var pageSize = CoraxBufferSize(IndexSearcher, query.PageSize, query);
 
-            IQueryMatch mltQuery;
+            // MoreLikeThis returns an array of term matches. We OR them into a bitmap,
+            // then AND with the filter query if present. Bitmap OR is inherently
+            // deduplicated — no DeduplicationMatch needed.
+            IQueryMatch[] mltTerms;
             if (baseDocId.HasValue)
             {
-                mltQuery = mlt.Like(baseDocId.Value);
+                mltTerms = mlt.Like(baseDocId.Value);
             }
             else
             {
                 using (var blittableJson = ParseJsonStringIntoBlittable(moreLikeThisQuery.BaseDocument, context))
-                    mltQuery = mlt.Like(blittableJson);
+                    mltTerms = mlt.Like(blittableJson);
             }
 
-            if (moreLikeThisQuery.FilterQuery != null && moreLikeThisQuery.FilterQuery is AllEntriesMatch == false)
+            // Materialize into bitmap via OR
+            var mltBitmap = new global::Corax.Utils.RoaringBitmaps.RoaringBitmap(_allocator);
+            try
             {
-                mltQuery = IndexSearcher.And(mltQuery, moreLikeThisQuery.FilterQuery);
-            }
+                Span<long> fillBuf = stackalloc long[4096];
+                foreach (var termMatch in mltTerms)
+                {
+                    int termRead;
+                    while ((termRead = termMatch.Fill(fillBuf)) > 0)
+                        mltBitmap.AddRange(fillBuf.Slice(0, termRead));
+                }
 
-            if (mltQuery.DuplicatesOccurrenceStatus == DuplicatesOccurrence.Possible)
-                mltQuery = IndexSearcher.DeduplicationMatch(mltQuery);
-            
+                // AND with filter query if present
+                if (moreLikeThisQuery.FilterQuery != null && moreLikeThisQuery.FilterQuery is AllEntriesMatch == false)
+                {
+                    var filterBitmap = new global::Corax.Utils.RoaringBitmaps.RoaringBitmap(_allocator);
+                    try
+                    {
+                        var filterMatch = moreLikeThisQuery.FilterQuery;
+                        int filterRead;
+                        while ((filterRead = filterMatch.Fill(fillBuf)) > 0)
+                            filterBitmap.AddRange(fillBuf.Slice(0, filterRead));
+                        mltBitmap.AndWith(ref filterBitmap);
+                    }
+                    finally
+                    {
+                        filterBitmap.Dispose();
+                    }
+                }
+
+                mltBitmap.PrepareForReading();
+                var mltIterator = mltBitmap.GetIterator();
+
             var ravenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             long[] ids = QueryPool.Rent(pageSize);
             var read = 0;
             long returnedDocs = 0;
             long skippedDocs = 0;
             Page page = default;
-            while ((read = mltQuery.Fill(ids.AsSpan())) != 0)
+            while ((read = mltIterator.Fill(ref mltBitmap, ids.AsSpan())) != 0)
             {
                 for (int i = 0; i < read; i++)
                 {
@@ -1297,6 +1325,12 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             }
 
             QueryPool.Return(ids);
+            mltIterator.Dispose();
+            } // end try (mltBitmap)
+            finally
+            {
+                mltBitmap.Dispose();
+            }
         }
 
         public string GetDocumentIdFor(long entryId)

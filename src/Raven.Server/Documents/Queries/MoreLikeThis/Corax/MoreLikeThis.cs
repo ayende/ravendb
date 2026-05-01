@@ -132,24 +132,24 @@ internal class RavenMoreLikeThis : MoreLikeThisBase, IDisposable
         }
     }
     
-    public IQueryMatch Like(long documentId)
+    public IQueryMatch[] Like(long documentId)
     {
         if (_fieldNames == null) throw new InvalidDataException($"FieldNames are empty!");
 
-        return CreateQuery(RetrieveTerms(documentId));
+        return CreateQueryMatches(RetrieveTerms(documentId));
     }
 
-    internal IQueryMatch Like(BlittableJsonReaderObject json)
+    internal IQueryMatch[] Like(BlittableJsonReaderObject json)
     {
-        return CreateQuery(RetrieveTerms(json));
+        return CreateQueryMatches(RetrieveTerms(json));
     }
 
-    IQueryMatch CreateQuery(PriorityQueue<object[]> q)
+    IQueryMatch[] CreateQueryMatches(PriorityQueue<object[]> q)
     {
         var indexSearcher = _builderParameters.IndexSearcher;
         object cur;
         var qterms = 0;
-        IQueryMatch query = null;
+        var matches = new List<IQueryMatch>();
         while ((cur = q.Pop()) is not null)
         {
             var ar = cur as object[];
@@ -166,17 +166,15 @@ internal class RavenMoreLikeThis : MoreLikeThisBase, IDisposable
             }
 
             var fieldMetadata = indexSearcher.GetFieldMetadata(fieldName);
-            query = query is null 
-                ? indexSearcher.TermQuery(fieldMetadata, term) 
-                : indexSearcher.Or(query, indexSearcher.TermQuery(fieldMetadata, term));
-            
+            matches.Add(indexSearcher.TermQuery(fieldMetadata, term));
+
             qterms++;
 
             if (_maxQueryTerms > 0 && qterms >= _maxQueryTerms)
                 break;
         }
 
-        return query ?? indexSearcher.EmptyMatch();
+        return matches.Count > 0 ? matches.ToArray() : Array.Empty<IQueryMatch>();
     }
 
     /// <summary>

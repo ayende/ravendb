@@ -87,7 +87,7 @@ public class StreamingOptimization_QueryBuilder(ITestOutputHelper output) : Rave
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying | RavenTestCategory.Indexes)]
     [InlineData(true)]
     [InlineData(false)] // where Name = X and Field < 1 order by Name => where Name = x and Field < 1
-    public async Task SortingMatchIsSkippedWhenIsAndBinaryMatch(bool hasMultipleValues) => await TestQueryBuilder<DeduplicationMatch<BinaryMatch>>(hasMultipleValues, session =>
+    public async Task SortingMatchIsSkippedWhenIsAndBinaryMatch(bool hasMultipleValues) => await TestQueryBuilder<CompiledQueryMatch>(hasMultipleValues, session =>
         session.Advanced.AsyncDocumentQuery<Dto, DtoIndexSingleValues>()
             .WhereEquals(p => p.Name, "maciej")
             .AndAlso()
@@ -109,7 +109,7 @@ public class StreamingOptimization_QueryBuilder(ITestOutputHelper output) : Rave
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying | RavenTestCategory.Indexes)]
     [InlineData(true)]
     [InlineData(false)] // where (Name = x and F < 1) and (S = 2 and F < 2 ) order by Name => skip order by
-    public async Task BinaryMatchOfBinaryMatchAnd(bool hasMultipleValues) => await TestQueryBuilder<DeduplicationMatch<BinaryMatch>>(hasMultipleValues, session =>
+    public async Task BinaryMatchOfBinaryMatchAnd(bool hasMultipleValues) => await TestQueryBuilder<CompiledQueryMatch>(hasMultipleValues, session =>
         session.Advanced.AsyncDocumentQuery<Dto, DtoIndexSingleValues>()
             .OpenSubclause()
             .WhereEquals(p => p.Name, "maciej")
@@ -187,7 +187,7 @@ public class StreamingOptimization_QueryBuilder(ITestOutputHelper output) : Rave
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying | RavenTestCategory.Indexes)]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task LessThanOptimization(bool hasMultipleValues) => await TestQueryBuilder<DeduplicationMatch<MultiTermMatch>>(hasMultipleValues, session =>
+    public async Task LessThanOptimization(bool hasMultipleValues) => await TestQueryBuilder<CompiledQueryMatch>(hasMultipleValues, session =>
         session.Advanced.AsyncDocumentQuery<Dto, DtoIndexSingleValues>()
             .WhereLessThan(p => p.First, 10)
             .OrderBy(x => x.First)
@@ -207,7 +207,7 @@ public class StreamingOptimization_QueryBuilder(ITestOutputHelper output) : Rave
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying | RavenTestCategory.Indexes)]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task LessThanOrEqualOptimization(bool hasMultipleValues) => await TestQueryBuilder<DeduplicationMatch<MultiTermMatch>>(hasMultipleValues, session =>
+    public async Task LessThanOrEqualOptimization(bool hasMultipleValues) => await TestQueryBuilder<CompiledQueryMatch>(hasMultipleValues, session =>
         session.Advanced.AsyncDocumentQuery<Dto, DtoIndexSingleValues>()
             .WhereLessThanOrEqual(p => p.First, 10)
             .OrderBy(x => x.First)
@@ -227,7 +227,7 @@ public class StreamingOptimization_QueryBuilder(ITestOutputHelper output) : Rave
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying | RavenTestCategory.Indexes)]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task GreaterThanOptimization(bool hasMultipleValues) => await TestQueryBuilder<DeduplicationMatch<MultiTermMatch>>(hasMultipleValues, session =>
+    public async Task GreaterThanOptimization(bool hasMultipleValues) => await TestQueryBuilder<CompiledQueryMatch>(hasMultipleValues, session =>
         session.Advanced.AsyncDocumentQuery<Dto, DtoIndexSingleValues>()
             .WhereGreaterThan(p => p.First, 10)
             .OrderBy(x => x.First)
@@ -247,7 +247,7 @@ public class StreamingOptimization_QueryBuilder(ITestOutputHelper output) : Rave
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying | RavenTestCategory.Indexes)]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task GreaterThanOrEqualOptimization(bool hasMultipleValues) => await TestQueryBuilder<DeduplicationMatch<MultiTermMatch>>(hasMultipleValues, session =>
+    public async Task GreaterThanOrEqualOptimization(bool hasMultipleValues) => await TestQueryBuilder<CompiledQueryMatch>(hasMultipleValues, session =>
         session.Advanced.AsyncDocumentQuery<Dto, DtoIndexSingleValues>()
             .WhereGreaterThanOrEqual(p => p.First, 10)
             .OrderBy(x => x.First)
@@ -267,7 +267,7 @@ public class StreamingOptimization_QueryBuilder(ITestOutputHelper output) : Rave
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying | RavenTestCategory.Indexes)]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task StartsWithOptimization(bool hasMultipleValues) => await TestQueryBuilder<DeduplicationMatch<MultiTermMatch>>(hasMultipleValues, session =>
+    public async Task StartsWithOptimization(bool hasMultipleValues) => await TestQueryBuilder<CompiledQueryMatch>(hasMultipleValues, session =>
         session.Advanced.AsyncDocumentQuery<Dto, DtoIndexSingleValues>()
             .WhereStartsWith(p => p.Name, "mac")
             .OrderBy(x => x.Name)
@@ -315,7 +315,7 @@ public class StreamingOptimization_QueryBuilder(ITestOutputHelper output) : Rave
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying | RavenTestCategory.Indexes)]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task EndsWithOptimization(bool hasMultipleValues) => await TestQueryBuilder<DeduplicationMatch<MultiTermMatch>>(hasMultipleValues, session =>
+    public async Task EndsWithOptimization(bool hasMultipleValues) => await TestQueryBuilder<CompiledQueryMatch>(hasMultipleValues, session =>
         session.Advanced.AsyncDocumentQuery<Dto, DtoIndexSingleValues>()
             .WhereEndsWith(p => p.Name, "mac")
             .OrderBy(x => x.Name)
@@ -344,7 +344,7 @@ public class StreamingOptimization_QueryBuilder(ITestOutputHelper output) : Rave
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying | RavenTestCategory.Indexes)]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task ExistsOptimization(bool hasMultipleValues) => await TestQueryBuilder<DeduplicationMatch<MultiTermMatch>>(hasMultipleValues, session =>
+    public async Task ExistsOptimization(bool hasMultipleValues) => await TestQueryBuilder<CompiledQueryMatch>(hasMultipleValues, session =>
         session.Advanced.AsyncDocumentQuery<Dto, DtoIndexSingleValues>()
             .WhereExists(p => p.Name)
             .OrderBy(x => x.Name)
@@ -373,7 +373,7 @@ public class StreamingOptimization_QueryBuilder(ITestOutputHelper output) : Rave
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying | RavenTestCategory.Indexes)]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task RegexOptimization(bool hasMultipleValues) => await TestQueryBuilder<DeduplicationMatch<MultiTermMatch>>(hasMultipleValues, session =>
+    public async Task RegexOptimization(bool hasMultipleValues) => await TestQueryBuilder<CompiledQueryMatch>(hasMultipleValues, session =>
         session.Advanced.AsyncDocumentQuery<Dto, DtoIndexSingleValues>()
             .WhereRegex(p => p.Name, "^[a-z ]{2,4}love")
             .OrderBy(x => x.Name)
@@ -403,7 +403,7 @@ public class StreamingOptimization_QueryBuilder(ITestOutputHelper output) : Rave
     [MemberData(nameof(RangesTests))]
     public async Task RangeTests(bool hasMultipleValues, bool leftInclusive, bool rightInclusive, bool ascending)
     {
-        await TestQueryBuilder<DeduplicationMatch<MultiTermMatch>>(hasMultipleValues, session =>
+        await TestQueryBuilder<CompiledQueryMatch>(hasMultipleValues, session =>
             {
                 var query = session.Advanced.AsyncDocumentQuery<Dto, DtoIndexSingleValues>();
 
