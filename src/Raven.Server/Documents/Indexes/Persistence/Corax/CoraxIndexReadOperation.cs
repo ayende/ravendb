@@ -1384,7 +1384,8 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     {
                         CompiledDelegate = global::Corax.Querying.Planning.QueryILEmitter.EmitDelegate(plan),
                         ExplainSource = plan.ExplainSource ?? global::Corax.Querying.Planning.QueryILEmitter.GenerateExplainSource(plan),
-                        Ordering = plan.OperandOrdering
+                        Ordering = plan.OperandOrdering,
+                        TypeSignature = plan.TypeSignature
                     };
                     planCache.Add(queryText, compiledPlan);
                 }
