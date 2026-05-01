@@ -1405,7 +1405,25 @@ internal static class QueryPlanBuilder
                     searchMeta = fieldMeta;
                 }
 
-                var searchQueryOptions = IndexSearcher.SearchQueryOptions.PhraseQueryWithWildcardAdjustments;
+                // Determine SearchQueryOptions based on index version
+                var indexDef = builderParams?.Index?.Definition ?? parameters?.Index?.Definition;
+                IndexSearcher.SearchQueryOptions searchQueryOptions;
+                if (indexDef != null && IndexDefinitionBaseServerSide.IndexVersion.IsCoraxSearchWildcardAdjustmentSupported(indexDef.Version))
+                    searchQueryOptions = IndexSearcher.SearchQueryOptions.PhraseQueryWithWildcardAdjustments;
+                else if (indexDef != null && indexDef.Version >= IndexDefinitionBaseServerSide.IndexVersion.PhraseQuerySupportInCoraxIndexes)
+                    searchQueryOptions = IndexSearcher.SearchQueryOptions.PhraseQuery;
+                else
+                    searchQueryOptions = IndexSearcher.SearchQueryOptions.Legacy;
+
+                // For wildcard queries with WildcardAdjustments, use Legacy mode
+                // which handles wildcard analyzer replacement internally
+                if (searchQueryOptions == IndexSearcher.SearchQueryOptions.PhraseQueryWithWildcardAdjustments
+                    && clause.TermValue != null && clause.TermValue.Length >= 1
+                    && (clause.TermValue[0] == '*' || (clause.TermValue.Length >= 2 && clause.TermValue[^1] == '*')))
+                {
+                    searchQueryOptions = IndexSearcher.SearchQueryOptions.Legacy;
+                }
+
                 return indexSearcher.SearchQuery(searchMeta,
                     new[] { clause.TermValue },
                     Constants.Search.Operator.Or,
