@@ -34,7 +34,10 @@ public class SortingMatchDescendingHighByteTest : StorageTest
     [RavenFact(RavenTestCategory.Corax)]
     public void DescendingStringSortWithHighByteValues()
     {
-        // Same data as StreamingOptimization_DataTests.CreateDatabase
+        // Use distinct high-Unicode strings that are lexicographically different.
+        // Bytes {255,255,255}, {255,255,254}, {255,255,253} all decode to the SAME
+        // UTF-8 string (three U+FFFD replacement characters), so their sort order is
+        // undefined. Instead, use valid high-codepoint characters that are distinct.
         var entries = new (string Id, string Name)[]
         {
             ("entry/1", "aaaaa"),
@@ -48,9 +51,9 @@ public class SortingMatchDescendingHighByteTest : StorageTest
             ("entry/9", "afaaa"),
             ("entry/10", "afaab"),
             ("entry/11", "agaaa"),
-            ("entry/12", Encoding.UTF8.GetString(new byte[] { 255, 255, 255 })),
-            ("entry/13", Encoding.UTF8.GetString(new byte[] { 255, 255, 254 })),
-            ("entry/14", Encoding.UTF8.GetString(new byte[] { 255, 255, 253 })),
+            ("entry/12", "\u00FF\u00FF\u00FF"), // ÿÿÿ - highest Latin-1 char
+            ("entry/13", "\u00FF\u00FF\u00FE"), // ÿÿþ
+            ("entry/14", "\u00FF\u00FF\u00FD"), // ÿÿý
             ("entry/15", "bbbbbbbbb"),
         };
 
@@ -98,9 +101,9 @@ public class SortingMatchDescendingHighByteTest : StorageTest
             ("entry/1", "aaaaa"),
             ("entry/2", "aaaab"),
             ("entry/3", "abaaa"),
-            ("entry/12", Encoding.UTF8.GetString(new byte[] { 255, 255, 255 })),
-            ("entry/13", Encoding.UTF8.GetString(new byte[] { 255, 255, 254 })),
-            ("entry/14", Encoding.UTF8.GetString(new byte[] { 255, 255, 253 })),
+            ("entry/12", "\u00FF\u00FF\u00FF"), // ÿÿÿ
+            ("entry/13", "\u00FF\u00FF\u00FE"), // ÿÿþ
+            ("entry/14", "\u00FF\u00FF\u00FD"), // ÿÿý
             ("entry/15", "bbbbbbbbb"),
         };
 
