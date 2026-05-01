@@ -508,6 +508,46 @@ internal static class QueryPlanBuilder
         });
     }
 
+    /// <summary>Split search term value respecting quoted phrases.
+    /// "nonexists \"second third\" nonexsts" → ["nonexists", "second third", "nonexsts"]
+    /// Same logic as old CoraxQueryBuilder.GetValues().</summary>
+    private static IEnumerable<string> SplitSearchTerms(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            yield return value;
+            yield break;
+        }
+
+        bool quoted = false;
+        int lastStart = 0;
+
+        for (int i = 0; i < value.Length; i++)
+        {
+            char c = value[i];
+            if (c == '"')
+            {
+                if (i > 0 && value[i - 1] == '\\')
+                    continue; // escaped quote
+
+                if (lastStart != i)
+                    yield return value.Substring(lastStart, i - lastStart);
+
+                quoted = !quoted;
+                lastStart = i + 1;
+            }
+            else if ((c == ' ' || c == '\t') && !quoted)
+            {
+                if (lastStart != i)
+                    yield return value.Substring(lastStart, i - lastStart);
+                lastStart = i + 1;
+            }
+        }
+
+        if (value.Length - lastStart > 0)
+            yield return value.Substring(lastStart, value.Length - lastStart);
+    }
+
     /// <summary>Extract field name from a FieldExpression.
     /// Uses the full compound path (Date.Year stays Date.Year).
     /// When metadata is available, uses GetIndexFieldName for proper alias resolution.</summary>
@@ -1424,8 +1464,11 @@ internal static class QueryPlanBuilder
                     searchQueryOptions = IndexSearcher.SearchQueryOptions.Legacy;
                 }
 
+                // Split search value respecting quoted phrases (same as old CoraxQueryBuilder.GetValues)
+                var searchValues = SplitSearchTerms(clause.TermValue);
+
                 return indexSearcher.SearchQuery(searchMeta,
-                    new[] { clause.TermValue },
+                    searchValues,
                     Constants.Search.Operator.Or,
                     searchQueryOptions);
             }
