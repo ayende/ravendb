@@ -370,10 +370,15 @@ internal static class QueryPlanBuilder
                 break;
 
             case MethodType.Exact:
-                // exact(expr) → recurse with exact flag
+            {
+                // exact(expr) → recurse, then mark all new clauses as exact
+                int beforeCount = clauses.Count;
                 if (method.Arguments.Count > 0)
                     ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
+                for (int c = beforeCount; c < clauses.Count; c++)
+                    clauses[c].IsExact = true;
                 break;
+            }
 
             case MethodType.Boost:
                 // boost(expr, factor) → recurse, mark as boosted
@@ -1136,6 +1141,7 @@ internal static class QueryPlanBuilder
         public long Cardinality = -1;
         public int OriginalIndex;
         public bool IsNegated;
+        public bool IsExact;
     }
 
     /// <summary>
@@ -1221,7 +1227,7 @@ internal static class QueryPlanBuilder
             && clause.ClauseType != ClauseType.Search;
         if (useBuilderParams)
         {
-            fieldMeta = QueryBuilderHelper.GetFieldMetadata(in builderParams, clause.FieldName);
+            fieldMeta = QueryBuilderHelper.GetFieldMetadata(in builderParams, clause.FieldName, exact: clause.IsExact);
         }
         else
         {
