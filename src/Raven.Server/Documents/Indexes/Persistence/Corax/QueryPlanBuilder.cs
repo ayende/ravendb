@@ -794,6 +794,14 @@ internal static class QueryPlanBuilder
                 scanPredicateInfos = scanPreds.ToArray();
         }
 
+        // Compute type signature from scan predicates
+        int typeSignature = 0;
+        if (scanPredicateInfos != null)
+        {
+            for (int i = 0; i < Math.Min(scanPredicateInfos.Length, 16); i++)
+                typeSignature |= ((int)scanPredicateInfos[i].ValueType & 0x3) << (i * 2);
+        }
+
         var plan = new QueryPlan
         {
             Ops = ops.ToArray(),
@@ -802,7 +810,8 @@ internal static class QueryPlanBuilder
             OperandCount = clauses.Count,
             Clauses = clauses.ToArray(),
             AllNegated = allNegated,
-            ScanPredicateInfos = scanPredicateInfos
+            ScanPredicateInfos = scanPredicateInfos,
+            TypeSignature = typeSignature
         };
 
         // Generate EXPLAIN source

@@ -103,14 +103,15 @@ public static partial class CoraxQueryBuilder
         var plan = QueryPlanBuilder.BuildPlan(planParams);
         string queryText = builderParameters.Query.Metadata.Query.QueryText;
         var planCache = builderParameters.IndexSearcher.PlanCache;
-        var compiledPlan = planCache.Get(queryText, plan.OperandOrdering);
+        var compiledPlan = planCache.Get(queryText, plan.OperandOrdering, plan.TypeSignature);
         if (compiledPlan == null)
         {
             compiledPlan = new global::Corax.Querying.Planning.CompiledPlan
             {
                 CompiledDelegate = global::Corax.Querying.Planning.QueryILEmitter.EmitDelegate(plan),
                 ExplainSource = plan.ExplainSource ?? global::Corax.Querying.Planning.QueryILEmitter.GenerateExplainSource(plan),
-                Ordering = plan.OperandOrdering
+                Ordering = plan.OperandOrdering,
+                TypeSignature = plan.TypeSignature
             };
             planCache.Add(queryText, compiledPlan);
         }

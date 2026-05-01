@@ -665,7 +665,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
                             string queryText = query.Metadata.Query.QueryText;
                             var planCache = IndexSearcher.PlanCache;
-                            var compiledPlan = planCache.Get(queryText, plan.OperandOrdering);
+                            var compiledPlan = planCache.Get(queryText, plan.OperandOrdering, plan.TypeSignature);
                             if (compiledPlan == null)
                             {
                                 compiledPlan = new global::Corax.Querying.Planning.CompiledPlan
@@ -1373,7 +1373,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 var plan = QueryPlanBuilder.BuildPlan(planParams);
                 string queryText = query.Metadata.Query.QueryText;
                 var planCache = IndexSearcher.PlanCache;
-                var compiledPlan = planCache.Get(queryText, plan.OperandOrdering);
+                var compiledPlan = planCache.Get(queryText, plan.OperandOrdering, plan.TypeSignature);
                 if (compiledPlan == null)
                 {
                     compiledPlan = new global::Corax.Querying.Planning.CompiledPlan

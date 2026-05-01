@@ -15,14 +15,14 @@ public class PlanCache
 
     private readonly ConcurrentDictionary<string, CompiledPlan[]> _cache = new();
 
-    public CompiledPlan Get(string queryText, int ordering)
+    public CompiledPlan Get(string queryText, int ordering, int typeSignature = 0)
     {
         if (!_cache.TryGetValue(queryText, out var plans))
             return null;
 
         for (int i = 0; i < plans.Length; i++)
         {
-            if (plans[i].Ordering == ordering)
+            if (plans[i].Ordering == ordering && plans[i].TypeSignature == typeSignature)
                 return plans[i];
         }
 
