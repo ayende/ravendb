@@ -24,6 +24,17 @@ public static class QueryILEmitter
     private static readonly FieldInfo s_ctxDirectSources = typeof(QueryScanContext).GetField(nameof(QueryScanContext.DirectSources))!;
     private static readonly FieldInfo s_ctxSearcher = typeof(QueryScanContext).GetField(nameof(QueryScanContext.Searcher))!;
     private static readonly FieldInfo s_ctxToken = typeof(QueryScanContext).GetField(nameof(QueryScanContext.Token))!;
+    private static readonly FieldInfo s_ctxTimings = typeof(QueryScanContext).GetField(nameof(QueryScanContext.Timings))!;
+    private static readonly FieldInfo s_ctxResultCounts = typeof(QueryScanContext).GetField(nameof(QueryScanContext.ResultCounts))!;
+    private static readonly FieldInfo s_ctxEntryScanTakenAtOp = typeof(QueryScanContext).GetField(nameof(QueryScanContext.EntryScanTakenAtOp))!;
+
+    // Timing helpers
+    private static readonly MethodInfo s_getTimestamp =
+        typeof(System.Diagnostics.Stopwatch).GetMethod(nameof(System.Diagnostics.Stopwatch.GetTimestamp))!;
+    private static readonly MethodInfo s_recordTiming =
+        typeof(EntryScanHelper).GetMethod(nameof(EntryScanHelper.RecordTiming))!;
+    private static readonly MethodInfo s_recordResultCount =
+        typeof(EntryScanHelper).GetMethod(nameof(EntryScanHelper.RecordResultCount))!;
 
     // Span<RoaringBitmap> indexer — returns ref RoaringBitmap
     private static readonly MethodInfo s_bitmapSpanIndexer =
@@ -140,10 +151,12 @@ public static class QueryILEmitter
         // Locals
         var bufferLocal = il.DeclareLocal(typeof(Span<long>));    // 0: Fill buffer
         var readLocal = il.DeclareLocal(typeof(int));              // 1: read count
+        var startTickLocal = il.DeclareLocal(typeof(long));        // 2: timing start tick
 
         var doneLabel = il.DefineLabel();
         var entryScanLabel = il.DefineLabel();
         bool hasEntryScan = false;
+        int entryScanOpIndex = -1;
 
         // stackalloc long[FillBufferSize]
         EmitLdcI4(il, FillBufferSize);
@@ -158,6 +171,9 @@ public static class QueryILEmitter
         for (int i = 0; i < ops.Length; i++)
         {
             ref PlanOp op = ref ops[i];
+
+            // Timing: record start tick before each op
+            EmitTimingStart(il, startTickLocal);
 
             switch (op.Kind)
             {
@@ -221,6 +237,7 @@ public static class QueryILEmitter
                 case PlanOpKind.CheckAndMaybeEntryScan:
                 {
                     hasEntryScan = true;
+                    entryScanOpIndex = i;
                     var skipCheck = il.DefineLabel();
 
                     // if (bitmap.Count >= 32000) skip
@@ -249,6 +266,9 @@ public static class QueryILEmitter
                     il.Emit(OpCodes.Br, doneLabel);
                     break;
             }
+
+            // Timing: record elapsed time and result count after each op
+            EmitTimingEnd(il, i, startTickLocal);
         }
 
         il.MarkLabel(doneLabel);
@@ -258,6 +278,10 @@ public static class QueryILEmitter
         if (hasEntryScan)
         {
             il.MarkLabel(entryScanLabel);
+            // Record which op triggered the entry scan
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Ldc_I4, entryScanOpIndex);
+            il.Emit(OpCodes.Stfld, s_ctxEntryScanTakenAtOp);
             EmitEntryScan(il, plan, bufferLocal, readLocal);
             il.Emit(OpCodes.Ret);
         }
@@ -727,6 +751,26 @@ public static class QueryILEmitter
         il.Emit(OpCodes.Ldind_Ref);
     }
 
+    /// <summary>Emit: startTick = Stopwatch.GetTimestamp()</summary>
+    private static void EmitTimingStart(ILGenerator il, LocalBuilder startTickLocal)
+    {
+        il.Emit(OpCodes.Call, s_getTimestamp);
+        il.Emit(OpCodes.Stloc, startTickLocal);
+    }
+
+    /// <summary>Emit: RecordTiming(ref ctx, opIndex, startTick); RecordResultCount(ref ctx, opIndex);</summary>
+    private static void EmitTimingEnd(ILGenerator il, int opIndex, LocalBuilder startTickLocal)
+    {
+        il.Emit(OpCodes.Ldarg_0);         // ref ctx
+        EmitLdcI4(il, opIndex);           // opIndex
+        il.Emit(OpCodes.Ldloc, startTickLocal); // startTick
+        il.Emit(OpCodes.Call, s_recordTiming);
+
+        il.Emit(OpCodes.Ldarg_0);
+        EmitLdcI4(il, opIndex);
+        il.Emit(OpCodes.Call, s_recordResultCount);
+    }
+
     private static void EmitCancellationCheck(ILGenerator il)
     {
         il.Emit(OpCodes.Ldarg_0);
@@ -822,5 +866,21 @@ public static class EntryScanHelper
     {
         // Entry scan is now emitted directly as IL in EmitEntryScan.
         // This helper exists only as a fallback when ScanPredicateInfos are not populated.
+    }
+
+    /// <summary>Record timing for a plan op. Called by emitted IL.</summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public static void RecordTiming(ref QueryScanContext ctx, int opIndex, long startTick)
+    {
+        if (opIndex < ctx.Timings.Length)
+            ctx.Timings[opIndex] = System.Diagnostics.Stopwatch.GetTimestamp() - startTick;
+    }
+
+    /// <summary>Record bitmap result count after a plan op. Called by emitted IL.</summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public static void RecordResultCount(ref QueryScanContext ctx, int opIndex)
+    {
+        if (opIndex < ctx.ResultCounts.Length)
+            ctx.ResultCounts[opIndex] = ctx.Bitmaps[0].Count;
     }
 }

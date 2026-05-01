@@ -21,6 +21,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
     private readonly ByteStringContext _allocator;
     private readonly IndexSearcher _searcher;
     private readonly int _bitmapCount;
+    private readonly int _opCount;
     private readonly long _limit;
     private readonly CancellationToken _token;
 
@@ -29,13 +30,19 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
     private bool _executed;
     private long _count;
 
-    public CompiledQueryMatch(CompiledPlan compiledPlan, int bitmapCount,
+    // Telemetry — populated during Execute if timings are requested
+    private long[] _timings;
+    private long[] _resultCounts;
+    private int _entryScanTakenAtOp;
+
+    public CompiledQueryMatch(CompiledPlan compiledPlan, int bitmapCount, int opCount,
         IQueryMatch[] resolvedMatches,
         long[] longParams, double[] doubleParams, Slice[] sliceParams, long[] fieldRootPages,
         IndexSearcher searcher, ByteStringContext allocator, long limit, CancellationToken token)
     {
         _compiledDelegate = compiledPlan.CompiledDelegate;
         _bitmapCount = bitmapCount;
+        _opCount = opCount;
         _resolvedMatches = resolvedMatches;
         _longParams = longParams;
         _doubleParams = doubleParams;
@@ -128,12 +135,27 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
 
     public QueryInspectionNode Inspect()
     {
-        return new QueryInspectionNode(
-            nameof(CompiledQueryMatch),
-            parameters: new Dictionary<string, string>
+        var parameters = new Dictionary<string, string>
+        {
+            ["Explain"] = _explainSource ?? "N/A"
+        };
+
+        if (_entryScanTakenAtOp >= 0)
+            parameters["EntryScanAt"] = _entryScanTakenAtOp.ToString();
+
+        if (_timings != null)
+        {
+            double tickFreq = System.Diagnostics.Stopwatch.Frequency / 1000.0; // ticks per ms
+            for (int i = 0; i < _timings.Length; i++)
             {
-                ["Explain"] = _explainSource ?? "N/A"
-            });
+                if (_timings[i] > 0)
+                    parameters[$"Op{i}_ms"] = (_timings[i] / tickFreq).ToString("F3");
+                if (i < _resultCounts.Length && _resultCounts[i] > 0)
+                    parameters[$"Op{i}_count"] = _resultCounts[i].ToString();
+            }
+        }
+
+        return new QueryInspectionNode(nameof(CompiledQueryMatch), parameters: parameters);
     }
 
     public SkipSortingResult AttemptToSkipSorting() => SkipSortingResult.ResultsNativelySorted;
@@ -151,6 +173,9 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
 
         try
         {
+            _timings = _opCount > 0 ? new long[_opCount] : Array.Empty<long>();
+            _resultCounts = _opCount > 0 ? new long[_opCount] : Array.Empty<long>();
+
             var ctx = new QueryScanContext
             {
                 Bitmaps = bitmaps.AsSpan(),
@@ -161,10 +186,15 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
                 LongParams = _longParams.AsSpan(),
                 DoubleParams = _doubleParams.AsSpan(),
                 SliceParams = _sliceParams.AsSpan(),
-                Token = _token
+                Token = _token,
+                Timings = _timings.AsSpan(),
+                ResultCounts = _resultCounts.AsSpan(),
+                EntryScanTakenAtOp = -1
             };
 
             _compiledDelegate(ref ctx);
+
+            _entryScanTakenAtOp = ctx.EntryScanTakenAtOp;
 
             // Take ownership of bitmaps[0] (may have been swapped during entry scan)
             _bitmap = bitmaps[0];
