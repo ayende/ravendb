@@ -90,6 +90,10 @@ public class QueryPlan
     public bool IsAllEntries;
     public bool AllNegated;
 
+    /// <summary>Packed parameter type signature from ScanPredicateInfos.
+    /// 2 bits per predicate (0=long, 1=double, 2=string). Used as part of cache key.</summary>
+    public int TypeSignature;
+
     /// <summary>Number of bitmaps needed for execution.
     /// [0] = main result, [1] = primary scratch, [2+] = nested OR/AND scratch.
     /// Statically determined from the query's nesting depth.</summary>
