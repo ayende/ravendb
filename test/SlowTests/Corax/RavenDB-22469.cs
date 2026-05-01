@@ -46,7 +46,9 @@ public class RavenDB_22469(ITestOutputHelper output) : StorageTest(output)
             var localResults = new List<long>();
             Span<long> ids = new long[16];
 
-            var match = indexSearcher.DeduplicationMatch(indexSearcher.StartWithQuery("Name", "_"), forceHashset: useHashset);
+            // DeduplicationMatch was removed — bitmap pipeline handles deduplication inherently.
+            // StartWithQuery returns MultiTermMatch which produces sorted, deduplicated entries.
+            var match = indexSearcher.StartWithQuery("Name", "_");
 
             while (match.Fill(ids) is var read and > 0)
             {
