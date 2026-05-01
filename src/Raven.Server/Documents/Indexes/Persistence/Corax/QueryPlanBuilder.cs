@@ -1248,7 +1248,11 @@ internal static class QueryPlanBuilder
             && clause.ClauseType != ClauseType.Search;
         if (useBuilderParams)
         {
-            fieldMeta = QueryBuilderHelper.GetFieldMetadata(in builderParams, clause.FieldName, exact: clause.IsExact);
+            string resolvedFieldName = clause.FieldName;
+            // For exact queries on auto-indexes, use the _exact field variant
+            if (clause.IsExact && builderParams.Metadata.IsDynamic)
+                resolvedFieldName = AutoIndexField.GetExactAutoIndexFieldName(resolvedFieldName);
+            fieldMeta = QueryBuilderHelper.GetFieldMetadata(in builderParams, resolvedFieldName, exact: clause.IsExact);
         }
         else
         {
