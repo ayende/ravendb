@@ -828,16 +828,36 @@ internal static class QueryPlanBuilder
                     matchIndex = 1;
                 }
             }
+            // Precheck: can all remaining clauses be converted to entry scan predicates?
+            // If any clause (In, AllIn, Spatial, Vector, Search, etc.) can't be scanned,
+            // we must not emit CheckAndMaybeEntryScan — entry scan would skip them entirely.
+            bool allScanEligible = true;
+            {
+                int dummyL = 0, dummyD = 0, dummyS = 0;
+                for (int j = startIndex; j < clauses.Count; j++)
+                {
+                    if (BuildScanPredicateInfo(clauses[j], ref dummyL, ref dummyD, ref dummyS) == null)
+                    {
+                        allScanEligible = false;
+                        break;
+                    }
+                }
+            }
+
             for (int i = startIndex; i < clauses.Count; i++)
             {
-                // Goto check before each AND step
-                ops.Add(new PlanOp
+                // Goto check before each AND step — only if all remaining clauses
+                // can be handled by entry scan predicates
+                if (allScanEligible)
                 {
-                    Kind = PlanOpKind.CheckAndMaybeEntryScan,
-                    ParamIndex = matchIndex,
-                    GotoLabelIndex = entryScanPredicates.Count
-                });
-                entryScanPredicates.Add(Array.Empty<MultiUnaryItem>());
+                    ops.Add(new PlanOp
+                    {
+                        Kind = PlanOpKind.CheckAndMaybeEntryScan,
+                        ParamIndex = matchIndex,
+                        GotoLabelIndex = entryScanPredicates.Count
+                    });
+                    entryScanPredicates.Add(Array.Empty<MultiUnaryItem>());
+                }
 
                 if (clauses[i].ClauseType == ClauseType.OrGroup && clauses[i].OrSubClauses != null)
                 {
