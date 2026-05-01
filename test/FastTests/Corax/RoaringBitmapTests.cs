@@ -20,6 +20,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     {
         var result = a.Clone();
         result.AndWith(ref b);
+        result.PrepareForReading();
         return result;
     }
 
@@ -27,7 +28,8 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     {
         var result = a.Clone();
         var bClone = b.Clone();
-        result.OrWith(ref bClone);
+        result.LazyOrWith(ref bClone);
+        result.PrepareForReading();
         bClone.Dispose();
         return result;
     }
@@ -36,6 +38,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     {
         var result = a.Clone();
         result.AndNotWith(ref b);
+        result.PrepareForReading();
         return result;
     }
 
@@ -614,7 +617,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public unsafe void SimdAndMatchesScalar()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        int count = RoaringBitmap.BitmapContainerSizeInUlongs;
+        int count = RoaringBitmap.BitmapContainerSizeInUInt64;
 
         ctx.Allocate(RoaringBitmap.BitmapContainerSizeInBytes, out var aStorage);
         ctx.Allocate(RoaringBitmap.BitmapContainerSizeInBytes, out var bStorage);
@@ -655,7 +658,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public unsafe void SimdOrMatchesScalar()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        int count = RoaringBitmap.BitmapContainerSizeInUlongs;
+        int count = RoaringBitmap.BitmapContainerSizeInUInt64;
 
         ctx.Allocate(RoaringBitmap.BitmapContainerSizeInBytes, out var aStorage);
         ctx.Allocate(RoaringBitmap.BitmapContainerSizeInBytes, out var bStorage);
@@ -696,7 +699,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public unsafe void SimdAndNotMatchesScalar()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        int count = RoaringBitmap.BitmapContainerSizeInUlongs;
+        int count = RoaringBitmap.BitmapContainerSizeInUInt64;
 
         ctx.Allocate(RoaringBitmap.BitmapContainerSizeInBytes, out var aStorage);
         ctx.Allocate(RoaringBitmap.BitmapContainerSizeInBytes, out var bStorage);
@@ -957,7 +960,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     }
 
     [RavenFact(RavenTestCategory.Corax)]
-    public void LazyOrWith_ProducesSameResultAsOrWith()
+    public void LazyOrWith_ComputesCorrectCardinalityAfterRepair()
     {
         using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
         var a = new RoaringBitmap(bsc);
@@ -967,26 +970,17 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         a.PrepareForReading();
         b.PrepareForReading();
 
-        // Lazy OR
-        var lazyResult = a.Clone();
+        var result = a.Clone();
         var bClone = b.Clone();
-        lazyResult.LazyOrWith(ref bClone);
-        lazyResult.RepairAfterLazy();
+        result.LazyOrWith(ref bClone);
+        result.RepairAfterLazy();
 
-        // Regular OR
-        var regularResult = a.Clone();
-        var bClone2 = b.Clone();
-        regularResult.OrWith(ref bClone2);
+        Assert.Equal(20_000, result.Count);
 
-        Assert.Equal(regularResult.Count, lazyResult.Count);
-        Assert.Equal(20_000, lazyResult.Count);
-
-        lazyResult.Dispose();
-        regularResult.Dispose();
+        result.Dispose();
         a.Dispose();
         b.Dispose();
         bClone.Dispose();
-        bClone2.Dispose();
     }
 
     #endregion

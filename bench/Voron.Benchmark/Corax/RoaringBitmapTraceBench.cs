@@ -73,7 +73,8 @@ public static class RoaringBitmapTraceBench
         var aCopy = new RoaringBitmap(ctx);
         for (int i = 0; i < valuesA.Length; i++) aCopy.Add(valuesA[i]);
         aCopy.PrepareForReading();
-        aCopy.OrWith(ref b);
+        aCopy.LazyOrWith(ref b);
+        aCopy.RepairAfterLazy();
 
         // ANDNOT (in-place)
         var aCopy2 = new RoaringBitmap(ctx);
