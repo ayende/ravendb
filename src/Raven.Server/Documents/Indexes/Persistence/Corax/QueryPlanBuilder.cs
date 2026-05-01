@@ -1229,6 +1229,9 @@ internal static class QueryPlanBuilder
                 if (long.TryParse(clause.TermValue, out long gteLong))
                     return indexSearcher.BetweenQuery(fieldMeta, gteLong, long.MaxValue,
                         UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual);
+                if (double.TryParse(clause.TermValue, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out double gteDouble))
+                    return indexSearcher.GreatThanOrEqualsQuery(fieldMeta, gteDouble);
                 return indexSearcher.BetweenQuery(fieldMeta, clause.TermValue, (string)null,
                     UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual);
 
