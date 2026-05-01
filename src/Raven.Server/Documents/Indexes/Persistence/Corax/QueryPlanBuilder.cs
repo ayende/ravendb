@@ -341,22 +341,22 @@ internal static class QueryPlanBuilder
     private static void ParseMethod(MethodExpression method, IndexSearcher indexSearcher,
         List<ClauseInfo> clauses, BlittableJsonReaderObject queryParameters, ref bool hasMixedAndOr)
     {
-        string methodName = method.Name.Value;
-        switch (methodName)
+        var methodType = QueryMethod.GetMethodType(method.Name.Value);
+        switch (methodType)
         {
-            case "search":
+            case MethodType.Search:
                 ParseSearchMethod(method, clauses, queryParameters);
                 break;
 
-            case "startsWith":
+            case MethodType.StartsWith:
                 ParsePrefixMethod(method, clauses, queryParameters, ClauseType.StartsWith);
                 break;
 
-            case "endsWith":
+            case MethodType.EndsWith:
                 ParsePrefixMethod(method, clauses, queryParameters, ClauseType.EndsWith);
                 break;
 
-            case "exists":
+            case MethodType.Exists:
                 if (method.Arguments.Count > 0 && method.Arguments[0] is FieldExpression existsField)
                 {
                     clauses.Add(new ClauseInfo
@@ -368,19 +368,19 @@ internal static class QueryPlanBuilder
                 }
                 break;
 
-            case "exact":
+            case MethodType.Exact:
                 // exact(expr) → recurse with exact flag
                 if (method.Arguments.Count > 0)
                     ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
                 break;
 
-            case "boost":
+            case MethodType.Boost:
                 // boost(expr, factor) → recurse, mark as boosted
                 if (method.Arguments.Count > 0)
                     ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, ref hasMixedAndOr);
                 break;
 
-            case "regex":
+            case MethodType.Regex:
                 if (method.Arguments.Count >= 2 && method.Arguments[0] is FieldExpression regexField)
                 {
                     clauses.Add(new ClauseInfo
@@ -393,10 +393,10 @@ internal static class QueryPlanBuilder
                 }
                 break;
 
-            case "spatial.within":
-            case "spatial.contains":
-            case "spatial.disjoint":
-            case "spatial.intersects":
+            case MethodType.Spatial_Within:
+            case MethodType.Spatial_Contains:
+            case MethodType.Spatial_Disjoint:
+            case MethodType.Spatial_Intersects:
                 // Spatial queries are resolved at execution time via the existing
                 // CoraxQueryBuilder.HandleSpatial infrastructure.
                 clauses.Add(new ClauseInfo
@@ -407,7 +407,7 @@ internal static class QueryPlanBuilder
                 });
                 break;
 
-            case "vector.search":
+            case MethodType.Vector_Search:
                 clauses.Add(new ClauseInfo
                 {
                     ClauseType = ClauseType.Vector,
@@ -416,13 +416,13 @@ internal static class QueryPlanBuilder
                 });
                 break;
 
-            case "moreLikeThis":
+            case MethodType.MoreLikeThis:
                 // MoreLikeThis is routed to reader.MoreLikeThis() at Index.cs level —
                 // it never reaches the query planner through normal execution.
                 throw new InvalidOperationException(
                     "moreLikeThis() should not reach the query planner — it has a separate execution path.");
 
-            case "when":
+            case MethodType.When:
             {
                 // when(condition, expr) — evaluate the constant condition at plan time.
                 // If false, produce no clause (empty result for this branch).
@@ -439,7 +439,7 @@ internal static class QueryPlanBuilder
 
             default:
                 throw new InvalidOperationException(
-                    $"Unexpected method '{methodName}' in WHERE clause.");
+                    $"Unexpected method '{method.Name.Value}' ({methodType}) in WHERE clause.");
         }
     }
 
