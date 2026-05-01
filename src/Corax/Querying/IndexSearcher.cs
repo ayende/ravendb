@@ -580,19 +580,6 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         }
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public IncludeNullMatch<TInner> IncludeNullMatch<TInner>(in FieldMetadata field, in TInner inner, bool forward, bool nullFirsts)
-        where TInner : IQueryMatch
-    {
-        return new IncludeNullMatch<TInner>(this, inner, field, forward, nullFirsts);
-    }
-    
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public IncludeNonExistingMatch<TInner> IncludeNonExistingMatch<TInner>(in FieldMetadata field, in TInner inner, bool forward, bool nullFirsts)
-        where TInner : IQueryMatch
-    {
-        return new IncludeNonExistingMatch<TInner>(this, inner, field, forward, nullFirsts);
-    }
 
     private void InitializeSpecialTermsMarkers()
     {
