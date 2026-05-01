@@ -163,7 +163,6 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
     private void Execute()
     {
         if (_executed) return;
-        _executed = true;
 
         // Allocate bitmap pool: [0] = main, [1..N] = scratch
         var bitmaps = new RoaringBitmap[_bitmapCount];
@@ -201,6 +200,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
             _bitmap.PrepareForReading();
             _count = _bitmap.Count;
             _iterator = _bitmap.GetIterator();
+            _executed = true; // Mark only after successful execution
         }
         finally
         {
