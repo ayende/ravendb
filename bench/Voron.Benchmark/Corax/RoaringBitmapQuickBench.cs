@@ -243,7 +243,7 @@ public static class RoaringBitmapQuickBench
         switch (op)
         {
             case "AND": a.AndWith(ref b); break;
-            case "OR": a.OrWith(ref b); break;
+            case "OR": a.LazyOrWith(ref b); a.RepairAfterLazy(); break;
             case "ANDNOT": a.AndNotWith(ref b); break;
             default: throw new ArgumentException(op);
         }
@@ -268,7 +268,7 @@ public static class RoaringBitmapQuickBench
         switch (op)
         {
             case "AND": a.AndWith(ref b); break;
-            case "OR": a.OrWith(ref b); break;
+            case "OR": a.LazyOrWith(ref b); a.RepairAfterLazy(); break;
             case "ANDNOT": a.AndNotWith(ref b); break;
         }
         GC.KeepAlive(a.Count);

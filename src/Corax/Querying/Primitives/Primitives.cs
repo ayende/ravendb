@@ -31,13 +31,19 @@ public static class QueryPrimitives
     {
         Span<long> buffer = stackalloc long[FillBufferSize];
 
+        // Track running total locally — AddRange leaves bitmap-container cardinalities
+        // dirty (LazyCardinality), so bitmap.Count would be unreliable mid-loop without
+        // an explicit RepairAfterLazy call. Posting lists have no duplicates within a
+        // single iterator, so running-total matches what bitmap.Count would report.
+        long total = 0;
         while (iterator.Fill(buffer, out int read) && read > 0)
         {
             // Posting list Fill may encode frequencies in the high bits — decode
             EntryIdEncodings.DecodeAndDiscardFrequency(buffer, read);
             bitmap.AddRange(buffer.Slice(0, read));
+            total += read;
 
-            if (bitmap.Count >= limit)
+            if (total >= limit)
                 break;
         }
     }

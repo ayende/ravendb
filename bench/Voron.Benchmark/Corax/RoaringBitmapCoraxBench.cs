@@ -170,7 +170,7 @@ public static class RoaringBitmapCoraxBench
         switch (op)
         {
             case "AND": a.AndWith(ref b); break;
-            case "OR": a.OrWith(ref b); break;
+            case "OR": a.LazyOrWith(ref b); a.RepairAfterLazy(); break;
             case "ANDNOT": a.AndNotWith(ref b); break;
         }
         GC.KeepAlive(a.Count);
@@ -231,7 +231,8 @@ public static class RoaringBitmapCoraxBench
         var sw = Stopwatch.StartNew();
         var result = bitmaps[0]; // accumulate into first
         for (int t = 1; t < bitmaps.Length; t++)
-            result.OrWith(ref bitmaps[t]);
+            result.LazyOrWith(ref bitmaps[t]);
+        result.RepairAfterLazy();
         GC.KeepAlive(result.Count);
         sw.Stop();
 
@@ -270,7 +271,8 @@ public static class RoaringBitmapCoraxBench
         for (int i = 0; i < postingB.Length; i++) b.Add(postingB[i]);
         a.PrepareForReading();
         b.PrepareForReading();
-        a.OrWith(ref b);
+        a.LazyOrWith(ref b);
+        a.RepairAfterLazy();
 
         var sw = Stopwatch.StartNew();
         var iter = a.GetIterator();

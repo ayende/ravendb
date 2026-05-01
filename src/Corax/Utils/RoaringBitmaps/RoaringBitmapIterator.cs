@@ -13,7 +13,7 @@ namespace Corax.Utils.RoaringBitmaps;
 /// Forward iterator for RoaringBitmap supporting Fill(Span&lt;long&gt;) streaming.
 /// On construction, builds a sorted array of packed (key, slot) ulongs for deterministic traversal.
 /// Each ulong packs: key in upper 32 bits, slot in lower 32 bits.
-/// _positionInContainer is shared: Array uses it as array index, Range as current value,
+/// _positionInContainer is shared: Array uses it as array index, Range as offset from RangeStart,
 /// Bitmap as the current ulong word index (0..1023). _bitmapCurrentWord stores remaining
 /// bits in the current word for bitmap iteration only.
 /// </summary>
@@ -23,7 +23,7 @@ public unsafe struct RoaringBitmapIterator : IDisposable
     private ByteString _packedEntries; // array of packed (key << 32) | slot
     private int _entryCount;
     private int _containerIndex; // index into _packedEntries
-    /// <summary>Array: index into sorted array. Range: current value. Bitmap: current ulong index (0..1023).</summary>
+    /// <summary>Array: index into sorted array. Range: offset from RangeStart. Bitmap: current ulong index (0..1023).</summary>
     private int _positionInContainer;
     private ulong _bitmapCurrentWord; // Bitmap only: remaining bits in current word
 
@@ -36,7 +36,7 @@ public unsafe struct RoaringBitmapIterator : IDisposable
 
         // Build sorted array of packed (key, slot) ulongs from active containers
         int containerCount = bitmap.ContainerCount;
-        if (containerCount == 0)
+        if (containerCount is 0)
         {
             _packedEntries = default;
             _entryCount = 0;
@@ -106,7 +106,7 @@ public unsafe struct RoaringBitmapIterator : IDisposable
             }
 
             bool containerCompleted = type == ContainerType.Bitmap
-                ? _positionInContainer >= RoaringBitmap.BitmapContainerSizeInUlongs && _bitmapCurrentWord == 0
+                ? _positionInContainer >= RoaringBitmap.BitmapContainerSizeInUInt64 && _bitmapCurrentWord == 0
                 : _positionInContainer >= entry.Cardinality;
 
             if (containerCompleted)
@@ -161,9 +161,9 @@ public unsafe struct RoaringBitmapIterator : IDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int FillFromBitmap(ref ContainerEntry entry, long baseValue, Span<long> buffer, int written)
     {
-        var bitmap = entry.BitmapData;
+        var bitmap = entry.BitmapPtr;
 
-        while (written < buffer.Length && _positionInContainer < RoaringBitmap.BitmapContainerSizeInUlongs)
+        while (written < buffer.Length && _positionInContainer < RoaringBitmap.BitmapContainerSizeInUInt64)
         {
             if (_bitmapCurrentWord == 0)
             {
@@ -192,8 +192,8 @@ public unsafe struct RoaringBitmapIterator : IDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int FillFromRange(ref ContainerEntry entry, long baseValue, Span<long> buffer, int written)
     {
-        int rangeEnd = entry.Cardinality;
-        int remaining = rangeEnd - _positionInContainer;
+        int rangeStart = entry.RangeStart;
+        int remaining = entry.Cardinality - _positionInContainer;
         int space = buffer.Length - written;
         int toCopy = Math.Min(remaining, space);
 
@@ -208,10 +208,10 @@ public unsafe struct RoaringBitmapIterator : IDisposable
             if (AdvInstructionSet.IsAcceleratedVector256 && toCopy >= 4)
             {
                 Vector256<long> vCurrent = Vector256.Create(
-                    baseValue + _positionInContainer,
-                    baseValue + _positionInContainer + 1,
-                    baseValue + _positionInContainer + 2,
-                    baseValue + _positionInContainer + 3);
+                    baseValue + rangeStart + _positionInContainer,
+                    baseValue + rangeStart + _positionInContainer + 1,
+                    baseValue + rangeStart + _positionInContainer + 2,
+                    baseValue + rangeStart + _positionInContainer + 3);
                 Vector256<long> vStep = Vector256.Create(4L);
 
                 for (; i + 4 <= toCopy; i += 4)
@@ -225,7 +225,7 @@ public unsafe struct RoaringBitmapIterator : IDisposable
             // Scalar remainder (or all, if no SIMD)
             for (; i < toCopy; i++)
             {
-                dst[i] = baseValue | (uint)_positionInContainer;
+                dst[i] = baseValue | (uint)(rangeStart + _positionInContainer);
                 _positionInContainer++;
             }
         }

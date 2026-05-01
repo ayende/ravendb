@@ -360,7 +360,8 @@ public class RoaringBitmapSetOpsBenchmark
         var clone = new RoaringBitmap(ctx);
         for (int i = 0; i < _valuesA.Length; i++) clone.Add(_valuesA[i]);
         clone.PrepareForReading();
-        clone.OrWith(ref _roaringB);
+        clone.LazyOrWith(ref _roaringB);
+        clone.RepairAfterLazy();
         long c = clone.Count;
         clone.Dispose();
         return c;
