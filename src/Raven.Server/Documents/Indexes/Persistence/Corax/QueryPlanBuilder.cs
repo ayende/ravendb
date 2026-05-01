@@ -1361,9 +1361,21 @@ internal static class QueryPlanBuilder
 
             case ClauseType.Search:
             {
-                // Search needs proper field metadata with analyzer
+                // Search needs proper field metadata with search analyzer
                 FieldMetadata searchMeta;
-                if (parameters?.Index != null && parameters.IndexFieldsMapping != null)
+                if (builderParams != null)
+                {
+                    string searchFieldName = clause.FieldName;
+                    if (builderParams.Metadata.IsDynamic)
+                        searchFieldName = AutoIndexField.GetSearchAutoIndexFieldName(searchFieldName);
+
+                    searchMeta = QueryBuilderHelper.GetFieldMetadata(
+                        builderParams.Allocator, searchFieldName, builderParams.Index,
+                        builderParams.IndexFieldsMapping, builderParams.FieldsToFetch,
+                        builderParams.HasDynamics, builderParams.DynamicFields,
+                        handleSearch: true, hasBoost: builderParams.HasBoost);
+                }
+                else if (parameters?.Index != null && parameters.IndexFieldsMapping != null)
                 {
                     string searchFieldName = clause.FieldName;
                     if (parameters.Metadata.IsDynamic)
