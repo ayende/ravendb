@@ -318,4 +318,30 @@ public static class QueryPrimitives
             iterator.Dispose();
         }
     }
+
+    /// <summary>
+    /// Filter bitmap using a match. If the match implements IBitmapFilterable and
+    /// the bitmap is small, lets the match scan entries directly. Otherwise falls
+    /// back to fill posting list + AND.
+    /// Called by emitted IL for complex matchers (vector, spatial) after entry scan.
+    /// </summary>
+    [SkipLocalsInit]
+    public static void FilterBitmapWithMatch(Matches.Meta.IQueryMatch match, ref Planning.QueryScanContext ctx)
+    {
+        if (match is Matches.Meta.IBitmapFilterable filterable)
+        {
+            filterable.FilterBitmap(ref ctx);
+            return;
+        }
+
+        // Default: fill posting list into temp bitmap, AND with main
+        ref var bitmap = ref ctx.Bitmaps[0];
+        ref var tempBitmap = ref ctx.Bitmaps[1];
+        tempBitmap.Clear();
+        Span<long> buffer = stackalloc long[FillBufferSize];
+        int read;
+        while ((read = match.Fill(buffer)) > 0)
+            tempBitmap.AddRange(buffer.Slice(0, read));
+        bitmap.AndWith(ref tempBitmap);
+    }
 }
