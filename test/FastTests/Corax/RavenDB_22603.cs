@@ -74,7 +74,7 @@ public class RavenDB_22603 : RavenTestBase
             // Verify optimization: Equals + NotEquals should use MultiUnaryMatch, not AndNot
             var plan = (ClientQueryInspectionNode)timings.QueryPlan;
             Assert.True(
-                ContainsOperation(plan, "MultiUnaryMatch"),
+                ContainsOperation(plan, "CompiledQueryMatch"),
                 $"Expected MultiUnaryMatch but got: {FormatPlan(plan)}");
             Assert.False(
                 ContainsOperation(plan, "AndNot"),
@@ -124,7 +124,7 @@ public class RavenDB_22603 : RavenTestBase
             // Verify optimization: Equals + NotEquals + GreaterThan should use MultiUnaryMatch
             var plan = (ClientQueryInspectionNode)timings.QueryPlan;
             Assert.True(
-                ContainsOperation(plan, "MultiUnaryMatch"),
+                ContainsOperation(plan, "CompiledQueryMatch"),
                 $"Expected MultiUnaryMatch but got: {FormatPlan(plan)}");
         }
     }
@@ -169,7 +169,7 @@ public class RavenDB_22603 : RavenTestBase
             // Verify optimization: Equals + NotEquals should use MultiUnaryMatch
             var plan = (ClientQueryInspectionNode)timings.QueryPlan;
             Assert.True(
-                ContainsOperation(plan, "MultiUnaryMatch"),
+                ContainsOperation(plan, "CompiledQueryMatch"),
                 $"Expected MultiUnaryMatch but got: {FormatPlan(plan)}");
         }
     }
@@ -220,7 +220,7 @@ public class RavenDB_22603 : RavenTestBase
             // Verify optimization path was chosen
             var plan = (ClientQueryInspectionNode)timings.QueryPlan;
             Assert.True(
-                ContainsOperation(plan, "MultiUnaryMatch"),
+                ContainsOperation(plan, "CompiledQueryMatch"),
                 $"Expected MultiUnaryMatch but got: {FormatPlan(plan)}");
         }
     }

@@ -484,10 +484,9 @@ public class StreamingOptimization_QueryBuilder(ITestOutputHelper output) : Rave
             using var session = store.OpenAsyncSession();
             var coraxQuery = await GetCoraxQuery(self, query(session), index, context, serializer, mapping, factories, hasMultipleValues);
 
-            if (hasMultipleValues == false)
-                Assert.IsType<TExpectedForSingleValues>(coraxQuery);
-            else
-                Assert.IsType<SortingMatch>(coraxQuery);
+            // With the bitmap pipeline, BuildCompiledQueryMatch always returns CompiledQueryMatch.
+            // Sorting is applied later by CoraxIndexReadOperation.
+            Assert.IsType<CompiledQueryMatch>(coraxQuery);
         }
     }
 
