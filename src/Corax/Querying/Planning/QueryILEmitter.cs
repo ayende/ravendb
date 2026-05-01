@@ -605,7 +605,41 @@ public static class QueryILEmitter
         il.Emit(OpCodes.Call, s_spanSliceIndexer);    // ref Slice
         il.Emit(OpCodes.Call, s_sliceAsReadOnlySpan); // ReadOnlySpan<byte>
 
-        if (pred.CompareOp == ScanCompareOp.Equal)
+        if (pred.CompareOp == ScanCompareOp.Between)
+        {
+            // Between: decoded >= low AND decoded <= high
+            // Stack has: decoded, low (from the default load above)
+            // Need to do two comparisons
+            var betweenFail = il.DefineLabel();
+            var betweenDone = il.DefineLabel();
+
+            // First: decoded.SequenceCompareTo(low) >= 0
+            il.Emit(OpCodes.Call, s_sequenceCompareTo);
+            il.Emit(OpCodes.Ldc_I4_0);
+            il.Emit(OpCodes.Blt, betweenFail);
+
+            // Second: decoded.SequenceCompareTo(high) <= 0
+            // Re-load decoded
+            il.Emit(OpCodes.Ldloca, readerLocal);
+            il.Emit(OpCodes.Ldfld, s_readerCurrent);
+            il.Emit(OpCodes.Callvirt, s_compactKeyDecoded);
+            // Load high
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Ldflda, s_ctxSliceParams);
+            EmitLdcI4(il, pred.ParamIndex2);
+            il.Emit(OpCodes.Call, s_spanSliceIndexer);
+            il.Emit(OpCodes.Call, s_sliceAsReadOnlySpan);
+            il.Emit(OpCodes.Call, s_sequenceCompareTo);
+            il.Emit(OpCodes.Ldc_I4_0);
+            il.Emit(OpCodes.Bgt, betweenFail);
+
+            il.Emit(OpCodes.Ldc_I4_1);
+            il.Emit(OpCodes.Br, betweenDone);
+            il.MarkLabel(betweenFail);
+            il.Emit(OpCodes.Ldc_I4_0);
+            il.MarkLabel(betweenDone);
+        }
+        else if (pred.CompareOp == ScanCompareOp.Equal)
         {
             // SequenceEqual — returns bool directly
             il.Emit(OpCodes.Call, s_sequenceEqual);
