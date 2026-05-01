@@ -18,7 +18,6 @@
   <ItemGroup>
     <Compile Remove="Data\RavenDB_16328\MyAnalyzer.cs" />
     <Compile Remove="Data\RavenDB_14939\MyAnalyzer.cs" />
-    <Compile Remove="Corax\RavenDB-22469.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Remove="Data\Attachments\RavenDB_24543\Northwind.zip" />
