@@ -680,10 +680,11 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                             var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, IndexSearcher, planParams, builderParameters);
                             QueryPlanBuilder.ExtractScanParameters(plan, IndexSearcher,
                                 out var longParams, out var doubleParams, out var sliceParams, out var fieldRootPages);
-                            queryMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
+                            var compiledMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
                                 compiledPlan, plan.BitmapCount, plan.Ops?.Length ?? 0, resolvedMatches,
                                 longParams, doubleParams, sliceParams, fieldRootPages,
                                 IndexSearcher, _allocator, take, token);
+                            queryMatch = compiledMatch;
 
                             orderByFields = CoraxQueryBuilder.GetSortMetadata(builderParameters, out bool hasEmptySorts);
                             if (orderByFields != null)
@@ -858,7 +859,9 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 // Since some primitives are lazily initialized, we must call Inspect after at least one Fill call.
                 queryTimings?.SetQueryPlan(queryMatch.Inspect());
 
-                // Dispose CompiledQueryMatch if it holds bitmap allocations
+                // Dispose CompiledQueryMatch if directly accessible.
+                // When SortingMatch wraps it, bitmap allocations are released
+                // when the transaction's ByteStringContext is disposed.
                 if (queryMatch is IDisposable disposableMatch)
                     disposableMatch.Dispose();
 

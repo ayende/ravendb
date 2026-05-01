@@ -12,6 +12,7 @@ namespace Corax.Querying.Planning;
 public class PlanCache
 {
     private const int MaxPlansPerQuery = 32;
+    private const int MaxDistinctQueries = 1024;
 
     private readonly ConcurrentDictionary<string, CompiledPlan[]> _cache = new();
 
@@ -31,11 +32,23 @@ public class PlanCache
 
     public void Add(string queryText, CompiledPlan plan)
     {
+        // Cap total distinct queries to prevent unbounded growth
+        if (_cache.Count > MaxDistinctQueries)
+            return; // Don't evict — just stop caching new queries
+
         _cache.AddOrUpdate(
             queryText,
             _ => new[] { plan },
             (_, existing) =>
             {
+                // Check for duplicate ordering+typeSignature before adding
+                for (int i = 0; i < existing.Length; i++)
+                {
+                    if (existing[i].Ordering == plan.Ordering
+                        && existing[i].TypeSignature == plan.TypeSignature)
+                        return existing; // Already cached
+                }
+
                 if (existing.Length >= MaxPlansPerQuery)
                     return existing;
 
