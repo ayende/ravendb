@@ -1137,6 +1137,89 @@ public class CompiledQueryTests : RavenTestBase
         }
     }
 
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public async Task EntryScanTriggers_SmallBitmapVsLargePostingList()
+    {
+        // Entry scan fires when: bitmap.Count < 32K && bitmap.Count * 64 < nextMatch.Count
+        // Create data where first operand produces ~10 entries and second has ~5000
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+        using var store = GetDocumentStore(options);
+
+        using (var session = store.OpenAsyncSession())
+        {
+            // 5000 docs, only 10 have Category='rare'
+            for (int i = 0; i < 5000; i++)
+            {
+                await session.StoreAsync(new TestDoc
+                {
+                    Name = $"doc-{i}",
+                    Category = i < 10 ? "rare" : $"common-{i % 50}",
+                    Status = i % 2 == 0 ? "active" : "inactive",
+                    Price = i
+                });
+            }
+            await session.SaveChangesAsync();
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        // Category='rare' produces ~10 entries, Status='active' has ~2500
+        // 10 * 64 = 640 < 2500 → entry scan should fire
+        using (var session = store.OpenAsyncSession())
+        {
+            var results = await session.Advanced.AsyncRawQuery<TestDoc>(
+                "from TestDocs where Category = 'rare' and Status = 'active'")
+                .ToListAsync();
+
+            Assert.Equal(5, results.Count); // indices 0,2,4,6,8
+            Assert.All(results, r =>
+            {
+                Assert.Equal("rare", r.Category);
+                Assert.Equal("active", r.Status);
+            });
+        }
+    }
+
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public async Task EntryScanWithNotEquals()
+    {
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+        using var store = GetDocumentStore(options);
+
+        using (var session = store.OpenAsyncSession())
+        {
+            for (int i = 0; i < 5000; i++)
+            {
+                await session.StoreAsync(new TestDoc
+                {
+                    Name = $"doc-{i}",
+                    Category = i < 10 ? "rare" : $"common-{i % 50}",
+                    Status = i % 2 == 0 ? "active" : "inactive",
+                    Price = i
+                });
+            }
+            await session.SaveChangesAsync();
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        // Category='rare' AND Status != 'active'
+        // 10 rare entries, 5 active, 5 inactive → expect 5 inactive
+        using (var session = store.OpenAsyncSession())
+        {
+            var results = await session.Advanced.AsyncRawQuery<TestDoc>(
+                "from TestDocs where Category = 'rare' and Status != 'active'")
+                .ToListAsync();
+
+            Assert.Equal(5, results.Count);
+            Assert.All(results, r =>
+            {
+                Assert.Equal("rare", r.Category);
+                Assert.Equal("inactive", r.Status);
+            });
+        }
+    }
+
     private class TestDoc
     {
         public string Id { get; set; }
