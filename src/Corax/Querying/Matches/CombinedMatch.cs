@@ -23,6 +23,7 @@ public struct CombinedMatch : IQueryMatch
     private int _leftRemainingCount;
     private long[] _rightRemaining;
     private int _rightRemainingCount;
+    private long[] _mergeBuffer;
     private const int BufferSize = 4096;
 
     private CombinedMatch(IQueryMatch left, IQueryMatch right, bool isOr)
@@ -34,6 +35,7 @@ public struct CombinedMatch : IQueryMatch
         _rightBuffer = new long[BufferSize];
         _leftRemaining = Array.Empty<long>();
         _rightRemaining = Array.Empty<long>();
+        _mergeBuffer = new long[BufferSize * 2];
     }
 
     public static CombinedMatch Or(IQueryMatch left, IQueryMatch right) => new(left, right, isOr: true);
@@ -120,14 +122,15 @@ public struct CombinedMatch : IQueryMatch
         // MergeHelper.Or does not respect destination length — merge into a temp buffer
         // large enough for the full merge, then copy what fits to output.
         int mergeSize = leftSpan.Length + rightSpan.Length;
-        var mergeBuffer = new long[mergeSize];
-        int merged = MergeHelper.Or(mergeBuffer.AsSpan(0, mergeSize), leftSpan, rightSpan);
+        if (_mergeBuffer.Length < mergeSize)
+            _mergeBuffer = new long[mergeSize];
+        int merged = MergeHelper.Or(_mergeBuffer.AsSpan(0, mergeSize), leftSpan, rightSpan);
 
         int copyCount = Math.Min(merged, output.Length);
-        mergeBuffer.AsSpan(0, copyCount).CopyTo(output);
+        _mergeBuffer.AsSpan(0, copyCount).CopyTo(output);
 
         // Save any remaining merged entries for the next Fill call
-        SaveRemaining(mergeBuffer.AsSpan(copyCount, merged - copyCount), ref _leftRemaining, ref _leftRemainingCount);
+        SaveRemaining(_mergeBuffer.AsSpan(copyCount, merged - copyCount), ref _leftRemaining, ref _leftRemainingCount);
         _rightRemainingCount = 0;
         return copyCount;
     }
