@@ -122,10 +122,29 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
                 var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, _indexSearcher, planParams, parameters);
                 QueryPlanBuilder.ExtractScanParameters(plan, _indexSearcher,
                     out var longParams, out var doubleParams, out var sliceParams, out var fieldRootPages);
-                baseQuery = new global::Corax.Querying.Matches.CompiledQueryMatch(
+                IQueryMatch compiledMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
                     compiledPlan, plan.BitmapCount, plan.Ops?.Length ?? 0, resolvedMatches,
                     longParams, doubleParams, sliceParams, fieldRootPages,
                     _indexSearcher, _allocator, long.MaxValue, token);
+
+                // Post-filter phase 1: Spatial filters
+                if (plan.SpatialFilters is { Length: > 0 })
+                {
+                    var spatialFilters = new IQueryMatch[plan.SpatialFilters.Length];
+                    for (int sf = 0; sf < plan.SpatialFilters.Length; sf++)
+                        spatialFilters[sf] = resolvedMatches[plan.SpatialFilters[sf].MatchIndex];
+                    compiledMatch = new global::Corax.Querying.Matches.PostFilterMatch(compiledMatch, spatialFilters);
+                }
+
+                // Post-filter phase 2: Vector selects
+                if (plan.VectorSelects is { Length: > 0 })
+                {
+                    var vectorItems = QueryPlanBuilder.ResolveVectorItems(plan, _indexSearcher, planParams, parameters);
+                    for (int vs = 0; vs < vectorItems.Length; vs++)
+                        compiledMatch = vectorItems[vs].Materialize(compiledMatch);
+                }
+
+                baseQuery = compiledMatch;
             }
             queryTimings?.SetQueryPlan(baseQuery.Inspect());
             var maxMatchingIds = _indexSearcher.MaxMemoizationSizeInBytes / sizeof(long);
@@ -317,10 +336,29 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
             var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, _indexSearcher, planParams, parameters);
             QueryPlanBuilder.ExtractScanParameters(plan, _indexSearcher,
                 out var longParams2, out var doubleParams2, out var sliceParams2, out var fieldRootPages2);
-            baseQuery = new global::Corax.Querying.Matches.CompiledQueryMatch(
+            IQueryMatch compiledMatch2 = new global::Corax.Querying.Matches.CompiledQueryMatch(
                 compiledPlan, plan.BitmapCount, plan.Ops?.Length ?? 0, resolvedMatches,
                 longParams2, doubleParams2, sliceParams2, fieldRootPages2,
                 _indexSearcher, _allocator, long.MaxValue, token);
+
+            // Post-filter phase 1: Spatial filters
+            if (plan.SpatialFilters is { Length: > 0 })
+            {
+                var spatialFilters = new IQueryMatch[plan.SpatialFilters.Length];
+                for (int sf = 0; sf < plan.SpatialFilters.Length; sf++)
+                    spatialFilters[sf] = resolvedMatches[plan.SpatialFilters[sf].MatchIndex];
+                compiledMatch2 = new global::Corax.Querying.Matches.PostFilterMatch(compiledMatch2, spatialFilters);
+            }
+
+            // Post-filter phase 2: Vector selects
+            if (plan.VectorSelects is { Length: > 0 })
+            {
+                var vectorItems = QueryPlanBuilder.ResolveVectorItems(plan, _indexSearcher, planParams, parameters);
+                for (int vs = 0; vs < vectorItems.Length; vs++)
+                    compiledMatch2 = vectorItems[vs].Materialize(compiledMatch2);
+            }
+
+            baseQuery = compiledMatch2;
         }
         else
         {

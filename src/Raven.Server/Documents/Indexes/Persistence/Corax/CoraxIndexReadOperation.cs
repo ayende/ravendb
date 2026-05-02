@@ -688,6 +688,28 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                                 IndexSearcher, _allocator, take, token);
                             queryMatch = compiledMatch;
 
+                            // Post-filter phase 1: Spatial filters
+                            // Each spatial match ANDs with the candidate bitmap produced by the filter phase.
+                            if (plan.SpatialFilters is { Length: > 0 })
+                            {
+                                var spatialFilters = new global::Corax.Querying.Matches.Meta.IQueryMatch[plan.SpatialFilters.Length];
+                                for (int sf = 0; sf < plan.SpatialFilters.Length; sf++)
+                                    spatialFilters[sf] = resolvedMatches[plan.SpatialFilters[sf].MatchIndex];
+                                queryMatch = new global::Corax.Querying.Matches.PostFilterMatch(queryMatch, spatialFilters);
+                            }
+
+                            // Post-filter phase 2: Vector selects
+                            // The bitmap-producing match (with spatial already applied) is passed
+                            // as the filterQuery to VectorSearchMatch.
+                            if (plan.VectorSelects is { Length: > 0 })
+                            {
+                                var vectorItems = QueryPlanBuilder.ResolveVectorItems(plan, IndexSearcher, planParams, builderParameters);
+                                // Chain vector selects: each wraps the previous result as its filter.
+                                // Typically there is only one vector select.
+                                for (int vs = 0; vs < vectorItems.Length; vs++)
+                                    queryMatch = vectorItems[vs].Materialize(queryMatch);
+                            }
+
                             orderByFields = CoraxQueryBuilder.GetSortMetadata(builderParameters, out bool hasEmptySorts);
                             if (orderByFields != null)
                             {
@@ -1397,6 +1419,23 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     compiledPlan, plan.BitmapCount, plan.Ops?.Length ?? 0, resolvedMatches,
                     longParams, doubleParams, sliceParams, fieldRootPages,
                     IndexSearcher, _allocator, take, token);
+
+                // Post-filter phase 1: Spatial filters
+                if (plan.SpatialFilters is { Length: > 0 })
+                {
+                    var spatialFilters = new global::Corax.Querying.Matches.Meta.IQueryMatch[plan.SpatialFilters.Length];
+                    for (int sf = 0; sf < plan.SpatialFilters.Length; sf++)
+                        spatialFilters[sf] = resolvedMatches[plan.SpatialFilters[sf].MatchIndex];
+                    queryMatch = new global::Corax.Querying.Matches.PostFilterMatch(queryMatch, spatialFilters);
+                }
+
+                // Post-filter phase 2: Vector selects
+                if (plan.VectorSelects is { Length: > 0 })
+                {
+                    var vectorItems = QueryPlanBuilder.ResolveVectorItems(plan, IndexSearcher, planParams, builderParameters);
+                    for (int vs = 0; vs < vectorItems.Length; vs++)
+                        queryMatch = vectorItems[vs].Materialize(queryMatch);
+                }
             }
 
             var ids = QueryPool.Rent(CoraxBufferSize(IndexSearcher, take, query));

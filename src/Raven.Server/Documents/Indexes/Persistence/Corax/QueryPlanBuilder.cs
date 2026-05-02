@@ -8,6 +8,7 @@ using Corax.Querying.Matches.Meta;
 using Corax.Querying.Planning;
 using Corax.Mappings;
 using Raven.Server.Documents.Indexes;
+using Raven.Server.Documents.Indexes.Persistence.Corax.QueryOptimizer;
 using Raven.Server.Documents.Queries;
 using Raven.Server.Documents.Queries.AST;
 using Sparrow.Json;
@@ -102,6 +103,42 @@ internal static class QueryPlanBuilder
         // Determine top-level operation
         bool isOr = rootOp == BooleanOp.Or;
 
+        // Separate spatial and vector clauses from the filter chain.
+        // For AND queries, spatial/vector execute AFTER the bitmap filter:
+        //   FilterOps -> SpatialFilters -> VectorSelects
+        // For OR queries, spatial/vector remain in the flat chain (they produce
+        // candidate sets that are OR'd together).
+        List<ClauseInfo> spatialClauses = null;
+        List<ClauseInfo> vectorClauses = null;
+        if (!isOr)
+        {
+            for (int i = clauses.Count - 1; i >= 0; i--)
+            {
+                if (clauses[i].ClauseType == ClauseType.Spatial)
+                {
+                    spatialClauses ??= new List<ClauseInfo>();
+                    spatialClauses.Add(clauses[i]);
+                    clauses.RemoveAt(i);
+                }
+                else if (clauses[i].ClauseType == ClauseType.Vector)
+                {
+                    vectorClauses ??= new List<ClauseInfo>();
+                    vectorClauses.Add(clauses[i]);
+                    clauses.RemoveAt(i);
+                }
+            }
+
+            // If all filter clauses were removed (query is purely spatial/vector),
+            // use AllEntries as the filter base.
+            if (clauses.Count == 0)
+            {
+                // Build an AllEntries plan, then attach post-filter phases
+                var plan = BuildAllEntriesPlan();
+                AttachPostFilterPhases(plan, spatialClauses, vectorClauses);
+                return plan;
+            }
+        }
+
         // Sort AND operands: non-negated first (ascending cardinality), then negated.
         // Negated clauses (NotEquals, IsNegated) can only subtract from an existing
         // bitmap via ANDNOT — they must never be the seed (first) operand.
@@ -118,7 +155,84 @@ internal static class QueryPlanBuilder
         }
 
         // Build PlanOp array
-        return EmitPlan(clauses, isOr);
+        var result = EmitPlan(clauses, isOr);
+
+        // Attach spatial/vector post-filter phases to the plan
+        if (spatialClauses != null || vectorClauses != null)
+        {
+            AttachPostFilterPhases(result, spatialClauses, vectorClauses);
+            // Regenerate explain to include post-filter phases
+            result.ExplainSource = GenerateExplain(result, clauses);
+        }
+
+        return result;
+    }
+
+    /// <summary>Attach spatial and vector post-filter phases to a query plan.
+    /// Spatial/vector clauses are stored in the plan's Clauses array at known indices,
+    /// and SpatialFilters/VectorSelects reference those indices for resolution at execution time.</summary>
+    private static void AttachPostFilterPhases(QueryPlan plan, List<ClauseInfo> spatialClauses, List<ClauseInfo> vectorClauses)
+    {
+        if (spatialClauses == null && vectorClauses == null)
+            return;
+
+        // Append spatial and vector clauses to the plan's Clauses array.
+        // Their match indices are computed relative to the existing clauses.
+        var existingClauses = plan.Clauses ?? Array.Empty<object>();
+        int existingCount = existingClauses.Length;
+
+        // Count the total match slots already used by existing clauses
+        // (OrGroups/In/AllIn expand to multiple matches)
+        int existingMatchCount = 0;
+        // AllEntries plans have an implicit match at index 0 not in Clauses
+        if (plan.IsAllEntries)
+            existingMatchCount = 1;
+        for (int i = 0; i < existingCount; i++)
+        {
+            if (existingClauses[i] is ClauseInfo ci)
+            {
+                if (ci.ClauseType == ClauseType.OrGroup && ci.OrSubClauses != null)
+                    existingMatchCount += ci.OrSubClauses.Count;
+                else if ((ci.ClauseType == ClauseType.AllIn || ci.ClauseType == ClauseType.In) && ci.InTerms != null)
+                    existingMatchCount += ci.InTerms.Count;
+                else
+                    existingMatchCount++;
+            }
+        }
+        // Account for AllNegated extra slot (AllEntries appended by ResolveMatches)
+        if (plan.AllNegated)
+            existingMatchCount++;
+
+        int spatialCount = spatialClauses?.Count ?? 0;
+        int vectorCount = vectorClauses?.Count ?? 0;
+        int totalExtra = spatialCount + vectorCount;
+
+        var newClauses = new object[existingCount + totalExtra];
+        Array.Copy(existingClauses, newClauses, existingCount);
+
+        int matchIndex = existingMatchCount;
+
+        if (spatialClauses != null)
+        {
+            plan.SpatialFilters = new SpatialFilterOp[spatialCount];
+            for (int i = 0; i < spatialCount; i++)
+            {
+                newClauses[existingCount + i] = spatialClauses[i];
+                plan.SpatialFilters[i] = new SpatialFilterOp { MatchIndex = matchIndex++, Clause = spatialClauses[i] };
+            }
+        }
+
+        if (vectorClauses != null)
+        {
+            plan.VectorSelects = new VectorSelectOp[vectorCount];
+            for (int i = 0; i < vectorCount; i++)
+            {
+                newClauses[existingCount + spatialCount + i] = vectorClauses[i];
+                plan.VectorSelects[i] = new VectorSelectOp { MatchIndex = matchIndex++, Clause = vectorClauses[i] };
+            }
+        }
+
+        plan.Clauses = newClauses;
     }
 
     private enum BooleanOp { And, Or, True, False, Leaf }
@@ -1092,6 +1206,18 @@ internal static class QueryPlanBuilder
         {
             sb.AppendLine($"//   {op.Kind} (param={op.ParamIndex}, est={op.EstimatedCardinality:N0})");
         }
+        if (plan.SpatialFilters is { Length: > 0 })
+        {
+            sb.AppendLine("// Post-filter spatial:");
+            foreach (var sf in plan.SpatialFilters)
+                sb.AppendLine($"//   SpatialFilter (matchIndex={sf.MatchIndex})");
+        }
+        if (plan.VectorSelects is { Length: > 0 })
+        {
+            sb.AppendLine("// Post-filter vector:");
+            foreach (var vs in plan.VectorSelects)
+                sb.AppendLine($"//   VectorSelect (matchIndex={vs.MatchIndex})");
+        }
         return sb.ToString();
     }
 
@@ -1430,9 +1556,29 @@ internal static class QueryPlanBuilder
     public static IQueryMatch[] ResolveMatches(QueryPlan plan, IndexSearcher indexSearcher,
         PlanParameters parameters = null, CoraxQueryBuilder.Parameters builderParams = null)
     {
-        // All-entries plan: no clauses, single AllEntries match
+        // All-entries plan with possible post-filter phases
         if (plan.IsAllEntries)
-            return new IQueryMatch[] { indexSearcher.AllEntries() };
+        {
+            // If there are spatial/vector post-filters, we need to resolve those too.
+            // The AllEntries match is at index 0, post-filter matches follow at their
+            // MatchIndex positions (which account for the implicit AllEntries at 0).
+            int spatialCount = plan.SpatialFilters?.Length ?? 0;
+            int vectorCount = plan.VectorSelects?.Length ?? 0;
+            int totalExtra = spatialCount + vectorCount;
+            if (totalExtra == 0)
+                return new IQueryMatch[] { indexSearcher.AllEntries() };
+
+            var allEntriesMatches = new IQueryMatch[1 + totalExtra];
+            allEntriesMatches[0] = indexSearcher.AllEntries();
+            // Resolve spatial and vector clauses from the plan's Clauses array.
+            // Each clause in plan.Clauses corresponds to a post-filter match at index 1+i.
+            for (int i = 0; i < plan.Clauses.Length; i++)
+            {
+                if (plan.Clauses[i] is ClauseInfo ci)
+                    allEntriesMatches[1 + i] = ResolveClause(ci, indexSearcher, parameters, builderParams);
+            }
+            return allEntriesMatches;
+        }
 
         var clauses = plan.Clauses;
         if (clauses == null || clauses.Length == 0)
@@ -1494,6 +1640,60 @@ internal static class QueryPlanBuilder
         if (plan.AllNegated)
             matches[matchIdx] = indexSearcher.AllEntries();
         return matches;
+    }
+
+    /// <summary>
+    /// Resolve vector select operations from the plan into CoraxVectorItem instances.
+    /// These are NOT materialized yet — the caller materializes them with the bitmap-producing
+    /// match as the filterQuery. Returns null if the plan has no vector selects.
+    /// </summary>
+    public static CoraxVectorItem[] ResolveVectorItems(QueryPlan plan, IndexSearcher indexSearcher,
+        PlanParameters parameters = null, CoraxQueryBuilder.Parameters builderParams = null)
+    {
+        if (plan.VectorSelects == null || plan.VectorSelects.Length == 0)
+            return null;
+
+        var items = new CoraxVectorItem[plan.VectorSelects.Length];
+        for (int i = 0; i < plan.VectorSelects.Length; i++)
+        {
+            var clause = plan.VectorSelects[i].Clause as ClauseInfo;
+            if (clause == null || clause.ClauseType != ClauseType.Vector || builderParams == null || clause.MethodExpression == null)
+                throw new InvalidOperationException("Vector select references an invalid clause at index " + i);
+
+            items[i] = CoraxQueryBuilder.HandleVector(builderParams, clause.MethodExpression, false);
+        }
+        return items;
+    }
+
+    /// <summary>Find the ClauseInfo that corresponds to a given match index.
+    /// The match index is the flattened position in the resolved IQueryMatch[] array.</summary>
+    private static ClauseInfo FindClauseByMatchIndex(QueryPlan plan, int targetMatchIndex)
+    {
+        if (plan.Clauses == null)
+            return null;
+
+        int matchIndex = 0;
+        for (int i = 0; i < plan.Clauses.Length; i++)
+        {
+            if (plan.Clauses[i] is not ClauseInfo clause)
+                continue;
+
+            int slotCount;
+            if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
+                slotCount = clause.OrSubClauses.Count;
+            else if ((clause.ClauseType == ClauseType.AllIn || clause.ClauseType == ClauseType.In) && clause.InTerms != null)
+                slotCount = clause.InTerms.Count;
+            else
+                slotCount = 1;
+
+            if (matchIndex <= targetMatchIndex && targetMatchIndex < matchIndex + slotCount)
+                return clause;
+
+            matchIndex += slotCount;
+        }
+
+        // Check for AllNegated extra slot
+        return null;
     }
 
     private static IQueryMatch ResolveClause(ClauseInfo clause, IndexSearcher indexSearcher,

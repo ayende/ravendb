@@ -20,27 +20,34 @@ public static class Program
         var runtime = sources.FirstOrDefault(x => x.Name == "System.Runtime");
         runtime?.Dispose();
 
-        for (int run = 0; run < 10; run++)
+        // Run many Corax tests to trigger the SIGABRT crash
+        var methods = typeof(FastTests.Corax.IndexSearcherTest).GetMethods()
+            .Where(m => m.GetCustomAttributes(typeof(RavenFactAttribute), false).Length > 0
+                     || m.GetCustomAttributes(typeof(RavenTheoryAttribute), false).Length > 0)
+            .Where(m => m.GetParameters().Length == 0)
+            .ToArray();
+
+        Console.WriteLine($"Found {methods.Length} parameterless test methods");
+
+        for (int run = 0; run < 3; run++)
         {
-            Console.WriteLine($"=== Run {run} ===");
-            try
+            Console.WriteLine($"\n=== Run {run} ===");
+            foreach (var method in methods)
             {
-                using var testOutputHelper = new ConsoleTestOutputHelper();
-                await using var test = new FastTests.Corax.IndexSearcherTest(testOutputHelper);
-                DebuggerAttachedTimeout.DisableLongTimespan = true;
-                test.SingleOr();
-                test.AllOr();
-                test.SingleAnd();
-                test.AllAnd();
-                test.AllAndMemoized();
-            }
-            catch (Exception e)
-            {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine($"Run {run}: {e.Message}");
-                Console.ForegroundColor = ConsoleColor.White;
+                try
+                {
+                    using var testOutputHelper = new ConsoleTestOutputHelper();
+                    await using var test = new FastTests.Corax.IndexSearcherTest(testOutputHelper);
+                    DebuggerAttachedTimeout.DisableLongTimespan = true;
+                    method.Invoke(test, null);
+                    Console.Write(".");
+                }
+                catch (Exception e)
+                {
+                    Console.Write("x");
+                }
             }
         }
-        Console.WriteLine("Done");
+        Console.WriteLine("\nDone — no crash");
     }
 }
