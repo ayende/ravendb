@@ -224,8 +224,10 @@ public static class QueryPrimitives
         }
 
         Span<long> batch = stackalloc long[EntryScanBatchSize];
+        // Batch resolution buffers — reused across iterations
+        Span<long> locations = stackalloc long[EntryScanBatchSize];
+        Span<Sparrow.UnmanagedSpan> spans = stackalloc Sparrow.UnmanagedSpan[EntryScanBatchSize];
         int matched = 0;
-        Page lastPage = default;
 
         Span<long> fieldRootPages = predicates.Length > FieldRootPagesStackAllocThreshold
             ? new long[predicates.Length]
@@ -239,12 +241,22 @@ public static class QueryPrimitives
         int read;
         while ((read = iter.Fill(ref bitmap, batch)) > 0)
         {
-            int i = (int)Math.Min(skip, read);
+            int startIdx = (int)Math.Min(skip, read);
             skip = Math.Max(0, skip - read);
-            for (; i < read; i++)
+            if (startIdx >= read)
+                continue;
+
+            // Batch-resolve entry data: cursor-walk B-tree + PageLocator-cached container reads
+            var batchSlice = batch.Slice(startIdx, read - startIdx);
+            searcher.BatchGetEntryData(batchSlice, locations.Slice(0, batchSlice.Length), spans.Slice(0, batchSlice.Length));
+
+            for (int i = 0; i < batchSlice.Length; i++)
             {
-                long entryId = batch[i];
-                var reader = searcher.GetEntryTermsReader(entryId, ref lastPage);
+                if (spans[i].Length == 0)
+                    continue; // missing entry
+
+                long entryId = batchSlice[i];
+                var reader = searcher.CreateEntryTermsReader(spans[i]);
                 bool documentMatched = true;
 
                 for (int p = 0; p < predicates.Length; p++)
