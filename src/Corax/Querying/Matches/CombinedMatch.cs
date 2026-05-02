@@ -137,21 +137,85 @@ public struct CombinedMatch : IQueryMatch
 
     private int FillAnd(Span<long> output)
     {
-        Span<long> leftBuf = _leftBuffer;
-        Span<long> rightBuf = _rightBuffer;
+        // AND of two ascending-sorted streams. Each Fill on an inner match returns
+        // the next batch of ascending entries; we must intersect them while preserving
+        // the side whose tail has not yet been consumed (its higher entries may match
+        // future entries on the other side). Loops until we either produce results or
+        // one side is permanently exhausted.
+        while (true)
+        {
+            if (EnsureBuffered(_left, ref _leftBuffer, ref _leftRemaining, ref _leftRemainingCount, ref _leftDone) == false)
+                return 0;
+            if (EnsureBuffered(_right, ref _rightBuffer, ref _rightRemaining, ref _rightRemainingCount, ref _rightDone) == false)
+                return 0;
 
-        int leftCount = _leftRemainingCount > 0 ? _leftRemainingCount : (!_leftDone ? _left.Fill(leftBuf) : 0);
-        if (leftCount == 0 && _leftRemainingCount == 0) { _leftDone = true; return 0; }
-        Span<long> leftSpan = _leftRemainingCount > 0 ? _leftRemaining.AsSpan(0, _leftRemainingCount) : leftBuf[..leftCount];
+            Span<long> leftSpan = _leftRemaining.AsSpan(0, _leftRemainingCount);
+            Span<long> rightSpan = _rightRemaining.AsSpan(0, _rightRemainingCount);
 
-        int rightCount = _rightRemainingCount > 0 ? _rightRemainingCount : (!_rightDone ? _right.Fill(rightBuf) : 0);
-        if (rightCount == 0 && _rightRemainingCount == 0) { _rightDone = true; return 0; }
-        Span<long> rightSpan = _rightRemainingCount > 0 ? _rightRemaining.AsSpan(0, _rightRemainingCount) : rightBuf[..rightCount];
+            long leftMax = leftSpan[^1];
+            long rightMax = rightSpan[^1];
 
-        int result = MergeHelper.And(output, leftSpan, rightSpan);
-        _leftRemainingCount = 0;
-        _rightRemainingCount = 0;
-        return result;
+            int result = MergeHelper.And(output, leftSpan, rightSpan);
+
+            // Drop everything up to the lower of the two maxes from the side that owns it,
+            // because the other side has not yet seen entries past its own max. Keep the
+            // higher-max tail so it can match future entries from the side that lags.
+            if (leftMax <= rightMax)
+            {
+                _leftRemainingCount = 0;
+                TrimBelowOrEqual(ref _rightRemaining, ref _rightRemainingCount, leftMax);
+            }
+            else
+            {
+                _rightRemainingCount = 0;
+                TrimBelowOrEqual(ref _leftRemaining, ref _leftRemainingCount, rightMax);
+            }
+
+            if (result > 0)
+                return result;
+
+            // Empty intersection on this batch; refill and try again unless the side
+            // we need to advance is already exhausted.
+        }
+    }
+
+    private static bool EnsureBuffered(IQueryMatch match, ref long[] scratch, ref long[] saved, ref int savedCount, ref bool done)
+    {
+        if (savedCount > 0)
+            return true;
+        if (done)
+            return false;
+
+        int filled = match.Fill(scratch);
+        if (filled == 0)
+        {
+            done = true;
+            return false;
+        }
+
+        if (saved.Length < filled)
+            saved = new long[filled];
+        scratch.AsSpan(0, filled).CopyTo(saved);
+        savedCount = filled;
+        return true;
+    }
+
+    private static void TrimBelowOrEqual(ref long[] buffer, ref int count, long threshold)
+    {
+        // Remove entries <= threshold from the front of buffer (entries are ascending).
+        int i = 0;
+        while (i < count && buffer[i] <= threshold)
+            i++;
+        if (i == 0)
+            return;
+        if (i >= count)
+        {
+            count = 0;
+            return;
+        }
+        int remaining = count - i;
+        Array.Copy(buffer, i, buffer, 0, remaining);
+        count = remaining;
     }
 
     private static void SaveRemaining(Span<long> remaining, ref long[] buffer, ref int count)
