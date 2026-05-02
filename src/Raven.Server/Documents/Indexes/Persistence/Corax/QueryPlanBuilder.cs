@@ -128,14 +128,26 @@ internal static class QueryPlanBuilder
                 }
             }
 
-            // If all filter clauses were removed (query is purely spatial/vector),
-            // use AllEntries as the filter base.
             if (clauses.Count == 0)
             {
-                // Build an AllEntries plan, then attach post-filter phases
-                var plan = BuildAllEntriesPlan();
-                AttachPostFilterPhases(plan, spatialClauses, vectorClauses);
-                return plan;
+                if (spatialClauses != null)
+                {
+                    // Purely spatial (or spatial + vector): AllEntries as filter base,
+                    // spatial narrows it, then vector selects from the result.
+                    var plan = BuildAllEntriesPlan();
+                    AttachPostFilterPhases(plan, spatialClauses, vectorClauses);
+                    return plan;
+                }
+
+                // Purely vector with no other filter clauses: put vector clauses back
+                // into the flat plan. The bitmap pipeline handles deduplication for
+                // multi-vector results, and VectorSearchMatch runs unfiltered.
+                if (vectorClauses != null)
+                {
+                    for (int i = vectorClauses.Count - 1; i >= 0; i--)
+                        clauses.Add(vectorClauses[i]);
+                    vectorClauses = null;
+                }
             }
         }
 

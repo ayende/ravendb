@@ -700,14 +700,15 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
                             // Post-filter phase 2: Vector selects
                             // The bitmap-producing match (with spatial already applied) is passed
-                            // as the filterQuery to VectorSearchMatch.
+                            // as the filterQuery to VectorSearchMatch. When the base is AllEntries
+                            // with no spatial filters, pass null for unfiltered vector search.
                             if (plan.VectorSelects is { Length: > 0 })
                             {
                                 var vectorItems = QueryPlanBuilder.ResolveVectorItems(plan, IndexSearcher, planParams, builderParameters);
-                                // Chain vector selects: each wraps the previous result as its filter.
-                                // Typically there is only one vector select.
+                                bool hasActualFilter = !plan.IsAllEntries || plan.SpatialFilters is { Length: > 0 };
+                                IQueryMatch vectorFilter = hasActualFilter ? queryMatch : null;
                                 for (int vs = 0; vs < vectorItems.Length; vs++)
-                                    queryMatch = vectorItems[vs].Materialize(queryMatch);
+                                    queryMatch = vectorItems[vs].Materialize(vectorFilter);
                             }
 
                             orderByFields = CoraxQueryBuilder.GetSortMetadata(builderParameters, out bool hasEmptySorts);
@@ -1433,8 +1434,10 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 if (plan.VectorSelects is { Length: > 0 })
                 {
                     var vectorItems = QueryPlanBuilder.ResolveVectorItems(plan, IndexSearcher, planParams, builderParameters);
+                    bool hasActualFilter = !plan.IsAllEntries || plan.SpatialFilters is { Length: > 0 };
+                    IQueryMatch vectorFilter = hasActualFilter ? queryMatch : null;
                     for (int vs = 0; vs < vectorItems.Length; vs++)
-                        queryMatch = vectorItems[vs].Materialize(queryMatch);
+                        queryMatch = vectorItems[vs].Materialize(vectorFilter);
                 }
             }
 

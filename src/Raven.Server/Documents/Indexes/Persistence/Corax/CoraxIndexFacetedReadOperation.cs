@@ -140,8 +140,10 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
                 if (plan.VectorSelects is { Length: > 0 })
                 {
                     var vectorItems = QueryPlanBuilder.ResolveVectorItems(plan, _indexSearcher, planParams, parameters);
+                    bool hasActualFilter = !plan.IsAllEntries || plan.SpatialFilters is { Length: > 0 };
+                    IQueryMatch vectorFilter = hasActualFilter ? compiledMatch : null;
                     for (int vs = 0; vs < vectorItems.Length; vs++)
-                        compiledMatch = vectorItems[vs].Materialize(compiledMatch);
+                        compiledMatch = vectorItems[vs].Materialize(vectorFilter);
                 }
 
                 baseQuery = compiledMatch;
@@ -354,8 +356,10 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
             if (plan.VectorSelects is { Length: > 0 })
             {
                 var vectorItems = QueryPlanBuilder.ResolveVectorItems(plan, _indexSearcher, planParams, parameters);
+                bool hasActualFilter = !plan.IsAllEntries || plan.SpatialFilters is { Length: > 0 };
+                IQueryMatch vectorFilter = hasActualFilter ? compiledMatch2 : null;
                 for (int vs = 0; vs < vectorItems.Length; vs++)
-                    compiledMatch2 = vectorItems[vs].Materialize(compiledMatch2);
+                    compiledMatch2 = vectorItems[vs].Materialize(vectorFilter);
             }
 
             baseQuery = compiledMatch2;
