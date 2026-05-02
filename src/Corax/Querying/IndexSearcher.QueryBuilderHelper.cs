@@ -11,7 +11,7 @@ public partial class IndexSearcher
         public enum QueryType
         {
             TermMatch,
-            BinaryMatch,
+            CombinedMatch,
             MultiTermMatch,
             AndNotMatch,
             BoostingMatch,
@@ -28,8 +28,8 @@ public partial class IndexSearcher
             if (type == typeof(TermMatch))
                 return QueryType.TermMatch;
 
-            if (type == typeof(BinaryMatch))
-                return QueryType.BinaryMatch;
+            if (type == typeof(CombinedMatch))
+                return QueryType.CombinedMatch;
 
             if (type == typeof(MultiTermMatch))
                 return QueryType.MultiTermMatch;

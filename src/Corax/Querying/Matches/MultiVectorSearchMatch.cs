@@ -287,7 +287,7 @@ public struct MultiVectorSearchMatch : IQueryMatch
 
         if (_filterQuery is not null)
         {
-            return new QueryInspectionNode($"{nameof(BinaryMatch)} [And]",
+            return new QueryInspectionNode($"{nameof(MultiVectorSearchMatch)} [And]",
                 children: new List<QueryInspectionNode> { mvsInspect, _filterQuery.Inspect() },
                 parameters: new Dictionary<string, string>()
                 {

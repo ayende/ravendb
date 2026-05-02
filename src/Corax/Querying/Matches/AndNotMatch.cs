@@ -205,7 +205,7 @@ namespace Corax.Querying.Matches
 
         public QueryInspectionNode Inspect()
         {
-            return new QueryInspectionNode($"{nameof(BinaryMatch)} [AndNot]",
+            return new QueryInspectionNode($"{nameof(AndNotMatch)} [AndNot]",
                 children: new List<QueryInspectionNode> { _inner.Inspect(), _outer.Inspect() },
                 parameters: new Dictionary<string, string>()
                 {

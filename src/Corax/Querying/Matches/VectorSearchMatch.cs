@@ -323,7 +323,7 @@ public struct VectorSearchMatch : IQueryMatch
 
         if (_filterQuery is not null)
         {
-            return new QueryInspectionNode($"{nameof(BinaryMatch)} [And]",
+            return new QueryInspectionNode($"{nameof(VectorSearchMatch)} [And]",
                 children: new List<QueryInspectionNode> { _filterQuery.Inspect(), vsInspect },
                 parameters: new Dictionary<string, string>()
                 {
