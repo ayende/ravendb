@@ -2,11 +2,21 @@ using System;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using Corax.Indexing;
 using Corax.Querying.Matches;
+using Corax.Querying.Matches.Meta;
 using Corax.Utils;
 using Corax.Utils.RoaringBitmaps;
+using Sparrow;
+using Sparrow.Compression;
+using Sparrow.Server;
+using Sparrow.Server.Utils;
 using Voron;
+using Voron.Data.Containers;
 using Voron.Data.PostingLists;
+using Voron.Impl;
+using Voron.Util;
+using Voron.Util.PFor;
 
 namespace Corax.Querying.Primitives;
 
@@ -360,5 +370,162 @@ public static class QueryPrimitives
         tempBitmap.Clear();
         FillFromMatch(match, ref tempBitmap);
         bitmap.AndNotWith(ref tempBitmap);
+    }
+
+    // Batch size for FillPostingListIds calls within FillBitmapFromTermProvider.
+    private const int PostingListIdBatchSize = 256;
+
+    /// <summary>
+    /// Fill a bitmap by walking an ITermProvider's posting list IDs in batches.
+    /// For each posting list ID, decodes the TermIdMask type and either:
+    ///   - Single: accumulates the decoded entry ID in a buffer
+    ///   - SmallPostingList: decodes inline via FastPForBufferedReader
+    ///   - PostingList: iterates through the full posting list via FillFromPostings
+    /// Entry IDs from Single and SmallPostingList are accumulated in a buffer,
+    /// sorted, and flushed to the bitmap in batches.
+    /// </summary>
+    [SkipLocalsInit]
+    public static unsafe void FillBitmapFromTermProvider(
+        ITermProvider provider,
+        LowLevelTransaction llt,
+        ref RoaringBitmap bitmap)
+    {
+        Span<long> plIds = stackalloc long[PostingListIdBatchSize];
+        Span<long> entryBuffer = stackalloc long[FillBufferSize];
+        int entryCount = 0;
+
+        var smallPostListIds = new ContextBoundNativeList<long>(llt.Allocator, PostingListIdBatchSize);
+        llt.Allocator.Allocate(PostingListIdBatchSize * sizeof(UnmanagedSpan), out ByteString containerItemsBs);
+        var containerItems = (UnmanagedSpan*)containerItemsBs.Ptr;
+        var pageLocator = llt.PageLocator;
+
+        FastPForBufferedReader smallListReader = default;
+        bool readerInitialized = false;
+
+        try
+        {
+            int read;
+            while ((read = provider.FillPostingListIds(plIds)) > 0)
+            {
+                // Collect small posting list container IDs for batch retrieval
+                smallPostListIds.Clear();
+                for (int i = 0; i < read; i++)
+                {
+                    var termType = (TermIdMask)plIds[i] & TermIdMask.EnsureIsSingleMask;
+                    if (termType == TermIdMask.SmallPostingList)
+                    {
+                        smallPostListIds.Add((long)EntryIdEncodings.GetContainerId(plIds[i]));
+                    }
+                }
+
+                // Batch-fetch all small posting list containers
+                int smallIdx = 0;
+                if (smallPostListIds.Count > 0)
+                {
+                    Container.GetAll(llt, smallPostListIds.ToSpan(),
+                        new Span<UnmanagedSpan>(containerItems, smallPostListIds.Count),
+                        long.MinValue, pageLocator);
+                }
+
+                for (int i = 0; i < read; i++)
+                {
+                    var postingListId = plIds[i];
+                    var termType = (TermIdMask)postingListId & TermIdMask.EnsureIsSingleMask;
+
+                    switch (termType)
+                    {
+                        case TermIdMask.Single:
+                        {
+                            long entryId = (long)EntryIdEncodings.GetContainerId(postingListId);
+                            if (entryCount >= entryBuffer.Length)
+                            {
+                                FlushEntries(entryBuffer, entryCount, ref bitmap);
+                                entryCount = 0;
+                            }
+                            entryBuffer[entryCount++] = entryId;
+                            break;
+                        }
+
+                        case TermIdMask.SmallPostingList:
+                        {
+                            var item = containerItems[smallIdx++];
+                            _ = VariableSizeEncoding.Read<int>(item.Address, out var offset);
+
+                            if (readerInitialized == false)
+                            {
+                                smallListReader = new FastPForBufferedReader(llt.Allocator);
+                                readerInitialized = true;
+                            }
+
+                            smallListReader.Init(item.Address + offset, item.Length - offset);
+
+                            // Read small posting list entries into the entry buffer
+                            fixed (long* pEntryBuffer = entryBuffer)
+                            {
+                                int smallRead;
+                                while ((smallRead = smallListReader.Fill(pEntryBuffer + entryCount, entryBuffer.Length - entryCount)) > 0)
+                                {
+                                    EntryIdEncodings.DecodeAndDiscardFrequency(entryBuffer.Slice(entryCount, smallRead), smallRead);
+                                    entryCount += smallRead;
+
+                                    if (entryCount >= entryBuffer.Length)
+                                    {
+                                        FlushEntries(entryBuffer, entryCount, ref bitmap);
+                                        entryCount = 0;
+                                    }
+                                }
+                            }
+                            break;
+                        }
+
+                        case TermIdMask.PostingList:
+                        {
+                            // Flush accumulated entries before processing the large posting list
+                            if (entryCount > 0)
+                            {
+                                FlushEntries(entryBuffer, entryCount, ref bitmap);
+                                entryCount = 0;
+                            }
+
+                            var setId = EntryIdEncodings.GetContainerId(postingListId);
+                            var setStateSpan = Container.GetReadOnly(llt, setId);
+                            ref readonly var setState = ref MemoryMarshal.AsRef<PostingListState>(setStateSpan);
+                            var postingList = new PostingList(llt, Slices.Empty, in setState);
+                            var iterator = postingList.Iterate();
+                            FillFromPostings(ref iterator, ref bitmap);
+                            break;
+                        }
+
+                        default:
+                            throw new InvalidOperationException($"Unknown TermIdMask type: {termType}");
+                    }
+                }
+            }
+
+            // Flush any remaining entries
+            if (entryCount > 0)
+            {
+                FlushEntries(entryBuffer, entryCount, ref bitmap);
+            }
+        }
+        finally
+        {
+            if (readerInitialized)
+                smallListReader.Dispose();
+            smallPostListIds.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Sort the entry buffer and add the sorted range to the bitmap.
+    /// Entries from different posting lists are not guaranteed to be sorted,
+    /// so we must sort before calling AddRange.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void FlushEntries(Span<long> entryBuffer, int count, ref RoaringBitmap bitmap)
+    {
+        var slice = entryBuffer.Slice(0, count);
+        int unique = Sorting.SortAndRemoveDuplicates(slice);
+        bitmap.AddRange(slice.Slice(0, unique));
     }
 }

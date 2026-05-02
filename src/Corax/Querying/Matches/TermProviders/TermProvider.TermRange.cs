@@ -149,6 +149,14 @@ public struct TermRangeProvider<TLookupIterator, TLow, THigh> : ITermProvider, I
         return _iterator.Fill(containers, _endContainerId, _shouldIncludeLastTerm);
     }
 
+    public int FillPostingListIds(Span<long> postingListIds)
+    {
+        if (_isEmpty)
+            return 0;
+
+        return _iterator.Fill(postingListIds, _endContainerId, _shouldIncludeLastTerm);
+    }
+
     public void Reset()
     {
         var shouldSeek = ShouldSeek();

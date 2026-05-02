@@ -35,6 +35,25 @@ namespace Corax.Querying.Matches.TermProviders
             throw new NotImplementedException();
         }
 
+        public int FillPostingListIds(Span<long> postingListIds)
+        {
+            var contains = _term.Decoded();
+            int count = 0;
+
+            while (count < postingListIds.Length)
+            {
+                if (_iterator.MoveNext(out var key, out long postingListId, out _) == false)
+                    break;
+
+                if (key.Decoded().Contains(contains))
+                    continue;
+
+                postingListIds[count++] = postingListId;
+            }
+
+            return count;
+        }
+
         public void Reset()
         {            
             _iterator = _tree.Iterate<TLookupIterator>();

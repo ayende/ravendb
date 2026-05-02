@@ -149,6 +149,12 @@ namespace Corax.Querying.Matches.TermProviders
             return _iterator.Fill(containers, _lastTermId, _includeLastTerm);
         }
 
+        public int FillPostingListIds(Span<long> postingListIds)
+        {
+            if (_isEmpty) return 0;
+            return _iterator.Fill(postingListIds, _lastTermId, _includeLastTerm);
+        }
+
         public void Reset()
         {
             if (_isEmpty)

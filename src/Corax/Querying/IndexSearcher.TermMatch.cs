@@ -212,6 +212,53 @@ public partial class IndexSearcher
         return new PostingListState { NumberOfEntries = NumberOfDocumentsUnderSpecificTerm(containerId) };
     }
 
+    /// <summary>
+    /// Returns the raw posting list ID (with TermIdMask encoding) for a string term,
+    /// or -1 if the term does not exist in the index.
+    /// </summary>
+    public long GetTermPostingListId(in FieldMetadata field, string term)
+    {
+        var terms = _fieldsTree?.CompactTreeFor(field.FieldName);
+        if (terms == null)
+            return -1;
+
+        if (term is null || ReferenceEquals(term, Constants.ProjectionNullValue))
+            return TryGetPostingListForNull(field, out var plId) ? plId : -1;
+
+        var termSlice = term switch
+        {
+            Constants.EmptyString => Constants.EmptyStringSlice,
+            _ => EncodeAndApplyAnalyzer(field, term)
+        };
+
+        if (termSlice.Size == 0)
+            return -1;
+
+        var termKey = _fieldsTree.Llt.AcquireCompactKey();
+        termKey.Set(termSlice.AsReadOnlySpan());
+
+        return terms.TryGetValue(termKey, out var value) ? value : -1;
+    }
+
+    /// <summary>
+    /// Returns the raw posting list ID (with TermIdMask encoding) for a Slice term,
+    /// or -1 if the term does not exist in the index.
+    /// </summary>
+    public long GetTermPostingListId(in FieldMetadata field, Slice term)
+    {
+        var terms = _fieldsTree?.CompactTreeFor(field.FieldName);
+        if (terms == null)
+            return -1;
+
+        if (term.Size == 0)
+            return -1;
+
+        var termKey = _fieldsTree.Llt.AcquireCompactKey();
+        termKey.Set(term.AsReadOnlySpan());
+
+        return terms.TryGetValue(termKey, out var value) ? value : -1;
+    }
+
     public long NumberOfDocumentsUnderSpecificTerm<TData>(in FieldMetadata binding, TData term)
     {
         if (typeof(TData) == typeof(long))

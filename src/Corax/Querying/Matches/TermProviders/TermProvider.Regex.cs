@@ -37,6 +37,25 @@ public struct RegexTermProvider<TLookupIterator> : ITermProvider
         throw new NotImplementedException();
     }
 
+    public int FillPostingListIds(Span<long> postingListIds)
+    {
+        int count = 0;
+
+        while (count < postingListIds.Length)
+        {
+            if (_iterator.MoveNext(out var compactKey, out long postingListId, out _) == false)
+                break;
+
+            var key = compactKey.Decoded();
+            if (_regex.IsMatch(Encoding.UTF8.GetString(key)) == false)
+                continue;
+
+            postingListIds[count++] = postingListId;
+        }
+
+        return count;
+    }
+
     public void Reset()
     {
         _iterator = _tree.Iterate<TLookupIterator>();
