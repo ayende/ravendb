@@ -136,8 +136,10 @@ public static partial class CoraxQueryBuilder
         if (plan.VectorSelects is { Length: > 0 })
         {
             var vectorItems = QueryPlanBuilder.ResolveVectorItems(plan, builderParameters.IndexSearcher, planParams, builderParameters);
+            bool hasActualFilter = !plan.IsAllEntries || plan.SpatialFilters is { Length: > 0 };
+            IQueryMatch vectorFilter = hasActualFilter ? result : null;
             for (int vs = 0; vs < vectorItems.Length; vs++)
-                result = vectorItems[vs].Materialize(result);
+                result = vectorItems[vs].Materialize(vectorFilter);
         }
 
         return result;
