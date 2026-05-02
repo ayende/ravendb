@@ -73,6 +73,19 @@ public interface IQueryMatch
     DuplicatesOccurrence DuplicatesOccurrenceStatus { get; }
 }
 
+/// <summary>
+/// Implemented by query matches backed by a RoaringBitmap, enabling SortingMatch
+/// to avoid full materialization via MemoizationMatch. Instead, SortingMatch can
+/// walk the CompactTree index and intersect batches via AndWith, stopping early
+/// when the LIMIT is reached.
+/// </summary>
+public interface IBitmapQueryMatch : IQueryMatch
+{
+    bool Contains(long entryId);
+    long MinEntryId { get; }
+    long MaxEntryId { get; }
+}
+
 public enum SkipSortingResult
 {
     ResultsNativelySorted,

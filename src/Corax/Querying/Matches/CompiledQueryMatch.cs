@@ -9,7 +9,7 @@ using Voron;
 
 namespace Corax.Querying.Matches;
 
-public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
+public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDisposable
 {
     private readonly QueryILEmitter.CompiledExecuteDelegate _compiledDelegate;
     private readonly IQueryMatch[] _resolvedMatches;
@@ -86,6 +86,32 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
     }
 
     public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
+
+    public bool Contains(long entryId)
+    {
+        if (!_executed) Execute();
+        return _bitmap.Contains(entryId);
+    }
+
+    public long MinEntryId
+    {
+        get
+        {
+            if (!_executed) Execute();
+            long minKey = _bitmap.MinContainerKey;
+            return minKey < 0 ? 0 : minKey * RoaringBitmap.ContainerSize;
+        }
+    }
+
+    public long MaxEntryId
+    {
+        get
+        {
+            if (!_executed) Execute();
+            long maxKey = _bitmap.MaxContainerKey;
+            return maxKey < 0 ? 0 : (maxKey + 1) * RoaringBitmap.ContainerSize - 1;
+        }
+    }
 
     public int Fill(Span<long> matches)
     {

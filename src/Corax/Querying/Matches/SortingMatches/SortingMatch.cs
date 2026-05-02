@@ -180,44 +180,73 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
         where TEntryComparer : struct, IEntryComparer, IComparer<UnmanagedSpan>
         where TDirection : struct, ILookupIterator
     {
-        // This method should also be re-entrant for the case where we have already pre-sorted everything and 
-        // we will just need to acquire via pages the totality of the results. 
+        // This method should also be re-entrant for the case where we have already pre-sorted everything and
+        // we will just need to acquire via pages the totality of the results.
         if (match.TotalResults == NotStarted)
         {
-            if (match._inner is not MemoizationMatch memoizer)
+            // Bitmap-backed matches (CompiledQueryMatch) can avoid full materialization.
+            // Walk the CompactTree index and intersect batches via AndWith, stopping early
+            // when the LIMIT is reached. This avoids MemoizationMatch's O(N) copy.
+            if (match._inner is Corax.Querying.Matches.Meta.IBitmapQueryMatch bitmapMatch)
             {
-                memoizer = match._searcher.Memoize(match._inner).Replay();
-            }
+                match.TotalResults = bitmapMatch.Count;
+                if (match.TotalResults == 0)
+                    return 0;
 
-            var allMatches = memoizer.FillAndRetrieve();
-            
-            memoizer.InnerRetriever(out IQueryMatch inner);
-            if (inner is TInner typedInner)
-                match._inner = typedInner;
-            
-            match.TotalResults = allMatches.Length;
-            
-            if (match.TotalResults == 0)
-                return 0;
-
-            const int IndexSortingThreshold = 4096;
-            var forceUsingOnlyIndex = match._searcher._testingConfiguration is { ForceSortingUsingIndex: true };
-
-            if (typeof(TDirection) == typeof(RandomDirection))
-            {
-                SortByRandom(ref match, allMatches);
-            }
-            else if (forceUsingOnlyIndex == false && (typeof(TDirection) == typeof(NoIterationOptimization) ||
-                      match.TotalResults < IndexSortingThreshold))
-            {
-                SortResults<TEntryComparer>(ref match, allMatches);
+                if (typeof(TDirection) == typeof(RandomDirection))
+                {
+                    // Random requires full materialization — no shortcut
+                    SortResultsFromBitmap<TEntryComparer>(ref match);
+                }
+                else if (typeof(TDirection) == typeof(NoIterationOptimization))
+                {
+                    // Score/spatial/alphanumeric: no index to walk, must materialize + heap sort
+                    SortResultsFromBitmap<TEntryComparer>(ref match);
+                }
+                else
+                {
+                    // Index walk: intersect CompactTree batches with bitmap via AndWith
+                    SortUsingIndexFromBitmap<TEntryComparer, TDirection>(ref match, bitmapMatch);
+                }
             }
             else
             {
-                SortUsingIndex<TEntryComparer, TDirection>(ref match, allMatches);
+                // Non-bitmap path: existing MemoizationMatch logic
+                if (match._inner is not MemoizationMatch memoizer)
+                {
+                    memoizer = match._searcher.Memoize(match._inner).Replay();
+                }
+
+                var allMatches = memoizer.FillAndRetrieve();
+
+                memoizer.InnerRetriever(out IQueryMatch inner);
+                if (inner is TInner typedInner)
+                    match._inner = typedInner;
+
+                match.TotalResults = allMatches.Length;
+
+                if (match.TotalResults == 0)
+                    return 0;
+
+                const int IndexSortingThreshold = 4096;
+                var forceUsingOnlyIndex = match._searcher._testingConfiguration is { ForceSortingUsingIndex: true };
+
+                if (typeof(TDirection) == typeof(RandomDirection))
+                {
+                    SortByRandom(ref match, allMatches);
+                }
+                else if (forceUsingOnlyIndex == false && (typeof(TDirection) == typeof(NoIterationOptimization) ||
+                          match.TotalResults < IndexSortingThreshold))
+                {
+                    SortResults<TEntryComparer>(ref match, allMatches);
+                }
+                else
+                {
+                    SortUsingIndex<TEntryComparer, TDirection>(ref match, allMatches);
+                }
+
+                memoizer.Dispose();
             }
-            
-            memoizer.Dispose();
         }
 
 
@@ -583,6 +612,111 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
         return output;
     }
 
+
+    /// <summary>
+    /// Walk the CompactTree index in sorted order, intersecting each batch of entry IDs
+    /// with the bitmap via AndWith. Stops early once _take results are collected.
+    /// Avoids the MemoizationMatch full materialization that SortUsingIndex requires.
+    /// </summary>
+    private static void SortUsingIndexFromBitmap<TEntryComparer, TDirection>(
+        ref SortingMatch<TInner> match, Corax.Querying.Matches.Meta.IBitmapQueryMatch bitmapMatch)
+        where TDirection : struct, ILookupIterator
+        where TEntryComparer : struct, IEntryComparer, IComparer<UnmanagedSpan>
+    {
+        var llt = match._searcher.Transaction.LowLevelTransaction;
+        var allocator = match._searcher.Allocator;
+        var entryCmp = default(TEntryComparer);
+
+        int maxResults = match._take == -1 ? int.MaxValue : match._take;
+
+        var sortedIdsScope = allocator.Allocate(sizeof(long) * SortingMatch.SortBatchSize, out ByteString bs);
+        Span<long> sortedIdBuffer = new(bs.Ptr, SortingMatch.SortBatchSize);
+
+        var reader = GetReader(ref match, entryCmp, bitmapMatch.MinEntryId, bitmapMatch.MaxEntryId);
+
+        while (match._results.Count < maxResults)
+        {
+            match._cancellationToken.ThrowIfCancellationRequested();
+
+            var read = reader.Read(sortedIdBuffer);
+            if (read == 0)
+                break;
+
+            // Intersect this batch of sorted IDs with the bitmap.
+            // AndWith filters in-place, keeping only IDs present in the bitmap.
+            read = bitmapMatch.AndWith(sortedIdBuffer, read);
+
+            for (int i = 0; i < read && match._results.Count < maxResults; i++)
+                match._results.Add(sortedIdBuffer[i]);
+        }
+
+        reader.Dispose();
+        sortedIdsScope.Dispose();
+
+        SortedIndexReader<TDirection> GetReader(ref SortingMatch<TInner> match, TEntryComparer entryCmp, long min, long max)
+        {
+            if (typeof(TDirection) == typeof(Lookup<CompactTree.CompactKeyLookup>.ForwardIterator) ||
+                typeof(TDirection) == typeof(Lookup<CompactTree.CompactKeyLookup>.BackwardIterator))
+            {
+                var termsTree = match._searcher.GetTermsFor(entryCmp.GetSortFieldName(ref match));
+                return new SortedIndexReader<TDirection>(llt, match._searcher, termsTree.IterateValues<TDirection>(), match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending);
+            }
+
+            if (typeof(TDirection) == typeof(Lookup<Int64LookupKey>.ForwardIterator) ||
+                typeof(TDirection) == typeof(Lookup<Int64LookupKey>.BackwardIterator))
+            {
+                var termsTree = match._searcher.GetLongTermsFor(entryCmp.GetSortFieldName(ref match));
+                return new SortedIndexReader<TDirection>(llt, match._searcher, termsTree.Iterate<TDirection>(), match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending);
+            }
+
+            if (typeof(TDirection) == typeof(Lookup<DoubleLookupKey>.ForwardIterator) ||
+                typeof(TDirection) == typeof(Lookup<DoubleLookupKey>.BackwardIterator))
+            {
+                var termsTree = match._searcher.GetDoubleTermsFor(entryCmp.GetSortFieldName(ref match));
+                return new SortedIndexReader<TDirection>(llt, match._searcher, termsTree.Iterate<TDirection>(), match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending);
+            }
+
+            throw new NotSupportedException(typeof(TDirection).FullName);
+        }
+    }
+
+    /// <summary>
+    /// For sort types without an index to walk (score, spatial, alphanumeric, random),
+    /// materialize all bitmap entries directly (without MemoizationMatch overhead) and heap sort.
+    /// </summary>
+    private static void SortResultsFromBitmap<TEntryComparer>(ref SortingMatch<TInner> match)
+        where TEntryComparer : struct, IEntryComparer, IComparer<UnmanagedSpan>
+    {
+        var allocator = match._searcher.Allocator;
+        int total = (int)match.TotalResults;
+
+        var scope = allocator.Allocate(total * sizeof(long), out ByteString bs);
+        var allMatches = new Span<long>(bs.Ptr, total);
+
+        int filled = 0;
+        int read;
+        while ((read = match._inner.Fill(allMatches[filled..])) > 0)
+            filled += read;
+
+        if (filled == 0)
+        {
+            scope.Dispose();
+            return;
+        }
+
+        if (typeof(TEntryComparer) == typeof(Descending<EntryComparerByScore>)
+            || typeof(TEntryComparer) == typeof(EntryComparerByScore))
+        {
+            // Scoring: use heap sort (SortResults handles score computation)
+            SortResults<TEntryComparer>(ref match, allMatches[..filled]);
+        }
+        else
+        {
+            SortResults<TEntryComparer>(ref match, allMatches[..filled]);
+        }
+
+        scope.Dispose();
+    }
 
     private static void InitializeIndexesTopHalf(Span<long> span)
     {
