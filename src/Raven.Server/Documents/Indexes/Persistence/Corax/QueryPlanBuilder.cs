@@ -1033,8 +1033,7 @@ internal static class QueryPlanBuilder
                     ops.Add(new PlanOp
                     {
                         Kind = PlanOpKind.CheckAndMaybeEntryScan,
-                        ParamIndex = matchIndex,
-                        GotoLabelIndex = entryScanPredicates.Count
+                        ParamIndex = matchIndex
                     });
                     entryScanPredicates.Add(Array.Empty<MultiUnaryItem>());
                 }
