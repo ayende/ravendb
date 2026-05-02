@@ -44,13 +44,15 @@ public partial class IndexSearcher
     {
         AssertFieldIsSearched();
         var searchAnalyzer = field.IsDynamic
-            ? _fieldMapping.SearchAnalyzer(field.FieldName.ToString()) 
+            ? _fieldMapping.SearchAnalyzer(field.FieldName.ToString())
             : field.Analyzer;
 
         field = field.ChangeAnalyzer(field.Mode, searchAnalyzer);
 
         Analyzer wildcardAnalyzer = null;
         IQueryMatch searchQuery = null;
+        BitmapMatch? searchBitmap = null;
+        var tempBitmap = new Utils.RoaringBitmaps.RoaringBitmap();
 
         List<Slice> termMatches = null;
         var terms = new ContextBoundNativeList<Slice>(Allocator);
@@ -108,42 +110,34 @@ public partial class IndexSearcher
                     _ => throw new ArgumentOutOfRangeException(nameof(termType), termType.ToString())
                 };
 
-                if (searchQuery is null)
-                {
-                    searchQuery = query;
-                    continue;
-                }
-
-                searchQuery = @operator switch
-                {
-                    Constants.Search.Operator.Or => Or<IQueryMatch, MultiTermMatch>(searchQuery, query, token: cancellationToken),
-                    Constants.Search.Operator.And => And<IQueryMatch, MultiTermMatch>(searchQuery, query, token: cancellationToken),
-                    _ => throw new ArgumentOutOfRangeException(nameof(@operator), @operator, null)
-                };
+                // Accumulate wildcard queries into bitmap
+                searchBitmap ??= new BitmapMatch();
+                if (@operator == Constants.Search.Operator.Or)
+                    Primitives.QueryPrimitives.FillFromMatch(query, ref searchBitmap.Value.Bitmap);
+                else
+                    Primitives.QueryPrimitives.AndWithMatch(query, ref searchBitmap.Value.Bitmap, ref tempBitmap);
             }
         }
 
         if (termMatches?.Count > 0)
         {
-            var termMatchesQuery = @operator switch
+            IQueryMatch termMatchesQuery = @operator switch
             {
                 Constants.Search.Operator.And => AllInQuery(field, termMatches.ToHashSet(SliceComparer.Instance), token: cancellationToken),
                 Constants.Search.Operator.Or => InQuery(field, termMatches, token: cancellationToken),
                 _ => throw new ArgumentOutOfRangeException(nameof(@operator), @operator, null)
             };
 
-            if (searchQuery is null)
-                searchQuery = termMatchesQuery;
+            // Fill term matches into the bitmap
+            searchBitmap ??= new BitmapMatch();
+            if (@operator == Constants.Search.Operator.Or)
+                Primitives.QueryPrimitives.FillFromMatch(termMatchesQuery, ref searchBitmap.Value.Bitmap);
             else
-            {
-                searchQuery = @operator switch
-                {
-                    Constants.Search.Operator.Or => Or<IQueryMatch, IQueryMatch>(termMatchesQuery, searchQuery),
-                    Constants.Search.Operator.And => And<IQueryMatch, IQueryMatch>(termMatchesQuery, searchQuery),
-                    _ => throw new ArgumentOutOfRangeException(nameof(@operator), @operator, null)
-                };
-            }
+                Primitives.QueryPrimitives.AndWithMatch(termMatchesQuery, ref searchBitmap.Value.Bitmap, ref tempBitmap);
         }
+
+        if (searchBitmap.HasValue)
+            searchQuery = searchBitmap.Value;
 
         
         void AssertFieldIsSearched()
