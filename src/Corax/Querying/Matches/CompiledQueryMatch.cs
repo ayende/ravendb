@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Planning;
-using Corax.Utils.RoaringBitmaps;
+using Voron.Data.RoaringBitmaps;
 using Sparrow.Server;
 using Voron;
 

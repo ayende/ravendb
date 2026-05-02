@@ -6,7 +6,7 @@ using Corax.Indexing;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
 using Corax.Utils;
-using Corax.Utils.RoaringBitmaps;
+using Voron.Data.RoaringBitmaps;
 using Sparrow;
 using Sparrow.Compression;
 using Sparrow.Server;

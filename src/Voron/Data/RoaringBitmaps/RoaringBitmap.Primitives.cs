@@ -8,7 +8,7 @@ using System.Runtime.Intrinsics.Arm;
 using Sparrow;
 using Sparrow.Server;
 
-namespace Corax.Utils.RoaringBitmaps;
+namespace Voron.Data.RoaringBitmaps;
 
 public unsafe partial struct RoaringBitmap
 {
@@ -688,7 +688,7 @@ public unsafe partial struct RoaringBitmap
         int rangeStart = entry.RangeStart;
         int rangeCount = entry.Cardinality;
 
-        if (!MaybeConvertRangeToArray(ref entry, ref type, rangeStart, rangeCount, [value]))
+        if (MaybeConvertRangeToArray(ref entry, ref type, rangeStart, rangeCount, [value]) == false)
         {
             ConvertRangeToBitmap(ref entry, ref type);
             BitmapSet(entry.BitmapPtr, value);

@@ -1,7 +1,7 @@
 ﻿using System.Runtime.CompilerServices;
 using Sparrow.Server;
 
-namespace Corax.Utils.RoaringBitmaps;
+namespace Voron.Data.RoaringBitmaps;
 
 public unsafe struct ContainerEntry
 {

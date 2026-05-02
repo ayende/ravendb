@@ -1,4 +1,4 @@
-﻿namespace Corax.Utils.RoaringBitmaps;
+﻿namespace Voron.Data.RoaringBitmaps;
 
 public enum ContainerType : byte
 {

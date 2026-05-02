@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using Corax.Querying.Matches.Meta;
-using Corax.Utils.RoaringBitmaps;
+using Voron.Data.RoaringBitmaps;
 
 namespace Corax.Querying.Matches;
 

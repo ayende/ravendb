@@ -52,7 +52,7 @@ public partial class IndexSearcher
         Analyzer wildcardAnalyzer = null;
         IQueryMatch searchQuery = null;
         BitmapMatch? searchBitmap = null;
-        var tempBitmap = new Utils.RoaringBitmaps.RoaringBitmap();
+        var tempBitmap = new Voron.Data.RoaringBitmaps.RoaringBitmap();
 
         List<Slice> termMatches = null;
         var terms = new ContextBoundNativeList<Slice>(Allocator);
@@ -192,7 +192,7 @@ public partial class IndexSearcher
         Analyzer wildcardAnalyzer = null;
         IQueryMatch searchQuery = null;
         BitmapMatch? searchBitmap = null;
-        var tempBitmap = new Utils.RoaringBitmaps.RoaringBitmap();
+        var tempBitmap = new Voron.Data.RoaringBitmaps.RoaringBitmap();
 
         List<Slice> termMatches = null;
         var terms = new ContextBoundNativeList<Slice>(Allocator);
@@ -358,7 +358,7 @@ public partial class IndexSearcher
         AssertFieldIsSearched();
         IQueryMatch searchQuery = null;
         BitmapMatch? searchBitmap = null;
-        var tempBitmap = new Utils.RoaringBitmaps.RoaringBitmap();
+        var tempBitmap = new Voron.Data.RoaringBitmaps.RoaringBitmap();
         List<Slice> termMatches = null;
         var terms = new ContextBoundNativeList<Slice>(Allocator);
 

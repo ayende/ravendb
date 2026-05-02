@@ -1271,7 +1271,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             }
 
             // Materialize into bitmap via OR
-            var mltBitmap = new global::Corax.Utils.RoaringBitmaps.RoaringBitmap(_allocator);
+            var mltBitmap = new global::Voron.Data.RoaringBitmaps.RoaringBitmap(_allocator);
             try
             {
                 Span<long> fillBuf = stackalloc long[4096];
@@ -1285,7 +1285,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 // AND with filter query if present
                 if (moreLikeThisQuery.FilterQuery != null && moreLikeThisQuery.FilterQuery is AllEntriesMatch == false)
                 {
-                    var filterBitmap = new global::Corax.Utils.RoaringBitmaps.RoaringBitmap(_allocator);
+                    var filterBitmap = new global::Voron.Data.RoaringBitmaps.RoaringBitmap(_allocator);
                     try
                     {
                         var filterMatch = moreLikeThisQuery.FilterQuery;

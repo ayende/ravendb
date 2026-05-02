@@ -7,7 +7,7 @@ using System.Runtime.InteropServices;
 using Corax.Mappings;
 using Corax.Querying.Matches.Meta;
 using Corax.Utils;
-using Sparrow.Server.Collections;
+using Voron.Data.RoaringBitmaps;
 using Sparrow.Server.Utils;
 using Voron.Data.Graphs;
 using Voron.Util;
@@ -55,7 +55,8 @@ public struct VectorSearchMatch : IQueryMatch
     /// </summary>
     private readonly bool _singleVectorSearchDoNotSort;
 
-    private GrowableBitArray? _filterResults;
+    private RoaringBitmap _filterResults;
+    private bool _hasFilterResults;
     private IQueryMatch _filterQuery;
     private bool _filterQueryLoaded;
     private long _filterMatchesCount;
@@ -101,7 +102,8 @@ public struct VectorSearchMatch : IQueryMatch
         {
             _filterQueryLoaded = true;
             _filterResults = IndexSearcher.VectorSearchUtils.LoadFilterMatches(_indexSearcher, ref _filterQuery);
-            _filterMatchesCount = _filterResults?.Count ?? 0;
+            _hasFilterResults = true;
+            _filterMatchesCount = _filterResults.Count;
 
             // Shortcut for empty filter
             if (_filterMatchesCount == 0)
@@ -110,38 +112,41 @@ public struct VectorSearchMatch : IQueryMatch
                 return;
             }
         }
-        
+
         _scanningQuery = IndexSearcher.VectorSearchUtils.ShouldScan(_indexSearcher, _filterMatchesCount, _isExact, _filterQuery, _scanningThreshold, _numberOfCandidates);
         var llt = _indexSearcher._transaction.LowLevelTransaction;
         var vector = _vectorToSearch.GetEmbeddingMemory();
         var fieldName = _metadata.FieldName;
-        
+
         ContextBoundNativeList<long> nodesIdsToScan = default;
         if (_scanningQuery)
         {
-            var hasNodes = IndexSearcher.VectorSearchUtils.TryConvertDocumentsIdsToNodesIds(_indexSearcher, _metadata, _filterResults!.Value, out nodesIdsToScan);
+            var hasNodes = IndexSearcher.VectorSearchUtils.TryConvertDocumentsIdsToNodesIds(_indexSearcher, _metadata, ref _filterResults, out nodesIdsToScan);
             if (hasNodes == false)
             {
                 _isEmpty = true;
                 _vectorToSearch.Dispose();
-                _filterResults?.Dispose();
+                if (_hasFilterResults)
+                    _filterResults.Dispose();
                 return;
             }
-            
+
             _nodesIdsToScan = nodesIdsToScan;
         }
-        
-        
+
+
         _vectorSearchRetriever = _isExact switch
         {
             _ when _scanningQuery => Hnsw.ExactNearest(llt, fieldName, _numberOfCandidates, vector, _minimumMatch, hasFilterMatch: false, nodesIdsToScan),
             true => Hnsw.ExactNearest(llt, fieldName, _numberOfCandidates, vector, _minimumMatch, _filterQuery != null),
-            false when _filterQuery != null => Hnsw.ApproximateFilteredNearest(llt, fieldName, _numberOfCandidates, vector, _minimumMatch, new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(_indexSearcher, _metadata, _filterResults!.Value, _random)), 
+            false when _filterQuery != null => Hnsw.ApproximateFilteredNearest(llt, fieldName, _numberOfCandidates, vector, _minimumMatch, new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(_indexSearcher, _metadata, _filterResults, _random)),
                 _ => Hnsw.ApproximateNearest(llt, fieldName, _numberOfCandidates, vector, _minimumMatch, _filterQuery != null),
         };
-        
 
-        _isEmpty = _scanningQuery 
+        if (_hasFilterResults)
+            _vectorSearchRetriever.FilterCount = _filterMatchesCount;
+
+        _isEmpty = _scanningQuery
             ? _filterMatchesCount == 0 || _vectorSearchRetriever.IsEmpty
             : _vectorSearchRetriever.IsEmpty;
     }
@@ -208,7 +213,7 @@ public struct VectorSearchMatch : IQueryMatch
 
         var distancesBuffer = _distances.GetSpace();
         
-        var read = _vectorSearchRetriever.Fill(matches, distancesBuffer, _filterResults);
+        var read = _vectorSearchRetriever.Fill(matches, distancesBuffer, _hasFilterResults ? _filterResults.Contains : null);
         
         if (read == 0)
         {
@@ -247,7 +252,7 @@ public struct VectorSearchMatch : IQueryMatch
             var dBuf = distances.GetSpace();
             Debug.Assert(mBuf.Length == dBuf.Length, "mBuf.Length == dBuf.Length");
 
-            currentRead = _vectorSearchRetriever.Fill(mBuf, dBuf, _filterResults);
+            currentRead = _vectorSearchRetriever.Fill(mBuf, dBuf, _hasFilterResults ? _filterResults.Contains : null);
             
             matches.AddUsage(currentRead);
             distances.AddUsage(currentRead);
@@ -363,7 +368,8 @@ public struct VectorSearchMatch : IQueryMatch
     {
         if (_scanningQuery)
             _nodesIdsToScan.Dispose();
-        _filterResults?.Dispose();
+        if (_hasFilterResults)
+            _filterResults.Dispose();
         _vectorSearchRetriever.Dispose();
         _vectorToSearch.Dispose();
     }
