@@ -37,7 +37,6 @@ public struct PlanOp
     public int ParamIndex;
     public int ParamIndex2;
     public int BitmapLocal;
-    public int GotoLabelIndex;
     public long EstimatedCardinality;
 }
 
