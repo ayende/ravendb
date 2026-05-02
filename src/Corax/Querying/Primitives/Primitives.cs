@@ -17,10 +17,27 @@ namespace Corax.Querying.Primitives;
 /// </summary>
 public static class QueryPrimitives
 {
-    // Buffer size for stackalloc Fill operations. Benchmark different values
-    // (1024, 2048, 4096, 8192) with the optimized AddRange to find the sweet spot.
-    // Larger buffers reduce Fill() call overhead but increase stack usage.
+    // Buffer size for stackalloc Fill operations.
     private const int FillBufferSize = 4096;
+
+    // Batch size for entry scan: how many bitmap entries to read per iteration.
+    private const int EntryScanBatchSize = 256;
+
+    // Buffer size for skip operations during paginated iteration.
+    private const int SkipBufferSize = 1024;
+
+    // Bitmap count threshold below which entry scan is considered cheaper than
+    // bitmap AND with a posting list. Below this, individual entry blob reads
+    // are cheaper than decoding the full posting list.
+    private const long EntryScanCountThreshold = 32_000;
+
+    // Cost multiplier: entry scan is chosen when bitmapCount * EntryScanCostMultiplier
+    // is less than the posting list size. Approximates the relative cost of reading
+    // entry blobs vs. decoding posting list pages.
+    private const long EntryScanCostMultiplier = 64;
+
+    // Threshold for stackalloc vs heap allocation of field root pages array.
+    private const int FieldRootPagesStackAllocThreshold = 128;
 
     /// <summary>
     /// Fill a bitmap from a posting list. Walks leaf pages, decodes PFor blocks,
@@ -173,8 +190,8 @@ public static class QueryPrimitives
     public static bool ShouldSwitchToEntryScan(ref RoaringBitmap bitmap, in PostingListState postingListState)
     {
         long bitmapCount = bitmap.Count;
-        return bitmapCount < 32_000
-            && bitmapCount * 64 < postingListState.NumberOfEntries;
+        return bitmapCount < EntryScanCountThreshold
+            && bitmapCount * EntryScanCostMultiplier < postingListState.NumberOfEntries;
     }
 
     /// <summary>
@@ -185,8 +202,8 @@ public static class QueryPrimitives
     public static bool ShouldHeapSortDirectly(ref RoaringBitmap bitmap, long sortFieldTotalEntries)
     {
         long bitmapCount = bitmap.Count;
-        return bitmapCount < 32_000
-            && bitmapCount * 64 < sortFieldTotalEntries;
+        return bitmapCount < EntryScanCountThreshold
+            && bitmapCount * EntryScanCostMultiplier < sortFieldTotalEntries;
     }
 
     /// <summary>
@@ -206,11 +223,11 @@ public static class QueryPrimitives
             return ScanWithSkipAndLimitOnly(ref bitmap, output, limit, ref skip, iter);
         }
 
-        Span<long> batch = stackalloc long[256];
+        Span<long> batch = stackalloc long[EntryScanBatchSize];
         int matched = 0;
         Page lastPage = default;
 
-        Span<long> fieldRootPages = predicates.Length > 128
+        Span<long> fieldRootPages = predicates.Length > FieldRootPagesStackAllocThreshold
             ? new long[predicates.Length]
             : stackalloc long[predicates.Length];
 
@@ -284,7 +301,7 @@ public static class QueryPrimitives
     {
         if (skip > 0)
         {
-            Span<long> skipBuf = stackalloc long[Math.Min(skip, 1024)];
+            Span<long> skipBuf = stackalloc long[Math.Min(skip, SkipBufferSize)];
             while (skip > 0)
             {
                 int toSkip = Math.Min(skip, skipBuf.Length);
