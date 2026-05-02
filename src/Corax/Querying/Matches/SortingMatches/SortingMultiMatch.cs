@@ -119,35 +119,26 @@ public unsafe partial struct SortingMultiMatch<TInner>
         {
             match._token.ThrowIfCancellationRequested();
 
-            // Materialize by calling Fill repeatedly
-            var count = match._inner.Count;
-            int bufferSize = count > 0 && count < 1024 * 1024 ? (int)count : 4096;
-            var scope = match._searcher.Allocator.Allocate(bufferSize * sizeof(long), out var bs);
-            var allMatches = new Span<long>(bs.Ptr, bufferSize);
+            // Materialize all results from inner match (bitmap or PostFilterMatch)
+            match.TotalResults = match._inner.Count;
+            if (match.TotalResults == 0)
+                return 0;
+
+            int total = (int)Math.Min(match.TotalResults, 1024 * 1024);
+            var scope = match._searcher.Allocator.Allocate(total * sizeof(long), out var bs);
+            var allMatches = new Span<long>(bs.Ptr, total);
             int filled = 0;
             int r;
             while ((r = match._inner.Fill(allMatches[filled..])) > 0)
-            {
                 filled += r;
-                if (filled >= allMatches.Length)
-                {
-                    var newSize = allMatches.Length * 2;
-                    var newScope = match._searcher.Allocator.Allocate(newSize * sizeof(long), out var newBs);
-                    var newBuf = new Span<long>(newBs.Ptr, newSize);
-                    allMatches[..filled].CopyTo(newBuf);
-                    scope.Dispose();
-                    scope = newScope;
-                    allMatches = newBuf;
-                }
-            }
 
-            match.TotalResults = filled;
-            if (match.TotalResults == 0)
+            if (filled == 0)
             {
                 scope.Dispose();
                 return 0;
             }
 
+            match.TotalResults = filled;
             SortResults<TComparer1, TComparer2, TComparer3>(ref match, allMatches[..filled]);
             scope.Dispose();
         }

@@ -211,7 +211,8 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
             }
             else
             {
-                // Non-bitmap path: materialize by calling Fill repeatedly
+                // Non-bitmap path (PostFilterMatch, VectorSearchMatch, etc.)
+                // Materialize all results by calling Fill repeatedly.
                 var count = match._inner.Count;
                 int bufferSize = count > 0 && count < 1024 * 1024 ? (int)count : 4096;
                 var scope = match._searcher.Allocator.Allocate(bufferSize * sizeof(long), out var bs);
@@ -240,23 +241,7 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
                     return 0;
                 }
 
-                const int IndexSortingThreshold = 4096;
-                var forceUsingOnlyIndex = match._searcher._testingConfiguration is { ForceSortingUsingIndex: true };
-
-                if (typeof(TDirection) == typeof(RandomDirection))
-                {
-                    SortByRandom(ref match, allMatches[..filled]);
-                }
-                else if (forceUsingOnlyIndex == false && (typeof(TDirection) == typeof(NoIterationOptimization) ||
-                          match.TotalResults < IndexSortingThreshold))
-                {
-                    SortResults<TEntryComparer>(ref match, allMatches[..filled]);
-                }
-                else
-                {
-                    SortUsingIndex<TEntryComparer, TDirection>(ref match, allMatches[..filled]);
-                }
-
+                SortResults<TEntryComparer>(ref match, allMatches[..filled]);
                 scope.Dispose();
             }
         }
