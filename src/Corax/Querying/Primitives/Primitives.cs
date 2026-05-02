@@ -45,7 +45,7 @@ public static class QueryPrimitives
     /// Respects limit — stops after enough entries.
     /// </summary>
     [SkipLocalsInit]
-    public static void FillFromPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, int limit = int.MaxValue)
+    public static void FillFromPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, long limit = long.MaxValue)
     {
         Span<long> buffer = stackalloc long[FillBufferSize];
 
@@ -213,7 +213,7 @@ public static class QueryPrimitives
     /// </summary>
     [SkipLocalsInit]
     public static int ScanAndFilter(ref RoaringBitmap bitmap, IndexSearcher searcher,
-        MultiUnaryItem[] predicates, Span<long> output, int limit, ref int skip)
+        MultiUnaryItem[] predicates, Span<long> output, long limit, ref long skip)
     {
         bitmap.PrepareForReading();
         using var iter = bitmap.GetIterator();
@@ -239,7 +239,7 @@ public static class QueryPrimitives
         int read;
         while ((read = iter.Fill(ref bitmap, batch)) > 0)
         {
-            int i = skip;
+            int i = (int)Math.Min(skip, read);
             skip = Math.Max(0, skip - read);
             for (; i < read; i++)
             {
@@ -297,20 +297,20 @@ public static class QueryPrimitives
         return matched;
     }
 
-    private static int ScanWithSkipAndLimitOnly(ref RoaringBitmap bitmap, Span<long> output, int limit, ref int skip, RoaringBitmapIterator iter)
+    private static int ScanWithSkipAndLimitOnly(ref RoaringBitmap bitmap, Span<long> output, long limit, ref long skip, RoaringBitmapIterator iter)
     {
         if (skip > 0)
         {
-            Span<long> skipBuf = stackalloc long[Math.Min(skip, SkipBufferSize)];
+            Span<long> skipBuf = stackalloc long[(int)Math.Min(skip, SkipBufferSize)];
             while (skip > 0)
             {
-                int toSkip = Math.Min(skip, skipBuf.Length);
+                int toSkip = (int)Math.Min(skip, skipBuf.Length);
                 int skipped = iter.Fill(ref bitmap, skipBuf.Slice(0, toSkip));
                 if (skipped == 0) return 0;
                 skip -= skipped;
             }
         }
-        int maxOutput = Math.Min(output.Length, limit);
+        int maxOutput = (int)Math.Min(output.Length, limit);
         return iter.Fill(ref bitmap, output.Slice(0, maxOutput));
     }
 
