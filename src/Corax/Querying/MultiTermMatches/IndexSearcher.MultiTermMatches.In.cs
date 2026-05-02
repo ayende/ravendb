@@ -39,7 +39,7 @@ public partial class IndexSearcher
 
         if (inTerms.Count is > 1 and <= 4)
         {
-            var stack = new BinaryMatch[inTerms.Count / 2];
+            var stack = new CombinedMatch[inTerms.Count / 2];
             for (int i = 0; i < inTerms.Count / 2; i++)
             {
                 if (typeof(TTermType) == typeof((string Term, bool Exact)))
@@ -183,7 +183,7 @@ public partial class IndexSearcher
             (true, _) => termsCount
         };
         
-        var binaryMatchOfTermMatches = new BinaryMatch[termMatchCount / 2];
+        var binaryMatchOfTermMatches = new CombinedMatch[termMatchCount / 2];
         for (int i = 0; i < termMatchCount / 2; i++)
         {
             var term1 = TermMatchHandlingNullTerm(field, queryTerms[i * 2], terms);
