@@ -83,6 +83,7 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
         // deduplicationDisabled: true is safe here because the HashSet absorbs duplicates
         // and skipping the query-level dedup saves work during materialization.
         HashSet<long> baseQueryMatchingIds = null;
+        global::Corax.Querying.Matches.Meta.IBitmapQueryMatch baseQueryBitmap = null;
         if (query.Metadata.Query.Where is not null)
         {
             var parameters = new CoraxQueryBuilder.Parameters(_indexSearcher, _allocator, null, null, query, _index,
@@ -149,23 +150,35 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
                 baseQuery = compiledMatch;
             }
             queryTimings?.SetQueryPlan(baseQuery.Inspect());
-            var maxMatchingIds = _indexSearcher.MaxMemoizationSizeInBytes / sizeof(long);
-            baseQueryMatchingIds = new HashSet<long>();
-            int read;
-            while ((read = baseQuery.Fill(ids)) != 0)
+
+            // If the base query is bitmap-backed, use it directly for Contains checks
+            // instead of materializing into a HashSet.
+            if (baseQuery is global::Corax.Querying.Matches.Meta.IBitmapQueryMatch bqBitmap)
             {
-                for (int i = 0; i < read; i++)
-                    baseQueryMatchingIds.Add(ids[i]);
-
-                token.ThrowIfCancellationRequested();
-
-                // When exceeded, fall back to the scanning path which streams with bounded memory.
-                if (baseQueryMatchingIds.Count > maxMatchingIds)
-                {
-                    CoraxIndexReadOperation.QueryPool.Return(ids);
-                    return ScanningFacetedQuery(results, facetQuery, queryTimings, context, getSpatialField, queryTime, token);
-                }
+                // Force execution so bitmap is populated
+                _ = bqBitmap.Count;
+                baseQueryBitmap = bqBitmap;
             }
+            else
+            {
+                var maxMatchingIds = _indexSearcher.MaxMemoizationSizeInBytes / sizeof(long);
+                baseQueryMatchingIds = new HashSet<long>();
+                int read;
+                while ((read = baseQuery.Fill(ids)) != 0)
+                {
+                    for (int i = 0; i < read; i++)
+                        baseQueryMatchingIds.Add(ids[i]);
+
+                    token.ThrowIfCancellationRequested();
+
+                    // When exceeded, fall back to the scanning path which streams with bounded memory.
+                    if (baseQueryMatchingIds.Count > maxMatchingIds)
+                    {
+                        CoraxIndexReadOperation.QueryPool.Return(ids);
+                        return ScanningFacetedQuery(results, facetQuery, queryTimings, context, getSpatialField, queryTime, token);
+                    }
+                }
+            } // end else (non-bitmap path)
         }
 
         foreach (var result in results)
@@ -185,14 +198,14 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
                 // including terms filtered out by the WHERE clause.
                 List<string> sortedIds;
                 using var aggregationScope = provider.AggregateByTerms(out sortedIds, out var counts);
-                if (baseQueryMatchingIds == null)
+                if (baseQueryMatchingIds == null && baseQueryBitmap == null)
                     result.Value.SortedIds = sortedIds;
 
                 var idX = 0;
                 foreach (var term in CollectionsMarshal.AsSpan(sortedIds))
                 {
                     long count;
-                    if (baseQueryMatchingIds != null)
+                    if (baseQueryMatchingIds != null || baseQueryBitmap != null)
                     {
                         var queryTerm = ReferenceEquals(term, Constants.ProjectionNullValue) ? null
                             : ReferenceEquals(term, Constants.ProjectionEmptyString) ? Constants.EmptyString
@@ -204,7 +217,7 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
                         {
                             for (int i = 0; i < read; i++)
                             {
-                                if (baseQueryMatchingIds.Contains(ids[i]))
+                                if (baseQueryBitmap != null ? baseQueryBitmap.Contains(ids[i]) : baseQueryMatchingIds.Contains(ids[i]))
                                     count++;
                             }
                         }
@@ -251,7 +264,7 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
                 var fieldMetadata = GetFieldMetadata(range.Field);
                 long count;
 
-                if (baseQueryMatchingIds != null)
+                if (baseQueryMatchingIds != null || baseQueryBitmap != null)
                 {
                     var rangeQuery = range.GetQuery(_indexSearcher, fieldMetadata);
                     count = 0;
@@ -260,7 +273,7 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
                     {
                         for (int i = 0; i < read; i++)
                         {
-                            if (baseQueryMatchingIds.Contains(ids[i]))
+                            if (baseQueryBitmap != null ? baseQueryBitmap.Contains(ids[i]) : baseQueryMatchingIds.Contains(ids[i]))
                                 count++;
                         }
                     }
