@@ -703,16 +703,46 @@ internal static class QueryPlanBuilder
 
         if (isOr)
         {
-            // OR chain
+            // OR chain — expand In/OrGroup terms into individual OR ops
+            int matchIndex = 0;
             for (int i = 0; i < clauses.Count; i++)
             {
-                ops.Add(new PlanOp
+                if ((clauses[i].ClauseType == ClauseType.In || clauses[i].ClauseType == ClauseType.AllIn) && clauses[i].InTerms != null)
                 {
-                    Kind = i == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
-                    FieldId = i,
-                    ParamIndex = i,
-                    EstimatedCardinality = clauses[i].Cardinality
-                });
+                    foreach (var _ in clauses[i].InTerms)
+                    {
+                        ops.Add(new PlanOp
+                        {
+                            Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
+                            ParamIndex = matchIndex,
+                            EstimatedCardinality = clauses[i].Cardinality / clauses[i].InTerms.Count
+                        });
+                        matchIndex++;
+                    }
+                }
+                else if (clauses[i].ClauseType == ClauseType.OrGroup && clauses[i].OrSubClauses != null)
+                {
+                    foreach (var _ in clauses[i].OrSubClauses)
+                    {
+                        ops.Add(new PlanOp
+                        {
+                            Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
+                            ParamIndex = matchIndex,
+                            EstimatedCardinality = clauses[i].Cardinality / clauses[i].OrSubClauses.Count
+                        });
+                        matchIndex++;
+                    }
+                }
+                else
+                {
+                    ops.Add(new PlanOp
+                    {
+                        Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
+                        ParamIndex = matchIndex,
+                        EstimatedCardinality = clauses[i].Cardinality
+                    });
+                    matchIndex++;
+                }
             }
             ops.Add(new PlanOp { Kind = PlanOpKind.IterateInto });
         }
@@ -800,6 +830,22 @@ internal static class QueryPlanBuilder
                         });
                     }
                     matchIndex += subClauses.Count;
+                }
+                else if (clauses[0].ClauseType == ClauseType.In && clauses[0].InTerms != null)
+                {
+                    // IN at seed: OR all terms into bitmap[0]
+                    var terms = clauses[0].InTerms;
+                    for (int t = 0; t < terms.Count; t++)
+                    {
+                        ops.Add(new PlanOp
+                        {
+                            Kind = t == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
+                            ParamIndex = matchIndex + t,
+                            BitmapLocal = 0,
+                            EstimatedCardinality = clauses[0].Cardinality / terms.Count
+                        });
+                    }
+                    matchIndex += terms.Count;
                 }
                 else if (clauses[0].ClauseType == ClauseType.AllIn && clauses[0].InTerms != null)
                 {
@@ -899,6 +945,30 @@ internal static class QueryPlanBuilder
                     ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
 
                     matchIndex += subClauses.Count;
+                }
+                else if (clauses[i].ClauseType == ClauseType.In && clauses[i].InTerms != null)
+                {
+                    // IN in AND chain: OR all terms into bitmap[1], then AND with bitmap[0]
+                    var terms = clauses[i].InTerms;
+                    ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 1 });
+                    for (int t = 0; t < terms.Count; t++)
+                    {
+                        ops.Add(new PlanOp
+                        {
+                            Kind = PlanOpKind.OrWithPostings,
+                            ParamIndex = matchIndex + t,
+                            BitmapLocal = 1,
+                            EstimatedCardinality = clauses[i].Cardinality / terms.Count
+                        });
+                    }
+                    ops.Add(new PlanOp
+                    {
+                        Kind = PlanOpKind.AndBitmaps,
+                        BitmapLocal = 0,
+                        ParamIndex2 = 1
+                    });
+                    ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
+                    matchIndex += terms.Count;
                 }
                 else if (clauses[i].ClauseType == ClauseType.AllIn && clauses[i].InTerms != null)
                 {
@@ -1379,14 +1449,14 @@ internal static class QueryPlanBuilder
             };
         }
 
-        // Flatten OrGroups and AllIn: each sub-clause/term becomes a separate match.
+        // Flatten OrGroups, In, and AllIn: each sub-clause/term becomes a separate match.
         int totalMatches = 0;
         for (int i = 0; i < clauses.Length; i++)
         {
             var clause = (ClauseInfo)clauses[i];
             if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
                 totalMatches += clause.OrSubClauses.Count;
-            else if (clause.ClauseType == ClauseType.AllIn && clause.InTerms != null)
+            else if ((clause.ClauseType == ClauseType.AllIn || clause.ClauseType == ClauseType.In) && clause.InTerms != null)
                 totalMatches += clause.InTerms.Count;
             else
                 totalMatches++;
@@ -1407,11 +1477,11 @@ internal static class QueryPlanBuilder
                     matches[matchIdx++] = match;
                 }
             }
-            else if (clause.ClauseType == ClauseType.AllIn && clause.InTerms != null)
+            else if ((clause.ClauseType == ClauseType.AllIn || clause.ClauseType == ClauseType.In) && clause.InTerms != null)
             {
-                var fieldMeta = indexSearcher.FieldMetadataBuilder(clause.FieldName);
+                // Each IN/AllIn term becomes a separate match — resolved as typed TermQuery
                 foreach (var term in clause.InTerms)
-                    matches[matchIdx++] = indexSearcher.TermQuery(fieldMeta, term);
+                    matches[matchIdx++] = ResolveInTerm(clause.FieldName, term, indexSearcher, parameters, builderParams);
             }
             else
             {
@@ -1516,36 +1586,10 @@ internal static class QueryPlanBuilder
                 return indexSearcher.BetweenQuery(fieldMeta, clause.TermValue, clause.TermValue2);
 
             case ClauseType.In:
-            {
-                // Check if terms are numeric — InQuery only handles string terms correctly.
-                // For numeric IN values, we need to use TermQuery<long> per term and OR them.
-                if (clause.InTerms != null && clause.InTerms.Count > 0
-                    && long.TryParse(clause.InTerms[0], out _))
-                {
-                    // Numeric IN — OR the individual TermQuery<long> results
-                    IQueryMatch inMatch = null;
-                    foreach (var term in clause.InTerms)
-                    {
-                        IQueryMatch termMatch;
-                        if (long.TryParse(term, out long inLong))
-                            termMatch = indexSearcher.TermQuery(fieldMeta, inLong);
-                        else if (double.TryParse(term, System.Globalization.NumberStyles.Float,
-                            System.Globalization.CultureInfo.InvariantCulture, out double inDouble))
-                            termMatch = indexSearcher.TermQuery(fieldMeta, inDouble);
-                        else
-                            termMatch = indexSearcher.TermQuery(fieldMeta, term);
-
-                        inMatch = inMatch == null ? termMatch : indexSearcher.Or(inMatch, termMatch);
-                    }
-                    return inMatch ?? TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
-                }
-                return indexSearcher.InQuery(fieldMeta, clause.InTerms);
-            }
-
             case ClauseType.AllIn:
-                // AllIn sub-terms are expanded into separate matches by ResolveMatches.
+                // In and AllIn sub-terms are expanded into separate matches by ResolveMatches.
                 throw new InvalidOperationException(
-                    "AllIn should be expanded by ResolveMatches, not resolved as a single clause.");
+                    $"{clause.ClauseType} should be expanded by ResolveMatches, not resolved as a single clause.");
 
             case ClauseType.Exists:
                 return indexSearcher.ExistsQuery(fieldMeta);
@@ -1647,5 +1691,23 @@ internal static class QueryPlanBuilder
             default:
                 throw new InvalidOperationException($"Unexpected ClauseType {clause.ClauseType} in ResolveClause.");
         }
+    }
+
+    /// <summary>Resolve a single IN term to a typed TermQuery (long, double, or string).</summary>
+    private static IQueryMatch ResolveInTerm(string fieldName, string term, IndexSearcher indexSearcher,
+        PlanParameters parameters, CoraxQueryBuilder.Parameters builderParams)
+    {
+        FieldMetadata fieldMeta;
+        if (builderParams != null)
+            fieldMeta = QueryBuilderHelper.GetFieldMetadata(in builderParams, fieldName, hasBoost: builderParams.HasBoost);
+        else
+            fieldMeta = indexSearcher.FieldMetadataBuilder(fieldName, hasBoost: parameters?.HasBoost ?? false);
+
+        if (long.TryParse(term, out long lVal))
+            return indexSearcher.TermQuery(fieldMeta, lVal);
+        if (double.TryParse(term, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out double dVal))
+            return indexSearcher.TermQuery(fieldMeta, dVal);
+        return indexSearcher.TermQuery(fieldMeta, term);
     }
 }
