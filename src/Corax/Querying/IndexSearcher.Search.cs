@@ -52,7 +52,7 @@ public partial class IndexSearcher
         Analyzer wildcardAnalyzer = null;
         IQueryMatch searchQuery = null;
         BitmapMatch? searchBitmap = null;
-        var tempBitmap = new Voron.Data.RoaringBitmaps.RoaringBitmap();
+        var tempBitmap = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
 
         List<Slice> termMatches = null;
         var terms = new ContextBoundNativeList<Slice>(Allocator);
@@ -111,7 +111,7 @@ public partial class IndexSearcher
                 };
 
                 // Accumulate wildcard queries into bitmap
-                searchBitmap ??= new BitmapMatch();
+                searchBitmap ??= new BitmapMatch(Allocator);
                 if (@operator == Constants.Search.Operator.Or)
                     Primitives.QueryPrimitives.FillFromMatch(query, ref searchBitmap.Value.Bitmap);
                 else
@@ -129,7 +129,7 @@ public partial class IndexSearcher
             };
 
             // Fill term matches into the bitmap
-            searchBitmap ??= new BitmapMatch();
+            searchBitmap ??= new BitmapMatch(Allocator);
             if (@operator == Constants.Search.Operator.Or)
                 Primitives.QueryPrimitives.FillFromMatch(termMatchesQuery, ref searchBitmap.Value.Bitmap);
             else
@@ -192,7 +192,7 @@ public partial class IndexSearcher
         Analyzer wildcardAnalyzer = null;
         IQueryMatch searchQuery = null;
         BitmapMatch? searchBitmap = null;
-        var tempBitmap = new Voron.Data.RoaringBitmaps.RoaringBitmap();
+        var tempBitmap = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
 
         List<Slice> termMatches = null;
         var terms = new ContextBoundNativeList<Slice>(Allocator);
@@ -260,7 +260,7 @@ public partial class IndexSearcher
                     _ => throw new ArgumentOutOfRangeException(nameof(termType), termType.ToString())
                 };
 
-                searchBitmap ??= new BitmapMatch();
+                searchBitmap ??= new BitmapMatch(Allocator);
                 if (@operator == Constants.Search.Operator.Or)
                     Primitives.QueryPrimitives.FillFromMatch(query, ref searchBitmap.Value.Bitmap);
                 else
@@ -286,7 +286,7 @@ public partial class IndexSearcher
 
             var phraseMatch = PhraseQuery(allIn, field, terms.ToSpan());
 
-            searchBitmap ??= new BitmapMatch();
+            searchBitmap ??= new BitmapMatch(Allocator);
             if (@operator == Constants.Search.Operator.Or)
                 Primitives.QueryPrimitives.FillFromMatch(phraseMatch, ref searchBitmap.Value.Bitmap);
             else
@@ -302,7 +302,7 @@ public partial class IndexSearcher
                 _ => throw new ArgumentOutOfRangeException(nameof(@operator), @operator, null)
             };
 
-            searchBitmap ??= new BitmapMatch();
+            searchBitmap ??= new BitmapMatch(Allocator);
             if (@operator == Constants.Search.Operator.Or)
                 Primitives.QueryPrimitives.FillFromMatch(termMatchesQuery, ref searchBitmap.Value.Bitmap);
             else
@@ -358,7 +358,7 @@ public partial class IndexSearcher
         AssertFieldIsSearched();
         IQueryMatch searchQuery = null;
         BitmapMatch? searchBitmap = null;
-        var tempBitmap = new Voron.Data.RoaringBitmaps.RoaringBitmap();
+        var tempBitmap = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
         List<Slice> termMatches = null;
         var terms = new ContextBoundNativeList<Slice>(Allocator);
 
@@ -417,7 +417,7 @@ public partial class IndexSearcher
                     _ => throw new ArgumentOutOfRangeException(nameof(termType), termType.ToString())
                 };
 
-                searchBitmap ??= new BitmapMatch();
+                searchBitmap ??= new BitmapMatch(Allocator);
                 if (@operator == Constants.Search.Operator.Or)
                     Primitives.QueryPrimitives.FillFromMatch(query, ref searchBitmap.Value.Bitmap);
                 else
@@ -436,7 +436,7 @@ public partial class IndexSearcher
             var allIn = AllInQuery(field, hs, cancellationToken: cancellationToken);
             var phraseMatch = PhraseQuery(allIn, field, terms.ToSpan());
 
-            searchBitmap ??= new BitmapMatch();
+            searchBitmap ??= new BitmapMatch(Allocator);
             if (@operator == Constants.Search.Operator.Or)
                 Primitives.QueryPrimitives.FillFromMatch(phraseMatch, ref searchBitmap.Value.Bitmap);
             else
@@ -452,7 +452,7 @@ public partial class IndexSearcher
                 _ => throw new ArgumentOutOfRangeException(nameof(@operator), @operator, null)
             };
 
-            searchBitmap ??= new BitmapMatch();
+            searchBitmap ??= new BitmapMatch(Allocator);
             if (@operator == Constants.Search.Operator.Or)
                 Primitives.QueryPrimitives.FillFromMatch(termMatchesQuery, ref searchBitmap.Value.Bitmap);
             else

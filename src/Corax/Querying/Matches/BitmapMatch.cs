@@ -23,6 +23,12 @@ public unsafe struct BitmapMatch : IQueryMatch, IBitmapQueryMatch, IDisposable
         _iteratorInitialized = false;
     }
 
+    public BitmapMatch(Sparrow.Server.ByteStringContext allocator)
+    {
+        _bitmap = new RoaringBitmap(allocator);
+        _iteratorInitialized = false;
+    }
+
     /// <summary>Get a mutable reference to the internal bitmap for building.</summary>
     public ref RoaringBitmap Bitmap => ref _bitmap;
 
