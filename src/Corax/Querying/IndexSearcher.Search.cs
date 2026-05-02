@@ -51,7 +51,12 @@ public partial class IndexSearcher
 
         Analyzer wildcardAnalyzer = null;
         IQueryMatch searchQuery = null;
-        BitmapMatch? searchBitmap = null;
+        // BitmapMatch holds a struct RoaringBitmap with internal NativeList<>'s. Using
+        // Nullable<BitmapMatch> would route .Value through a temporary copy, severing
+        // mutations to the bitmap's count/index fields. Keep an eagerly-allocated
+        // instance plus a flag tracking whether anything was accumulated.
+        var searchBitmap = new BitmapMatch(Allocator);
+        bool searchBitmapHasValue = false;
         var tempBitmap = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
 
         List<Slice> termMatches = null;
@@ -91,14 +96,14 @@ public partial class IndexSearcher
                 }
 
                 Slice analyzedTerm = default;
-                
+
                 if (termType is not Constants.Search.SearchMatchOptions.Exists)
                 {
                     analyzedTerm = EncodeAndApplyAnalyzer(field, analyzer, termReadyToAnalyze);
                     if (analyzedTerm.Size == 0)
                         continue; //skip empty results
                 }
-                
+
                 var query = termType switch
                 {
                     Constants.Search.SearchMatchOptions.TermMatch => throw new InvalidDataException(
@@ -110,12 +115,11 @@ public partial class IndexSearcher
                     _ => throw new ArgumentOutOfRangeException(nameof(termType), termType.ToString())
                 };
 
-                // Accumulate wildcard queries into bitmap
-                searchBitmap ??= new BitmapMatch(Allocator);
+                searchBitmapHasValue = true;
                 if (@operator == Constants.Search.Operator.Or)
-                    Primitives.QueryPrimitives.FillFromMatch(query, ref searchBitmap.Value.Bitmap);
+                    Primitives.QueryPrimitives.FillFromMatch(query, ref searchBitmap.Bitmap);
                 else
-                    Primitives.QueryPrimitives.AndWithMatch(query, ref searchBitmap.Value.Bitmap, ref tempBitmap);
+                    Primitives.QueryPrimitives.AndWithMatch(query, ref searchBitmap.Bitmap, ref tempBitmap);
             }
         }
 
@@ -128,16 +132,15 @@ public partial class IndexSearcher
                 _ => throw new ArgumentOutOfRangeException(nameof(@operator), @operator, null)
             };
 
-            // Fill term matches into the bitmap
-            searchBitmap ??= new BitmapMatch(Allocator);
+            searchBitmapHasValue = true;
             if (@operator == Constants.Search.Operator.Or)
-                Primitives.QueryPrimitives.FillFromMatch(termMatchesQuery, ref searchBitmap.Value.Bitmap);
+                Primitives.QueryPrimitives.FillFromMatch(termMatchesQuery, ref searchBitmap.Bitmap);
             else
-                Primitives.QueryPrimitives.AndWithMatch(termMatchesQuery, ref searchBitmap.Value.Bitmap, ref tempBitmap);
+                Primitives.QueryPrimitives.AndWithMatch(termMatchesQuery, ref searchBitmap.Bitmap, ref tempBitmap);
         }
 
-        if (searchBitmap.HasValue)
-            searchQuery = searchBitmap.Value;
+        if (searchBitmapHasValue)
+            searchQuery = searchBitmap;
 
         
         void AssertFieldIsSearched()
@@ -191,7 +194,12 @@ public partial class IndexSearcher
 
         Analyzer wildcardAnalyzer = null;
         IQueryMatch searchQuery = null;
-        BitmapMatch? searchBitmap = null;
+        // BitmapMatch holds a struct RoaringBitmap with internal NativeList<>'s. Using
+        // Nullable<BitmapMatch> would route .Value through a temporary copy, severing
+        // mutations to the bitmap's count/index fields. Keep an eagerly-allocated
+        // instance plus a flag tracking whether anything was accumulated.
+        var searchBitmap = new BitmapMatch(Allocator);
+        bool searchBitmapHasValue = false;
         var tempBitmap = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
 
         List<Slice> termMatches = null;
@@ -260,20 +268,20 @@ public partial class IndexSearcher
                     _ => throw new ArgumentOutOfRangeException(nameof(termType), termType.ToString())
                 };
 
-                searchBitmap ??= new BitmapMatch(Allocator);
+                searchBitmapHasValue = true;
                 if (@operator == Constants.Search.Operator.Or)
-                    Primitives.QueryPrimitives.FillFromMatch(query, ref searchBitmap.Value.Bitmap);
+                    Primitives.QueryPrimitives.FillFromMatch(query, ref searchBitmap.Bitmap);
                 else
-                    Primitives.QueryPrimitives.AndWithMatch(query, ref searchBitmap.Value.Bitmap, ref tempBitmap);
+                    Primitives.QueryPrimitives.AndWithMatch(query, ref searchBitmap.Bitmap, ref tempBitmap);
 
                 continue;
             }
-            
+
             //Phrase query
             terms.Clear();
             EncodeAndApplyAnalyzerForMultipleTerms(field, word, ref terms);
-            
-            if (terms.Count == 0) 
+
+            if (terms.Count == 0)
                 continue; //sentence contained only stop-words
             PhraseQuery:
             var hs = new HashSet<Slice>(SliceComparer.Instance);
@@ -286,11 +294,11 @@ public partial class IndexSearcher
 
             var phraseMatch = PhraseQuery(allIn, field, terms.ToSpan());
 
-            searchBitmap ??= new BitmapMatch(Allocator);
+            searchBitmapHasValue = true;
             if (@operator == Constants.Search.Operator.Or)
-                Primitives.QueryPrimitives.FillFromMatch(phraseMatch, ref searchBitmap.Value.Bitmap);
+                Primitives.QueryPrimitives.FillFromMatch(phraseMatch, ref searchBitmap.Bitmap);
             else
-                Primitives.QueryPrimitives.AndWithMatch(phraseMatch, ref searchBitmap.Value.Bitmap, ref tempBitmap);
+                Primitives.QueryPrimitives.AndWithMatch(phraseMatch, ref searchBitmap.Bitmap, ref tempBitmap);
         }
 
         if (termMatches?.Count > 0)
@@ -302,23 +310,23 @@ public partial class IndexSearcher
                 _ => throw new ArgumentOutOfRangeException(nameof(@operator), @operator, null)
             };
 
-            searchBitmap ??= new BitmapMatch(Allocator);
+            searchBitmapHasValue = true;
             if (@operator == Constants.Search.Operator.Or)
-                Primitives.QueryPrimitives.FillFromMatch(termMatchesQuery, ref searchBitmap.Value.Bitmap);
+                Primitives.QueryPrimitives.FillFromMatch(termMatchesQuery, ref searchBitmap.Bitmap);
             else
-                Primitives.QueryPrimitives.AndWithMatch(termMatchesQuery, ref searchBitmap.Value.Bitmap, ref tempBitmap);
+                Primitives.QueryPrimitives.AndWithMatch(termMatchesQuery, ref searchBitmap.Bitmap, ref tempBitmap);
         }
 
-        if (searchBitmap.HasValue)
-            searchQuery = searchBitmap.Value;
+        if (searchBitmapHasValue)
+            searchQuery = searchBitmap;
 
-        
+
         void AssertFieldIsSearched()
         {
             if (field.Analyzer == null && field.IsDynamic == false)
                 throw new InvalidOperationException($"{nameof(SearchQueryWithPhraseQuery)} requires analyzer.");
         }
-        
+
         wildcardAnalyzer?.Dispose();
 
         return searchQuery ?? TermMatch.CreateEmpty(this, Allocator);
@@ -357,7 +365,12 @@ public partial class IndexSearcher
     {
         AssertFieldIsSearched();
         IQueryMatch searchQuery = null;
-        BitmapMatch? searchBitmap = null;
+        // BitmapMatch holds a struct RoaringBitmap with internal NativeList<>'s. Using
+        // Nullable<BitmapMatch> would route .Value through a temporary copy, severing
+        // mutations to the bitmap's count/index fields. Keep an eagerly-allocated
+        // instance plus a flag tracking whether anything was accumulated.
+        var searchBitmap = new BitmapMatch(Allocator);
+        bool searchBitmapHasValue = false;
         var tempBitmap = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
         List<Slice> termMatches = null;
         var terms = new ContextBoundNativeList<Slice>(Allocator);
@@ -417,11 +430,11 @@ public partial class IndexSearcher
                     _ => throw new ArgumentOutOfRangeException(nameof(termType), termType.ToString())
                 };
 
-                searchBitmap ??= new BitmapMatch(Allocator);
+                searchBitmapHasValue = true;
                 if (@operator == Constants.Search.Operator.Or)
-                    Primitives.QueryPrimitives.FillFromMatch(query, ref searchBitmap.Value.Bitmap);
+                    Primitives.QueryPrimitives.FillFromMatch(query, ref searchBitmap.Bitmap);
                 else
-                    Primitives.QueryPrimitives.AndWithMatch(query, ref searchBitmap.Value.Bitmap, ref tempBitmap);
+                    Primitives.QueryPrimitives.AndWithMatch(query, ref searchBitmap.Bitmap, ref tempBitmap);
 
                 continue;
             }
@@ -436,13 +449,13 @@ public partial class IndexSearcher
             var allIn = AllInQuery(field, hs, cancellationToken: cancellationToken);
             var phraseMatch = PhraseQuery(allIn, field, terms.ToSpan());
 
-            searchBitmap ??= new BitmapMatch(Allocator);
+            searchBitmapHasValue = true;
             if (@operator == Constants.Search.Operator.Or)
-                Primitives.QueryPrimitives.FillFromMatch(phraseMatch, ref searchBitmap.Value.Bitmap);
+                Primitives.QueryPrimitives.FillFromMatch(phraseMatch, ref searchBitmap.Bitmap);
             else
-                Primitives.QueryPrimitives.AndWithMatch(phraseMatch, ref searchBitmap.Value.Bitmap, ref tempBitmap);
+                Primitives.QueryPrimitives.AndWithMatch(phraseMatch, ref searchBitmap.Bitmap, ref tempBitmap);
         }
-        
+
         if (termMatches?.Count > 0)
         {
             var termMatchesQuery = @operator switch
@@ -452,15 +465,15 @@ public partial class IndexSearcher
                 _ => throw new ArgumentOutOfRangeException(nameof(@operator), @operator, null)
             };
 
-            searchBitmap ??= new BitmapMatch(Allocator);
+            searchBitmapHasValue = true;
             if (@operator == Constants.Search.Operator.Or)
-                Primitives.QueryPrimitives.FillFromMatch(termMatchesQuery, ref searchBitmap.Value.Bitmap);
+                Primitives.QueryPrimitives.FillFromMatch(termMatchesQuery, ref searchBitmap.Bitmap);
             else
-                Primitives.QueryPrimitives.AndWithMatch(termMatchesQuery, ref searchBitmap.Value.Bitmap, ref tempBitmap);
+                Primitives.QueryPrimitives.AndWithMatch(termMatchesQuery, ref searchBitmap.Bitmap, ref tempBitmap);
         }
 
-        if (searchBitmap.HasValue)
-            searchQuery = searchBitmap.Value;
+        if (searchBitmapHasValue)
+            searchQuery = searchBitmap;
 
         return searchQuery ?? TermMatch.CreateEmpty(this, Allocator);
         
