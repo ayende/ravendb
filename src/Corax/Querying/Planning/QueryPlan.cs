@@ -79,6 +79,27 @@ public enum ScanCompareOp : byte
     Between,
 }
 
+/// <summary>References a spatial IQueryMatch that should be applied as a post-filter
+/// after the bitmap filter phase completes. The match is ANDed with the candidate bitmap.</summary>
+public struct SpatialFilterOp
+{
+    /// <summary>Index into the resolved IQueryMatch[] for this spatial match.</summary>
+    public int MatchIndex;
+    /// <summary>The clause that produced this spatial filter, for match resolution.</summary>
+    public object Clause;
+}
+
+/// <summary>References a vector IQueryMatch that should wrap the bitmap filter result.
+/// The compiled bitmap match is passed as the filterQuery to VectorSearchMatch.</summary>
+public struct VectorSelectOp
+{
+    /// <summary>Index into the resolved IQueryMatch[] for this vector match.
+    /// At execution time, the vector match is materialized with the bitmap match as its filter.</summary>
+    public int MatchIndex;
+    /// <summary>The clause that produced this vector select, for match resolution.</summary>
+    public object Clause;
+}
+
 public class QueryPlan
 {
     public PlanOp[] Ops;
@@ -89,6 +110,14 @@ public class QueryPlan
     public object[] Clauses;
     public bool IsAllEntries;
     public bool AllNegated;
+
+    /// <summary>Spatial operations to apply after the bitmap filter phase builds the candidate bitmap.
+    /// Each spatial match is ANDed with the candidate set.</summary>
+    public SpatialFilterOp[] SpatialFilters;
+
+    /// <summary>Vector operations to apply after spatial filtering.
+    /// The bitmap-producing CompiledQueryMatch is passed as the filterQuery to VectorSearchMatch.</summary>
+    public VectorSelectOp[] VectorSelects;
 
     /// <summary>Packed parameter type signature from ScanPredicateInfos.
     /// 2 bits per predicate (0=long, 1=double, 2=string). Used as part of cache key.</summary>
