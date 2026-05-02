@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Corax.Querying.Matches;
@@ -70,8 +71,7 @@ public static class QueryPrimitives
         // Each container key covers 65536 entry IDs.
         long minKey = bitmap.MinContainerKey;
         long maxKey = bitmap.MaxContainerKey;
-        if (minKey < 0)
-            return; // bitmap is empty (shouldn't happen after IsEmpty check, but defensive)
+        Debug.Assert(minKey is not -1 && maxKey is not -1,"shouldn't happen, we checked IsEmpty") ;
 
         long seekFrom = minKey * RoaringBitmap.ContainerSize;
         long pruneAfter = (maxKey + 1) * RoaringBitmap.ContainerSize - 1;
@@ -130,8 +130,7 @@ public static class QueryPrimitives
 
         long minKey = bitmap.MinContainerKey;
         long maxKey = bitmap.MaxContainerKey;
-        if (minKey < 0)
-            return;
+        Debug.Assert(minKey is not -1 && maxKey is not -1,"shouldn't happen, we checked IsEmpty") ;
 
         long seekFrom = minKey * RoaringBitmap.ContainerSize;
         long pruneAfter = (maxKey + 1) * RoaringBitmap.ContainerSize - 1;
@@ -153,17 +152,6 @@ public static class QueryPrimitives
         } while (hasMore && read > 0);
 
         bitmap.AndNotWith(ref tempBitmap);
-    }
-
-    /// <summary>
-    /// Lazy OR — same as OrWithPostings but intended for use in multi-term IN chains.
-    /// Call RepairAfterLazy() on the bitmap after all lazy OR operations.
-    /// </summary>
-    public static void LazyOrWithPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap)
-    {
-        // Currently delegates to OrWithPostings. When LazyOrWith on RoaringBitmap
-        // is fully implemented (skip popcount per container), this will use that.
-        OrWithPostings(ref iterator, ref bitmap);
     }
 
     /// <summary>
@@ -210,119 +198,103 @@ public static class QueryPrimitives
     public static int ScanAndFilter(ref RoaringBitmap bitmap, IndexSearcher searcher,
         MultiUnaryItem[] predicates, Span<long> output, int limit, ref int skip)
     {
-        if (predicates == null || predicates.Length == 0)
+        bitmap.PrepareForReading();
+        using var iter = bitmap.GetIterator();
+
+        if (predicates is not {Length: > 0}) // No predicates — just deal with skip/limit
         {
-            // No predicates — iterate with skip/limit
-            bitmap.PrepareForReading();
-            var iter = bitmap.GetIterator();
-            try
-            {
-                if (skip > 0)
-                {
-                    Span<long> skipBuf = stackalloc long[Math.Min(skip, 1024)];
-                    while (skip > 0)
-                    {
-                        int toSkip = Math.Min(skip, skipBuf.Length);
-                        int skipped = iter.Fill(ref bitmap, skipBuf.Slice(0, toSkip));
-                        if (skipped == 0) return 0;
-                        skip -= skipped;
-                    }
-                }
-                int maxOutput = (int)Math.Min(output.Length, limit);
-                return iter.Fill(ref bitmap, output.Slice(0, maxOutput));
-            }
-            finally
-            {
-                iter.Dispose();
-            }
+            return ScanWithSkipAndLimitOnly(ref bitmap, output, limit, ref skip, iter);
         }
 
-        bitmap.PrepareForReading();
-        var iterator = bitmap.GetIterator();
+        Span<long> batch = stackalloc long[256];
+        int matched = 0;
+        Page lastPage = default;
 
-        try
+        Span<long> fieldRootPages = predicates.Length > 128
+            ? new long[predicates.Length]
+            : stackalloc long[predicates.Length];
+
+        for (int p = 0; p < predicates.Length; p++)
         {
-            Span<long> batch = stackalloc long[256];
-            int matched = 0;
-            Page lastPage = default;
+            fieldRootPages[p] = searcher.FieldCache.GetLookupRootPage(predicates[p].Binding.FieldName);
+        }
 
-            Span<long> fieldRootPages = predicates.Length > 128
-                ? new long[predicates.Length]
-                : stackalloc long[predicates.Length];
-
-            for (int p = 0; p < predicates.Length; p++)
+        int read;
+        while ((read = iter.Fill(ref bitmap, batch)) > 0)
+        {
+            int i = skip;
+            skip = Math.Max(0, skip - read);
+            for (; i < read; i++)
             {
-                fieldRootPages[p] = searcher.FieldCache.GetLookupRootPage(predicates[p].Binding.FieldName);
-            }
+                long entryId = batch[i];
+                var reader = searcher.GetEntryTermsReader(entryId, ref lastPage);
+                bool documentMatched = true;
 
-            int read;
-            while ((read = iterator.Fill(ref bitmap, batch)) > 0)
-            {
-                for (int i = 0; i < read; i++)
+                for (int p = 0; p < predicates.Length; p++)
                 {
-                    if (skip > 0)
+                    ref var predicate = ref predicates[p];
+                    long fieldRootPage = fieldRootPages[p];
+
+                    bool isAccepted = predicate.Mode == MultiUnaryItem.UnaryMode.All;
+                    reader.Reset();
+
+                    while (reader.FindNext(fieldRootPage))
                     {
-                        skip--;
-                        continue;
-                    }
-
-                    long entryId = batch[i];
-                    var reader = searcher.GetEntryTermsReader(entryId, ref lastPage);
-                    bool documentMatched = true;
-
-                    for (int p = 0; p < predicates.Length; p++)
-                    {
-                        ref var predicate = ref predicates[p];
-                        long fieldRootPage = fieldRootPages[p];
-
-                        bool isAccepted = predicate.Mode == MultiUnaryItem.UnaryMode.All;
-                        reader.Reset();
-
-                        while (reader.FindNext(fieldRootPage))
+                        bool cmpResult = predicate.Type switch
                         {
-                            bool cmpResult = predicate.Type switch
-                            {
-                                MultiUnaryItem.DataType.Slice => predicate.CompareLiteral(reader),
-                                MultiUnaryItem.DataType.Long => predicate.CompareNumerical(reader),
-                                MultiUnaryItem.DataType.Double => predicate.CompareNumerical(reader),
-                                _ => throw new ArgumentOutOfRangeException()
-                            };
+                            MultiUnaryItem.DataType.Slice => predicate.CompareLiteral(reader),
+                            MultiUnaryItem.DataType.Long => predicate.CompareNumerical(reader),
+                            MultiUnaryItem.DataType.Double => predicate.CompareNumerical(reader),
+                            _ => throw new ArgumentOutOfRangeException()
+                        };
 
-                            if (predicate.Mode == MultiUnaryItem.UnaryMode.All && !cmpResult)
-                            {
-                                isAccepted = false;
-                                break;
-                            }
-
-                            if (predicate.Mode == MultiUnaryItem.UnaryMode.Any && cmpResult)
-                            {
-                                isAccepted = true;
-                                break;
-                            }
+                        if (predicate.Mode == MultiUnaryItem.UnaryMode.All && !cmpResult)
+                        {
+                            isAccepted = false;
+                            break;
                         }
 
-                        if (!isAccepted)
+                        if (predicate.Mode == MultiUnaryItem.UnaryMode.Any && cmpResult)
                         {
-                            documentMatched = false;
+                            isAccepted = true;
                             break;
                         }
                     }
 
-                    if (documentMatched)
+                    if (!isAccepted)
                     {
-                        output[matched++] = entryId;
-                        if (matched >= limit || matched >= output.Length)
-                            return matched;
+                        documentMatched = false;
+                        break;
                     }
                 }
-            }
 
-            return matched;
+                if (documentMatched)
+                {
+                    output[matched++] = entryId;
+                    if (matched >= limit || matched >= output.Length)
+                        return matched;
+                }
+            }
         }
-        finally
+
+        return matched;
+    }
+
+    private static int ScanWithSkipAndLimitOnly(ref RoaringBitmap bitmap, Span<long> output, int limit, ref int skip, RoaringBitmapIterator iter)
+    {
+        if (skip > 0)
         {
-            iterator.Dispose();
+            Span<long> skipBuf = stackalloc long[Math.Min(skip, 1024)];
+            while (skip > 0)
+            {
+                int toSkip = Math.Min(skip, skipBuf.Length);
+                int skipped = iter.Fill(ref bitmap, skipBuf.Slice(0, toSkip));
+                if (skipped == 0) return 0;
+                skip -= skipped;
+            }
         }
+        int maxOutput = Math.Min(output.Length, limit);
+        return iter.Fill(ref bitmap, output.Slice(0, maxOutput));
     }
 
     /// <summary>
