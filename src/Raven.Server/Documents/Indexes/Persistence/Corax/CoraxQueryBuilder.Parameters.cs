@@ -29,7 +29,6 @@ public partial class CoraxQueryBuilder
         public readonly int Take;
         public readonly CancellationToken Token;
         public readonly List<string> BuildSteps;
-        public readonly MemoizationMatchProvider<AllEntriesMatch> AllEntries;
         public readonly QueryMetadata Metadata;
         public readonly bool HasDynamics;
         public readonly Lazy<List<string>> DynamicFields;
@@ -58,7 +57,6 @@ public partial class CoraxQueryBuilder
             Take = take;
             Token = token;
             BuildSteps = buildSteps;
-            AllEntries = IndexSearcher.Memoize(IndexSearcher.AllEntries());
             Metadata = query.Metadata;
             HasDynamics = index.Definition.HasDynamicFields;
             IsVectorSingleClause = Metadata.Query.Where is MethodExpression me && QueryMethod.GetMethodType(me.Name.Value) == MethodType.Vector_Search && Metadata.OrderBy is null or {Length: 0};

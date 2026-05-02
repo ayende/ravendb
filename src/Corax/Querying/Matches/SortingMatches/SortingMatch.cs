@@ -211,41 +211,53 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
             }
             else
             {
-                // Non-bitmap path: existing MemoizationMatch logic
-                if (match._inner is not MemoizationMatch memoizer)
+                // Non-bitmap path: materialize by calling Fill repeatedly
+                var count = match._inner.Count;
+                int bufferSize = count > 0 ? (int)Math.Min(count, int.MaxValue) : 4096;
+                var scope = match._searcher.Allocator.Allocate(bufferSize * sizeof(long), out var bs);
+                var allMatches = new Span<long>(bs.Ptr, bufferSize);
+                int filled = 0;
+                int r;
+                while ((r = match._inner.Fill(allMatches[filled..])) > 0)
                 {
-                    memoizer = match._searcher.Memoize(match._inner).Replay();
+                    filled += r;
+                    if (filled >= allMatches.Length)
+                    {
+                        var newSize = allMatches.Length * 2;
+                        var newScope = match._searcher.Allocator.Allocate(newSize * sizeof(long), out var newBs);
+                        var newBuf = new Span<long>(newBs.Ptr, newSize);
+                        allMatches[..filled].CopyTo(newBuf);
+                        scope.Dispose();
+                        scope = newScope;
+                        allMatches = newBuf;
+                    }
                 }
 
-                var allMatches = memoizer.FillAndRetrieve();
-
-                memoizer.InnerRetriever(out IQueryMatch inner);
-                if (inner is TInner typedInner)
-                    match._inner = typedInner;
-
-                match.TotalResults = allMatches.Length;
-
+                match.TotalResults = filled;
                 if (match.TotalResults == 0)
+                {
+                    scope.Dispose();
                     return 0;
+                }
 
                 const int IndexSortingThreshold = 4096;
                 var forceUsingOnlyIndex = match._searcher._testingConfiguration is { ForceSortingUsingIndex: true };
 
                 if (typeof(TDirection) == typeof(RandomDirection))
                 {
-                    SortByRandom(ref match, allMatches);
+                    SortByRandom(ref match, allMatches[..filled]);
                 }
                 else if (forceUsingOnlyIndex == false && (typeof(TDirection) == typeof(NoIterationOptimization) ||
                           match.TotalResults < IndexSortingThreshold))
                 {
-                    SortResults<TEntryComparer>(ref match, allMatches);
+                    SortResults<TEntryComparer>(ref match, allMatches[..filled]);
                 }
                 else
                 {
-                    SortUsingIndex<TEntryComparer, TDirection>(ref match, allMatches);
+                    SortUsingIndex<TEntryComparer, TDirection>(ref match, allMatches[..filled]);
                 }
 
-                memoizer.Dispose();
+                scope.Dispose();
             }
         }
 

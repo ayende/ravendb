@@ -117,24 +117,39 @@ public unsafe partial struct SortingMultiMatch<TInner>
         // we will just need to acquire via pages the totality of the results. 
         if (match.TotalResults == NotStarted)
         {
-            if (match._inner is not MemoizationMatch memoizer)
-            {
-                memoizer = match._searcher.Memoize(match._inner).Replay();
-            }
-            
             match._token.ThrowIfCancellationRequested();
-            var allMatches = memoizer.FillAndRetrieve();
-            match.TotalResults = allMatches.Length;
-            memoizer.InnerRetriever(out IQueryMatch inner);
-            if (inner is TInner typedInner)
-                match._inner = typedInner;
-            
-            
+
+            // Materialize by calling Fill repeatedly
+            var count = match._inner.Count;
+            int bufferSize = count > 0 ? (int)Math.Min(count, int.MaxValue) : 4096;
+            var scope = match._searcher.Allocator.Allocate(bufferSize * sizeof(long), out var bs);
+            var allMatches = new Span<long>(bs.Ptr, bufferSize);
+            int filled = 0;
+            int r;
+            while ((r = match._inner.Fill(allMatches[filled..])) > 0)
+            {
+                filled += r;
+                if (filled >= allMatches.Length)
+                {
+                    var newSize = allMatches.Length * 2;
+                    var newScope = match._searcher.Allocator.Allocate(newSize * sizeof(long), out var newBs);
+                    var newBuf = new Span<long>(newBs.Ptr, newSize);
+                    allMatches[..filled].CopyTo(newBuf);
+                    scope.Dispose();
+                    scope = newScope;
+                    allMatches = newBuf;
+                }
+            }
+
+            match.TotalResults = filled;
             if (match.TotalResults == 0)
+            {
+                scope.Dispose();
                 return 0;
-            
-            SortResults<TComparer1, TComparer2, TComparer3>(ref match, allMatches);
-            memoizer.Dispose();
+            }
+
+            SortResults<TComparer1, TComparer2, TComparer3>(ref match, allMatches[..filled]);
+            scope.Dispose();
         }
 
         var read = match._results.CopyTo(matches, match._alreadyReadIdx);
