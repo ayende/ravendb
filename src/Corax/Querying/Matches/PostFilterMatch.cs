@@ -26,6 +26,7 @@ public struct PostFilterMatch : IQueryMatch
     public bool IsBoosting => _inner.IsBoosting;
     public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
 
+
     public int Fill(Span<long> matches)
     {
         int read = _inner.Fill(matches);
