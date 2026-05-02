@@ -46,6 +46,38 @@ namespace Corax.Querying.Matches.TermProviders
             throw new NotImplementedException();
         }
 
+        public int FillPostingListIds(Span<long> postingListIds)
+        {
+            ReadOnlySpan<byte> decodedStartsWith = _startWith.Decoded();
+            int count = 0;
+
+            while (count < postingListIds.Length)
+            {
+                if (_iterator.MoveNext(out var compactKey, out long postingListId, out _) == false)
+                    break;
+
+                var key = compactKey.Decoded();
+                if (_validatePostfixLen && key[^1] != decodedStartsWith.Length)
+                {
+                    _token.ThrowIfCancellationRequested();
+                    continue;
+                }
+
+                if (_firstRun && default(TLookupIterator).IsForward == false && key.StartsWith(decodedStartsWith) == false)
+                {
+                    _firstRun = false;
+                    continue;
+                }
+
+                if (key.StartsWith(decodedStartsWith) == false)
+                    break;
+
+                postingListIds[count++] = postingListId;
+            }
+
+            return count;
+        }
+
         public void Reset()
         {
             if (default(TLookupIterator).IsForward)

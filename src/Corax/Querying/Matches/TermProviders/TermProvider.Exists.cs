@@ -73,11 +73,23 @@ namespace Corax.Querying.Matches.TermProviders
                 {
                     return total;
                 }
-                
+
                 _fetchNulls = false;
             }
-            
+
             return _iterator.Fill(containers);
+        }
+
+        public int FillPostingListIds(Span<long> postingListIds)
+        {
+            if (_fetchNulls)
+            {
+                postingListIds[0] = _postingListId;
+                _fetchNulls = false;
+                return 1;
+            }
+
+            return _iterator.Fill(postingListIds);
         }
 
         public void Reset()

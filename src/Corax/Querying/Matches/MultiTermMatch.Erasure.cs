@@ -159,6 +159,8 @@ namespace Corax.Querying.Matches
                 throw new NotImplementedException();
             }
 
+            public int FillPostingListIds(Span<long> postingListIds) => 0;
+
             public void Reset(){}
 
             public QueryInspectionNode Inspect()
