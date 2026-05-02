@@ -8,7 +8,7 @@ using Sparrow;
 using Sparrow.Server;
 using Voron.Util;
 
-namespace Corax.Utils.RoaringBitmaps;
+namespace Voron.Data.RoaringBitmaps;
 
 /// <summary>
 /// A roaring bitmap implementation optimized for Corax's native memory model.
@@ -673,7 +673,7 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
             ushort val = arr[i];
             int wordIdx = val >> 6;
             int chunkIdx = wordIdx >> 2;
-            if (!BitmapContains(dirtyMap, (ushort)chunkIdx))
+            if (BitmapContains(dirtyMap, (ushort)chunkIdx) == false)
             {
                 BitmapSet(dirtyMap, (ushort)chunkIdx);
                 new Span<byte>(scratch + chunkIdx * 4, 4 * sizeof(ulong)).Clear();
@@ -921,7 +921,7 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
                 for (int i = 0; i < left.Cardinality; i++)
                 {
                     ushort val = arr[i];
-                    if (!BitmapContains(bmp, val))
+                    if (BitmapContains(bmp, val) == false)
                         arr[count++] = val;
                 }
 
@@ -1263,7 +1263,7 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
                 break;
 
             case ContainerType.Range:
-                if (!TryMergeRangeInPlace(ref entry, value, value + 1))
+                if (TryMergeRangeInPlace(ref entry, value, value + 1) == false)
                 {
                     ConvertRangeForAdd(ref entry, ref type, value);
                 }

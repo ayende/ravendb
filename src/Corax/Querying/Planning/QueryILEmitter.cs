@@ -7,7 +7,7 @@ using System.Threading;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
 using Corax.Utils;
-using Corax.Utils.RoaringBitmaps;
+using Voron.Data.RoaringBitmaps;
 using Voron;
 
 namespace Corax.Querying.Planning;

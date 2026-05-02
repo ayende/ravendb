@@ -7,7 +7,7 @@ using Sparrow;
 using Sparrow.Server;
 using Sparrow.Server.Utils.VxSort;
 
-namespace Corax.Utils.RoaringBitmaps;
+namespace Voron.Data.RoaringBitmaps;
 
 /// <summary>
 /// Forward iterator for RoaringBitmap supporting Fill(Span&lt;long&gt;) streaming.

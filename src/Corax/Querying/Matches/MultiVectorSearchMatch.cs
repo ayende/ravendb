@@ -6,7 +6,7 @@ using System.Linq;
 using Corax.Mappings;
 using Corax.Querying.Matches.Meta;
 using Corax.Utils;
-using Sparrow.Server.Collections;
+using Voron.Data.RoaringBitmaps;
 using Sparrow.Server.Utils;
 using Voron.Data.Graphs;
 using Voron.Util;
@@ -52,7 +52,8 @@ public struct MultiVectorSearchMatch : IQueryMatch
     /// </summary>
     private readonly bool _singleVectorSearchDoNotSort;
 
-    private GrowableBitArray? _filterResults;
+    private RoaringBitmap _filterResults;
+    private bool _hasFilterResults;
     private IQueryMatch _filterQuery;
     private long _filterMatchesCount;
 
@@ -81,8 +82,9 @@ public struct MultiVectorSearchMatch : IQueryMatch
         if (_filterQuery != null)
         {
             _filterResults = IndexSearcher.VectorSearchUtils.LoadFilterMatches(_indexSearcher, ref _filterQuery);
-            _filterMatchesCount = _filterResults!.Value.Count;
-            
+            _hasFilterResults = true;
+            _filterMatchesCount = _filterResults.Count;
+
             // Shortcut for empty filter
             if (_filterMatchesCount == 0)
             {
@@ -94,12 +96,13 @@ public struct MultiVectorSearchMatch : IQueryMatch
         _scanningQuery = IndexSearcher.VectorSearchUtils.ShouldScan(_indexSearcher, _filterMatchesCount, _isExact, _filterQuery, _scanningThreshold, _numberOfCandidates);
         if (_scanningQuery)
         {
-            var hasNodes = IndexSearcher.VectorSearchUtils.TryConvertDocumentsIdsToNodesIds(_indexSearcher, _metadata, _filterResults!.Value, out _nodesIdsToScan);
+            var hasNodes = IndexSearcher.VectorSearchUtils.TryConvertDocumentsIdsToNodesIds(_indexSearcher, _metadata, ref _filterResults, out _nodesIdsToScan);
             if (hasNodes == false)
             {
                 _isEmpty = true;
                 _nodesIdsToScan.Dispose();
-                _filterResults?.Dispose();
+                if (_hasFilterResults)
+                    _filterResults.Dispose();
                 foreach (var vector in _vectorsToSearch)
                     vector.Dispose();
                 return;
@@ -114,17 +117,19 @@ public struct MultiVectorSearchMatch : IQueryMatch
             var vector = _vectorsToSearch[i].GetEmbeddingMemory();
             _vectorsRetrievers[i] = (_isExact) switch
             {
-
                 _ when _scanningQuery => Hnsw.ExactNearest(llt, _metadata.FieldName, _numberOfCandidates, vector, _minimumMatch, false, _nodesIdsToScan),
                 true => Hnsw.ExactNearest(llt, _metadata.FieldName, _numberOfCandidates, vector, _minimumMatch, _filterQuery != null, null),
-                false when _filterQuery != null => Hnsw.ApproximateFilteredNearest(llt,  _metadata.FieldName, _numberOfCandidates, vector, _minimumMatch, new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(_indexSearcher, _metadata, _filterResults!.Value, _random)), 
+                false when _filterQuery != null => Hnsw.ApproximateFilteredNearest(llt, _metadata.FieldName, _numberOfCandidates, vector, _minimumMatch, new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(_indexSearcher, _metadata, _filterResults, _random)),
                 false => Hnsw.ApproximateNearest(llt, _metadata.FieldName, _numberOfCandidates, vector, _minimumMatch, _filterQuery != null),
             };
+
+            if (_hasFilterResults)
+                _vectorsRetrievers[i].FilterCount = _filterMatchesCount;
 
             allEmpty &= _vectorsRetrievers[i].IsEmpty;
         }
 
-        _isEmpty = allEmpty || (_filterQuery != null && _filterResults!.Value.Count == 0);
+        _isEmpty = allEmpty || (_hasFilterResults && _filterResults.Count == 0);
     }
 
     public int Fill(Span<long> matches)
@@ -169,7 +174,7 @@ public struct MultiVectorSearchMatch : IQueryMatch
                 Debug.Assert(matchBuffer.Length == distanceBuffer.Length, "matchBuffer.Length == distanceBuffer.Length");
 
 
-                currentRead = vectorSearcher.Fill(matchBuffer, distanceBuffer, _filterResults);
+                currentRead = vectorSearcher.Fill(matchBuffer, distanceBuffer, _hasFilterResults ? _filterResults.Contains : null);
                 
                 _matches.AddUsage(currentRead);
                 _distances.AddUsage(currentRead);
@@ -192,7 +197,8 @@ public struct MultiVectorSearchMatch : IQueryMatch
         if (_singleVectorSearchDoNotSort) 
             _distances.Results.Sort(_matches.Results);
         
-        _filterResults?.Dispose();
+        if (_hasFilterResults)
+            _filterResults.Dispose();
     }
 
     public int AndWith(Span<long> buffer, int matches)
