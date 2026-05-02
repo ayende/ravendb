@@ -318,18 +318,13 @@ namespace FastTests.Corax
             {
                 using var searcher = new IndexSearcher(Env, CreateKnownFields(Allocator));
 
-                var match1 = searcher.Memoize(searcher.TermQuery("Id", "entry/1"));
-                var match2 = searcher.Memoize(searcher.TermQuery("Content", "mountain"));
-                var andMatch = searcher.Memoize(searcher.And(match1.Replay(), match2.Replay()));
-
-                var replay1 = andMatch.Replay();
-                var replay2 = andMatch.Replay();
+                var match1 = searcher.TermQuery("Id", "entry/1");
+                var match2 = searcher.TermQuery("Content", "mountain");
+                var andMatch = searcher.And(match1, match2);
 
                 Span<long> ids = stackalloc long[16];
-                Assert.Equal(2, replay1.Fill(ids));
-                Assert.Equal(0, replay1.Fill(ids));
-                Assert.Equal(2, replay2.Fill(ids));
-                Assert.Equal(0, replay2.Fill(ids));
+                Assert.Equal(2, andMatch.Fill(ids));
+                Assert.Equal(0, andMatch.Fill(ids));
             }
         }
 
