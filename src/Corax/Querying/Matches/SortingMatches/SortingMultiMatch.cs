@@ -121,7 +121,7 @@ public unsafe partial struct SortingMultiMatch<TInner>
 
             // Materialize by calling Fill repeatedly
             var count = match._inner.Count;
-            int bufferSize = count > 0 ? (int)Math.Min(count, int.MaxValue) : 4096;
+            int bufferSize = count > 0 && count < 1024 * 1024 ? (int)count : 4096;
             var scope = match._searcher.Allocator.Allocate(bufferSize * sizeof(long), out var bs);
             var allMatches = new Span<long>(bs.Ptr, bufferSize);
             int filled = 0;

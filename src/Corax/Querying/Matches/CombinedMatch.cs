@@ -117,12 +117,19 @@ public struct CombinedMatch : IQueryMatch
             return toCopy;
         }
 
-        int result = MergeHelper.Or(output, leftSpan, rightSpan);
-        // MergeHelper.Or merges sorted arrays. Remaining items need to be tracked.
-        // For simplicity, we don't track partial consumption — refill next call.
-        _leftRemainingCount = 0;
+        // MergeHelper.Or does not respect destination length — merge into a temp buffer
+        // large enough for the full merge, then copy what fits to output.
+        int mergeSize = leftSpan.Length + rightSpan.Length;
+        var mergeBuffer = new long[mergeSize];
+        int merged = MergeHelper.Or(mergeBuffer.AsSpan(0, mergeSize), leftSpan, rightSpan);
+
+        int copyCount = Math.Min(merged, output.Length);
+        mergeBuffer.AsSpan(0, copyCount).CopyTo(output);
+
+        // Save any remaining merged entries for the next Fill call
+        SaveRemaining(mergeBuffer.AsSpan(copyCount, merged - copyCount), ref _leftRemaining, ref _leftRemainingCount);
         _rightRemainingCount = 0;
-        return result;
+        return copyCount;
     }
 
     private int FillAnd(Span<long> output)
