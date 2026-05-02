@@ -109,6 +109,14 @@ public static class QueryILEmitter
     private static readonly MethodInfo s_sliceAsReadOnlySpan =
         typeof(Voron.Slice).GetMethod(nameof(Voron.Slice.AsReadOnlySpan))!;
 
+    // QueryPrimitives — called instead of inline IL Fill loops
+    private static readonly MethodInfo s_fillFromMatch =
+        typeof(Corax.Querying.Primitives.QueryPrimitives).GetMethod(nameof(Primitives.QueryPrimitives.FillFromMatch))!;
+    private static readonly MethodInfo s_andWithMatch =
+        typeof(Corax.Querying.Primitives.QueryPrimitives).GetMethod(nameof(Primitives.QueryPrimitives.AndWithMatch))!;
+    private static readonly MethodInfo s_andNotWithMatch =
+        typeof(Corax.Querying.Primitives.QueryPrimitives).GetMethod(nameof(Primitives.QueryPrimitives.AndNotWithMatch))!;
+
     // Span<Slice> indexer
     private static readonly MethodInfo s_spanSliceIndexer =
         typeof(Span<Voron.Slice>).GetProperty("Item")!.GetGetMethod()!;
@@ -180,17 +188,19 @@ public static class QueryILEmitter
                 case PlanOpKind.FillFromPostings:
                 case PlanOpKind.DirectIterate:
                     EmitCancellationCheck(il);
-                    EmitFillLoop(il, op.ParamIndex, bufferLocal, readLocal, 0);
+                    // QueryPrimitives.FillFromMatch(match, ref bitmap[0])
+                    EmitLoadMatch(il, op.ParamIndex);
+                    EmitLoadBitmapRef(il, 0);
+                    il.Emit(OpCodes.Call, s_fillFromMatch);
                     break;
 
                 case PlanOpKind.AndWithPostings:
                     EmitCancellationCheck(il);
-                    EmitLoadBitmapRef(il, 1);
-                    il.Emit(OpCodes.Call, s_clear);
-                    EmitFillLoop(il, op.ParamIndex, bufferLocal, readLocal, 1);
+                    // QueryPrimitives.AndWithMatch(match, ref bitmap[0], ref bitmap[1])
+                    EmitLoadMatch(il, op.ParamIndex);
                     EmitLoadBitmapRef(il, 0);
                     EmitLoadBitmapRef(il, 1);
-                    il.Emit(OpCodes.Call, s_andWith);
+                    il.Emit(OpCodes.Call, s_andWithMatch);
                     EmitLoadBitmapRef(il, 0);
                     il.Emit(OpCodes.Call, s_isEmptyGetter);
                     il.Emit(OpCodes.Brtrue, doneLabel);
@@ -199,7 +209,10 @@ public static class QueryILEmitter
                 case PlanOpKind.OrWithPostings:
                 case PlanOpKind.LazyOrWithPostings:
                     EmitCancellationCheck(il);
-                    EmitFillLoop(il, op.ParamIndex, bufferLocal, readLocal, op.BitmapLocal);
+                    // QueryPrimitives.FillFromMatch(match, ref bitmap[slot])
+                    EmitLoadMatch(il, op.ParamIndex);
+                    EmitLoadBitmapRef(il, op.BitmapLocal);
+                    il.Emit(OpCodes.Call, s_fillFromMatch);
                     break;
 
                 case PlanOpKind.ClearBitmap:
@@ -221,12 +234,11 @@ public static class QueryILEmitter
 
                 case PlanOpKind.AndNotWithPostings:
                     EmitCancellationCheck(il);
-                    EmitLoadBitmapRef(il, 1);
-                    il.Emit(OpCodes.Call, s_clear);
-                    EmitFillLoop(il, op.ParamIndex, bufferLocal, readLocal, 1);
+                    // QueryPrimitives.AndNotWithMatch(match, ref bitmap[0], ref bitmap[1])
+                    EmitLoadMatch(il, op.ParamIndex);
                     EmitLoadBitmapRef(il, 0);
                     EmitLoadBitmapRef(il, 1);
-                    il.Emit(OpCodes.Call, s_andNotWith);
+                    il.Emit(OpCodes.Call, s_andNotWithMatch);
                     break;
 
                 case PlanOpKind.RepairAfterLazy:

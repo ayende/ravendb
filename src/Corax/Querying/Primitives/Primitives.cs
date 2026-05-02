@@ -297,4 +297,39 @@ public static class QueryPrimitives
         return iter.Fill(ref bitmap, output.Slice(0, maxOutput));
     }
 
+    // --- IQueryMatch-based overloads for IL emitter ---
+    // The emitted IL resolves matches as IQueryMatch[] (TermMatch, BoostingMatch, etc.).
+    // These overloads let the IL call QueryPrimitives directly instead of emitting
+    // inline Fill+AddRange loops. JIT inlines these with AggressiveInlining.
+
+    /// <summary>Fill bitmap from an IQueryMatch by calling Fill repeatedly.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [SkipLocalsInit]
+    public static void FillFromMatch(Matches.Meta.IQueryMatch match, ref RoaringBitmap bitmap)
+    {
+        Span<long> buffer = stackalloc long[FillBufferSize];
+        int read;
+        while ((read = match.Fill(buffer)) > 0)
+            bitmap.AddRange(buffer.Slice(0, read));
+    }
+
+    /// <summary>Fill temp bitmap from match, then AND with target.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [SkipLocalsInit]
+    public static void AndWithMatch(Matches.Meta.IQueryMatch match, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap)
+    {
+        tempBitmap.Clear();
+        FillFromMatch(match, ref tempBitmap);
+        bitmap.AndWith(ref tempBitmap);
+    }
+
+    /// <summary>Fill temp bitmap from match, then ANDNOT from target.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [SkipLocalsInit]
+    public static void AndNotWithMatch(Matches.Meta.IQueryMatch match, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap)
+    {
+        tempBitmap.Clear();
+        FillFromMatch(match, ref tempBitmap);
+        bitmap.AndNotWith(ref tempBitmap);
+    }
 }
