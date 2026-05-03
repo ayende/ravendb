@@ -357,7 +357,12 @@ public static class QueryPrimitives
     }
 
     /// <summary>Fill temp bitmap from match, then AND with target.
-    /// Fast path: borrow the match's bitmap directly and AND in place — no temp fill needed.</summary>
+    /// Fast paths:
+    ///   - Match exposes a RoaringBitmap (IBitmapQueryMatch): AND in place against the borrowed bitmap.
+    ///   - Match is a TermMatch backed by a large posting list: use the galloping page-scan
+    ///     <see cref="AndWithPostings"/>, which bounds the posting-list scan to the bitmap's
+    ///     container range — only reads pages that can intersect, instead of materializing
+    ///     the full posting list into a temp bitmap.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     [SkipLocalsInit]
     public static void AndWithMatch(Matches.Meta.IQueryMatch match, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap)
@@ -368,13 +373,19 @@ public static class QueryPrimitives
             bitmap.AndWith(ref src);
             return;
         }
+        if (match is Matches.TermMatch tm && tm.TryGetLargePostingListIterator(out var iter))
+        {
+            AndWithPostings(ref iter, ref bitmap, ref tempBitmap);
+            return;
+        }
         tempBitmap.Clear();
         FillFromMatch(match, ref tempBitmap);
         bitmap.AndWith(ref tempBitmap);
     }
 
     /// <summary>Fill temp bitmap from match, then ANDNOT from target.
-    /// Fast path: borrow the match's bitmap and ANDNOT directly.</summary>
+    /// Fast paths mirror <see cref="AndWithMatch"/> — bitmap-borrow for IBitmapQueryMatch,
+    /// galloping <see cref="AndNotWithPostings"/> for TermMatch with a large posting list.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     [SkipLocalsInit]
     public static void AndNotWithMatch(Matches.Meta.IQueryMatch match, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap)
@@ -383,6 +394,11 @@ public static class QueryPrimitives
         {
             var src = bm.BorrowBitmap();
             bitmap.AndNotWith(ref src);
+            return;
+        }
+        if (match is Matches.TermMatch tm && tm.TryGetLargePostingListIterator(out var iter))
+        {
+            AndNotWithPostings(ref iter, ref bitmap, ref tempBitmap);
             return;
         }
         tempBitmap.Clear();
