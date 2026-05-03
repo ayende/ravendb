@@ -70,7 +70,7 @@ public class CompiledQueryBenchmark : RavenTestBase
         for (int w = 0; w < warmup; w++)
         {
             using var session = store.OpenAsyncSession();
-            var results = await session.Advanced.AsyncRawQuery<dynamic>(rql).ToListAsync();
+            await session.Advanced.AsyncRawQuery<dynamic>(rql).ToListAsync();
         }
 
         // Measure
