@@ -24,8 +24,6 @@ public static class QueryILEmitter
     private static readonly FieldInfo s_ctxDirectSources = typeof(QueryScanContext).GetField(nameof(QueryScanContext.DirectSources))!;
     private static readonly FieldInfo s_ctxSearcher = typeof(QueryScanContext).GetField(nameof(QueryScanContext.Searcher))!;
     private static readonly FieldInfo s_ctxToken = typeof(QueryScanContext).GetField(nameof(QueryScanContext.Token))!;
-    private static readonly FieldInfo s_ctxTimings = typeof(QueryScanContext).GetField(nameof(QueryScanContext.Timings))!;
-    private static readonly FieldInfo s_ctxResultCounts = typeof(QueryScanContext).GetField(nameof(QueryScanContext.ResultCounts))!;
     private static readonly FieldInfo s_ctxEntryScanTakenAtOp = typeof(QueryScanContext).GetField(nameof(QueryScanContext.EntryScanTakenAtOp))!;
 
     // Timing helpers
@@ -41,14 +39,12 @@ public static class QueryILEmitter
         typeof(Span<RoaringBitmap>).GetProperty("Item")!.GetGetMethod()!;
 
     // IQueryMatch
-    private static readonly MethodInfo s_fillMethod = typeof(IQueryMatch).GetMethod(nameof(IQueryMatch.Fill))!;
     private static readonly MethodInfo s_matchCountGetter = typeof(IQueryMatch).GetProperty(nameof(IQueryMatch.Count))!.GetGetMethod()!;
 
     // Span<IQueryMatch> indexer
     private static readonly MethodInfo s_matchSpanIndexer = typeof(Span<IQueryMatch>).GetProperty("Item")!.GetGetMethod()!;
 
     // RoaringBitmap
-    private static readonly MethodInfo s_addRange = typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.AddRange))!;
     private static readonly MethodInfo s_andWith = typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.AndWith))!;
     private static readonly MethodInfo s_andNotWith = typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.AndNotWith))!;
     private static readonly MethodInfo s_clear = typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.Clear))!;
@@ -69,8 +65,6 @@ public static class QueryILEmitter
 
     // Span<long>
     private static readonly ConstructorInfo s_spanCtor = typeof(Span<long>).GetConstructor(new[] { typeof(void*), typeof(int) })!;
-    private static readonly MethodInfo s_spanSlice = typeof(Span<long>).GetMethod(nameof(Span<long>.Slice), new[] { typeof(int), typeof(int) })!;
-    private static readonly MethodInfo s_spanToReadOnly = typeof(Span<long>).GetMethod("op_Implicit", new[] { typeof(Span<long>) })!;
     private static readonly MethodInfo s_spanLongIndexer = typeof(Span<long>).GetProperty("Item")!.GetGetMethod()!;
 
     // IndexSearcher — for entry scan
@@ -81,9 +75,6 @@ public static class QueryILEmitter
     // EntryTermsReader
     private static readonly MethodInfo s_readerReset = typeof(EntryTermsReader).GetMethod(nameof(EntryTermsReader.Reset))!;
     private static readonly MethodInfo s_readerFindNext = typeof(EntryTermsReader).GetMethod(nameof(EntryTermsReader.FindNext))!;
-
-    // MultiUnaryItem comparison — fallback for string/slice predicates
-    private static readonly MethodInfo s_compareLiteral = typeof(MultiUnaryItem).GetMethod(nameof(MultiUnaryItem.CompareLiteral))!;
 
     // EntryTermsReader numeric fields — for direct comparison
     private static readonly FieldInfo s_readerCurrentLong = typeof(EntryTermsReader).GetField(nameof(EntryTermsReader.CurrentLong))!;
@@ -305,10 +296,6 @@ public static class QueryILEmitter
 
         return (CompiledExecuteDelegate)dm.CreateDelegate(typeof(CompiledExecuteDelegate));
     }
-
-    // Span<MultiUnaryItem> indexer
-    private static readonly MethodInfo s_predicateSpanIndexer =
-        typeof(Span<MultiUnaryItem>).GetProperty("Item")!.GetGetMethod()!;
 
     /// <summary>Emit the entry scan: iterate bitmap entries, check predicates per entry,
     /// collect matches into TempBitmap, swap bitmaps.
@@ -745,36 +732,6 @@ public static class QueryILEmitter
                 il.Emit(OpCodes.Ceq); // !(a > b) = a <= b
                 break;
         }
-    }
-
-    private static void EmitFillLoop(ILGenerator il, int paramIndex,
-        LocalBuilder bufferLocal, LocalBuilder readLocal, int bitmapSlot)
-    {
-        var loopStart = il.DefineLabel();
-        var loopEnd = il.DefineLabel();
-
-        il.MarkLabel(loopStart);
-
-        // read = ctx.Matches[paramIndex].Fill(buffer)
-        EmitLoadMatch(il, paramIndex);
-        il.Emit(OpCodes.Ldloc, bufferLocal);
-        il.Emit(OpCodes.Callvirt, s_fillMethod);
-        il.Emit(OpCodes.Stloc, readLocal);
-        il.Emit(OpCodes.Ldloc, readLocal);
-        il.Emit(OpCodes.Ldc_I4_0);
-        il.Emit(OpCodes.Ble, loopEnd);
-
-        // bitmap.AddRange(buffer.Slice(0, read))
-        EmitLoadBitmapRef(il, bitmapSlot);
-        il.Emit(OpCodes.Ldloca_S, bufferLocal);
-        il.Emit(OpCodes.Ldc_I4_0);
-        il.Emit(OpCodes.Ldloc, readLocal);
-        il.Emit(OpCodes.Call, s_spanSlice);
-        il.Emit(OpCodes.Call, s_spanToReadOnly);
-        il.Emit(OpCodes.Call, s_addRange);
-
-        il.Emit(OpCodes.Br, loopStart);
-        il.MarkLabel(loopEnd);
     }
 
     /// <summary>Load ref to bitmap from ctx.Bitmaps[0]s[slot].
