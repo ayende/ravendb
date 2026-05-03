@@ -89,7 +89,6 @@ public struct VectorSelectOp
 public class QueryPlan
 {
     public PlanOp[] Ops;
-    public string ExplainSource;
     public int OperandOrdering;
     public object[] Clauses;
     public bool IsAllEntries;
