@@ -12,7 +12,7 @@ public partial class IndexSearcher
         where TInner : IQueryMatch
         where TOuter : IQueryMatch
     {
-        return CombinedMatch.And(innerSet, outerSet);
+        return CombinedMatch.And(Allocator, innerSet, outerSet);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -20,7 +20,7 @@ public partial class IndexSearcher
         where TInner : IQueryMatch
         where TOuter : IQueryMatch
     {
-        return CombinedMatch.Or(innerSet, outerSet);
+        return CombinedMatch.Or(Allocator, innerSet, outerSet);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

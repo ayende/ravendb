@@ -4,7 +4,6 @@ using Corax;
 using Corax.Indexing;
 using Corax.Mappings;
 using Corax.Querying;
-using Corax.Querying.Matches.Meta;
 using Corax.Utils;
 using FastTests.Voron;
 using Raven.Server.Documents.Indexes.Persistence.Lucene;
@@ -85,7 +84,18 @@ public class RavenDB_21689 : StorageTest
             var maxResults = Math.Max(searchIds.Length, termQueries.Length);
             var andBuffer = new long[maxResults];
             searchIds.CopyTo(andBuffer, 0);
-            var mergeCount = MergeHelper.And(termQueries.AsSpan(), termQueries.AsSpan(), searchIds.AsSpan());
+            // Compute the expected intersection of termQueries and searchIds (both sorted ascending) inline
+            // so the test stays self-contained after MergeHelper was removed.
+            int mergeCount = 0;
+            {
+                int li = 0, ri = 0;
+                while (li < termQueries.Length && ri < searchIds.Length)
+                {
+                    if (termQueries[li] < searchIds[ri]) li++;
+                    else if (termQueries[li] > searchIds[ri]) ri++;
+                    else { termQueries[mergeCount++] = termQueries[li]; li++; ri++; }
+                }
+            }
             Assert.Equal(mergeCount, termQuery.AndWith(andBuffer, searchIds.Length));
             Assert.True(termQueries.AsSpan(0, mergeCount).SequenceEqual(andBuffer.AsSpan(0, mergeCount)));
         }
