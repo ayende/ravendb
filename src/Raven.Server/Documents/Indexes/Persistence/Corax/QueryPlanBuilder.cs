@@ -92,7 +92,7 @@ internal static class QueryPlanBuilder
         var queryText = planParams.Metadata.Query.QueryText;
 
         var planCache = indexSearcher.PlanCache;
-        var compiledPlan = planCache.Get(queryText, plan.OperandOrdering, plan.TypeSignature);
+        var compiledPlan = planCache.Get(queryText, plan.OperandOrdering, plan.TypeSignature, plan.FullKinds);
         if (compiledPlan == null)
         {
             // Capture the QueryPlan in a closure so the EXPLAIN string is generated only
@@ -104,7 +104,8 @@ internal static class QueryPlanBuilder
                 CompiledDelegate = QueryILEmitter.EmitDelegate(plan),
                 ExplainSourceProvider = () => QueryILEmitter.GenerateExplainSource(capturedPlan),
                 Ordering = plan.OperandOrdering,
-                TypeSignature = plan.TypeSignature
+                TypeSignature = plan.TypeSignature,
+                FullKinds = plan.FullKinds
             };
             planCache.Add(queryText, compiledPlan);
         }
@@ -1442,12 +1443,23 @@ internal static class QueryPlanBuilder
                 scanPredicateInfos = scanPreds.ToArray();
         }
 
-        // Compute type signature from scan predicates
+        // Compute type signature from scan predicates. The int packs the first 16 kinds
+        // (2 bits each). For ≤ 16 predicates this is the exact cache identity. For more,
+        // it's a lossy hash and we attach FullKinds for disambiguation in PlanCache.
         int typeSignature = 0;
+        byte[] fullKinds = null;
         if (scanPredicateInfos != null)
         {
-            for (int i = 0; i < Math.Min(scanPredicateInfos.Length, 16); i++)
+            int n = scanPredicateInfos.Length;
+            int packCount = Math.Min(n, 16);
+            for (int i = 0; i < packCount; i++)
                 typeSignature |= ((int)scanPredicateInfos[i].ValueType & 0x3) << (i * 2);
+            if (n > 16)
+            {
+                fullKinds = new byte[n];
+                for (int i = 0; i < n; i++)
+                    fullKinds[i] = (byte)scanPredicateInfos[i].ValueType;
+            }
         }
 
         // EXPLAIN source is now generated lazily by CompiledPlan.ExplainSource on first
@@ -1460,7 +1472,8 @@ internal static class QueryPlanBuilder
             Clauses = clauses.ToArray(),
             AllNegated = allNegated,
             ScanPredicateInfos = scanPredicateInfos,
-            TypeSignature = typeSignature
+            TypeSignature = typeSignature,
+            FullKinds = fullKinds
         };
         return plan;
     }
