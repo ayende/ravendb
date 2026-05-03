@@ -9,8 +9,23 @@ public sealed class CompiledPlan
     public int Ordering { get; init; }
 
     /// <summary>Packed parameter type signature (2 bits per param: 0=long, 1=double, 2=string).
-    /// Different types produce different IL (different comparison instructions).</summary>
+    /// For ≤ 16 typed scan predicates this is the exact identity. For more, it carries the
+    /// 2-bit-per-kind packing of the FIRST 16 predicates and acts as a lossy hash; in that
+    /// case <see cref="FullKinds"/> is non-null and disambiguates via SequenceEqual on the
+    /// PlanCache chain walk.</summary>
     public int TypeSignature { get; init; }
+
+    /// <summary>Full per-predicate kind vector. Populated only when there are more than 16
+    /// typed scan predicates (where <see cref="TypeSignature"/>'s int packing becomes a
+    /// hash rather than an identity). Null in the common case so the hot path doesn't pay
+    /// the byte[] allocation.</summary>
+    public byte[] FullKinds { get; init; }
+
+    /// <summary>Chain pointer for hash-collision disambiguation in PlanCache. Two plans
+    /// share a slot when their int <see cref="TypeSignature"/> values collide but their
+    /// <see cref="FullKinds"/> differ — only possible when paramCount &gt; 16. Null in the
+    /// common case (chain length 1).</summary>
+    public CompiledPlan Next;
 
     /// <summary>Provider that generates the EXPLAIN pseudocode on first access. Lazily
     /// materialized — Inspect() / EXPLAIN diagnostics are the only consumers, so the

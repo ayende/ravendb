@@ -28,10 +28,18 @@ public class PlanCache
     private readonly ConcurrentDictionary<string, PerQueryPlans> _cache = new();
 
     public CompiledPlan Get(string queryText, int ordering, int typeSignature = 0)
+        => Get(queryText, ordering, typeSignature, default);
+
+    /// <summary>Lookup honouring the full per-predicate kind vector. Required when the
+    /// scan-predicate count exceeds 16: the int <paramref name="typeSignature"/> packs
+    /// only the first 16 kinds and acts as a lossy hash, so two plans can share a slot
+    /// — disambiguation walks the slot's <see cref="CompiledPlan.Next"/> chain comparing
+    /// <see cref="CompiledPlan.FullKinds"/> via <c>SequenceEqual</c>.</summary>
+    public CompiledPlan Get(string queryText, int ordering, int typeSignature, ReadOnlySpan<byte> kinds)
     {
         if (!_cache.TryGetValue(queryText, out var per))
             return null;
-        return per.TryLookup(ordering, typeSignature);
+        return per.TryLookup(ordering, typeSignature, kinds);
     }
 
     public void Add(string queryText, CompiledPlan plan)
@@ -60,17 +68,37 @@ public class PlanCache
         private readonly CompiledPlan[] _plans = new CompiledPlan[MaxPlansPerQuery];
         private int _filled;
 
-        public CompiledPlan TryLookup(int ordering, int typesig)
+        public CompiledPlan TryLookup(int ordering, int typesig, ReadOnlySpan<byte> kinds)
         {
             if (Vector256.IsHardwareAccelerated)
-                return Vec256Lookup(ordering, typesig);
+                return Vec256Lookup(ordering, typesig, kinds);
             if (Vector128.IsHardwareAccelerated)
-                return Vec128Lookup(ordering, typesig);
-            return ScalarLookup(ordering, typesig);
+                return Vec128Lookup(ordering, typesig, kinds);
+            return ScalarLookup(ordering, typesig, kinds);
+        }
+
+        // ResolveCandidate walks the slot's chain (head + Next pointers) looking for the
+        // plan whose embedded (Ordering, TypeSignature, FullKinds) matches the lookup.
+        // For ≤16 kinds the int typesig is the full identity — chain length is 1 and no
+        // SequenceEqual call ever runs. For >16 kinds the SIMD-int match was a hash, so we
+        // walk the chain comparing FullKinds against the caller's span.
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static CompiledPlan ResolveCandidate(CompiledPlan head, int ordering, int typesig, ReadOnlySpan<byte> kinds)
+        {
+            for (var p = head; p != null; p = p.Next)
+            {
+                if (p.Ordering != ordering || p.TypeSignature != typesig)
+                    continue;
+                if (p.FullKinds == null)
+                    return p; // ≤16 kinds path: int typesig was exact identity.
+                if (kinds.SequenceEqual(p.FullKinds))
+                    return p;
+            }
+            return null;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private CompiledPlan Vec256Lookup(int ordering, int typesig)
+        private CompiledPlan Vec256Lookup(int ordering, int typesig, ReadOnlySpan<byte> kinds)
         {
             var ordVec = Vector256.Create(ordering);
             var typVec = Vector256.Create(typesig);
@@ -84,20 +112,17 @@ public class PlanCache
                 {
                     int lane = BitOperations.TrailingZeroCount(mask);
                     mask &= mask - 1;
-                    var plan = Volatile.Read(ref _plans[i + lane]);
-                    // Embedded-key revalidation: a torn write may have left the slot's int
-                    // keys pointing at a plan with different (Ordering, TypeSignature).
-                    // Empty slots are also matched here when the lookup keys happen to be
-                    // (0, 0); the null guard handles them.
-                    if (plan != null && plan.Ordering == ordering && plan.TypeSignature == typesig)
-                        return plan;
+                    var head = Volatile.Read(ref _plans[i + lane]);
+                    var resolved = ResolveCandidate(head, ordering, typesig, kinds);
+                    if (resolved != null)
+                        return resolved;
                 }
             }
             return null;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private CompiledPlan Vec128Lookup(int ordering, int typesig)
+        private CompiledPlan Vec128Lookup(int ordering, int typesig, ReadOnlySpan<byte> kinds)
         {
             var ordVec = Vector128.Create(ordering);
             var typVec = Vector128.Create(typesig);
@@ -111,24 +136,25 @@ public class PlanCache
                 {
                     int lane = BitOperations.TrailingZeroCount(mask);
                     mask &= mask - 1;
-                    var plan = Volatile.Read(ref _plans[i + lane]);
-                    if (plan != null && plan.Ordering == ordering && plan.TypeSignature == typesig)
-                        return plan;
+                    var head = Volatile.Read(ref _plans[i + lane]);
+                    var resolved = ResolveCandidate(head, ordering, typesig, kinds);
+                    if (resolved != null)
+                        return resolved;
                 }
             }
             return null;
         }
 
-        private CompiledPlan ScalarLookup(int ordering, int typesig)
+        private CompiledPlan ScalarLookup(int ordering, int typesig, ReadOnlySpan<byte> kinds)
         {
             for (int i = 0; i < MaxPlansPerQuery; i++)
             {
-                if (_orderings[i] == ordering && _typesigs[i] == typesig)
-                {
-                    var plan = Volatile.Read(ref _plans[i]);
-                    if (plan != null && plan.Ordering == ordering && plan.TypeSignature == typesig)
-                        return plan;
-                }
+                if (_orderings[i] != ordering || _typesigs[i] != typesig)
+                    continue;
+                var head = Volatile.Read(ref _plans[i]);
+                var resolved = ResolveCandidate(head, ordering, typesig, kinds);
+                if (resolved != null)
+                    return resolved;
             }
             return null;
         }
@@ -140,6 +166,13 @@ public class PlanCache
             // both saw the lookup miss. Both versions are equivalent; the extra one gets
             // GC'd when the slot is overwritten or the master plan retires. Skipping the
             // check keeps Publish's hot path branch-free.
+
+            // >16-typed-params chain path: if we have FullKinds and an existing slot
+            // already shares our (ordering, typesig) int packing, prepend onto its chain
+            // instead of stealing a fresh slot. SequenceEqual lets the chain hold
+            // genuinely-distinct plans whose int hash collides.
+            if (plan.FullKinds != null && TryChainPrepend(plan))
+                return;
 
             int slot;
             while (true)
@@ -166,6 +199,27 @@ public class PlanCache
             Volatile.Write(ref _plans[slot], plan);
             Volatile.Write(ref _orderings[slot], plan.Ordering);
             Volatile.Write(ref _typesigs[slot], plan.TypeSignature);
+        }
+
+        private bool TryChainPrepend(CompiledPlan plan)
+        {
+            for (int i = 0; i < MaxPlansPerQuery; i++)
+            {
+                if (_orderings[i] != plan.Ordering || _typesigs[i] != plan.TypeSignature)
+                    continue;
+                // CAS the chain head: prepend iff slot is occupied AND nobody else swaps it
+                // out from under us. Lookup readers see a consistent linked list at all times.
+                while (true)
+                {
+                    var head = Volatile.Read(ref _plans[i]);
+                    if (head == null)
+                        return false; // race: slot was emptied; fall back to slot insert
+                    plan.Next = head;
+                    if (Interlocked.CompareExchange(ref _plans[i], plan, head) == head)
+                        return true;
+                }
+            }
+            return false;
         }
     }
 }

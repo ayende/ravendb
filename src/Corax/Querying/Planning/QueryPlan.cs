@@ -103,8 +103,17 @@ public class QueryPlan
     public VectorSelectOp[] VectorSelects;
 
     /// <summary>Packed parameter type signature from ScanPredicateInfos.
-    /// 2 bits per predicate (0=long, 1=double, 2=string). Used as part of cache key.</summary>
+    /// 2 bits per predicate (0=long, 1=double, 2=string) for the FIRST 16 predicates.
+    /// For ≤ 16 predicates this is the exact identity. For more, it acts as a lossy
+    /// hash and <see cref="FullKinds"/> carries the disambiguator.</summary>
     public int TypeSignature;
+
+    /// <summary>Full per-predicate kind vector. Populated only when there are more than
+    /// 16 typed scan predicates. Null in the common case so PlanCache lookups stay
+    /// branch-free on the hot path. When non-null, PlanCache.Add walks the slot chain
+    /// (CompiledPlan.Next) and SequenceEqual-compares this vs. existing FullKinds to
+    /// disambiguate plans whose <see cref="TypeSignature"/> ints collide.</summary>
+    public byte[] FullKinds;
 
     /// <summary>Number of bitmaps a compiled query plan currently needs.
     /// Slot 0 holds the main result, slot 1 is scratch for AND-with-postings / AND-NOT
