@@ -113,6 +113,12 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
         }
     }
 
+    public RoaringBitmap BorrowBitmap()
+    {
+        if (!_executed) Execute();
+        return _bitmap;
+    }
+
     public int Fill(Span<long> matches)
     {
         if (!_executed) Execute();
