@@ -100,49 +100,8 @@ public static partial class CoraxQueryBuilder
             DynamicFields = builderParameters.DynamicFields,
             HasBoost = builderParameters.HasBoost
         };
-        var plan = QueryPlanBuilder.BuildPlan(planParams);
-        string queryText = builderParameters.Query.Metadata.Query.QueryText;
-        var planCache = builderParameters.IndexSearcher.PlanCache;
-        var compiledPlan = planCache.Get(queryText, plan.OperandOrdering, plan.TypeSignature);
-        if (compiledPlan == null)
-        {
-            compiledPlan = new global::Corax.Querying.Planning.CompiledPlan
-            {
-                CompiledDelegate = global::Corax.Querying.Planning.QueryILEmitter.EmitDelegate(plan),
-                ExplainSource = plan.ExplainSource ?? global::Corax.Querying.Planning.QueryILEmitter.GenerateExplainSource(plan),
-                Ordering = plan.OperandOrdering,
-                TypeSignature = plan.TypeSignature
-            };
-            planCache.Add(queryText, compiledPlan);
-        }
-        var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, builderParameters.IndexSearcher, planParams, builderParameters);
-        QueryPlanBuilder.ExtractScanParameters(plan, builderParameters.IndexSearcher,
-            out var longParams, out var doubleParams, out var sliceParams, out var fieldRootPages);
-        IQueryMatch result = new global::Corax.Querying.Matches.CompiledQueryMatch(
-            compiledPlan, global::Corax.Querying.Planning.QueryPlan.RequiredBitmaps, plan.Ops?.Length ?? 0, resolvedMatches,
-            longParams, doubleParams, sliceParams, fieldRootPages,
-            builderParameters.IndexSearcher, builderParameters.Allocator, long.MaxValue, builderParameters.Token);
-
-        // Post-filter phase 1: Spatial filters
-        if (plan.SpatialFilters is { Length: > 0 })
-        {
-            var spatialFilters = new IQueryMatch[plan.SpatialFilters.Length];
-            for (int sf = 0; sf < plan.SpatialFilters.Length; sf++)
-                spatialFilters[sf] = resolvedMatches[plan.SpatialFilters[sf].MatchIndex];
-            result = new global::Corax.Querying.Matches.PostFilterMatch(result, spatialFilters);
-        }
-
-        // Post-filter phase 2: Vector selects
-        if (plan.VectorSelects is { Length: > 0 })
-        {
-            var vectorItems = QueryPlanBuilder.ResolveVectorItems(plan, builderParameters.IndexSearcher, planParams, builderParameters);
-            bool hasActualFilter = !plan.IsAllEntries || plan.SpatialFilters is { Length: > 0 };
-            IQueryMatch vectorFilter = hasActualFilter ? result : null;
-            for (int vs = 0; vs < vectorItems.Length; vs++)
-                result = vectorItems[vs].Materialize(vectorFilter);
-        }
-
-        return result;
+        return QueryPlanBuilder.BuildAndCompile(
+            planParams, builderParameters, long.MaxValue, out _, highlightingTerms: null, builderParameters.Token);
     }
 
     internal static IQueryMatch HandleSpatial(Parameters builderParameters, MethodExpression expression, MethodType spatialMethod)

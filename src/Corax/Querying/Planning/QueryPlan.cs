@@ -102,10 +102,8 @@ public struct VectorSelectOp
 public class QueryPlan
 {
     public PlanOp[] Ops;
-    public MultiUnaryItem[][] EntryScanPredicates;
     public string ExplainSource;
     public int OperandOrdering;
-    public int OperandCount;
     public object[] Clauses;
     public bool IsAllEntries;
     public bool AllNegated;
