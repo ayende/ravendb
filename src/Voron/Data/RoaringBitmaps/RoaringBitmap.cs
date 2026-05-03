@@ -59,6 +59,11 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
     private int _containerCount = 0;
     /// <summary>Head of the free list in _entries. Dead entry's Cardinality field stores the next free index; -2 = end.</summary>
     private int _freeListHead = FreeSlotTerminator;
+    /// <summary>Free list of recyclable container storages. Decoupled from the entry free list so
+    /// <see cref="Clear"/> can nuke entries entirely without losing the storage. <see cref="AllocateOrRecycle"/>
+    /// scans this list for the first storage with sufficient capacity, falling back to a fresh ctx allocation.
+    /// </summary>
+    private NativeList<ByteString> _freeStorages = new();
 
     public readonly int ContainerCount => _containerCount;
 
@@ -84,10 +89,12 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
     public readonly bool IsEmpty => _containerCount == 0;
 
     /// <summary>
-    /// Reset all containers without releasing memory. Container storage is kept attached
-    /// to the slots and made available for reuse on the next allocation, avoiding the
-    /// roundtrip through the ByteStringContext free pool. Hot path: temp bitmaps cleared
-    /// and refilled across every AND/AND-NOT step in the query pipeline.
+    /// Reset all containers without releasing memory. Container storages are pushed onto
+    /// the dedicated <see cref="_freeStorages"/> free list and made available for reuse on
+    /// the next allocation, avoiding the round-trip through the ByteStringContext free pool.
+    /// Entries / types / index are nuked outright — there's nothing to preserve in the
+    /// entry slots themselves between Clear cycles. Hot path: temp bitmaps cleared and
+    /// refilled across every AND/AND-NOT step in the query pipeline.
     /// </summary>
     public void Clear()
     {
@@ -98,23 +105,17 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
         ContainerEntry* entries = _entries.RawItems;
         ContainerType* types = _types.RawItems;
 
-        // Walk in reverse so the resulting free list is ordered slot 0 → 1 → 2 …,
-        // matching the natural allocation order on the next fill (head pops smallest slot first).
-        int prevFree = FreeSlotTerminator;
-        for (int i = count - 1; i >= 0; i--)
+        // Recover every storage and park it on the storage free list.
+        for (int i = 0; i < count; i++)
         {
-            if (types[i] != ContainerType.Free)
-            {
-                var keptStorage = entries[i].Storage;
-                entries[i] = default;
-                entries[i].Storage = keptStorage;
-                types[i] = ContainerType.Free;
-            }
-            entries[i].NextFreeSlot = (uint)prevFree;
-            prevFree = i;
+            if (types[i] != ContainerType.Free && entries[i].Storage.HasValue)
+                _freeStorages.Add(ctx, entries[i].Storage);
         }
-        _freeListHead = prevFree;
+
+        _entries.Clear();
+        _types.Clear();
         _containerCount = 0;
+        _freeListHead = FreeSlotTerminator;
 
         int* indexRaw = _index.RawItems;
         int indexLen = _index.Count;
@@ -122,20 +123,22 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
     }
 
     /// <summary>
-    /// Acquire storage of at least <paramref name="neededBytes"/>. Reuses storage attached
-    /// to the head of the free list (left there by <see cref="Clear"/>) when the size fits;
-    /// otherwise falls back to allocating fresh from the context. Only peeks the head — does
-    /// not walk the chain — to keep the allocator path O(1).
+    /// Acquire storage of at least <paramref name="neededBytes"/>. Walks <see cref="_freeStorages"/>
+    /// linearly looking for a storage with sufficient capacity (typical N is small enough that
+    /// the linear scan beats a more complex structure); reused storage is unlinked via swap-with-last.
+    /// Falls back to a fresh ctx allocation when nothing on the free list fits.
     /// </summary>
     private void AllocateOrRecycle(int neededBytes, out ByteString storage)
     {
-        if (_freeListHead != FreeSlotTerminator)
+        var raw = _freeStorages.RawItems;
+        int n = _freeStorages.Count;
+        for (int i = 0; i < n; i++)
         {
-            ref var head = ref _entries[_freeListHead];
-            if (head.Storage.HasValue && head.Storage.Length >= neededBytes)
+            if (raw[i].Length >= neededBytes)
             {
-                storage = head.Storage;
-                head.Storage = default;
+                storage = raw[i];
+                raw[i] = raw[n - 1];
+                _freeStorages.Count = n - 1;
                 return;
             }
         }
@@ -1128,20 +1131,7 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
             slot = _freeListHead;
             Debug.Assert(_types.RawItems[slot] == ContainerType.Free, "Expected free entry");
             _freeListHead = (int)_entries[slot].NextFreeSlot;
-
-            // Stale storage in the slot (left by Clear/FreeContainer) that the new entry
-            // doesn't reuse must be returned to the context — otherwise the overwrite below
-            // would orphan it. The common path is "caller went through AllocateOrRecycle":
-            // that already detached the slot's storage and put it on the new entry, so the
-            // slot now has no storage and we skip the release.
-            ref var slotEntry = ref _entries[slot];
-            if (slotEntry.Storage.HasValue &&
-                (entry.Storage.HasValue == false || slotEntry.Storage.Ptr != entry.Storage.Ptr))
-            {
-                ctx.Release(ref slotEntry.Storage);
-            }
-
-            slotEntry = entry;
+            _entries[slot] = entry;
             _types.RawItems[slot] = type;
         }
         else
@@ -1160,16 +1150,16 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
     }
 
     /// <summary>
-    /// Remove a container: keep its storage attached to the slot (so a later allocation in this
-    /// bitmap can recycle it via <see cref="AllocateOrRecycle"/>), mark the index as absent,
-    /// and chain the slot onto the free list.
+    /// Remove a container: detach its storage onto <see cref="_freeStorages"/> for reuse,
+    /// mark the index as absent, and chain the slot onto the entry free list.
     /// </summary>
     private void FreeContainer(long key, int slot)
     {
         ref ContainerEntry entry = ref _entries[slot];
-        var keptStorage = entry.Storage;
+        if (entry.Storage.HasValue)
+            _freeStorages.Add(ctx, entry.Storage);
+
         entry = default;
-        entry.Storage = keptStorage;
         _types.RawItems[slot] = ContainerType.Free;
         entry.NextFreeSlot = (uint)_freeListHead;
         _freeListHead = slot;
@@ -1378,9 +1368,6 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
 
     public void Dispose()
     {
-        // Walk entries directly - more cache-friendly than index indirection.
-        // Free slots can also carry storage (Clear/FreeContainer keep it attached
-        // so AllocateOrRecycle can reuse it), so we release for any slot with storage.
         if (_entries.IsValid)
         {
             ContainerEntry* entries = _entries.RawItems;
@@ -1392,6 +1379,17 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
             }
 
             _entries.Dispose(ctx);
+        }
+
+        // Release every storage parked on the free list — these are storages that were
+        // freed via Clear/FreeContainer but never recycled before Dispose.
+        if (_freeStorages.IsValid)
+        {
+            ByteString* raw = _freeStorages.RawItems;
+            int n = _freeStorages.Count;
+            for (int i = 0; i < n; i++)
+                ctx.Release(ref raw[i]);
+            _freeStorages.Dispose(ctx);
         }
 
         if (_types.IsValid)

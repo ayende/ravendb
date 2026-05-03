@@ -97,11 +97,12 @@ public class IndexSearcherTest : StorageTest
 
         using var searcher = new IndexSearcher(Env, CreateKnownFields(Allocator));
 
-        var allEntries = searcher.AllEntries();
-        var allEntriesMemoized = searcher.Memoize(allEntries);
+        // Memoize was deleted with the old IQueryMatch streaming pipeline. AllEntries() is
+        // cheap (it just iterates the entry index), so we call it fresh each time we need a
+        // new source for a multi-consumer expression.
 
         {
-            var andNotMatch = searcher.AndNot(allEntriesMemoized.Replay(), allEntriesMemoized.Replay());
+            var andNotMatch = searcher.AndNot(searcher.AllEntries(), searcher.AllEntries());
 
             Span<long> ids = stackalloc long[4096];
 
@@ -117,7 +118,7 @@ public class IndexSearcherTest : StorageTest
         }
 
         {
-            var andNotMatch = searcher.AndNot(allEntriesMemoized.Replay(), searcher.StartWithQuery("Content", "J"));
+            var andNotMatch = searcher.AndNot(searcher.AllEntries(), searcher.StartWithQuery("Content", "J"));
 
             Span<long> ids = stackalloc long[4096];
             int counter = 0;
@@ -132,7 +133,7 @@ public class IndexSearcherTest : StorageTest
         }
 
         {
-            var andNotMatch = searcher.AndNot(allEntriesMemoized.Replay(), searcher.StartWithQuery("Content", "00"));
+            var andNotMatch = searcher.AndNot(searcher.AllEntries(), searcher.StartWithQuery("Content", "00"));
 
             Span<long> ids = stackalloc long[4096];
 
@@ -155,8 +156,8 @@ public class IndexSearcherTest : StorageTest
         }
 
         {
-            var andNotMatch = searcher.AndNot(allEntriesMemoized.Replay(), searcher.StartWithQuery("Content", "00"));
-            var andMatch = searcher.And(allEntriesMemoized.Replay(), andNotMatch);
+            var andNotMatch = searcher.AndNot(searcher.AllEntries(), searcher.StartWithQuery("Content", "00"));
+            var andMatch = searcher.And(searcher.AllEntries(), andNotMatch);
 
             Span<long> ids = stackalloc long[4096];
 

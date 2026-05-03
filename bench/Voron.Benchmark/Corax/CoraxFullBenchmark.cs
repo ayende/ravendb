@@ -582,7 +582,7 @@ public static class CoraxFullBenchmark
     private static int RunBitmapQuery(ByteStringContext bsc, IndexSearcher searcher,
         (string field, string term)[] operands, bool isAnd, bool andWithLast, long[] ids)
     {
-        using var bitmap = new global::Corax.Utils.RoaringBitmaps.RoaringBitmap(bsc);
+        using var bitmap = new global::Voron.Data.RoaringBitmaps.RoaringBitmap(bsc);
         Span<long> buffer = stackalloc long[4096];
 
         if (isAnd)
@@ -593,7 +593,7 @@ public static class CoraxFullBenchmark
             while ((read0 = match0.Fill(buffer)) > 0)
                 bitmap.AddRange(buffer.Slice(0, read0));
 
-            using var tempBitmap = new global::Corax.Utils.RoaringBitmaps.RoaringBitmap(bsc);
+            using var tempBitmap = new global::Voron.Data.RoaringBitmaps.RoaringBitmap(bsc);
             for (int i = 1; i < operands.Length; i++)
             {
                 tempBitmap.Clear();
@@ -615,7 +615,7 @@ public static class CoraxFullBenchmark
                     bitmap.AddRange(buffer.Slice(0, readI));
             }
 
-            using var tempBitmap = new global::Corax.Utils.RoaringBitmaps.RoaringBitmap(bsc);
+            using var tempBitmap = new global::Voron.Data.RoaringBitmaps.RoaringBitmap(bsc);
             var matchLast = searcher.TermQuery(operands[^1].field, operands[^1].term);
             int readLast;
             while ((readLast = matchLast.Fill(buffer)) > 0)
