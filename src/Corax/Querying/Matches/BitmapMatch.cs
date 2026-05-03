@@ -43,6 +43,15 @@ public unsafe struct BitmapMatch : IQueryMatch, IBitmapQueryMatch, IDisposable
 
     public bool Contains(long entryId) => _bitmap.Contains(entryId);
 
+    /// <summary>
+    /// Borrow the underlying bitmap for downstream consumption. RoaringBitmap is a
+    /// single-threaded, consume-after-use design — set operations on the right side
+    /// (AndWith / AndNotWith / OrWith / LazyOrWith) are deliberately destructive,
+    /// trading source validity for performance. Callers that need to iterate the
+    /// borrowed copy (vector search filter, faceted Contains) call
+    /// <see cref="RoaringBitmap.PrepareForReading"/> themselves; callers that
+    /// consume it via set ops don't need to.
+    /// </summary>
     public RoaringBitmap BorrowBitmap() => _bitmap;
 
     public long MinEntryId

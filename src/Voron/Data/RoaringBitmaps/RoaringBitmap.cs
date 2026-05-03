@@ -22,6 +22,18 @@ namespace Voron.Data.RoaringBitmaps;
 /// - ArrayUnsorted: append-only ushort[]. Add is O(1). Sorted lazily on first read.
 /// - Array: sorted ushort[] for sparse data (cardinality &lt;= 4096, up to 8KB)
 /// - Bitmap: 8KB fixed bitmap (1024 longs) for dense data (&gt; 4096 values)
+///
+/// Threading and consumption model:
+/// - Single-threaded by design. Concurrent access from multiple threads is not supported;
+///   no internal locking, no atomic state. Callers are responsible for not sharing a bitmap
+///   across threads simultaneously.
+/// - Set operations (<see cref="AndWith"/>, <see cref="AndNotWith"/>, <see cref="LazyOrWith"/>)
+///   are intentionally destructive on their right-hand argument. The right side may have its
+///   containers stolen, sorted in place, or otherwise mutated. This is a deliberate trade —
+///   it lets the implementation skip a copy in hot paths. After being passed as the right side
+///   of a set op, a bitmap is considered consumed and must not be used for further reads or
+///   set ops on its own. Pair this with <see cref="Clear"/>'s storage recycling: a consumed
+///   bitmap can be Clear()'d and reused as a scratch buffer with no allocator round-trip.
 /// </summary>
 /// 
 [StructLayout(LayoutKind.Auto)]
