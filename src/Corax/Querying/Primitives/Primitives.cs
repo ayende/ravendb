@@ -341,15 +341,29 @@ public static class QueryPrimitives
     // These overloads let the IL call QueryPrimitives directly instead of emitting
     // inline Fill+AddRange loops. JIT inlines these with AggressiveInlining.
 
-    /// <summary>Fill bitmap from an IQueryMatch by calling Fill repeatedly.</summary>
+    /// <summary>Fill bitmap from an IQueryMatch by calling Fill repeatedly.
+    /// Fast paths (consume-after-use semantics — sources are not read again):
+    ///   - IBitmapQueryMatch: steal containers via LazyOrWith + one RepairAfterLazy pass.
+    ///   - TermMatch backed by a large posting list: native FillFromPostings on the iterator,
+    ///     skipping the per-batch IQueryMatch + function-pointer indirection.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     [SkipLocalsInit]
     public static void FillFromMatch(Matches.Meta.IQueryMatch match, ref RoaringBitmap bitmap)
     {
-        // No bitmap-borrow fast path here — LazyOrWith steals containers from its source
-        // (zero-copy but destructive). Borrowing would corrupt the owning match's state.
-        // AndWithMatch / AndNotWithMatch are safe to fast-path because in-place AND/AND-NOT
-        // only mutate the destination.
+        if (match is Matches.Meta.IBitmapQueryMatch bm)
+        {
+            var src = bm.BorrowBitmap();
+            if (src.IsEmpty)
+                return;
+            bitmap.LazyOrWith(ref src);
+            bitmap.RepairAfterLazy();
+            return;
+        }
+        if (match is Matches.TermMatch tm && tm.TryGetLargePostingListIterator(out var iter))
+        {
+            FillFromPostings(ref iter, ref bitmap);
+            return;
+        }
         Span<long> buffer = stackalloc long[FillBufferSize];
         int read;
         while ((read = match.Fill(buffer)) > 0)
