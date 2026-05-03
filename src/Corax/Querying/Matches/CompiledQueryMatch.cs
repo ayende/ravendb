@@ -13,6 +13,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
 {
     private readonly QueryILEmitter.CompiledExecuteDelegate _compiledDelegate;
     private readonly IQueryMatch[] _resolvedMatches;
+    private readonly TermSource[] _termSources;
     private readonly long[] _longParams;
     private readonly double[] _doubleParams;
     private readonly Slice[] _sliceParams;
@@ -35,7 +36,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
     private int _entryScanTakenAtOp;
 
     public CompiledQueryMatch(CompiledPlan compiledPlan, int bitmapCount, int opCount,
-        IQueryMatch[] resolvedMatches,
+        IQueryMatch[] resolvedMatches, TermSource[] termSources,
         long[] longParams, double[] doubleParams, Slice[] sliceParams, long[] fieldRootPages,
         IndexSearcher searcher, ByteStringContext allocator, long limit, CancellationToken token)
     {
@@ -44,6 +45,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
         _bitmapCount = bitmapCount;
         _opCount = opCount;
         _resolvedMatches = resolvedMatches;
+        _termSources = termSources;
         _longParams = longParams;
         _doubleParams = doubleParams;
         _sliceParams = sliceParams;
@@ -213,6 +215,8 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
                 Bitmaps = bitmaps.AsSpan(),
                 Searcher = _searcher,
                 DirectSources = _resolvedMatches.AsSpan(),
+                TermSources = _termSources != null ? _termSources.AsSpan() : Span<TermSource>.Empty,
+                Llt = _searcher.Transaction.LowLevelTransaction,
                 TermProviders = Span<ITermProvider>.Empty,
                 FieldRootPages = _fieldRootPages.AsSpan(),
                 LongParams = _longParams.AsSpan(),

@@ -241,6 +241,16 @@ public partial class IndexSearcher
     }
 
     /// <summary>
+    /// Returns the raw posting list ID (with TermIdMask encoding) for a numeric term,
+    /// or -1 if the term does not exist in the index. Mirrors the resolution path
+    /// taken by <see cref="TermQuery{TNumeric}"/>.
+    /// </summary>
+    public long GetTermPostingListId<TNumeric>(in FieldMetadata field, TNumeric term)
+    {
+        return GetContainerIdOfNumericalTerm(field, out _, term);
+    }
+
+    /// <summary>
     /// Returns the raw posting list ID (with TermIdMask encoding) for a Slice term,
     /// or -1 if the term does not exist in the index.
     /// </summary>
