@@ -600,7 +600,7 @@ namespace Corax.Querying.Matches
         {
             if (_scoreFunc == null)
             {
-                return; // We ignore. Nothing to do here. 
+                return; // We ignore. Nothing to do here.
             }
 
             _scoreFunc(ref this, matches, scores, boostFactor);
@@ -609,6 +609,25 @@ namespace Corax.Querying.Matches
         public QueryInspectionNode Inspect()
         {
             return _inspectFunc is null ? QueryInspectionNode.NotInitializedInspectionNode(nameof(TermMatch)) : _inspectFunc(ref this);
+        }
+
+        /// <summary>
+        /// Expose the underlying large-posting-list iterator so QueryPrimitives.AndWithPostings
+        /// / FillFromPostings can scan it directly with the galloping page-scan bound by the
+        /// bitmap's container range. Returns false for empty / single-value / small-posting-list
+        /// cases where the existing Fill-loop path is already optimal. The caller takes ownership
+        /// of iteration; do not call <see cref="Fill"/> or <see cref="AndWith"/> on the same
+        /// TermMatch afterward.
+        /// </summary>
+        internal bool TryGetLargePostingListIterator(out PostingList.Iterator iterator)
+        {
+            // Empty / Single / Small all leave _set at default (zeroed Iterator).
+            // YieldSet (line ~566) initializes _set = postingList.Iterate(). PostingList
+            // also stamps _totalResults = NumberOfEntries which is always > 0; combined
+            // with _containerReader being default (not initialized for the Set path) we
+            // can disambiguate cheaply.
+            iterator = _set;
+            return _totalResults > 1 && _containerReader.IsValid == false;
         }
 
         string DebugView => Inspect().ToString();
