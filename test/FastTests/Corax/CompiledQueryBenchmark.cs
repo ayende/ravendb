@@ -3,7 +3,6 @@ using System.Diagnostics;
 using System.Linq;
 using System.Threading.Tasks;
 using Raven.Client.Documents;
-using Raven.Client.Documents.Queries;
 using Tests.Infrastructure;
 using Xunit;
 
