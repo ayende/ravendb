@@ -245,6 +245,9 @@ public unsafe struct RoaringBitmapIterator : IDisposable
     public void Dispose()
     {
         if (_packedEntries.HasValue)
+        {
             _ctx.Release(ref _packedEntries);
+            _packedEntries = default; // make Dispose idempotent — repeated callers are common in finally chains
+        }
     }
 }
