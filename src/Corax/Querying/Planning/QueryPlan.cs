@@ -1,5 +1,3 @@
-using Corax.Querying.Matches;
-
 namespace Corax.Querying.Planning;
 
 public enum PlanOpKind : byte
@@ -40,23 +38,17 @@ public struct PlanOp
     public long EstimatedCardinality;
 }
 
-/// <summary>Describes a single entry-scan predicate for IL emission.
-/// For numeric predicates, the emitter generates direct comparisons
-/// (reader.CurrentLong > ctx.LongParams[i]) — no delegate call, no MultiUnaryItem.
-/// For string predicates, falls back to MultiUnaryItem.CompareLiteral.</summary>
+/// <summary>One entry-scan predicate. Numeric predicates emit a direct compare
+/// against ctx.LongParams[ParamIndex] / DoubleParams[...]; slice predicates fall
+/// back to MultiUnaryItem.CompareLiteral. Between uses both ParamIndex slots.
+/// OrBranches is non-null only for OR-group predicates.</summary>
 public struct ScanPredicateInfo
 {
-    /// <summary>Field name — used by caller to resolve root page into FieldRootPages span.</summary>
     public string FieldName;
-    /// <summary>What type of value to compare.</summary>
     public ScanValueType ValueType;
-    /// <summary>The comparison operation.</summary>
     public ScanCompareOp CompareOp;
-    /// <summary>Index into LongParams/DoubleParams/ScanPredicates span depending on ValueType.</summary>
     public int ParamIndex;
-    /// <summary>For Between: second value index in the same typed span.</summary>
     public int ParamIndex2;
-    /// <summary>For OR groups: sub-predicates. null for simple AND predicates.</summary>
     public ScanPredicateInfo[] OrBranches;
 }
 
@@ -78,24 +70,19 @@ public enum ScanCompareOp : byte
     Between,
 }
 
-/// <summary>References a spatial IQueryMatch that should be applied as a post-filter
-/// after the bitmap filter phase completes. The match is ANDed with the candidate bitmap.</summary>
+/// <summary>Spatial post-filter — ANDed with the candidate bitmap after the filter phase.
+/// MatchIndex points into the resolved IQueryMatch[]; Clause is the originating ClauseInfo.</summary>
 public struct SpatialFilterOp
 {
-    /// <summary>Index into the resolved IQueryMatch[] for this spatial match.</summary>
     public int MatchIndex;
-    /// <summary>The clause that produced this spatial filter, for match resolution.</summary>
     public object Clause;
 }
 
-/// <summary>References a vector IQueryMatch that should wrap the bitmap filter result.
-/// The compiled bitmap match is passed as the filterQuery to VectorSearchMatch.</summary>
+/// <summary>Vector select — wraps the bitmap-producing match as its filterQuery.
+/// MatchIndex points into the resolved IQueryMatch[]; Clause is the originating ClauseInfo.</summary>
 public struct VectorSelectOp
 {
-    /// <summary>Index into the resolved IQueryMatch[] for this vector match.
-    /// At execution time, the vector match is materialized with the bitmap match as its filter.</summary>
     public int MatchIndex;
-    /// <summary>The clause that produced this vector select, for match resolution.</summary>
     public object Clause;
 }
 
