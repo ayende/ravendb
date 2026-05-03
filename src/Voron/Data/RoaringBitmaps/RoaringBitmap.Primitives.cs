@@ -10,13 +10,16 @@ using Sparrow.Server;
 
 namespace Voron.Data.RoaringBitmaps;
 
-public unsafe partial struct RoaringBitmap
+public unsafe ref partial struct RoaringBitmap
 {
     #region Bitmap Container
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static bool BitmapContains(ulong* bitmap, ushort val) =>
         (bitmap[val >> 6] & (1UL << (val & 63))) != 0;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static bool BitmapContainsPublic(ulong* bitmap, ushort val) => BitmapContains(bitmap, val);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void BitmapSet(ulong* bitmap, ushort val) =>
@@ -688,7 +691,9 @@ public unsafe partial struct RoaringBitmap
         int rangeStart = entry.RangeStart;
         int rangeCount = entry.Cardinality;
 
-        if (MaybeConvertRangeToArray(ref entry, ref type, rangeStart, rangeCount, [value]) == false)
+        Span<long> extraValuesSpan = stackalloc long[1];
+        extraValuesSpan[0] = value;
+        if (MaybeConvertRangeToArray(ref entry, ref type, rangeStart, rangeCount, extraValuesSpan) == false)
         {
             ConvertRangeToBitmap(ref entry, ref type);
             BitmapSet(entry.BitmapPtr, value);
@@ -734,7 +739,7 @@ public unsafe partial struct RoaringBitmap
         FillBitmapFromRange(bitmap, entry.RangeStart, entry.Cardinality);
 
         if (entry.Storage.HasValue)
-            ctx.Release(ref entry.Storage);
+            _ctx.Release(ref entry.Storage);
 
         entry.Storage = storage;
         entry.Data = storage.Ptr;
@@ -760,7 +765,7 @@ public unsafe partial struct RoaringBitmap
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool MaybeConvertRangeToArray(ref ContainerEntry entry, ref ContainerType type, int rangeStart, int rangeCount, ReadOnlySpan<long> sortedValues)
+    private bool MaybeConvertRangeToArray(ref ContainerEntry entry, ref ContainerType type, int rangeStart, int rangeCount, scoped ReadOnlySpan<long> sortedValues)
     {
         int totalCount = rangeCount + sortedValues.Length;
         if (totalCount > ArrayContainerMaxCardinality)

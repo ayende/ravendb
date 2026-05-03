@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Planning;
@@ -25,7 +26,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
     private readonly int _opCount;
     private readonly CancellationToken _token;
 
-    private RoaringBitmap _bitmap;
+    private RoaringBitmapData _bitmapData;
     private RoaringBitmapIterator _iterator;
     private bool _executed;
     private long _count;
@@ -54,7 +55,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
         _allocator = allocator;
         _searcher = searcher;
         _token = token;
-        _bitmap = new RoaringBitmap(allocator);
+        _bitmapData = default;
         _iterator = default;
         _executed = false;
         _count = -1;
@@ -91,7 +92,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
     public bool Contains(long entryId)
     {
         if (!_executed) Execute();
-        return _bitmap.Contains(entryId);
+        return _bitmapData.Contains(entryId);
     }
 
     public long MinEntryId
@@ -99,7 +100,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
         get
         {
             if (!_executed) Execute();
-            long minKey = _bitmap.MinContainerKey;
+            long minKey = _bitmapData.MinContainerKey;
             return minKey < 0 ? 0 : minKey * RoaringBitmap.ContainerSize;
         }
     }
@@ -109,21 +110,22 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
         get
         {
             if (!_executed) Execute();
-            long maxKey = _bitmap.MaxContainerKey;
+            long maxKey = _bitmapData.MaxContainerKey;
             return maxKey < 0 ? 0 : (maxKey + 1) * RoaringBitmap.ContainerSize - 1;
         }
     }
 
-    public RoaringBitmap BorrowBitmap()
+    [UnscopedRef]
+    public ref RoaringBitmapData GetBitmapData()
     {
         if (!_executed) Execute();
-        return _bitmap;
+        return ref _bitmapData;
     }
 
     public int Fill(Span<long> matches)
     {
         if (!_executed) Execute();
-        return _iterator.Fill(ref _bitmap, matches);
+        return _iterator.Fill(ref _bitmapData, matches);
     }
 
     public int AndWith(Span<long> buffer, int matches)
@@ -134,7 +136,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
         while (i < matches)
         {
             long containerKey = buffer[i] >> RoaringBitmap.ContainerKeyShift;
-            int containerSlot = _bitmap.GetSlotForKey(containerKey);
+            int containerSlot = _bitmapData.GetSlotForKey(containerKey);
 
             if (containerSlot < 0)
             {
@@ -147,7 +149,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
             long containerEnd = (containerKey + 1) << RoaringBitmap.ContainerKeyShift;
             while (i < matches && buffer[i] < containerEnd)
             {
-                if (_bitmap.Contains(buffer[i]))
+                if (_bitmapData.Contains(buffer[i]))
                     buffer[kept++] = buffer[i];
                 i++;
             }
@@ -198,10 +200,9 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
         if (_executed) return;
 
         // Allocate bitmap pool: [0] = main, [1..N] = scratch
-        var bitmaps = new RoaringBitmap[_bitmapCount];
-        bitmaps[0] = _bitmap; // main bitmap (owned by this struct)
-        for (int i = 1; i < bitmaps.Length; i++)
-            bitmaps[i] = new RoaringBitmap(_allocator);
+        Span<RoaringBitmapData> bitmaps = new RoaringBitmapData[_bitmapCount];
+        bitmaps[0] = _bitmapData; // main bitmap (owned by this struct)
+        // bitmaps[1..] are default (zeroed), no initialization needed
 
         try
         {
@@ -212,7 +213,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
 
             var ctx = new QueryScanContext
             {
-                Bitmaps = bitmaps.AsSpan(),
+                Bitmaps = bitmaps,
                 Searcher = _searcher,
                 DirectSources = _resolvedMatches.AsSpan(),
                 TermSources = _termSources != null ? _termSources.AsSpan() : Span<TermSource>.Empty,
@@ -233,23 +234,23 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
             _entryScanTakenAtOp = ctx.EntryScanTakenAtOp;
 
             // Take ownership of bitmaps[0] (may have been swapped during entry scan)
-            _bitmap = bitmaps[0];
-            _bitmap.PrepareForReading();
-            _count = _bitmap.Count;
-            _iterator = _bitmap.GetIterator();
+            _bitmapData = bitmaps[0];
+            _bitmapData.PrepareForReading();
+            _count = _bitmapData.Count;
+            _iterator = _bitmapData.GetIterator(_allocator);
             _executed = true; // Mark only after successful execution
         }
         finally
         {
-            // Dispose scratch bitmaps only (not [0], which is _bitmap)
+            // Dispose scratch bitmaps only (not [0], which is _bitmapData)
             for (int i = 1; i < bitmaps.Length; i++)
-                bitmaps[i].Dispose();
+                bitmaps[i].Dispose(_allocator);
         }
     }
 
     public void Dispose()
     {
         _iterator.Dispose();
-        _bitmap.Dispose();
+        _bitmapData.Dispose(_allocator);
     }
 }

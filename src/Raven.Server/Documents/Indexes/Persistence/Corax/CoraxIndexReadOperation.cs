@@ -1233,37 +1233,40 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             }
 
             // Materialize into bitmap via OR
-            var mltBitmap = new global::Voron.Data.RoaringBitmaps.RoaringBitmap(_allocator);
+            global::Voron.Data.RoaringBitmaps.RoaringBitmapData mltBitmapData = default;
             try
             {
-                Span<long> fillBuf = stackalloc long[4096];
+                long[] fillBuf = new long[4096];
                 foreach (var termMatch in mltTerms)
                 {
+                    var mltBitmapView = new global::Voron.Data.RoaringBitmaps.RoaringBitmap(ref mltBitmapData, _allocator);
                     int termRead;
                     while ((termRead = termMatch.Fill(fillBuf)) > 0)
-                        mltBitmap.AddRange(fillBuf.Slice(0, termRead));
+                        mltBitmapView.AddRange(fillBuf.AsSpan(0, termRead));
                 }
 
                 // AND with filter query if present
                 if (moreLikeThisQuery.FilterQuery != null && moreLikeThisQuery.FilterQuery is AllEntriesMatch == false)
                 {
-                    var filterBitmap = new global::Voron.Data.RoaringBitmaps.RoaringBitmap(_allocator);
+                    global::Voron.Data.RoaringBitmaps.RoaringBitmapData filterBitmapData = default;
                     try
                     {
+                        var filterBitmapView = new global::Voron.Data.RoaringBitmaps.RoaringBitmap(ref filterBitmapData, _allocator);
                         var filterMatch = moreLikeThisQuery.FilterQuery;
                         int filterRead;
                         while ((filterRead = filterMatch.Fill(fillBuf)) > 0)
-                            filterBitmap.AddRange(fillBuf.Slice(0, filterRead));
-                        mltBitmap.AndWith(ref filterBitmap);
+                            filterBitmapView.AddRange(fillBuf.AsSpan(0, filterRead));
+                        var mltBitmapViewForAnd = new global::Voron.Data.RoaringBitmaps.RoaringBitmap(ref mltBitmapData, _allocator);
+                        mltBitmapViewForAnd.AndWith(ref filterBitmapData);
                     }
                     finally
                     {
-                        filterBitmap.Dispose();
+                        filterBitmapData.Dispose(_allocator);
                     }
                 }
 
-                mltBitmap.PrepareForReading();
-                var mltIterator = mltBitmap.GetIterator();
+                mltBitmapData.PrepareForReading(_allocator);
+                var mltIterator = mltBitmapData.GetIterator(_allocator);
 
             var ravenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             long[] ids = QueryPool.Rent(pageSize);
@@ -1271,7 +1274,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             long returnedDocs = 0;
             long skippedDocs = 0;
             Page page = default;
-            while ((read = mltIterator.Fill(ref mltBitmap, ids.AsSpan())) != 0)
+            while ((read = mltIterator.Fill(ref mltBitmapData, ids.AsSpan())) != 0)
             {
                 for (int i = 0; i < read; i++)
                 {
@@ -1316,10 +1319,10 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
             QueryPool.Return(ids);
             mltIterator.Dispose();
-            } // end try (mltBitmap)
+            } // end try (mltBitmapData)
             finally
             {
-                mltBitmap.Dispose();
+                mltBitmapData.Dispose(_allocator);
             }
         }
 

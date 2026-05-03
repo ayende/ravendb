@@ -20,7 +20,7 @@ public struct CombinedMatch : IQueryMatch, IDisposable
     private IQueryMatch _right;
     private readonly ByteStringContext _allocator;
     private readonly bool _isOr;
-    private RoaringBitmap _bitmap;
+    private RoaringBitmapData _bitmapData;
     private RoaringBitmapIterator _iterator;
     private bool _materialized;
     private long _resultCount;
@@ -33,7 +33,7 @@ public struct CombinedMatch : IQueryMatch, IDisposable
         _left = left;
         _right = right;
         _isOr = isOr;
-        _bitmap = new RoaringBitmap(allocator);
+        _bitmapData = default;
         _iterator = default;
         _materialized = false;
         _resultCount = 0;
@@ -65,43 +65,60 @@ public struct CombinedMatch : IQueryMatch, IDisposable
         if (_materialized == false)
             Materialize();
 
-        return _iterator.Fill(ref _bitmap, matches);
+        return _iterator.Fill(ref _bitmapData, matches);
     }
 
     private void Materialize()
     {
         // Drain the left side directly into the result bitmap.
-        FillBitmapFromMatch(_left, ref _bitmap);
+        FillBitmapFromMatch(_left, ref _bitmapData, _allocator);
 
         if (_isOr)
         {
             // For OR, drain the right side into a scratch bitmap and lazy-merge.
-            using var rightBitmap = new RoaringBitmap(_allocator);
-            var right = rightBitmap;
-            FillBitmapFromMatch(_right, ref right);
-            right.PrepareForReading();
-            _bitmap.LazyOrWith(ref right);
-            _bitmap.RepairAfterLazy();
+            RoaringBitmapData rightData = default;
+            try
+            {
+                FillBitmapFromMatch(_right, ref rightData, _allocator);
+                RoaringBitmap right = new(ref rightData, _allocator);
+                right.PrepareForReading();
+                RoaringBitmap main = new(ref _bitmapData, _allocator);
+                main.LazyOrWith(ref rightData);
+                main.RepairAfterLazy();
+            }
+            finally
+            {
+                rightData.Dispose(_allocator);
+            }
         }
         else
         {
             // For AND, drain the right side into a scratch bitmap and intersect.
-            _bitmap.PrepareForReading();
-            using var rightBitmap = new RoaringBitmap(_allocator);
-            var right = rightBitmap;
-            FillBitmapFromMatch(_right, ref right);
-            right.PrepareForReading();
-            _bitmap.AndWith(ref right);
+            RoaringBitmapData rightData = default;
+            try
+            {
+                RoaringBitmap main = new(ref _bitmapData, _allocator);
+                main.PrepareForReading();
+                FillBitmapFromMatch(_right, ref rightData, _allocator);
+                RoaringBitmap right = new(ref rightData, _allocator);
+                right.PrepareForReading();
+                main.AndWith(ref rightData);
+            }
+            finally
+            {
+                rightData.Dispose(_allocator);
+            }
         }
 
-        _bitmap.PrepareForReading();
-        _resultCount = _bitmap.Count;
-        _iterator = _bitmap.GetIterator();
+        _bitmapData.PrepareForReading(_allocator);
+        _resultCount = _bitmapData.Count;
+        _iterator = _bitmapData.GetIterator(_allocator);
         _materialized = true;
     }
 
-    private static void FillBitmapFromMatch(IQueryMatch match, ref RoaringBitmap bitmap)
+    private static void FillBitmapFromMatch(IQueryMatch match, ref RoaringBitmapData bitmapData, ByteStringContext allocator)
     {
+        RoaringBitmap bitmap = new(ref bitmapData, allocator);
         Span<long> scratch = stackalloc long[FillScratchSize];
         int read;
         while ((read = match.Fill(scratch)) > 0)
@@ -138,6 +155,6 @@ public struct CombinedMatch : IQueryMatch, IDisposable
     public void Dispose()
     {
         _iterator.Dispose();
-        _bitmap.Dispose();
+        _bitmapData.Dispose(_allocator);
     }
 }

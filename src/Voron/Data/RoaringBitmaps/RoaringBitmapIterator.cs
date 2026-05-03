@@ -28,7 +28,7 @@ public unsafe struct RoaringBitmapIterator : IDisposable
     private int _positionInContainer;
     private ulong _bitmapCurrentWord; // Bitmap only: remaining bits in current word
 
-    public RoaringBitmapIterator(ref RoaringBitmap bitmap, ByteStringContext ctx)
+    public RoaringBitmapIterator(ref RoaringBitmapData data, ByteStringContext ctx)
     {
         _ctx = ctx;
         _containerIndex = 0;
@@ -36,7 +36,7 @@ public unsafe struct RoaringBitmapIterator : IDisposable
         _bitmapCurrentWord = 0;
 
         // Build sorted array of packed (key, slot) ulongs from active containers
-        int containerCount = bitmap.ContainerCount;
+        int containerCount = data.ContainerCount;
         if (containerCount is 0)
         {
             _packedEntries = default;
@@ -51,8 +51,8 @@ public unsafe struct RoaringBitmapIterator : IDisposable
         _entryCount = 0;
 
         // Pack all active entries: (key << 32) | slot
-        var entries = bitmap.GetEntriesForIterator();
-        var types = bitmap._types.RawItems;
+        var entries = new ReadOnlySpan<ContainerEntry>(data._entries.RawItems, data._entries.Count);
+        var types = data._types.RawItems;
         for (int i = 0; i < entries.Length; i++)
         {
             if (types[i] != ContainerType.Free)
@@ -71,7 +71,7 @@ public unsafe struct RoaringBitmapIterator : IDisposable
     /// Fill the buffer with the next batch of values from the bitmap.
     /// Returns the number of values written.
     /// </summary>
-    public int Fill(ref RoaringBitmap bitmap, Span<long> buffer)
+    public int Fill(ref RoaringBitmapData data, Span<long> buffer)
     {
         int written = 0;
         if (_entryCount == 0)
@@ -85,8 +85,8 @@ public unsafe struct RoaringBitmapIterator : IDisposable
             int slot = (int)(packed & 0xFFFFFFFF);          // Lower 32 bits = slot
             uint key = (uint)(packed >> 32);                 // Upper 32 bits = key
 
-            ref ContainerEntry entry = ref bitmap.GetEntryBySlot(slot);
-            ContainerType type = bitmap._types.RawItems[slot];
+            ref ContainerEntry entry = ref data._entries[slot];
+            ContainerType type = data._types.RawItems[slot];
             long baseValue = (long)key << RoaringBitmap.ContainerKeyShift;
 
             // Iteration contract: callers MUST run RoaringBitmap.PrepareForReading() before

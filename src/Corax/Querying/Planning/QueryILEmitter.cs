@@ -37,9 +37,9 @@ public static class QueryILEmitter
     private static readonly MethodInfo s_recordResultCount =
         typeof(EntryScanHelper).GetMethod(nameof(EntryScanHelper.RecordResultCount))!;
 
-    // Span<RoaringBitmap> indexer — returns ref RoaringBitmap
+    // Span<RoaringBitmapData> indexer — returns ref RoaringBitmapData
     private static readonly MethodInfo s_bitmapSpanIndexer =
-        typeof(Span<RoaringBitmap>).GetProperty("Item")!.GetGetMethod()!;
+        typeof(Span<RoaringBitmapData>).GetProperty("Item")!.GetGetMethod()!;
 
     // IQueryMatch
     private static readonly MethodInfo s_matchCountGetter = typeof(IQueryMatch).GetProperty(nameof(IQueryMatch.Count))!.GetGetMethod()!;
@@ -47,20 +47,42 @@ public static class QueryILEmitter
     // Span<IQueryMatch> indexer
     private static readonly MethodInfo s_matchSpanIndexer = typeof(Span<IQueryMatch>).GetProperty("Item")!.GetGetMethod()!;
 
-    // RoaringBitmap
-    private static readonly MethodInfo s_andWith = typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.AndWith))!;
-    private static readonly MethodInfo s_andNotWith = typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.AndNotWith))!;
-    private static readonly MethodInfo s_clear = typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.Clear))!;
-    private static readonly MethodInfo s_isEmptyGetter = typeof(RoaringBitmap).GetProperty(nameof(RoaringBitmap.IsEmpty))!.GetGetMethod()!;
-    private static readonly MethodInfo s_repairAfterLazy = typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.RepairAfterLazy))!;
-    private static readonly MethodInfo s_bitmapCountGetter = typeof(RoaringBitmap).GetProperty(nameof(RoaringBitmap.Count))!.GetGetMethod()!;
-    private static readonly MethodInfo s_swapContents = typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.SwapContents))!;
-    private static readonly MethodInfo s_prepareForReading = typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.PrepareForReading))!;
-    private static readonly MethodInfo s_getIterator = typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.GetIterator))!;
-    private static readonly MethodInfo s_bitmapAdd = typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.Add))!;
+    // RoaringBitmapData — methods called directly by emitted IL
+    private static readonly MethodInfo s_andWith =
+        typeof(RoaringBitmapData).GetMethod(nameof(RoaringBitmapData.AndWith),
+            new[] { typeof(RoaringBitmapData).MakeByRefType(), typeof(Sparrow.Server.ByteStringContext) })!;
+    private static readonly MethodInfo s_andNotWith =
+        typeof(RoaringBitmapData).GetMethod(nameof(RoaringBitmapData.AndNotWith),
+            new[] { typeof(RoaringBitmapData).MakeByRefType(), typeof(Sparrow.Server.ByteStringContext) })!;
+    private static readonly MethodInfo s_clear =
+        typeof(RoaringBitmapData).GetMethod(nameof(RoaringBitmapData.Clear),
+            new[] { typeof(Sparrow.Server.ByteStringContext) })!;
+    private static readonly MethodInfo s_isEmptyGetter = typeof(RoaringBitmapData).GetProperty(nameof(RoaringBitmapData.IsEmpty))!.GetGetMethod()!;
+    private static readonly MethodInfo s_repairAfterLazy =
+        typeof(RoaringBitmapData).GetMethod(nameof(RoaringBitmapData.RepairAfterLazy),
+            new[] { typeof(Sparrow.Server.ByteStringContext) })!;
+    private static readonly MethodInfo s_bitmapCountGetter = typeof(RoaringBitmapData).GetProperty(nameof(RoaringBitmapData.Count))!.GetGetMethod()!;
+    private static readonly MethodInfo s_swapContents =
+        typeof(RoaringBitmapData).GetMethod(nameof(RoaringBitmapData.SwapContents),
+            new[] { typeof(RoaringBitmapData).MakeByRefType() })!;
+    private static readonly MethodInfo s_prepareForReading =
+        typeof(RoaringBitmapData).GetMethod(nameof(RoaringBitmapData.PrepareForReading),
+            new[] { typeof(Sparrow.Server.ByteStringContext) })!;
+    private static readonly MethodInfo s_getIterator =
+        typeof(RoaringBitmapData).GetMethod(nameof(RoaringBitmapData.GetIterator),
+            new[] { typeof(Sparrow.Server.ByteStringContext) })!;
+    private static readonly MethodInfo s_bitmapAdd =
+        typeof(RoaringBitmapData).GetMethod(nameof(RoaringBitmapData.Add),
+            new[] { typeof(long), typeof(Sparrow.Server.ByteStringContext) })!;
+
+    // IndexSearcher.Allocator — for passing ByteStringContext to RoaringBitmapData methods
+    private static readonly MethodInfo s_searcherAllocatorGetter =
+        typeof(IndexSearcher).GetProperty(nameof(IndexSearcher.Allocator))!.GetGetMethod()!;
 
     // RoaringBitmapIterator
-    private static readonly MethodInfo s_iterFill = typeof(RoaringBitmapIterator).GetMethod(nameof(RoaringBitmapIterator.Fill))!;
+    private static readonly MethodInfo s_iterFill =
+        typeof(RoaringBitmapIterator).GetMethod(nameof(RoaringBitmapIterator.Fill),
+            new[] { typeof(RoaringBitmapData).MakeByRefType(), typeof(System.Span<long>) })!;
     private static readonly MethodInfo s_iterDispose = typeof(RoaringBitmapIterator).GetMethod(nameof(RoaringBitmapIterator.Dispose))!;
 
     // CancellationToken
@@ -257,12 +279,14 @@ public static class QueryILEmitter
 
                 case PlanOpKind.ClearBitmap:
                     EmitLoadBitmapRef(il, op.BitmapLocal);
+                    EmitLoadAllocator(il);
                     il.Emit(OpCodes.Call, s_clear);
                     break;
 
                 case PlanOpKind.AndBitmaps:
                     EmitLoadBitmapRef(il, op.BitmapLocal);   // target
                     EmitLoadBitmapRef(il, op.ParamIndex2);    // source
+                    EmitLoadAllocator(il);
                     il.Emit(OpCodes.Call, s_andWith);
                     break;
 
@@ -295,6 +319,7 @@ public static class QueryILEmitter
 
                 case PlanOpKind.RepairAfterLazy:
                     EmitLoadBitmapRef(il, 0);
+                    EmitLoadAllocator(il);
                     il.Emit(OpCodes.Call, s_repairAfterLazy);
                     break;
 
@@ -382,13 +407,16 @@ public static class QueryILEmitter
 
         // PrepareForReading + GetIterator
         EmitLoadBitmapRef(il, 0);
+        EmitLoadAllocator(il);
         il.Emit(OpCodes.Call, s_prepareForReading);
         EmitLoadBitmapRef(il, 0);
+        EmitLoadAllocator(il);
         il.Emit(OpCodes.Call, s_getIterator);
         il.Emit(OpCodes.Stloc, iterLocal);
 
         // TempBitmap.Clear()
         EmitLoadBitmapRef(il, 1);
+        EmitLoadAllocator(il);
         il.Emit(OpCodes.Call, s_clear);
 
         // Allocate scan batch: stackalloc long[256]
@@ -529,6 +557,7 @@ public static class QueryILEmitter
         // All predicates passed — add to TempBitmap
         EmitLoadBitmapRef(il, 1);
         il.Emit(OpCodes.Ldloc, entryIdLocal);
+        EmitLoadAllocator(il);
         il.Emit(OpCodes.Call, s_bitmapAdd);
 
         // nextEntry: i++, continue
@@ -555,6 +584,7 @@ public static class QueryILEmitter
 
         // Clear the now-unused TempBitmap
         EmitLoadBitmapRef(il, 1);
+        EmitLoadAllocator(il);
         il.Emit(OpCodes.Call, s_clear);
     }
 
@@ -795,14 +825,22 @@ public static class QueryILEmitter
         }
     }
 
-    /// <summary>Load ref to bitmap from ctx.Bitmaps[0]s[slot].
-    /// Span indexer returns ref RoaringBitmap.</summary>
+    /// <summary>Load ref to bitmap data from ctx.Bitmaps[slot].
+    /// Span indexer returns ref RoaringBitmapData.</summary>
     private static void EmitLoadBitmapRef(ILGenerator il, int slot)
     {
         il.Emit(OpCodes.Ldarg_0);
         il.Emit(OpCodes.Ldflda, s_ctxBitmaps);
         EmitLdcI4(il, slot);
-        il.Emit(OpCodes.Call, s_bitmapSpanIndexer); // ref RoaringBitmap
+        il.Emit(OpCodes.Call, s_bitmapSpanIndexer); // ref RoaringBitmapData
+    }
+
+    /// <summary>Load ctx.Searcher.Allocator — ByteStringContext for methods needing allocation.</summary>
+    private static void EmitLoadAllocator(ILGenerator il)
+    {
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Ldfld, s_ctxSearcher);
+        il.Emit(OpCodes.Callvirt, s_searcherAllocatorGetter);
     }
 
     /// <summary>Load ctx.Matches[index] — returns IQueryMatch on the stack.</summary>

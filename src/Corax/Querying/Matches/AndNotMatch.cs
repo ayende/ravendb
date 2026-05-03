@@ -27,7 +27,7 @@ namespace Corax.Querying.Matches
 
         private readonly ByteStringContext _context;
 
-        private RoaringBitmap _bitmap;
+        private RoaringBitmapData _bitmapData;
         private RoaringBitmapIterator _iterator;
         private bool _materialized;
         private bool _isAndWithBuffer;
@@ -50,7 +50,7 @@ namespace Corax.Querying.Matches
             _token = token;
 
             _context = context;
-            _bitmap = new RoaringBitmap(context);
+            _bitmapData = default;
             _iterator = default;
             _materialized = false;
             _isAndWithBuffer = false;
@@ -65,7 +65,7 @@ namespace Corax.Querying.Matches
             if (_materialized == false)
                 Materialize();
 
-            return _iterator.Fill(ref _bitmap, matches);
+            return _iterator.Fill(ref _bitmapData, matches);
         }
 
         private void Materialize()
@@ -73,28 +73,37 @@ namespace Corax.Querying.Matches
             _token.ThrowIfCancellationRequested();
 
             // Drain inner into the result bitmap.
-            FillBitmapFromMatch(ref _inner, ref _bitmap);
-            _bitmap.PrepareForReading();
+            FillBitmapFromMatch(ref _inner, ref _bitmapData, _context);
+            RoaringBitmap main = new(ref _bitmapData, _context);
+            main.PrepareForReading();
 
             // Drain outer into a scratch bitmap and subtract it.
-            using var outerBitmap = new RoaringBitmap(_context);
-            var outer = outerBitmap;
-            FillBitmapFromMatch(ref _outer, ref outer);
-            outer.PrepareForReading();
+            RoaringBitmapData outerData = default;
+            try
+            {
+                FillBitmapFromMatch(ref _outer, ref outerData, _context);
+                RoaringBitmap outer = new(ref outerData, _context);
+                outer.PrepareForReading();
 
-            _token.ThrowIfCancellationRequested();
-            _bitmap.AndNotWith(ref outer);
-            _bitmap.PrepareForReading();
+                _token.ThrowIfCancellationRequested();
+                main.AndNotWith(ref outerData);
+                main.PrepareForReading();
+            }
+            finally
+            {
+                outerData.Dispose(_context);
+            }
 
-            _totalResults = _bitmap.Count;
+            _totalResults = _bitmapData.Count;
             _confidence = QueryCountConfidence.High;
-            _iterator = _bitmap.GetIterator();
+            _iterator = _bitmapData.GetIterator(_context);
             _materialized = true;
         }
 
-        private void FillBitmapFromMatch<TMatch>(ref TMatch match, ref RoaringBitmap bitmap)
+        private void FillBitmapFromMatch<TMatch>(ref TMatch match, ref RoaringBitmapData bitmapData, ByteStringContext context)
             where TMatch : IQueryMatch
         {
+            RoaringBitmap bitmap = new(ref bitmapData, context);
             Span<long> scratch = stackalloc long[FillScratchSize];
             int read;
             while ((read = match.Fill(scratch)) > 0)
@@ -120,7 +129,7 @@ namespace Corax.Querying.Matches
             int kept = 0;
             for (int i = 0; i < matches; i++)
             {
-                if (_bitmap.Contains(buffer[i]))
+                if (_bitmapData.Contains(buffer[i]))
                     buffer[kept++] = buffer[i];
             }
             return kept;
@@ -149,7 +158,7 @@ namespace Corax.Querying.Matches
         public void Dispose()
         {
             _iterator.Dispose();
-            _bitmap.Dispose();
+            _bitmapData.Dispose(_context);
         }
 
 

@@ -26,13 +26,14 @@ public class RandomNodesFromFilterEnumeratorTests(ITestOutputHelper output) : St
         // Test empty
         using (var indexSearcher = new IndexSearcher(Env, indexMapping))
         {
-            var filterResult = new RoaringBitmap(indexSearcher.Allocator);
-            filterResult.PrepareForReading();
+            RoaringBitmapData filterData = default;
+            RoaringBitmap filterBitmap = new(ref filterData, indexSearcher.Allocator);
+            filterBitmap.PrepareForReading();
 
-            using var it = new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(indexSearcher, indexMapping.GetByFieldId(1).Metadata, filterResult, random);
+            using var it = new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(indexSearcher, indexMapping.GetByFieldId(1).Metadata, filterData, random);
 
             Assert.False(it.MoveNext());
-            filterResult.Dispose();
+            filterBitmap.Dispose();
         }
     }
 
@@ -44,7 +45,8 @@ public class RandomNodesFromFilterEnumeratorTests(ITestOutputHelper output) : St
         using var indexMapping = InsertData();
         using (var indexSearcher = new IndexSearcher(Env, indexMapping))
         {
-            var filterResult = new RoaringBitmap(indexSearcher.Allocator);
+            RoaringBitmapData filterData = default;
+            RoaringBitmap filterBitmap = new(ref filterData, indexSearcher.Allocator);
 
             var allEntries = Enumerable.Range(1, (int)indexSearcher.LastEntryId).Select(x => (long)x).ToArray();
             random.Shuffle(allEntries.AsSpan());
@@ -53,12 +55,12 @@ public class RandomNodesFromFilterEnumeratorTests(ITestOutputHelper output) : St
             var toInsert = allEntries.AsSpan().Slice(0, count);
             toInsert.Sort();
 
-            filterResult.AddRange(toInsert);
-            filterResult.PrepareForReading();
+            filterBitmap.AddRange(toInsert);
+            filterBitmap.PrepareForReading();
 
             List<long> results = new();
 
-            using (var it = new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(indexSearcher, indexMapping.GetByFieldId(1).Metadata, filterResult, random))
+            using (var it = new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(indexSearcher, indexMapping.GetByFieldId(1).Metadata, filterData, random))
             {
                 while (it.MoveNext())
                 {
@@ -69,7 +71,7 @@ public class RandomNodesFromFilterEnumeratorTests(ITestOutputHelper output) : St
             Assert.True(results.Count > 0);
             // Each entry should produce at least one node ID
             Assert.True(results.Distinct().Count() <= count * 2); // upper bound: each doc could have multiple vectors
-            filterResult.Dispose();
+            filterBitmap.Dispose();
         }
     }
 
@@ -85,11 +87,12 @@ public class RandomNodesFromFilterEnumeratorTests(ITestOutputHelper output) : St
         //First
         using (var indexSearcher = new IndexSearcher(Env, indexMapping))
         {
-            var filterResult = new RoaringBitmap(indexSearcher.Allocator);
-            filterResult.Add(1);
-            filterResult.PrepareForReading();
+            RoaringBitmapData filterData = default;
+            RoaringBitmap filterBitmap = new(ref filterData, indexSearcher.Allocator);
+            filterBitmap.Add(1);
+            filterBitmap.PrepareForReading();
 
-            using (var it = new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(indexSearcher, indexMapping.GetByFieldId(1).Metadata, filterResult, random))
+            using (var it = new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(indexSearcher, indexMapping.GetByFieldId(1).Metadata, filterData, random))
             {
                 Assert.True(it.MoveNext());
                 Assert.Equal(1, it.Current);
@@ -97,18 +100,19 @@ public class RandomNodesFromFilterEnumeratorTests(ITestOutputHelper output) : St
                 Assert.Equal(-1, it.Current);
             }
 
-            filterResult.Dispose();
+            filterBitmap.Dispose();
         }
 
 
         //Last
         using (var indexSearcher = new IndexSearcher(Env, indexMapping))
         {
-            var filterResult = new RoaringBitmap(indexSearcher.Allocator);
-            filterResult.Add(indexSearcher.LastEntryId);
-            filterResult.PrepareForReading();
+            RoaringBitmapData filterData = default;
+            RoaringBitmap filterBitmap = new(ref filterData, indexSearcher.Allocator);
+            filterBitmap.Add(indexSearcher.LastEntryId);
+            filterBitmap.PrepareForReading();
 
-            using (var it = new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(indexSearcher, indexMapping.GetByFieldId(1).Metadata, filterResult, random))
+            using (var it = new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(indexSearcher, indexMapping.GetByFieldId(1).Metadata, filterData, random))
             {
                 Assert.True(it.MoveNext());
                 Assert.Equal(indexSearcher.LastEntryId, it.Current);
@@ -116,17 +120,18 @@ public class RandomNodesFromFilterEnumeratorTests(ITestOutputHelper output) : St
                 Assert.Equal(-1, it.Current);
             }
 
-            filterResult.Dispose();
+            filterBitmap.Dispose();
         }
         // Random
         using (var indexSearcher = new IndexSearcher(Env, indexMapping))
         {
-            var filterResult = new RoaringBitmap(indexSearcher.Allocator);
+            RoaringBitmapData filterData = default;
+            RoaringBitmap filterBitmap = new(ref filterData, indexSearcher.Allocator);
             var expected = random.Next(2, (int)indexSearcher.LastEntryId);
-            filterResult.Add(expected);
-            filterResult.PrepareForReading();
+            filterBitmap.Add(expected);
+            filterBitmap.PrepareForReading();
 
-            using (var it = new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(indexSearcher, indexMapping.GetByFieldId(1).Metadata, filterResult, random))
+            using (var it = new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(indexSearcher, indexMapping.GetByFieldId(1).Metadata, filterData, random))
             {
                 Assert.True(it.MoveNext());
                 Assert.Equal(expected, it.Current);
@@ -134,7 +139,7 @@ public class RandomNodesFromFilterEnumeratorTests(ITestOutputHelper output) : St
                 Assert.Equal(-1, it.Current);
             }
 
-            filterResult.Dispose();
+            filterBitmap.Dispose();
         }
     }
 
@@ -146,11 +151,12 @@ public class RandomNodesFromFilterEnumeratorTests(ITestOutputHelper output) : St
         var random = new Random(seed);
         using (var indexSearcher = new IndexSearcher(Env, indexMapping))
         {
-            var filterResult = new RoaringBitmap(indexSearcher.Allocator);
-            filterResult.Add(1);
-            filterResult.PrepareForReading();
+            RoaringBitmapData filterData = default;
+            RoaringBitmap filterBitmap = new(ref filterData, indexSearcher.Allocator);
+            filterBitmap.Add(1);
+            filterBitmap.PrepareForReading();
 
-            using (var it = new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(indexSearcher, indexMapping.GetByFieldId(1).Metadata, filterResult, random))
+            using (var it = new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(indexSearcher, indexMapping.GetByFieldId(1).Metadata, filterData, random))
             {
                 Assert.True(it.MoveNext());
                 Assert.Equal(1, it.Current);
@@ -160,15 +166,16 @@ public class RandomNodesFromFilterEnumeratorTests(ITestOutputHelper output) : St
                 Assert.Equal(-1, it.Current);
             }
 
-            filterResult.Dispose();
+            filterBitmap.Dispose();
         }
         using (var indexSearcher = new IndexSearcher(Env, indexMapping))
         {
-            var filterResult = new RoaringBitmap(indexSearcher.Allocator);
-            filterResult.Add(indexSearcher.LastEntryId);
-            filterResult.PrepareForReading();
+            RoaringBitmapData filterData = default;
+            RoaringBitmap filterBitmap = new(ref filterData, indexSearcher.Allocator);
+            filterBitmap.Add(indexSearcher.LastEntryId);
+            filterBitmap.PrepareForReading();
 
-            using (var it = new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(indexSearcher, indexMapping.GetByFieldId(1).Metadata, filterResult, random))
+            using (var it = new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(indexSearcher, indexMapping.GetByFieldId(1).Metadata, filterData, random))
             {
                 Assert.True(it.MoveNext());
                 Assert.Equal(2 * indexSearcher.LastEntryId - 1, it.Current);
@@ -178,16 +185,17 @@ public class RandomNodesFromFilterEnumeratorTests(ITestOutputHelper output) : St
                 Assert.Equal(-1, it.Current);
             }
 
-            filterResult.Dispose();
+            filterBitmap.Dispose();
         }
         using (var indexSearcher = new IndexSearcher(Env, indexMapping))
         {
-            var filterResult = new RoaringBitmap(indexSearcher.Allocator);
+            RoaringBitmapData filterData = default;
+            RoaringBitmap filterBitmap = new(ref filterData, indexSearcher.Allocator);
             var randomDoc = random.Next(1, (int)indexSearcher.LastEntryId + 1);
-            filterResult.Add(randomDoc);
-            filterResult.PrepareForReading();
+            filterBitmap.Add(randomDoc);
+            filterBitmap.PrepareForReading();
 
-            using (var it = new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(indexSearcher, indexMapping.GetByFieldId(1).Metadata, filterResult, random))
+            using (var it = new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(indexSearcher, indexMapping.GetByFieldId(1).Metadata, filterData, random))
             {
                 Assert.True(it.MoveNext());
                 Assert.Equal(2 * randomDoc - 1, it.Current);
@@ -197,7 +205,7 @@ public class RandomNodesFromFilterEnumeratorTests(ITestOutputHelper output) : St
                 Assert.Equal(-1, it.Current);
             }
 
-            filterResult.Dispose();
+            filterBitmap.Dispose();
         }
     }
 
@@ -209,7 +217,8 @@ public class RandomNodesFromFilterEnumeratorTests(ITestOutputHelper output) : St
         using var indexMapping = InsertData(true);
         using (var indexSearcher = new IndexSearcher(Env, indexMapping))
         {
-            var filterResult = new RoaringBitmap(indexSearcher.Allocator);
+            RoaringBitmapData filterData = default;
+            RoaringBitmap filterBitmap = new(ref filterData, indexSearcher.Allocator);
 
             var allEntries = Enumerable.Range(1, (int)indexSearcher.LastEntryId).Select(x => (long)x).ToArray();
             random.Shuffle(allEntries.AsSpan());
@@ -218,14 +227,14 @@ public class RandomNodesFromFilterEnumeratorTests(ITestOutputHelper output) : St
             var toInsert = allEntries.AsSpan().Slice(0, count);
             toInsert.Sort();
 
-            filterResult.AddRange(toInsert);
-            filterResult.PrepareForReading();
+            filterBitmap.AddRange(toInsert);
+            filterBitmap.PrepareForReading();
 
             var expectedResults = toInsert.ToArray().Select(x => x * 2).Concat(toInsert.ToArray().Select(x => x * 2 - 1)).ToArray();
 
             List<long> results = new();
 
-            using (var it = new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(indexSearcher, indexMapping.GetByFieldId(1).Metadata, filterResult, random))
+            using (var it = new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(indexSearcher, indexMapping.GetByFieldId(1).Metadata, filterData, random))
             {
                 while (it.MoveNext())
                 {
@@ -237,7 +246,7 @@ public class RandomNodesFromFilterEnumeratorTests(ITestOutputHelper output) : St
             results.Sort();
             expectedResults.AsSpan().Sort();
             Assert.Equal(expectedResults, CollectionsMarshal.AsSpan(results));
-            filterResult.Dispose();
+            filterBitmap.Dispose();
         }
     }
 
