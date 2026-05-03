@@ -407,7 +407,6 @@ namespace Corax.Querying.Matches
 
                         bool applyVectorization;
 
-                        // See: MergeHelper.AndVectorized
                         // read => leftLength
                         // matches => rightLength
                         bool isSmallerInput;

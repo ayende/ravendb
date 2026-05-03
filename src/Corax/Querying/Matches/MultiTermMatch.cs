@@ -17,6 +17,7 @@ using Sparrow.Server.Utils.VxSort;
 using Voron;
 using Voron.Data.Containers;
 using Voron.Data.PostingLists;
+using Voron.Data.RoaringBitmaps;
 using Voron.Util;
 using Voron.Util.PFor;
 
@@ -366,72 +367,45 @@ namespace Corax.Querying.Matches
 
         private int AndWithFill(Span<long> buffer, int matches)
         {
-            var incomingMatches = buffer.Slice(0, matches);
-            using var _ = _context.Allocate(2 * sizeof(long) * buffer.Length, out var bufferHolder);
-            var innerMatchesBuffer = bufferHolder.ToSpan<long>()[matches..];
-            var workingMatches = bufferHolder.ToSpan<long>()[..matches];
-            
-            // We store all results in a single list - the motivation for this is that we may get the same result from multiple Fill calls
-            // (e.g. in case of WhereIn with multiple matching terms). In such case it will be deduplicated.
-            var allResults = new NativeList<long>();
-            allResults.Initialize(_context);
-            
+            // Build a bitmap of the incoming matches so the per-Fill batches can be filtered
+            // via a constant-time Contains check. The incoming buffer is already sorted
+            // ascending, so AddRange is exact.
+            using var incomingBitmap = new RoaringBitmap(_context);
+            var incoming = incomingBitmap;
+            incoming.AddRange(buffer.Slice(0, matches));
+            incoming.PrepareForReading();
+
+            using var _ = _context.Allocate(sizeof(long) * buffer.Length, out var innerBufferHolder);
+            var innerMatchesBuffer = innerBufferHolder.ToSpan<long>();
+
             _termReader.Reset(ref this);
-            
-            var fillCounter = 0;
-            bool alreadySorted = false;
+
+            int kept = 0;
             while (Fill(innerMatchesBuffer) is var read and > 0)
             {
                 _token.ThrowIfCancellationRequested();
-                
-                fillCounter++;
                 _totalResults += read;
 
-                var innerMatches = innerMatchesBuffer[..read];
-                
-                var common = MergeHelper.And(
-                    dst: workingMatches, 
-                    left: innerMatches,
-                    right: incomingMatches);
-                
-                if (allResults.HasCapacityFor(common) == false)
-                    allResults.EnsureCapacityFor(_context, common);
-                allResults.AddRangeUnsafe(workingMatches[..common]);
-                
-                // Because we're performing AND operation, we want to do sorting and deduplication when we're sure there are duplicates (allResults.Count > matches)
-                // or (possibly) got all results (allResults.Count == matches).
-                if (allResults.Count >= matches)
+                for (int i = 0; i < read && kept < matches; i++)
                 {
-                    if (fillCounter > 1)
-                    {
-                        var newCount = Sorting.SortAndRemoveDuplicates(allResults.ToSpan());
-                        allResults.Count = newCount;
-                    }
-
-                    // If we matched all results, we can stop processing.
-                    // At this point the results are either sorted, or come from a single Fill call, which guarantees sorted results.
-                    if (allResults.Count == matches)
-                    {
-                        alreadySorted = true;
-                        break;
-                    }
+                    long entry = innerMatchesBuffer[i];
+                    if (incoming.Contains(entry))
+                        buffer[kept++] = entry;
                 }
-            }
-            
-            // The results returned by the Fill method are sorted within one call. If we make multiple calls, we have no
-            // guarantee that concatenated results are sorted, which can lead to invalid results since the AND operation guarantees a sorted result.
-            if (alreadySorted == false && fillCounter > 1)
-            {
-                var newCount = Sorting.SortAndRemoveDuplicates(allResults.ToSpan());
-                allResults.Count = newCount;
+
+                if (kept >= matches)
+                    break;
             }
 
-            Debug.Assert(allResults.Count <= matches);
-            allResults.CopyTo(buffer, 0);
-            var resultCount = allResults.Count;
-            allResults.Dispose(_context);
-            
-            return resultCount;
+            // Multiple Fill calls do not guarantee an ascending sequence across batches; the AND
+            // contract requires sorted unique output, so finalize before returning.
+            if (kept > 1)
+            {
+                var resultSpan = buffer[..kept];
+                kept = Sorting.SortAndRemoveDuplicates(resultSpan);
+            }
+
+            return kept;
         }
 
 #if !DEBUG
@@ -445,16 +419,11 @@ namespace Corax.Querying.Matches
             // that would trigger such optimization or if they are even necessary. The reason why is that buffer size
             // may offset some of the requirements for such a scan operation. Interesting approaches to consider include
             // evaluating directly, construct temporary data structures like bloom filters on subsequent iterations when
-            // the statistics guarantee those approaches, etc. Currently we apply memoization but without any limit to 
-            // size of the result and it's subsequent usage of memory. 
+            // the statistics guarantee those approaches, etc. Currently we apply memoization but without any limit to
+            // size of the result and it's subsequent usage of memory.
 
-            using var _ = _context.Allocate(3 * sizeof(long) * buffer.Length, out var bufferHolder);
-            var longBuffer = MemoryMarshal.Cast<byte, long>(bufferHolder.ToSpan());
-
-            // PERF: We want to avoid to share cache lines, that's why the third array will move toward the end of the array. 
-            Span<long> results = longBuffer.Slice(0, buffer.Length);
-            Span<long> tmp = longBuffer.Slice(buffer.Length, buffer.Length);
-            Span<long> tmp2 = longBuffer.Slice(2 * buffer.Length, buffer.Length);
+            using var _ = _context.Allocate(sizeof(long) * buffer.Length, out var bufferHolder);
+            var tmp = MemoryMarshal.Cast<byte, long>(bufferHolder.ToSpan());
 
             _inner.Reset();
             ResetBm25Buffer();
@@ -466,16 +435,21 @@ namespace Corax.Querying.Matches
 
             long totalRead = _currentTerm.Count;
 
-            int totalSize = 0;
-            while (totalSize < buffer.Length && hasData)
+            // OR per-term AndWith results into a bitmap. Each per-term batch is an intersection
+            // against the incoming buffer, so we accumulate a deduped union of all matches.
+            using var resultsBitmap = new RoaringBitmap(_context);
+            var results = resultsBitmap;
+
+            while (hasData)
             {
                 _token.ThrowIfCancellationRequested();
                 actualMatches.CopyTo(tmp);
                 var read = _currentTerm.AndWith(tmp, matches);
                 if (read != 0)
                 {
-                    results[0..totalSize].CopyTo(tmp2);
-                    totalSize = MergeHelper.Or(results, tmp2[0..totalSize], tmp[0..read]);
+                    var batch = tmp[..read];
+                    for (int i = 0; i < read; i++)
+                        results.Add(batch[i]);
                     totalRead += _currentTerm.Count;
                 }
 
@@ -483,14 +457,16 @@ namespace Corax.Querying.Matches
                 AddTermToBm25();
             }
 
-            // We will check if we can make a better decision next time. 
             if (!hasData)
             {
                 _totalResults = totalRead;
                 _confidence = QueryCountConfidence.High;
             }
 
-            results[0..totalSize].CopyTo(buffer);
+            results.PrepareForReading();
+            var iter = results.GetIterator();
+            int totalSize = iter.Fill(ref results, buffer);
+            iter.Dispose();
 
             return totalSize;
         }

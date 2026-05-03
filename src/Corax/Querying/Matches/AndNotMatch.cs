@@ -5,12 +5,12 @@ using System.Runtime.CompilerServices;
 using System.Threading;
 using Corax.Querying.Matches.Meta;
 using Sparrow.Server;
-using Sparrow.Server.Utils;
+using Voron.Data.RoaringBitmaps;
 
 namespace Corax.Querying.Matches
 {
     [DebuggerDisplay("{DebugView,nq}")]
-    public struct AndNotMatch<TInner, TOuter> : IQueryMatch
+    public struct AndNotMatch<TInner, TOuter> : IQueryMatch, IDisposable
     where TInner : IQueryMatch
     where TOuter : IQueryMatch
     {
@@ -26,27 +26,19 @@ namespace Corax.Querying.Matches
         public long Count => _totalResults;
 
         private readonly ByteStringContext _context;
-        
-        /// <summary>
-        /// Indicates that the buffer is used by the AndWith method.
-        /// </summary>
+
+        private RoaringBitmap _bitmap;
+        private RoaringBitmapIterator _iterator;
+        private bool _materialized;
         private bool _isAndWithBuffer;
 
-        private GrowableBuffer<long, Progressive<long>> _buffer;
+        private const int FillScratchSize = 4096;
 
-        private bool _doNotSortResults;
-
-        public SkipSortingResult AttemptToSkipSorting()
-        {
-            var r = _inner.AttemptToSkipSorting();
-            // if the inner requires sorting, we also require it
-            _doNotSortResults = r != SkipSortingResult.SortingIsRequired;
-            return r;
-        }
+        public SkipSortingResult AttemptToSkipSorting() => SkipSortingResult.ResultsNativelySorted;
 
         public QueryCountConfidence Confidence => _confidence;
 
-        private AndNotMatch(ByteStringContext context, 
+        private AndNotMatch(ByteStringContext context,
             in TInner inner, in TOuter outer,
             long totalResults, QueryCountConfidence confidence, CancellationToken token)
         {
@@ -58,6 +50,9 @@ namespace Corax.Querying.Matches
             _token = token;
 
             _context = context;
+            _bitmap = new RoaringBitmap(context);
+            _iterator = default;
+            _materialized = false;
             _isAndWithBuffer = false;
         }
 
@@ -66,136 +61,70 @@ namespace Corax.Querying.Matches
         {
             if (_isAndWithBuffer)
                 throw new InvalidOperationException($"We cannot execute `{nameof(Fill)}` after initiating a `{nameof(AndWith)}` operation.");
-            // Check if this is the second time we enter or not. 
-            if (_buffer.IsInitialized == false)
+
+            if (_materialized == false)
+                Materialize();
+
+            return _iterator.Fill(ref _bitmap, matches);
+        }
+
+        private void Materialize()
+        {
+            _token.ThrowIfCancellationRequested();
+
+            // Drain inner into the result bitmap.
+            FillBitmapFromMatch(ref _inner, ref _bitmap);
+            _bitmap.PrepareForReading();
+
+            // Drain outer into a scratch bitmap and subtract it.
+            using var outerBitmap = new RoaringBitmap(_context);
+            var outer = outerBitmap;
+            FillBitmapFromMatch(ref _outer, ref outer);
+            outer.PrepareForReading();
+
+            _token.ThrowIfCancellationRequested();
+            _bitmap.AndNotWith(ref outer);
+            _bitmap.PrepareForReading();
+
+            _totalResults = _bitmap.Count;
+            _confidence = QueryCountConfidence.High;
+            _iterator = _bitmap.GetIterator();
+            _materialized = true;
+        }
+
+        private void FillBitmapFromMatch<TMatch>(ref TMatch match, ref RoaringBitmap bitmap)
+            where TMatch : IQueryMatch
+        {
+            Span<long> scratch = stackalloc long[FillScratchSize];
+            int read;
+            while ((read = match.Fill(scratch)) > 0)
             {
-                _buffer = new GrowableBuffer<long, Progressive<long>>();
-                int iterations = 0;
-                
-                _buffer.Init(_context, _outer.Count);
-                while (_outer.Fill(_buffer.GetSpace()) is var read)
-                {
-                    if (read == 0)
-                        break;
-                    
-                    _buffer.AddUsage(read);
-                    iterations++;
-                }
-                
-                // The problem is that multiple Fill calls do not ensure that we will get a sequence of ordered
-                // values, therefore we must ensure that we get a 'sorted' sequence ensuring those happen.
-                if (iterations > 1 && _buffer.Count > 1)
-                {
-                    var newCount = Sorting.SortAndRemoveDuplicates(_buffer.Results);
-                    _buffer.Truncate(newCount);
-                }
-            }
-
-            // The outer is empty, so item in inner will be returned. 
-            if (_buffer.Count == 0)
-                return _inner.Fill(matches);
-
-            // Now it is time to run the other part of the algorithm, which is getting the Inner data until we fill the buffer.
-            while (true)
-            {
-                int totalResults = 0;
-                int iterations = 0;
-
-                var resultsSpan = matches;
-                while (resultsSpan.Length > 0)
-                {
-                    // RavenDB-17750: We have to fill everything possible UNTIL there are no more matches availables.
-                    var results = _inner.Fill(resultsSpan);
-                    if (results == 0)                         
-                        break; // We are certainly done. As `Fill` must not return 0 results unless it is done. 
-
-                    totalResults += results;
-                    iterations++;
-
-                    resultsSpan = resultsSpan.Slice(results);
-                }
-
-                // Again multiple Fill calls do not ensure that we will get a sequence of ordered
-                // values, therefore we must ensure that we get a 'sorted' sequence ensuring those happen.
-                if (_doNotSortResults == false && iterations > 1)
-                {
-                    // We need to sort and remove duplicates.
-                    
-                    _token.ThrowIfCancellationRequested();
-                    totalResults = Sorting.SortAndRemoveDuplicates(matches.Slice(0, totalResults));
-                }
-
-                // This is an early bailout, the only way this can happen is when Fill returns 0 and we dont have
-                // any match to return. 
-                if (totalResults == 0)
-                    return 0;
-                
-                // We have matches and therefore we need now to remove the ones found in the outer buffer.
-                Span<long> outerBuffer = _buffer.Results;
-                Span<long> innerBuffer = matches.Slice(0, totalResults);
                 _token.ThrowIfCancellationRequested();
-                totalResults = MergeHelper.AndNot(innerBuffer, innerBuffer, outerBuffer);
-
-                // Since we would require to sort again if we dont return, we return what we have instead.
-                if (totalResults != 0)
-                    return totalResults; 
-
-                // If can happen that we filtered out everything, but we cannot return 0. Therefore, we will
-                // continue executing until we run out of any potential inner match. 
+                // Successive Fill batches are not guaranteed to be ascending across calls; add per-element.
+                for (int i = 0; i < read; i++)
+                    bitmap.Add(scratch[i]);
             }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public int AndWith(Span<long> buffer, int matches)
         {
-            // This is not an AndWith memoized buffer, therefore we need to acquire a buffer to store the results
-            // before continuing.   
             if (_isAndWithBuffer == false)
             {
-                _token.ThrowIfCancellationRequested();
-                var andWithBuffer = new GrowableBuffer<long, Progressive<long>>();
-                andWithBuffer.Init(_context, Count);
-
-                // Now it is time to run the other part of the algorithm, which is getting the Inner data until we fill the buffer.
-                int iterations = 0;
-                while (Fill(andWithBuffer.GetSpace()) is var read)
-                {
-                    if (read == 0)
-                        break;
-                    
-                    _token.ThrowIfCancellationRequested();
-                    andWithBuffer.AddUsage(read);
-                    iterations++;
-                }
-
-                // Again multiple Fill calls do not ensure that we will get a sequence of ordered
-                // values, therefore we must ensure that we get a 'sorted' sequence ensuring those happen.
-                if (iterations > 1 && andWithBuffer.Count > 0)
-                {
-                    // We need to sort and remove duplicates.
-                    _token.ThrowIfCancellationRequested();
-                    var newCount = Sorting.SortAndRemoveDuplicates(andWithBuffer.Results);
-                    andWithBuffer.Truncate(newCount);
-                }
-                
-                // Now we signal that this is now indeed an AndWith memoized buffer, no Fill allowed from now on.                
+                if (_materialized == false)
+                    Materialize();
                 _isAndWithBuffer = true;
-                _buffer.Dispose();
-                _buffer = andWithBuffer;
-                
-                //Since we evaluated whole query we exactly know how many items it returns.
-                _totalResults = _buffer.Count;
-                _confidence = QueryCountConfidence.High;
             }
 
-            // If we don't have any result, no need to do anything. And with nothing will mean that there is nothing.
-            if (_buffer.Count == 0)
-                return 0;
-
-            _token.ThrowIfCancellationRequested();
-            return MergeHelper.And(buffer, buffer.Slice(0, matches), _buffer.Results);
+            // Filter the incoming buffer against the materialized result set.
+            int kept = 0;
+            for (int i = 0; i < matches; i++)
+            {
+                if (_bitmap.Contains(buffer[i]))
+                    buffer[kept++] = buffer[i];
+            }
+            return kept;
         }
-
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Score(Span<long> matches, Span<float> scores, float boostFactor)
@@ -216,6 +145,12 @@ namespace Corax.Querying.Matches
         }
 
         string DebugView => Inspect().ToString();
+
+        public void Dispose()
+        {
+            _iterator.Dispose();
+            _bitmap.Dispose();
+        }
 
 
         public static AndNotMatch<TInner, TOuter> Create(IndexSearcher searcher, in TInner inner, in TOuter outer, in CancellationToken token)

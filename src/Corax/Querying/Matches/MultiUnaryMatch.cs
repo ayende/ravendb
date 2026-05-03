@@ -420,7 +420,8 @@ public struct MultiUnaryMatch<TInner> : IQueryMatch
     private readonly IndexSearcher _searcher;
     private TInner _inner;
     private readonly MultiUnaryItem[] _comparers;
-    private GrowableBuffer<long, Progressive<long>> _growableBuffer;
+    private Voron.Data.RoaringBitmaps.RoaringBitmap _matchBitmap;
+    private bool _matchBitmapBuilt;
     public MultiUnaryMatch(IndexSearcher searcher, TInner inner, in MultiUnaryItem[] items)
     {
         _inner = inner;
@@ -429,6 +430,8 @@ public struct MultiUnaryMatch<TInner> : IQueryMatch
         _count = _inner.Count;
         _confidence = QueryCountConfidence.Low;
         IsBoosting = false;
+        _matchBitmap = new Voron.Data.RoaringBitmaps.RoaringBitmap(searcher.Allocator);
+        _matchBitmapBuilt = false;
     }
 
     public long Count => _count;
@@ -535,22 +538,39 @@ public struct MultiUnaryMatch<TInner> : IQueryMatch
     
     public int AndWith(Span<long> buffer, int matches)
     {
-        ref var matchBuffer = ref _growableBuffer;
-        if (matchBuffer.IsInitialized == false)
+        if (_matchBitmapBuilt == false)
         {
-            matchBuffer.Init(_searcher.Allocator, _inner.Count);
-            while(Fill(matchBuffer.GetSpace()) is var read and > 0)
-                matchBuffer.AddUsage(read);
-            
-            // If results are not natively sorted we do not have any guarantees about order. We've to sort it to perform AND.
-            if (_inner.AttemptToSkipSorting() != SkipSortingResult.ResultsNativelySorted)
-                Sort.Run(matchBuffer.Results);
+            // Drain Fill into a bitmap so subsequent AndWith calls can intersect via Contains.
+            // The bitmap also handles any out-of-order or duplicate IDs produced across batches.
+            const int FillScratchSize = 4096;
+            Span<long> scratch = stackalloc long[FillScratchSize];
+            int read;
+            while ((read = Fill(scratch)) > 0)
+            {
+                for (int i = 0; i < read; i++)
+                    _matchBitmap.Add(scratch[i]);
+            }
 
+            _matchBitmap.PrepareForReading();
             _confidence = QueryCountConfidence.High;
-            _count = matchBuffer.Count;
+            _count = _matchBitmap.Count;
+            _matchBitmapBuilt = true;
         }
-        
-        return MergeHelper.And(buffer, buffer.Slice(0, matches), matchBuffer.Results);
+
+        // Filter the incoming buffer in place against the bitmap. Buffer is sorted ascending
+        // on entry; preserving order means we just compact matched entries to the front.
+        int kept = 0;
+        for (int i = 0; i < matches; i++)
+        {
+            if (_matchBitmap.Contains(buffer[i]))
+                buffer[kept++] = buffer[i];
+        }
+        return kept;
+    }
+
+    public void Dispose()
+    {
+        _matchBitmap.Dispose();
     }
 
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)
