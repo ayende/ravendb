@@ -29,7 +29,11 @@ public unsafe struct BitmapMatch : IQueryMatch, IBitmapQueryMatch, IDisposable
         _iteratorInitialized = false;
     }
 
-    /// <summary>Get a mutable reference to the internal bitmap for building.</summary>
+    /// <summary>Get a mutable reference to the internal bitmap for building.
+    /// The returned ref is intentionally unscoped because callers thread it through
+    /// QueryPrimitives.FillFromMatch / AndWithMatch chains where the BitmapMatch lives
+    /// on the caller's stack frame for the full call duration. Suppresses CS9084.</summary>
+    [System.Diagnostics.CodeAnalysis.UnscopedRef]
     public ref RoaringBitmap Bitmap => ref _bitmap;
 
     public long Count => _bitmap.Count;
