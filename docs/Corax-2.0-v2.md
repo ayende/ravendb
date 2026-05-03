@@ -2,8 +2,9 @@
 
 *Target: RavenDB 8.0. Corax becomes the default indexing engine.*
 
-*Source ground truth: the v7.2 codebase and the `RavenDB-25284` branch
-(on `ayende/ravendb`). All type/file references are from the code.*
+*Source ground truth: the v7.2 codebase, the `RavenDB-25284` prototype,
+and the `RavenDB-25281` implementation branch (on `ayende/ravendb`).
+All type/file references are from the code.*
 
 ---
 
@@ -11,7 +12,7 @@
 
 Corax 2.0 replaces the query execution model. Two changes ship together:
 
-- **Roaring bitmap as accumulator.** Replace the `IQueryMatch` streaming
+- **Roaring bitmap as accumulator.** Replace the streaming
   `Fill(Span<long>)` protocol with roaring bitmaps. AND/OR/ANDNOT become
   SIMD container ops. Eliminates re-sorting, re-deduplication, and
   `MemoizationMatch`. Already prototyped on `RavenDB-25284`; 2-4× on
@@ -24,10 +25,20 @@ Corax 2.0 replaces the query execution model. Two changes ship together:
   assemblies, no `AssemblyLoadContext`. DynamicMethod delegates are
   GC-collectible.
 
-Together these delete: `IQueryMatch`, the seven `*.Erasure.cs` files,
+The compiled path is the primary execution model. `IQueryMatch` is
+**retained** as the integration seam — new types (`BitmapMatch`,
+`CombinedMatch`, `CompiledQueryMatch`, `PostFilterMatch`) all implement
+it. A new `IBitmapQueryMatch` extension exposes bitmap-backed matches
+for zero-copy borrowing by downstream consumers (sort, vector search,
+faceted lookup).
+
+Deleted: `BinaryMatch<,,>`, seven `*.Erasure.cs` files,
 `MemoizationMatch`, `MergeHelper`, `DeduplicationMatch`,
-`RoaringBitmapMatch`, and the `delegate*` function-pointer dispatch.
-The compiled path is the only execution model.
+`RoaringBitmapMatch`, `IncludeNullMatch`, `IncludeNonExistingMatch`,
+and the `delegate*` function-pointer dispatch. The entire
+`QueryOptimizer` folder (`CoraxAndQueries`, `CoraxBooleanItem`,
+`CoraxBooleanQueryBase`, `CoraxOrQueries`, `CoraxWhenQuery`,
+`ICoraxClause`) is replaced by `QueryPlanBuilder`.
 
 ---
 
@@ -70,9 +81,12 @@ Understanding a query plan requires reading half the codebase.
    flat IL sequence calling bitmap primitives — no indirect dispatch.
 3. Preserve on-disk format and indexing semantics. Corax 2.0 is
    compute-only.
-4. Delete `IQueryMatch` and the match-tree code entirely. The compiled
-   path is the only execution model. No fallback, no feature toggle.
-   DynamicMethod generation at ~50μs eliminates cold-start concerns.
+4. Replace `BinaryMatch<,,>`/erasure-match tree with compiled
+   DynamicMethod execution. The compiled path is the primary execution
+   model. `IQueryMatch` is retained as integration seam for match
+   wrapping (sort, vector, spatial, boosting); the heavyweight
+   `BinaryMatch<,,>` / erasure / MemoizationMatch machinery is deleted.
+   No feature toggle — the compiled path is always used.
 
 **Non-Goals.** Replacing Voron. Replacing analyzers/pipeline. Sharding-
 aware planning. A new query language. Vector/spatial algorithm redesign.
@@ -134,12 +148,19 @@ replaces. It is not described here — see §2.2 for why it hurts.
 Three execution paths exist in the generated code:
 
 1. **Bitmap operations** — for set-level predicates (term, range, IN,
-   AND, OR, ANDNOT). The common path for most queries.
+   AND, OR, ANDNOT). The common path for most queries. Term ops use
+   native `TermSource` dispatch (bypassing `IQueryMatch`); non-term
+   ops (search, range, vector) use the `IQueryMatch` bridge path.
 2. **Entry scan (unary matching)** — when the bitmap shrinks below a
    threshold (~32K), remaining predicates are evaluated per-entry via
-   `EntryTermsReader` instead of more posting list lookups.
+   `EntryTermsReader` instead of more posting list lookups. The
+   predicate comparisons are emitted as **direct IL** (long/double/
+   slice compare instructions), not through `MultiUnaryItem` delegates.
 3. **Ordered range scan** — when WHERE field = ORDER BY field with
    LIMIT, walk the CompactTree in sort order directly. No bitmap.
+   Handled by `SortingMatch` wrapping a `CompiledQueryMatch` that
+   implements `IBitmapQueryMatch` (the sort path walks the index and
+   calls `Contains()` per candidate).
 
 ---
 
@@ -147,8 +168,12 @@ Three execution paths exist in the generated code:
 
 ### 6.1 Implementation
 
-`public ref struct RoaringBitmap : IDisposable` . Allocated through `ByteStringContext`, zero
-managed-heap pressure. Compiler-enforced stack lifetime.
+`public struct RoaringBitmap : IDisposable` . Allocated through `ByteStringContext`, zero
+managed-heap pressure. Not a `ref struct` — the bitmap is stored in
+fields (`BitmapMatch`, `CompiledQueryMatch`) and held in
+`Span<RoaringBitmap>` arrays (the `QueryScanContext.Bitmaps` pool).
+Lifetime discipline is enforced by convention, not the type system:
+each bitmap is disposed when its owning match is disposed.
 
 Entry IDs are `long` split via `key = value >> 16` into container key + 16-bit
 offset. Container lookup is O(1) via flat index (`NativeList<int>`).
@@ -171,26 +196,29 @@ space:
 
 - **`FillFromPostings`** — walk leaf pages, decode PFor blocks, set bits.
   Sequential output uses the Range container path.
-- **`AndWithPostings`** — galloping page-scan. Combines skip-ahead
-  (only visit posting list pages that overlap with set bits in the
-  accumulator) with bulk SIMD AND (decode entire page into a temp
-  bitmap, AND against accumulator containers):
+- **`AndWithPostings`** — bounds the posting list scan by the bitmap's
+  container key range (min/max), then fills a temp bitmap via the
+  iterator's `Seek` + `pruneAfter` and batch-ANDs:
 
-  1. Find first set bit in accumulator → entry ID X.
-  2. Seek posting list B+ tree to the page containing X.
-  3. Decode the *entire* page into a reusable temp bitmap.
-  4. AND the temp bitmap's containers with the accumulator's containers
-     (only overlapping container keys — O(1) per key via flat index).
-  5. Find next set bit in accumulator *after* the page's last entry ID.
-  6. Gallop forward in B+ tree, repeat from step 2.
+  1. Read the bitmap's `MinContainerKey` and `MaxContainerKey` (trivial
+     field reads on the flat index).
+  2. Seek the posting list B+ tree to `minKey * ContainerSize` (skip
+     all entries below the bitmap's range).
+  3. Batch-fill entries from the posting list iterator with
+     `pruneAfter = (maxKey + 1) * ContainerSize - 1` (stop reading past
+     the bitmap's range).
+  4. Decode PFor blocks into a temp bitmap (reused, cleared between ops).
+  5. `bitmap.AndWith(ref tempBitmap)` — SIMD container AND over
+     overlapping container keys.
 
-  Pages with no accumulator bits are skipped entirely (galloping), and 
-  matching pages are processed via SIMD container AND (bulk). The temp 
-  bitmap is allocated once per query, `Clear()`'d between pages. PFor 
-  decoding is sequential — you can't selectively decode entries from a 
-  compressed block, so decoding the  whole page into a temp bitmap costs 
-  the same as decoding only the overlapping entries. Cost proportional 
-  to *pages that intersect the accumulator*, not the total posting list size.
+  Simpler than per-bit galloping but achieves the same effect: only
+  posting list pages whose entry IDs fall within the bitmap's container
+  range are ever visited. The temp bitmap is allocated once per query,
+  `Clear()`'d between ops. PFor decoding is sequential — you can't
+  selectively decode entries from a compressed block, so decoding the
+  whole page into a temp bitmap costs the same as decoding only the
+  overlapping entries. Cost proportional to *containers that intersect
+  the bitmap's range*, not the total posting list size.
 - **`OrWithPostings`** — walk all leaf pages, set bits. Idempotent.
 - **`AndNotWithPostings`** — same galloping shape, calls ANDNOT the temp bitmap
   instead of AND, that is all.
@@ -297,91 +325,76 @@ directly.
 ```csharp
 namespace Corax.Querying.Primitives;
 
-public static class Primitives
+public static class QueryPrimitives
 {
     // --- Posting list → bitmap ---
-    void FillFromPostings(PostingList postings, ref RoaringBitmap bitmap);
-    void AndWithPostings(PostingList postings, ref RoaringBitmap bitmap);
-    void OrWithPostings(PostingList postings, ref RoaringBitmap bitmap);
-    void AndNotWithPostings(PostingList postings, ref RoaringBitmap bitmap);
-    void LazyOrWithPostings(PostingList postings, ref RoaringBitmap bitmap);
+    // Walks leaf pages, decodes PFor blocks, adds entries to bitmap via
+    // batch AddRange. Stops once `limit` entries have been added.
+    void FillFromPostings(ref PostingList.Iterator iterator,
+                          ref RoaringBitmap bitmap,
+                          long limit = long.MaxValue);
 
-    // --- Range scan → bitmap ---
-    // Handles BETWEEN, >, <, >=, <= via from/to with Min/Max sentinels.
-    void FillFromRange(CompactTree tree, Slice from, Slice to,
-                       ref RoaringBitmap bitmap);
+    // AND bitmap with posting list using container-key-range bounding.
+    // Fills tempBitmap from the posting list (Seek to minKey × 65536,
+    // batch-Fill with pruneAfter), then bitmap.AndWith(ref tempBitmap).
+    void AndWithPostings(ref PostingList.Iterator iterator,
+                         ref RoaringBitmap bitmap,
+                         ref RoaringBitmap tempBitmap);
+
+    // OR bitmap with posting list — walk all leaf pages, set bits.
+    void OrWithPostings(ref PostingList.Iterator iterator,
+                        ref RoaringBitmap bitmap);
+
+    // ANDNOT with posting list — same container-key-range bounding,
+    // calls bitmap.AndNotWith(ref tempBitmap).
+    void AndNotWithPostings(ref PostingList.Iterator iterator,
+                            ref RoaringBitmap bitmap,
+                            ref RoaringBitmap tempBitmap);
+
+    // --- IQueryMatch-based overloads ---
+    // Fast-path dispatch: IBitmapQueryMatch → steal containers via
+    // LazyOrWith + RepairAfterLazy; TermMatch with large posting list
+    // → native FillFromPostings; fallback → generic Fill+AddRange.
+    void FillFromMatch(IQueryMatch match, ref RoaringBitmap bitmap);
+    void AndWithMatch(IQueryMatch match, ref RoaringBitmap bitmap,
+                      ref RoaringBitmap tempBitmap);
+    void AndNotWithMatch(IQueryMatch match, ref RoaringBitmap bitmap,
+                         ref RoaringBitmap tempBitmap);
+
+    // --- Native TermSource dispatch (bypasses IQueryMatch) ---
+    // TermSource wraps the three-way CompactTree value encoding:
+    // Empty, Single (entry ID inline), SmallPostingList (FastPFor
+    // buffer in Container), PostingList (full B+ tree iterator).
+    void FillBitmapFromTermSource(ref TermSource source, LowLevelTransaction llt,
+                                  ref RoaringBitmap bitmap);
+    void AndWithTermSource(ref TermSource source, LowLevelTransaction llt,
+                           ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap);
+    void AndNotWithTermSource(ref TermSource source, LowLevelTransaction llt,
+                              ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap);
+
+    // --- Term provider → bitmap (for range/startsWith/regex/contains) ---
+    void FillBitmapFromTermProvider(ITermProvider provider,
+                                    LowLevelTransaction llt,
+                                    ref RoaringBitmap bitmap);
 
     // --- Bitmap → output ---
     int IterateInto(ref RoaringBitmap bitmap, Span<long> output,
-                    ref int skip);
+                    ref RoaringBitmapIterator iterator);
 
-    // --- Ordered range scan (sort-skip path, no bitmap) ---
-    int OrderedRangeScan(CompactTree tree, Slice from, Slice to,
-                         Span<long> output, int limit, ref int skip);
+    // --- Entry scan (emitted as direct IL in the DynamicMethod) ---
+    // The IL emitter generates per-predicate comparisons directly
+    // (Long/Double/Slice comparisons, Between, NotEqual, OR-groups)
+    // instead of calling through MultiUnaryItem. The scan loop walks
+    // the bitmap iterator, calls EntryTermsReader per entry, evaluates
+    // each predicate via emitted compare instructions, and collects
+    // matches into scratch bitmap slot 1, then swaps bitmaps.
+    // (No single ScanAndFilter primitive — the scan is inlined in IL.)
 
-    // --- Entry scan (unary matching, no sort) ---
-    // Iterates bitmap, reads entry data, evaluates predicates, writes
-    // matching IDs to output. Fused loop with early exit.
-    int ScanAndFilter(ref RoaringBitmap bitmap,
-                      IndexSearcher searcher,
-                      MultiUnaryItem[] predicates,
-                      Span<long> output, int limit, ref int skip);
-
-    // Same as ScanAndFilter but modifies the bitmap in place — clears
-    // bits for entries that fail the predicates. Used when the filtered
-    // bitmap must flow into a subsequent primitive (e.g. VectorRank)
-    // that requires a bitmap input, not an output span.
-    void ScanAndFilterInPlace(ref RoaringBitmap bitmap,
-                              IndexSearcher searcher,
-                              MultiUnaryItem[] predicates);
-
-    // --- Sort + optional filter ---
-    // One primitive for all sorted output. Internally decides strategy
-    // via ShouldHeapSortDirectly:
-    //   Small bitmap → iterate bitmap, eval predicates, heap-sort
-    //   Large bitmap → walk sort index in [rangeStart..rangeEnd],
-    //                  check bitmap.Contains(), eval predicates per hit
-    // predicates may be empty (all filtering already done via bitmap).
-    // rangeStart/rangeEnd: use Slice.BeforeAllKeys/AfterAllKeys for unbounded.
-    int SortWithFilter(ref RoaringBitmap bitmap,
-                       IndexSearcher searcher,
-                       MultiUnaryItem[] predicates,
-                       OrderMetadata orderMeta,
-                       Slice rangeStart, Slice rangeEnd,
-                       Span<long> output, int limit);
-
-    // --- Scoring ---
-    // Vector search over bitmap candidates. Filters bitmap IN PLACE to
-    // top-K entries, writes (entryId, distance) pairs to DistanceLookup.
-    // Internally selects strategy based on bitmap cardinality:
-    //   Small bitmap → brute-force exact: read each entry's stored vector
-    //     from the blob, compute distance directly. N dot products.
-    //   Large bitmap → HNSW graph traversal filtered by bitmap. Approximate
-    //     but sublinear.
-    // DistanceLookup is a small sorted array — O(K) memory. The projection
-    // layer reads @distance per result via DistanceLookup.Get(entryId).
-    void VectorRank(VectorIndex index, IndexSearcher searcher,
-                    ReadOnlySpan<float> query,
-                    ref RoaringBitmap candidates,
-                    ref DistanceLookup distances, int k);
-
-    // Spatial: filters bitmap, stores distances for matching entries.
-    void SpatialFilter(SpatialIndex index, IShape shape,
-                       ref RoaringBitmap candidates);
-
-    // Sort bitmap entries by distance (from VectorRank or SpatialFilter).
-    // Reads distances from DistanceLookup, outputs entry IDs in
-    // distance order. K is small — trivial heap sort.
-    int SortByDistance(ref RoaringBitmap bitmap,
-                       ref DistanceLookup distances,
-                       Span<long> output, int limit);
-
-    // BM25 sort: collect frequencies from boosted posting lists
-    // (galloping scan, only entries in bitmap), then iterate bitmap
-    // with PriorityQueue<long, float>(capacity = limit).
-    // Memory: O(boosted_intersection + limit).
-    int SortByScore(ref RoaringBitmap bitmap, IndexSearcher searcher,
-                    Span<BoostingTermInfo> terms, Span<long> output, int limit);
+    // --- Runtime strategy helpers ---
+    bool ShouldSwitchToEntryScan(ref RoaringBitmap bitmap,
+                                 in PostingListState postingListState);
+    bool ShouldHeapSortDirectly(ref RoaringBitmap bitmap,
+                                long sortFieldTotalEntries);
 }
 ```
 
@@ -407,16 +420,17 @@ resolved (we need it for the AND call), so we read its current
 
 ```csharp
 [MethodImpl(MethodImplOptions.AggressiveInlining)]
-static bool ShouldSwitchToEntryScan(ref RoaringBitmap bitmap, PostingList postingList)
+static bool ShouldSwitchToEntryScan(ref RoaringBitmap bitmap, in PostingListState postingListState)
 {
     // Entry scan: read bitmap.Count blobs, compare fields. ~1-2μs per blob.
-    // Bitmap AND: galloping page-scan, cost ~ pages that intersect bitmap.
+    // Bitmap AND: container-key-range-bounded scan, cost ~ containers that
+    //   intersect the bitmap's range.
     // Heuristic: one posting list page-seek + decode ≈ scanning ~64 blobs.
     // Switch when bitmap is small enough AND the posting list is large
     // relative to the bitmap.
     var bitmapCount = bitmap.Count;
     return bitmapCount < 32_000
-        && bitmapCount * 64 < postingList.State.NumberOfEntries;
+        && bitmapCount * 64 < postingListState.NumberOfEntries;
 }
 ```
 
@@ -438,7 +452,7 @@ index:
 
 ```csharp
 [MethodImpl(MethodImplOptions.AggressiveInlining)]
-static bool ShouldHeapSortDirectly(ref RoaringBitmap bitmap, OrderMetadata orderMeta)
+static bool ShouldHeapSortDirectly(ref RoaringBitmap bitmap, long sortFieldTotalEntries)
 {
     // Heap-sort: read bitmap.Count blobs, extract sort field, push into
     // PriorityQueue. Cost ~ bitmap.Count * (blob read + comparison).
@@ -447,39 +461,40 @@ static bool ShouldHeapSortDirectly(ref RoaringBitmap bitmap, OrderMetadata order
     // When bitmap is small relative to the sort-field index, heap-sort wins.
     var bitmapCount = bitmap.Count;
     return bitmapCount < 32_000
-        && bitmapCount * 64 < orderMeta.FieldTotalEntries;
+        && bitmapCount * 64 < sortFieldTotalEntries;
 }
 ```
 
 ```csharp
-static int Execute(ref QueryContext ctx, Span<long> output, ref int skip)
+static void Execute(ref QueryScanContext ctx)
 {
-    using var bitmap = new RoaringBitmap(ctx.Allocator);
+    // ctx.Bitmaps[0] = main result bitmap (pre-allocated by CompiledQueryMatch)
+    // ctx.TermSources[i] = resolved posting list references (Three-way dispatch:
+    //   Empty / Single / SmallPostingList / PostingList)
 
-    Primitives.FillFromPostings(ctx.GetPostings(Field_Tag, ctx.P0), ref bitmap);
+    QueryPrimitives.FillBitmapFromTermSource(
+        ref ctx.TermSources[0], ctx.Llt, ref ctx.Bitmaps[0]);
 
-    var categoryPostings = ctx.GetPostings(Field_Category, ctx.P1);
-    if (ShouldSwitchToEntryScan(ref bitmap, categoryPostings))
-        goto EntryScan_AfterTag;
+    // Runtime check: is the bitmap small enough that scanning entries
+    // is cheaper than AND-ing with the next posting list?
+    if (ShouldSwitchToEntryScan(ref ctx.Bitmaps[0],
+            ref ctx.DirectSources[1].Count /* next source cardinality */))
+        goto EntryScan_AfterFirst;
 
-    Primitives.AndWithPostings(categoryPostings, ref bitmap);
+    QueryPrimitives.AndWithTermSource(
+        ref ctx.TermSources[1], ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
+    if (ctx.Bitmaps[0].IsEmpty) return;
 
-    var statusPostings = ctx.GetPostings(Field_Status, ctx.P2);
-    if (ShouldSwitchToEntryScan(ref bitmap, statusPostings))
-        goto EntryScan_AfterCategory;
+    QueryPrimitives.AndWithTermSource(
+        ref ctx.TermSources[2], ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
+    // bitmap[0] holds the final result; CompiledQueryMatch reads it via IterateInto
+    return;
 
-    Primitives.AndWithPostings(statusPostings, ref bitmap);
-    return Primitives.IterateInto(ref bitmap, output, ref skip);
-
-EntryScan_AfterTag:
-    // Category + Status still need checking
-    return Primitives.ScanAndFilter(ref bitmap, ctx.Searcher,
-        unaryItems_CategoryAndStatus, output, ctx.Limit, ref skip);
-
-EntryScan_AfterCategory:
-    // Only Status still needs checking
-    return Primitives.ScanAndFilter(ref bitmap, ctx.Searcher,
-        unaryItems_StatusOnly, output, ctx.Limit, ref skip);
+EntryScan_AfterFirst:
+    // Emitted IL iterates bitmap[0] entries, reads entry data via
+    // EntryTermsReader, evaluates remaining predicates with direct
+    // comparison instructions (long/double/slice compare baked into IL).
+    // Matching entries go into bitmap[1], then SwapContents swaps them.
 }
 ```
 
@@ -526,15 +541,19 @@ containers.
 
 ```csharp
 // WHERE Foo = $x AND Bar = $y LIMIT 5
-Primitives.FillFromPostings(fooPostings, ref bitmap);
-// bitmap has e.g. 10K entries (Foo is the smallest operand)
+QueryPrimitives.FillFromPostings(ref fooIter, ref bitmap, limit: 5);
+// FillFromPostings checks bitmap count after each posting list leaf page
+// and stops once `limit` entries have been accumulated. For LIMIT 5, the
+// first page (~1K entries) is decoded but only 5 entries are added.
+// The remaining pages are never read.
 
-// AndWithPostings processes containers left to right.
-// After each container AND, checks cumulative surviving count.
-// Stops as soon as 5 entries have survived across all containers.
-Primitives.AndWithPostings(barPostings, ref bitmap, limit: 5);
+// AndWithPostings uses the container-key-range bounding pattern:
+// bitmap now has ≤5 entries across at most 5 containers.
+// The posting list scan is bounded to those containers' range.
+QueryPrimitives.AndWithPostings(ref barIter, ref bitmap, ref tempBitmap);
 
-return Primitives.IterateInto(ref bitmap, output, ref skip);
+// IterateInto produces the final output.
+QueryPrimitives.IterateInto(ref bitmap, output, ref iterator);
 ```
 
 The limit check is one comparison per container — negligible cost.
@@ -555,13 +574,17 @@ RQL text
     [2] Normalise: flatten AND/OR trees, fuse ranges
     [3] Estimate: read cardinalities (O(1) per term from PostingListState)
     [4] Optimise: reorder operands, detect sort-skip, batch IN clauses
-    [5] Lookup plan cache (per index instance)
+    [5] Resolve: TermSources (native dispatch via CompactTree value encoding)
+        and IQueryMatch[] DirectSources (vector/spatial/multi-term matches)
+    [6] Lookup plan cache (per index instance, keyed by queryText + ordering + TypeSignature)
         → hit: return cached DynamicMethod delegate
         → miss: emit via QueryILEmitter, cache
-  → invoke delegate(QueryContext, output, skip)
-    → goto checks between AND steps handle unary promotion at runtime (§7.3)
-    → LIMIT checks at page/container boundaries handle early exit (§7.4)
-  → load documents, yield to client
+    → resolve matches → extract scan parameters (long/double/slice)
+    → wrap in CompiledQueryMatch → wrap spatial PostFilterMatch if needed
+      → invoke delegate(ref QueryScanContext)
+        → goto checks between AND steps handle unary promotion at runtime (§7.3)
+        → per-op timing recorded for EXPLAIN diagnostics
+      → load documents, yield to client
 ```
 
 Planning cost is bounded: steps 1-3 are O(number of operands), each
@@ -633,10 +656,24 @@ LIMIT is present, emit `OrderedRangeScan` instead of bitmap + sort.
 **Pass 6 — IN-clause batching.** `field IN (t1, ..., tN)` →
 `LazyOrWithPostings` loop + `RepairAfterLazy()`.
 
-**Pass 7 — Emit.** Generate DynamicMethod IL. The emitter inserts
+**Pass 7 — TermSource resolution.** Each term op's posting list
+reference is decoded from the CompactTree value: the low 2 bits
+distinguish Single / SmallPostingList / PostingList. Single values
+have the entry ID inline. SmallPostingLists are FastPFor buffers in
+a Container. PostingLists are full B+ tree iterators. This three-way
+dispatch lets the emitted IL call native primitives (`FillBitmapFromTermSource`,
+`AndWithTermSource`, `AndNotWithTermSource`) instead of going through
+the `IQueryMatch` wrapper.
+
+**Pass 8 — Emit.** Generate DynamicMethod IL. The emitter inserts
 goto checks between AND steps (§7.3) and LIMIT checks at processing
 boundaries (§7.4) — these are runtime mechanisms, not planner
-decisions. Generate C# source for EXPLAIN.
+decisions. Generate lazy EXPLAIN source provider.
+
+The emitted IL also records per-op timing (Stopwatch.GetTimestamp
+before/after) and result counts (`bitmap[0].Count` after each op)
+when telemetry is requested. These feed the EXPLAIN diagnostics and
+are visible via `CompiledQueryMatch.Inspect()`.
 
 ### 8.4 Plan cache
 
@@ -646,30 +683,48 @@ fresh cache; the old cache is GC'd with the old instance.
 
 ```
 Per IndexSearcher:
-  ConcurrentDictionary<string queryText, CompiledPlan[]>
+  ConcurrentDictionary<string queryText, PerQueryPlans>
+  PerQueryPlans: 32-slot struct-of-arrays
+    int[]   _orderings
+    int[]   _typesigs
+    CompiledPlan[] _plans
 ```
 
-The key is the RQL query string as-is. The value is a small array of
-compiled plans — one per distinct operand ordering seen for this query.
+The key is the RQL query string as-is. The value is a fixed 32-slot
+SoA (struct-of-arrays) per query text — parallel arrays of `int` for
+orderings and type signatures, with a `CompiledPlan[]` payload.
 
 Each `CompiledPlan` carries an `int Ordering` field: the operand sort
 order packed at 3 bits per position (values 0-7), up to 10 operands
 in 30 bits. E.g. [2, 0, 1] → `(2 << 0) | (0 << 3) | (1 << 6)` = `0x42`.
 
-Lookup:
+Each `CompiledPlan` also carries an `int TypeSignature`: 2 bits per
+parameter (0=long, 1=double, 2=string) packing the types of all
+bound query parameters. Different parameter types produce different
+IL code paths (different comparison instructions), so the cache must
+distinguish them. E.g. `WHERE Age > $p0` with `$p0=long` vs
+`$p0=double` produce different emitted IL.
+
+Lookup uses SIMD-accelerated vector comparison over the SoA arrays:
+
 ```csharp
-if (_cache.TryGetValue(queryText, out var plans))
-{
-    for (int i = 0; i < plans.Length; i++)
-        if (plans[i].Ordering == ordering)
-            return plans[i];
-    // no exact match — find closest or generate new
-}
+// Vector256 path: 8 slots per iteration, two Vector256.Equals
+//   (one for orderings, one for typesigs), AND, ExtractMostSignificantBits,
+//   TrailingZeroCount. Typical 1-3 plans = 1 vector iteration.
+if (Vector256.IsHardwareAccelerated)
+    return Vec256Lookup(ordering, typesig);
+if (Vector128.IsHardwareAccelerated)
+    return Vec128Lookup(ordering, typesig);
+return ScalarLookup(ordering, typesig);
 ```
 
-The array is tiny (1-3 entries typical, 32 max). Linear scan is faster
-than a hash lookup at this size. On miss, generate a new DynamicMethod
-(~50μs) and add it to the array via `ConcurrentDictionary.AddOrUpdate`.
+Embedded-key revalidation guards against torn writes: after a slot
+match, the plan's own `Ordering` and `TypeSignature` fields are
+re-checked before returning. This allows lock-free publishing:
+the plan ref is written first (Volatile.Write), then the keys.
+
+On miss, generate a new DynamicMethod (~50μs) and publish it into
+the SoA arrays via sequential fill (while < 32) or random eviction.
 
 **Cap: 32 plans per query text.** Beyond 32, pick the plan with the
 closest ordering. The goto pattern (§7.3) compensates for any
@@ -687,42 +742,119 @@ Key new types (signatures only — implementation detail is out of scope):
 
 ```csharp
 // The planner — replaces CoraxQueryBuilder for query execution.
+// Lives in Raven.Server, building a QueryPlan from parsed RQL AST.
 class QueryPlanBuilder
 {
-    CompiledPlan Build(PlanParameters parameters);
+    static QueryPlan BuildPlan(PlanParameters parameters);
+    static IQueryMatch BuildAndCompile(PlanParameters planParams, ...);
 }
 
-// A compiled plan — DynamicMethod delegate + EXPLAIN source.
+// A compiled plan — DynamicMethod delegate + lazy EXPLAIN source.
 class CompiledPlan
 {
-    delegate int ExecuteDelegate(ref QueryContext ctx,
-        Span<long> output, ref int skip);
-    ExecuteDelegate Execute;
-    string ExplainSource;
+    // void return: the result is in ctx.Bitmaps[0] after execution.
+    // The caller (CompiledQueryMatch) reads it via IterateInto.
+    delegate void CompiledExecuteDelegate(ref QueryScanContext ctx);
+
+    CompiledExecuteDelegate CompiledDelegate;
+    int Ordering;       // packed operand ordering
+    int TypeSignature;  // packed parameter type signature
+    Func<string> ExplainSourceProvider;  // lazy, generated on first read
 }
 
 // Runtime state bag passed to the compiled function.
-ref struct QueryContext
+ref struct QueryScanContext
 {
+    Span<RoaringBitmap> Bitmaps;      // [0]=main result, [1..N]=scratch
     IndexSearcher Searcher;
-    ByteStringContext Allocator;
-    OrderMetadata OrderMeta;
-    int Limit;
-    BlittableJsonReaderObject Parameters;  // bound params, as-is
-    // Field IDs are resolved at plan time and baked into the IL
-    // as constant integers — no string lookups at execution time.
+    Span<IQueryMatch> DirectSources;  // vector/spatial/multi-term matches
+    Span<TermSource> TermSources;     // native posting-list dispatch
+    LowLevelTransaction Llt;          // cached for TermSource dispatch
+    Span<ITermProvider> TermProviders;
+    Span<long> FieldRootPages;        // for entry scan predicates
+    Span<long> LongParams;            // typed parameter values
+    Span<double> DoubleParams;
+    Span<Slice> SliceParams;
+    CancellationToken Token;
+    Span<long> Timings;               // per-op Stopwatch ticks
+    Span<long> ResultCounts;          // bitmap count after each op
+    int EntryScanTakenAtOp;           // -1 if not triggered
+}
+
+// Three-way native posting-list source. Mirrors the encoding in the
+// CompactTree value's low 2 bits (Single / SmallPostingList / PostingList).
+// Resolved up-front by QueryPlanBuilder, bypasses IQueryMatch wrapper
+// for term ops (Fill/AndWith/AndNotWith).
+struct TermSource
+{
+    TermSourceKind Kind;  // Empty, Single, SmallPostingList, PostingList
+    long SingleEntryId;
+    long SmallPostingListId;
+    PostingList.Iterator LargeIterator;
+}
+
+// Bitmap-backed IQueryMatch. Used when query operations produce a bitmap
+// that needs to be wrapped for the rest of the pipeline.
+struct BitmapMatch : IQueryMatch, IBitmapQueryMatch, IDisposable
+{
+    ref RoaringBitmap Bitmap { get; }  // mutable ref for building
+    // Implements IQueryMatch.Fill via RoaringBitmapIterator
+    // Implements IBitmapQueryMatch.BorrowBitmap() for zero-copy sharing
+}
+
+// Lightweight replacement for BinaryMatch. Combines two IQueryMatch
+// instances with OR or AND semantics during Fill().
+struct CombinedMatch : IQueryMatch
+{
+    static CombinedMatch Or(IQueryMatch left, IQueryMatch right);
+    static CombinedMatch And(IQueryMatch left, IQueryMatch right);
+}
+
+// The compiled query entry point. Wraps a CompiledPlan delegate +
+// resolved matches + parameters. Executes lazily (deferred until first
+// Fill/Count/Contains). Implements IBitmapQueryMatch so downstream
+// consumers (SortingMatch, VectorSearch) can borrow the bitmap directly.
+struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDisposable
+{
+    // BorrowBitmap() returns the result bitmap directly — downstream
+    // consumers (SortingMatch.SortUsingIndex, VectorSearch.LoadFilterMatches)
+    // use this to skip re-materialization.
+    RoaringBitmap BorrowBitmap();
+}
+
+// Chains spatial filters after a compiled bitmap match.
+struct PostFilterMatch : IQueryMatch { ... }
+
+// Extension interface for bitmap-backed IQueryMatch. Enables
+// SortingMatch to avoid full materialization via MemoizationMatch
+// and instead walk the CompactTree index, intersecting batches via
+// AndWith() against the bitmap.
+interface IBitmapQueryMatch : IQueryMatch
+{
+    bool Contains(long entryId);
+    long MinEntryId { get; }
+    long MaxEntryId { get; }
+    RoaringBitmap BorrowBitmap();  // zero-copy, caller MUST NOT dispose
 }
 ```
 
 Fields in generated IL are referenced by constant integer IDs (resolved
-at plan time from the index schema), not by string names. Multiple IN
-clauses are handled by reading term lists from the `Parameters`
-blittable at execution time — no separate `PList` arrays needed.
+at plan time from the index schema, not by string names). Term ops
+resolve to `TermSource[]` indices for native dispatch; non-term ops
+(vector, spatial, multi-term) resolve to `DirectSources[]` indices
+into the `IQueryMatch[]` array.
 
-**Removed types**: `IQueryMatch`, all `*.Erasure.cs`, `BinaryMatch<,,>`,
-`MemoizationMatch`, `MergeHelper`, `DeduplicationMatch`,
-`RoaringBitmapMatch`, `CoraxQueryBuilder` (replaced by
-`QueryPlanBuilder`).
+**Removed types**: `BinaryMatch<,,>`, all `*.Erasure.cs`,
+`MemoizationMatch` (+ erasure + provider), `MergeHelper`,
+`DeduplicationMatch`, `RoaringBitmapMatch`, `IncludeNullMatch`,
+`IncludeNonExistingMatch`, `CoraxQueryBuilder.QueryOptimizer` folder
+(CoraxAndQueries, CoraxBooleanItem, CoraxBooleanQueryBase,
+CoraxOrQueries, CoraxWhenQuery, ICoraxClause).
+
+**New types**: `QueryPlanBuilder`, `CompiledPlan`, `QueryScanContext`,
+`QueryILEmitter`, `PlanCache`, `PlanOp`, `TermSource`, `BitmapMatch`,
+`CombinedMatch`, `CompiledQueryMatch`, `PostFilterMatch`,
+`IBitmapQueryMatch`, `QueryPrimitives`.
 
 ---
 
@@ -734,23 +866,27 @@ blittable at execution time — no separate `PList` arrays needed.
 from Users where Status = $p0 limit 10
 ```
 
-```csharp
-static int Execute(ref QueryContext ctx, Span<long> output, ref int skip)
+```
+// EXPLAIN pseudocode (actual execution via DynamicMethod IL)
+static void Execute(ref QueryScanContext ctx)
 {
     // Single operand, no ORDER BY — no bitmap needed.
-    // Iterate the posting list directly.
-    var postings = ctx.GetPostings(Field_Status, ctx.P0);
-    return postings.Iterator.Fill(output, ref skip);
+    // The TermSource is resolved to the posting list iterator;
+    // the caller (CompiledQueryMatch.Fill) reads entries via
+    // RoaringBitmapIterator onto the output Span<long>.
+    QueryPrimitives.FillBitmapFromTermSource(
+        ref ctx.TermSources[0], ctx.Llt, ref ctx.Bitmaps[0]);
+    // ctx.Bitmaps[0] now has the result — caller iterates it.
 }
 ```
 
-Single operand + no ORDER BY always uses direct posting list iteration.
-The bitmap would be pure overhead — decode posting list pages into
-containers, then iterate containers to extract the same entry IDs.
-Two passes over the same data for no benefit. The posting list iterator
-already produces sorted, deduplicated entry IDs. LIMIT is handled by
-the output span size; OFFSET (skip/paging) is the same cost either
-way.
+Single operand + no ORDER BY always uses direct posting list iteration
+(through the TermSource native dispatch). The bitmap is still built
+(to maintain the uniform pipeline), but the entry IDs flow directly
+from the posting list iterator into the bitmap via batch AddRange.
+No per-entry overhead, one pass through the data. LIMIT is handled by
+the `FillFromPostings` limit parameter, which stops after the first
+page when the limit is reached.
 
 ### 10.2 AND chain with dynamic unary promotion
 
@@ -761,46 +897,50 @@ from Products where Tag = $p0 and Category = $p1 and InStock = $p2
 
 Cardinalities: Tag ~1%, Category ~10%, InStock ~80%, Rating≥4 ~40%.
 
-```csharp
-static int Execute(ref QueryContext ctx, Span<long> output, ref int skip)
+```
+// EXPLAIN pseudocode (actual execution via DynamicMethod IL)
+static void Execute(ref QueryScanContext ctx)
 {
-    using var bitmap = new RoaringBitmap(ctx.Allocator);
+    // ctx.TermSources[0] = Tag = $p0 (smallest — fills first)
+    QueryPrimitives.FillBitmapFromTermSource(
+        ref ctx.TermSources[0], ctx.Llt, ref ctx.Bitmaps[0]);
 
-    Primitives.FillFromPostings(ctx.GetPostings(Field_Tag, ctx.P0), ref bitmap);
+    // ctx.DirectSources[1] = Category posting list (IQueryMatch wrapper)
+    // Runtime check: bitmap small enough to scan entries instead?
+    if (ctx.Bitmaps[0].Count < 32000
+        && ctx.Bitmaps[0].Count * 64 < ctx.DirectSources[1].Count)
+        goto EntryScan_AfterFirst;
 
-    var categoryPostings = ctx.GetPostings(Field_Category, ctx.P1);
-    if (ShouldSwitchToEntryScan(ref bitmap, categoryPostings))
-        goto EntryScan_AfterTag;
+    QueryPrimitives.AndWithMatch(ctx.DirectSources[1],
+        ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
+    if (ctx.Bitmaps[0].IsEmpty) return;
 
-    Primitives.AndWithPostings(categoryPostings, ref bitmap);
+    if (ctx.Bitmaps[0].Count < 32000
+        && ctx.Bitmaps[0].Count * 64 < ctx.DirectSources[2].Count)
+        goto EntryScan_After2;
 
-    var instockPostings = ctx.GetPostings(Field_InStock, ctx.P2);
-    if (ShouldSwitchToEntryScan(ref bitmap, instockPostings))
-        goto EntryScan_AfterCategory;
+    QueryPrimitives.AndWithMatch(ctx.DirectSources[2],
+        ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
+    if (ctx.Bitmaps[0].IsEmpty) return;
 
-    Primitives.AndWithPostings(instockPostings, ref bitmap);
+    if (ctx.Bitmaps[0].Count < 32000
+        && ctx.Bitmaps[0].Count * 64 < ctx.DirectSources[3].Count)
+        goto EntryScan_After3;
 
-    var ratingPostings = ctx.GetPostings(Field_Rating_Gte, ctx.P3);
-    if (ShouldSwitchToEntryScan(ref bitmap, ratingPostings))
-        goto EntryScan_AfterInStock;
+    QueryPrimitives.AndWithMatch(ctx.DirectSources[3],
+        ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
+    return; // result in Bitmaps[0]
 
-    Primitives.AndWithPostings(ratingPostings, ref bitmap);
-    return Primitives.IterateInto(ref bitmap, output, ref skip);
+EntryScan_AfterFirst:
+    // Emitted IL: iterate bitmap[0], for each entry read EntryTermsReader,
+    // emit direct long/double/slice comparisons for Category+InStock+Rating.
+    // Matches collected into bitmap[1], SwapContents swaps with bitmap[0].
 
-EntryScan_AfterTag:
-    // Category, InStock, Rating evaluated per-entry
-    return Primitives.ScanAndFilter(ref bitmap, ctx.Searcher,
-        unaryItems_CategoryInStockRating, output, ctx.Limit, ref skip);
+EntryScan_After2:
+    // Emitted IL: same pattern, InStock+Rating remaining.
 
-EntryScan_AfterCategory:
-    // InStock, Rating evaluated per-entry
-    return Primitives.ScanAndFilter(ref bitmap, ctx.Searcher,
-        unaryItems_InStockRating, output, ctx.Limit, ref skip);
-
-EntryScan_AfterInStock:
-    // Only Rating evaluated per-entry
-    return Primitives.ScanAndFilter(ref bitmap, ctx.Searcher,
-        unaryItems_RatingOnly, output, ctx.Limit, ref skip);
+EntryScan_After3:
+    // Emitted IL: same pattern, Rating remaining.
 }
 ```
 
@@ -820,32 +960,34 @@ order by Name limit 20
 Pass 2 fuses `Price > 10 AND Price < 100` → `Price BETWEEN 10..100`.
 Cardinality estimated via the three-tier method (§8.2).
 
-```csharp
-static int Execute(ref QueryContext ctx, Span<long> output, ref int skip)
+```
+// EXPLAIN pseudocode (actual execution via DynamicMethod IL)
+static void Execute(ref QueryScanContext ctx)
 {
-    using var bitmap = new RoaringBitmap(ctx.Allocator);
-    Primitives.FillFromRange(ctx.GetCompactTree(Field_Price),
-        ctx.P0, ctx.P1, ref bitmap);
+    // ctx.DirectSources[0] = Price BETWEEN 10..100 (MultiTermMatch driving
+    // a TermRangeProvider, resolved as IQueryMatch, not TermSource)
+    QueryPrimitives.FillFromMatch(ctx.DirectSources[0], ref ctx.Bitmaps[0]);
 
-    var instockPostings = ctx.GetPostings(Field_InStock, ctx.TrueSlice);
-    if (ShouldSwitchToEntryScan(ref bitmap, instockPostings))
+    if (ctx.Bitmaps[0].Count < 32000
+        && ctx.Bitmaps[0].Count * 64 < ctx.DirectSources[1].Count)
         goto EntryScan_AfterPrice;
 
-    Primitives.AndWithPostings(instockPostings, ref bitmap);
-
-    // All predicates applied — no remaining unary filters
-    return Primitives.SortWithFilter(ref bitmap, ctx.Searcher,
-        MultiUnaryItem.Empty, ctx.OrderMeta,
-        Slice.BeforeAllKeys, Slice.AfterAllKeys, output, 20);
+    QueryPrimitives.AndWithMatch(ctx.DirectSources[1],
+        ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
+    return; // result in Bitmaps[0]; sorted by Name via SortingMatch
 
 EntryScan_AfterPrice:
-    // InStock still needs checking — SortWithFilter handles both
-    // the unary evaluation and the sort strategy decision internally.
-    return Primitives.SortWithFilter(ref bitmap, ctx.Searcher,
-        unaryItems_InStockOnly, ctx.OrderMeta,
-        Slice.BeforeAllKeys, Slice.AfterAllKeys, output, 20);
+    // Emitted IL: iterate bitmap[0], check InStock per entry,
+    // collect matches into bitmap[1], SwapContents.
+    // SortingMatch wraps this and sorts the result by Name.
 }
 ```
+
+Sorting is handled by `SortingMatch` wrapping the `CompiledQueryMatch`.
+When the inner match implements `IBitmapQueryMatch`, `SortingMatch`
+avoids full materialization: it walks the CompactTree index (Name) and
+intersects batches via `AndWith()` against the bitmap, stopping early
+when the LIMIT (20) is reached.
 
 ### 10.4 Sort-skip with additional filters
 
@@ -858,29 +1000,23 @@ The planner detects WHERE StartDate = ORDER BY StartDate. But there's
 an additional filter (Venue). We don't need to decide upfront whether
 Venue is selective — build the bitmap and let the runtime decide:
 
-```csharp
-static int Execute(ref QueryContext ctx, Span<long> output, ref int skip)
+```
+// EXPLAIN pseudocode
+static void Execute(ref QueryScanContext ctx)
 {
-    using var bitmap = new RoaringBitmap(ctx.Allocator);
-    Primitives.FillFromPostings(ctx.GetPostings(Field_Venue, ctx.P1), ref bitmap);
-
-    // Bitmap is the Venue candidate set. SortWithFilter handles both
-    // the StartDate range filter (as unary predicate for heap-sort path,
-    // or as rangeStart for index-walk path) and the sort strategy.
-    return Primitives.SortWithFilter(ref bitmap, ctx.Searcher,
-        unaryItems_StartDateGt, ctx.OrderMeta,
-        ctx.P0, Slice.AfterAllKeys, output, 25);
+    QueryPrimitives.FillBitmapFromTermSource(
+        ref ctx.TermSources[0], ctx.Llt, ref ctx.Bitmaps[0]);
+    // Result: Venue candidate set; StartDate filter + sort by StartDate
+    // handled by SortingMatch's IBitmapQueryMatch path.
 }
 ```
 
-`SortWithFilter` decides internally: for a small bitmap, iterate
-entries, check StartDate > '2025-01-01' per-entry, heap-sort. For a
-large bitmap, walk the StartDate index from `rangeStart` ('2025-01-01')
-forward, check `bitmap.Contains()` per candidate.
-
-`rangeStart` / `rangeEnd` control the index walk bounds. For
-`ORDER BY X DESC`, `SortWithFilter` walks backward from `rangeEnd`.
-Use `Slice.BeforeAllKeys` / `Slice.AfterAllKeys` for unbounded.
+SortingMatch wraps the CompiledQueryMatch. Because CompiledQueryMatch
+implements `IBitmapQueryMatch`, the sort path checks `bitmap.Contains()`
+against each entry as it walks the StartDate index. No separate
+SortWithFilter primitive — the sort strategy (heap-sort vs index walk)
+is decided inside `SortingMatch.SortUsingIndex<TEntryComparer, TDirection>`
+based on the `ShouldHeapSortDirectly` heuristic.
 
 ### 10.5 IN clause with lazy OR
 
@@ -890,30 +1026,34 @@ from Articles where Tag in ($t0, $t1, ... $t29) and Published = true
 
 IN cardinality = sum of individual term cardinalities (max number of entries in index).
 
-```csharp
-static int Execute(ref QueryContext ctx, Span<long> output, ref int skip)
+```
+// EXPLAIN pseudocode
+static void Execute(ref QueryScanContext ctx)
 {
-    using var bitmap = new RoaringBitmap(ctx.Allocator);
-    var tags = ctx.GetTermList("Tag");
-    for (int i = 0; i < tags.Length; i++)
-        Primitives.LazyOrWithPostings(ctx.GetPostings(Field_Tag, tags[i]),
-            ref bitmap);
-    // fix cardinality counts that were previously skipped in LazyOrWithPostings
-    bitmap.RepairAfterLazy(); 
+    // ctx.TermSources[0..29] = Tag IN ($t0..$t29) — each resolved to
+    // a TermSource. Emitted loop calls FillBitmapFromTermSource for each.
+    for (int i = 0; i < 30; i++)
+        QueryPrimitives.FillBitmapFromTermSource(
+            ref ctx.TermSources[i], ctx.Llt, ref ctx.Bitmaps[0]);
 
-    var publishedPostings = ctx.GetPostings(Field_Published, ctx.TrueSlice);
-    if (ShouldSwitchToEntryScan(ref bitmap, publishedPostings))
-        goto EntryScan_AfterTags;
+    ctx.Bitmaps[0].RepairAfterLazy(); // fix cardinality counts
 
-    Primitives.AndWithPostings(publishedPostings, ref bitmap);
-    return Primitives.IterateInto(ref bitmap, output, ref skip);
+    QueryPrimitives.AndWithMatch(ctx.DirectSources[0],
+        ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
+    if (ctx.Bitmaps[0].IsEmpty) return;
 
-EntryScan_AfterTags:
-    // Published evaluated per-entry
-    return Primitives.ScanAndFilter(ref bitmap, ctx.Searcher,
-        unaryItems_PublishedOnly, output, ctx.Limit, ref skip);
+    return; // result in Bitmaps[0]
+
+    // Entry scan label emitted if ShouldSwitchToEntryScan fires
 }
 ```
+
+Note: IN clause does NOT use `LazyOrWithPostings` as a distinct
+primitive call. Instead, the emitted IL loops over resolved
+`TermSource` entries and calls `FillBitmapFromTermSource` for each,
+which handles all three value encodings (Single/SmallPostingList/
+PostingList) natively. The lazy cardinality skip is inherent in the
+`AddRange` path — `RepairAfterLazy()` fixes counts at the end.
 
 ### 10.6 Complex boolean with dynamic unary promotion
 
@@ -925,45 +1065,39 @@ where (Department = 'Cardiology' or Department = 'Neurology')
 order by AdmitDate desc limit 50
 ```
 
-```csharp
-static int Execute(ref QueryContext ctx, Span<long> output, ref int skip)
+```
+// EXPLAIN pseudocode
+static void Execute(ref QueryScanContext ctx)
 {
-    using var bitmap = new RoaringBitmap(ctx.Allocator);
-    Primitives.OrWithPostings(ctx.GetPostings(Field_Dept, ctx.P0), ref bitmap);
-    Primitives.OrWithPostings(ctx.GetPostings(Field_Dept, ctx.P1), ref bitmap);
+    // Department OR — both terms via TermSource native dispatch
+    QueryPrimitives.FillBitmapFromTermSource(
+        ref ctx.TermSources[0], ctx.Llt, ref ctx.Bitmaps[0]);
+    QueryPrimitives.FillBitmapFromTermSource(
+        ref ctx.TermSources[1], ctx.Llt, ref ctx.Bitmaps[0]);
 
-    var dateTree = ctx.GetCompactTree(Field_AdmitDate);
-    if (ShouldSwitchToEntryScan(ref bitmap, dateTree))
-        goto EntryScan_AfterDept;
+    // ctx.DirectSources[0] = AdmitDate > '2025-01-01' (MultiTermMatch range)
+    if (ShouldSwitchToEntryScan(...)) goto EntryScan_AfterDept;
 
-    using var dateBitmap = new RoaringBitmap(ctx.Allocator);
-    Primitives.FillFromRange(dateTree, ctx.P2, Slice.AfterAllKeys, ref dateBitmap);
-    bitmap.AndWith(ref dateBitmap);
+    // Fill from multi-term match into temp, AND with main
+    QueryPrimitives.AndWithMatch(ctx.DirectSources[0],
+        ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
+    if (ctx.Bitmaps[0].IsEmpty) return;
 
-    var statusPostings = ctx.GetPostings(Field_Status, ctx.P3);
-    if (ShouldSwitchToEntryScan(ref bitmap, statusPostings))
-        goto EntryScan_AfterDate;
+    // ctx.DirectSources[1] = Status != 'Discharged' (AndNotMatch)
+    if (ShouldSwitchToEntryScan(...)) goto EntryScan_AfterDate;
 
-    Primitives.AndNotWithPostings(statusPostings, ref bitmap);
+    QueryPrimitives.AndNotWithMatch(ctx.DirectSources[1],
+        ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
 
-    // ORDER BY AdmitDate DESC — walk AdmitDate index backward from
-    // AfterAllKeys down to '2025-01-01', check bitmap.Contains().
-    // All predicates applied via bitmap — no remaining unary filters.
-    return Primitives.SortWithFilter(ref bitmap, ctx.Searcher,
-        MultiUnaryItem.Empty, ctx.OrderMeta,
-        ctx.P2, Slice.AfterAllKeys, output, 50);
+    // result in Bitmaps[0]; sorted by AdmitDate DESC via SortingMatch
+    // wrapper implementing IBitmapQueryMatch path
+    return;
 
 EntryScan_AfterDept:
-    // AdmitDate range + Status != Discharged still need checking.
-    return Primitives.SortWithFilter(ref bitmap, ctx.Searcher,
-        unaryItems_DateAndStatus, ctx.OrderMeta,
-        ctx.P2, Slice.AfterAllKeys, output, 50);
+    // Emitted IL: iterate bitmap[0], check AdmitDate+Status per entry
 
 EntryScan_AfterDate:
-    // Only Status != Discharged still needs checking.
-    return Primitives.SortWithFilter(ref bitmap, ctx.Searcher,
-        unaryItems_StatusOnly, ctx.OrderMeta,
-        ctx.P2, Slice.AfterAllKeys, output, 50);
+    // Emitted IL: iterate bitmap[0], check Status per entry
 }
 ```
 
@@ -978,28 +1112,29 @@ where boost(search(Title, $p0), 10) or search(Body, $p1)
 order by score() limit 10
 ```
 
-```csharp
-static int Execute(ref QueryContext ctx, Span<long> output, ref int skip)
+```
+// EXPLAIN pseudocode
+static void Execute(ref QueryScanContext ctx)
 {
-    using var bitmap = new RoaringBitmap(ctx.Allocator);
+    // Title search + Body search — OR'd into bitmap via IQueryMatch fill
+    // (search produces BoostingMatch/IQueryMatch, not native TermSource)
+    QueryPrimitives.FillFromMatch(ctx.DirectSources[0], ref ctx.Bitmaps[0]);
+    QueryPrimitives.FillFromMatch(ctx.DirectSources[1], ref ctx.Bitmaps[0]);
 
-    // Build candidate set: all entries matching either search clause.
-    // No scoring yet — just set bits in the bitmap.
-    Primitives.OrWithPostings(ctx.GetSearchPostings(Field_Title, ctx.P0),
-        ref bitmap);
-    Primitives.OrWithPostings(ctx.GetSearchPostings(Field_Body, ctx.P1),
-        ref bitmap);
-
-    // Sort by score: iterates bitmap in batches, re-reads term frequencies
-    // from the Title and Body posting lists per entry, computes BM25 with
-    // boost factors, feeds a top-10 heap. O(LIMIT) memory, not O(bitmap).
-    Span<BoostingTermInfo> terms = stackalloc BoostingTermInfo[] {
-        new(Field_Title, ctx.P0, boost: 10.0f),
-        new(Field_Body, ctx.P1, boost: 1.0f)
-    };
-    return Primitives.SortByScore(ref bitmap, ctx.Searcher, terms, output, 10);
+    // Scoring handled by BoostingMatch wrapper + SortingMatch's
+    // Score path. The compiled query builds the candidate set;
+    // scoring and BM25 sort are layered on top via IQueryMatch.Score()
+    // calls through the resolved match chain.
+    return; // result in Bitmaps[0]
 }
 ```
+
+Scoring is handled by the existing `BoostingMatch`/`Score` machinery
+wrapping the `CompiledQueryMatch`. The compiled query produces the
+candidate bitmap; `SortingMatch` iterates it and calls `Score()` on
+the resolved match chain for BM25 computation. No `SortByScore`
+primitive is called from the emitted IL — scoring flows through the
+`IQueryMatch.Score()` interface.
 
 ### 10.8 Vector search with pre-filtering
 
@@ -1010,40 +1145,40 @@ and   vector.search(Embedding, $vec, 20)
 order by score()
 ```
 
-```csharp
-static int Execute(ref QueryContext ctx, Span<long> output, ref int skip)
+```
+// EXPLAIN pseudocode
+static void Execute(ref QueryScanContext ctx)
 {
-    using var bitmap = new RoaringBitmap(ctx.Allocator);
+    // WHERE filter: Category AND Active — built into bitmap[0]
+    QueryPrimitives.FillBitmapFromTermSource(
+        ref ctx.TermSources[0], ctx.Llt, ref ctx.Bitmaps[0]);
 
-    // Build candidate set from WHERE clause
-    Primitives.FillFromPostings(ctx.GetPostings(Field_Category, ctx.P0),
-        ref bitmap);
-
-    var activePostings = ctx.GetPostings(Field_Active, ctx.TrueSlice);
-    if (ShouldSwitchToEntryScan(ref bitmap, activePostings))
-        goto EntryScan_AfterCategory;
-
-    Primitives.AndWithPostings(activePostings, ref bitmap);
+    if (ShouldSwitchToEntryScan(...)) goto EntryScan_AfterCategory;
+    QueryPrimitives.AndWithMatch(ctx.DirectSources[0],
+        ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
     goto VectorSearch;
 
 EntryScan_AfterCategory:
-    // Active evaluated per-entry — filter bitmap in place
-    Primitives.ScanAndFilterInPlace(ref bitmap, ctx.Searcher,
-        unaryItems_ActiveOnly);
+    // Emitted IL: iterate bitmap[0], check Active per entry
 
 VectorSearch:
-    // VectorRank filters bitmap in place to top-K, writes distances
-    // to ctx.Distances for @distance metadata.
-    int k = ctx.GetInt(Param_VectorK);
-    Primitives.VectorRank(ctx.GetVectorIndex(Field_Embedding),
-        ctx.Searcher, ctx.Vec, ref bitmap, ref ctx.Distances, k);
-    // bitmap now has ≤K bits set. ORDER BY score() means sort by
-    // distance (best similarity first). ctx.Distances has the values —
-    // just sort the ≤K entries by their distance.
-    return Primitives.SortByDistance(ref bitmap, ref ctx.Distances,
-        output, k);
+    // The VectorSearchMatch wraps this CompiledQueryMatch as its
+    // filterQuery. Because CompiledQueryMatch implements
+    // IBitmapQueryMatch, VectorSearchUtils.LoadFilterMatches
+    // borrows the bitmap directly (BorrowBitmap()) instead of
+    // re-materializing via Fill(). Zero-copy path.
+    return;
 }
 ```
+
+Vector search is handled at the match-object level, not via a
+primitive. `BuildAndCompile` produces a `CompiledQueryMatch` and then
+a `CoraxVectorItem.Materialize()` wraps it as a `VectorSearchMatch`
+with the compiled bitmap as its `filterQuery`. The vector retriever
+reads the borrowed bitmap via `IBitmapQueryMatch.BorrowBitmap()`.
+Sorting by distance is handled by `SortingMatch`/`SortingMultiMatch`
+wrapping the vector result — distances are read from `GrowableBuffer`
+inside `VectorSearchMatch`.
 
 ### 10.9 Vector search with sort on a different field
 
@@ -1058,39 +1193,23 @@ Vector search returns top-100 by similarity, then we sort those by Price
 and take 20. The vector K (100) is larger than the final LIMIT (20) to
 give the Price sort enough candidates.
 
-```csharp
-static int Execute(ref QueryContext ctx, Span<long> output, ref int skip)
+```
+// EXPLAIN pseudocode
+static void Execute(ref QueryScanContext ctx)
 {
-    using var bitmap = new RoaringBitmap(ctx.Allocator);
-
-    Primitives.FillFromPostings(ctx.GetPostings(Field_Category, ctx.P0),
-        ref bitmap);
-
-    // VectorRank filters bitmap IN PLACE to top-K by similarity.
-    // Clears bits for entries not in top-K. Also writes distances
-    // into ctx.Distances — a (entryId, distance) lookup keyed by
-    // entry ID, so the projection layer can retrieve @distance
-    // metadata per result regardless of subsequent sort order.
-    // K is bounded and small — the lookup is O(K) memory.
-    int k = ctx.GetInt(Param_VectorK);
-    Primitives.VectorRank(ctx.GetVectorIndex(Field_Embedding),
-        ctx.Searcher, ctx.Vec, ref bitmap, ref ctx.Distances, k);
-    // bitmap now has ≤K bits set.
-
-    // Sort the ≤K vector results by Price. Bitmap is tiny —
-    // SortWithFilter will heap-sort from entry blobs.
-    return Primitives.SortWithFilter(ref bitmap, ctx.Searcher,
-        MultiUnaryItem.Empty, ctx.OrderMeta,
-        Slice.BeforeAllKeys, Slice.AfterAllKeys, output, 20);
+    QueryPrimitives.FillBitmapFromTermSource(
+        ref ctx.TermSources[0], ctx.Llt, ref ctx.Bitmaps[0]);
+    // result to VectorSearchMatch filter; vector returns top-K,
+    // then SortingMultiMatch sorts those ≤K results by Price.
 }
 ```
 
-`VectorRank` modifies the bitmap in place — no clear + rebuild loop.
-Distances are written to `ctx.Distances`, a small lookup
-(`(entryId, float)` pairs, sorted by entry ID, allocated from
-`ByteStringContext`). The projection layer reads `@distance` per
-result via `ctx.Distances.Get(entryId)`. Since K is small (20-100),
-the lookup is trivially small.
+Same pattern as §10.8: the compiled query builds the WHERE bitmap,
+`VectorSearchMatch` borrows it via `IBitmapQueryMatch.BorrowBitmap()`,
+performs the ANN/brute-force search, and produces ≤K results.
+`SortingMultiMatch` then sorts those ≤K results by Price using heap
+sort (the set is tiny). No `SortWithFilter` or `VectorRank` primitive
+is called from the emitted IL — these are layered as match wrappers.
 
 ### 10.10 Constant folding — `true OR` elimination
 
@@ -1112,15 +1231,16 @@ The query reduces to:
 from index 'PreOrderAll' order by result.IsHandled
 ```
 
-Generated code — no bitmap, no WHERE, just walk the sort index:
-```csharp
-static int Execute(ref QueryContext ctx, Span<long> output, ref int skip)
+Generated code — empty plan (no bitmap, no WHERE, no TermSources):
+```
+// EXPLAIN pseudocode
+static void Execute(ref QueryScanContext ctx)
 {
-    // All entries — walk IsHandled index from start.
-    return Primitives.OrderedRangeScan(
-        ctx.GetCompactTree(Field_IsHandled),
-        Slice.BeforeAllKeys, Slice.AfterAllKeys,
-        output, ctx.Limit, ref skip);
+    // All entries — no bitmap needed, no WHERE clause.
+    // ctx.Bitmaps[0] is empty; the caller (CompiledQueryMatch) sees
+    // Count = 0 from the empty bitmap and delegates to the enclosing
+    // SortingMatch which walks the IsHandled index directly.
+    return;
 }
 ```
 
@@ -1134,17 +1254,25 @@ etc.) as if the `true OR X` was never there.
 ## 11. Testing & Risks
 
 **Testing.** Result parity with Corax 1.0: the full existing test
-corpus runs against the new path before the old code is deleted.
+corpus runs against the new path. The old code (erasure files,
+BinaryMatch, etc.) is deleted — there is no fallback path.
 Performance regression bench extended with bitmap benchmarks from
 `RavenDB-25284`. CI smoke set on every push; full perf bench nightly.
 
 **Risks.**
 - Bitmap allocation pressure on `ByteStringContext` for very large result
-  sets. Bounded by `BitmapMemoryRequiredThresholdInBytes` (32 MB).
+  sets. Bounded by `BitmapMemoryRequiredThresholdInBytes` (32 MB). The
+  bitmap pool (`QueryScanContext.Bitmaps`) reuses scratch slot [1]
+  across all ops, avoiding per-op allocation.
 - Sort stability — bitmap iteration is by entry ID; explicit tie-break
   by entry ID in ORDER BY generation.
 - DynamicMethod IL bugs are hard to debug — mitigated by EXPLAIN source
-  + comprehensive parity tests.
+  + comprehensive parity tests + per-op timing telemetry visible via
+  `CompiledQueryMatch.Inspect()`.
+- `CombinedMatch` (replacement for `BinaryMatch` in SearchQuery/InQuery)
+  introduces heap-allocated buffers — must be kept on the stack frame
+  of a calling method and not escape to the heap. The struct lifetime
+  discipline is enforced by convention.
 
 ---
 
@@ -1163,3 +1291,20 @@ Performance regression bench extended with bitmap benchmarks from
 - **Batch-vectorized iteration.** Emit bitmap results in
   container-aligned batches (Array→bulk copy, Bitmap→SIMD tzcnt loops).
   Lucene 10.3 achieved 40% speedup with this pattern.
+- **Plan-shape caching.** The `BuildPlan` AST walk is currently cached
+  per `IndexSearcher` via `ConditionalWeakTable` (cloned + refreshed
+  per call). Moving to a full plan-shape cache that skips the entire
+  AST walk on cache hit is the remaining work (tracking in task #82).
+- **Per-op limit propagation.** The `CompiledQueryMatch` constructor
+  accepts a `limit` parameter but it is not yet wired through to
+  `FillFromPostings` for early termination. Planned with task #84.
+- **Multi-field ORDER BY in IBitmapQueryMatch sort path.** The current
+  `SortingMatch.IBitmapQueryMatch` path handles single-field sort.
+  Multi-field sorting with bitmap-based index walk for tie-breaking
+  is not yet implemented.
+- **Compound field sort-skip.** Detecting compound field opportunities
+  via `Index.HasCompoundField()` and emitting `OrderedRangeScan` on
+  the compound field's CompactTree is a gap.
+- **Null-first/null-last sort.** The `IncludeNullMatch`/`IncludeNonExistingMatch`
+  types are deleted but the null-positioning feature is not yet ported
+  to the bitmap path.

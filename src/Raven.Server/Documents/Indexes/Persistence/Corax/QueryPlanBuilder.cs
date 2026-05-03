@@ -111,6 +111,7 @@ internal static class QueryPlanBuilder
         }
 
         var resolvedMatches = ResolveMatches(plan, indexSearcher, planParams, builderParameters);
+        var termSources = ResolveTermSources(plan, indexSearcher, planParams, builderParameters);
         ExtractScanParameters(plan, indexSearcher,
             out var longParams, out var doubleParams, out var sliceParams, out var fieldRootPages);
 
@@ -118,7 +119,7 @@ internal static class QueryPlanBuilder
             PopulateHighlightingTerms(plan, highlightingTerms, planParams.Metadata);
 
         IQueryMatch result = new CompiledQueryMatch(
-            compiledPlan, QueryPlan.RequiredBitmaps, plan.Ops?.Length ?? 0, resolvedMatches,
+            compiledPlan, QueryPlan.RequiredBitmaps, plan.Ops?.Length ?? 0, resolvedMatches, termSources,
             longParams, doubleParams, sliceParams, fieldRootPages,
             indexSearcher, planParams.Allocator, take, token);
 
@@ -1118,26 +1119,29 @@ internal static class QueryPlanBuilder
             {
                 if ((clauses[i].ClauseType == ClauseType.In || clauses[i].ClauseType == ClauseType.AllIn) && clauses[i].InTerms != null)
                 {
+                    // Each IN term is a single-term lookup → eligible for native dispatch.
                     foreach (var _ in clauses[i].InTerms)
                     {
                         ops.Add(new PlanOp
                         {
                             Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex,
-                            EstimatedCardinality = clauses[i].Cardinality / clauses[i].InTerms.Count
+                            EstimatedCardinality = clauses[i].Cardinality / clauses[i].InTerms.Count,
+                            UseTermSource = true
                         });
                         matchIndex++;
                     }
                 }
                 else if (clauses[i].ClauseType == ClauseType.OrGroup && clauses[i].OrSubClauses != null)
                 {
-                    foreach (var _ in clauses[i].OrSubClauses)
+                    foreach (var sub in clauses[i].OrSubClauses)
                     {
                         ops.Add(new PlanOp
                         {
                             Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex,
-                            EstimatedCardinality = clauses[i].Cardinality / clauses[i].OrSubClauses.Count
+                            EstimatedCardinality = clauses[i].Cardinality / clauses[i].OrSubClauses.Count,
+                            UseTermSource = IsTermSourceEligibleClause(sub)
                         });
                         matchIndex++;
                     }
@@ -1148,7 +1152,8 @@ internal static class QueryPlanBuilder
                     {
                         Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                         ParamIndex = matchIndex,
-                        EstimatedCardinality = clauses[i].Cardinality
+                        EstimatedCardinality = clauses[i].Cardinality,
+                        UseTermSource = IsTermSourceEligibleClause(clauses[i])
                     });
                     matchIndex++;
                 }
@@ -1168,7 +1173,8 @@ internal static class QueryPlanBuilder
         else if (clauses.Count == 1 && clauses[0].ClauseType == ClauseType.NotEquals)
         {
             // Standalone NotEquals: AllEntries ANDNOT term
-            // ParamIndex 0 = the AllEntries match, ParamIndex 1 = the negated term
+            // ParamIndex 0 = the AllEntries match (NOT a term source — keep on IQueryMatch path),
+            // ParamIndex 1 = the negated term (eligible for native dispatch).
             ops.Add(new PlanOp
             {
                 Kind = PlanOpKind.FillFromPostings,
@@ -1179,7 +1185,8 @@ internal static class QueryPlanBuilder
             {
                 Kind = PlanOpKind.AndNotWithPostings,
                 ParamIndex = 1, // Will be resolved to the negated term
-                EstimatedCardinality = clauses[0].Cardinality
+                EstimatedCardinality = clauses[0].Cardinality,
+                UseTermSource = IsTermSourceEligibleClause(clauses[0])
             });
             ops.Add(new PlanOp { Kind = PlanOpKind.IterateInto });
 
@@ -1233,14 +1240,15 @@ internal static class QueryPlanBuilder
                             Kind = s == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex + s,
                             BitmapLocal = 0,
-                            EstimatedCardinality = subClauses[s].Cardinality
+                            EstimatedCardinality = subClauses[s].Cardinality,
+                            UseTermSource = IsTermSourceEligibleClause(subClauses[s])
                         });
                     }
                     matchIndex += subClauses.Count;
                 }
                 else if (clauses[0].ClauseType == ClauseType.In && clauses[0].InTerms != null)
                 {
-                    // IN at seed: OR all terms into bitmap[0]
+                    // IN at seed: OR all terms into bitmap[0]. Each IN term is a single-term lookup.
                     var terms = clauses[0].InTerms;
                     for (int t = 0; t < terms.Count; t++)
                     {
@@ -1249,21 +1257,23 @@ internal static class QueryPlanBuilder
                             Kind = t == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex + t,
                             BitmapLocal = 0,
-                            EstimatedCardinality = clauses[0].Cardinality / terms.Count
+                            EstimatedCardinality = clauses[0].Cardinality / terms.Count,
+                            UseTermSource = true
                         });
                     }
                     matchIndex += terms.Count;
                 }
                 else if (clauses[0].ClauseType == ClauseType.AllIn && clauses[0].InTerms != null)
                 {
-                    // First clause is AllIn — fill first term, AND remaining
+                    // First clause is AllIn — fill first term, AND remaining. Each term is a single-term lookup.
                     var terms = clauses[0].InTerms;
                     ops.Add(new PlanOp
                     {
                         Kind = PlanOpKind.FillFromPostings,
                         ParamIndex = matchIndex,
                         BitmapLocal = 0,
-                        EstimatedCardinality = clauses[0].Cardinality / terms.Count
+                        EstimatedCardinality = clauses[0].Cardinality / terms.Count,
+                        UseTermSource = true
                     });
                     for (int t = 1; t < terms.Count; t++)
                     {
@@ -1272,7 +1282,8 @@ internal static class QueryPlanBuilder
                             Kind = PlanOpKind.AndWithPostings,
                             ParamIndex = matchIndex + t,
                             BitmapLocal = 0,
-                            EstimatedCardinality = clauses[0].Cardinality / terms.Count
+                            EstimatedCardinality = clauses[0].Cardinality / terms.Count,
+                            UseTermSource = true
                         });
                         ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
                     }
@@ -1284,7 +1295,8 @@ internal static class QueryPlanBuilder
                     {
                         Kind = PlanOpKind.FillFromPostings,
                         ParamIndex = 0,
-                        EstimatedCardinality = clauses[0].Cardinality
+                        EstimatedCardinality = clauses[0].Cardinality,
+                        UseTermSource = IsTermSourceEligibleClause(clauses[0])
                     });
                     matchIndex = 1;
                 }
@@ -1334,7 +1346,8 @@ internal static class QueryPlanBuilder
                             Kind = PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex + s,
                             BitmapLocal = 1, // target bitmap[1]
-                            EstimatedCardinality = subClauses[s].Cardinality
+                            EstimatedCardinality = subClauses[s].Cardinality,
+                            UseTermSource = IsTermSourceEligibleClause(subClauses[s])
                         });
                     }
 
@@ -1353,7 +1366,8 @@ internal static class QueryPlanBuilder
                 }
                 else if (clauses[i].ClauseType == ClauseType.In && clauses[i].InTerms != null)
                 {
-                    // IN in AND chain: OR all terms into bitmap[1], then AND with bitmap[0]
+                    // IN in AND chain: OR all terms into bitmap[1], then AND with bitmap[0].
+                    // Each IN term is a single-term lookup.
                     var terms = clauses[i].InTerms;
                     ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 1 });
                     for (int t = 0; t < terms.Count; t++)
@@ -1363,7 +1377,8 @@ internal static class QueryPlanBuilder
                             Kind = PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex + t,
                             BitmapLocal = 1,
-                            EstimatedCardinality = clauses[i].Cardinality / terms.Count
+                            EstimatedCardinality = clauses[i].Cardinality / terms.Count,
+                            UseTermSource = true
                         });
                     }
                     ops.Add(new PlanOp
@@ -1377,7 +1392,7 @@ internal static class QueryPlanBuilder
                 }
                 else if (clauses[i].ClauseType == ClauseType.AllIn && clauses[i].InTerms != null)
                 {
-                    // AllIn: AND each term's posting list with bitmap[0]
+                    // AllIn: AND each term's posting list with bitmap[0]. Each term is single-term.
                     var terms = clauses[i].InTerms;
                     for (int t = 0; t < terms.Count; t++)
                     {
@@ -1386,7 +1401,8 @@ internal static class QueryPlanBuilder
                             Kind = PlanOpKind.AndWithPostings,
                             ParamIndex = matchIndex + t,
                             BitmapLocal = 0,
-                            EstimatedCardinality = clauses[i].Cardinality / terms.Count
+                            EstimatedCardinality = clauses[i].Cardinality / terms.Count,
+                            UseTermSource = true
                         });
                         ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
                     }
@@ -1402,7 +1418,8 @@ internal static class QueryPlanBuilder
                         Kind = andKind,
                         ParamIndex = matchIndex,
                         BitmapLocal = 0,
-                        EstimatedCardinality = clauses[i].Cardinality
+                        EstimatedCardinality = clauses[i].Cardinality,
+                        UseTermSource = IsTermSourceEligibleClause(clauses[i])
                     });
 
                     if (!isNegated)
@@ -1904,6 +1921,222 @@ internal static class QueryPlanBuilder
         if (plan.AllNegated)
             matches[matchIdx] = indexSearcher.AllEntries();
         return matches;
+    }
+
+    /// <summary>
+    /// Resolve clause infos to <see cref="TermSource"/> instances for the native
+    /// posting-list dispatch path. Parallels <see cref="ResolveMatches"/> — the
+    /// returned array uses the same indexing scheme. Slots whose underlying
+    /// clause is multi-term / non-term-shaped (Spatial, Vector, Search, Range,
+    /// StartsWith, EndsWith, Regex, AllEntries) keep <c>Kind == TermSourceKind.Empty</c>;
+    /// only Equals / NotEquals / In / AllIn / OrGroup-of-(Not)Equals slots populate.
+    /// The IL emitter consults <see cref="PlanOp.UseTermSource"/> to decide which
+    /// array to read.
+    /// </summary>
+    public static TermSource[] ResolveTermSources(QueryPlan plan, IndexSearcher indexSearcher,
+        PlanParameters parameters = null, CoraxQueryBuilder.Parameters builderParams = null)
+    {
+        // IsAllEntries plans never emit term ops (FillFromPostings / AndWith / etc.) —
+        // their match[0] is AllEntries, post-filter slots are spatial/vector. No
+        // TermSource population needed.
+        if (plan.IsAllEntries)
+            return Array.Empty<TermSource>();
+
+        var clauses = plan.Clauses;
+        if (clauses == null || clauses.Length == 0)
+            return Array.Empty<TermSource>();
+
+        // Standalone NotEquals: matches[0] = AllEntries (NOT a term source),
+        // matches[1] = the negated term. Mirror that layout.
+        if (clauses.Length == 1 && ((ClauseInfo)clauses[0]).IsNegated)
+        {
+            var sources = new TermSource[2];
+            // sources[0] stays Empty — AllEntries goes through DirectSources.
+            sources[1] = ResolveSingleTermSource((ClauseInfo)clauses[0], indexSearcher, parameters, builderParams);
+            return sources;
+        }
+
+        int totalMatches = 0;
+        for (int i = 0; i < clauses.Length; i++)
+        {
+            var clause = (ClauseInfo)clauses[i];
+            if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
+                totalMatches += clause.OrSubClauses.Count;
+            else if ((clause.ClauseType == ClauseType.AllIn || clause.ClauseType == ClauseType.In) && clause.InTerms != null)
+                totalMatches += clause.InTerms.Count;
+            else
+                totalMatches++;
+        }
+        int extraSlots = plan.AllNegated ? 1 : 0;
+        var termSources = new TermSource[totalMatches + extraSlots];
+        int matchIdx = 0;
+        for (int i = 0; i < clauses.Length; i++)
+        {
+            var clause = (ClauseInfo)clauses[i];
+            if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
+            {
+                foreach (var sub in clause.OrSubClauses)
+                {
+                    // Boosting bypasses TermSource — Boost wraps the IQueryMatch and
+                    // expects to forward Score(). Keep boosted ops on the IQueryMatch
+                    // path so scores are computed correctly.
+                    if (sub.BoostFactor > 0)
+                    {
+                        matchIdx++;
+                        continue;
+                    }
+                    termSources[matchIdx++] = ResolveSingleTermSource(sub, indexSearcher, parameters, builderParams);
+                }
+            }
+            else if ((clause.ClauseType == ClauseType.AllIn || clause.ClauseType == ClauseType.In) && clause.InTerms != null)
+            {
+                foreach (var term in clause.InTerms)
+                    termSources[matchIdx++] = ResolveInTermSource(clause, term, indexSearcher, parameters, builderParams);
+            }
+            else
+            {
+                if (clause.BoostFactor > 0)
+                {
+                    matchIdx++;
+                    continue;
+                }
+                termSources[matchIdx++] = ResolveSingleTermSource(clause, indexSearcher, parameters, builderParams);
+            }
+        }
+        // AllNegated extra slot is AllEntries — stays Empty in TermSources.
+        return termSources;
+    }
+
+    /// <summary>Decide whether a clause type can be expressed as a single
+    /// <see cref="TermSource"/>. Boosted clauses go through the IQueryMatch path
+    /// even when they're term-shaped, so scoring still works.</summary>
+    internal static bool IsTermSourceEligibleClause(ClauseInfo clause)
+    {
+        if (clause == null)
+            return false;
+        if (clause.BoostFactor > 0)
+            return false;
+        return clause.ClauseType is ClauseType.Equals or ClauseType.NotEquals;
+    }
+
+    /// <summary>Resolve a single Equals / NotEquals clause to a posting-list ID and
+    /// decode it into a <see cref="TermSource"/>. Returns Empty when the clause
+    /// is non-term-shaped or the term doesn't exist in the index.</summary>
+    private static TermSource ResolveSingleTermSource(ClauseInfo clause, IndexSearcher indexSearcher,
+        PlanParameters parameters, CoraxQueryBuilder.Parameters builderParams)
+    {
+        if (IsTermSourceEligibleClause(clause) == false)
+            return default; // Kind == Empty
+
+        FieldMetadata fieldMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
+
+        long postingListId;
+        if (clause.TermValueType == ValueTokenType.Long
+            && long.TryParse(clause.TermValue, out long eqLong))
+        {
+            // GetTermPostingListId<long> internally calls GetNumericFieldMetadata<long>;
+            // pass the raw field metadata so we don't double-suffix the field name.
+            postingListId = indexSearcher.GetTermPostingListId(fieldMeta, eqLong);
+        }
+        else if (clause.TermValueType == ValueTokenType.Double
+            && double.TryParse(clause.TermValue,
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out double eqDouble))
+        {
+            postingListId = indexSearcher.GetTermPostingListId(fieldMeta, eqDouble);
+        }
+        else
+        {
+            postingListId = indexSearcher.GetTermPostingListId(fieldMeta, clause.TermValue);
+        }
+
+        return DecodePostingListId(postingListId, indexSearcher);
+    }
+
+    /// <summary>Resolve a single In/AllIn term to a posting-list ID. Mirrors
+    /// <see cref="ResolveInTerm"/> — typed long / double / string lookup.</summary>
+    private static TermSource ResolveInTermSource(ClauseInfo clause, string term, IndexSearcher indexSearcher,
+        PlanParameters parameters, CoraxQueryBuilder.Parameters builderParams)
+    {
+        FieldMetadata fieldMeta;
+        if (builderParams != null)
+            fieldMeta = QueryBuilderHelper.GetFieldMetadata(in builderParams, clause.FieldName, hasBoost: builderParams.HasBoost);
+        else
+            fieldMeta = indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);
+
+        long postingListId;
+        if (long.TryParse(term, out long lVal))
+        {
+            postingListId = indexSearcher.GetTermPostingListId(fieldMeta, lVal);
+        }
+        else if (double.TryParse(term,
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out double dVal))
+        {
+            postingListId = indexSearcher.GetTermPostingListId(fieldMeta, dVal);
+        }
+        else
+        {
+            postingListId = indexSearcher.GetTermPostingListId(fieldMeta, term);
+        }
+
+        return DecodePostingListId(postingListId, indexSearcher);
+    }
+
+    /// <summary>Resolve field metadata for a term-source clause. Mirrors the
+    /// non-Spatial/Vector/Search branch of <see cref="ResolveClause"/>.</summary>
+    private static FieldMetadata ResolveFieldMetadata(ClauseInfo clause, IndexSearcher indexSearcher,
+        PlanParameters parameters, CoraxQueryBuilder.Parameters builderParams)
+    {
+        if (builderParams != null)
+        {
+            string resolvedFieldName = clause.FieldName;
+            if (clause.IsExact && builderParams.Metadata.IsDynamic)
+                resolvedFieldName = AutoIndexField.GetExactAutoIndexFieldName(resolvedFieldName);
+            return QueryBuilderHelper.GetFieldMetadata(in builderParams, resolvedFieldName, exact: clause.IsExact, hasBoost: builderParams.HasBoost);
+        }
+
+        return indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);
+    }
+
+    /// <summary>Decode a raw posting-list ID (with TermIdMask bits) into a
+    /// <see cref="TermSource"/>. Returns Empty when the term doesn't exist (-1).
+    /// For PostingList kind, opens a fresh iterator on the underlying set.</summary>
+    private static TermSource DecodePostingListId(long postingListId, IndexSearcher indexSearcher)
+    {
+        if (postingListId == -1)
+            return default; // Kind == Empty
+
+        var termType = (global::Corax.Indexing.TermIdMask)postingListId & global::Corax.Indexing.TermIdMask.EnsureIsSingleMask;
+        switch (termType)
+        {
+            case global::Corax.Indexing.TermIdMask.Single:
+                return new TermSource
+                {
+                    Kind = TermSourceKind.Single,
+                    SingleEntryId = (long)global::Corax.Utils.EntryIdEncodings.GetContainerId(postingListId),
+                };
+
+            case global::Corax.Indexing.TermIdMask.SmallPostingList:
+                return new TermSource
+                {
+                    Kind = TermSourceKind.SmallPostingList,
+                    SmallPostingListId = (long)global::Corax.Utils.EntryIdEncodings.GetContainerId(postingListId),
+                };
+
+            case global::Corax.Indexing.TermIdMask.PostingList:
+            {
+                var postingList = indexSearcher.GetPostingList(postingListId);
+                return new TermSource
+                {
+                    Kind = TermSourceKind.PostingList,
+                    LargeIterator = postingList.Iterate(),
+                };
+            }
+
+            default:
+                return default;
+        }
     }
 
     /// <summary>

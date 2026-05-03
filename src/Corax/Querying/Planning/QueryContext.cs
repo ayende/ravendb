@@ -3,6 +3,7 @@ using System.Threading;
 using Corax.Querying.Matches.Meta;
 using Voron.Data.RoaringBitmaps;
 using Voron;
+using Voron.Impl;
 
 namespace Corax.Querying.Planning;
 
@@ -21,6 +22,19 @@ public ref struct QueryScanContext
     /// <summary>Direct sources — matches that produce entry IDs via Fill().
     /// TermMatch, MultiTermMatch, AllEntriesMatch, SpatialMatch, VectorSearchMatch.</summary>
     public Span<IQueryMatch> DirectSources;
+
+    /// <summary>Native posting-list sources for term ops. Indexed by
+    /// <see cref="PlanOp.ParamIndex"/> when <see cref="PlanOp.UseTermSource"/> is set.
+    /// Each TermSource holds a Single entry id, SmallPostingList container id, or
+    /// PostingList.Iterator — passed to FillBitmapFromTermSource /
+    /// AndWithTermSource / AndNotWithTermSource directly, bypassing the IQueryMatch
+    /// wrapper / function-pointer indirection.</summary>
+    public Span<TermSource> TermSources;
+
+    /// <summary>LowLevelTransaction used by TermSource dispatchers to load small
+    /// posting list containers. Cached at Execute() time so the emitted IL doesn't
+    /// re-fetch it per op.</summary>
+    public LowLevelTransaction Llt;
 
     /// <summary>Term providers — iterate CompactTree terms, each yielding a posting list.
     /// The emitted IL iterates providers in a batch loop, OR-ing each term's

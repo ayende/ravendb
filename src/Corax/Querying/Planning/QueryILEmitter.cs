@@ -6,6 +6,7 @@ using System.Text;
 using System.Threading;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
+using Corax.Querying.Primitives;
 using Corax.Utils;
 using Voron.Data.RoaringBitmaps;
 using Voron;
@@ -22,6 +23,8 @@ public static class QueryILEmitter
     // QueryScanContext fields
     private static readonly FieldInfo s_ctxBitmaps = typeof(QueryScanContext).GetField(nameof(QueryScanContext.Bitmaps))!;
     private static readonly FieldInfo s_ctxDirectSources = typeof(QueryScanContext).GetField(nameof(QueryScanContext.DirectSources))!;
+    private static readonly FieldInfo s_ctxTermSources = typeof(QueryScanContext).GetField(nameof(QueryScanContext.TermSources))!;
+    private static readonly FieldInfo s_ctxLlt = typeof(QueryScanContext).GetField(nameof(QueryScanContext.Llt))!;
     private static readonly FieldInfo s_ctxSearcher = typeof(QueryScanContext).GetField(nameof(QueryScanContext.Searcher))!;
     private static readonly FieldInfo s_ctxToken = typeof(QueryScanContext).GetField(nameof(QueryScanContext.Token))!;
     private static readonly FieldInfo s_ctxEntryScanTakenAtOp = typeof(QueryScanContext).GetField(nameof(QueryScanContext.EntryScanTakenAtOp))!;
@@ -108,6 +111,18 @@ public static class QueryILEmitter
     private static readonly MethodInfo s_andNotWithMatch =
         typeof(Corax.Querying.Primitives.QueryPrimitives).GetMethod(nameof(Primitives.QueryPrimitives.AndNotWithMatch))!;
 
+    // Native posting-list dispatch — bypasses IQueryMatch wrapper
+    private static readonly MethodInfo s_fillBitmapFromTermSource =
+        typeof(Corax.Querying.Primitives.QueryPrimitives).GetMethod(nameof(Primitives.QueryPrimitives.FillBitmapFromTermSource))!;
+    private static readonly MethodInfo s_andWithTermSource =
+        typeof(Corax.Querying.Primitives.QueryPrimitives).GetMethod(nameof(Primitives.QueryPrimitives.AndWithTermSource))!;
+    private static readonly MethodInfo s_andNotWithTermSource =
+        typeof(Corax.Querying.Primitives.QueryPrimitives).GetMethod(nameof(Primitives.QueryPrimitives.AndNotWithTermSource))!;
+
+    // Span<TermSource> indexer
+    private static readonly MethodInfo s_termSourceSpanIndexer =
+        typeof(Span<TermSource>).GetProperty("Item")!.GetGetMethod()!;
+
     // Span<Slice> indexer
     private static readonly MethodInfo s_spanSliceIndexer =
         typeof(Span<Voron.Slice>).GetProperty("Item")!.GetGetMethod()!;
@@ -179,19 +194,42 @@ public static class QueryILEmitter
                 case PlanOpKind.FillFromPostings:
                 case PlanOpKind.DirectIterate:
                     EmitCancellationCheck(il);
-                    // QueryPrimitives.FillFromMatch(match, ref bitmap[0])
-                    EmitLoadMatch(il, op.ParamIndex);
-                    EmitLoadBitmapRef(il, 0);
-                    il.Emit(OpCodes.Call, s_fillFromMatch);
+                    if (op.UseTermSource)
+                    {
+                        // QueryPrimitives.FillBitmapFromTermSource(ref TermSources[i], llt, ref bitmap[0])
+                        EmitLoadTermSourceRef(il, op.ParamIndex);
+                        EmitLoadLlt(il);
+                        EmitLoadBitmapRef(il, 0);
+                        il.Emit(OpCodes.Call, s_fillBitmapFromTermSource);
+                    }
+                    else
+                    {
+                        // QueryPrimitives.FillFromMatch(match, ref bitmap[0])
+                        EmitLoadMatch(il, op.ParamIndex);
+                        EmitLoadBitmapRef(il, 0);
+                        il.Emit(OpCodes.Call, s_fillFromMatch);
+                    }
                     break;
 
                 case PlanOpKind.AndWithPostings:
                     EmitCancellationCheck(il);
-                    // QueryPrimitives.AndWithMatch(match, ref bitmap[0], ref bitmap[1])
-                    EmitLoadMatch(il, op.ParamIndex);
-                    EmitLoadBitmapRef(il, 0);
-                    EmitLoadBitmapRef(il, 1);
-                    il.Emit(OpCodes.Call, s_andWithMatch);
+                    if (op.UseTermSource)
+                    {
+                        // QueryPrimitives.AndWithTermSource(ref TermSources[i], llt, ref bitmap[0], ref bitmap[1])
+                        EmitLoadTermSourceRef(il, op.ParamIndex);
+                        EmitLoadLlt(il);
+                        EmitLoadBitmapRef(il, 0);
+                        EmitLoadBitmapRef(il, 1);
+                        il.Emit(OpCodes.Call, s_andWithTermSource);
+                    }
+                    else
+                    {
+                        // QueryPrimitives.AndWithMatch(match, ref bitmap[0], ref bitmap[1])
+                        EmitLoadMatch(il, op.ParamIndex);
+                        EmitLoadBitmapRef(il, 0);
+                        EmitLoadBitmapRef(il, 1);
+                        il.Emit(OpCodes.Call, s_andWithMatch);
+                    }
                     EmitLoadBitmapRef(il, 0);
                     il.Emit(OpCodes.Call, s_isEmptyGetter);
                     il.Emit(OpCodes.Brtrue, doneLabel);
@@ -200,10 +238,21 @@ public static class QueryILEmitter
                 case PlanOpKind.OrWithPostings:
                 case PlanOpKind.LazyOrWithPostings:
                     EmitCancellationCheck(il);
-                    // QueryPrimitives.FillFromMatch(match, ref bitmap[slot])
-                    EmitLoadMatch(il, op.ParamIndex);
-                    EmitLoadBitmapRef(il, op.BitmapLocal);
-                    il.Emit(OpCodes.Call, s_fillFromMatch);
+                    if (op.UseTermSource)
+                    {
+                        // QueryPrimitives.FillBitmapFromTermSource(ref TermSources[i], llt, ref bitmap[slot])
+                        EmitLoadTermSourceRef(il, op.ParamIndex);
+                        EmitLoadLlt(il);
+                        EmitLoadBitmapRef(il, op.BitmapLocal);
+                        il.Emit(OpCodes.Call, s_fillBitmapFromTermSource);
+                    }
+                    else
+                    {
+                        // QueryPrimitives.FillFromMatch(match, ref bitmap[slot])
+                        EmitLoadMatch(il, op.ParamIndex);
+                        EmitLoadBitmapRef(il, op.BitmapLocal);
+                        il.Emit(OpCodes.Call, s_fillFromMatch);
+                    }
                     break;
 
                 case PlanOpKind.ClearBitmap:
@@ -225,11 +274,23 @@ public static class QueryILEmitter
 
                 case PlanOpKind.AndNotWithPostings:
                     EmitCancellationCheck(il);
-                    // QueryPrimitives.AndNotWithMatch(match, ref bitmap[0], ref bitmap[1])
-                    EmitLoadMatch(il, op.ParamIndex);
-                    EmitLoadBitmapRef(il, 0);
-                    EmitLoadBitmapRef(il, 1);
-                    il.Emit(OpCodes.Call, s_andNotWithMatch);
+                    if (op.UseTermSource)
+                    {
+                        // QueryPrimitives.AndNotWithTermSource(ref TermSources[i], llt, ref bitmap[0], ref bitmap[1])
+                        EmitLoadTermSourceRef(il, op.ParamIndex);
+                        EmitLoadLlt(il);
+                        EmitLoadBitmapRef(il, 0);
+                        EmitLoadBitmapRef(il, 1);
+                        il.Emit(OpCodes.Call, s_andNotWithTermSource);
+                    }
+                    else
+                    {
+                        // QueryPrimitives.AndNotWithMatch(match, ref bitmap[0], ref bitmap[1])
+                        EmitLoadMatch(il, op.ParamIndex);
+                        EmitLoadBitmapRef(il, 0);
+                        EmitLoadBitmapRef(il, 1);
+                        il.Emit(OpCodes.Call, s_andNotWithMatch);
+                    }
                     break;
 
                 case PlanOpKind.RepairAfterLazy:
@@ -754,6 +815,24 @@ public static class QueryILEmitter
         il.Emit(OpCodes.Ldind_Ref);
     }
 
+    /// <summary>Load &amp;ctx.TermSources[index] — pushes a managed pointer (ref TermSource)
+    /// suitable for the FillBitmapFromTermSource / AndWithTermSource / AndNotWithTermSource
+    /// primitives. Span indexer returns ref T directly.</summary>
+    private static void EmitLoadTermSourceRef(ILGenerator il, int index)
+    {
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Ldflda, s_ctxTermSources);
+        EmitLdcI4(il, index);
+        il.Emit(OpCodes.Call, s_termSourceSpanIndexer);
+    }
+
+    /// <summary>Load ctx.Llt — pushes a LowLevelTransaction reference on the stack.</summary>
+    private static void EmitLoadLlt(ILGenerator il)
+    {
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Ldfld, s_ctxLlt);
+    }
+
     /// <summary>Emit: startTick = Stopwatch.GetTimestamp()</summary>
     private static void EmitTimingStart(ILGenerator il, LocalBuilder startTickLocal)
     {
@@ -818,19 +897,29 @@ public static class QueryILEmitter
         for (int i = 0; i < plan.Ops.Length; i++)
         {
             ref PlanOp op = ref plan.Ops[i];
+            string src = op.UseTermSource ? $"ctx.TermSources[{op.ParamIndex}]" : $"ctx.DirectSources[{op.ParamIndex}]";
             switch (op.Kind)
             {
                 case PlanOpKind.FillFromPostings:
                 case PlanOpKind.DirectIterate:
-                    sb.AppendLine($"QueryPrimitives.FillFromMatch(ctx.DirectSources[{op.ParamIndex}], ref ctx.Bitmaps[0]);");
+                    if (op.UseTermSource)
+                        sb.AppendLine($"QueryPrimitives.FillBitmapFromTermSource(ref {src}, ctx.Llt, ref ctx.Bitmaps[0]);");
+                    else
+                        sb.AppendLine($"QueryPrimitives.FillFromMatch({src}, ref ctx.Bitmaps[0]);");
                     break;
                 case PlanOpKind.AndWithPostings:
-                    sb.AppendLine($"QueryPrimitives.AndWithMatch(ctx.DirectSources[{op.ParamIndex}], ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);");
+                    if (op.UseTermSource)
+                        sb.AppendLine($"QueryPrimitives.AndWithTermSource(ref {src}, ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);");
+                    else
+                        sb.AppendLine($"QueryPrimitives.AndWithMatch({src}, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);");
                     sb.AppendLine("if (ctx.Bitmaps[0].IsEmpty) return;");
                     break;
                 case PlanOpKind.OrWithPostings:
                 case PlanOpKind.LazyOrWithPostings:
-                    sb.AppendLine($"QueryPrimitives.FillFromMatch(ctx.DirectSources[{op.ParamIndex}], ref ctx.Bitmaps[{op.BitmapLocal}]);");
+                    if (op.UseTermSource)
+                        sb.AppendLine($"QueryPrimitives.FillBitmapFromTermSource(ref {src}, ctx.Llt, ref ctx.Bitmaps[{op.BitmapLocal}]);");
+                    else
+                        sb.AppendLine($"QueryPrimitives.FillFromMatch({src}, ref ctx.Bitmaps[{op.BitmapLocal}]);");
                     break;
                 case PlanOpKind.ClearBitmap:
                     sb.AppendLine($"ctx.Bitmaps[{op.BitmapLocal}].Clear();");
@@ -842,7 +931,10 @@ public static class QueryILEmitter
                     sb.AppendLine($"if (ctx.Bitmaps[{op.BitmapLocal}].IsEmpty) return;");
                     break;
                 case PlanOpKind.AndNotWithPostings:
-                    sb.AppendLine($"QueryPrimitives.AndNotWithMatch(ctx.DirectSources[{op.ParamIndex}], ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);");
+                    if (op.UseTermSource)
+                        sb.AppendLine($"QueryPrimitives.AndNotWithTermSource(ref {src}, ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);");
+                    else
+                        sb.AppendLine($"QueryPrimitives.AndNotWithMatch({src}, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);");
                     break;
                 case PlanOpKind.RepairAfterLazy:
                     sb.AppendLine("ctx.Bitmaps[0].RepairAfterLazy();");

@@ -432,6 +432,158 @@ public static class QueryPrimitives
         bitmap.AndNotWith(ref tempBitmap);
     }
 
+    // ---- Native posting-list dispatch on a TermSource ----
+    // The IL emitter resolves each term op to a TermSource (Empty / Single /
+    // SmallPostingList / PostingList). These dispatchers do the three-way switch
+    // and call the right native primitive, skipping the IQueryMatch wrapper.
+
+    /// <summary>OR a TermSource into the bitmap.
+    /// Single → Add; SmallPostingList → decode FastPFor buffer + AddRange;
+    /// PostingList → <see cref="FillFromPostings"/>; Empty → no-op.</summary>
+    [SkipLocalsInit]
+    public static unsafe void FillBitmapFromTermSource(
+        ref Planning.TermSource source,
+        Voron.Impl.LowLevelTransaction llt,
+        ref RoaringBitmap bitmap)
+    {
+        switch (source.Kind)
+        {
+            case Planning.TermSourceKind.Empty:
+                return;
+
+            case Planning.TermSourceKind.Single:
+                bitmap.Add(source.SingleEntryId);
+                return;
+
+            case Planning.TermSourceKind.SmallPostingList:
+                AddSmallPostingListToBitmap(llt, source.SmallPostingListId, ref bitmap);
+                return;
+
+            case Planning.TermSourceKind.PostingList:
+                FillFromPostings(ref source.LargeIterator, ref bitmap);
+                return;
+
+            default:
+                throw new InvalidOperationException($"Unknown TermSourceKind: {source.Kind}");
+        }
+    }
+
+    /// <summary>AND the bitmap with a TermSource. Galloping page-scan when the
+    /// source is a large PostingList; per-key membership / temp-bitmap-fill for
+    /// the smaller cases. Empty source clears the bitmap (intersection with
+    /// nothing = nothing).</summary>
+    [SkipLocalsInit]
+    public static unsafe void AndWithTermSource(
+        ref Planning.TermSource source,
+        Voron.Impl.LowLevelTransaction llt,
+        ref RoaringBitmap bitmap,
+        ref RoaringBitmap tempBitmap)
+    {
+        if (bitmap.IsEmpty)
+            return;
+
+        switch (source.Kind)
+        {
+            case Planning.TermSourceKind.Empty:
+                bitmap.Clear();
+                return;
+
+            case Planning.TermSourceKind.Single:
+            {
+                long entryId = source.SingleEntryId;
+                bool keep = bitmap.Contains(entryId);
+                bitmap.Clear();
+                if (keep)
+                    bitmap.Add(entryId);
+                return;
+            }
+
+            case Planning.TermSourceKind.SmallPostingList:
+                tempBitmap.Clear();
+                AddSmallPostingListToBitmap(llt, source.SmallPostingListId, ref tempBitmap);
+                bitmap.AndWith(ref tempBitmap);
+                return;
+
+            case Planning.TermSourceKind.PostingList:
+                AndWithPostings(ref source.LargeIterator, ref bitmap, ref tempBitmap);
+                return;
+
+            default:
+                throw new InvalidOperationException($"Unknown TermSourceKind: {source.Kind}");
+        }
+    }
+
+    /// <summary>ANDNOT the bitmap with a TermSource (subtract). Empty source is
+    /// a no-op (subtracting nothing).</summary>
+    [SkipLocalsInit]
+    public static unsafe void AndNotWithTermSource(
+        ref Planning.TermSource source,
+        Voron.Impl.LowLevelTransaction llt,
+        ref RoaringBitmap bitmap,
+        ref RoaringBitmap tempBitmap)
+    {
+        if (bitmap.IsEmpty)
+            return;
+
+        switch (source.Kind)
+        {
+            case Planning.TermSourceKind.Empty:
+                return;
+
+            case Planning.TermSourceKind.Single:
+                tempBitmap.Clear();
+                tempBitmap.Add(source.SingleEntryId);
+                bitmap.AndNotWith(ref tempBitmap);
+                return;
+
+            case Planning.TermSourceKind.SmallPostingList:
+                tempBitmap.Clear();
+                AddSmallPostingListToBitmap(llt, source.SmallPostingListId, ref tempBitmap);
+                bitmap.AndNotWith(ref tempBitmap);
+                return;
+
+            case Planning.TermSourceKind.PostingList:
+                AndNotWithPostings(ref source.LargeIterator, ref bitmap, ref tempBitmap);
+                return;
+
+            default:
+                throw new InvalidOperationException($"Unknown TermSourceKind: {source.Kind}");
+        }
+    }
+
+    /// <summary>Fetch the small posting list container by id, decode the
+    /// FastPFor stream into the bitmap. Allocates a stackalloc buffer +
+    /// FastPForBufferedReader scoped to this call.</summary>
+    [SkipLocalsInit]
+    private static unsafe void AddSmallPostingListToBitmap(
+        Voron.Impl.LowLevelTransaction llt,
+        long smallPostingListId,
+        ref RoaringBitmap bitmap)
+    {
+        Container.Get(llt, (Voron.Data.Containers.ContainerEntryId)smallPostingListId, out var item);
+        _ = VariableSizeEncoding.Read<int>(item.Address, out var offset);
+
+        Span<long> buffer = stackalloc long[FillBufferSize];
+        var reader = new FastPForBufferedReader(llt.Allocator);
+        try
+        {
+            reader.Init(item.Address + offset, item.Length - offset);
+            fixed (long* pBuffer = buffer)
+            {
+                int read;
+                while ((read = reader.Fill(pBuffer, buffer.Length)) > 0)
+                {
+                    EntryIdEncodings.DecodeAndDiscardFrequency(buffer.Slice(0, read), read);
+                    bitmap.AddRange(buffer.Slice(0, read));
+                }
+            }
+        }
+        finally
+        {
+            reader.Dispose();
+        }
+    }
+
     // Batch size for FillPostingListIds calls within FillBitmapFromTermProvider.
     private const int PostingListIdBatchSize = 256;
 

@@ -1,3 +1,5 @@
+using Voron.Data.PostingLists;
+
 namespace Corax.Querying.Planning;
 
 public enum PlanOpKind : byte
@@ -36,6 +38,49 @@ public struct PlanOp
     public int ParamIndex2;
     public int BitmapLocal;
     public long EstimatedCardinality;
+
+    /// <summary>When true and the op is a term op (Fill/And/Or/AndNot WithPostings),
+    /// <see cref="ParamIndex"/> indexes <see cref="QueryScanContext.TermSources"/>
+    /// (native posting-list dispatch — single value / small posting list /
+    /// PostingList.Iterator). When false it indexes
+    /// <see cref="QueryScanContext.DirectSources"/> and goes through the
+    /// IQueryMatch wrapper. Vector / spatial / multi-term clauses always stay on
+    /// the IQueryMatch path.</summary>
+    public bool UseTermSource;
+}
+
+/// <summary>Three-way native posting-list source attached to a term op.
+/// Mirrors the encoding used by <see cref="ITermProvider.FillPostingListIds"/>:
+/// the low 2 bits of a CompactTree value distinguish Single / SmallPostingList /
+/// PostingList. Resolved up-front by <c>ResolveTermSources</c>; consumed by
+/// <c>FillBitmapFromTermSource</c> / <c>AndWithTermSource</c> /
+/// <c>AndNotWithTermSource</c> at execution time.</summary>
+public unsafe struct TermSource
+{
+    public TermSourceKind Kind;
+
+    /// <summary>Decoded entry id (Kind == Single) — already passed through
+    /// EntryIdEncodings.GetContainerId.</summary>
+    public long SingleEntryId;
+
+    /// <summary>Container id for the small posting list (Kind == SmallPostingList) —
+    /// pass to <c>Container.Get</c> on the LowLevelTransaction, then decode the
+    /// FastPFor buffer.</summary>
+    public long SmallPostingListId;
+
+    /// <summary>Iterator over a large posting list (Kind == PostingList).</summary>
+    public PostingList.Iterator LargeIterator;
+}
+
+public enum TermSourceKind : byte
+{
+    /// <summary>The term does not exist in the index (or the field has no compact tree).
+    /// Dispatcher primitives no-op on Empty for Or-shaped ops, and clear the bitmap
+    /// for And-shaped ops.</summary>
+    Empty,
+    Single,
+    SmallPostingList,
+    PostingList,
 }
 
 /// <summary>One entry-scan predicate. Numeric predicates emit a direct compare
