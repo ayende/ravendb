@@ -69,6 +69,76 @@ internal static class QueryPlanBuilder
         });
     }
 
+    /// <summary>
+    /// One-stop entry point that runs the full plan-build → cache-lookup → IL-emit →
+    /// match-resolve → param-extract → wrap-with-post-filters pipeline. Replaces five
+    /// hand-rolled call sites in CoraxIndexReadOperation, CoraxIndexFacetedReadOperation,
+    /// and CoraxQueryBuilder which all did the exact same dance.
+    ///
+    /// Today this is a strict refactor — BuildPlan still runs every call. The
+    /// master/compiled split where the AST-walk and clause-extraction are cached by
+    /// queryText is task #82's remaining stages and lands later.
+    /// </summary>
+    public static IQueryMatch BuildAndCompile(
+        PlanParameters planParams,
+        global::Raven.Server.Documents.Indexes.Persistence.Corax.CoraxQueryBuilder.Parameters builderParameters,
+        long take,
+        out QueryPlan plan,
+        Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms,
+        CancellationToken token)
+    {
+        plan = BuildPlan(planParams);
+        var indexSearcher = planParams.IndexSearcher;
+        var queryText = planParams.Metadata.Query.QueryText;
+
+        var planCache = indexSearcher.PlanCache;
+        var compiledPlan = planCache.Get(queryText, plan.OperandOrdering, plan.TypeSignature);
+        if (compiledPlan == null)
+        {
+            compiledPlan = new CompiledPlan
+            {
+                CompiledDelegate = QueryILEmitter.EmitDelegate(plan),
+                ExplainSource = plan.ExplainSource ?? QueryILEmitter.GenerateExplainSource(plan),
+                Ordering = plan.OperandOrdering,
+                TypeSignature = plan.TypeSignature
+            };
+            planCache.Add(queryText, compiledPlan);
+        }
+
+        var resolvedMatches = ResolveMatches(plan, indexSearcher, planParams, builderParameters);
+        ExtractScanParameters(plan, indexSearcher,
+            out var longParams, out var doubleParams, out var sliceParams, out var fieldRootPages);
+
+        if (highlightingTerms != null)
+            PopulateHighlightingTerms(plan, highlightingTerms, planParams.Metadata);
+
+        IQueryMatch result = new CompiledQueryMatch(
+            compiledPlan, QueryPlan.RequiredBitmaps, plan.Ops?.Length ?? 0, resolvedMatches,
+            longParams, doubleParams, sliceParams, fieldRootPages,
+            indexSearcher, planParams.Allocator, take, token);
+
+        // Spatial post-filter phase: AND each spatial match with the candidate bitmap.
+        if (plan.SpatialFilters is { Length: > 0 })
+        {
+            var spatialFilters = new IQueryMatch[plan.SpatialFilters.Length];
+            for (int sf = 0; sf < plan.SpatialFilters.Length; sf++)
+                spatialFilters[sf] = resolvedMatches[plan.SpatialFilters[sf].MatchIndex];
+            result = new PostFilterMatch(result, spatialFilters);
+        }
+
+        // Vector select phase: each vector wraps the bitmap so far as its filter source.
+        if (plan.VectorSelects is { Length: > 0 } && builderParameters != null)
+        {
+            var vectorItems = ResolveVectorItems(plan, indexSearcher, planParams, builderParameters);
+            bool hasActualFilter = !plan.IsAllEntries || plan.SpatialFilters is { Length: > 0 };
+            IQueryMatch vectorFilter = hasActualFilter ? result : null;
+            for (int vs = 0; vs < vectorItems.Length; vs++)
+                result = vectorItems[vs].Materialize(vectorFilter);
+        }
+
+        return result;
+    }
+
     public static QueryPlan BuildPlan(PlanParameters p)
     {
         var query = p.Metadata.Query;
@@ -825,7 +895,6 @@ internal static class QueryPlanBuilder
     private static QueryPlan EmitPlan(List<ClauseInfo> clauses, bool isOr)
     {
         var ops = new List<PlanOp>();
-        var entryScanPredicates = new List<MultiUnaryItem[]>();
 
         if (isOr)
         {
@@ -906,9 +975,7 @@ internal static class QueryPlanBuilder
             return new QueryPlan
             {
                 Ops = ops.ToArray(),
-                EntryScanPredicates = Array.Empty<MultiUnaryItem[]>(),
                 OperandOrdering = 0,
-                OperandCount = 1,
                 Clauses = clauses.ToArray()
             };
         }
@@ -1035,7 +1102,6 @@ internal static class QueryPlanBuilder
                         Kind = PlanOpKind.CheckAndMaybeEntryScan,
                         ParamIndex = matchIndex
                     });
-                    entryScanPredicates.Add(Array.Empty<MultiUnaryItem>());
                 }
 
                 if (clauses[i].ClauseType == ClauseType.OrGroup && clauses[i].OrSubClauses != null)
@@ -1174,9 +1240,7 @@ internal static class QueryPlanBuilder
         var plan = new QueryPlan
         {
             Ops = ops.ToArray(),
-            EntryScanPredicates = entryScanPredicates.ToArray(),
             OperandOrdering = ordering,
-            OperandCount = clauses.Count,
             Clauses = clauses.ToArray(),
             AllNegated = allNegated,
             ScanPredicateInfos = scanPredicateInfos,
@@ -1503,7 +1567,6 @@ internal static class QueryPlanBuilder
         return new QueryPlan
         {
             Ops = new[] { new PlanOp { Kind = PlanOpKind.DirectIterate, ParamIndex = 0 } },
-            EntryScanPredicates = Array.Empty<MultiUnaryItem[]>(),
             Clauses = Array.Empty<ClauseInfo>(),
             IsAllEntries = true
         };
@@ -1515,7 +1578,6 @@ internal static class QueryPlanBuilder
         return new QueryPlan
         {
             Ops = Array.Empty<PlanOp>(),
-            EntryScanPredicates = Array.Empty<MultiUnaryItem[]>(),
             Clauses = Array.Empty<ClauseInfo>()
         };
     }

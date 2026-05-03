@@ -661,55 +661,8 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                                 DynamicFields = builderParameters.DynamicFields,
                                 HasBoost = builderParameters.HasBoost
                             };
-                            var plan = QueryPlanBuilder.BuildPlan(planParams);
-
-                            string queryText = query.Metadata.Query.QueryText;
-                            var planCache = IndexSearcher.PlanCache;
-                            var compiledPlan = planCache.Get(queryText, plan.OperandOrdering, plan.TypeSignature);
-                            if (compiledPlan == null)
-                            {
-                                compiledPlan = new global::Corax.Querying.Planning.CompiledPlan
-                                {
-                                    CompiledDelegate = global::Corax.Querying.Planning.QueryILEmitter.EmitDelegate(plan),
-                                    ExplainSource = plan.ExplainSource ?? global::Corax.Querying.Planning.QueryILEmitter.GenerateExplainSource(plan),
-                                    Ordering = plan.OperandOrdering,
-                                    TypeSignature = plan.TypeSignature
-                                };
-                                planCache.Add(queryText, compiledPlan);
-                            }
-
-                            var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, IndexSearcher, planParams, builderParameters);
-                            QueryPlanBuilder.ExtractScanParameters(plan, IndexSearcher,
-                                out var longParams, out var doubleParams, out var sliceParams, out var fieldRootPages);
-                            QueryPlanBuilder.PopulateHighlightingTerms(plan, highlightings.Terms, query.Metadata);
-                            var compiledMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
-                                compiledPlan, global::Corax.Querying.Planning.QueryPlan.RequiredBitmaps, plan.Ops?.Length ?? 0, resolvedMatches,
-                                longParams, doubleParams, sliceParams, fieldRootPages,
-                                IndexSearcher, _allocator, take, token);
-                            queryMatch = compiledMatch;
-
-                            // Post-filter phase 1: Spatial filters
-                            // Each spatial match ANDs with the candidate bitmap produced by the filter phase.
-                            if (plan.SpatialFilters is { Length: > 0 })
-                            {
-                                var spatialFilters = new global::Corax.Querying.Matches.Meta.IQueryMatch[plan.SpatialFilters.Length];
-                                for (int sf = 0; sf < plan.SpatialFilters.Length; sf++)
-                                    spatialFilters[sf] = resolvedMatches[plan.SpatialFilters[sf].MatchIndex];
-                                queryMatch = new global::Corax.Querying.Matches.PostFilterMatch(queryMatch, spatialFilters);
-                            }
-
-                            // Post-filter phase 2: Vector selects
-                            // The bitmap-producing match (with spatial already applied) is passed
-                            // as the filterQuery to VectorSearchMatch. When the base is AllEntries
-                            // with no spatial filters, pass null for unfiltered vector search.
-                            if (plan.VectorSelects is { Length: > 0 })
-                            {
-                                var vectorItems = QueryPlanBuilder.ResolveVectorItems(plan, IndexSearcher, planParams, builderParameters);
-                                bool hasActualFilter = !plan.IsAllEntries || plan.SpatialFilters is { Length: > 0 };
-                                IQueryMatch vectorFilter = hasActualFilter ? queryMatch : null;
-                                for (int vs = 0; vs < vectorItems.Length; vs++)
-                                    queryMatch = vectorItems[vs].Materialize(vectorFilter);
-                            }
+                            queryMatch = QueryPlanBuilder.BuildAndCompile(
+                                planParams, builderParameters, take, out _, highlightings.Terms, token);
 
                             orderByFields = CoraxQueryBuilder.GetSortMetadata(builderParameters, out bool hasEmptySorts);
                             if (orderByFields != null)
@@ -1398,47 +1351,8 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     DynamicFields = builderParameters.DynamicFields,
                     HasBoost = builderParameters.HasBoost
                 };
-                var plan = QueryPlanBuilder.BuildPlan(planParams);
-                string queryText = query.Metadata.Query.QueryText;
-                var planCache = IndexSearcher.PlanCache;
-                var compiledPlan = planCache.Get(queryText, plan.OperandOrdering, plan.TypeSignature);
-                if (compiledPlan == null)
-                {
-                    compiledPlan = new global::Corax.Querying.Planning.CompiledPlan
-                    {
-                        CompiledDelegate = global::Corax.Querying.Planning.QueryILEmitter.EmitDelegate(plan),
-                        ExplainSource = plan.ExplainSource ?? global::Corax.Querying.Planning.QueryILEmitter.GenerateExplainSource(plan),
-                        Ordering = plan.OperandOrdering,
-                        TypeSignature = plan.TypeSignature
-                    };
-                    planCache.Add(queryText, compiledPlan);
-                }
-                var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, IndexSearcher, planParams, builderParameters);
-                QueryPlanBuilder.ExtractScanParameters(plan, IndexSearcher,
-                    out var longParams, out var doubleParams, out var sliceParams, out var fieldRootPages);
-                queryMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
-                    compiledPlan, global::Corax.Querying.Planning.QueryPlan.RequiredBitmaps, plan.Ops?.Length ?? 0, resolvedMatches,
-                    longParams, doubleParams, sliceParams, fieldRootPages,
-                    IndexSearcher, _allocator, take, token);
-
-                // Post-filter phase 1: Spatial filters
-                if (plan.SpatialFilters is { Length: > 0 })
-                {
-                    var spatialFilters = new global::Corax.Querying.Matches.Meta.IQueryMatch[plan.SpatialFilters.Length];
-                    for (int sf = 0; sf < plan.SpatialFilters.Length; sf++)
-                        spatialFilters[sf] = resolvedMatches[plan.SpatialFilters[sf].MatchIndex];
-                    queryMatch = new global::Corax.Querying.Matches.PostFilterMatch(queryMatch, spatialFilters);
-                }
-
-                // Post-filter phase 2: Vector selects
-                if (plan.VectorSelects is { Length: > 0 })
-                {
-                    var vectorItems = QueryPlanBuilder.ResolveVectorItems(plan, IndexSearcher, planParams, builderParameters);
-                    bool hasActualFilter = !plan.IsAllEntries || plan.SpatialFilters is { Length: > 0 };
-                    IQueryMatch vectorFilter = hasActualFilter ? queryMatch : null;
-                    for (int vs = 0; vs < vectorItems.Length; vs++)
-                        queryMatch = vectorItems[vs].Materialize(vectorFilter);
-                }
+                queryMatch = QueryPlanBuilder.BuildAndCompile(
+                    planParams, builderParameters, take, out _, highlightingTerms: null, token);
             }
 
             var ids = QueryPool.Rent(CoraxBufferSize(IndexSearcher, take, query));
