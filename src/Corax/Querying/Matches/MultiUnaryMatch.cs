@@ -420,7 +420,7 @@ public struct MultiUnaryMatch<TInner> : IQueryMatch
     private readonly IndexSearcher _searcher;
     private TInner _inner;
     private readonly MultiUnaryItem[] _comparers;
-    private Voron.Data.RoaringBitmaps.RoaringBitmap _matchBitmap;
+    private Voron.Data.RoaringBitmaps.RoaringBitmapData _matchBitmapData;
     private bool _matchBitmapBuilt;
     public MultiUnaryMatch(IndexSearcher searcher, TInner inner, in MultiUnaryItem[] items)
     {
@@ -430,7 +430,7 @@ public struct MultiUnaryMatch<TInner> : IQueryMatch
         _count = _inner.Count;
         _confidence = QueryCountConfidence.Low;
         IsBoosting = false;
-        _matchBitmap = new Voron.Data.RoaringBitmaps.RoaringBitmap(searcher.Allocator);
+        _matchBitmapData = default;
         _matchBitmapBuilt = false;
     }
 
@@ -544,16 +544,17 @@ public struct MultiUnaryMatch<TInner> : IQueryMatch
             // The bitmap also handles any out-of-order or duplicate IDs produced across batches.
             const int FillScratchSize = 4096;
             Span<long> scratch = stackalloc long[FillScratchSize];
+            var bm = new Voron.Data.RoaringBitmaps.RoaringBitmap(ref _matchBitmapData, _searcher.Allocator);
             int read;
             while ((read = Fill(scratch)) > 0)
             {
                 for (int i = 0; i < read; i++)
-                    _matchBitmap.Add(scratch[i]);
+                    bm.Add(scratch[i]);
             }
 
-            _matchBitmap.PrepareForReading();
+            _matchBitmapData.PrepareForReading(_searcher.Allocator);
             _confidence = QueryCountConfidence.High;
-            _count = _matchBitmap.Count;
+            _count = _matchBitmapData.Count;
             _matchBitmapBuilt = true;
         }
 
@@ -562,7 +563,7 @@ public struct MultiUnaryMatch<TInner> : IQueryMatch
         int kept = 0;
         for (int i = 0; i < matches; i++)
         {
-            if (_matchBitmap.Contains(buffer[i]))
+            if (_matchBitmapData.Contains(buffer[i]))
                 buffer[kept++] = buffer[i];
         }
         return kept;
@@ -570,7 +571,7 @@ public struct MultiUnaryMatch<TInner> : IQueryMatch
 
     public void Dispose()
     {
-        _matchBitmap.Dispose();
+        _matchBitmapData.Dispose(_searcher.Allocator);
     }
 
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)

@@ -370,42 +370,49 @@ namespace Corax.Querying.Matches
             // Build a bitmap of the incoming matches so the per-Fill batches can be filtered
             // via a constant-time Contains check. The incoming buffer is already sorted
             // ascending, so AddRange is exact.
-            using var incomingBitmap = new RoaringBitmap(_context);
-            var incoming = incomingBitmap;
-            incoming.AddRange(buffer.Slice(0, matches));
-            incoming.PrepareForReading();
-
-            using var _ = _context.Allocate(sizeof(long) * buffer.Length, out var innerBufferHolder);
-            var innerMatchesBuffer = innerBufferHolder.ToSpan<long>();
-
-            _termReader.Reset(ref this);
-
-            int kept = 0;
-            while (Fill(innerMatchesBuffer) is var read and > 0)
+            RoaringBitmapData incomingData = default;
+            try
             {
-                _token.ThrowIfCancellationRequested();
-                _totalResults += read;
+                RoaringBitmap incomingView = new(ref incomingData, _context);
+                incomingView.AddRange(buffer.Slice(0, matches));
+                incomingData.PrepareForReading(_context);
 
-                for (int i = 0; i < read && kept < matches; i++)
+                using var _ = _context.Allocate(sizeof(long) * buffer.Length, out var innerBufferHolder);
+                var innerMatchesBuffer = innerBufferHolder.ToSpan<long>();
+
+                _termReader.Reset(ref this);
+
+                int kept = 0;
+                while (Fill(innerMatchesBuffer) is var read and > 0)
                 {
-                    long entry = innerMatchesBuffer[i];
-                    if (incoming.Contains(entry))
-                        buffer[kept++] = entry;
+                    _token.ThrowIfCancellationRequested();
+                    _totalResults += read;
+
+                    for (int i = 0; i < read && kept < matches; i++)
+                    {
+                        long entry = innerMatchesBuffer[i];
+                        if (incomingData.Contains(entry))
+                            buffer[kept++] = entry;
+                    }
+
+                    if (kept >= matches)
+                        break;
                 }
 
-                if (kept >= matches)
-                    break;
-            }
+                // Multiple Fill calls do not guarantee an ascending sequence across batches; the AND
+                // contract requires sorted unique output, so finalize before returning.
+                if (kept > 1)
+                {
+                    var resultSpan = buffer[..kept];
+                    kept = Sorting.SortAndRemoveDuplicates(resultSpan);
+                }
 
-            // Multiple Fill calls do not guarantee an ascending sequence across batches; the AND
-            // contract requires sorted unique output, so finalize before returning.
-            if (kept > 1)
+                return kept;
+            }
+            finally
             {
-                var resultSpan = buffer[..kept];
-                kept = Sorting.SortAndRemoveDuplicates(resultSpan);
+                incomingData.Dispose(_context);
             }
-
-            return kept;
         }
 
 #if !DEBUG
@@ -437,38 +444,45 @@ namespace Corax.Querying.Matches
 
             // OR per-term AndWith results into a bitmap. Each per-term batch is an intersection
             // against the incoming buffer, so we accumulate a deduped union of all matches.
-            using var resultsBitmap = new RoaringBitmap(_context);
-            var results = resultsBitmap;
-
-            while (hasData)
+            RoaringBitmapData resultsData = default;
+            try
             {
-                _token.ThrowIfCancellationRequested();
-                actualMatches.CopyTo(tmp);
-                var read = _currentTerm.AndWith(tmp, matches);
-                if (read != 0)
+                RoaringBitmap resultsView = new(ref resultsData, _context);
+
+                while (hasData)
                 {
-                    var batch = tmp[..read];
-                    for (int i = 0; i < read; i++)
-                        results.Add(batch[i]);
-                    totalRead += _currentTerm.Count;
+                    _token.ThrowIfCancellationRequested();
+                    actualMatches.CopyTo(tmp);
+                    var read = _currentTerm.AndWith(tmp, matches);
+                    if (read != 0)
+                    {
+                        var batch = tmp[..read];
+                        for (int i = 0; i < read; i++)
+                            resultsView.Add(batch[i]);
+                        totalRead += _currentTerm.Count;
+                    }
+
+                    hasData = _inner.Next(out _currentTerm);
+                    AddTermToBm25();
                 }
 
-                hasData = _inner.Next(out _currentTerm);
-                AddTermToBm25();
-            }
+                if (!hasData)
+                {
+                    _totalResults = totalRead;
+                    _confidence = QueryCountConfidence.High;
+                }
 
-            if (!hasData)
+                resultsData.PrepareForReading(_context);
+                var iter = resultsData.GetIterator(_context);
+                int totalSize = iter.Fill(ref resultsData, buffer);
+                iter.Dispose();
+
+                return totalSize;
+            }
+            finally
             {
-                _totalResults = totalRead;
-                _confidence = QueryCountConfidence.High;
+                resultsData.Dispose(_context);
             }
-
-            results.PrepareForReading();
-            var iter = results.GetIterator();
-            int totalSize = iter.Fill(ref results, buffer);
-            iter.Dispose();
-
-            return totalSize;
         }
 
         private void ResetBm25Buffer()

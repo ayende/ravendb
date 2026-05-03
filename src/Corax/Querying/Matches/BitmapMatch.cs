@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using Corax.Querying.Matches.Meta;
+using Sparrow.Server;
 using Voron.Data.RoaringBitmaps;
 
 namespace Corax.Querying.Matches;
@@ -13,52 +15,46 @@ namespace Corax.Querying.Matches;
 /// </summary>
 public unsafe struct BitmapMatch : IQueryMatch, IBitmapQueryMatch, IDisposable
 {
-    private RoaringBitmap _bitmap;
+    private RoaringBitmapData _bitmapState;
+    private readonly ByteStringContext _allocator;
     private RoaringBitmapIterator _iterator;
     private bool _iteratorInitialized;
 
-    public BitmapMatch(RoaringBitmap bitmap)
+    public BitmapMatch(ByteStringContext allocator)
     {
-        _bitmap = bitmap;
+        _bitmapState = default;
+        _allocator = allocator;
         _iteratorInitialized = false;
     }
 
-    public BitmapMatch(Sparrow.Server.ByteStringContext allocator)
-    {
-        _bitmap = new RoaringBitmap(allocator);
-        _iteratorInitialized = false;
-    }
-
-    /// <summary>Get a mutable reference to the internal bitmap for building.
+    /// <summary>Get a mutable reference to the internal bitmap state for building.
     /// The returned ref is intentionally unscoped because callers thread it through
     /// QueryPrimitives.FillFromMatch / AndWithMatch chains where the BitmapMatch lives
     /// on the caller's stack frame for the full call duration. Suppresses CS9084.</summary>
-    [System.Diagnostics.CodeAnalysis.UnscopedRef]
-    public ref RoaringBitmap Bitmap => ref _bitmap;
+    [UnscopedRef]
+    public ref RoaringBitmapData BitmapState => ref _bitmapState;
 
-    public long Count => _bitmap.Count;
+    /// <summary>Returns the allocator for this bitmap match.</summary>
+    public ByteStringContext Allocator => _allocator;
+
+    public long Count => _bitmapState.Count;
     public QueryCountConfidence Confidence => QueryCountConfidence.High;
     public bool IsBoosting => false;
     public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
 
-    public bool Contains(long entryId) => _bitmap.Contains(entryId);
+    public bool Contains(long entryId) => _bitmapState.Contains(entryId);
 
     /// <summary>
-    /// Borrow the underlying bitmap for downstream consumption. RoaringBitmap is a
-    /// single-threaded, consume-after-use design — set operations on the right side
-    /// (AndWith / AndNotWith / OrWith / LazyOrWith) are deliberately destructive,
-    /// trading source validity for performance. Callers that need to iterate the
-    /// borrowed copy (vector search filter, faceted Contains) call
-    /// <see cref="RoaringBitmap.PrepareForReading"/> themselves; callers that
-    /// consume it via set ops don't need to.
+    /// Returns a reference to the underlying bitmap data for downstream consumption.
     /// </summary>
-    public RoaringBitmap BorrowBitmap() => _bitmap;
+    [UnscopedRef]
+    public ref RoaringBitmapData GetBitmapData() => ref _bitmapState;
 
     public long MinEntryId
     {
         get
         {
-            long minKey = _bitmap.MinContainerKey;
+            long minKey = _bitmapState.MinContainerKey;
             return minKey < 0 ? 0 : minKey * RoaringBitmap.ContainerSize;
         }
     }
@@ -67,7 +63,7 @@ public unsafe struct BitmapMatch : IQueryMatch, IBitmapQueryMatch, IDisposable
     {
         get
         {
-            long maxKey = _bitmap.MaxContainerKey;
+            long maxKey = _bitmapState.MaxContainerKey;
             return maxKey < 0 ? 0 : (maxKey + 1) * RoaringBitmap.ContainerSize - 1;
         }
     }
@@ -76,11 +72,11 @@ public unsafe struct BitmapMatch : IQueryMatch, IBitmapQueryMatch, IDisposable
     {
         if (!_iteratorInitialized)
         {
-            _bitmap.PrepareForReading();
-            _iterator = _bitmap.GetIterator();
+            _bitmapState.PrepareForReading();
+            _iterator = _bitmapState.GetIterator(_allocator);
             _iteratorInitialized = true;
         }
-        return _iterator.Fill(ref _bitmap, matches);
+        return _iterator.Fill(ref _bitmapState, matches);
     }
 
     public int AndWith(Span<long> buffer, int matches)
@@ -88,7 +84,7 @@ public unsafe struct BitmapMatch : IQueryMatch, IBitmapQueryMatch, IDisposable
         int kept = 0;
         for (int i = 0; i < matches; i++)
         {
-            if (_bitmap.Contains(buffer[i]))
+            if (_bitmapState.Contains(buffer[i]))
                 buffer[kept++] = buffer[i];
         }
         return kept;
@@ -114,6 +110,6 @@ public unsafe struct BitmapMatch : IQueryMatch, IBitmapQueryMatch, IDisposable
     {
         if (_iteratorInitialized)
             _iterator.Dispose();
-        _bitmap.Dispose();
+        _bitmapState.Dispose(_allocator);
     }
 }

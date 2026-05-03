@@ -35,14 +35,26 @@ namespace Voron.Data.RoaringBitmaps;
 ///   set ops on its own. Pair this with <see cref="Clear"/>'s storage recycling: a consumed
 ///   bitmap can be Clear()'d and reused as a scratch buffer with no allocator round-trip.
 /// </summary>
-/// 
 [StructLayout(LayoutKind.Auto)]
-public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable // CPF: should this be a ref struct?
+public unsafe ref partial struct RoaringBitmap : IDisposable
 {
+    private ref RoaringBitmapData _data;
+    private readonly ByteStringContext _ctx;
+
     /// <summary>The allocator backing this bitmap's container storage. Exposed so peer
     /// RoaringBitmap instances can compare allocators (for cross-bitmap buffer donation
     /// in AndWith / AndNotWith) and so wrapping match types can match the lifetime.</summary>
-    internal ByteStringContext Allocator => ctx;
+    internal ByteStringContext Allocator => _ctx;
+
+    public RoaringBitmap(ref RoaringBitmapData data, ByteStringContext ctx)
+    {
+        _data = ref data;
+        _ctx = ctx;
+        // A zero-capacity entries list means no slots have ever been allocated
+        // (default struct), so the free-list sentinel has not been set yet.
+        if (_data._entries.Capacity == 0)
+            _data._freeListHead = FreeSlotTerminator;
+    }
 
     public const int BitmapContainerSizeInBytes = 8192; // 8KB
     public const int BitmapContainerSizeInUInt64 = BitmapContainerSizeInBytes / sizeof(ulong);
@@ -50,114 +62,80 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
     public const int ContainerKeyShift = 16;
     public const int ContainerSize = 1 << ContainerKeyShift; // 65,536 entry IDs per container
     private const int ContainerValueMask = 0xFFFF;
+    internal const int ContainerValueMaskPublic = ContainerValueMask;
     private const int LazyCardinality = -1;
 
     private const int FreeSlotTerminator = -2; // end of free list
     private const int IndexAbsent = -1;        // key is not present in index
+    internal const int IndexAbsentPublic = IndexAbsent;
 
-    /// <summary>Packed container entries. May have tombstones (gaps reused via free list).</summary>
-    private NativeList<ContainerEntry> _entries = new();
-    /// <summary>Container types, parallel to _entries. Split to reduce padding in ContainerEntry.</summary>
-    internal NativeList<ContainerType> _types = new();
-    /// <summary>Key → entry slot index. -1 = absent. Length = maxKey + 1.</summary>
-    private NativeList<int> _index = new();
-    private int _containerCount = 0;
-    /// <summary>Head of the free list in _entries. Dead entry's Cardinality field stores the next free index; -2 = end.</summary>
-    private int _freeListHead = FreeSlotTerminator;
-    /// <summary>Free list of recyclable container storages. Decoupled from the entry free list so
-    /// <see cref="Clear"/> can nuke entries entirely without losing the storage. <see cref="AllocateOrRecycle"/>
-    /// scans this list for the first storage with sufficient capacity, falling back to a fresh ctx allocation.
-    /// </summary>
-    private NativeList<ByteString> _freeStorages = new();
+    public readonly int ContainerCount => _data.ContainerCount;
 
-    public readonly int ContainerCount => _containerCount;
+    public long Count => _data.Count;
 
-    public long Count
-    {
-        get
-        {
-            long total = 0;
-            ContainerEntry* entries = _entries.RawItems;
-            ContainerType* types = _types.RawItems;
-            int count = _entries.Count;
-            for (int i = 0; i < count; i++)
-            {
-                if (types[i] == ContainerType.Free)
-                    continue;
-
-                total += entries[i].Cardinality;
-            }
-            return total;
-        }
-    }
-
-    public readonly bool IsEmpty => _containerCount == 0;
+    public readonly bool IsEmpty => _data.IsEmpty;
 
     /// <summary>
     /// Reset all containers without releasing memory. Container storages are pushed onto
-    /// the dedicated <see cref="_freeStorages"/> free list and made available for reuse on
-    /// the next allocation, avoiding the round-trip through the ByteStringContext free pool.
-    /// Entries / types / index are nuked outright — there's nothing to preserve in the
-    /// entry slots themselves between Clear cycles. Hot path: temp bitmaps cleared and
-    /// refilled across every AND/AND-NOT step in the query pipeline.
+    /// the dedicated free list and made available for reuse on the next allocation,
+    /// avoiding the round-trip through the ByteStringContext free pool.
     /// </summary>
     public void Clear()
     {
-        int count = _entries.Count;
-        if (count == 0 && _index.Count == 0)
+        int count = _data._entries.Count;
+        if (count == 0 && _data._index.Count == 0)
             return;
 
-        ContainerEntry* entries = _entries.RawItems;
-        ContainerType* types = _types.RawItems;
+        ContainerEntry* entries = _data._entries.RawItems;
+        ContainerType* types = _data._types.RawItems;
 
         // Recover every storage and park it on the storage free list.
         for (int i = 0; i < count; i++)
         {
             if (types[i] != ContainerType.Free && entries[i].Storage.HasValue)
-                _freeStorages.Add(ctx, entries[i].Storage);
+                _data._freeStorages.Add(_ctx, entries[i].Storage);
         }
 
-        _entries.Clear();
-        _types.Clear();
-        _containerCount = 0;
-        _freeListHead = FreeSlotTerminator;
+        _data._entries.Clear();
+        _data._types.Clear();
+        _data._containerCount = 0;
+        _data._freeListHead = FreeSlotTerminator;
 
-        int* indexRaw = _index.RawItems;
-        int indexLen = _index.Count;
+        int* indexRaw = _data._index.RawItems;
+        int indexLen = _data._index.Count;
         new Span<int>(indexRaw, indexLen).Fill(IndexAbsent);
     }
 
     /// <summary>
-    /// Acquire storage of at least <paramref name="neededBytes"/>. Walks <see cref="_freeStorages"/>
-    /// linearly looking for a storage with sufficient capacity (typical N is small enough that
-    /// the linear scan beats a more complex structure); reused storage is unlinked via swap-with-last.
+    /// Acquire storage of at least <paramref name="neededBytes"/>. Walks <see cref="_data._freeStorages"/>
+    /// linearly looking for a storage with sufficient capacity; reused storage is unlinked via swap-with-last.
     /// Falls back to a fresh ctx allocation when nothing on the free list fits.
     /// </summary>
     private void AllocateOrRecycle(int neededBytes, out ByteString storage)
     {
-        var raw = _freeStorages.RawItems;
-        int n = _freeStorages.Count;
+        var raw = _data._freeStorages.RawItems;
+        int n = _data._freeStorages.Count;
         for (int i = 0; i < n; i++)
         {
             if (raw[i].Length >= neededBytes)
             {
                 storage = raw[i];
                 raw[i] = raw[n - 1];
-                _freeStorages.Count = n - 1;
+                _data._freeStorages.Count = n - 1;
                 return;
             }
         }
-        ctx.Allocate(neededBytes, out storage);
+        _ctx.Allocate(neededBytes, out storage);
     }
 
     /// <summary>
-    /// Swap the internal state of two-bitmaps. O(1) — just swaps pointers and counts.
+    /// Swap the internal state of two-bitmaps. O(1) — just swaps the RoaringBitmapData contents.
     /// Used after entry scan to swap the filtered results into the main bitmap.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void SwapContents(ref RoaringBitmap other)
     {
-        (this, other) = (other, this);
+        (_data, other._data) = (other._data, _data);
     }
 
     /// <summary>Batch-add strictly sorted (no duplicates) values. Groups values by container
@@ -312,8 +290,8 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
     /// <summary>Batch-add sorted values into an existing container.</summary>
     private void AddRangeToContainer(int slot, ReadOnlySpan<long> sortedValues)
     {
-        ref ContainerEntry entry = ref _entries[slot];
-        ref ContainerType type = ref _types.RawItems[slot];
+        ref ContainerEntry entry = ref _data._entries[slot];
+        ref ContainerType type = ref _data._types.RawItems[slot];
 
         switch (type)
         {
@@ -358,7 +336,7 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
                 int newTotal = entry.Cardinality + sortedValues.Length;
                 if (newTotal > ArrayContainerMaxCardinality)
                 {
-                    ConvertArrayToBitmap(ref entry, ref _types.RawItems[slot]);
+                    ConvertArrayToBitmap(ref entry, ref _data._types.RawItems[slot]);
                     goto case ContainerType.Bitmap; // Convert to bitmap and add
                 }
 
@@ -376,7 +354,7 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
                     AllocateOrRecycle(neededBytes, out ByteString newStorage);
                     new Span<byte>(entry.Data, entry.Cardinality * sizeof(ushort))
                         .CopyTo(new Span<byte>(newStorage.Ptr, newStorage.Length));
-                    ctx.Release(ref entry.Storage);
+                    _ctx.Release(ref entry.Storage);
                     entry.Data = newStorage.Ptr;
                     entry.Storage = newStorage;
                 }
@@ -384,12 +362,12 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
                 // Append new values
                 CopyDenseBottom16BitsToUshortArray(sortedValues, entry.ArrayData + entry.Cardinality);
                 entry.Cardinality = newTotal;
-                _types.RawItems[slot] = stillSorted ? ContainerType.Array : ContainerType.ArrayUnsorted;
+                _data._types.RawItems[slot] = stillSorted ? ContainerType.Array : ContainerType.ArrayUnsorted;
                 break;
             }
         }
     }
-    
+
     /// <summary>
     /// Lazy OR skips per-container cardinality tracking.
     /// Bitmap containers get Cardinality = -1 (dirty). Call RepairAfterLazy() once
@@ -402,17 +380,17 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
     /// The 8KB bitmap is already allocated; converting to Array allocates another buffer
     /// and scans 1024 words, costing more than it saves for short-lived data.
     /// </summary>
-    public void LazyOrWith(ref RoaringBitmap other)
+    public void LazyOrWith(scoped ref RoaringBitmap other)
     {
         if (other.IsEmpty)
             return;
 
-        int otherLen = other._index.Count;
+        int otherLen = other._data._index.Count;
         if (otherLen > 0)
             EnsureIndexCoversKey(otherLen - 1);
 
-        _entries.EnsureCapacityFor(ctx, other.ContainerCount);
-        _types.EnsureCapacityFor(ctx, other.ContainerCount);
+        _data._entries.EnsureCapacityFor(_ctx, other.ContainerCount);
+        _data._types.EnsureCapacityFor(_ctx, other.ContainerCount);
 
         for (int key = 0; key < otherLen; key++)
         {
@@ -425,17 +403,23 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
 
             if (mySlot >= 0)
             {
-                LazyOrContainerInPlace(ref _entries[mySlot], ref _types.RawItems[mySlot],
-                    ref otherEntry, other._types.RawItems[otherSlot]);
+                LazyOrContainerInPlace(ref _data._entries[mySlot], ref _data._types.RawItems[mySlot],
+                    ref otherEntry, other._data._types.RawItems[otherSlot]);
                 continue;
             }
 
             // Steal container from other (zero-copy).
-            ContainerType otherType = other._types.RawItems[otherSlot];
+            ContainerType otherType = other._data._types.RawItems[otherSlot];
             ContainerEntry stolen = otherEntry;
             otherEntry = default; // Clear the entry
             AddNewContainer(key, otherType, stolen);
         }
+    }
+
+    public void LazyOrWith(ref RoaringBitmapData otherData)
+    {
+        scoped RoaringBitmap other = new(ref otherData, _ctx);
+        LazyOrWith(ref other);
     }
 
     /// <summary>Lazy OR for a single container pair. Skips popcount — marks bitmap
@@ -510,7 +494,7 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
                 // OR left's array values into right's bitmap, then take ownership of the buffer.
                 SetArrayInBitmap(left.ArrayData, left.Cardinality, right.BitmapPtr);
                 if (left.Storage.HasValue)
-                    ctx.Release(ref left.Storage);
+                    _ctx.Release(ref left.Storage);
                 left.Storage = right.Storage;
                 left.Data = right.Data;
                 left.Cardinality = LazyCardinality;
@@ -529,14 +513,14 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
     /// (e.g., AND/ANDNOT removed all bits) are freed here.</summary>
     public void RepairAfterLazy()
     {
-        for (int i = 0; i < _entries.Count; i++)
+        for (int i = 0; i < _data._entries.Count; i++)
         {
             if (// _types is a dense array, so cheaper to scan through it first
-                _types.RawItems[i] != ContainerType.Bitmap || 
-                _entries[i].Cardinality != LazyCardinality)
+                _data._types.RawItems[i] != ContainerType.Bitmap ||
+                _data._entries[i].Cardinality != LazyCardinality)
                 continue;
 
-            ref ContainerEntry entry = ref _entries[i];
+            ref ContainerEntry entry = ref _data._entries[i];
 
              entry.Cardinality  = BitmapContainerCardinality(entry.Data);
 
@@ -546,36 +530,10 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
     }
 
     /// <summary>Returns the minimum container key in the bitmap, or -1 if empty.</summary>
-    public long MinContainerKey
-    {
-        get
-        {
-            if (_containerCount == 0)
-                return -1;
-            for (int i = 0; i < _index.Count; i++)
-            {
-                if (_index[i] != IndexAbsent)
-                    return i;
-            }
-            return -1;
-        }
-    }
+    public long MinContainerKey => _data.MinContainerKey;
 
     /// <summary>Returns the maximum container key in the bitmap, or -1 if empty.</summary>
-    public long MaxContainerKey
-    {
-        get
-        {
-            if (_containerCount == 0)
-                return -1;
-            for (int i = _index.Count - 1; i >= 0; i--)
-            {
-                if (_index[i] != IndexAbsent)
-                    return i;
-            }
-            return -1;
-        }
-    }
+    public long MaxContainerKey => _data.MaxContainerKey;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Add(long value)
@@ -587,7 +545,7 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
         int slot = GetSlotForKey(key);
         if (slot >= 0)
         {
-            ref ContainerEntry entry = ref _entries[slot];
+            ref ContainerEntry entry = ref _data._entries[slot];
             AddToContainer(ref entry, slot, low);
         }
         else
@@ -602,18 +560,7 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool Contains(long value)
-    {
-        long key = value >> ContainerKeyShift;
-        ushort low = (ushort)(value & ContainerValueMask);
-
-        int slot = GetSlotForKey(key);
-        if (slot < 0)
-            return false;
-
-        ref ContainerEntry entry = ref _entries[slot];
-        return ContainerContains(ref entry, _types.RawItems[slot], low);
-    }
+    public bool Contains(long value) => _data.Contains(value);
 
     /// <summary>
     /// Fill the buffer with values from the bitmap, starting from the current iteration state.
@@ -621,34 +568,35 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
     /// </summary>
     public int Fill(Span<long> buffer, ref RoaringBitmapIterator iterator)
     {
-        return iterator.Fill(ref this, buffer);
+        return iterator.Fill(ref _data, buffer);
     }
 
     public RoaringBitmapIterator GetIterator()
     {
-        return new RoaringBitmapIterator(ref this, ctx);
+        return new RoaringBitmapIterator(ref _data, _ctx);
     }
 
     /// <summary>
-    /// Create a deep copy of this bitmap. All container data is cloned into the same ByteStringContext.
+    /// Create a deep copy of the bitmap's data. All container data is cloned into the same ByteStringContext.
     /// The source bitmap is not modified. The clone preserves container types (Range, Array, Bitmap).
     /// </summary>
-    public RoaringBitmap Clone()
+    public RoaringBitmapData CloneData()
     {
-        var copy = new RoaringBitmap(ctx);
+        RoaringBitmapData target = default;
+        RoaringBitmap copy = new(ref target, _ctx);
 
         // Walk entries directly using the Key field - no index indirection needed
-        ContainerEntry* entries = _entries.RawItems;
-        ContainerType* types = _types.RawItems;
-        int entryCount = _entries.Count;
+        ContainerEntry* entries = _data._entries.RawItems;
+        ContainerType* types = _data._types.RawItems;
+        int entryCount = _data._entries.Count;
         for (int i = 0; i < entryCount; i++)
         {
             if (types[i] != ContainerType.Free)
-                copy.AddContainer(entries[i].Key, types[i], CloneContainer(ctx, ref entries[i], types[i]));
+                copy.AddContainer(entries[i].Key, types[i], CloneContainer(_ctx, ref entries[i], types[i]));
         }
-        return copy;
+        return target;
     }
-    
+
     // Threshold: below this count, comparison sort on a small array
     // is cheaper than the bitmap radix sort path.
     private const int BitmapSortThreshold = 128;
@@ -671,9 +619,9 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
         // Dedup is free. Scratch reused across all containers (one clear per chunk touched).
         ulong* scratch = stackalloc ulong[BitmapContainerSizeInUInt64];
 
-        ContainerEntry* entries = _entries.RawItems;
-        ContainerType* types = _types.RawItems;
-        int entryCount = _entries.Count;
+        ContainerEntry* entries = _data._entries.RawItems;
+        ContainerType* types = _data._types.RawItems;
+        int entryCount = _data._entries.Count;
         for (int i = 0; i < entryCount; i++)
         {
             switch (types[i])
@@ -768,16 +716,16 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
     /// In-place AND: retain only values that also exist in others.
     /// Walks both index arrays; containers in this bitmap with no match in other are freed.
     /// </summary>
-    public void AndWith(ref RoaringBitmap other)
+    public void AndWith(scoped ref RoaringBitmap other)
     {
-        int* myIdx = _index.RawItems;
-        int myLen = _index.Count;
+        int* myIdx = _data._index.RawItems;
+        int myLen = _data._index.Count;
         // Donate freed left-side storages to `other`'s free list when the two bitmaps
         // share an allocator. `other` is being consumed by callers under our
         // consume-after-use contract; arming its scratch pool here means a later
         // Clear+fill on the same instance has buffers ready without round-tripping
         // through ctx.Allocate. Different ctx → fall back to self-pool (FreeContainer).
-        bool sharedCtx = ReferenceEquals(ctx, other.Allocator);
+        bool sharedCtx = ReferenceEquals(_ctx, other.Allocator);
 
         for (int key = 0; key < myLen; key++)
         {
@@ -796,9 +744,9 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
             }
             else
             {
-                ref ContainerEntry myEntry = ref _entries[mySlot];
+                ref ContainerEntry myEntry = ref _data._entries[mySlot];
                 ref ContainerEntry otherEntry = ref other.GetEntryBySlot(otherSlot);
-                AndContainerInPlace(ref myEntry, ref _types.RawItems[mySlot], ref otherEntry, other._types.RawItems[otherSlot]);
+                AndContainerInPlace(ref myEntry, ref _data._types.RawItems[mySlot], ref otherEntry, other._data._types.RawItems[otherSlot]);
                 if (myEntry.Cardinality == 0)
                 {
                     if (sharedCtx)
@@ -810,16 +758,22 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
         }
     }
 
+    public void AndWith(ref RoaringBitmapData otherData)
+    {
+        scoped RoaringBitmap other = new(ref otherData, _ctx);
+        AndWith(ref other);
+    }
+
     /// <summary>Donate this slot's storage to <paramref name="recipient"/>'s free pool
     /// before freeing the entry. Used during AndWith / AndNotWith to arm the consumed
     /// right-side bitmap with buffers that this side would otherwise have stranded on
     /// its own pool. Caller must verify ctx-equality first.</summary>
-    private void DonateStorageThenFreeContainer(long key, int slot, ref RoaringBitmap recipient)
+    private void DonateStorageThenFreeContainer(long key, int slot, scoped ref RoaringBitmap recipient)
     {
-        ref ContainerEntry entry = ref _entries[slot];
+        ref ContainerEntry entry = ref _data._entries[slot];
         if (entry.Storage.HasValue)
         {
-            recipient._freeStorages.Add(recipient.Allocator, entry.Storage);
+            recipient._data._freeStorages.Add(recipient.Allocator, entry.Storage);
             entry.Storage = default;
         }
         FreeContainer(key, slot);
@@ -828,11 +782,11 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
     /// <summary>
     /// In-place ANDNOT: remove all values that exist in other from this bitmap.
     /// </summary>
-    public void AndNotWith(ref RoaringBitmap other)
+    public void AndNotWith(scoped ref RoaringBitmap other)
     {
-        int myLen = _index.Count;
-        int* myIdx = _index.RawItems;
-        bool sharedCtx = ReferenceEquals(ctx, other.Allocator);
+        int myLen = _data._index.Count;
+        int* myIdx = _data._index.RawItems;
+        bool sharedCtx = ReferenceEquals(_ctx, other.Allocator);
 
         for (int key = 0; key < myLen; key++)
         {
@@ -845,8 +799,8 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
                 continue; // nothing to subtract
 
             ref ContainerEntry otherEntry = ref other.GetEntryBySlot(otherSlot);
-            AndNotContainerInPlace(ref _entries[mySlot], ref _types.RawItems[mySlot], ref otherEntry, other._types.RawItems[otherSlot]);
-            if (_entries[mySlot].Cardinality == 0)
+            AndNotContainerInPlace(ref _data._entries[mySlot], ref _data._types.RawItems[mySlot], ref otherEntry, other._data._types.RawItems[otherSlot]);
+            if (_data._entries[mySlot].Cardinality == 0)
             {
                 if (sharedCtx)
                     DonateStorageThenFreeContainer(key, mySlot, ref other);
@@ -856,10 +810,16 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
         }
     }
 
+    public void AndNotWith(ref RoaringBitmapData otherData)
+    {
+        scoped RoaringBitmap other = new(ref otherData, _ctx);
+        AndNotWith(ref other);
+    }
+
     [SkipLocalsInit]
     private void AndContainerInPlace(ref ContainerEntry left, ref ContainerType leftType, ref ContainerEntry right, ContainerType rightType)
     {
-        switch (leftType, rightType) 
+        switch (leftType, rightType)
         {
             // Range×Range fast paths - no allocation needed
             case (ContainerType.Range, ContainerType.Range):
@@ -939,9 +899,9 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
                     && left.Cardinality <= SimdLinearScanThreshold
                     && right.Cardinality <= SimdLinearScanThreshold)
                 {
-                    Debug.Assert(left.Storage.Length % Vector256<ushort>.Count == 0 && right.Storage.Length % Vector256<ushort>.Count == 0, 
+                    Debug.Assert(left.Storage.Length % Vector256<ushort>.Count == 0 && right.Storage.Length % Vector256<ushort>.Count == 0,
                             "array containers must be SIMD-aligned for SIMD AND, see SimdContains for details");
-                    
+
                     left.Cardinality = SimdCrossAnd(left.ArrayData, left.Cardinality, right.ArrayData, right.Cardinality, left.ArrayData);
                 }
                 else
@@ -1017,7 +977,7 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
             }
             case (ContainerType.Array or ContainerType.ArrayUnsorted, ContainerType.Array or ContainerType.ArrayUnsorted):
             {
-                // merge small arrays using SIMD 
+                // merge small arrays using SIMD
                 if (AdvInstructionSet.IsAcceleratedVector256
                     && left.Cardinality <= SimdLinearScanThreshold
                     && right.Cardinality <= SimdLinearScanThreshold)
@@ -1110,24 +1070,19 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
     /// O(1) lookup: returns the entry slot for this key, or -1 if not present.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal readonly int GetSlotForKey(long key)
-    {
-        if (key < 0 || key >= _index.Count)
-            return IndexAbsent;
-        return _index.RawItems[key];
-    }
+    internal readonly int GetSlotForKey(long key) => _data.GetSlotForKey(key);
 
     /// <summary>
     /// Get a direct reference to an entry by its slot index in the entries array.
     /// </summary>
-    internal readonly ref ContainerEntry GetEntryBySlot(int slot) => ref _entries[slot];
+    internal readonly ref ContainerEntry GetEntryBySlot(int slot) => ref _data._entries[slot];
 
     /// <summary>
     /// Get entries array pointer and count for iterator construction.
     /// </summary>
     internal readonly ReadOnlySpan<ContainerEntry> GetEntriesForIterator()
     {
-        return new ReadOnlySpan<ContainerEntry>(_entries.RawItems, _entries.Count);
+        return new ReadOnlySpan<ContainerEntry>(_data._entries.RawItems, _data._entries.Count);
     }
 
     /// <summary>
@@ -1136,7 +1091,7 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void EnsureIndexCoversKey(long key)
     {
-        if (key < _index.Count)
+        if (key < _data._index.Count)
             return;
 
         IncreaseIndexCapacity(key);
@@ -1149,12 +1104,12 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
             throw new ArgumentOutOfRangeException(nameof(key), $"Container key {key} is out of the valid range (0..{int.MaxValue - 17}).");
 
         int needed = checked((int)(key + 1));
-        int oldCount = _index.Count;
-        _index.EnsureCapacityFor(ctx, needed - oldCount);
-        _index.Count = needed;
+        int oldCount = _data._index.Count;
+        _data._index.EnsureCapacityFor(_ctx, needed - oldCount);
+        _data._index.Count = needed;
 
         // Fill new slots with -1 (absent)
-        int* ptr = _index.RawItems;
+        int* ptr = _data._index.RawItems;
         new Span<int>(ptr + oldCount, needed - oldCount).Fill(IndexAbsent);
     }
 
@@ -1166,46 +1121,46 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
         EnsureIndexCoversKey(key);
 
         int slot;
-        if (_freeListHead != FreeSlotTerminator)
+        if (_data._freeListHead != FreeSlotTerminator)
         {
-            slot = _freeListHead;
-            Debug.Assert(_types.RawItems[slot] == ContainerType.Free, "Expected free entry");
-            _freeListHead = (int)_entries[slot].NextFreeSlot;
-            _entries[slot] = entry;
-            _types.RawItems[slot] = type;
+            slot = _data._freeListHead;
+            Debug.Assert(_data._types.RawItems[slot] == ContainerType.Free, "Expected free entry");
+            _data._freeListHead = (int)_data._entries[slot].NextFreeSlot;
+            _data._entries[slot] = entry;
+            _data._types.RawItems[slot] = type;
         }
         else
         {
-            slot = _entries.Count;
-            _entries.Add(ctx, entry);
-            _types.Add(ctx, type);
+            slot = _data._entries.Count;
+            _data._entries.Add(_ctx, entry);
+            _data._types.Add(_ctx, type);
         }
 
         // we checked size of key in EnsureIndexCoversKey, so this cast is safe
-        _entries[slot].Key = (uint)key;
+        _data._entries[slot].Key = (uint)key;
 
-        _index.RawItems[key] = slot;
-        _containerCount++;
+        _data._index.RawItems[key] = slot;
+        _data._containerCount++;
         return slot;
     }
 
     /// <summary>
-    /// Remove a container: detach its storage onto <see cref="_freeStorages"/> for reuse,
+    /// Remove a container: detach its storage onto <see cref="_data._freeStorages"/> for reuse,
     /// mark the index as absent, and chain the slot onto the entry free list.
     /// </summary>
     private void FreeContainer(long key, int slot)
     {
-        ref ContainerEntry entry = ref _entries[slot];
+        ref ContainerEntry entry = ref _data._entries[slot];
         if (entry.Storage.HasValue)
-            _freeStorages.Add(ctx, entry.Storage);
+            _data._freeStorages.Add(_ctx, entry.Storage);
 
         entry = default;
-        _types.RawItems[slot] = ContainerType.Free;
-        entry.NextFreeSlot = (uint)_freeListHead;
-        _freeListHead = slot;
+        _data._types.RawItems[slot] = ContainerType.Free;
+        entry.NextFreeSlot = (uint)_data._freeListHead;
+        _data._freeListHead = slot;
 
-        _index.RawItems[key] = IndexAbsent;
-        _containerCount--;
+        _data._index.RawItems[key] = IndexAbsent;
+        _data._containerCount--;
     }
 
     /// <summary>
@@ -1237,7 +1192,7 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
     {
         return Math.Max(InitialArrayContainerSizeInBytes, (bytes + SimdAlignment - 1) & ~(SimdAlignment - 1));
     }
-    
+
     /// <summary>
     /// Append all values from <paramref name="right"/> into <paramref name="left"/>, which together
     /// hold <paramref name="totalCount"/> entries. Steals an existing buffer when possible to avoid allocation:
@@ -1259,7 +1214,7 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
         // Right buffer fits both — prepend left's values into right, then take ownership.
         Unsafe.CopyBlockUnaligned(right.ArrayData + right.Cardinality, left.ArrayData, (uint)(leftCardinality * sizeof(ushort)));
         if (left.Storage.HasValue)
-            ctx.Release(ref left.Storage);
+            _ctx.Release(ref left.Storage);
         left.Storage = right.Storage;
         left.Data = right.Data;
         right = default;
@@ -1290,7 +1245,7 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
             Unsafe.CopyBlockUnaligned(newStorage.Ptr, entry.Data, (uint)copyBytes);
 
         if (entry.Storage.HasValue)
-            ctx.Release(ref entry.Storage);
+            _ctx.Release(ref entry.Storage);
         entry.Storage = newStorage;
         entry.Data = newStorage.Ptr;
     }
@@ -1303,7 +1258,7 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void AddToContainer(ref ContainerEntry entry, int slot, ushort value)
     {
-        ref ContainerType type = ref _types.RawItems[slot];
+        ref ContainerType type = ref _data._types.RawItems[slot];
         switch (type)
         {
             case ContainerType.Array:
@@ -1397,7 +1352,7 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
             entry.Cardinality = updatedCount;
         }
         if (entry.Storage.HasValue)
-            ctx.Release(ref entry.Storage);
+            _ctx.Release(ref entry.Storage);
 
         entry.Storage = newStorage;
         entry.Data = newStorage.Ptr;
@@ -1408,34 +1363,34 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
 
     public void Dispose()
     {
-        if (_entries.IsValid)
+        if (_data._entries.IsValid)
         {
-            ContainerEntry* entries = _entries.RawItems;
-            int count = _entries.Count;
+            ContainerEntry* entries = _data._entries.RawItems;
+            int count = _data._entries.Count;
             for (int i = 0; i < count; i++)
             {
                 if (entries[i].Storage.HasValue)
-                    ctx.Release(ref entries[i].Storage);
+                    _ctx.Release(ref entries[i].Storage);
             }
 
-            _entries.Dispose(ctx);
+            _data._entries.Dispose(_ctx);
         }
 
         // Release every storage parked on the free list — these are storages that were
         // freed via Clear/FreeContainer but never recycled before Dispose.
-        if (_freeStorages.IsValid)
+        if (_data._freeStorages.IsValid)
         {
-            ByteString* raw = _freeStorages.RawItems;
-            int n = _freeStorages.Count;
+            ByteString* raw = _data._freeStorages.RawItems;
+            int n = _data._freeStorages.Count;
             for (int i = 0; i < n; i++)
-                ctx.Release(ref raw[i]);
-            _freeStorages.Dispose(ctx);
+                _ctx.Release(ref raw[i]);
+            _data._freeStorages.Dispose(_ctx);
         }
 
-        if (_types.IsValid)
-            _types.Dispose(ctx);
+        if (_data._types.IsValid)
+            _data._types.Dispose(_ctx);
 
-        if (_index.IsValid)
-            _index.Dispose(ctx);
+        if (_data._index.IsValid)
+            _data._index.Dispose(_ctx);
     }
 }

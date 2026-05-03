@@ -15,7 +15,7 @@ public ref struct QueryScanContext
 {
     /// <summary>Bitmap pool. [0] = main result, [1..N] = scratch.
     /// Size is statically determined by the plan's nesting depth.</summary>
-    public Span<RoaringBitmap> Bitmaps;
+    public Span<RoaringBitmapData> Bitmaps;
 
     public IndexSearcher Searcher;
 
