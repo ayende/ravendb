@@ -467,12 +467,13 @@ internal static class QueryPlanBuilder
         if (be.Left is not FieldExpression field)
             return;
         string fieldName = GetFieldName(field, metadata, queryParameters);
-        string termValue = GetTermValue(be.Right, queryParameters);
+        string termValue = GetTermValue(be.Right, queryParameters, out var valueType);
 
         clauses.Add(new ClauseInfo
         {
             FieldName = fieldName,
             TermValue = termValue,
+            TermValueType = valueType,
             ClauseType = be.Operator switch
             {
                 OperatorType.GreaterThan => ClauseType.GreaterThan,
@@ -491,11 +492,14 @@ internal static class QueryPlanBuilder
         if (between.Source is not FieldExpression field)
             return;
 
+        var minValue = GetTermValue(between.Min, queryParameters, out var minType);
+        var maxValue = GetTermValue(between.Max, queryParameters, out _);
         clauses.Add(new ClauseInfo
         {
             FieldName = GetFieldName(field, metadata, queryParameters),
-            TermValue = GetTermValue(between.Min, queryParameters),
-            TermValue2 = GetTermValue(between.Max, queryParameters),
+            TermValue = minValue,
+            TermValue2 = maxValue,
+            TermValueType = minType,
             ClauseType = ClauseType.Between,
             OriginalIndex = clauses.Count
         });
@@ -1513,50 +1517,50 @@ internal static class QueryPlanBuilder
             _ => ScanCompareOp.Equal
         };
 
-        // Determine the value type from the term value
-        if (clause.TermValue != null && long.TryParse(clause.TermValue, out _))
+        // Strong typing: TermValueType is set by GetTermValue from the parser's literal
+        // type (for inline values) or the resolved JSON-blittable runtime type (for params).
+        // Switch on it directly — no string round-trip / TryParse fallback. A null TermValue
+        // (e.g. "exists" check) falls through to Slice.
+        ScanValueType valueType;
+        switch (clause.TermValueType)
         {
-            int paramIdx = longIndex++;
-            int paramIdx2 = clause.ClauseType == ClauseType.Between && clause.TermValue2 != null
-                ? longIndex++ : -1;
-            return new ScanPredicateInfo
-            {
-                FieldName = clause.FieldName,
-                ValueType = ScanValueType.Long,
-                CompareOp = compareOp,
-                ParamIndex = paramIdx,
-                ParamIndex2 = paramIdx2
-            };
+            case ValueTokenType.Long:
+                valueType = ScanValueType.Long;
+                break;
+            case ValueTokenType.Double:
+                valueType = ScanValueType.Double;
+                break;
+            default:
+                // String/True/False/Null/Parameter (when unresolvable) → opaque slice comparison.
+                valueType = ScanValueType.Slice;
+                break;
         }
 
-        if (clause.TermValue != null && double.TryParse(clause.TermValue,
-            System.Globalization.NumberStyles.Float,
-            System.Globalization.CultureInfo.InvariantCulture, out _))
+        bool isBetween = clause.ClauseType == ClauseType.Between && clause.TermValue2 != null;
+        int idx, idx2;
+        switch (valueType)
         {
-            int paramIdx = doubleIndex++;
-            int paramIdx2 = clause.ClauseType == ClauseType.Between && clause.TermValue2 != null
-                ? doubleIndex++ : -1;
-            return new ScanPredicateInfo
-            {
-                FieldName = clause.FieldName,
-                ValueType = ScanValueType.Double,
-                CompareOp = compareOp,
-                ParamIndex = paramIdx,
-                ParamIndex2 = paramIdx2
-            };
+            case ScanValueType.Long:
+                idx = longIndex++;
+                idx2 = isBetween ? longIndex++ : -1;
+                break;
+            case ScanValueType.Double:
+                idx = doubleIndex++;
+                idx2 = isBetween ? doubleIndex++ : -1;
+                break;
+            default:
+                idx = sliceIndex++;
+                idx2 = isBetween ? sliceIndex++ : -1;
+                break;
         }
 
-        // String/Slice comparison
-        int sliceIdx = sliceIndex++;
-        int sliceIdx2 = clause.ClauseType == ClauseType.Between && clause.TermValue2 != null
-            ? sliceIndex++ : -1;
         return new ScanPredicateInfo
         {
             FieldName = clause.FieldName,
-            ValueType = ScanValueType.Slice,
+            ValueType = valueType,
             CompareOp = compareOp,
-            ParamIndex = sliceIdx,
-            ParamIndex2 = sliceIdx2
+            ParamIndex = idx,
+            ParamIndex2 = idx2
         };
     }
 
