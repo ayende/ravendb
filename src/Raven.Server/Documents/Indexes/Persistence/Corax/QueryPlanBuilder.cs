@@ -95,10 +95,14 @@ internal static class QueryPlanBuilder
         var compiledPlan = planCache.Get(queryText, plan.OperandOrdering, plan.TypeSignature);
         if (compiledPlan == null)
         {
+            // Capture the QueryPlan in a closure so the EXPLAIN string is generated only
+            // when something reads it (Inspect() / EXPLAIN diagnostics). Most queries
+            // never pay this cost.
+            var capturedPlan = plan;
             compiledPlan = new CompiledPlan
             {
                 CompiledDelegate = QueryILEmitter.EmitDelegate(plan),
-                ExplainSource = plan.ExplainSource ?? QueryILEmitter.GenerateExplainSource(plan),
+                ExplainSourceProvider = () => QueryILEmitter.GenerateExplainSource(capturedPlan),
                 Ordering = plan.OperandOrdering,
                 TypeSignature = plan.TypeSignature
             };
@@ -300,11 +304,7 @@ internal static class QueryPlanBuilder
 
         // Attach spatial/vector post-filter phases to the plan
         if (spatialClauses != null || vectorClauses != null)
-        {
             AttachPostFilterPhases(result, spatialClauses, vectorClauses);
-            // Regenerate explain to include post-filter phases
-            result.ExplainSource = GenerateExplain(result, clauses);
-        }
 
         return result;
     }
@@ -1450,6 +1450,9 @@ internal static class QueryPlanBuilder
                 typeSignature |= ((int)scanPredicateInfos[i].ValueType & 0x3) << (i * 2);
         }
 
+        // EXPLAIN source is now generated lazily by CompiledPlan.ExplainSource on first
+        // read (via QueryILEmitter.GenerateExplainSource). The vast majority of plans
+        // never get inspected, so the eager build was pure overhead.
         var plan = new QueryPlan
         {
             Ops = ops.ToArray(),
@@ -1459,54 +1462,7 @@ internal static class QueryPlanBuilder
             ScanPredicateInfos = scanPredicateInfos,
             TypeSignature = typeSignature
         };
-
-        // Generate EXPLAIN source
-        plan.ExplainSource = GenerateExplain(plan, clauses);
         return plan;
-    }
-
-    private static string GenerateExplain(QueryPlan plan, List<ClauseInfo> clauses)
-    {
-        var sb = new System.Text.StringBuilder();
-        sb.AppendLine("// Corax 2.0 Bitmap Query Plan");
-        sb.AppendLine("// Clauses (sorted by cardinality):");
-        foreach (var c in clauses)
-        {
-            string type = c.ClauseType.ToString();
-            string detail = c.ClauseType switch
-            {
-                ClauseType.Equals => $"{c.FieldName} = '{c.TermValue}'",
-                ClauseType.NotEquals => $"{c.FieldName} != '{c.TermValue}'",
-                ClauseType.GreaterThan => $"{c.FieldName} > {c.TermValue}",
-                ClauseType.LessThan => $"{c.FieldName} < {c.TermValue}",
-                ClauseType.Between => $"{c.FieldName} BETWEEN {c.TermValue}..{c.TermValue2}",
-                ClauseType.In => $"{c.FieldName} IN ({c.InTerms?.Count ?? 0} terms)",
-                ClauseType.StartsWith => $"startsWith({c.FieldName}, '{c.TermValue}')",
-                ClauseType.EndsWith => $"endsWith({c.FieldName}, '{c.TermValue}')",
-                ClauseType.OrGroup => $"OR group ({c.OrSubClauses?.Count ?? 0} sub-clauses)",
-                _ => $"{c.FieldName} {type} '{c.TermValue}'"
-            };
-            sb.AppendLine($"//   [{c.Cardinality:N0} est] {detail}");
-        }
-        sb.AppendLine("//");
-        sb.AppendLine("// Operations:");
-        foreach (var op in plan.Ops)
-        {
-            sb.AppendLine($"//   {op.Kind} (param={op.ParamIndex}, est={op.EstimatedCardinality:N0})");
-        }
-        if (plan.SpatialFilters is { Length: > 0 })
-        {
-            sb.AppendLine("// Post-filter spatial:");
-            foreach (var sf in plan.SpatialFilters)
-                sb.AppendLine($"//   SpatialFilter (matchIndex={sf.MatchIndex})");
-        }
-        if (plan.VectorSelects is { Length: > 0 })
-        {
-            sb.AppendLine("// Post-filter vector:");
-            foreach (var vs in plan.VectorSelects)
-                sb.AppendLine($"//   VectorSelect (matchIndex={vs.MatchIndex})");
-        }
-        return sb.ToString();
     }
 
     /// <summary>Extract typed parameter values from clauses for entry scan.
