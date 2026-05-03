@@ -52,7 +52,8 @@ public static class QueryPrimitives
     /// <summary>
     /// Fill a bitmap from a posting list. Walks leaf pages, decodes PFor blocks,
     /// adds entries to the bitmap via batch AddRange.
-    /// Respects limit — stops after enough entries.
+    /// Stops once <paramref name="limit"/> entries have been added; the final batch
+    /// is truncated so the bitmap never overshoots the requested limit.
     /// </summary>
     [SkipLocalsInit]
     public static void FillFromPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, long limit = long.MaxValue)
@@ -68,11 +69,21 @@ public static class QueryPrimitives
         {
             // Posting list Fill may encode frequencies in the high bits — decode
             EntryIdEncodings.DecodeAndDiscardFrequency(buffer, read);
+
+            // Truncate the final batch when it would push us past `limit`. Without this
+            // the bitmap could overshoot by up to FillBufferSize (4096) entries.
+            long remaining = limit - total;
+            if (remaining < read)
+            {
+                if (remaining <= 0)
+                    break;
+                read = (int)remaining;
+                bitmap.AddRange(buffer.Slice(0, read));
+                break;
+            }
+
             bitmap.AddRange(buffer.Slice(0, read));
             total += read;
-
-            if (total >= limit)
-                break;
         }
     }
 
