@@ -22,7 +22,6 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
     private readonly IndexSearcher _searcher;
     private readonly int _bitmapCount;
     private readonly int _opCount;
-    private readonly long _limit;
     private readonly CancellationToken _token;
 
     private RoaringBitmap _bitmap;
@@ -40,6 +39,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
         long[] longParams, double[] doubleParams, Slice[] sliceParams, long[] fieldRootPages,
         IndexSearcher searcher, ByteStringContext allocator, long limit, CancellationToken token)
     {
+        _ = limit; // not yet used; reserved for limit-aware bitmap-build early-exit (planned with #84-full)
         _compiledDelegate = compiledPlan.CompiledDelegate;
         _bitmapCount = bitmapCount;
         _opCount = opCount;
@@ -51,7 +51,6 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
         _explainSource = compiledPlan.ExplainSource;
         _allocator = allocator;
         _searcher = searcher;
-        _limit = limit;
         _token = token;
         _bitmap = new RoaringBitmap(allocator);
         _iterator = default;
