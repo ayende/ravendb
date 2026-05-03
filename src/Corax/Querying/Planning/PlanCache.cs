@@ -48,30 +48,6 @@ public class PlanCache
     }
 
     /// <summary>
-    /// Score how well two orderings match. Uses XOR + popcount:
-    /// identical orderings XOR to 0 (score = 30 for 10 operands),
-    /// completely different orderings have many set bits (low score).
-    /// </summary>
-    public static int MatchScore(int a, int b)
-    {
-        int diff = a ^ b;
-        // 30 bits max (10 operands × 3 bits each) — higher score = better match
-        return 30 - BitOperations.PopCount((uint)diff);
-    }
-
-    /// <summary>Pack operand positions into an int. 3 bits per position, up to 10 operands.</summary>
-    public static int PackOrdering(ReadOnlySpan<int> operandPositions)
-    {
-        int result = 0;
-        int count = Math.Min(operandPositions.Length, 10);
-        for (int i = 0; i < count; i++)
-        {
-            result |= (operandPositions[i] & 0x7) << (i * 3);
-        }
-        return result;
-    }
-
-    /// <summary>
     /// 32-slot per-query plan cache. Lookup is SIMD scan over parallel int arrays;
     /// matched candidates are revalidated against the plan's own embedded keys to
     /// guard against torn-write races (key written before plan ref or vice versa).
