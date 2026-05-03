@@ -625,6 +625,10 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             while (runQuery)
             {
                 IQueryMatch queryMatch;
+                // Track the original (pre-wrap) match so its bitmap allocations are released
+                // even when SortingMatch / SortingMultiMatch wrap it (those wrappers don't
+                // implement IDisposable themselves).
+                IDisposable innerDisposableMatch = null;
                 OrderMetadata[] orderByFields;
 
                 CoraxQueryBuilder.Parameters builderParameters;
@@ -663,6 +667,8 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                             };
                             queryMatch = QueryPlanBuilder.BuildAndCompile(
                                 planParams, builderParameters, take, out _, highlightings.Terms, token);
+
+                            innerDisposableMatch = queryMatch as IDisposable;
 
                             orderByFields = CoraxQueryBuilder.GetSortMetadata(builderParameters, out bool hasEmptySorts);
                             if (orderByFields != null)
@@ -837,10 +843,13 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 // Since some primitives are lazily initialized, we must call Inspect after at least one Fill call.
                 queryTimings?.SetQueryPlan(queryMatch.Inspect());
 
-                // Dispose CompiledQueryMatch if directly accessible.
-                // When SortingMatch wraps it, bitmap allocations are released
-                // when the transaction's ByteStringContext is disposed.
-                if (queryMatch is IDisposable disposableMatch)
+                // Dispose the compiled match (and its bitmap allocations) deterministically.
+                // When the bitmap pipeline applies sorting, queryMatch becomes a SortingMatch
+                // / SortingMultiMatch wrapper that does not implement IDisposable; the inner
+                // CompiledQueryMatch was captured into innerDisposableMatch above so it is
+                // released here even when wrapped.
+                innerDisposableMatch?.Dispose();
+                if (ReferenceEquals(queryMatch, innerDisposableMatch) == false && queryMatch is IDisposable disposableMatch)
                     disposableMatch.Dispose();
 
                 QueryPool.Return(ids);
