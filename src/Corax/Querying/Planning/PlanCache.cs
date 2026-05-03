@@ -159,9 +159,11 @@ public class PlanCache
 
         public void Publish(CompiledPlan plan)
         {
-            // Already cached?
-            if (TryLookup(plan.Ordering, plan.TypeSignature) != null)
-                return;
+            // No dedup check: the caller already does TryLookup before compiling, so a
+            // duplicate Publish only happens under a benign race between two threads that
+            // both saw the lookup miss. Both versions are equivalent; the extra one gets
+            // GC'd when the slot is overwritten or the master plan retires. Skipping the
+            // check keeps Publish's hot path branch-free.
 
             int slot;
             while (true)
