@@ -319,6 +319,7 @@ public static class QueryPrimitives
         return matched;
     }
 
+    [SkipLocalsInit]
     private static int ScanWithSkipAndLimitOnly(ref RoaringBitmap bitmap, Span<long> output, long limit, ref long skip, RoaringBitmapIterator iter)
     {
         if (skip > 0)

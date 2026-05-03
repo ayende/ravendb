@@ -39,6 +39,11 @@ namespace Voron.Data.RoaringBitmaps;
 [StructLayout(LayoutKind.Auto)]
 public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable // CPF: should this be a ref struct?
 {
+    /// <summary>The allocator backing this bitmap's container storage. Exposed so peer
+    /// RoaringBitmap instances can compare allocators (for cross-bitmap buffer donation
+    /// in AndWith / AndNotWith) and so wrapping match types can match the lifetime.</summary>
+    internal ByteStringContext Allocator => ctx;
+
     public const int BitmapContainerSizeInBytes = 8192; // 8KB
     public const int BitmapContainerSizeInUInt64 = BitmapContainerSizeInBytes / sizeof(ulong);
     private const int ArrayContainerMaxCardinality = BitmapContainerSizeInBytes / sizeof(ushort); // crossover: array at max costs same as bitmap
@@ -767,6 +772,12 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
     {
         int* myIdx = _index.RawItems;
         int myLen = _index.Count;
+        // Donate freed left-side storages to `other`'s free list when the two bitmaps
+        // share an allocator. `other` is being consumed by callers under our
+        // consume-after-use contract; arming its scratch pool here means a later
+        // Clear+fill on the same instance has buffers ready without round-tripping
+        // through ctx.Allocate. Different ctx → fall back to self-pool (FreeContainer).
+        bool sharedCtx = ReferenceEquals(ctx, other.Allocator);
 
         for (int key = 0; key < myLen; key++)
         {
@@ -778,7 +789,10 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
             if (otherSlot < 0)
             {
                 // Not in other - remove
-                FreeContainer(key, mySlot);
+                if (sharedCtx)
+                    DonateStorageThenFreeContainer(key, mySlot, ref other);
+                else
+                    FreeContainer(key, mySlot);
             }
             else
             {
@@ -786,9 +800,29 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
                 ref ContainerEntry otherEntry = ref other.GetEntryBySlot(otherSlot);
                 AndContainerInPlace(ref myEntry, ref _types.RawItems[mySlot], ref otherEntry, other._types.RawItems[otherSlot]);
                 if (myEntry.Cardinality == 0)
-                    FreeContainer(key, mySlot);
+                {
+                    if (sharedCtx)
+                        DonateStorageThenFreeContainer(key, mySlot, ref other);
+                    else
+                        FreeContainer(key, mySlot);
+                }
             }
         }
+    }
+
+    /// <summary>Donate this slot's storage to <paramref name="recipient"/>'s free pool
+    /// before freeing the entry. Used during AndWith / AndNotWith to arm the consumed
+    /// right-side bitmap with buffers that this side would otherwise have stranded on
+    /// its own pool. Caller must verify ctx-equality first.</summary>
+    private void DonateStorageThenFreeContainer(long key, int slot, ref RoaringBitmap recipient)
+    {
+        ref ContainerEntry entry = ref _entries[slot];
+        if (entry.Storage.HasValue)
+        {
+            recipient._freeStorages.Add(recipient.Allocator, entry.Storage);
+            entry.Storage = default;
+        }
+        FreeContainer(key, slot);
     }
 
     /// <summary>
@@ -798,6 +832,7 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
     {
         int myLen = _index.Count;
         int* myIdx = _index.RawItems;
+        bool sharedCtx = ReferenceEquals(ctx, other.Allocator);
 
         for (int key = 0; key < myLen; key++)
         {
@@ -812,7 +847,12 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable 
             ref ContainerEntry otherEntry = ref other.GetEntryBySlot(otherSlot);
             AndNotContainerInPlace(ref _entries[mySlot], ref _types.RawItems[mySlot], ref otherEntry, other._types.RawItems[otherSlot]);
             if (_entries[mySlot].Cardinality == 0)
-                FreeContainer(key, mySlot);
+            {
+                if (sharedCtx)
+                    DonateStorageThenFreeContainer(key, mySlot, ref other);
+                else
+                    FreeContainer(key, mySlot);
+            }
         }
     }
 
