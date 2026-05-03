@@ -7,12 +7,13 @@ namespace Corax.Querying.Planning;
 /// <summary>
 /// Caches compiled query plans per index instance.
 /// Lives on IndexSearcher — GC'd when the index is replaced.
-/// Cap: 32 plans per query text.
+/// Outer cap: 2048 distinct query texts. Inner cap: 32 plans per query text
+/// (one slot per (ordering, typeSignature) variant).
 /// </summary>
 public class PlanCache
 {
     private const int MaxPlansPerQuery = 32;
-    private const int MaxDistinctQueries = 1024;
+    private const int MaxDistinctQueries = 2048;
 
     private readonly ConcurrentDictionary<string, CompiledPlan[]> _cache = new();
 
