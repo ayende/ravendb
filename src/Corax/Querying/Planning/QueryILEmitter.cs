@@ -854,8 +854,9 @@ public static class QueryILEmitter
             return "// Empty plan";
 
         var sb = new StringBuilder();
-        sb.AppendLine("// Compiled query (DynamicMethod)");
-        sb.AppendLine("Span<long> buffer = stackalloc long[4096];");
+        sb.AppendLine("// Compiled query (DynamicMethod) — pseudocode mirroring the emitted IL.");
+        sb.AppendLine("// Mutating ops dispatch through Corax.Querying.Primitives.QueryPrimitives,");
+        sb.AppendLine("// which picks bitmap-borrow / posting-list / generic-Fill paths at runtime.");
 
         for (int i = 0; i < plan.Ops.Length; i++)
         {
@@ -864,37 +865,43 @@ public static class QueryILEmitter
             {
                 case PlanOpKind.FillFromPostings:
                 case PlanOpKind.DirectIterate:
-                    sb.AppendLine($"while ((read = ctx.Matches[{op.ParamIndex}].Fill(buffer)) > 0) ctx.Bitmaps[0].AddRange(buffer[..read]);");
+                    sb.AppendLine($"QueryPrimitives.FillFromMatch(ctx.DirectSources[{op.ParamIndex}], ref ctx.Bitmaps[0]);");
                     break;
                 case PlanOpKind.AndWithPostings:
-                    sb.AppendLine($"ctx.Bitmaps[1].Clear();");
-                    sb.AppendLine($"while ((read = ctx.Matches[{op.ParamIndex}].Fill(buffer)) > 0) ctx.Bitmaps[1].AddRange(buffer[..read]);");
-                    sb.AppendLine($"ctx.Bitmaps[0].AndWith(ref ctx.Bitmaps[1]); if (ctx.Bitmaps[0].IsEmpty) return;");
+                    sb.AppendLine($"QueryPrimitives.AndWithMatch(ctx.DirectSources[{op.ParamIndex}], ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);");
+                    sb.AppendLine("if (ctx.Bitmaps[0].IsEmpty) return;");
                     break;
                 case PlanOpKind.OrWithPostings:
                 case PlanOpKind.LazyOrWithPostings:
-                    sb.AppendLine($"while ((read = ctx.Matches[{op.ParamIndex}].Fill(buffer)) > 0) ctx.Bitmaps[0].AddRange(buffer[..read]);");
+                    sb.AppendLine($"QueryPrimitives.FillFromMatch(ctx.DirectSources[{op.ParamIndex}], ref ctx.Bitmaps[{op.BitmapLocal}]);");
+                    break;
+                case PlanOpKind.ClearBitmap:
+                    sb.AppendLine($"ctx.Bitmaps[{op.BitmapLocal}].Clear();");
+                    break;
+                case PlanOpKind.AndBitmaps:
+                    sb.AppendLine($"ctx.Bitmaps[{op.BitmapLocal}].AndWith(ref ctx.Bitmaps[{op.ParamIndex2}]);");
+                    break;
+                case PlanOpKind.CheckEmpty:
+                    sb.AppendLine($"if (ctx.Bitmaps[{op.BitmapLocal}].IsEmpty) return;");
                     break;
                 case PlanOpKind.AndNotWithPostings:
-                    sb.AppendLine($"ctx.Bitmaps[1].Clear();");
-                    sb.AppendLine($"while ((read = ctx.Matches[{op.ParamIndex}].Fill(buffer)) > 0) ctx.Bitmaps[1].AddRange(buffer[..read]);");
-                    sb.AppendLine($"ctx.Bitmaps[0].AndNotWith(ref ctx.Bitmaps[1]);");
+                    sb.AppendLine($"QueryPrimitives.AndNotWithMatch(ctx.DirectSources[{op.ParamIndex}], ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);");
                     break;
                 case PlanOpKind.RepairAfterLazy:
                     sb.AppendLine("ctx.Bitmaps[0].RepairAfterLazy();");
                     break;
                 case PlanOpKind.CheckAndMaybeEntryScan:
-                    sb.AppendLine($"if (ctx.Bitmaps[0].Count < 32000 && ctx.Bitmaps[0].Count * 64 < ctx.Matches[{op.ParamIndex}].Count) goto EntryScan;");
+                    sb.AppendLine($"if (ctx.Bitmaps[0].Count < 32000 && ctx.Bitmaps[0].Count * 64 < ctx.DirectSources[{op.ParamIndex}].Count) goto EntryScan;");
                     break;
                 case PlanOpKind.IterateInto:
-                    sb.AppendLine("return;");
+                    sb.AppendLine("return; // result is in ctx.Bitmaps[0]; caller iterates via QueryPrimitives.IterateInto");
                     break;
                 default:
                     sb.AppendLine($"// {op.Kind}");
                     break;
             }
         }
-        sb.AppendLine("EntryScan: EntryScanHelper.Execute(ref ctx);");
+        sb.AppendLine("EntryScan: // emitted IL walks ctx.Bitmaps[0] and re-checks per-entry predicates");
         return sb.ToString();
     }
 }

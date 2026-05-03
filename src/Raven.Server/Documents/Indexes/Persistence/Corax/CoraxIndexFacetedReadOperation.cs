@@ -84,6 +84,9 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
         // and skipping the query-level dedup saves work during materialization.
         HashSet<long> baseQueryMatchingIds = null;
         global::Corax.Querying.Matches.Meta.IBitmapQueryMatch baseQueryBitmap = null;
+        // baseQueryDisposable owns the bitmap allocations of a CompiledQueryMatch base query;
+        // disposed at the end of this method (or before the scanning fallback runs).
+        IDisposable baseQueryDisposable = null;
         if (query.Metadata.Query.Where is not null)
         {
             var parameters = new CoraxQueryBuilder.Parameters(_indexSearcher, _allocator, null, null, query, _index,
@@ -108,6 +111,7 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
                 baseQuery = QueryPlanBuilder.BuildAndCompile(
                     planParams, parameters, long.MaxValue, out _, highlightingTerms: null, token);
             }
+            baseQueryDisposable = baseQuery as IDisposable;
             queryTimings?.SetQueryPlan(baseQuery.Inspect());
 
             // If the base query is bitmap-backed, use it directly for Contains checks
@@ -133,6 +137,7 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
                     // When exceeded, fall back to the scanning path which streams with bounded memory.
                     if (baseQueryMatchingIds.Count > maxMatchingIds)
                     {
+                        baseQueryDisposable?.Dispose();
                         CoraxIndexReadOperation.QueryPool.Return(ids);
                         return ScanningFacetedQuery(results, facetQuery, queryTimings, context, getSpatialField, queryTime, token);
                     }
@@ -254,6 +259,7 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
         UpdateFacetResults(results, query, facetsByName);
         CompleteFacetCalculationsStage(results, query);
 
+        baseQueryDisposable?.Dispose();
         CoraxIndexReadOperation.QueryPool.Return(ids);
         return results.Values
             .Select(x => x.Result)
@@ -307,49 +313,55 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
         int read = 0;
         CreateMappingForRanges(results, facetsByRange, facetQuery);
 
-        while ((read = baseQuery.Fill(ids)) != 0)
+        try
         {
-            for (int docId = 0; docId < read; docId++)
+            while ((read = baseQuery.Fill(ids)) != 0)
             {
-                var reader = _indexSearcher.GetEntryTermsReader(ids[docId], ref page);
-                foreach (var result in results)
+                for (int docId = 0; docId < read; docId++)
                 {
-                    token.ThrowIfCancellationRequested();
-
-                    using var facetTiming = queryTimings?.For($"{nameof(QueryTimingsScope.Names.AggregateBy)}/{result.Key}");
-
-                    if (result.Value.Ranges == null || result.Value.Ranges.Count == 0)
+                    var reader = _indexSearcher.GetEntryTermsReader(ids[docId], ref page);
+                    foreach (var result in results)
                     {
-                        HandleFacetsPerDocument(ref reader, result, facetsByName, facetQuery.Legacy, facetTiming, token);
-                        continue;
-                    }
+                        token.ThrowIfCancellationRequested();
 
-                    // Cache facetByRange because we will fulfill data in batches instead of whole collection
-                    if (facetsByRange.TryGetValue(result.Key, out var facetValues) == false)
-                    {
-                        facetValues = new();
-                        facetsByRange.Add(result.Key, facetValues);
-                    }
+                        using var facetTiming = queryTimings?.For($"{nameof(QueryTimingsScope.Names.AggregateBy)}/{result.Key}");
 
-                    HandleRangeFacetsPerDocument(ref reader, result.Key, result.Value, facetQuery.Legacy, facetTiming, facetValues, token);
+                        if (result.Value.Ranges == null || result.Value.Ranges.Count == 0)
+                        {
+                            HandleFacetsPerDocument(ref reader, result, facetsByName, facetQuery.Legacy, facetTiming, token);
+                            continue;
+                        }
+
+                        // Cache facetByRange because we will fulfill data in batches instead of whole collection
+                        if (facetsByRange.TryGetValue(result.Key, out var facetValues) == false)
+                        {
+                            facetValues = new();
+                            facetsByRange.Add(result.Key, facetValues);
+                        }
+
+                        HandleRangeFacetsPerDocument(ref reader, result.Key, result.Value, facetQuery.Legacy, facetTiming, facetValues, token);
+                    }
                 }
+
+                token.ThrowIfCancellationRequested();
             }
 
-            token.ThrowIfCancellationRequested();
+            UpdateRangeResults(results, facetsByRange);
+
+            UpdateFacetResults(results, query, facetsByName);
+
+            CompleteFacetCalculationsStage(results, query);
+            queryTimings?.SetQueryPlan(baseQuery.Inspect());
+
+            return results.Values
+                .Select(x => x.Result)
+                .ToList();
         }
-
-        UpdateRangeResults(results, facetsByRange);
-
-        UpdateFacetResults(results, query, facetsByName);
-
-        CompleteFacetCalculationsStage(results, query);
-        queryTimings?.SetQueryPlan(baseQuery.Inspect());
-
-
-        CoraxIndexReadOperation.QueryPool.Return(ids);
-        return results.Values
-            .Select(x => x.Result)
-            .ToList();
+        finally
+        {
+            (baseQuery as IDisposable)?.Dispose();
+            CoraxIndexReadOperation.QueryPool.Return(ids);
+        }
     }
 
     private void UpdateRangeResults(Dictionary<string, FacetedQueryParser.FacetResult> results, Dictionary<string, Dictionary<string, FacetValues>> facetsByRange)
