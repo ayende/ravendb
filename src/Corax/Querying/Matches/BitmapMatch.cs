@@ -39,6 +39,8 @@ public unsafe struct BitmapMatch : IQueryMatch, IBitmapQueryMatch, IDisposable
 
     public bool Contains(long entryId) => _bitmap.Contains(entryId);
 
+    public RoaringBitmap BorrowBitmap() => _bitmap;
+
     public long MinEntryId
     {
         get

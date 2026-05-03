@@ -57,6 +57,7 @@ public struct VectorSearchMatch : IQueryMatch
 
     private RoaringBitmap _filterResults;
     private bool _hasFilterResults;
+    private bool _ownsFilterResults;
     private IQueryMatch _filterQuery;
     private bool _filterQueryLoaded;
     private long _filterMatchesCount;
@@ -101,7 +102,7 @@ public struct VectorSearchMatch : IQueryMatch
         if (_filterQueryLoaded == false)
         {
             _filterQueryLoaded = true;
-            _filterResults = IndexSearcher.VectorSearchUtils.LoadFilterMatches(_indexSearcher, ref _filterQuery);
+            _filterResults = IndexSearcher.VectorSearchUtils.LoadFilterMatches(_indexSearcher, ref _filterQuery, out _ownsFilterResults);
             _hasFilterResults = true;
             _filterMatchesCount = _filterResults.Count;
 
@@ -126,7 +127,7 @@ public struct VectorSearchMatch : IQueryMatch
             {
                 _isEmpty = true;
                 _vectorToSearch.Dispose();
-                if (_hasFilterResults)
+                if (_hasFilterResults && _ownsFilterResults)
                     _filterResults.Dispose();
                 return;
             }
@@ -368,7 +369,7 @@ public struct VectorSearchMatch : IQueryMatch
     {
         if (_scanningQuery)
             _nodesIdsToScan.Dispose();
-        if (_hasFilterResults)
+        if (_hasFilterResults && _ownsFilterResults)
             _filterResults.Dispose();
         _vectorSearchRetriever.Dispose();
         _vectorToSearch.Dispose();

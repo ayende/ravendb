@@ -31,8 +31,21 @@ public partial class IndexSearcher
             return shouldScan;
         }
 
-        public static RoaringBitmap LoadFilterMatches(IndexSearcher indexSearcher, ref IQueryMatch query)
+        public static RoaringBitmap LoadFilterMatches(IndexSearcher indexSearcher, ref IQueryMatch query, out bool owned)
         {
+            // Fast path: the upstream pipeline (CompiledQueryMatch / BitmapMatch / PostFilterMatch
+            // wrapping a bitmap) already has the bitmap built. Borrow it directly — we only read,
+            // and the source query keeps the storage alive for our entire scope. Skipping
+            // re-materialization avoids one full Fill loop and one bitmap construction per query.
+            if (query is IBitmapQueryMatch bitmapMatch)
+            {
+                owned = false;
+                var borrowed = bitmapMatch.BorrowBitmap();
+                borrowed.PrepareForReading();
+                return borrowed;
+            }
+
+            owned = true;
             var filter = new RoaringBitmap(indexSearcher.Allocator);
 
             using var _ = indexSearcher.Allocator.Allocate(4096, out Span<long> workingBuffer);

@@ -84,6 +84,13 @@ public interface IBitmapQueryMatch : IQueryMatch
     bool Contains(long entryId);
     long MinEntryId { get; }
     long MaxEntryId { get; }
+
+    /// <summary>
+    /// Returns a borrowed copy of the underlying bitmap. The returned struct aliases the
+    /// owner's container memory — the caller MUST NOT dispose it. Used by downstream
+    /// consumers (vector search filter, faceted lookups) to skip re-materialization.
+    /// </summary>
+    Voron.Data.RoaringBitmaps.RoaringBitmap BorrowBitmap();
 }
 
 public enum SkipSortingResult
