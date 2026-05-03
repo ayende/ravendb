@@ -341,32 +341,59 @@ public static class QueryPrimitives
     // These overloads let the IL call QueryPrimitives directly instead of emitting
     // inline Fill+AddRange loops. JIT inlines these with AggressiveInlining.
 
-    /// <summary>Fill bitmap from an IQueryMatch by calling Fill repeatedly.</summary>
+    /// <summary>Fill bitmap from an IQueryMatch by calling Fill repeatedly.
+    /// Fast path: when the match already exposes a bitmap (IBitmapQueryMatch — every modern
+    /// term/term-match-producing path does), borrow it and OR directly. Skips one full
+    /// Fill loop and the AddRange path's per-batch sort/dedup work.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     [SkipLocalsInit]
     public static void FillFromMatch(Matches.Meta.IQueryMatch match, ref RoaringBitmap bitmap)
     {
+        if (match is Matches.Meta.IBitmapQueryMatch bm)
+        {
+            var src = bm.BorrowBitmap();
+            // Empty bitmap => OR with empty is a no-op; LazyOrWith on empty doesn't repair.
+            if (src.IsEmpty)
+                return;
+            bitmap.LazyOrWith(ref src);
+            bitmap.RepairAfterLazy();
+            return;
+        }
         Span<long> buffer = stackalloc long[FillBufferSize];
         int read;
         while ((read = match.Fill(buffer)) > 0)
             bitmap.AddRange(buffer.Slice(0, read));
     }
 
-    /// <summary>Fill temp bitmap from match, then AND with target.</summary>
+    /// <summary>Fill temp bitmap from match, then AND with target.
+    /// Fast path: borrow the match's bitmap directly and AND in place — no temp fill needed.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     [SkipLocalsInit]
     public static void AndWithMatch(Matches.Meta.IQueryMatch match, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap)
     {
+        if (match is Matches.Meta.IBitmapQueryMatch bm)
+        {
+            var src = bm.BorrowBitmap();
+            bitmap.AndWith(ref src);
+            return;
+        }
         tempBitmap.Clear();
         FillFromMatch(match, ref tempBitmap);
         bitmap.AndWith(ref tempBitmap);
     }
 
-    /// <summary>Fill temp bitmap from match, then ANDNOT from target.</summary>
+    /// <summary>Fill temp bitmap from match, then ANDNOT from target.
+    /// Fast path: borrow the match's bitmap and ANDNOT directly.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     [SkipLocalsInit]
     public static void AndNotWithMatch(Matches.Meta.IQueryMatch match, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap)
     {
+        if (match is Matches.Meta.IBitmapQueryMatch bm)
+        {
+            var src = bm.BorrowBitmap();
+            bitmap.AndNotWith(ref src);
+            return;
+        }
         tempBitmap.Clear();
         FillFromMatch(match, ref tempBitmap);
         bitmap.AndNotWith(ref tempBitmap);
