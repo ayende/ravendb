@@ -122,10 +122,13 @@ public class QueryPlan
     /// 2 bits per predicate (0=long, 1=double, 2=string). Used as part of cache key.</summary>
     public int TypeSignature;
 
-    /// <summary>Number of bitmaps needed for execution.
-    /// [0] = main result, [1] = primary scratch, [2+] = nested OR/AND scratch.
-    /// Statically determined from the query's nesting depth.</summary>
-    public int BitmapCount = 2;
+    /// <summary>Number of bitmaps a compiled query plan currently needs.
+    /// Slot 0 holds the main result, slot 1 is scratch for AND-with-postings / AND-NOT
+    /// and for OR-group accumulation. Today every emitted plan stays within these two slots
+    /// because OR groups are built into slot 1 sequentially (cleared between groups) and
+    /// no nested AND-inside-OR shape is representable yet. When AndGroup lands, this becomes
+    /// a per-plan computed value derived from the maximum BitmapLocal referenced by any op.</summary>
+    public const int RequiredBitmaps = 2;
 
     /// <summary>Metadata for entry scan predicates. Used by the IL emitter to generate
     /// direct comparison calls. Parallel to the MultiUnaryItem[] created at execution time.

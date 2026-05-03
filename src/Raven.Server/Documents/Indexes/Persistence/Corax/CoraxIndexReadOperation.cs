@@ -683,7 +683,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                                 out var longParams, out var doubleParams, out var sliceParams, out var fieldRootPages);
                             QueryPlanBuilder.PopulateHighlightingTerms(plan, highlightings.Terms, query.Metadata);
                             var compiledMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
-                                compiledPlan, plan.BitmapCount, plan.Ops?.Length ?? 0, resolvedMatches,
+                                compiledPlan, global::Corax.Querying.Planning.QueryPlan.RequiredBitmaps, plan.Ops?.Length ?? 0, resolvedMatches,
                                 longParams, doubleParams, sliceParams, fieldRootPages,
                                 IndexSearcher, _allocator, take, token);
                             queryMatch = compiledMatch;
@@ -1417,7 +1417,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 QueryPlanBuilder.ExtractScanParameters(plan, IndexSearcher,
                     out var longParams, out var doubleParams, out var sliceParams, out var fieldRootPages);
                 queryMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
-                    compiledPlan, plan.BitmapCount, plan.Ops?.Length ?? 0, resolvedMatches,
+                    compiledPlan, global::Corax.Querying.Planning.QueryPlan.RequiredBitmaps, plan.Ops?.Length ?? 0, resolvedMatches,
                     longParams, doubleParams, sliceParams, fieldRootPages,
                     IndexSearcher, _allocator, take, token);
 
