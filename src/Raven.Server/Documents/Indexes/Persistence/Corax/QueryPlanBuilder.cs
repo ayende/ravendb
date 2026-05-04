@@ -1127,17 +1127,25 @@ internal static class QueryPlanBuilder
 
     /// <summary>Determine the <see cref="ValueTokenType"/> for an individual In-clause term.
     /// <paramref name="literalType"/> is the AST token type; for Parameter tokens the type
-    /// is inferred from the resolved value (matches the logic in <see cref="GetTermValue"/>).</summary>
+    /// is inferred from the resolved value (matches the logic in <see cref="ConvertInValue"/>).</summary>
     private static ValueTokenType GetInTermValueTokenType(object resolvedValue, ValueTokenType literalType)
     {
         if (literalType != ValueTokenType.Parameter)
             return literalType;
         // Parameter expansion — infer from runtime value
         if (resolvedValue is bool b) return b ? ValueTokenType.True : ValueTokenType.False;
+        // Date/time values are stored as ticks (long) in Corax — must match ConvertInValue logic
+        if (resolvedValue is DateTime or DateTimeOffset) return ValueTokenType.Long;
         if (resolvedValue is long or int) return ValueTokenType.Long;
         if (resolvedValue is double or float or decimal) return ValueTokenType.Double;
         if (resolvedValue is Sparrow.Json.LazyNumberValue lnv)
             return lnv.TryParseLong(out _) ? ValueTokenType.Long : ValueTokenType.Double;
+        // LazyStringValue or plain string — check if it's a date string (same pattern as ConvertInValue)
+        var str = resolvedValue?.ToString();
+        if (str != null && str.Length > 18 && str.Length < 35 && str.Contains('T')
+            && DateTime.TryParse(str, System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.RoundtripKind, out _))
+            return ValueTokenType.Long;
         return ValueTokenType.String;
     }
 
