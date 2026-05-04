@@ -51,6 +51,9 @@ public static class QueryILEmitter
     private static readonly MethodInfo s_andWith =
         typeof(RoaringBitmapData).GetMethod(nameof(RoaringBitmapData.AndWith),
             new[] { typeof(RoaringBitmapData).MakeByRefType(), typeof(Sparrow.Server.ByteStringContext) })!;
+    private static readonly MethodInfo s_orWith =
+        typeof(RoaringBitmapData).GetMethod(nameof(RoaringBitmapData.OrWith),
+            new[] { typeof(RoaringBitmapData).MakeByRefType(), typeof(Sparrow.Server.ByteStringContext) })!;
     private static readonly MethodInfo s_andNotWith =
         typeof(RoaringBitmapData).GetMethod(nameof(RoaringBitmapData.AndNotWith),
             new[] { typeof(RoaringBitmapData).MakeByRefType(), typeof(Sparrow.Server.ByteStringContext) })!;
@@ -262,9 +265,14 @@ public static class QueryILEmitter
                         EmitLoadAllocator(il);
                         il.Emit(OpCodes.Call, s_andWithMatch);
                     }
-                    EmitLoadBitmapRef(il, 0);
-                    il.Emit(OpCodes.Call, s_isEmptyGetter);
-                    il.Emit(OpCodes.Brtrue, doneLabel);
+                    // Skip early exit when inside an OR chain (AND sub-expression result
+                    // being empty is not a reason to abort the whole OR accumulation).
+                    if (!op.SkipEarlyExit)
+                    {
+                        EmitLoadBitmapRef(il, 0);
+                        il.Emit(OpCodes.Call, s_isEmptyGetter);
+                        il.Emit(OpCodes.Brtrue, doneLabel);
+                    }
                     break;
 
                 case PlanOpKind.OrWithPostings:
@@ -300,6 +308,26 @@ public static class QueryILEmitter
                     EmitLoadBitmapRef(il, op.ParamIndex2);    // source
                     EmitLoadAllocator(il);
                     il.Emit(OpCodes.Call, s_andWith);
+                    break;
+
+                case PlanOpKind.AndNotBitmaps:
+                    EmitLoadBitmapRef(il, op.BitmapLocal);   // target
+                    EmitLoadBitmapRef(il, op.ParamIndex2);    // source
+                    EmitLoadAllocator(il);
+                    il.Emit(OpCodes.Call, s_andNotWith);
+                    break;
+
+                case PlanOpKind.OrBitmaps:
+                    EmitLoadBitmapRef(il, op.BitmapLocal);   // target
+                    EmitLoadBitmapRef(il, op.ParamIndex2);    // source
+                    EmitLoadAllocator(il);
+                    il.Emit(OpCodes.Call, s_orWith);
+                    break;
+
+                case PlanOpKind.SwapBitmaps:
+                    EmitLoadBitmapRef(il, op.BitmapLocal);   // slot A
+                    EmitLoadBitmapRef(il, op.ParamIndex2);    // slot B
+                    il.Emit(OpCodes.Call, s_swapContents);
                     break;
 
                 case PlanOpKind.CheckEmpty:
@@ -967,6 +995,15 @@ public static class QueryILEmitter
                     break;
                 case PlanOpKind.AndBitmaps:
                     sb.AppendLine($"ctx.Bitmaps[{op.BitmapLocal}].AndWith(ref ctx.Bitmaps[{op.ParamIndex2}]);");
+                    break;
+                case PlanOpKind.AndNotBitmaps:
+                    sb.AppendLine($"ctx.Bitmaps[{op.BitmapLocal}].AndNotWith(ref ctx.Bitmaps[{op.ParamIndex2}]);");
+                    break;
+                case PlanOpKind.OrBitmaps:
+                    sb.AppendLine($"ctx.Bitmaps[{op.BitmapLocal}].OrWith(ref ctx.Bitmaps[{op.ParamIndex2}]);");
+                    break;
+                case PlanOpKind.SwapBitmaps:
+                    sb.AppendLine($"ctx.Bitmaps[{op.BitmapLocal}].SwapContents(ref ctx.Bitmaps[{op.ParamIndex2}]);");
                     break;
                 case PlanOpKind.CheckEmpty:
                     sb.AppendLine($"if (ctx.Bitmaps[{op.BitmapLocal}].IsEmpty) return;");

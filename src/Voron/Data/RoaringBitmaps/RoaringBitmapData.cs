@@ -1,3 +1,4 @@
+using System.Numerics;
 using System.Runtime.InteropServices;
 using Sparrow.Server;
 using Voron.Util;
@@ -34,7 +35,18 @@ public unsafe struct RoaringBitmapData
                 if (types[i] == ContainerType.Free)
                     continue;
 
-                total += entries[i].Cardinality;
+                int card = entries[i].Cardinality;
+                if (card < 0)
+                {
+                    // LazyCardinality: bitmap container was updated without recomputing the popcount.
+                    // Count bits directly so callers (e.g. ShouldSwitchToEntryScan) see a correct value
+                    // rather than the sentinel -1, which would incorrectly trigger early entry scan.
+                    ulong* bitmapPtr = (ulong*)entries[i].Data;
+                    for (int w = 0; w < RoaringBitmap.BitmapContainerSizeInUInt64; w++)
+                        total += BitOperations.PopCount(bitmapPtr[w]);
+                }
+                else
+                    total += card;
             }
             return total;
         }
@@ -138,6 +150,13 @@ public unsafe struct RoaringBitmapData
     {
         RoaringBitmap view = new(ref this, ctx);
         view.AndNotWith(ref other);
+    }
+
+    public void OrWith(ref RoaringBitmapData other, ByteStringContext ctx)
+    {
+        RoaringBitmap view = new(ref this, ctx);
+        view.LazyOrWith(ref other);
+        view.RepairAfterLazy();
     }
 
     public void RepairAfterLazy(ByteStringContext ctx)

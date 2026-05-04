@@ -642,12 +642,14 @@ namespace FastTests.Corax
             }
 
             {
-                var results = ExecuteRQLQuery("FROM TestIndex WHERE Content IN ('dolorem', 'ipsa', 'in', 'omnis', 'ullamco', 'ab', 'esse', 'aut', 'rem', 'eu', 'iure', 'ad', 'consequuntur', 'est', 'adipisci', 'velit', 'inventore', 'nesciunt.', 'vitae', 'laborum.', 'voluptate', 'et', 'fugiat', 'voluptas', 'quae', 'dolor', 'qui')");
+                // ALL IN requires every listed term to be present — only entry9 has all 27.
+                var results = ExecuteRQLQuery("FROM TestIndex WHERE Content ALL IN ('dolorem', 'ipsa', 'in', 'omnis', 'ullamco', 'ab', 'esse', 'aut', 'rem', 'eu', 'iure', 'ad', 'consequuntur', 'est', 'adipisci', 'velit', 'inventore', 'nesciunt.', 'vitae', 'laborum.', 'voluptate', 'et', 'fugiat', 'voluptas', 'quae', 'dolor', 'qui')");
                 Assert.Equal(1, results.Count);
             }
 
             {
-                var results = ExecuteRQLQuery("FROM TestIndex WHERE Content IN ('dolorem', 'ipsa', 'in', 'omnis', 'ullamco', 'ab', 'esse', 'aut', 'rem', 'eu', 'iure', 'ad', 'consequuntur', 'est', 'adipisci', 'velit', 'inventore', 'nesciunt.', 'vitae', 'laborum.', 'voluptate', 'et', 'fugiat', 'voluptas', 'quae', 'dolor', 'THIS_IS_SUPER_UNIQUE_VALUE')");
+                // One term replaced with a unique value no entry has → 0 results.
+                var results = ExecuteRQLQuery("FROM TestIndex WHERE Content ALL IN ('dolorem', 'ipsa', 'in', 'omnis', 'ullamco', 'ab', 'esse', 'aut', 'rem', 'eu', 'iure', 'ad', 'consequuntur', 'est', 'adipisci', 'velit', 'inventore', 'nesciunt.', 'vitae', 'laborum.', 'voluptate', 'et', 'fugiat', 'voluptas', 'quae', 'dolor', 'THIS_IS_SUPER_UNIQUE_VALUE')");
                 Assert.Equal(0, results.Count);
             }
         }
@@ -1229,7 +1231,9 @@ namespace FastTests.Corax
 
             {
                 var inList = string.Join("', '", listForNotIn.Select(l => l.Content));
-                var results = ExecuteRQLQuery($"FROM TestIndex WHERE NOT (Content IN ('{inList}'))");
+                // RQL requires "true AND NOT" to express negation at the top level.
+                // "true AND NOT Content IN (...)" is the valid form for NOT IN.
+                var results = ExecuteRQLQuery($"FROM TestIndex WHERE true AND NOT Content IN ('{inList}')");
                 Assert.Equal(1000 - listForNotIn.Count(), results.Count);
             }
         }
@@ -1248,21 +1252,22 @@ namespace FastTests.Corax
             using var searcher = new IndexSearcher(Env, CreateKnownFields(Allocator));
 
             {
-                var results = ExecuteRQLQuery("FROM TestIndex WHERE NOT (Content STARTSWITH 'Run')");
+                // true AND NOT ... anchors the top-level NOT (NOT alone is parsed as a method call).
+                var results = ExecuteRQLQuery("FROM TestIndex WHERE true AND NOT startsWith(Content, 'Run')");
                 Assert.Equal(1, results.Count);
                 var item = searcher.TermsReaderFor("Id").GetTermFor(results[0]);
                 Assert.Equal("entry/1", item);
             }
 
             {
-                // Empty result case: NOT (all entries) = 0 results
-                var allResults = ExecuteRQLQuery("FROM TestIndex");
-                var notAllResults = ExecuteRQLQuery("FROM TestIndex WHERE NOT (Id = 'entry/1' OR Id = 'entry/2' OR Id = 'entry/3')");
+                // Empty result case: exclude all 3 known IDs → 0 results
+                var notAllResults = ExecuteRQLQuery("FROM TestIndex WHERE Id != 'entry/1' AND Id != 'entry/2' AND Id != 'entry/3'");
                 Assert.Equal(0, notAllResults.Count);
             }
 
             {
-                var results = ExecuteRQLQuery("FROM TestIndex WHERE NOT (Content STARTSWITH 'J')");
+                // No entries start with 'J', so true AND NOT startsWith(Content, 'J') keeps all.
+                var results = ExecuteRQLQuery("FROM TestIndex WHERE true AND NOT startsWith(Content, 'J')");
                 Assert.Equal(3, results.Count);
                 var uniqueIds = new HashSet<long>(results);
                 Assert.Equal(3, uniqueIds.Count);
@@ -1299,26 +1304,30 @@ namespace FastTests.Corax
             IndexEntries(bsc, entriesToIndex, CreateKnownFields(bsc));
 
             {
-                // Test: !(8) OR !(9) OR !(10) = all entries (since none have these values)
-                var results = ExecuteRQLQuery("FROM TestIndex WHERE NOT (Content = '8') OR NOT (Content = '9') OR NOT (Content = '10')");
+                // Test: (Content != '8') OR (Content != '9') OR (Content != '10') = all entries
+                // (no entry has 8, 9, or 10, so each != matches all 7)
+                var results = ExecuteRQLQuery("FROM TestIndex WHERE Content != '8' OR Content != '9' OR Content != '10'");
                 Assert.Equal(7, results.Count);
             }
 
             {
-                // Test: !(1) OR !(2) OR !(3) OR !(5) OR !(7) = all entries
-                var results = ExecuteRQLQuery("FROM TestIndex WHERE NOT (Content IN ('1', '2', '3', '5', '7'))");
+                // Test: NOT (1 IN doc OR 2 IN doc OR ... OR 7 IN doc) means
+                // NOT (1 IN doc) OR NOT (2 IN doc) ... — at least one value absent from the set.
+                // No entry has ALL of {1,2,3,5,7}, so OR of NOT-in gives all 7 entries.
+                var results = ExecuteRQLQuery("FROM TestIndex WHERE Content != '1' OR Content != '2' OR Content != '3' OR Content != '5' OR Content != '7'");
                 Assert.Equal(entries.Count, results.Count);
             }
 
             {
-                // Test: Just get all entries
-                var results = ExecuteRQLQuery("FROM TestIndex WHERE Id STARTSWITH 'entry/'");
+                // Test: All entries have an Id starting with 'entry/'
+                var results = ExecuteRQLQuery("FROM TestIndex WHERE startsWith(Id, 'entry/')");
                 Assert.Equal(7, results.Count);
             }
 
             {
-                // Test: Combining conditions
-                var results = ExecuteRQLQuery("FROM TestIndex WHERE (Id STARTSWITH 'entry/') AND NOT (Content IN ('8', '9', '10'))");
+                // Test: startsWith(Id, 'entry/') AND NOT Content IN ('8', '9', '10') = all 7
+                // None of the entries have content values 8, 9, or 10.
+                var results = ExecuteRQLQuery("FROM TestIndex WHERE startsWith(Id, 'entry/') AND NOT Content IN ('8', '9', '10')");
                 Assert.Equal(7, results.Count);
             }
         }
@@ -1356,7 +1365,7 @@ namespace FastTests.Corax
             }
 
             {
-                var results = ExecuteRQLQuery("FROM TestIndex WHERE Content STARTSWITH 'ma' OR Content = 'torun'");
+                var results = ExecuteRQLQuery("FROM TestIndex WHERE startsWith(Content, 'ma') OR Content = 'torun'");
                 var linqResult = entries.Where(x => x.Content.Any(z => z.StartsWith("ma") || z.Contains("torun"))).ToList();
                 Assert.Equal(linqResult.Count, results.Count);
             }
@@ -1397,11 +1406,11 @@ namespace FastTests.Corax
             IndexEntries(Allocator, entries.ToArray(), CreateKnownFields(Allocator));
 
             {
-                var results = ExecuteRQLQuery("FROM TestIndex WHERE NOT (Content = '1')");
+                var results = ExecuteRQLQuery("FROM TestIndex WHERE Content != '1'");
                 Assert.Equal(3, results.Count);
             }
             {
-                var results = ExecuteRQLQuery("FROM TestIndex WHERE NOT (Content = '2')");
+                var results = ExecuteRQLQuery("FROM TestIndex WHERE Content != '2'");
                 var expected = entries.Count(x => x.Content.Contains("2") == false);
                 Assert.Equal(expected, results.Count);
             }
