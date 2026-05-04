@@ -1,19 +1,38 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Threading;
 using Corax.Querying;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
+using Corax.Querying.Matches.SortingMatches.Meta;
 using Corax.Querying.Planning;
 using Corax.Mappings;
+using Corax.Utils;
+using Raven.Client;
+using Raven.Client.Documents.Indexes.Vector;
+using Raven.Client.Exceptions;
+using Raven.Client.Exceptions.Corax;
+using VectorOptions = Raven.Client.Documents.Indexes.Vector.VectorOptions;
+using Raven.Server.Documents.AI.Embeddings;
+using Raven.Server.Documents.ETL.Providers.AI.Embeddings;
 using Raven.Server.Documents.Indexes;
 using Raven.Server.Documents.Indexes.Persistence.Corax.QueryOptimizer;
+using Raven.Server.Documents.Indexes.VectorSearch;
 using Raven.Server.Documents.Queries;
 using Raven.Server.Documents.Queries.AST;
+using Spatial4n.Shapes;
+using Sparrow;
 using Sparrow.Json;
 using Constants = Corax.Constants;
+using RavenConstants = Raven.Client.Constants;
+using ClientConstants = Raven.Client.Constants;
 using Sparrow.Server;
+using SpatialUnits = Raven.Client.Documents.Indexes.Spatial.SpatialUnits;
 using IndexSearcher = Corax.Querying.IndexSearcher;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax;
@@ -81,7 +100,7 @@ internal static class QueryPlanBuilder
     /// </summary>
     public static IQueryMatch BuildAndCompile(
         PlanParameters planParams,
-        global::Raven.Server.Documents.Indexes.Persistence.Corax.CoraxQueryBuilder.Parameters builderParameters,
+        QueryBuilderParameters builderParameters,
         long take,
         out QueryPlan plan,
         Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms,
@@ -1835,7 +1854,7 @@ internal static class QueryPlanBuilder
     /// posting list resolution, etc.
     /// </summary>
     public static IQueryMatch[] ResolveMatches(QueryPlan plan, IndexSearcher indexSearcher,
-        PlanParameters parameters = null, CoraxQueryBuilder.Parameters builderParams = null)
+        PlanParameters parameters = null, QueryBuilderParameters builderParams = null)
     {
         // All-entries plan with possible post-filter phases
         if (plan.IsAllEntries)
@@ -1934,7 +1953,7 @@ internal static class QueryPlanBuilder
     /// array to read.
     /// </summary>
     public static TermSource[] ResolveTermSources(QueryPlan plan, IndexSearcher indexSearcher,
-        PlanParameters parameters = null, CoraxQueryBuilder.Parameters builderParams = null)
+        PlanParameters parameters = null, QueryBuilderParameters builderParams = null)
     {
         // IsAllEntries plans never emit term ops (FillFromPostings / AndWith / etc.) —
         // their match[0] is AllEntries, post-filter slots are spatial/vector. No
@@ -2023,7 +2042,7 @@ internal static class QueryPlanBuilder
     /// decode it into a <see cref="TermSource"/>. Returns Empty when the clause
     /// is non-term-shaped or the term doesn't exist in the index.</summary>
     private static TermSource ResolveSingleTermSource(ClauseInfo clause, IndexSearcher indexSearcher,
-        PlanParameters parameters, CoraxQueryBuilder.Parameters builderParams)
+        PlanParameters parameters, QueryBuilderParameters builderParams)
     {
         if (IsTermSourceEligibleClause(clause) == false)
             return default; // Kind == Empty
@@ -2056,7 +2075,7 @@ internal static class QueryPlanBuilder
     /// <summary>Resolve a single In/AllIn term to a posting-list ID. Mirrors
     /// <see cref="ResolveInTerm"/> — typed long / double / string lookup.</summary>
     private static TermSource ResolveInTermSource(ClauseInfo clause, string term, IndexSearcher indexSearcher,
-        PlanParameters parameters, CoraxQueryBuilder.Parameters builderParams)
+        PlanParameters parameters, QueryBuilderParameters builderParams)
     {
         FieldMetadata fieldMeta;
         if (builderParams != null)
@@ -2086,7 +2105,7 @@ internal static class QueryPlanBuilder
     /// <summary>Resolve field metadata for a term-source clause. Mirrors the
     /// non-Spatial/Vector/Search branch of <see cref="ResolveClause"/>.</summary>
     private static FieldMetadata ResolveFieldMetadata(ClauseInfo clause, IndexSearcher indexSearcher,
-        PlanParameters parameters, CoraxQueryBuilder.Parameters builderParams)
+        PlanParameters parameters, QueryBuilderParameters builderParams)
     {
         if (builderParams != null)
         {
@@ -2145,7 +2164,7 @@ internal static class QueryPlanBuilder
     /// match as the filterQuery. Returns null if the plan has no vector selects.
     /// </summary>
     public static CoraxVectorItem[] ResolveVectorItems(QueryPlan plan, IndexSearcher indexSearcher,
-        PlanParameters parameters = null, CoraxQueryBuilder.Parameters builderParams = null)
+        PlanParameters parameters = null, QueryBuilderParameters builderParams = null)
     {
         if (plan.VectorSelects == null || plan.VectorSelects.Length == 0)
             return null;
@@ -2157,7 +2176,7 @@ internal static class QueryPlanBuilder
             if (clause == null || clause.ClauseType != ClauseType.Vector || builderParams == null || clause.MethodExpression == null)
                 throw new InvalidOperationException("Vector select references an invalid clause at index " + i);
 
-            items[i] = CoraxQueryBuilder.HandleVector(builderParams, clause.MethodExpression, false);
+            items[i] = HandleVector(builderParams, clause.MethodExpression, false);
         }
         return items;
     }
@@ -2194,7 +2213,7 @@ internal static class QueryPlanBuilder
     }
 
     private static IQueryMatch ResolveClause(ClauseInfo clause, IndexSearcher indexSearcher,
-        PlanParameters parameters = null, CoraxQueryBuilder.Parameters builderParams = null)
+        PlanParameters parameters = null, QueryBuilderParameters builderParams = null)
     {
         // Use proper field metadata from the index schema when available.
         // This ensures correct analyzer application for static index fields.
@@ -2367,14 +2386,14 @@ internal static class QueryPlanBuilder
                 if (builderParams == null || clause.MethodExpression == null)
                     throw new InvalidOperationException("Spatial resolution requires builder parameters");
                 var spatialMethod = QueryMethod.GetMethodType(clause.MethodExpression.Name.Value);
-                return CoraxQueryBuilder.HandleSpatial(builderParams, clause.MethodExpression, spatialMethod);
+                return HandleSpatial(builderParams, clause.MethodExpression, spatialMethod);
             }
 
             case ClauseType.Vector:
             {
                 if (builderParams == null || clause.MethodExpression == null)
                     throw new InvalidOperationException("Vector resolution requires builder parameters");
-                var vectorItem = CoraxQueryBuilder.HandleVector(builderParams, clause.MethodExpression, false);
+                var vectorItem = HandleVector(builderParams, clause.MethodExpression, false);
                 // Materialize with null inner — the bitmap provides the candidate set
                 return vectorItem.Materialize(null);
             }
@@ -2392,7 +2411,7 @@ internal static class QueryPlanBuilder
 
     /// <summary>Resolve a single IN term to a typed TermQuery (long, double, or string).</summary>
     private static IQueryMatch ResolveInTerm(string fieldName, string term, IndexSearcher indexSearcher,
-        PlanParameters parameters, CoraxQueryBuilder.Parameters builderParams)
+        PlanParameters parameters, QueryBuilderParameters builderParams)
     {
         FieldMetadata fieldMeta;
         if (builderParams != null)
@@ -2406,5 +2425,679 @@ internal static class QueryPlanBuilder
             System.Globalization.CultureInfo.InvariantCulture, out double dVal))
             return indexSearcher.TermQuery(fieldMeta, dVal);
         return indexSearcher.TermQuery(fieldMeta, term);
+    }
+
+    public static OrderMetadata[] GetSortMetadata(QueryBuilderParameters builderParameters, out bool hasEmpty)
+    {
+        hasEmpty = false;
+        var query = builderParameters.Query;
+        var index = builderParameters.Index;
+        var getSpatialField = builderParameters.Factories?.GetSpatialFieldFactory;
+        var indexMapping = builderParameters.IndexFieldsMapping;
+        var queryMapping = builderParameters.FieldsToFetch;
+        var allocator = builderParameters.Allocator;
+        if (query.PageSize == 0) // no need to sort when counting only
+        {
+            return null;
+        }
+
+        var orderByFields = query.Metadata.OrderBy;
+
+        if (orderByFields == null)
+        {
+            if (builderParameters.HasBoost && (
+                    index.Configuration.OrderByScoreAutomaticallyWhenBoostingIsInvolved
+                    || index.Configuration.CoraxVectorSearchOrderByScoreAutomatically))
+            {
+                // in case when we've single vector clause and we expose the score, we have to go through
+                // order by primitive to retrieve them; however scores are detected as natively sorted
+                if (builderParameters.IsVectorSingleClause && index.Configuration.CoraxIncludeDocumentScore == false)
+                    return null;
+
+                if (builderParameters.Metadata.HasVectorSearch == false)
+                    builderParameters.IndexReadOperation?.AssertCanOrderByScoreAutomaticallyWhenBoostingOrVectorSearchIsInvolved();
+
+                return new[] { new OrderMetadata(true, MatchCompareFieldType.Score) };
+            }
+
+            return null;
+        }
+
+        int sortIndex = 0;
+        var sortArray = new OrderMetadata[16];
+
+        if (orderByFields.Length > sortArray.Length)
+            throw new InvalidOperationException($"Corax does not support ordering by more than {sortArray.Length} properties.");
+
+        foreach (var field in orderByFields)
+        {
+            if (field.OrderingType == OrderByFieldType.Random)
+            {
+                var seed = field.Arguments is { Length: > 0 } ?
+                    (int)Hashing.XXHash32.CalculateRaw(field.Arguments[0].NameOrValue) :
+                    Random.Shared.Next(); // use a random seed if none is provided
+                sortArray[sortIndex++] = new OrderMetadata(seed);
+                continue;
+            }
+
+            if (field.OrderingType == OrderByFieldType.Score)
+            {
+                if (field.Ascending)
+                    sortArray[sortIndex++] = new OrderMetadata(true, MatchCompareFieldType.Score);
+                else
+                    sortArray[sortIndex++] = new OrderMetadata(true, MatchCompareFieldType.Score, ascending: false);
+
+                continue;
+            }
+
+            var fieldMetadata = QueryBuilderHelper.GetFieldIdForOrderBy(allocator, field.Name, index, builderParameters.HasDynamics,
+                builderParameters.DynamicFields, indexMapping, queryMapping, false);
+
+            bool fieldIsEmpty = builderParameters.IndexSearcher.GetTermAmountInField(fieldMetadata) == 0;
+            if (fieldIsEmpty)
+            {
+                if (builderParameters.IndexReadOperation.IsSharded == false)
+                    continue;
+                hasEmpty = true;
+            }
+
+            if (field.OrderingType == OrderByFieldType.Distance)
+            {
+                var spatialField = getSpatialField(field.Name);
+
+                int lastArgument;
+                IPoint point;
+                switch (field.Method)
+                {
+                    case MethodType.Spatial_Circle:
+                        var cLatitude = field.Arguments[1].GetDouble(query.QueryParameters);
+                        var cLongitude = field.Arguments[2].GetDouble(query.QueryParameters);
+                        lastArgument = 2;
+                        point = spatialField.ReadPoint(cLatitude, cLongitude).Center;
+                        break;
+                    case MethodType.Spatial_Wkt:
+                        var wkt = field.Arguments[0].GetString(query.QueryParameters);
+                        SpatialUnits? spatialUnits = null;
+                        lastArgument = 1;
+                        if (field.Arguments.Length > 1)
+                        {
+                            spatialUnits = Enum.Parse<SpatialUnits>(field.Arguments[1].GetString(query.QueryParameters), ignoreCase: true);
+                            lastArgument = 2;
+                        }
+
+                        point = spatialField.ReadShape(wkt, spatialUnits).Center;
+                        break;
+                    case MethodType.Spatial_Point:
+                        var pLatitude = field.Arguments[0].GetDouble(query.QueryParameters);
+                        var pLongitude = field.Arguments[1].GetDouble(query.QueryParameters);
+                        lastArgument = 2;
+                        point = spatialField.ReadPoint(pLatitude, pLongitude).Center;
+                        break;
+                    default:
+                        throw new ArgumentOutOfRangeException();
+                }
+
+                var roundTo = field.Arguments.Length > lastArgument
+                    ? field.Arguments[lastArgument].GetDouble(query.QueryParameters)
+                    : 0D;
+
+                sortArray[sortIndex++] = new OrderMetadata(fieldMetadata, field.Ascending, MatchCompareFieldType.Spatial, point, roundTo,
+                    spatialField.Units is SpatialUnits.Kilometers
+                        ? global::Corax.Utils.Spatial.SpatialUnits.Kilometers
+                        : global::Corax.Utils.Spatial.SpatialUnits.Miles, fieldIsEmpty);
+                continue;
+            }
+
+            var orderingType = field.OrderingType;
+            if (orderingType is OrderByFieldType.Implicit && index.Configuration.OrderByTicksAutomaticallyWhenDatesAreInvolved && index.IndexFieldsPersistence.HasTimeValues(field.Name.Value))
+                orderingType = OrderByFieldType.Long;
+
+            var metadataField = QueryBuilderHelper.GetFieldIdForOrderBy(allocator, field.Name.Value, index, builderParameters.HasDynamics,
+                builderParameters.DynamicFields,
+                indexMapping, queryMapping, false);
+            OrderMetadata? temporaryOrder = null;
+            switch (orderingType)
+            {
+                case OrderByFieldType.Custom:
+                    throw new NotSupportedInCoraxException($"{nameof(Corax)} doesn't support Custom OrderBy.");
+                case OrderByFieldType.AlphaNumeric:
+                    sortArray[sortIndex++] = new OrderMetadata(metadataField, field.Ascending, MatchCompareFieldType.Alphanumeric, fieldIsEmpty);
+                    continue;
+                case OrderByFieldType.Long:
+                    temporaryOrder = new OrderMetadata(metadataField, field.Ascending, MatchCompareFieldType.Integer, fieldIsEmpty);
+                    break;
+                case OrderByFieldType.Double:
+                    temporaryOrder = new OrderMetadata(metadataField, field.Ascending, MatchCompareFieldType.Floating, fieldIsEmpty);
+                    break;
+            }
+
+            sortArray[sortIndex++] = temporaryOrder ?? new OrderMetadata(metadataField, field.Ascending, MatchCompareFieldType.Sequence, fieldIsEmpty);
+        }
+
+        return sortArray[0..sortIndex];
+    }
+
+    public static IQueryMatch OrderBy(QueryBuilderParameters builderParameters, IQueryMatch match, in OrderMetadata[] orderMetadataSource, bool hasEmptySortingMatches)
+    {
+        RuntimeHelpers.EnsureSufficientExecutionStack();
+        var indexSearcher = builderParameters.IndexSearcher;
+        var take = builderParameters.Take;
+        OrderMetadata[] orderMetadata = null;
+        if (hasEmptySortingMatches == false)
+            orderMetadata = orderMetadataSource;
+        else
+        {
+            var currentIdx = 0;
+            foreach (var orderMetadataItem in orderMetadataSource)
+            {
+                if (orderMetadataItem.FieldHasNoTerms)
+                    continue;
+
+                orderMetadata ??= new OrderMetadata[orderMetadataSource.Length];
+                orderMetadata[currentIdx++] = orderMetadataItem;
+            }
+
+            orderMetadata = currentIdx == 0 ? [] : orderMetadata![..currentIdx];
+        }
+
+        switch (orderMetadata.Length)
+        {
+            case 0:
+                return match;
+            case 1:
+                return indexSearcher.OrderBy(match, orderMetadata[0], builderParameters.Index.Configuration.NullFirst, take, builderParameters.Token);
+            default:
+                return indexSearcher.OrderBy(match, orderMetadata, builderParameters.Index.Configuration.NullFirst, take, builderParameters.Token);
+        }
+    }
+
+    private static IQueryMatch HandleSpatial(QueryBuilderParameters builderParameters, MethodExpression expression, MethodType spatialMethod)
+    {
+        var metadata = builderParameters.Metadata;
+        var queryParameters = builderParameters.QueryParameters;
+        var index = builderParameters.Index;
+        var indexFieldsMapping = builderParameters.IndexFieldsMapping;
+        var fieldsToFetch = builderParameters.FieldsToFetch;
+        var allocator = builderParameters.Allocator;
+
+        string fieldName;
+        if (metadata.IsDynamic == false)
+            fieldName = QueryBuilderHelper.ExtractIndexFieldName(metadata.Query, queryParameters, expression.Arguments[0], metadata);
+        else
+        {
+            var spatialExpression = (MethodExpression)expression.Arguments[0];
+            fieldName = metadata.GetSpatialFieldName(spatialExpression, builderParameters.QueryParameters);
+        }
+
+        var fieldMetadata = QueryBuilderHelper.GetFieldMetadata(allocator, fieldName, index, indexFieldsMapping, fieldsToFetch, builderParameters.HasDynamics,
+            builderParameters.DynamicFields, hasBoost: builderParameters.HasBoost);
+        var shapeExpression = (MethodExpression)expression.Arguments[1];
+
+        var distanceErrorPct = RavenConstants.Documents.Indexing.Spatial.DefaultDistanceErrorPct;
+        if (expression.Arguments.Count == 3)
+        {
+            var distanceErrorPctValue = QueryBuilderHelper.GetValue(metadata.Query, metadata, queryParameters, (ValueExpression)expression.Arguments[2]);
+            QueryBuilderHelper.AssertValueIsNumber(fieldName, distanceErrorPctValue.Type);
+
+            distanceErrorPct = Convert.ToDouble(distanceErrorPctValue.Value);
+        }
+
+        var spatialField = builderParameters.Factories.GetSpatialFieldFactory(fieldName);
+
+        var methodName = shapeExpression.Name;
+        var methodType = QueryMethod.GetMethodType(methodName.Value);
+
+        IShape shape = null;
+        switch (methodType)
+        {
+            case MethodType.Spatial_Circle:
+                shape = QueryBuilderHelper.HandleCircle(metadata.Query, shapeExpression, metadata, queryParameters, fieldName, spatialField, out _);
+                break;
+            case MethodType.Spatial_Wkt:
+                shape = QueryBuilderHelper.HandleWkt(builderParameters, fieldName, shapeExpression, spatialField, out _);
+                break;
+            default:
+                QueryMethod.ThrowMethodNotSupported(methodType, metadata.QueryText, builderParameters.QueryParameters);
+                break;
+        }
+
+        Debug.Assert(shape != null);
+
+        var operation = spatialMethod switch
+        {
+            MethodType.Spatial_Within => global::Corax.Utils.Spatial.SpatialRelation.Within,
+            MethodType.Spatial_Disjoint => global::Corax.Utils.Spatial.SpatialRelation.Disjoint,
+            MethodType.Spatial_Intersects => global::Corax.Utils.Spatial.SpatialRelation.Intersects,
+            MethodType.Spatial_Contains => global::Corax.Utils.Spatial.SpatialRelation.Contains,
+            _ => (global::Corax.Utils.Spatial.SpatialRelation)QueryMethod.ThrowMethodNotSupported(spatialMethod, metadata.QueryText, builderParameters.QueryParameters)
+        };
+
+        return builderParameters.IndexSearcher.SpatialQuery(fieldMetadata, distanceErrorPct, shape, spatialField.GetContext(), operation, token: builderParameters.Token);
+    }
+
+    private static CoraxVectorItem HandleVector(QueryBuilderParameters builderParameters, MethodExpression me, bool exact)
+    {
+        var metadata = builderParameters.Metadata;
+        IndexField indexField;
+        string embeddingsGenerationTaskIdentifier;
+        var minimumMatch = builderParameters.Index.Configuration.CoraxVectorSearchDefaultMinimumSimilarity;
+        if (me.Arguments.Count > 2)
+        {
+            var (similarityValue, similiarityValueType) = QueryBuilderHelper.GetValue(builderParameters.Metadata.Query, builderParameters.Metadata, builderParameters.QueryParameters,
+                (ValueExpression)me.Arguments[2]);
+            minimumMatch = similiarityValueType switch
+            {
+                ValueTokenType.Null => builderParameters.Index.Configuration.CoraxVectorSearchDefaultMinimumSimilarity,
+                ValueTokenType.Long => (long)similarityValue,
+                ValueTokenType.Double => (float)(double)similarityValue,
+                _ => throw new NotSupportedException("vector.search() minimumMatch must be a float, but was: " + similiarityValueType)
+            };
+        }
+
+        int numberOfCandidates = builderParameters.Index.Configuration.CoraxVectorDefaultNumberOfCandidatesForQuerying;
+        if (me.Arguments.Count > 3)
+        {
+            var (candidatesValue, candidatesValueType) = QueryBuilderHelper.GetValue(builderParameters.Metadata.Query, builderParameters.Metadata, builderParameters.QueryParameters,
+                (ValueExpression)me.Arguments[3]);
+            numberOfCandidates = candidatesValueType switch
+            {
+                ValueTokenType.Long => Convert.ToInt32(candidatesValue),
+                ValueTokenType.Double => Convert.ToInt32(candidatesValue),
+                ValueTokenType.Null => builderParameters.Index.Configuration.CoraxVectorDefaultNumberOfCandidatesForQuerying,
+                _ => throw new NotSupportedException("vector.search() minimumMatch must be a float, but was: " + candidatesValueType)
+            };
+        }
+
+        var fieldName = metadata.IsDynamic == false
+            ? QueryBuilderHelper.ExtractIndexFieldName(metadata.Query, builderParameters.QueryParameters, me.Arguments[0], metadata)
+            : metadata.GetVectorFieldName(me, builderParameters.QueryParameters);
+
+        var fieldMetadata = QueryBuilderHelper.GetFieldMetadata(builderParameters, fieldName, hasBoost: builderParameters.HasBoost);
+        QueryExpression srcVector = me.Arguments[1];
+
+        if (srcVector is MethodExpression methodValue) // embedding.forDoc(docId) ...
+        {
+            var supportedMethods = methodValue.Name != ClientConstants.VectorSearch.EmbeddingForDocument
+                                   && methodValue.Name != ClientConstants.VectorSearch.EmbeddingForRaw
+                                   && methodValue.Name != ClientConstants.VectorSearch.EmbeddingText;
+
+            PortableExceptions.ThrowIf<InvalidDataException>(supportedMethods,
+                $"Expected {ClientConstants.VectorSearch.EmbeddingForDocument}() method call, but got: {methodValue.Name}");
+
+            var (methodParameter, valueTokenType) = QueryBuilderHelper.GetValue(metadata.Query, metadata, builderParameters.QueryParameters, (ValueExpression)methodValue.Arguments[0], allowObjectsInParameters: false, allowArraysInParameters: true);
+
+            var method = methodValue.Name.ToString() switch
+            {
+                ClientConstants.VectorSearch.EmbeddingForDocument => VectorHelpers.MethodVectorValue.ForDocument,
+                ClientConstants.VectorSearch.EmbeddingForRaw => VectorHelpers.MethodVectorValue.ForRaw,
+                ClientConstants.VectorSearch.EmbeddingText => VectorHelpers.MethodVectorValue.EmbeddingText,
+                _ => throw new InvalidDataException(
+                    $"Unknown method in value ({methodValue.Name}. Parameter type: {methodParameter.GetType().FullName}, Value: {methodParameter}")
+            };
+
+            if (method is not VectorHelpers.MethodVectorValue.EmbeddingText)
+            {
+                return (method, methodParameter) switch
+                {
+                    (method: VectorHelpers.MethodVectorValue.ForDocument, string docId) => CoraxVectorItem.BuildForDocVector(builderParameters, fieldMetadata, docId, numberOfCandidates, minimumMatch, exact),
+                    (method: VectorHelpers.MethodVectorValue.ForDocument, StringSegment docIdSegment) => CoraxVectorItem.BuildForDocVector(builderParameters, fieldMetadata, docIdSegment.Value, numberOfCandidates, minimumMatch, exact),
+                    (method: VectorHelpers.MethodVectorValue.ForRaw, string vectorAsBase64) => CoraxVectorItem.BuildSingleVector(builderParameters, fieldMetadata, GenerateEmbeddings.FromBase64Array(VectorOptions.Default, builderParameters.Allocator, vectorAsBase64, false), numberOfCandidates, minimumMatch, exact),
+                    (method: VectorHelpers.MethodVectorValue.ForRaw, StringSegment stringSegmentAsBase64) => CoraxVectorItem.BuildSingleVector(builderParameters, fieldMetadata, GenerateEmbeddings.FromBase64Array(VectorOptions.Default, builderParameters.Allocator, stringSegmentAsBase64.ToString(), false), numberOfCandidates, minimumMatch, exact),
+                    (_, BlittableJsonReaderArray { Length: > 0 }) => throw new InvalidDataException("Cannot perform search on empty value."),
+                    _ => throw new InvalidQueryException(
+                        $"Unknown method in value ({methodValue.Name}. Parameter type: {methodParameter.GetType().FullName}, Value: {methodParameter}")
+                };
+            }
+
+            var aiTaskMethod = (MethodExpression)methodValue.Arguments[1];
+            PortableExceptions.ThrowIfNot<InvalidOperationException>(aiTaskMethod.Name == ClientConstants.VectorSearch.AiTaskMethodName, "Expected to find an AI task method call, but got: " + aiTaskMethod.Name);
+            embeddingsGenerationTaskIdentifier = QueryBuilderHelper.GetValue(metadata.Query, metadata, builderParameters.QueryParameters, (ValueExpression)aiTaskMethod.Arguments[0],
+                allowObjectsInParameters: false, allowArraysInParameters: false).Value.ToString();
+            var vectorOptions = VectorHelpers.GetExplicitVectorOptions(builderParameters, fieldName, out indexField);
+            if (vectorOptions != null)
+            {
+                vectorOptions = new VectorOptions()
+                {
+                    DestinationEmbeddingType = vectorOptions.DestinationEmbeddingType,
+                    Dimensions = vectorOptions.Dimensions,
+                    SourceEmbeddingType = VectorEmbeddingType.Text,
+                    NumberOfCandidatesForIndexing = vectorOptions.NumberOfCandidatesForIndexing,
+                    NumberOfEdges = vectorOptions.NumberOfEdges
+                };
+            }
+
+            var vector = VectorHelpers.GetEmbeddingsForQueryParameter(builderParameters, valueTokenType, methodParameter, embeddingsGenerationTaskIdentifier, vectorOptions, fieldName);
+
+            if (vector.SingleVector != null)
+            {
+                return CoraxVectorItem.BuildSingleVector(builderParameters, fieldMetadata, vector.SingleVector.Value, numberOfCandidates, minimumMatch, exact);
+            }
+
+            return CoraxVectorItem.BuildMultiVector(builderParameters, fieldMetadata, vector.MultiVector, numberOfCandidates, minimumMatch, exact);
+        }
+
+        var (value, valueType) = QueryBuilderHelper.GetValue(metadata.Query, metadata, builderParameters.QueryParameters, (ValueExpression)srcVector,
+            allowObjectsInParameters: false, allowArraysInParameters: true);
+
+        (VectorValue? SingleVector, VectorValue[] MultiVector) transformedEmbeddings = (null, null);
+        int numberOfDimensions;
+        if (VectorHelpers.TryRetrieveEtlTaskName(builderParameters, fieldName, out embeddingsGenerationTaskIdentifier))
+        {
+            var vectorOptions = VectorHelpers.GetExplicitVectorOptions(builderParameters, fieldName, out indexField);
+            transformedEmbeddings = VectorHelpers.GetEmbeddingsForQueryParameter(builderParameters, valueType, value, embeddingsGenerationTaskIdentifier, vectorOptions, fieldName);
+        }
+        else
+        {
+            VectorOptions vectorOptions = VectorHelpers.GetOptions(builderParameters, fieldName, out indexField);
+
+            if (builderParameters.Index.IndexFieldsPersistence.TryReadNumberOfDimensions(fieldName, out numberOfDimensions) == false)
+                return CoraxVectorItem.BuildEmpty(builderParameters); // no vector indexed
+            if (vectorOptions.SourceEmbeddingType is VectorEmbeddingType.Text)
+            {
+                transformedEmbeddings = VectorHelpers.GetVectorValueForTextualInput(builderParameters, vectorOptions, valueType, value);
+            }
+            else
+            {
+                switch (value)
+                {
+                    case string s:
+                        transformedEmbeddings.SingleVector = GenerateEmbeddings.FromBase64Array(vectorOptions, builderParameters.Allocator, s);
+                        break;
+                    case StringSegment stringSegment:
+                        transformedEmbeddings.SingleVector = GenerateEmbeddings.FromBase64Array(vectorOptions, builderParameters.Allocator, stringSegment.ToString());
+                        break;
+                    case BlittableJsonReaderObject bjro:
+                        transformedEmbeddings.SingleVector = VectorHelpers.GetVectorValueFromRavenVector(builderParameters, bjro, vectorOptions);
+                        break;
+                    case BlittableJsonReaderArray { Length: > 0 } bjra:
+                    {
+                        var isRavenVector = bjra[0] is BlittableJsonReaderObject;
+                        var isStringArray = bjra[0] is string or StringSegment or LazyStringValue;
+                        var isArray = bjra[0] is BlittableJsonReaderArray;
+
+                        if (isRavenVector == false && isStringArray == false && isArray == false)
+                        {
+                            transformedEmbeddings.SingleVector = VectorHelpers.GetVectorValueFromNumericalBlittableArray(builderParameters, bjra, vectorOptions);
+                        }
+                        else
+                        {
+                            var embeddings = new VectorValue[bjra.Length];
+                            for (int i = 0; i < bjra.Length; ++i)
+                            {
+                                if (isRavenVector)
+                                    embeddings[i] = VectorHelpers.GetVectorValueFromRavenVector(builderParameters, (BlittableJsonReaderObject)bjra[i], vectorOptions);
+                                else if (isStringArray)
+                                    embeddings[i] = GenerateEmbeddings.FromBase64Array(vectorOptions, builderParameters.Allocator, bjra[i].ToString());
+                                else
+                                    embeddings[i] = VectorHelpers.GetVectorValueFromNumericalBlittableArray(builderParameters, (BlittableJsonReaderArray)bjra[i],
+                                        vectorOptions);
+                            }
+
+                            transformedEmbeddings.MultiVector = embeddings;
+                        }
+
+                        break;
+                    }
+                    default:
+                        PortableExceptions.Throw<InvalidDataException>("We expected to get vector(s), however got: " + value.GetType().Name);
+                        break;
+                }
+            }
+        }
+
+        if (builderParameters.Index.IndexFieldsPersistence.TryReadNumberOfDimensions(fieldName, out numberOfDimensions) == false)
+            return CoraxVectorItem.BuildEmpty(builderParameters); // no vector indexed
+
+        if (transformedEmbeddings.SingleVector != null)
+        {
+            var singleVector = transformedEmbeddings.SingleVector.Value;
+
+            if (indexField != null)
+                AssertDimensions(singleVector);
+            return CoraxVectorItem.BuildSingleVector(builderParameters, fieldMetadata, singleVector, numberOfCandidates, minimumMatch, exact);
+        }
+
+        if (transformedEmbeddings.MultiVector != null)
+        {
+            var multiVector = transformedEmbeddings.MultiVector;
+
+            if (indexField != null)
+            {
+                foreach (var vector in multiVector)
+                    AssertDimensions(vector);
+            }
+            return CoraxVectorItem.BuildMultiVector(builderParameters, fieldMetadata, multiVector, numberOfCandidates, minimumMatch, exact);
+        }
+
+        throw new InvalidDataException("Expected to get single or multiple embeddings of VectorValue type but none was provided");
+
+        void AssertDimensions(in VectorValue vector)
+        {
+            if (numberOfDimensions != vector.Length)
+            {
+                using (vector)
+                    VectorHelpers.ThrowDifferentNumberOfDimensions(indexField, fieldName, vector, numberOfDimensions);
+            }
+        }
+    }
+
+    private static class VectorHelpers
+    {
+        public enum MethodVectorValue
+        {
+            ForDocument,
+            ForRaw,
+            EmbeddingText
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static bool TryRetrieveEtlTaskName(QueryBuilderParameters builderParameters, in string fieldName, out string embeddingsGenerationTaskIdentifier)
+        {
+            var existsInPersistence =
+                builderParameters.Index.IndexFieldsPersistence.TryReadEmbeddingsGenerationTaskIdentifier(fieldName, out embeddingsGenerationTaskIdentifier);
+
+            if (builderParameters.Metadata.IsDynamic == false)
+                return existsInPersistence;
+
+            if (((builderParameters.FieldsToFetch != null && builderParameters.FieldsToFetch.IndexFields.TryGetValue(fieldName, out var indexField)) || (builderParameters.Index.Definition.IndexFields.TryGetValue(fieldName, out indexField))) && indexField.Vector is AutoVectorOptions avo)
+            {
+                embeddingsGenerationTaskIdentifier = avo.EmbeddingsGenerationTaskIdentifier;
+                return avo.EmbeddingsGenerationTaskIdentifier != null;
+            }
+
+            embeddingsGenerationTaskIdentifier = null;
+            return false;
+        }
+
+        internal static (VectorValue? SingleVector, VectorValue[] MultiVector) GetVectorValueForTextualInput(QueryBuilderParameters parameters, VectorOptions vectorOptions, ValueTokenType valueType, object value)
+        {
+            if (valueType is ValueTokenType.String)
+                return (GenerateEmbeddings.FromText(parameters.Allocator, vectorOptions, value.ToString()), null);
+
+            if (valueType is not ValueTokenType.Parameter)
+                PortableExceptions.Throw<InvalidDataException>($"Cannot use vector.search() on a text field with a non-string value. Got {valueType}");
+
+            if (value is BlittableJsonReaderArray valueAsList)
+            {
+                var embeddings = new VectorValue[valueAsList.Length];
+                for (var i = 0; i < valueAsList.Length; ++i)
+                    embeddings[i] = GenerateEmbeddings.FromText(parameters.Allocator, vectorOptions, valueAsList[i].ToString());
+
+                return (null, embeddings);
+            }
+
+            PortableExceptions.Throw<InvalidDataException>($"Cannot use vector.search() on a text field with a non-string value(s). Got {valueType}");
+            return (null, null);
+        }
+
+        internal static VectorValue GetVectorValueFromRavenVector(QueryBuilderParameters parameters, BlittableJsonReaderObject json, VectorOptions vectorOptions)
+        {
+            var vectorObjectFound = json.TryGetMember(Sparrow.Global.Constants.Naming.VectorPropertyName, out var vectorObject);
+            PortableExceptions.ThrowIfNot<InvalidDataException>(vectorObjectFound, "Cannot find vector property in the object.");
+
+            var vectorReader = (BlittableJsonReaderVector)vectorObject;
+            return QueryBuilderHelper.GetVectorValueFromBlittableJsonVectorReader(parameters.Allocator, vectorOptions, vectorReader);
+        }
+
+        internal static VectorValue GetVectorValueFromNumericalBlittableArray(QueryBuilderParameters parameters, BlittableJsonReaderArray array, VectorOptions vectorOptions)
+        {
+            var bytesUsed = array.Length * (vectorOptions.SourceEmbeddingType is VectorEmbeddingType.Single ? sizeof(float) : 1);
+            var memScope = parameters.Allocator.Allocate(bytesUsed, out Memory<byte> mem);
+            ref var floatRef = ref MemoryMarshal.GetReference(MemoryMarshal.Cast<byte, float>(mem.Span));
+            ref var sbyteRef = ref MemoryMarshal.GetReference(MemoryMarshal.Cast<byte, sbyte>(mem.Span));
+            ref var byteRef = ref MemoryMarshal.GetReference(mem.Span);
+
+            for (int i = 0; i < array.Length; ++i)
+            {
+                switch (vectorOptions.SourceEmbeddingType)
+                {
+                    case VectorEmbeddingType.Single:
+                        Unsafe.Add(ref floatRef, i) = array.GetByIndex<float>(i);
+                        break;
+                    case VectorEmbeddingType.Int8:
+                        Unsafe.Add(ref sbyteRef, i) = array.GetByIndex<sbyte>(i);
+                        break;
+                    default:
+                        Unsafe.AddByteOffset(ref byteRef, i) = array.GetByIndex<byte>(i);
+                        break;
+                }
+            }
+
+            return GenerateEmbeddings.FromArray(parameters.Allocator, memScope, mem, vectorOptions, bytesUsed);
+        }
+
+        internal static VectorOptions GetExplicitVectorOptions(QueryBuilderParameters builderParameters, in string fieldName, out IndexField indexField)
+        {
+            if ((builderParameters.FieldsToFetch != null && builderParameters.FieldsToFetch.IndexFields.TryGetValue(fieldName, out indexField)) == false
+                && (builderParameters.Index.Definition.IndexFields.TryGetValue(fieldName, out indexField)) == false)
+                PortableExceptions.Throw<InvalidDataException>($"Cannot find `{fieldName}` field in the index.");
+
+            return indexField.Vector;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static VectorOptions GetOptions(QueryBuilderParameters builderParameters, in string fieldName, out IndexField indexField)
+        {
+            if ((builderParameters.FieldsToFetch != null && builderParameters.FieldsToFetch.IndexFields.TryGetValue(fieldName, out indexField)) == false
+                && (builderParameters.Index.Definition.IndexFields.TryGetValue(fieldName, out indexField)) == false)
+                PortableExceptions.Throw<InvalidDataException>($"Cannot find `{fieldName}` field in the index.");
+
+            // VectorOptions can be null when a user does not specify the configuration.
+            // In such cases, we will choose the input depending on the value type (similar to how we handle it during indexing).
+            if (indexField.Vector != null)
+                return indexField.Vector;
+
+            builderParameters.Index.IndexFieldsPersistence.TryReadVectorSourceEmbeddingType(fieldName, out var vectorSourceEmbeddingType);
+
+            var defaultVectorOptions = vectorSourceEmbeddingType switch
+            {
+                VectorEmbeddingType.Single => VectorOptions.Default,
+                VectorEmbeddingType.Text => VectorOptions.DefaultText,
+                _ => throw new InvalidDataException(
+                    $"Unknown vector source embedding type: {vectorSourceEmbeddingType}. Implicit configuration support only single and text vector source embedding types.")
+            };
+
+            indexField.Vector = defaultVectorOptions;
+
+            return defaultVectorOptions;
+        }
+
+        internal static void ThrowDifferentNumberOfDimensions(in IndexField indexField, in string fieldName, in VectorValue transformedEmbedding,
+            in int numberOfDimensions)
+        {
+            var (storedDimensions, inputDimensions) = indexField.Vector.DestinationEmbeddingType switch
+            {
+                VectorEmbeddingType.Single => (numberOfDimensions / sizeof(float), transformedEmbedding.Length / sizeof(float)),
+                VectorEmbeddingType.Int8 => (numberOfDimensions - sizeof(float), transformedEmbedding.Length - sizeof(float)),
+                VectorEmbeddingType.Binary => (numberOfDimensions, transformedEmbedding.Length),
+                _ => throw new InvalidDataException($"Unexpected embedding type - {numberOfDimensions}.")
+            };
+
+            PortableExceptions.Throw<InvalidDataException>(
+                $"Vector field `{fieldName}` has {storedDimensions} dimensions, but the vector passed to vector.search() has {inputDimensions} dimensions.");
+        }
+
+        internal static (VectorValue? SingleVector, VectorValue[] MultiVector) GetEmbeddingsForQueryParameter(QueryBuilderParameters builderParameters, ValueTokenType valueType,
+            object value,
+            string embeddingsGenerationTaskIdentifier, VectorOptions vectorOptions, string fieldName)
+        {
+            var database = builderParameters.Index.DocumentDatabase;
+
+            var embeddingsTaskId = new EmbeddingsGenerationTaskIdentifier(embeddingsGenerationTaskIdentifier);
+
+            var embeddingsGenerator = database.EmbeddingsGeneratorQueries;
+
+            var sourceEmbeddingType = embeddingsGenerator.GetQuantizationOf(embeddingsTaskId);
+
+            // Quantized dynamic field indicates that the task generated embeddings with different quantization than requested in the index
+            // In this case we want to use quantization defined in dynamic field (which was set in CurrentIndexingScope.GetLoadVectorField)
+            VectorEmbeddingType destinationEmbeddingType;
+            if (builderParameters.Metadata.IsDynamic)
+            {
+                if (sourceEmbeddingType is not VectorEmbeddingType.Single)
+                    destinationEmbeddingType = sourceEmbeddingType;
+                else
+                    destinationEmbeddingType = vectorOptions!.DestinationEmbeddingType;
+            }
+            else
+            {
+                if (vectorOptions?.DestinationEmbeddingType is not null)
+                    destinationEmbeddingType = vectorOptions!.DestinationEmbeddingType;
+                else
+                    destinationEmbeddingType = sourceEmbeddingType;
+            }
+
+            ReadOnlyMemory<ReadOnlyMemory<byte>> embeddingValues;
+
+            switch (valueType)
+            {
+                case ValueTokenType.String:
+                    embeddingValues = embeddingsGenerator
+                        .GetEmbeddingsForQuery(builderParameters.DocumentsContext, embeddingsTaskId, value.ToString());
+                    break;
+                case ValueTokenType.Parameter:
+                {
+                    if (value is not BlittableJsonReaderArray bjra)
+                        throw new InvalidQueryException($"Expected array as parameter of vector.search({fieldName}) method, got '{value.GetType().FullName}' type instead.");
+
+                    var values = new string[bjra.Length];
+
+                    for (var i = 0; i < values.Length; i++)
+                        values[i] = bjra[i].ToString();
+
+                    embeddingValues = embeddingsGenerator
+                        .GetEmbeddingsForQuery(builderParameters.DocumentsContext, embeddingsTaskId, values);
+                    break;
+                }
+                default:
+                    throw new NotSupportedException($"Unexpected value type provided as parameter to vector.search({fieldName}) method. Got '{value.GetType().FullName}' type.");
+            }
+
+            var queryingVectorOption = new VectorOptions
+            {
+                SourceEmbeddingType = sourceEmbeddingType,
+                DestinationEmbeddingType = destinationEmbeddingType
+            };
+
+            if (embeddingValues.Length == 1)
+            {
+                var embeddingValue = embeddingValues.Span[0];
+
+                return (GenerateEmbeddings.FromArray(builderParameters.Allocator, embeddingValue.Span, queryingVectorOption), null);
+            }
+            else
+            {
+                var vectorValues = new VectorValue[embeddingValues.Length];
+
+                for (int i = 0; i < embeddingValues.Length; i++)
+                {
+                    var embeddingValue = embeddingValues.Span[i];
+
+                    vectorValues[i] = GenerateEmbeddings.FromArray(builderParameters.Allocator, embeddingValue.Span, queryingVectorOption);
+                }
+
+                return (null, vectorValues);
+            }
+        }
     }
 }

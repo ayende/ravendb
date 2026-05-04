@@ -631,7 +631,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 IDisposable innerDisposableMatch = null;
                 OrderMetadata[] orderByFields;
 
-                CoraxQueryBuilder.Parameters builderParameters;
+                QueryBuilderParameters builderParameters;
                 using (queryTimings?.For(nameof(QueryTimingsScope.Names.Corax), start: false)?.Start())
                 {
                     IDisposable releaseServerContext = null;
@@ -646,7 +646,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                             closeServerTransaction = serverContext.OpenReadTransaction();
                         }
 
-                        builderParameters = new CoraxQueryBuilder.Parameters(IndexSearcher, _allocator, serverContext, documentsContext, query, _index,
+                        builderParameters = new QueryBuilderParameters(IndexSearcher, _allocator, serverContext, documentsContext, query, _index,
                             query.QueryParameters, QueryBuilderFactories, _fieldMappings, fieldsToFetch, highlightings.Terms, (int)take, deduplicationDisabled: false, indexReadOperation: this, token: token, queryTime: queryTime);
 
                         using (closeServerTransaction)
@@ -670,10 +670,10 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
                             innerDisposableMatch = queryMatch as IDisposable;
 
-                            orderByFields = CoraxQueryBuilder.GetSortMetadata(builderParameters, out bool hasEmptySorts);
+                            orderByFields = QueryPlanBuilder.GetSortMetadata(builderParameters, out bool hasEmptySorts);
                             if (orderByFields != null)
                             {
-                                queryMatch = CoraxQueryBuilder.OrderBy(
+                                queryMatch = QueryPlanBuilder.OrderBy(
                                     builderParameters, queryMatch, orderByFields, hasEmptySorts);
                             }
                         }
@@ -1136,7 +1136,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             IDisposable closeServerTransaction = null;
             TransactionOperationContext serverContext = null;
             MoreLikeThisQuery moreLikeThisQuery;
-            CoraxQueryBuilder.Parameters builderParameters;
+            QueryBuilderParameters builderParameters;
 
             try
             {
@@ -1149,8 +1149,8 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 using (closeServerTransaction)
                 {
                     builderParameters = new(IndexSearcher, _allocator, serverContext, context, query, _index, query.QueryParameters, QueryBuilderFactories,
-                        _fieldMappings, null, null /* allow highlighting? */, CoraxQueryBuilder.TakeAll, deduplicationDisabled: true, indexReadOperation: this, token: token);
-                    moreLikeThisQuery = CoraxQueryBuilder.BuildMoreLikeThisQuery(builderParameters, query.Metadata.Query.Where);
+                        _fieldMappings, null, null /* allow highlighting? */, -1, deduplicationDisabled: true, indexReadOperation: this, token: token);
+                    moreLikeThisQuery = BuildMoreLikeThisQuery(builderParameters, query.Metadata.Query.Where);
                 }
             }
             finally
@@ -1176,7 +1176,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             }
 
             builderParameters = new(IndexSearcher, _allocator, null, context, query, _index, query.QueryParameters, QueryBuilderFactories,
-                _fieldMappings, null, null /* allow highlighting? */, CoraxQueryBuilder.TakeAll, deduplicationDisabled:true, indexReadOperation: this, token: token);
+                _fieldMappings, null, null /* allow highlighting? */, -1, deduplicationDisabled:true, indexReadOperation: this, token: token);
             using var mlt = new RavenRavenMoreLikeThis(builderParameters, options);
             long? baseDocId = null;
 
@@ -1348,7 +1348,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 take = CoraxConstants.IndexSearcher.TakeAll;
 
             IQueryMatch queryMatch;
-            var builderParameters = new CoraxQueryBuilder.Parameters(IndexSearcher, _allocator, null, documentsContext, query, _index, query.QueryParameters, QueryBuilderFactories, _fieldMappings, null, null, -1, deduplicationDisabled: false, indexReadOperation: this, token: token);
+            var builderParameters = new QueryBuilderParameters(IndexSearcher, _allocator, null, documentsContext, query, _index, query.QueryParameters, QueryBuilderFactories, _fieldMappings, null, null, -1, deduplicationDisabled: false, indexReadOperation: this, token: token);
             {
                 var planParams = new QueryPlanBuilder.PlanParameters
                 {
@@ -1472,6 +1472,82 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
         private static void ThrowExplanationsIsNotImplementedInCorax()
         {
             throw new NotSupportedInCoraxException($"{nameof(Corax)} doesn't support {nameof(Explanations)} yet.");
+        }
+
+        private static MoreLikeThisQuery BuildMoreLikeThisQuery(QueryBuilderParameters builderParameters, QueryExpression whereExpression)
+        {
+            using (CultureHelper.EnsureInvariantCulture())
+            {
+                var indexSearcher = builderParameters.IndexSearcher;
+                var metadata = builderParameters.Metadata;
+                var queryParameters = builderParameters.QueryParameters;
+                var context = builderParameters.DocumentsContext;
+
+                var moreLikeThisExpression = QueryBuilderHelper.FindMoreLikeThisExpression(whereExpression);
+                if (moreLikeThisExpression == null)
+                    throw new InvalidOperationException("Query does not contain MoreLikeThis method expression");
+
+                BlittableJsonReaderObject options = null;
+                if (moreLikeThisExpression.Arguments.Count == 2)
+                {
+                    var value = QueryBuilderHelper.GetValue(metadata.Query, metadata, queryParameters, moreLikeThisExpression.Arguments[1], allowObjectsInParameters: true);
+                    if (value.Type == ValueTokenType.String)
+                        options = IndexOperationBase.ParseJsonStringIntoBlittable(QueryBuilderHelper.GetValueAsString(value.Value), context);
+                    else
+                        options = value.Value as BlittableJsonReaderObject;
+                }
+
+                string baseDocument = null;
+                IQueryMatch baseDocumentQuery = null;
+                var firstArgument = moreLikeThisExpression.Arguments[0];
+                if (firstArgument is BinaryExpression)
+                {
+                    baseDocumentQuery = BuildCompiledQueryMatch(builderParameters);
+                }
+                else
+                {
+                    var firstArgumentValue = QueryBuilderHelper.GetValueAsString(QueryBuilderHelper.GetValue(metadata.Query, metadata, queryParameters, firstArgument).Value);
+                    if (bool.TryParse(firstArgumentValue, out var firstArgumentBool))
+                    {
+                        baseDocumentQuery = firstArgumentBool
+                            ? indexSearcher.AllEntries()
+                            : indexSearcher.EmptyMatch();
+                    }
+                    else
+                    {
+                        baseDocument = firstArgumentValue;
+                    }
+                }
+
+                var filterQuery = BuildCompiledQueryMatch(builderParameters);
+
+                return new MoreLikeThisQuery
+                {
+                    BaseDocument = baseDocument,
+                    BaseDocumentQuery = baseDocumentQuery,
+                    FilterQuery = filterQuery,
+                    Options = options
+                };
+            }
+        }
+
+        private static IQueryMatch BuildCompiledQueryMatch(QueryBuilderParameters builderParameters)
+        {
+            var planParams = new QueryPlanBuilder.PlanParameters
+            {
+                IndexSearcher = builderParameters.IndexSearcher,
+                Metadata = builderParameters.Query.Metadata,
+                QueryParameters = builderParameters.QueryParameters,
+                Index = builderParameters.Index,
+                IndexFieldsMapping = builderParameters.IndexFieldsMapping,
+                Allocator = builderParameters.Allocator,
+                Token = builderParameters.Token,
+                HasDynamics = builderParameters.HasDynamics,
+                DynamicFields = builderParameters.DynamicFields,
+                HasBoost = builderParameters.HasBoost
+            };
+            return QueryPlanBuilder.BuildAndCompile(
+                planParams, builderParameters, long.MaxValue, out _, highlightingTerms: null, builderParameters.Token);
         }
     }
 }

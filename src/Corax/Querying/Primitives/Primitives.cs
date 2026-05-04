@@ -33,9 +33,6 @@ public static class QueryPrimitives
     // Batch size for entry scan: how many bitmap entries to read per iteration.
     private const int EntryScanBatchSize = 256;
 
-    // Buffer size for skip operations during paginated iteration.
-    private const int SkipBufferSize = 1024;
-
     // Bitmap count threshold below which entry scan is considered cheaper than
     // bitmap AND with a posting list. Below this, individual entry blob reads
     // are cheaper than decoding the full posting list.
@@ -45,9 +42,6 @@ public static class QueryPrimitives
     // is less than the posting list size. Approximates the relative cost of reading
     // entry blobs vs. decoding posting list pages.
     private const long EntryScanCostMultiplier = 64;
-
-    // Threshold for stackalloc vs heap allocation of field root pages array.
-    private const int FieldRootPagesStackAllocThreshold = 128;
 
     /// <summary>
     /// Fill a bitmap from a posting list. Walks leaf pages, decodes PFor blocks,
@@ -212,147 +206,25 @@ public static class QueryPrimitives
     /// Runtime check: should we switch from bitmap AND to per-entry scan?
     /// Compares cost of reading bitmap.Count entry blobs vs galloping through
     /// the posting list. Returns true when entry scan is cheaper.
+    /// Called directly from IL-emitted code.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool ShouldSwitchToEntryScan(ref RoaringBitmapData data, in PostingListState postingListState)
+    public static bool ShouldSwitchToEntryScan(long bitmapCount, long postingListCount)
     {
-        long bitmapCount = data.Count;
         return bitmapCount < EntryScanCountThreshold
-            && bitmapCount * EntryScanCostMultiplier < postingListState.NumberOfEntries;
+            && bitmapCount * EntryScanCostMultiplier < postingListCount;
     }
 
     /// <summary>
     /// Runtime check: should we heap-sort the bitmap directly instead of
     /// walking the sort-field index?
+    /// Called directly from IL-emitted code.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool ShouldHeapSortDirectly(ref RoaringBitmapData data, long sortFieldTotalEntries)
+    public static bool ShouldHeapSortDirectly(long bitmapCount, long sortFieldTotalEntries)
     {
-        long bitmapCount = data.Count;
         return bitmapCount < EntryScanCountThreshold
             && bitmapCount * EntryScanCostMultiplier < sortFieldTotalEntries;
-    }
-
-    /// <summary>
-    /// Entry scan: iterate bitmap, read each entry's stored field data via
-    /// EntryTermsReader, evaluate predicates with early exit.
-    /// Same pattern as MultiUnaryMatch.Fill() but driven from a bitmap iterator.
-    /// </summary>
-    [SkipLocalsInit]
-    public static int ScanAndFilter(ref RoaringBitmapData data, ByteStringContext allocator, IndexSearcher searcher,
-        MultiUnaryItem[] predicates, Span<long> output, long limit, ref long skip)
-    {
-        data.PrepareForReading(allocator);
-        scoped RoaringBitmap bitmap = new(ref data, allocator);
-        using var iter = bitmap.GetIterator();
-
-        if (predicates is not {Length: > 0}) // No predicates — just deal with skip/limit
-        {
-            return ScanWithSkipAndLimitOnly(ref data, output, limit, ref skip, iter, allocator);
-        }
-
-        Span<long> batch = stackalloc long[EntryScanBatchSize];
-        // Batch resolution buffers — reused across iterations
-        Span<long> locations = stackalloc long[EntryScanBatchSize];
-        Span<Sparrow.UnmanagedSpan> spans = stackalloc Sparrow.UnmanagedSpan[EntryScanBatchSize];
-        int matched = 0;
-
-        Span<long> fieldRootPages = predicates.Length > FieldRootPagesStackAllocThreshold
-            ? new long[predicates.Length]
-            : stackalloc long[predicates.Length];
-
-        for (int p = 0; p < predicates.Length; p++)
-        {
-            fieldRootPages[p] = searcher.FieldCache.GetLookupRootPage(predicates[p].Binding.FieldName);
-        }
-
-        int read;
-        while ((read = iter.Fill(ref data, batch)) > 0)
-        {
-            int startIdx = (int)Math.Min(skip, read);
-            skip = Math.Max(0, skip - read);
-            if (startIdx >= read)
-                continue;
-
-            // Batch-resolve entry data: cursor-walk B-tree + PageLocator-cached container reads
-            var batchSlice = batch.Slice(startIdx, read - startIdx);
-            searcher.BatchGetEntryData(batchSlice, locations.Slice(0, batchSlice.Length), spans.Slice(0, batchSlice.Length));
-
-            for (int i = 0; i < batchSlice.Length; i++)
-            {
-                if (spans[i].Length == 0)
-                    continue; // missing entry
-
-                long entryId = batchSlice[i];
-                var reader = searcher.CreateEntryTermsReader(spans[i]);
-                bool documentMatched = true;
-
-                for (int p = 0; p < predicates.Length; p++)
-                {
-                    ref var predicate = ref predicates[p];
-                    long fieldRootPage = fieldRootPages[p];
-
-                    bool isAccepted = predicate.Mode == MultiUnaryItem.UnaryMode.All;
-                    reader.Reset();
-
-                    while (reader.FindNext(fieldRootPage))
-                    {
-                        bool cmpResult = predicate.Type switch
-                        {
-                            MultiUnaryItem.DataType.Slice => predicate.CompareLiteral(reader),
-                            MultiUnaryItem.DataType.Long => predicate.CompareNumerical(reader),
-                            MultiUnaryItem.DataType.Double => predicate.CompareNumerical(reader),
-                            _ => throw new ArgumentOutOfRangeException()
-                        };
-
-                        if (predicate.Mode == MultiUnaryItem.UnaryMode.All && !cmpResult)
-                        {
-                            isAccepted = false;
-                            break;
-                        }
-
-                        if (predicate.Mode == MultiUnaryItem.UnaryMode.Any && cmpResult)
-                        {
-                            isAccepted = true;
-                            break;
-                        }
-                    }
-
-                    if (!isAccepted)
-                    {
-                        documentMatched = false;
-                        break;
-                    }
-                }
-
-                if (documentMatched)
-                {
-                    output[matched++] = entryId;
-                    if (matched >= limit || matched >= output.Length)
-                        return matched;
-                }
-            }
-        }
-
-        return matched;
-    }
-
-    [SkipLocalsInit]
-    private static int ScanWithSkipAndLimitOnly(ref RoaringBitmapData data, Span<long> output, long limit, ref long skip, RoaringBitmapIterator iter, ByteStringContext allocator)
-    {
-        if (skip > 0)
-        {
-            Span<long> skipBuf = stackalloc long[(int)Math.Min(skip, SkipBufferSize)];
-            while (skip > 0)
-            {
-                int toSkip = (int)Math.Min(skip, skipBuf.Length);
-                int skipped = iter.Fill(ref data, skipBuf.Slice(0, toSkip));
-                if (skipped == 0) return 0;
-                skip -= skipped;
-            }
-        }
-        int maxOutput = (int)Math.Min(output.Length, limit);
-        return iter.Fill(ref data, output.Slice(0, maxOutput));
     }
 
     // --- IQueryMatch-based overloads for IL emitter ---

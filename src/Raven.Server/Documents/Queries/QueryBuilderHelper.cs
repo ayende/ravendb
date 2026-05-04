@@ -528,7 +528,7 @@ public static class QueryBuilderHelper
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static FieldMetadata GetFieldMetadata(in CoraxQueryBuilder.Parameters parameters, string fieldName, bool isForQuery = true,
+    internal static FieldMetadata GetFieldMetadata(in QueryBuilderParameters parameters, string fieldName, bool isForQuery = true,
         bool exact = false, bool isSorting = false, bool hasBoost = false, bool handleSearch = false)
     {
         return GetFieldMetadata(parameters.Allocator, fieldName, parameters.Index, parameters.IndexFieldsMapping, parameters.FieldsToFetch, parameters.HasDynamics, parameters.DynamicFields, isForQuery, exact, isSorting, hasBoost, handleSearch);
@@ -695,7 +695,7 @@ public static class QueryBuilderHelper
         DescendingSpatial
     }
 
-    internal static IShape HandleWkt(CoraxQueryBuilder.Parameters builderParameters, string fieldName, MethodExpression expression,
+    internal static IShape HandleWkt(QueryBuilderParameters builderParameters, string fieldName, MethodExpression expression,
         SpatialField spatialField, out SpatialUnits units)
     {
         var wktValue = QueryBuilderHelper.GetValue(builderParameters.Metadata.Query, builderParameters.Metadata, builderParameters.QueryParameters, (ValueExpression)expression.Arguments[0]);

@@ -39,11 +39,11 @@ namespace Raven.Server.Documents.Queries.MoreLikeThis.Corax;
 
 internal class RavenMoreLikeThis : MoreLikeThisBase, IDisposable
 {
-    private readonly CoraxQueryBuilder.Parameters _builderParameters;
+    private readonly QueryBuilderParameters _builderParameters;
     private readonly Analyzer _analyzer;
     private readonly AnalyzersScope _analyzersScope;
 
-    public RavenMoreLikeThis(CoraxQueryBuilder.Parameters builderParameters, Analyzer analyzer = null)
+    public RavenMoreLikeThis(QueryBuilderParameters builderParameters, Analyzer analyzer = null)
     {
         _analyzer = analyzer ?? Analyzer.CreateDefaultAnalyzer(builderParameters.Allocator);
         _builderParameters = builderParameters;
