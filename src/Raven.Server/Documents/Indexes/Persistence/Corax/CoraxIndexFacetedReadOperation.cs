@@ -89,7 +89,7 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
         IDisposable baseQueryDisposable = null;
         if (query.Metadata.Query.Where is not null)
         {
-            var parameters = new CoraxQueryBuilder.Parameters(_indexSearcher, _allocator, null, null, query, _index,
+            var parameters = new QueryBuilderParameters(_indexSearcher, _allocator, null, null, query, _index,
                 query.QueryParameters, _queryBuilderFactories, _fieldMappings, null, null, -1,
                 deduplicationDisabled: true, token: token);
 
@@ -279,7 +279,7 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
         Dictionary<string, Dictionary<string, FacetValues>> facetsByName = new();
         Dictionary<string, Dictionary<string, FacetValues>> facetsByRange = new();
 
-        var parameters = new CoraxQueryBuilder.Parameters(_indexSearcher, _allocator, null, null, query, _index, query.QueryParameters, _queryBuilderFactories,
+        var parameters = new QueryBuilderParameters(_indexSearcher, _allocator, null, null, query, _index, query.QueryParameters, _queryBuilderFactories,
             _fieldMappings, null, null, -1, deduplicationDisabled: false, token: token, queryTime: queryTime);
 
         IQueryMatch baseQuery;

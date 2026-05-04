@@ -167,6 +167,12 @@ public static class QueryILEmitter
     private static readonly MethodInfo s_spanDoubleIndexer =
         typeof(Span<double>).GetProperty("Item")!.GetGetMethod()!;
 
+    // Entry-scan cost heuristics — called from emitted IL so thresholds stay in one place
+    private static readonly MethodInfo s_shouldSwitchToEntryScan =
+        typeof(Corax.Querying.Primitives.QueryPrimitives).GetMethod(
+            nameof(Primitives.QueryPrimitives.ShouldSwitchToEntryScan),
+            new[] { typeof(long), typeof(long) })!;
+
     public static CompiledExecuteDelegate EmitDelegate(QueryPlan plan)
     {
         var ops = plan.Ops;
@@ -218,17 +224,19 @@ public static class QueryILEmitter
                     EmitCancellationCheck(il);
                     if (op.UseTermSource)
                     {
-                        // QueryPrimitives.FillBitmapFromTermSource(ref TermSources[i], llt, ref bitmap[0])
+                        // QueryPrimitives.FillBitmapFromTermSource(ref TermSources[i], llt, ref bitmap[0], allocator)
                         EmitLoadTermSourceRef(il, op.ParamIndex);
                         EmitLoadLlt(il);
                         EmitLoadBitmapRef(il, 0);
+                        EmitLoadAllocator(il);
                         il.Emit(OpCodes.Call, s_fillBitmapFromTermSource);
                     }
                     else
                     {
-                        // QueryPrimitives.FillFromMatch(match, ref bitmap[0])
+                        // QueryPrimitives.FillFromMatch(match, ref bitmap[0], allocator)
                         EmitLoadMatch(il, op.ParamIndex);
                         EmitLoadBitmapRef(il, 0);
+                        EmitLoadAllocator(il);
                         il.Emit(OpCodes.Call, s_fillFromMatch);
                     }
                     break;
@@ -237,19 +245,21 @@ public static class QueryILEmitter
                     EmitCancellationCheck(il);
                     if (op.UseTermSource)
                     {
-                        // QueryPrimitives.AndWithTermSource(ref TermSources[i], llt, ref bitmap[0], ref bitmap[1])
+                        // QueryPrimitives.AndWithTermSource(ref TermSources[i], llt, ref bitmap[0], ref bitmap[1], allocator)
                         EmitLoadTermSourceRef(il, op.ParamIndex);
                         EmitLoadLlt(il);
                         EmitLoadBitmapRef(il, 0);
                         EmitLoadBitmapRef(il, 1);
+                        EmitLoadAllocator(il);
                         il.Emit(OpCodes.Call, s_andWithTermSource);
                     }
                     else
                     {
-                        // QueryPrimitives.AndWithMatch(match, ref bitmap[0], ref bitmap[1])
+                        // QueryPrimitives.AndWithMatch(match, ref bitmap[0], ref bitmap[1], allocator)
                         EmitLoadMatch(il, op.ParamIndex);
                         EmitLoadBitmapRef(il, 0);
                         EmitLoadBitmapRef(il, 1);
+                        EmitLoadAllocator(il);
                         il.Emit(OpCodes.Call, s_andWithMatch);
                     }
                     EmitLoadBitmapRef(il, 0);
@@ -262,17 +272,19 @@ public static class QueryILEmitter
                     EmitCancellationCheck(il);
                     if (op.UseTermSource)
                     {
-                        // QueryPrimitives.FillBitmapFromTermSource(ref TermSources[i], llt, ref bitmap[slot])
+                        // QueryPrimitives.FillBitmapFromTermSource(ref TermSources[i], llt, ref bitmap[slot], allocator)
                         EmitLoadTermSourceRef(il, op.ParamIndex);
                         EmitLoadLlt(il);
                         EmitLoadBitmapRef(il, op.BitmapLocal);
+                        EmitLoadAllocator(il);
                         il.Emit(OpCodes.Call, s_fillBitmapFromTermSource);
                     }
                     else
                     {
-                        // QueryPrimitives.FillFromMatch(match, ref bitmap[slot])
+                        // QueryPrimitives.FillFromMatch(match, ref bitmap[slot], allocator)
                         EmitLoadMatch(il, op.ParamIndex);
                         EmitLoadBitmapRef(il, op.BitmapLocal);
+                        EmitLoadAllocator(il);
                         il.Emit(OpCodes.Call, s_fillFromMatch);
                     }
                     break;
@@ -300,19 +312,21 @@ public static class QueryILEmitter
                     EmitCancellationCheck(il);
                     if (op.UseTermSource)
                     {
-                        // QueryPrimitives.AndNotWithTermSource(ref TermSources[i], llt, ref bitmap[0], ref bitmap[1])
+                        // QueryPrimitives.AndNotWithTermSource(ref TermSources[i], llt, ref bitmap[0], ref bitmap[1], allocator)
                         EmitLoadTermSourceRef(il, op.ParamIndex);
                         EmitLoadLlt(il);
                         EmitLoadBitmapRef(il, 0);
                         EmitLoadBitmapRef(il, 1);
+                        EmitLoadAllocator(il);
                         il.Emit(OpCodes.Call, s_andNotWithTermSource);
                     }
                     else
                     {
-                        // QueryPrimitives.AndNotWithMatch(match, ref bitmap[0], ref bitmap[1])
+                        // QueryPrimitives.AndNotWithMatch(match, ref bitmap[0], ref bitmap[1], allocator)
                         EmitLoadMatch(il, op.ParamIndex);
                         EmitLoadBitmapRef(il, 0);
                         EmitLoadBitmapRef(il, 1);
+                        EmitLoadAllocator(il);
                         il.Emit(OpCodes.Call, s_andNotWithMatch);
                     }
                     break;
@@ -327,27 +341,16 @@ public static class QueryILEmitter
                 {
                     hasEntryScan = true;
                     entryScanOpIndex = i;
-                    var skipCheck = il.DefineLabel();
 
-                    // if (bitmap.Count >= 32000) skip
+                    // if (QueryPrimitives.ShouldSwitchToEntryScan(bitmap.Count, match.Count)) goto entryScan
                     EmitLoadBitmapRef(il, 0);
                     il.Emit(OpCodes.Call, s_bitmapCountGetter);
                     il.Emit(OpCodes.Conv_I8);
-                    il.Emit(OpCodes.Ldc_I8, 32000L);
-                    il.Emit(OpCodes.Bge, skipCheck);
-
-                    // if (bitmap.Count * 64 < matches[paramIndex].Count) goto entryScan
-                    EmitLoadBitmapRef(il, 0);
-                    il.Emit(OpCodes.Call, s_bitmapCountGetter);
-                    il.Emit(OpCodes.Conv_I8);
-                    il.Emit(OpCodes.Ldc_I4, 64);
-                    il.Emit(OpCodes.Conv_I8);
-                    il.Emit(OpCodes.Mul);
                     EmitLoadMatch(il, op.ParamIndex);
                     il.Emit(OpCodes.Callvirt, s_matchCountGetter);
-                    il.Emit(OpCodes.Blt, entryScanLabel);
+                    il.Emit(OpCodes.Call, s_shouldSwitchToEntryScan);
+                    il.Emit(OpCodes.Brtrue, entryScanLabel);
 
-                    il.MarkLabel(skipCheck);
                     break;
                 }
 

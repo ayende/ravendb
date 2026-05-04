@@ -157,31 +157,6 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         FieldCache = new FieldsCache(_transaction, _fieldsTree);
     }
     
-    /// <summary>
-    /// Batch-resolve entry data for sorted entry IDs. Uses cursor-walk on the
-    /// entryId→location B-tree (O(batch) instead of O(batch × log N)) and
-    /// PageLocator-cached container reads.
-    /// The caller must stackalloc or rent the locations and spans arrays.
-    /// </summary>
-    public void BatchGetEntryData(ReadOnlySpan<long> sortedEntryIds, Span<long> locations, Span<Sparrow.UnmanagedSpan> spans)
-    {
-        InitializeSpecialTermsMarkers();
-        _entryIdToLocation.GetFor(sortedEntryIds, locations, -1);
-        Voron.Data.Containers.Container.GetAll(
-            _transaction.LowLevelTransaction, locations, spans, -1, _transaction.LowLevelTransaction.PageLocator);
-    }
-
-    /// <summary>
-    /// Create an EntryTermsReader from pre-resolved entry data (from BatchGetEntryData).
-    /// </summary>
-    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    public EntryTermsReader CreateEntryTermsReader(Sparrow.UnmanagedSpan data)
-    {
-        InitializeSpecialTermsMarkers();
-        return new EntryTermsReader(_transaction.LowLevelTransaction, _nullTermsMarkers, _nonExistingTermsMarkers,
-            data.Address, data.Length, _dictionaryId, _vectorFieldsMarkers);
-    }
-
     public EntryTermsReader GetEntryTermsReader(long id, ref Page p, CompactKey key = null)
     {
         if (_entryIdToLocation.TryGetValue(id, out var locLong) == false)

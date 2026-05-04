@@ -2,10 +2,11 @@ using System;
 using Corax.Mappings;
 using Corax.Querying.Matches.Meta;
 using Corax.Utils;
+using Raven.Server.Documents.Indexes.Persistence.Corax;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryOptimizer;
 
-public sealed class CoraxVectorItem(CoraxQueryBuilder.Parameters parameters) : IQueryMatch
+public sealed class CoraxVectorItem(QueryBuilderParameters parameters) : IQueryMatch
 {
     private bool _isEmpty;
     private FieldMetadata _field;
@@ -18,7 +19,7 @@ public sealed class CoraxVectorItem(CoraxQueryBuilder.Parameters parameters) : I
     private readonly bool _isVectorSingleClause = parameters.IsVectorSingleClause;
     public float? Boosting { get; set; }
 
-    public static CoraxVectorItem BuildForDocVector(CoraxQueryBuilder.Parameters parameters, FieldMetadata field, string documentId, in int numberOfCandidates, in float minimumDistance, in bool isExact)
+    public static CoraxVectorItem BuildForDocVector(QueryBuilderParameters parameters, FieldMetadata field, string documentId, in int numberOfCandidates, in float minimumDistance, in bool isExact)
     {
         return new(parameters)
         {
@@ -30,12 +31,12 @@ public sealed class CoraxVectorItem(CoraxQueryBuilder.Parameters parameters) : I
         };
     }
 
-    public static CoraxVectorItem BuildEmpty(CoraxQueryBuilder.Parameters parameters)
+    public static CoraxVectorItem BuildEmpty(QueryBuilderParameters parameters)
     {
         return new CoraxVectorItem(parameters){_isEmpty = true};
     }
 
-    public static CoraxVectorItem BuildSingleVector(CoraxQueryBuilder.Parameters parameters, FieldMetadata field, VectorValue vectorToSearch, in int numberOfCandidates, in float minimumDistance, in bool isExact)
+    public static CoraxVectorItem BuildSingleVector(QueryBuilderParameters parameters, FieldMetadata field, VectorValue vectorToSearch, in int numberOfCandidates, in float minimumDistance, in bool isExact)
     {
         return new(parameters)
         {
@@ -47,7 +48,7 @@ public sealed class CoraxVectorItem(CoraxQueryBuilder.Parameters parameters) : I
         };
     }
 
-    public static CoraxVectorItem BuildMultiVector(CoraxQueryBuilder.Parameters parameters, FieldMetadata field, VectorValue[] vectorToSearch, in int numberOfCandidates, in float minimumDistance, in bool isExact)
+    public static CoraxVectorItem BuildMultiVector(QueryBuilderParameters parameters, FieldMetadata field, VectorValue[] vectorToSearch, in int numberOfCandidates, in float minimumDistance, in bool isExact)
     {
         return new(parameters)
         {
@@ -99,7 +100,7 @@ public sealed class CoraxVectorItem(CoraxQueryBuilder.Parameters parameters) : I
     public DuplicatesOccurrence DuplicatesOccurrenceStatus { get => throw new NotSupportedException(IQueryMatchUsageException); }
 
 
-    private const string IQueryMatchUsageException = $"You tried to use {nameof(CoraxVectorItem)} as normal querying function. This class is only for type - relaxation inside {nameof(CoraxQueryBuilder)} to build query.";
+    private const string IQueryMatchUsageException = $"You tried to use {nameof(CoraxVectorItem)} as normal querying function. This class is only for type-relaxation inside QueryPlanBuilder to build query.";
 
     #endregion
 }
