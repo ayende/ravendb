@@ -238,11 +238,9 @@ namespace Voron.Benchmark.Corax
         [Benchmark]
         public void OrderByRuntimeQuery()
         {            
-            var typeTerm = _indexSearcher.TermQuery(_typeSlice, _dogSlice);
             var ageField = FieldMetadata.Build(_ageSlice, default, 2, default, default);
             var ageTerm = _indexSearcher.StartWithQuery(ageField, _ageValueSlice);
-            var andQuery = _indexSearcher.And(typeTerm, ageTerm);
-            var query = _indexSearcher.OrderBy(andQuery, new OrderMetadata(ageField, true, MatchCompareFieldType.Sequence, fieldHasNoTerms: false), nullFirst: true, take: TakeSize);           
+            var query = _indexSearcher.OrderBy(ageTerm, new OrderMetadata(ageField, true, MatchCompareFieldType.Sequence, fieldHasNoTerms: false), nullFirst: true, take: TakeSize);
 
             Span<long> ids = _ids;
             while (query.Fill(ids) != 0)

@@ -242,10 +242,11 @@ namespace Voron.Benchmark.Corax
 
             var typeTerm = indexSearcher.TermQuery("Type", "Dog");
             var ageTerm = indexSearcher.InQuery("Age", new() { "15", "16" });
-            var query = indexSearcher.And(typeTerm, ageTerm);
 
             Span<long> ids = _ids;
-            while (query.Fill(ids) != 0);
+            int read;
+            while ((read = typeTerm.Fill(ids)) > 0)
+                ageTerm.AndWith(ids, read);
         }
 
         [Benchmark]
@@ -256,10 +257,11 @@ namespace Voron.Benchmark.Corax
 
             var typeTerm = indexSearcher.TermQuery("Type", "Dog");
             var ageTerm = indexSearcher.InQuery("Age", new() { "15", "16" });
-            var query = indexSearcher.And(ageTerm, typeTerm);
 
             Span<long> ids = _ids;
-            while (query.Fill(ids) != 0);
+            int read;
+            while ((read = ageTerm.Fill(ids)) > 0)
+                typeTerm.AndWith(ids, read);
         }
 
         [Benchmark]

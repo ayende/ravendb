@@ -227,18 +227,16 @@ namespace Voron.Benchmark.Corax
 
             var identityReader = indexSearcher.TermsReaderFor("id()");
             var typeTerm = indexSearcher.TermQuery("Type", "Dog");
-            var familyTerm = indexSearcher.TermQuery("Age", "15");
-            var query = indexSearcher.And(typeTerm, familyTerm);
+            var ageTerm = indexSearcher.TermQuery("Age", "15");
 
-            int read = 0;
+            int read;
             Span<long> ids = _ids;
-            do
+            while ((read = typeTerm.Fill(ids)) > 0)
             {
-                read = query.Fill(ids);
-                for (int i = 0; i < read; i++)
+                int common = ageTerm.AndWith(ids, read);
+                for (int i = 0; i < common; i++)
                     identityReader.GetTermFor(ids[i]);
             }
-            while (read != 0);
         }
 
         [Benchmark]
@@ -248,11 +246,12 @@ namespace Voron.Benchmark.Corax
             using var indexSearcher = new IndexSearcher(Env, CreateFieldsMapping(bsc));
 
             var typeTerm = indexSearcher.TermQuery("Type", "Dog");
-            var familyTerm = indexSearcher.TermQuery("Age", "15");
-            var query = indexSearcher.And(typeTerm, familyTerm);
+            var ageTerm = indexSearcher.TermQuery("Age", "15");
 
             Span<long> ids = _ids;
-            while (query.Fill(ids) != 0);
+            int read;
+            while ((read = typeTerm.Fill(ids)) > 0)
+                ageTerm.AndWith(ids, read);
         }
 
         [Benchmark]

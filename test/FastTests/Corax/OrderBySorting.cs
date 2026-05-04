@@ -34,9 +34,7 @@ namespace FastTests.Corax
             longList.Sort(CompareDescending);
             using var searcher = new IndexSearcher(Env, CreateKnownFields(Allocator));
             {
-                var allEntries = searcher.AllEntries();
-                var match1 = searcher.StartWithQuery("Id", "l");
-                var concat = searcher.And(allEntries, match1);
+                var concat = searcher.StartWithQuery("Id", "l");
 
                 var match = searcher.OrderBy(concat,
                     new OrderMetadata(searcher.FieldMetadataBuilder("Content", ContentId), false, MatchCompareFieldType.Integer, fieldHasNoTerms: false), nullFirst: true);
