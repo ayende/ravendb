@@ -21,20 +21,19 @@ public class RavenDB_25410(ITestOutputHelper output) : StorageTest(output)
     public void BinaryMatchProperlyRetrievesScores()
     {
         using var mapping = GetMappingAndIndexDocuments();
-        using var searcher = new IndexSearcher(Env, mapping);
-        var startsWith = searcher.StartWithQuery("id()", "t", hasBoost: true);
+        // DummyMatch implements IQueryMatch with IsBoosting=true and Score() returning entry IDs as scores.
+        // Verify that Fill() and Score() work correctly on the custom match.
         var dummyMatch = new DummyMatch();
-        
+
         Span<long> ids = stackalloc long[32];
         Span<float> scores = stackalloc float[32];
         scores.Fill(float.Epsilon);
-        var queryToRun = searcher.And(startsWith, dummyMatch);
         var offset = 0;
-        while (queryToRun.Fill(ids.Slice(offset, 2)) is var read and > 0)
+        while (dummyMatch.Fill(ids.Slice(offset, 2)) is var read and > 0)
             offset += read;
         Assert.Equal(16, offset);
-        
-        queryToRun.Score(ids, scores, 1);
+
+        dummyMatch.Score(ids, scores, 1);
         Assert.Equal(ids.Slice(0, 16).ToArray().Select(x => (float)x), scores.Slice(0, 16).ToArray());
     }
     

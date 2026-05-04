@@ -594,9 +594,15 @@ public class StreamingOptimization_QueryBuilder(ITestOutputHelper output) : Rave
             {
                 var indexQueryServerSide = new IndexQueryServerSide(indexQuery.Query, blittableParameters);
                 using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
-                CoraxQueryBuilder.Parameters parameters = new(indexSearcher, bsc, null, null, indexQueryServerSide, index, blittableParameters,
-                    queryBuilderFactories, mapping, null, null, int.MaxValue, false);
-                var coraxQuery = CoraxQueryBuilder.BuildCompiledQueryMatch(parameters);
+                var planParams = new QueryPlanBuilder.PlanParameters
+                {
+                    IndexSearcher = indexSearcher,
+                    Metadata = indexQueryServerSide.Metadata,
+                    QueryParameters = blittableParameters,
+                    Allocator = bsc,
+                    Token = default
+                };
+                var coraxQuery = QueryPlanBuilder.BuildAndCompile(planParams, null, long.MaxValue, out _, null, default);
 
                 return coraxQuery;
             }

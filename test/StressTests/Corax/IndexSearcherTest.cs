@@ -156,8 +156,8 @@ public class IndexSearcherTest : StorageTest
         }
 
         {
-            var andNotMatch = searcher.AndNot(searcher.AllEntries(), searcher.StartWithQuery("Content", "00"));
-            var andMatch = searcher.And(searcher.AllEntries(), andNotMatch);
+            // And(AllEntries(), X) == X — drop the redundant outer And.
+            var andMatch = searcher.AndNot(searcher.AllEntries(), searcher.StartWithQuery("Content", "00"));
 
             Span<long> ids = stackalloc long[4096];
 
@@ -260,8 +260,8 @@ public class IndexSearcherTest : StorageTest
         }
 
         {
-            var andNotMatch = searcher.AndNot(searcher.AllEntries(), searcher.StartWithQuery("Content", "00"));
-            var andMatch = searcher.And(searcher.AllEntries(), andNotMatch);
+            // And(AllEntries(), X) == X — drop the redundant outer And.
+            var andMatch = searcher.AndNot(searcher.AllEntries(), searcher.StartWithQuery("Content", "00"));
 
             Span<long> ids = stackalloc long[4096];
 
