@@ -174,6 +174,7 @@ public class RankingFunctionTests : StorageTest
             Token = default
         };
         var match = QueryPlanBuilder.BuildAndCompile(planParams, null, long.MaxValue, out _, null, default);
+        match = QueryPlanBuilder.ApplyScoreOrdering(planParams, match, long.MaxValue);
         var list = new List<string>();
         Span<long> ids = stackalloc long[256];
         int count;
