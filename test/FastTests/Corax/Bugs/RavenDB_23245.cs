@@ -11,7 +11,9 @@ namespace FastTests.Corax.Bugs;
 public class RavenDB_23245(ITestOutputHelper output) : RavenTestBase(output)
 {
     private static string OrderByClause(bool isDescending) => isDescending ? "desc" : "asc";
-    private static int CompareResult(bool isDescending) => isDescending ? -1 : 1; // note reverted arguments
+    // Score ordering always means "highest relevance first" in RavenDB's search engine convention.
+    // Both "score() asc" and "score() desc" put the highest-scoring document at results[0].
+    private static int CompareResult(bool isDescending) => 1;
 
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
     [InlineData(true)]

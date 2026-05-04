@@ -112,6 +112,23 @@ internal static class QueryPlanBuilder
         var indexSearcher = planParams.IndexSearcher;
         var queryText = planParams.Metadata.Query.QueryText;
 
+        if (planParams.HasBoost)
+        {
+            // When BM25 scoring is needed, UseTermSource=true skips Fill() on the
+            // TermMatch objects in _resolvedMatches, leaving Bm25Relevance._matchBuffer
+            // empty. Score() binary-searches an empty buffer → returns 0 for every entry,
+            // producing arbitrary (wrong) sort order.
+            // Force all ops through the IQueryMatch path so TermMatch.Fill() is called
+            // and score buffers are populated before SortingMatch invokes Score().
+            // Bit 30 of OperandOrdering differentiates cached boosted plans from
+            // non-boosted ones so they don't share a compiled delegate.
+            var ops = plan.Ops;
+            if (ops != null)
+                for (int i = 0; i < ops.Length; i++)
+                    ops[i].UseTermSource = false;
+            plan.OperandOrdering |= (1 << 30);
+        }
+
         var planCache = indexSearcher.PlanCache;
         var compiledPlan = planCache.Get(queryText, plan.OperandOrdering, plan.TypeSignature, plan.FullKinds);
         if (compiledPlan == null)
@@ -2822,10 +2839,11 @@ internal static class QueryPlanBuilder
 
             if (field.OrderingType == OrderByFieldType.Score)
             {
-                if (field.Ascending)
-                    sortArray[sortIndex++] = new OrderMetadata(true, MatchCompareFieldType.Score);
-                else
-                    sortArray[sortIndex++] = new OrderMetadata(true, MatchCompareFieldType.Score, ascending: false);
+                // Score ordering always uses ascending=true (→ EntryComparerByScore → K-largest heap → highest scores first).
+                // Both "ORDER BY score()" and "ORDER BY score() DESC" mean "most relevant first" in a search engine context.
+                // The parser cannot distinguish "no direction" from "explicit ASC" (both set Ascending=true),
+                // so we treat all score orderings identically: highest scores first.
+                sortArray[sortIndex++] = new OrderMetadata(true, MatchCompareFieldType.Score);
 
                 continue;
             }
@@ -2949,6 +2967,35 @@ internal static class QueryPlanBuilder
             default:
                 return indexSearcher.OrderBy(match, orderMetadata, builderParameters.Index.Configuration.NullFirst, take, builderParameters.Token);
         }
+    }
+
+    /// <summary>Apply ORDER BY from plan metadata when a full <see cref="QueryBuilderParameters"/> is not
+    /// available (e.g., direct tests). Handles <c>ORDER BY score()</c> only — callers that need
+    /// field / spatial / alphanumeric sorts must use the full
+    /// <see cref="OrderBy(QueryBuilderParameters,IQueryMatch,in OrderMetadata[],bool)"/> overload.</summary>
+    public static IQueryMatch ApplyScoreOrdering(PlanParameters planParams, IQueryMatch match, long take, CancellationToken token = default)
+    {
+        // planParams.Metadata.OrderBy is the processed OrderByField[] (QueryMetadata level),
+        // not the raw AST Query.OrderBy tuples.
+        OrderByField[] orderByFields = planParams.Metadata.OrderBy;
+        if (orderByFields == null || orderByFields.Length == 0)
+            return match;
+
+        var indexSearcher = planParams.IndexSearcher;
+        int takeInt = take > int.MaxValue ? Constants.IndexSearcher.TakeAll : (int)take;
+
+        for (int i = 0; i < orderByFields.Length; i++)
+        {
+            if (orderByFields[i].OrderingType == OrderByFieldType.Score)
+            {
+                // Score ordering always uses ascending=true (→ EntryComparerByScore → K-largest heap → highest scores first).
+                // Both "ORDER BY score()" and "ORDER BY score() DESC" mean "most relevant first" in a search engine context.
+                var meta = new OrderMetadata(true, MatchCompareFieldType.Score);
+                return indexSearcher.OrderBy(match, meta, nullFirst: false, take: takeInt, token: token);
+            }
+        }
+
+        return match;
     }
 
     private static IQueryMatch HandleSpatial(QueryBuilderParameters builderParameters, MethodExpression expression, MethodType spatialMethod)
