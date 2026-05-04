@@ -15,18 +15,28 @@ public partial class IndexSearcher
         var terms = _fieldsTree?.CompactTreeFor(field.FieldName);
         if (terms == null)
         {
-            // If either the term or the field does not exist the request will be empty. 
+            // If either the term or the field does not exist the request will be empty.
             return TermMatch.CreateEmpty(this, Allocator);
         }
-        
-        IQueryMatch match = field.HasBoost 
+
+        IQueryMatch match = field.HasBoost
             ? new SpatialMatch<HasBoosting>(this, _transaction.Allocator, spatialContext, field, shape, terms, error, spatialRelation, token)
             : new SpatialMatch<NoBoosting>(this, _transaction.Allocator, spatialContext, field, shape, terms, error, spatialRelation, token);
         if (isNegated)
         {
-            return AndNot(AllEntries(), match);
+            // Negated spatial query: all entries except those matching the spatial condition
+            // Build bitmap from all entries, then AND NOT the spatial match
+            var allEntriesBitmap = new Matches.BitmapMatch(Allocator);
+            var allEntries = AllEntries();
+            Primitives.QueryPrimitives.FillFromMatch(allEntries, ref allEntriesBitmap.BitmapState, Allocator);
+
+            var tempBitmapData = default(Voron.Data.RoaringBitmaps.RoaringBitmapData);
+            Primitives.QueryPrimitives.AndNotWithMatch(match, ref allEntriesBitmap.BitmapState, ref tempBitmapData, Allocator);
+            tempBitmapData.Dispose(Allocator);
+
+            return allEntriesBitmap;
         }
-        
+
         return match;
     }
 }

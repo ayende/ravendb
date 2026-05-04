@@ -125,18 +125,45 @@ public partial class IndexSearcher
 
         if (termMatches?.Count > 0)
         {
-            IQueryMatch termMatchesQuery = @operator switch
+            // Build bitmap directly from term posting lists instead of calling AllInQuery/InQuery
+            var termBitmap = new BitmapMatch(Allocator);
+            var tempTermBitmapData = default(Voron.Data.RoaringBitmaps.RoaringBitmapData);
+
+            if (@operator == Constants.Search.Operator.And)
             {
-                Constants.Search.Operator.And => AllInQuery(field, termMatches.ToHashSet(SliceComparer.Instance), token: cancellationToken),
-                Constants.Search.Operator.Or => InQuery(field, termMatches, token: cancellationToken),
-                _ => throw new ArgumentOutOfRangeException(nameof(@operator), @operator, null)
-            };
+                // AND all terms together
+                bool first = true;
+                foreach (var term in termMatches)
+                {
+                    var termQuery = TermQuery(field, term);
+                    if (first)
+                    {
+                        Primitives.QueryPrimitives.FillFromMatch(termQuery, ref termBitmap.BitmapState, Allocator);
+                        first = false;
+                    }
+                    else
+                    {
+                        Primitives.QueryPrimitives.AndWithMatch(termQuery, ref termBitmap.BitmapState, ref tempTermBitmapData, Allocator);
+                    }
+                }
+            }
+            else
+            {
+                // OR all terms together
+                foreach (var term in termMatches)
+                {
+                    var termQuery = TermQuery(field, term);
+                    Primitives.QueryPrimitives.FillFromMatch(termQuery, ref termBitmap.BitmapState, Allocator);
+                }
+            }
 
             searchBitmapHasValue = true;
             if (@operator == Constants.Search.Operator.Or)
-                Primitives.QueryPrimitives.FillFromMatch(termMatchesQuery, ref searchBitmap.BitmapState, Allocator);
+                Primitives.QueryPrimitives.FillFromMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState, Allocator);
             else
-                Primitives.QueryPrimitives.AndWithMatch(termMatchesQuery, ref searchBitmap.BitmapState, ref tempBitmapData, Allocator);
+                Primitives.QueryPrimitives.AndWithMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState, ref tempBitmapData, Allocator);
+
+            tempTermBitmapData.Dispose(Allocator);
         }
 
         if (searchBitmapHasValue)
@@ -285,15 +312,26 @@ public partial class IndexSearcher
             if (terms.Count == 0)
                 continue; //sentence contained only stop-words
             PhraseQuery:
-            var hs = new HashSet<Slice>(SliceComparer.Instance);
-            for (var i = 0; i < terms.Count; ++i)
+            // Build bitmap directly from term posting lists for phrase query
+            var phraseBitmap = new BitmapMatch(Allocator);
+            var tempPhraseBitmapData = default(Voron.Data.RoaringBitmaps.RoaringBitmapData);
+            bool firstPhraseTerm = true;
+            foreach (var term in terms.GetEnumerator())
             {
-                hs.Add(terms[i]);
+                var termQuery = TermQuery(field, term);
+                if (firstPhraseTerm)
+                {
+                    Primitives.QueryPrimitives.FillFromMatch(termQuery, ref phraseBitmap.BitmapState, Allocator);
+                    firstPhraseTerm = false;
+                }
+                else
+                {
+                    Primitives.QueryPrimitives.AndWithMatch(termQuery, ref phraseBitmap.BitmapState, ref tempPhraseBitmapData, Allocator);
+                }
             }
 
-            var allIn = AllInQuery(field, hs, cancellationToken: cancellationToken);
-
-            var phraseMatch = PhraseQuery(allIn, field, terms.ToSpan());
+            var phraseMatch = PhraseQuery(phraseBitmap, field, terms.ToSpan());
+            tempPhraseBitmapData.Dispose(Allocator);
 
             searchBitmapHasValue = true;
             if (@operator == Constants.Search.Operator.Or)
@@ -304,18 +342,45 @@ public partial class IndexSearcher
 
         if (termMatches?.Count > 0)
         {
-            IQueryMatch termMatchesQuery = @operator switch
+            // Build bitmap directly from term posting lists instead of calling AllInQuery/InQuery
+            var termBitmap = new BitmapMatch(Allocator);
+            var tempTermBitmapData = default(Voron.Data.RoaringBitmaps.RoaringBitmapData);
+
+            if (@operator == Constants.Search.Operator.And)
             {
-                Constants.Search.Operator.And => AllInQuery(field, termMatches.ToHashSet(SliceComparer.Instance), token: cancellationToken),
-                Constants.Search.Operator.Or => InQuery(field, termMatches, token: cancellationToken),
-                _ => throw new ArgumentOutOfRangeException(nameof(@operator), @operator, null)
-            };
+                // AND all terms together
+                bool first = true;
+                foreach (var term in termMatches)
+                {
+                    var termQuery = TermQuery(field, term);
+                    if (first)
+                    {
+                        Primitives.QueryPrimitives.FillFromMatch(termQuery, ref termBitmap.BitmapState, Allocator);
+                        first = false;
+                    }
+                    else
+                    {
+                        Primitives.QueryPrimitives.AndWithMatch(termQuery, ref termBitmap.BitmapState, ref tempTermBitmapData, Allocator);
+                    }
+                }
+            }
+            else
+            {
+                // OR all terms together
+                foreach (var term in termMatches)
+                {
+                    var termQuery = TermQuery(field, term);
+                    Primitives.QueryPrimitives.FillFromMatch(termQuery, ref termBitmap.BitmapState, Allocator);
+                }
+            }
 
             searchBitmapHasValue = true;
             if (@operator == Constants.Search.Operator.Or)
-                Primitives.QueryPrimitives.FillFromMatch(termMatchesQuery, ref searchBitmap.BitmapState, Allocator);
+                Primitives.QueryPrimitives.FillFromMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState, Allocator);
             else
-                Primitives.QueryPrimitives.AndWithMatch(termMatchesQuery, ref searchBitmap.BitmapState, ref tempBitmapData, Allocator);
+                Primitives.QueryPrimitives.AndWithMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState, ref tempBitmapData, Allocator);
+
+            tempTermBitmapData.Dispose(Allocator);
         }
 
         if (searchBitmapHasValue)
@@ -442,14 +507,26 @@ public partial class IndexSearcher
             }
 
             // Phrase query part (wildcards are not supported in phrase queries).
-            var hs = new HashSet<Slice>(SliceComparer.Instance);
-            for (var i = 0; i < terms.Count; ++i)
+            // Build bitmap directly from term posting lists for phrase query
+            var phraseBitmap = new BitmapMatch(Allocator);
+            var tempPhraseBitmapData = default(Voron.Data.RoaringBitmaps.RoaringBitmapData);
+            bool firstPhraseTerm = true;
+            foreach (var term in terms.GetEnumerator())
             {
-                hs.Add(terms[i]);
+                var termQuery = TermQuery(field, term);
+                if (firstPhraseTerm)
+                {
+                    Primitives.QueryPrimitives.FillFromMatch(termQuery, ref phraseBitmap.BitmapState, Allocator);
+                    firstPhraseTerm = false;
+                }
+                else
+                {
+                    Primitives.QueryPrimitives.AndWithMatch(termQuery, ref phraseBitmap.BitmapState, ref tempPhraseBitmapData, Allocator);
+                }
             }
 
-            var allIn = AllInQuery(field, hs, cancellationToken: cancellationToken);
-            var phraseMatch = PhraseQuery(allIn, field, terms.ToSpan());
+            var phraseMatch = PhraseQuery(phraseBitmap, field, terms.ToSpan());
+            tempPhraseBitmapData.Dispose(Allocator);
 
             searchBitmapHasValue = true;
             if (@operator == Constants.Search.Operator.Or)
@@ -460,18 +537,45 @@ public partial class IndexSearcher
 
         if (termMatches?.Count > 0)
         {
-            var termMatchesQuery = @operator switch
+            // Build bitmap directly from term posting lists instead of calling AllInQuery/InQuery
+            var termBitmap = new BitmapMatch(Allocator);
+            var tempTermBitmapData = default(Voron.Data.RoaringBitmaps.RoaringBitmapData);
+
+            if (@operator == Constants.Search.Operator.And)
             {
-                Constants.Search.Operator.And => AllInQuery(field, termMatches.ToHashSet(SliceComparer.Instance), token: cancellationToken),
-                Constants.Search.Operator.Or => InQuery(field, termMatches, token: cancellationToken),
-                _ => throw new ArgumentOutOfRangeException(nameof(@operator), @operator, null)
-            };
+                // AND all terms together
+                bool first = true;
+                foreach (var term in termMatches)
+                {
+                    var termQuery = TermQuery(field, term);
+                    if (first)
+                    {
+                        Primitives.QueryPrimitives.FillFromMatch(termQuery, ref termBitmap.BitmapState, Allocator);
+                        first = false;
+                    }
+                    else
+                    {
+                        Primitives.QueryPrimitives.AndWithMatch(termQuery, ref termBitmap.BitmapState, ref tempTermBitmapData, Allocator);
+                    }
+                }
+            }
+            else
+            {
+                // OR all terms together
+                foreach (var term in termMatches)
+                {
+                    var termQuery = TermQuery(field, term);
+                    Primitives.QueryPrimitives.FillFromMatch(termQuery, ref termBitmap.BitmapState, Allocator);
+                }
+            }
 
             searchBitmapHasValue = true;
             if (@operator == Constants.Search.Operator.Or)
-                Primitives.QueryPrimitives.FillFromMatch(termMatchesQuery, ref searchBitmap.BitmapState, Allocator);
+                Primitives.QueryPrimitives.FillFromMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState, Allocator);
             else
-                Primitives.QueryPrimitives.AndWithMatch(termMatchesQuery, ref searchBitmap.BitmapState, ref tempBitmapData, Allocator);
+                Primitives.QueryPrimitives.AndWithMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState, ref tempBitmapData, Allocator);
+
+            tempTermBitmapData.Dispose(Allocator);
         }
 
         if (searchBitmapHasValue)

@@ -131,12 +131,6 @@ namespace Corax.Querying.Matches
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static MultiTermMatch Create(in CombinedMatch query)
-        {
-            return new MultiTermMatch(query, StaticFunctionCache<CombinedMatch>.FunctionTable);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static MultiTermMatch Create(in TermMatch query)
         {
             return new MultiTermMatch(query, StaticFunctionCache<TermMatch>.FunctionTable);
