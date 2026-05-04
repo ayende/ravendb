@@ -17,8 +17,14 @@ public enum PlanOpKind : byte
     ClearBitmap,
     /// <summary>AND two bitmap slots. BitmapLocal = target, ParamIndex2 = source.</summary>
     AndBitmaps,
+    /// <summary>ANDNOT two bitmap slots. BitmapLocal = target, ParamIndex2 = source.</summary>
+    AndNotBitmaps,
     /// <summary>Check if bitmap is empty. BitmapLocal = slot. If empty, goto done.</summary>
     CheckEmpty,
+    /// <summary>OR two bitmap slots. BitmapLocal = target, ParamIndex2 = source.</summary>
+    OrBitmaps,
+    /// <summary>Swap contents of two bitmap slots. BitmapLocal = slot A, ParamIndex2 = slot B.</summary>
+    SwapBitmaps,
 }
 
 public struct PlanOp
@@ -38,6 +44,12 @@ public struct PlanOp
     /// IQueryMatch wrapper. Vector / spatial / multi-term clauses always stay on
     /// the IQueryMatch path.</summary>
     public bool UseTermSource;
+
+    /// <summary>When true, suppress the empty-check early exit after
+    /// <see cref="PlanOpKind.AndWithPostings"/>. Used for AND sub-chains inside
+    /// an OR accumulator where an empty intermediate result is not a reason to
+    /// abort the whole expression.</summary>
+    public bool SkipEarlyExit;
 }
 
 /// <summary>Three-way native posting-list source attached to a term op.
@@ -151,13 +163,12 @@ public class QueryPlan
     /// disambiguate plans whose <see cref="TypeSignature"/> ints collide.</summary>
     public byte[] FullKinds;
 
-    /// <summary>Number of bitmaps a compiled query plan currently needs.
-    /// Slot 0 holds the main result, slot 1 is scratch for AND-with-postings / AND-NOT
-    /// and for OR-group accumulation. Today every emitted plan stays within these two slots
-    /// because OR groups are built into slot 1 sequentially (cleared between groups) and
-    /// no nested AND-inside-OR shape is representable yet. When AndGroup lands, this becomes
-    /// a per-plan computed value derived from the maximum BitmapLocal referenced by any op.</summary>
-    public const int RequiredBitmaps = 2;
+    /// <summary>Number of bitmaps this plan needs at execution time.
+    /// Slot 0 = main result, slot 1 = scratch for AND-with-postings / AND-NOT and OR-group
+    /// accumulation. Plans with multiple AndGroups inside an OR chain use slot 2 as a
+    /// save slot during the swap-build-or pattern, so RequiredBitmaps is set to 3 for those.
+    /// Default is 2 (covers all non-multi-AndGroup plans).</summary>
+    public int RequiredBitmaps = 2;
 
     /// <summary>Metadata for entry scan predicates. Used by the IL emitter to generate
     /// direct comparison calls. Parallel to the MultiUnaryItem[] created at execution time.

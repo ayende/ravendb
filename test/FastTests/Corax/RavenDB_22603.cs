@@ -329,7 +329,7 @@ public class RavenDB_22603_Primitive : StorageTest
         // Expected: entries where Name != "apple" AND Color != "yellow"
         var expected = _entries.Where(e => e.Name != "apple" && e.Color != "yellow").Select(e => e.Id).ToList();
 
-        var results = ExecuteRQLQuery("FROM TestIndex WHERE NOT Name = 'apple' AND NOT Color = 'yellow'");
+        var results = ExecuteRQLQuery("FROM TestIndex WHERE Name != 'apple' AND Color != 'yellow'");
         results.Sort();
         expected.Sort();
 
@@ -388,7 +388,7 @@ public class RavenDB_22603_Primitive : StorageTest
         // This means: cherry entries only (entries/5 and entries/6)
         var expected = _entries.Where(e => e.Name != "apple" && e.Name != "banana").Select(e => e.Id).ToList();
 
-        var results = ExecuteRQLQuery("FROM TestIndex WHERE NOT Name = 'apple' AND NOT Name = 'banana'");
+        var results = ExecuteRQLQuery("FROM TestIndex WHERE Name != 'apple' AND Name != 'banana'");
         results.Sort();
         expected.Sort();
 
