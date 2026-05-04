@@ -235,7 +235,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
 
             // Take ownership of bitmaps[0] (may have been swapped during entry scan)
             _bitmapData = bitmaps[0];
-            _bitmapData.PrepareForReading();
+            _bitmapData.PrepareForReading(_allocator);
             _count = _bitmapData.Count;
             _iterator = _bitmapData.GetIterator(_allocator);
             _executed = true; // Mark only after successful execution
