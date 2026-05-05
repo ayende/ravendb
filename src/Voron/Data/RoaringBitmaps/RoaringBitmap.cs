@@ -41,11 +41,6 @@ public unsafe ref partial struct RoaringBitmap : IDisposable
     private ref RoaringBitmapData _data;
     private readonly ByteStringContext _ctx;
 
-    /// <summary>The allocator backing this bitmap's container storage. Exposed so peer
-    /// RoaringBitmap instances can compare allocators (for cross-bitmap buffer donation
-    /// in AndWith / AndNotWith) and so wrapping match types can match the lifetime.</summary>
-    internal ByteStringContext Allocator => _ctx;
-
     public RoaringBitmap(ref RoaringBitmapData data, ByteStringContext ctx)
     {
         _data = ref data;
@@ -53,7 +48,7 @@ public unsafe ref partial struct RoaringBitmap : IDisposable
         // _freeListHead == 0 is the terminator; default(RoaringBitmapData) already has it.
     }
 
-    public const int BitmapContainerSizeInBytes = 8192; // 8KB
+    private const int BitmapContainerSizeInBytes = 8192; // 8KB
     public const int BitmapContainerSizeInUInt64 = BitmapContainerSizeInBytes / sizeof(ulong);
     private const int ArrayContainerMaxCardinality = BitmapContainerSizeInBytes / sizeof(ushort); // crossover: array at max costs same as bitmap
     public const int ContainerKeyShift = 16;
@@ -64,8 +59,7 @@ public unsafe ref partial struct RoaringBitmap : IDisposable
 
     // _freeListHead / NextFreeSlot use a 1-based encoding: 0 = empty (zero-init), slot+1 = real index.
     // This lets default(RoaringBitmapData) be a valid empty bitmap without any explicit init.
-    private const int IndexAbsent = -1;        // key is not present in index
-    internal const int IndexAbsentPublic = IndexAbsent;
+    internal const int IndexAbsent = -1;        // key is not present in index
 
     public readonly int ContainerCount => _data.ContainerCount;
 
@@ -749,7 +743,7 @@ public unsafe ref partial struct RoaringBitmap : IDisposable
         // consume-after-use contract; arming its scratch pool here means a later
         // Clear+fill on the same instance has buffers ready without round-tripping
         // through ctx.Allocate. Different ctx → fall back to self-pool (FreeContainer).
-        bool sharedCtx = ReferenceEquals(_ctx, other.Allocator);
+        bool sharedCtx = ReferenceEquals(_ctx, other._ctx);
 
         for (int key = 0; key < myLen; key++)
         {
@@ -810,7 +804,7 @@ public unsafe ref partial struct RoaringBitmap : IDisposable
     {
         int myLen = _data._index.Count;
         int* myIdx = _data._index.RawItems;
-        bool sharedCtx = ReferenceEquals(_ctx, other.Allocator);
+        bool sharedCtx = ReferenceEquals(_ctx, other._ctx);
 
         for (int key = 0; key < myLen; key++)
         {

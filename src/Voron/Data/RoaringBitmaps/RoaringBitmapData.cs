@@ -93,7 +93,7 @@ public unsafe struct RoaringBitmapData
                 return -1;
             for (int i = 0; i < _index.Count; i++)
             {
-                if (_index[i] != RoaringBitmap.IndexAbsentPublic)
+                if (_index[i] != RoaringBitmap.IndexAbsent)
                     return i;
             }
             return -1;
@@ -108,7 +108,7 @@ public unsafe struct RoaringBitmapData
                 return -1;
             for (int i = _index.Count - 1; i >= 0; i--)
             {
-                if (_index[i] != RoaringBitmap.IndexAbsentPublic)
+                if (_index[i] != RoaringBitmap.IndexAbsent)
                     return i;
             }
             return -1;
@@ -118,7 +118,7 @@ public unsafe struct RoaringBitmapData
     public readonly int GetSlotForKey(long key)
     {
         if (key < 0 || key >= _index.Count)
-            return RoaringBitmap.IndexAbsentPublic;
+            return RoaringBitmap.IndexAbsent;
         return _index.RawItems[key];
     }
 
