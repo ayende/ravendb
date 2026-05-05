@@ -74,17 +74,13 @@ public unsafe partial struct RoaringBitmap : IDisposable
     public const int ContainerKeyShift = 16;
     public const int ContainerSize = 1 << ContainerKeyShift; // 65,536 entry IDs per container
     private const int ContainerValueMask = 0xFFFF;
-    internal const int ContainerValueMaskPublic = ContainerValueMask;
     private const int LazyCardinality = -1;
 
     private const int InitialArrayContainerSizeInBytes = 64; // 32 shorts — minimum for SIMD linear scan without scalar tail
     private const int SimdAlignment = 32; // Vector256 width in bytes
     private const int SimdLinearScanThreshold = 64; // below this, SIMD linear scan beats binary/quad search
 
-
-    // _freeListHead / NextFreeSlot use a 1-based encoding: 0 = empty (zero-init), slot+1 = real index.
-    // This lets default(RoaringBitmap) be a valid empty bitmap without any explicit init (except _ctx must be set).
-    internal const int IndexAbsent = -1;        // key is not present in index
+    private const int IndexAbsent = -1;        // key is not present in index
 
     public readonly int ContainerCount => _containerCount;
 
@@ -102,17 +98,20 @@ public unsafe partial struct RoaringBitmap : IDisposable
                     continue;
 
                 int card = entries[i].Cardinality;
-                if (card < 0)
+                if (card is LazyCardinality)
                 {
                     // LazyCardinality: bitmap container was updated without recomputing the popcount.
                     // Count bits directly so callers (e.g. ShouldSwitchToEntryScan) see a correct value
                     // rather than the sentinel -1, which would incorrectly trigger early entry scan.
-                    ulong* bitmapPtr = (ulong*)entries[i].Data;
-                    for (int w = 0; w < BitmapContainerSizeInUInt64; w++)
-                        total += BitOperations.PopCount(bitmapPtr[w]);
+                    Debug.Assert(types[i] is ContainerType.Bitmap, "only bitmaps can have lazy cardinality");
+                    entries[i].Cardinality = card = BitmapContainerCardinality(entries[i].Data);
+                    if (card is 0)
+                    {
+                        FreeContainer(entries[i].Key, i);
+                        continue;
+                    }
                 }
-                else
-                    total += card;
+                total += card;
             }
             return total;
         }
@@ -123,7 +122,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
     public readonly bool Contains(long value)
     {
         long key = value >> ContainerKeyShift;
-        ushort low = (ushort)(value & ContainerValueMaskPublic);
+        ushort low = (ushort)(value & ContainerValueMask);
 
         int slot = GetSlotForKey(key);
         if (slot < 0)
@@ -135,7 +134,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
         {
             ContainerType.Array => ArrayContainerContains(entry.ArrayData, entry.Cardinality, low),
             ContainerType.ArrayUnsorted => SimdLinearContains(entry.ArrayData, entry.Cardinality, low),
-            ContainerType.Bitmap => BitmapContainsPublic((ulong*)entry.Data, low),
+            ContainerType.Bitmap => BitmapContains((ulong*)entry.Data, low),
             ContainerType.Range => low >= entry.RangeStart && low < entry.RangeStart + entry.Cardinality,
             _ => false
         };
@@ -232,8 +231,8 @@ public unsafe partial struct RoaringBitmap : IDisposable
         // Starting at the head field, it advances to each node's embedded next-pointer.
         // `bestRef` tracks the field pointing to the best-fit node found so far, so we
         // can unlink the winner with a single assignment after the walk.
+        ref ByteString bestRef =  ref _nextFreeStorage;
         ref ByteString scan = ref _nextFreeStorage;
-        ref ByteString bestRef = ref Unsafe.NullRef<ByteString>();
         int bestLen = int.MaxValue;
 
         while (scan.HasValue)
@@ -247,7 +246,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
             scan = ref *(ByteString*)scan.Ptr;
         }
 
-        if (Unsafe.IsNullRef(ref bestRef) == false)
+        if (bestLen != int.MaxValue)
         {
             storage = bestRef;                       // read the winner
             bestRef = *(ByteString*)storage.Ptr;     // unlink: point prev's next to winner's next
@@ -264,9 +263,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void SwapContents(ref RoaringBitmap other)
     {
-        RoaringBitmap tmp = this;
-        this = other;
-        other = tmp;
+        (other, this) = (this, other);
     }
 
     /// <summary>Batch-add strictly sorted (no duplicates) values. Groups values by container
@@ -759,7 +756,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
                     if (entry.Cardinality >= BitmapSortThreshold)
                         SortViaBitmapScratch(ref entry, ref types[i], scratch);
                     else
-                        SortAndDedupSmallArray(ref entry, ref types[i]);
+                        SortAndDedupSmallArray(ref entry, out types[i]);
                     break;
                 }
 
@@ -788,7 +785,8 @@ public unsafe partial struct RoaringBitmap : IDisposable
         var arr = entry.ArrayData;
         int count = entry.Cardinality;
 
-        ulong* dirtyMap = stackalloc ulong[4];
+        const int dirtyMapUlongLen = 4;
+        ulong* dirtyMap = stackalloc ulong[dirtyMapUlongLen];
         Debug.Assert(dirtyMap[0] is 0 ,"This ensure that the stackalloc was cleared, *this* method should not have [SkipLocalsInit]");
 
         // Explode: set bits for each value, mark the chunk dirty on first touch and clear it.
@@ -808,14 +806,15 @@ public unsafe partial struct RoaringBitmap : IDisposable
 
         // Extract: only visit chunks marked dirty
         int sorted = 0;
-        for (int i = 0; i < 4; i++)
+        for (int i = 0; i < dirtyMapUlongLen; i++)
         {
             ulong currentWork = dirtyMap[i];
             while (currentWork != 0)
             {
                 int chunkBit = BitOperations.TrailingZeroCount(currentWork);
                 int wordBaseIdx = ((i << 6) + chunkBit) << 2;
-                for (int wordOffset = 0; wordOffset < 4; wordOffset++)
+                const int bitmapWordsPerBit = 4;
+                for (int wordOffset = 0; wordOffset < bitmapWordsPerBit; wordOffset++)
                 {
                     int wordIdx = wordBaseIdx + wordOffset;
                     ulong currentWord = scratch[wordIdx];
@@ -913,105 +912,106 @@ public unsafe partial struct RoaringBitmap : IDisposable
     [SkipLocalsInit]
     private void AndContainerInPlace(ref ContainerEntry left, ref ContainerType leftType, ref ContainerEntry right, ContainerType rightType)
     {
-        ulong* scratch = stackalloc ulong[BitmapContainerSizeInUInt64];
-
-        while (true)
+        switch (leftType, rightType)
         {
-            switch (leftType, rightType)
+            // Range×Range fast paths - no allocation needed
+            case (ContainerType.Range, ContainerType.Range):
             {
-                // Range×Range fast paths - no allocation needed
-                case (ContainerType.Range, ContainerType.Range):
+                int intersectStart = Math.Max(left.RangeStart, right.RangeStart);
+                int intersectEnd = Math.Min(RangeEndExclusive(ref left), RangeEndExclusive(ref right));
+                if (intersectStart >= intersectEnd)
                 {
-                    int intersectStart = Math.Max(left.RangeStart, right.RangeStart);
-                    int intersectEnd = Math.Min(RangeEndExclusive(ref left), RangeEndExclusive(ref right));
-                    if (intersectStart >= intersectEnd)
-                    {
-                        left.Cardinality = 0;
-                    }
-                    else
-                    {
-                        left.RangeStart = (ushort)intersectStart;
-                        left.Cardinality = intersectEnd - intersectStart;
-                    }
-
-                    return;
+                    left.Cardinality = 0;
                 }
-                case (ContainerType.Range, _):
+                else
                 {
-                    ConvertRangeToBitmap(ref left, ref leftType);
-                    continue;
+                    left.RangeStart = (ushort)intersectStart;
+                    left.Cardinality = intersectEnd - intersectStart;
                 }
-                case (_, ContainerType.Range):
-                {
-                    ContainerEntry temp = MaterializeRangeIntoBuffer(ref right, scratch);
-                    AndContainerInPlace(ref left, ref leftType, ref temp, ContainerType.Bitmap);
-                    return;
-                }
-                case (ContainerType.Bitmap, ContainerType.Bitmap):
-                {
-                    // Lazy: bitwise AND only; PreparForReading will popcount + free if empty.
-                    BitmapAndNoPop(left.BitmapPtr, right.BitmapPtr, left.BitmapPtr);
-                    left.Cardinality = LazyCardinality;
-                    break;
-                }
-                case (ContainerType.Bitmap, ContainerType.Array or ContainerType.ArrayUnsorted):
-                {
-                    // AND bitmap with array: build the intersection in a stack scratch by
-                    // OR'ing only values that are set in left; then copy back. Lazy cardinality.
-                    ushort* arr = right.ArrayData;
-                    var bmp = left.BitmapPtr;
-                    new Span<byte>(scratch, BitmapContainerSizeInBytes).Clear();
-
-                    for (int i = 0; i < right.Cardinality; i++)
-                    {
-                        ushort val = arr[i];
-                        if (BitmapContains(bmp, val)) BitmapSet(scratch, val);
-                    }
-
-                    new Span<byte>(scratch, BitmapContainerSizeInBytes).CopyTo(new Span<byte>(left.Data, BitmapContainerSizeInBytes));
-                    left.Cardinality = LazyCardinality;
-                    break;
-                }
-                case (ContainerType.Array or ContainerType.ArrayUnsorted, ContainerType.Bitmap):
-                {
-                    // Filter left's values against right's bitmap, in-place. Order doesn't matter.
-                    ushort* arr = left.ArrayData;
-                    var bmp = right.BitmapPtr;
-                    int count = 0;
-                    for (int i = 0; i < left.Cardinality; i++)
-                    {
-                        ushort val = arr[i];
-                        if (BitmapContains(bmp, val)) arr[count++] = val;
-                    }
-
-                    left.Cardinality = count;
-                    break;
-                }
-                case (ContainerType.Array or ContainerType.ArrayUnsorted, ContainerType.Array or ContainerType.ArrayUnsorted):
-                {
-                    if (AdvInstructionSet.IsAcceleratedVector256 && left.Cardinality <= SimdLinearScanThreshold && right.Cardinality <= SimdLinearScanThreshold)
-                    {
-                        Debug.Assert(left.Storage.Length % Vector256<ushort>.Count == 0 && right.Storage.Length % Vector256<ushort>.Count == 0, "array containers must be SIMD-aligned for SIMD AND, see SimdContains for details");
-
-                        left.Cardinality = SimdCrossAnd(left.ArrayData, left.Cardinality, right.ArrayData, right.Cardinality, left.ArrayData);
-                    }
-                    else
-                    {
-                        // Need sorted arrays for galloping merge
-                        if (leftType == ContainerType.ArrayUnsorted) SortAndDedupSmallArray(ref left, ref leftType);
-                        if (rightType == ContainerType.ArrayUnsorted) SortAndDedupSmallArray(ref right, ref rightType);
-                        ushort* a = left.ArrayData;
-                        ushort* b = right.ArrayData;
-                        left.Cardinality = ArrayContainerAnd(a, left.Cardinality, b, right.Cardinality, a);
-                    }
-
-                    break;
-                }
-                default:
-                    throw new InvalidOperationException($"Invalid container combination: {leftType} and {rightType}");
+                return;
             }
+            case (ContainerType.Range, _):
+            {
+                ConvertRangeToBitmap(ref left, ref leftType);
+                AndContainerInPlace(ref left, ref leftType, ref right, rightType);
+                return;
+            }
+            case (_, ContainerType.Range):
+            {
+                ulong* stackBmp = stackalloc ulong[BitmapContainerSizeInUInt64];
+                ContainerEntry temp = MaterializeRangeIntoBuffer(ref right, stackBmp);
+                AndContainerInPlace(ref left, ref leftType, ref temp, ContainerType.Bitmap);
+                return;
+            }
+            case (ContainerType.Bitmap, ContainerType.Bitmap):
+            {
+                // Lazy: bitwise AND only; PreparForReading will popcount + free if empty.
+                BitmapAndNoPop(left.BitmapPtr, right.BitmapPtr, left.BitmapPtr);
+                left.Cardinality = LazyCardinality;
+                break;
+            }
+            case (ContainerType.Bitmap, ContainerType.Array or ContainerType.ArrayUnsorted):
+            {
+                // AND bitmap with array: build the intersection in a stack scratch by
+                // OR'ing only values that are set in left; then copy back. Lazy cardinality.
+                ushort* arr = right.ArrayData;
+                var bmp = left.BitmapPtr;
+                ulong* scratch = stackalloc ulong[BitmapContainerSizeInUInt64];
+                new Span<byte>(scratch, BitmapContainerSizeInBytes).Clear();
 
-            break;
+                for (int i = 0; i < right.Cardinality; i++)
+                {
+                    ushort val = arr[i];
+                    if (BitmapContains(bmp, val))
+                        BitmapSet(scratch, val);
+                }
+
+                new Span<byte>(scratch, BitmapContainerSizeInBytes)
+                    .CopyTo(new Span<byte>(left.Data, BitmapContainerSizeInBytes));
+                left.Cardinality = LazyCardinality;
+                break;
+            }
+            case (ContainerType.Array or ContainerType.ArrayUnsorted, ContainerType.Bitmap):
+            {
+                // Filter left's values against right's bitmap, in-place. Order doesn't matter.
+                ushort* arr = left.ArrayData;
+                var bmp = right.BitmapPtr;
+                int count = 0;
+                for (int i = 0; i < left.Cardinality; i++)
+                {
+                    ushort val = arr[i];
+                    if (BitmapContains(bmp, val))
+                        arr[count++] = val;
+                }
+                left.Cardinality = count;
+                break;
+            }
+            case (ContainerType.Array or ContainerType.ArrayUnsorted, ContainerType.Array or ContainerType.ArrayUnsorted):
+            {
+                if (AdvInstructionSet.IsAcceleratedVector256
+                    && left.Cardinality <= SimdLinearScanThreshold
+                    && right.Cardinality <= SimdLinearScanThreshold)
+                {
+                    Debug.Assert(left.Storage.Length % Vector256<ushort>.Count == 0 && right.Storage.Length % Vector256<ushort>.Count == 0,
+                            "array containers must be SIMD-aligned for SIMD AND, see SimdContains for details");
+
+                    left.Cardinality = SimdCrossAnd(left.ArrayData, left.Cardinality, right.ArrayData, right.Cardinality, left.ArrayData);
+                }
+                else
+                {
+                    // Need sorted arrays for galloping merge
+                    if (leftType == ContainerType.ArrayUnsorted)
+                        SortAndDedupSmallArray(ref left, out leftType);
+                    if (rightType == ContainerType.ArrayUnsorted)
+                        SortAndDedupSmallArray(ref right, out rightType);
+                    ushort* a = left.ArrayData;
+                    ushort* b = right.ArrayData;
+                    left.Cardinality = ArrayContainerAnd(a, left.Cardinality, b, right.Cardinality, a);
+                }
+                break;
+            }
+            default:
+                throw new InvalidOperationException($"Invalid container combination: {leftType} and {rightType}");
         }
     }
 
@@ -1082,9 +1082,9 @@ public unsafe partial struct RoaringBitmap : IDisposable
                 }
 
                 if (leftType == ContainerType.ArrayUnsorted)
-                    SortAndDedupSmallArray(ref left, ref leftType);
+                    SortAndDedupSmallArray(ref left, out leftType);
                 if (rightType == ContainerType.ArrayUnsorted)
-                    SortAndDedupSmallArray(ref right, ref rightType);
+                    SortAndDedupSmallArray(ref right, out rightType);
                 ushort* a = left.ArrayData;
                 ushort* b = right.ArrayData;
                 left.Cardinality = ArrayContainerAndNot(a, left.Cardinality, b, right.Cardinality, a);
@@ -1174,7 +1174,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
 
     private void IncreaseIndexCapacity(long key)
     {
-        if (key < 0 || key >= int.MaxValue - 16)
+        if (key is < 0 or >= int.MaxValue - 16)
             throw new ArgumentOutOfRangeException(nameof(key), $"Container key {key} is out of the valid range (0..{int.MaxValue - 17}).");
 
         int needed = checked((int)(key + 1));

@@ -19,16 +19,12 @@ public unsafe partial struct RoaringBitmap
         (bitmap[val >> 6] & (1UL << (val & 63))) != 0;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static bool BitmapContainsPublic(ulong* bitmap, ushort val) => BitmapContains(bitmap, val);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void BitmapSet(ulong* bitmap, ushort val) =>
         bitmap[val >> 6] |= 1UL << (val & 63);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static int BitmapContainerCardinality(byte* data)
     {
-
         if (AdvInstructionSet.Arm.IsSupportedArm64)
         {
             Vector128<ulong>* bitmapVec = (Vector128<ulong>*)data;
@@ -314,21 +310,20 @@ public unsafe partial struct RoaringBitmap
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static bool ArrayContainerContains(ushort* data, int cardinality, ushort value)
     {
-        if (AdvInstructionSet.IsAcceleratedVector128)
+        return AdvInstructionSet.IsAcceleratedVector128 switch
         {
-            if (cardinality <= SimdLinearScanThreshold)
-                return SimdLinearContains(data, cardinality, value);
-            return SimdQuadContains(data, cardinality, value);
-        }
-
-        return ArrayContainerFind(data, cardinality, value) >= 0;
+            // if we don't have a lot of data, we can do a linear scan using SIMD more efficiently 
+            true when cardinality <= SimdLinearScanThreshold => SimdLinearContains(data, cardinality, value),
+            true => SimdQuadContains(data, cardinality, value),
+            _ => ArrayContainerFind(data, cardinality, value) >= 0
+        };
     }
 
     /// <summary>
-    /// SIMD linear scan for small arrays (&lt;= 64 values). Works on both sorted and unsorted data.
+    /// SIMD linear scan for small arrays (less than 64 values). Works on both sorted and unsorted data.
     /// Uses Vector256 (16 shorts) when available, Vector128 (8 shorts) otherwise.
     /// Iterates in full-vector chunks (ceiling division); the last chunk may over-read into zeroed
-    /// padding. <c>found &lt; cardinality</c> excludes any false-positive from a zero padding match.
+    /// padding. <c>found greater than cardinality</c> excludes any false-positive from a zero padding match.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static bool SimdLinearContains(ushort* arr, int cardinality, ushort value)
@@ -344,14 +339,12 @@ public unsafe partial struct RoaringBitmap
             {
                 // Safe to over-read: allocation is SIMD-aligned with zeroed padding.
                 var hasMatch = Vector256.Equals(Vector256.Load(arr + v * Vector256<ushort>.Count), needle).ExtractMostSignificantBits();
-                if (hasMatch != 0)
-                {
-                    int found = BitOperations.TrailingZeroCount(hasMatch) + v * Vector256<ushort>.Count;
-                    return found < cardinality;
-                }
+                if (hasMatch == 0) 
+                    continue;
+                
+                int found = BitOperations.TrailingZeroCount(hasMatch) + v * Vector256<ushort>.Count;
+                return found < cardinality;
             }
-
-            return false;
         }
         else // AdvInstructionSet.IsAcceleratedVector128 verified by caller
         {
@@ -361,15 +354,15 @@ public unsafe partial struct RoaringBitmap
             for (int v = 0; v < vecCount; v++)
             {
                 var hasMatch = Vector128.Equals(Vector128.Load(arr + v * Vector128<ushort>.Count), needle).ExtractMostSignificantBits();
-                if (hasMatch != 0)
-                {
-                    int found = BitOperations.TrailingZeroCount(hasMatch) + v * Vector128<ushort>.Count;
-                    return found < cardinality;
-                }
+                if (hasMatch == 0) 
+                    continue;
+                
+                int found = BitOperations.TrailingZeroCount(hasMatch) + v * Vector128<ushort>.Count;
+                return found < cardinality;
             }
-
-            return false;
         }
+
+        return false;
     }
 
     /// <summary>
@@ -457,11 +450,11 @@ public unsafe partial struct RoaringBitmap
                 Vector256<ushort> bChunk = Vector256.Load(b + bv * Vector256<ushort>.Count);
 
                 var hasMatch = Vector256.Equals(needle, bChunk).ExtractMostSignificantBits();
-                if (hasMatch != 0)
-                {
-                    found = BitOperations.TrailingZeroCount(hasMatch) + bv * Vector256<ushort>.Count;
-                    break;
-                }
+                if (hasMatch == 0) 
+                    continue;
+                
+                found = BitOperations.TrailingZeroCount(hasMatch) + bv * Vector256<ushort>.Count;
+                break;
             }
 
             // Keep the element if not found within [0, bLen).
@@ -496,11 +489,11 @@ public unsafe partial struct RoaringBitmap
                 Vector256<ushort> bChunk = Vector256.Load(b + bv * Vector256<ushort>.Count);
 
                 var hasMatch = Vector256.Equals(needle, bChunk).ExtractMostSignificantBits();
-                if (hasMatch != 0)
-                {
-                    found = BitOperations.TrailingZeroCount(hasMatch) + bv * Vector256<ushort>.Count;
-                    break;
-                }
+                if (hasMatch == 0) 
+                    continue;
+                
+                found = BitOperations.TrailingZeroCount(hasMatch) + bv * Vector256<ushort>.Count;
+                break;
             }
 
             // Keep the element if not found within [0, bLen).
@@ -634,7 +627,7 @@ public unsafe partial struct RoaringBitmap
     /// <summary>
     /// Comparison sort + dedup for small arrays below the bitmap radix sort threshold.
     /// </summary>
-    private static void SortAndDedupSmallArray(ref ContainerEntry entry, ref ContainerType type)
+    private static void SortAndDedupSmallArray(ref ContainerEntry entry, out ContainerType type)
     {
         var arr = entry.ArrayData;
         int count = entry.Cardinality;
@@ -693,12 +686,13 @@ public unsafe partial struct RoaringBitmap
 
         Span<long> extraValuesSpan = stackalloc long[1];
         extraValuesSpan[0] = value;
-        if (MaybeConvertRangeToArray(ref entry, ref type, rangeStart, rangeCount, extraValuesSpan) == false)
-        {
-            ConvertRangeToBitmap(ref entry, ref type);
-            BitmapSet(entry.BitmapPtr, value);
-            entry.Cardinality = LazyCardinality;
-        }
+        
+        if (MaybeConvertRangeToArray(ref entry, ref type, rangeStart, rangeCount, extraValuesSpan))
+            return;
+        
+        ConvertRangeToBitmap(ref entry, ref type);
+        BitmapSet(entry.BitmapPtr, value);
+        entry.Cardinality = LazyCardinality;
     }
 
     /// <summary>
