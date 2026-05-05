@@ -17,8 +17,8 @@ public static class QueryILEmitter
 {
     public delegate void CompiledExecuteDelegate(ref QueryScanContext ctx);
 
-    private const int FillBufferSize = 4096;
-    private const int ScanBatchSize = 256;
+    // FillBufferSize and EntryScanBatchSize from QueryPrimitives are shared
+    // so all stackalloc sizes stay in sync. See Primitives.cs for documentation.
 
     // QueryScanContext fields
     private static readonly FieldInfo s_ctxBitmaps = typeof(QueryScanContext).GetField(nameof(QueryScanContext.Bitmaps))!;
@@ -199,12 +199,12 @@ public static class QueryILEmitter
         int entryScanOpIndex = -1;
 
         // stackalloc long[FillBufferSize]
-        EmitLdcI4(il, FillBufferSize);
+        EmitLdcI4(il, Primitives.QueryPrimitives.FillBufferSize);
         il.Emit(OpCodes.Conv_U);
         il.Emit(OpCodes.Sizeof, typeof(long));
         il.Emit(OpCodes.Mul_Ovf_Un);
         il.Emit(OpCodes.Localloc);
-        EmitLdcI4(il, FillBufferSize);
+        EmitLdcI4(il, Primitives.QueryPrimitives.FillBufferSize);
         il.Emit(OpCodes.Newobj, s_spanCtor);
         il.Emit(OpCodes.Stloc, bufferLocal);
 
@@ -437,13 +437,13 @@ public static class QueryILEmitter
         EmitLoadBitmapRef(il, 1);
         il.Emit(OpCodes.Call, s_clear);
 
-        // Allocate scan batch: stackalloc long[256]
-        EmitLdcI4(il, ScanBatchSize);
+        // Allocate scan batch: stackalloc long[EntryScanBatchSize]
+        EmitLdcI4(il, Primitives.QueryPrimitives.EntryScanBatchSize);
         il.Emit(OpCodes.Conv_U);
         il.Emit(OpCodes.Sizeof, typeof(long));
         il.Emit(OpCodes.Mul_Ovf_Un);
         il.Emit(OpCodes.Localloc);
-        EmitLdcI4(il, ScanBatchSize);
+        EmitLdcI4(il, Primitives.QueryPrimitives.EntryScanBatchSize);
         il.Emit(OpCodes.Newobj, s_spanCtor);
         il.Emit(OpCodes.Stloc, batchLocal);
 
