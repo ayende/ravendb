@@ -100,7 +100,7 @@ public class RankingFunctionTests : StorageTest
         // 3 matches: entries 0,1 (maciej) and 3 (kaszebe).
         // kaszebe appears once vs maciej twice → higher BM25 IDF → entry 3 scores highest.
         var results = ExecuteRQLQueryByScore(
-            "FROM RankingIndex WHERE Content = 'maciej' OR Content = 'kaszebe' ORDER BY score() DESC");
+            "FROM RankingIndex WHERE Content = 'maciej' OR Content = 'kaszebe' ORDER BY score()");
 
         Assert.Equal(3, results.Count);
         Assert.Equal("3", results[0]); // kaszebe (highest IDF) scores first
@@ -122,7 +122,7 @@ public class RankingFunctionTests : StorageTest
 
         // AND of two terms: entries 0 (maciej+kaszebe) and 3 (kaszebe+maciej) match both.
         var results = ExecuteRQLQueryByScore(
-            "FROM RankingIndex WHERE Content = 'maciej' AND Content = 'kaszebe' ORDER BY score() DESC");
+            "FROM RankingIndex WHERE Content = 'maciej' AND Content = 'kaszebe' ORDER BY score()");
 
         Assert.Equal(2, results.Count);
     }

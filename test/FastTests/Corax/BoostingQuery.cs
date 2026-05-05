@@ -66,7 +66,7 @@ namespace FastTests.Corax
             // list/2, list/4 match Content1='1' only (no extra boost) → third tier.
             // list/3 (Content1=2) doesn't match either condition → excluded.
             var idsName = ExecuteRQLQueryByScore(
-                "FROM TestIndex WHERE boost(startsWith(Id, 'list/1'), 2) OR Content1 = '1' ORDER BY score() DESC");
+                "FROM TestIndex WHERE boost(startsWith(Id, 'list/1'), 2) OR Content1 = '1' ORDER BY score()");
 
             Assert.Equal(5, idsName.Count);
             Assert.Equal("list/1", idsName[0]);
@@ -85,7 +85,7 @@ namespace FastTests.Corax
             longList = Enumerable.Range(0, amount).Select(i => new IndexSingleNumericalEntry<long, long> {Id = $"list/{i}", Content1 = i % mod}).ToList();
             IndexEntries();
 
-            var result = ExecuteRQLQueryByScore("FROM TestIndex WHERE Content1 IN ('1', '2', '3') ORDER BY score() DESC");
+            var result = ExecuteRQLQueryByScore("FROM TestIndex WHERE Content1 IN ('1', '2', '3') ORDER BY score()");
 
             Assert.Equal(result.Count, result.Distinct().Count());
 
@@ -114,7 +114,7 @@ namespace FastTests.Corax
             // list/2, list/4 match Content1='1' only (boost 10) → third tier.
             // list/3 matches Content1='2' (no extra boost) → lowest.
             var sortedByCorax = ExecuteRQLQueryByScore(
-                "FROM TestIndex WHERE boost(startsWith(Id, 'list/1'), 20) OR boost(Content1 = '1', 10) OR Content1 = '2' ORDER BY score() DESC");
+                "FROM TestIndex WHERE boost(startsWith(Id, 'list/1'), 20) OR boost(Content1 = '1', 10) OR Content1 = '2' ORDER BY score()");
 
             Assert.Equal(6, sortedByCorax.Count);
             Assert.Equal("list/1", sortedByCorax[0]);
@@ -137,7 +137,7 @@ namespace FastTests.Corax
             IndexEntries();
 
             var allResults = ExecuteRQLQueryByScore(
-                "FROM TestIndex WHERE boost(startsWith(Id, 'list/1'), 20) OR boost(Content1 = '1', 10) OR Content1 = '2' ORDER BY score() DESC");
+                "FROM TestIndex WHERE boost(startsWith(Id, 'list/1'), 20) OR boost(Content1 = '1', 10) OR Content1 = '2' ORDER BY score()");
             var sortedByCorax = allResults.Take(4).ToList();
 
             Assert.Equal(4, sortedByCorax.Count);
@@ -165,7 +165,7 @@ namespace FastTests.Corax
 
             // BM25 IDF: Content1=0 (2 entries) scores higher than Content1=1 (4 entries).
             var sortedByCorax = ExecuteRQLQueryByScore(
-                "FROM TestIndex WHERE Content1 = '0' OR Content1 = '1' ORDER BY score() DESC");
+                "FROM TestIndex WHERE Content1 = '0' OR Content1 = '1' ORDER BY score()");
 
             for (int i = 0; i < longList.Count; ++i)
             {
@@ -194,7 +194,7 @@ namespace FastTests.Corax
 
             // BM25 IDF: Content1=0 (2 entries) scores higher than Content1=1 (4 entries).
             var sortedByCorax = ExecuteRQLQueryByScore(
-                "FROM TestIndex WHERE Content1 IN ('0', '1') ORDER BY score() DESC");
+                "FROM TestIndex WHERE Content1 IN ('0', '1') ORDER BY score()");
 
             for (int i = 0; i < longList.Count; ++i)
             {
@@ -264,7 +264,7 @@ namespace FastTests.Corax
             // BM25 IDF: Content1=0 (1 entry) > Content1=1 (2) > Content1=2 (3) > Content1=3 (4 entries).
             // After sorting longList ascending by Content1, sortedByCorax[i].Content1 must equal longList[i].Content1.
             var sortedByCorax = ExecuteRQLQueryByScoreReadContent1(
-                "FROM TestIndex WHERE Content1 IN ('0', '1', '2', '3') ORDER BY score() DESC");
+                "FROM TestIndex WHERE Content1 IN ('0', '1', '2', '3') ORDER BY score()");
 
             for (int i = 0; i < longList.Count; ++i)
                 Assert.Equal(longList[i].Content1, sortedByCorax[i]);
