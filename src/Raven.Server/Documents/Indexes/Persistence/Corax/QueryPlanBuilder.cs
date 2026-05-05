@@ -91,14 +91,9 @@ internal static class QueryPlanBuilder
     }
 
     /// <summary>
-    /// One-stop entry point that runs the full plan-build → cache-lookup → IL-emit →
-    /// match-resolve → param-extract → wrap-with-post-filters pipeline. Replaces five
-    /// hand-rolled call sites in CoraxIndexReadOperation, CoraxIndexFacetedReadOperation,
-    /// and CoraxQueryBuilder which all did the exact same dance.
-    ///
-    /// Today this is a strict refactor — BuildPlan still runs every call. The
-    /// master/compiled split where the AST-walk and clause-extraction are cached by
-    /// queryText is task #82's remaining stages and lands later.
+    /// Plan → compile → resolve pipeline: builds the plan, caches compiled delegates
+    /// by query text, resolves matches and term sources, extracts scan parameters,
+    /// wraps with post-filter phases (spatial, vector).
     /// </summary>
     public static IQueryMatch BuildAndCompile(
         PlanParameters planParams,
@@ -184,12 +179,9 @@ internal static class QueryPlanBuilder
     }
 
     /// <summary>
-    /// Master-plan-shape cache (#82 α). Per-IndexSearcher map of query text → cached
-    /// parsed shape (List<ClauseInfo> with AST refs preserved, no resolved values
-    /// from the live params). The IndexSearcher is held via a CWT-style shape table:
-    /// each call to BuildPlan looks up the per-searcher cache lazily and creates it
-    /// if absent. When the IndexSearcher dies, the per-searcher cache becomes
-    /// unreachable and is reclaimed by GC.
+    /// Per-IndexSearcher cache from query text to parsed shape (ClauseInfo list with
+    /// AST refs, no resolved parameter values). The IndexSearcher is held via a
+    /// ConditionalWeakTable so the cache is reclaimed when the searcher is GC'd.
     ///
     /// Cardinality estimation, clause sorting, and op emission still run live every
     /// call — only the AST walk and ClauseInfo construction are cached.
@@ -266,14 +258,12 @@ internal static class QueryPlanBuilder
         if (clauses.Count == 0)
             return BuildAllEntriesPlan();
 
-        // Estimate cardinalities
         foreach (var clause in clauses)
         {
             if (clause.Cardinality < 0)
                 clause.Cardinality = EstimateCardinality(clause, indexSearcher);
         }
 
-        // Determine top-level operation
         bool isOr = rootOp == BooleanOp.Or;
 
         // Separate spatial and vector clauses from the filter chain.
@@ -355,10 +345,8 @@ internal static class QueryPlanBuilder
             }
         }
 
-        // Build PlanOp array
         var result = EmitPlan(clauses, isOr);
 
-        // Attach spatial/vector post-filter phases to the plan
         if (spatialClauses != null || vectorClauses != null)
             AttachPostFilterPhases(result, spatialClauses, vectorClauses);
 
@@ -859,7 +847,6 @@ internal static class QueryPlanBuilder
     private static void ParseNegated(NegatedExpression negated, IndexSearcher indexSearcher,
         List<ClauseInfo> clauses, BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ref bool hasMixedAndOr)
     {
-        // NOT expr → ANDNOT with all entries
         var innerClauses = new List<ClauseInfo>();
         ParseExpression(negated.Expression, indexSearcher, innerClauses, queryParameters, metadata, ref hasMixedAndOr);
 
@@ -1350,14 +1337,12 @@ internal static class QueryPlanBuilder
                                 SkipEarlyExit = true // don't abort — OR chain continues
                             });
                         }
-                        // OR the saved prior accumulation (slot 2) back into the AND result (slot 0).
                         ops.Add(new PlanOp
                         {
                             Kind = PlanOpKind.OrBitmaps,
                             BitmapLocal = 0,
                             ParamIndex2 = 2
                         });
-                        // Clear slot 2 so it's clean for the next non-first AndGroup iteration.
                         ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 2 });
                     }
                     matchIndex += subClauses.Count;
@@ -1386,7 +1371,6 @@ internal static class QueryPlanBuilder
         }
         else if (clauses.Count == 1 && clauses[0].ClauseType == ClauseType.Equals)
         {
-            // Single equality — direct iterate, no bitmap
             ops.Add(new PlanOp
             {
                 Kind = PlanOpKind.DirectIterate,
@@ -1396,9 +1380,6 @@ internal static class QueryPlanBuilder
         }
         else if (clauses.Count == 1 && clauses[0].ClauseType == ClauseType.NotEquals)
         {
-            // Standalone NotEquals: AllEntries ANDNOT term
-            // ParamIndex 0 = the AllEntries match (NOT a term source — keep on IQueryMatch path),
-            // ParamIndex 1 = the negated term (eligible for native dispatch).
             ops.Add(new PlanOp
             {
                 Kind = PlanOpKind.FillFromPostings,
@@ -1462,8 +1443,6 @@ internal static class QueryPlanBuilder
                 startIndex = 1;
             }
 
-            // Build match index mapping — OrGroups expand to multiple matches
-            // First, compute match index for clause 0
             int matchIndex = 0;
             if (!firstIsNegated)
             {
