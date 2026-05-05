@@ -692,15 +692,16 @@ internal static class QueryPlanBuilder
                     {
                         for (int a = 0; a < arr.Length; a++)
                         {
-                            var elem = arr[a];
-                            terms.Add(ConvertInValue(elem, ref hasTime));
-                            termTypes.Add(GetInTermValueTokenType(elem, ValueTokenType.Parameter));
+                            var (elemVal, elemTyp) = ConvertInValue(arr[a], ValueTokenType.Parameter, ref hasTime);
+                            terms.Add(elemVal);
+                            termTypes.Add(elemTyp);
                         }
                     }
                     else
                     {
-                        terms.Add(ConvertInValue(resolved, ref hasTime));
-                        termTypes.Add(GetInTermValueTokenType(resolved, ve.Value));
+                        var (resVal, resTyp) = ConvertInValue(resolved, ve.Value, ref hasTime);
+                        terms.Add(resVal);
+                        termTypes.Add(resTyp);
                     }
                 }
             }
@@ -829,15 +830,16 @@ internal static class QueryPlanBuilder
                 {
                     for (int a = 0; a < arr.Length; a++)
                     {
-                        var elem = arr[a];
-                        terms.Add(ConvertInValue(elem, ref hasTime));
-                        termTypes.Add(GetInTermValueTokenType(elem, ValueTokenType.Parameter));
+                        var (elemVal, elemTyp) = ConvertInValue(arr[a], ValueTokenType.Parameter, ref hasTime);
+                        terms.Add(elemVal);
+                        termTypes.Add(elemTyp);
                     }
                 }
                 else
                 {
-                    terms.Add(ConvertInValue(resolvedValue, ref hasTime));
-                    termTypes.Add(GetInTermValueTokenType(resolvedValue, ve.Value));
+                    var (resVal, resTyp) = ConvertInValue(resolvedValue, ve.Value, ref hasTime);
+                    terms.Add(resVal);
+                    termTypes.Add(resTyp);
                 }
             }
         }
@@ -1040,33 +1042,39 @@ internal static class QueryPlanBuilder
     }
 
     /// <summary>Convert an IN value to its string representation, handling booleans and dates.</summary>
-    private static string ConvertInValue(object value, ref bool hasTime)
+    private static (string value, ValueTokenType type) ConvertInValue(object value, ValueTokenType literalType, ref bool hasTime)
     {
         if (value == null)
-            return null;
+            return (null, ValueTokenType.String);
         if (value is bool b)
-            return b ? "true" : "false";
-        // Check for date/time values — convert to ticks string for Corax
+            return (b ? "true" : "false", b ? ValueTokenType.True : ValueTokenType.False);
         if (value is DateTime dt)
         {
             hasTime = true;
-            return dt.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            return (dt.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture), ValueTokenType.Long);
         }
         if (value is DateTimeOffset dto)
         {
             hasTime = true;
-            return dto.UtcDateTime.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            return (dto.UtcDateTime.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture), ValueTokenType.Long);
         }
-        // LazyStringValue from Blittable — might be a date string
+        if (literalType != ValueTokenType.Parameter)
+            return (value.ToString(), literalType);
+        if (value is long or int)
+            return (value.ToString(), ValueTokenType.Long);
+        if (value is double or float or decimal)
+            return (((System.IConvertible)value).ToString(System.Globalization.CultureInfo.InvariantCulture), ValueTokenType.Double);
+        if (value is Sparrow.Json.LazyNumberValue lnv)
+            return (value.ToString(), lnv.TryParseLong(out _) ? ValueTokenType.Long : ValueTokenType.Double);
         var str = value.ToString();
         if (str != null && str.Length > 18 && str.Length < 35 && str.Contains('T')
             && DateTime.TryParse(str, System.Globalization.CultureInfo.InvariantCulture,
                 System.Globalization.DateTimeStyles.RoundtripKind, out var parsed))
         {
             hasTime = true;
-            return parsed.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            return (parsed.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture), ValueTokenType.Long);
         }
-        return str;
+        return (str, ValueTokenType.String);
     }
 
     /// <summary>Split search term value respecting quoted phrases.
@@ -1125,29 +1133,7 @@ internal static class QueryPlanBuilder
         return field.FieldValue;
     }
 
-    /// <summary>Determine the <see cref="ValueTokenType"/> for an individual In-clause term.
-    /// <paramref name="literalType"/> is the AST token type; for Parameter tokens the type
-    /// is inferred from the resolved value (matches the logic in <see cref="ConvertInValue"/>).</summary>
-    private static ValueTokenType GetInTermValueTokenType(object resolvedValue, ValueTokenType literalType)
-    {
-        if (literalType != ValueTokenType.Parameter)
-            return literalType;
-        // Parameter expansion — infer from runtime value
-        if (resolvedValue is bool b) return b ? ValueTokenType.True : ValueTokenType.False;
-        // Date/time values are stored as ticks (long) in Corax — must match ConvertInValue logic
-        if (resolvedValue is DateTime or DateTimeOffset) return ValueTokenType.Long;
-        if (resolvedValue is long or int) return ValueTokenType.Long;
-        if (resolvedValue is double or float or decimal) return ValueTokenType.Double;
-        if (resolvedValue is Sparrow.Json.LazyNumberValue lnv)
-            return lnv.TryParseLong(out _) ? ValueTokenType.Long : ValueTokenType.Double;
-        // LazyStringValue or plain string — check if it's a date string (same pattern as ConvertInValue)
-        var str = resolvedValue?.ToString();
-        if (str != null && str.Length > 18 && str.Length < 35 && str.Contains('T')
-            && DateTime.TryParse(str, System.Globalization.CultureInfo.InvariantCulture,
-                System.Globalization.DateTimeStyles.RoundtripKind, out _))
-            return ValueTokenType.Long;
-        return ValueTokenType.String;
-    }
+
 
     private static string GetTermValue(QueryExpression expr, BlittableJsonReaderObject queryParameters)
     {

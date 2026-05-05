@@ -611,14 +611,13 @@ namespace Corax.Querying.Matches
         }
 
         /// <summary>
-        /// Expose the underlying large-posting-list iterator so QueryPrimitives.AndWithPostings
-        /// / FillFromPostings can scan it directly with the galloping page-scan bound by the
-        /// bitmap's container range. Returns false for empty / single-value / small-posting-list
-        /// cases where the existing Fill-loop path is already optimal. The caller takes ownership
-        /// of iteration; do not call <see cref="Fill"/> or <see cref="AndWith"/> on the same
-        /// TermMatch afterward.
+        /// Expose the underlying PostingList-kind iterator for galloping page-scan.
+        /// Returns false for Empty / Single / SmallPostingList cases where the
+        /// existing Fill-loop path is already optimal. The caller takes ownership
+        /// of iteration; do not call <see cref="Fill"/> or <see cref="AndWith"/> on
+        /// the same TermMatch afterward.
         /// </summary>
-        internal bool TryGetLargePostingListIterator(out PostingList.Iterator iterator)
+        internal bool TryGetPostingListIterator(out PostingList.Iterator iterator)
         {
             // Empty / Single / Small all leave _set at default (zeroed Iterator).
             // YieldSet (line ~566) initializes _set = postingList.Iterate(). PostingList

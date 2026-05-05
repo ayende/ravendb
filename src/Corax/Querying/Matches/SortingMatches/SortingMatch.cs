@@ -701,16 +701,7 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
             return;
         }
 
-        if (typeof(TEntryComparer) == typeof(Descending<EntryComparerByScore>)
-            || typeof(TEntryComparer) == typeof(EntryComparerByScore))
-        {
-            // Scoring: use heap sort (SortResults handles score computation)
-            SortResults<TEntryComparer>(ref match, allMatches[..filled]);
-        }
-        else
-        {
-            SortResults<TEntryComparer>(ref match, allMatches[..filled]);
-        }
+        SortResults<TEntryComparer>(ref match, allMatches[..filled]);
 
         scope.Dispose();
     }

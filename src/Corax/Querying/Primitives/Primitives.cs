@@ -27,11 +27,13 @@ namespace Corax.Querying.Primitives;
 /// </summary>
 public static class QueryPrimitives
 {
-    // Buffer size for stackalloc Fill operations.
-    private const int FillBufferSize = 4096;
+    // Buffer size for stackalloc Fill operations (posting-list batch reads).
+    // Shared with QueryILEmitter which emits the same constant into compiled IL.
+    internal const int FillBufferSize = 4096;
 
     // Batch size for entry scan: how many bitmap entries to read per iteration.
-    private const int EntryScanBatchSize = 256;
+    // Shared with QueryILEmitter which emits the same constant into compiled IL.
+    internal const int EntryScanBatchSize = 256;
 
     // Bitmap count threshold below which entry scan is considered cheaper than
     // bitmap AND with a posting list. Below this, individual entry blob reads
@@ -243,7 +245,7 @@ public static class QueryPrimitives
             bitmap.OrWith(ref srcData);
             return;
         }
-        if (match is Matches.TermMatch tm && tm.TryGetLargePostingListIterator(out var iter))
+        if (match is Matches.TermMatch tm && tm.TryGetPostingListIterator(out var iter))
         {
             FillFromPostings(ref iter, ref bitmap, allocator);
             return;
@@ -271,7 +273,7 @@ public static class QueryPrimitives
             bitmap.AndWith(ref srcData);
             return;
         }
-        if (match is Matches.TermMatch tm && tm.TryGetLargePostingListIterator(out var iter))
+        if (match is Matches.TermMatch tm && tm.TryGetPostingListIterator(out var iter))
         {
             AndWithPostings(ref iter, ref bitmap, ref tempBitmap, allocator);
             return;
@@ -294,7 +296,7 @@ public static class QueryPrimitives
             bitmap.AndNotWith(ref srcData);
             return;
         }
-        if (match is Matches.TermMatch tm && tm.TryGetLargePostingListIterator(out var iter))
+        if (match is Matches.TermMatch tm && tm.TryGetPostingListIterator(out var iter))
         {
             AndNotWithPostings(ref iter, ref bitmap, ref tempBitmap, allocator);
             return;
