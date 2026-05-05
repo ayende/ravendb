@@ -110,7 +110,7 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     private bool _nullPostingListsTreeLoaded;
     private bool _nonExistingPostingListsTreeLoaded;
 
-    public long MaxMemoizationSizeInBytes = 128 * 1024 * 1024;
+    public long MaxFacetQueryFilterSizeInBytes = 128 * 1024 * 1024;
 
     public bool DocumentsAreBoosted => GetDocumentBoostTree().NumberOfEntries > 0;
 

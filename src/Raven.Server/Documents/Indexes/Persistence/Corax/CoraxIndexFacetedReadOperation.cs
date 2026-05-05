@@ -41,7 +41,7 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
         _fieldMappings = fieldsMapping;
         _indexSearcher = new IndexSearcher(readTransaction, _fieldMappings)
         {
-            MaxMemoizationSizeInBytes = index.Configuration.MaxMemoizationSize.GetValue(SizeUnit.Bytes)
+            MaxFacetQueryFilterSizeInBytes = index.Configuration.MaxFacetQueryFilterSize.GetValue(SizeUnit.Bytes)
         };
         _fieldNameCache = new();
     }
@@ -124,7 +124,7 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
             }
             else
             {
-                var maxMatchingIds = _indexSearcher.MaxMemoizationSizeInBytes / sizeof(long);
+                var maxMatchingIds = _indexSearcher.MaxFacetQueryFilterSizeInBytes / sizeof(long);
                 baseQueryMatchingIds = new HashSet<long>();
                 int read;
                 while ((read = baseQuery.Fill(ids)) != 0)
