@@ -350,9 +350,6 @@ public unsafe partial struct RoaringBitmap : IDisposable
         return lo;
     }
 
-    /// <summary>
-    /// Create a new bitmap container from sorted values.
-    /// </summary>
     private void CreateBitmapContainerFromSorted(long key, ReadOnlySpan<long> sortedValues)
     {
         AllocateOrRecycle(BitmapContainerSizeInBytes, out ByteString storage);
