@@ -370,12 +370,11 @@ namespace Corax.Querying.Matches
             // Build a bitmap of the incoming matches so the per-Fill batches can be filtered
             // via a constant-time Contains check. The incoming buffer is already sorted
             // ascending, so AddRange is exact.
-            RoaringBitmapData incomingData = default;
+            RoaringBitmap incomingData = new(_context);
             try
             {
-                RoaringBitmap incomingView = new(ref incomingData, _context);
-                incomingView.AddRange(buffer.Slice(0, matches));
-                incomingData.PrepareForReading(_context);
+                incomingData.AddRange(buffer.Slice(0, matches));
+                incomingData.PrepareForReading();
 
                 using var _ = _context.Allocate(sizeof(long) * buffer.Length, out var innerBufferHolder);
                 var innerMatchesBuffer = innerBufferHolder.ToSpan<long>();
@@ -411,7 +410,7 @@ namespace Corax.Querying.Matches
             }
             finally
             {
-                incomingData.Dispose(_context);
+                incomingData.Dispose();
             }
         }
 
@@ -444,11 +443,9 @@ namespace Corax.Querying.Matches
 
             // OR per-term AndWith results into a bitmap. Each per-term batch is an intersection
             // against the incoming buffer, so we accumulate a deduped union of all matches.
-            RoaringBitmapData resultsData = default;
+            RoaringBitmap resultsData = new(_context);
             try
             {
-                RoaringBitmap resultsView = new(ref resultsData, _context);
-
                 while (hasData)
                 {
                     _token.ThrowIfCancellationRequested();
@@ -458,7 +455,7 @@ namespace Corax.Querying.Matches
                     {
                         var batch = tmp[..read];
                         for (int i = 0; i < read; i++)
-                            resultsView.Add(batch[i]);
+                            resultsData.Add(batch[i]);
                         totalRead += _currentTerm.Count;
                     }
 
@@ -472,8 +469,8 @@ namespace Corax.Querying.Matches
                     _confidence = QueryCountConfidence.High;
                 }
 
-                resultsData.PrepareForReading(_context);
-                var iter = resultsData.GetIterator(_context);
+                resultsData.PrepareForReading();
+                var iter = resultsData.GetIterator();
                 int totalSize = iter.Fill(ref resultsData, buffer);
                 iter.Dispose();
 
@@ -481,7 +478,7 @@ namespace Corax.Querying.Matches
             }
             finally
             {
-                resultsData.Dispose(_context);
+                resultsData.Dispose();
             }
         }
 

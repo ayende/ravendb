@@ -2546,10 +2546,10 @@ internal static class QueryPlanBuilder
         // Materialize AllEntries ANDNOT excluded-term into a bitmap.
         // FillFromMatch for the BitmapMatch result fast-paths via IBitmapQueryMatch.
         var bitmapMatch = new BitmapMatch(indexSearcher.Allocator);
-        var tempData = default(RoaringBitmapData);
+        var tempData = new RoaringBitmap(indexSearcher.Allocator);
         QueryPrimitives.FillFromMatch(indexSearcher.AllEntries(), ref bitmapMatch.BitmapState, indexSearcher.Allocator);
         QueryPrimitives.AndNotWithMatch(termMatch, ref bitmapMatch.BitmapState, ref tempData, indexSearcher.Allocator);
-        tempData.Dispose(indexSearcher.Allocator);
+        tempData.Dispose();
         return bitmapMatch;
     }
 

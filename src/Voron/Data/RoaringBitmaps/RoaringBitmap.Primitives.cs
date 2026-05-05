@@ -10,7 +10,7 @@ using Sparrow.Server;
 
 namespace Voron.Data.RoaringBitmaps;
 
-public unsafe ref partial struct RoaringBitmap
+public unsafe partial struct RoaringBitmap
 {
     #region Bitmap Container
 

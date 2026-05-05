@@ -15,14 +15,14 @@ namespace Corax.Querying.Matches;
 /// </summary>
 public unsafe struct BitmapMatch : IQueryMatch, IBitmapQueryMatch, IDisposable
 {
-    private RoaringBitmapData _bitmapState;
+    private RoaringBitmap _bitmapState;
     private readonly ByteStringContext _allocator;
     private RoaringBitmapIterator _iterator;
     private bool _iteratorInitialized;
 
     public BitmapMatch(ByteStringContext allocator)
     {
-        _bitmapState = default;
+        _bitmapState = new RoaringBitmap(allocator);
         _allocator = allocator;
         _iteratorInitialized = false;
     }
@@ -32,7 +32,7 @@ public unsafe struct BitmapMatch : IQueryMatch, IBitmapQueryMatch, IDisposable
     /// QueryPrimitives.FillFromMatch / AndWithMatch chains where the BitmapMatch lives
     /// on the caller's stack frame for the full call duration. Suppresses CS9084.</summary>
     [UnscopedRef]
-    public ref RoaringBitmapData BitmapState => ref _bitmapState;
+    public ref RoaringBitmap BitmapState => ref _bitmapState;
 
     /// <summary>Returns the allocator for this bitmap match.</summary>
     public ByteStringContext Allocator => _allocator;
@@ -48,7 +48,7 @@ public unsafe struct BitmapMatch : IQueryMatch, IBitmapQueryMatch, IDisposable
     /// Returns a reference to the underlying bitmap data for downstream consumption.
     /// </summary>
     [UnscopedRef]
-    public ref RoaringBitmapData GetBitmapData() => ref _bitmapState;
+    public ref RoaringBitmap GetBitmapData() => ref _bitmapState;
 
     public long MinEntryId
     {
@@ -73,7 +73,7 @@ public unsafe struct BitmapMatch : IQueryMatch, IBitmapQueryMatch, IDisposable
         if (!_iteratorInitialized)
         {
             _bitmapState.PrepareForReading();
-            _iterator = _bitmapState.GetIterator(_allocator);
+            _iterator = _bitmapState.GetIterator();
             _iteratorInitialized = true;
         }
         return _iterator.Fill(ref _bitmapState, matches);
@@ -110,6 +110,6 @@ public unsafe struct BitmapMatch : IQueryMatch, IBitmapQueryMatch, IDisposable
     {
         if (_iteratorInitialized)
             _iterator.Dispose();
-        _bitmapState.Dispose(_allocator);
+        _bitmapState.Dispose();
     }
 }

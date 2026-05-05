@@ -90,7 +90,7 @@ public interface IBitmapQueryMatch : IQueryMatch
     /// Used by downstream consumers (vector search filter, faceted lookups) to skip re-materialization.
     /// </summary>
     [System.Diagnostics.CodeAnalysis.UnscopedRef]
-    ref Voron.Data.RoaringBitmaps.RoaringBitmapData GetBitmapData();
+    ref Voron.Data.RoaringBitmaps.RoaringBitmap GetBitmapData();
 }
 
 public enum SkipSortingResult

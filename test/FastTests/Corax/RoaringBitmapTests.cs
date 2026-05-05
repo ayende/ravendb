@@ -16,40 +16,37 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
 
     // Set op helpers for testing: deep-clone left bitmap, then mutate in-place.
     // Preserves the original bitmap's container structure for subsequent assertions.
-    // Returns RoaringBitmapData; caller must dispose it with ctx.
-    private static RoaringBitmapData And(ByteStringContext ctx, RoaringBitmap a, RoaringBitmap b)
+    // Returns RoaringBitmap; caller must dispose it.
+    private static RoaringBitmap And(ByteStringContext ctx, RoaringBitmap a, RoaringBitmap b)
     {
-        RoaringBitmapData resultData = a.CloneData();
-        RoaringBitmap result = new(ref resultData, ctx);
+        RoaringBitmap result = a.Clone();
         result.AndWith(ref b);
         result.PrepareForReading();
-        return resultData;
+        return result;
     }
 
-    private static RoaringBitmapData Or(ByteStringContext ctx, RoaringBitmap a, RoaringBitmap b)
+    private static RoaringBitmap Or(ByteStringContext ctx, RoaringBitmap a, RoaringBitmap b)
     {
-        RoaringBitmapData resultData = a.CloneData();
-        RoaringBitmap result = new(ref resultData, ctx);
-        RoaringBitmapData bCloneData = b.CloneData();
+        RoaringBitmap result = a.Clone();
+        RoaringBitmap bClone = b.Clone();
         try
         {
-            result.LazyOrWith(ref bCloneData);
+            result.OrWith(ref bClone);
             result.PrepareForReading();
         }
         finally
         {
-            bCloneData.Dispose(ctx);
+            bClone.Dispose();
         }
-        return resultData;
+        return result;
     }
 
-    private static RoaringBitmapData AndNot(ByteStringContext ctx, RoaringBitmap a, RoaringBitmap b)
+    private static RoaringBitmap AndNot(ByteStringContext ctx, RoaringBitmap a, RoaringBitmap b)
     {
-        RoaringBitmapData resultData = a.CloneData();
-        RoaringBitmap result = new(ref resultData, ctx);
+        RoaringBitmap result = a.Clone();
         result.AndNotWith(ref b);
         result.PrepareForReading();
-        return resultData;
+        return result;
     }
 
 
@@ -57,8 +54,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void CanAddAndContainsSingleValue()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData bitmapData = default;
-        RoaringBitmap bitmap = new(ref bitmapData, ctx);
+        RoaringBitmap bitmap = new(ctx);
         bitmap.Add(42);
         bitmap.PrepareForReading();
         Assert.True(bitmap.Contains(42));
@@ -71,8 +67,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void CanAddManyValuesInSameContainer()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData bitmapData = default;
-        RoaringBitmap bitmap = new(ref bitmapData, ctx);
+        RoaringBitmap bitmap = new(ctx);
         for (int i = 0; i < 1000; i++)
             bitmap.Add(i);
 
@@ -89,8 +84,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void CanAddValuesAcrossMultipleContainers()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData bitmapData = default;
-        RoaringBitmap bitmap = new(ref bitmapData, ctx);
+        RoaringBitmap bitmap = new(ctx);
         // Values in different 64K ranges
         bitmap.Add(0);
         bitmap.Add(65536);     // container key 1
@@ -112,8 +106,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void ArrayToBitmapConversionOnThreshold()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData bitmapData = default;
-        RoaringBitmap bitmap = new(ref bitmapData, ctx);
+        RoaringBitmap bitmap = new(ctx);
         // Add more than 4096 values to trigger array->bitmap conversion
         for (int i = 0; i < 5000; i++)
             bitmap.Add(i);
@@ -130,8 +123,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void FullContainerAsRange()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData bitmapData = default;
-        RoaringBitmap bitmap = new(ref bitmapData, ctx);
+        RoaringBitmap bitmap = new(ctx);
         // Fill an entire container — should become Range with count=65536
         for (int i = 0; i < 65536; i++)
             bitmap.Add(i);
@@ -148,8 +140,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void DuplicateAddIsIdempotent()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData bitmapData = default;
-        RoaringBitmap bitmap = new(ref bitmapData, ctx);
+        RoaringBitmap bitmap = new(ctx);
         bitmap.Add(42);
         bitmap.Add(42);
         bitmap.Add(42);
@@ -162,8 +153,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void CanHandle64BitValues()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData bitmapData = default;
-        RoaringBitmap bitmap = new(ref bitmapData, ctx);
+        RoaringBitmap bitmap = new(ctx);
         long largeValue = (long)int.MaxValue + 100;
         bitmap.Add(largeValue);
         bitmap.PrepareForReading();
@@ -179,10 +169,8 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void AndIntersection()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData aData = default;
-        RoaringBitmap a = new(ref aData, ctx);
-        RoaringBitmapData bData = default;
-        RoaringBitmap b = new(ref bData, ctx);
+        RoaringBitmap a = new(ctx);
+        RoaringBitmap b = new(ctx);
         for (int i = 0; i < 1000; i++)
             a.Add(i);
         for (int i = 500; i < 1500; i++)
@@ -190,7 +178,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
 
         a.PrepareForReading();
         b.PrepareForReading();
-        RoaringBitmapData result = And(ctx, a, b);
+        RoaringBitmap result = And(ctx, a, b);
         try
         {
             Assert.Equal(500, result.Count);
@@ -201,7 +189,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         }
         finally
         {
-            result.Dispose(ctx);
+            result.Dispose();
             a.Dispose();
             b.Dispose();
         }
@@ -211,10 +199,8 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void OrUnion()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData aData = default;
-        RoaringBitmap a = new(ref aData, ctx);
-        RoaringBitmapData bData = default;
-        RoaringBitmap b = new(ref bData, ctx);
+        RoaringBitmap a = new(ctx);
+        RoaringBitmap b = new(ctx);
 
         for (int i = 0; i < 1000; i++)
             a.Add(i);
@@ -223,13 +209,13 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
 
         a.PrepareForReading();
         b.PrepareForReading();
-        RoaringBitmapData result = Or(ctx, a, b);
+        RoaringBitmap result = Or(ctx, a, b);
 
         Assert.Equal(1500, result.Count);
         for (int i = 0; i < 1500; i++)
             Assert.True(result.Contains(i));
         Assert.False(result.Contains(1500));
-        result.Dispose(ctx);
+        result.Dispose();
         a.Dispose();
         b.Dispose();
     }
@@ -238,10 +224,8 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void AndNotDifference()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData aData = default;
-        RoaringBitmap a = new(ref aData, ctx);
-        RoaringBitmapData bData = default;
-        RoaringBitmap b = new(ref bData, ctx);
+        RoaringBitmap a = new(ctx);
+        RoaringBitmap b = new(ctx);
         for (int i = 0; i < 1000; i++)
             a.Add(i);
         for (int i = 500; i < 1500; i++)
@@ -249,7 +233,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
 
         a.PrepareForReading();
         b.PrepareForReading();
-        RoaringBitmapData result = AndNot(ctx, a, b);
+        RoaringBitmap result = AndNot(ctx, a, b);
         try
         {
             Assert.Equal(500, result.Count);
@@ -260,7 +244,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         }
         finally
         {
-            result.Dispose(ctx);
+            result.Dispose();
             a.Dispose();
             b.Dispose();
         }
@@ -270,10 +254,8 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void AndWithDisjointBitmaps()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData aData = default;
-        RoaringBitmap a = new(ref aData, ctx);
-        RoaringBitmapData bData = default;
-        RoaringBitmap b = new(ref bData, ctx);
+        RoaringBitmap a = new(ctx);
+        RoaringBitmap b = new(ctx);
         for (int i = 0; i < 100; i++)
             a.Add(i);
         for (int i = 200; i < 300; i++)
@@ -281,7 +263,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
 
         a.PrepareForReading();
         b.PrepareForReading();
-        RoaringBitmapData result = And(ctx, a, b);
+        RoaringBitmap result = And(ctx, a, b);
         try
         {
             Assert.Equal(0, result.Count);
@@ -289,7 +271,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         }
         finally
         {
-            result.Dispose(ctx);
+            result.Dispose();
             a.Dispose();
             b.Dispose();
         }
@@ -299,10 +281,8 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void SetOpsWithDenseBitmapContainers()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData aData = default;
-        RoaringBitmap a = new(ref aData, ctx);
-        RoaringBitmapData bData = default;
-        RoaringBitmap b = new(ref bData, ctx);
+        RoaringBitmap a = new(ctx);
+        RoaringBitmap b = new(ctx);
         // Dense enough to be bitmap containers (>4096 each)
         for (int i = 0; i < 10000; i++)
             a.Add(i * 2); // evens 0..19998
@@ -310,16 +290,16 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
             b.Add(i * 2 + 1); // odds 1..19999
 
         // AND should be empty (no overlap)
-        RoaringBitmapData andResult = And(ctx, a, b);
+        RoaringBitmap andResult = And(ctx, a, b);
         Assert.Equal(0, andResult.Count);
-        andResult.Dispose(ctx);
+        andResult.Dispose();
 
         // OR should have all 20000
         a.PrepareForReading();
         b.PrepareForReading();
-        RoaringBitmapData orResult = Or(ctx, a, b);
+        RoaringBitmap orResult = Or(ctx, a, b);
         Assert.Equal(20000, orResult.Count);
-        orResult.Dispose(ctx);
+        orResult.Dispose();
         a.Dispose();
         b.Dispose();
     }
@@ -328,10 +308,8 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void SetOpsWithMixedContainerTypes()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData sparseData = default;
-        RoaringBitmap sparse = new(ref sparseData, ctx);
-        RoaringBitmapData denseData = default;
-        RoaringBitmap dense = new(ref denseData, ctx);
+        RoaringBitmap sparse = new(ctx);
+        RoaringBitmap dense = new(ctx);
         // Sparse (array container): 100 values
         for (int i = 0; i < 100; i++)
             sparse.Add(i * 10);
@@ -343,7 +321,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         // AND: sparse values that exist in dense
         sparse.PrepareForReading();
         dense.PrepareForReading();
-        RoaringBitmapData andResult = And(ctx, sparse, dense);
+        RoaringBitmap andResult = And(ctx, sparse, dense);
         try
         {
             // Values 0, 10, 20, ..., 490 (up to 4990 but dense only goes to 4999)
@@ -357,7 +335,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         }
         finally
         {
-            andResult.Dispose(ctx);
+            andResult.Dispose();
             sparse.Dispose();
             dense.Dispose();
         }
@@ -367,10 +345,8 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void SetOpsAcrossMultipleContainers()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData aData = default;
-        RoaringBitmap a = new(ref aData, ctx);
-        RoaringBitmapData bData = default;
-        RoaringBitmap b = new(ref bData, ctx);
+        RoaringBitmap a = new(ctx);
+        RoaringBitmap b = new(ctx);
         // a: containers 0 and 1
         for (int i = 0; i < 200; i++)
             a.Add(i);
@@ -385,24 +361,24 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
 
         a.PrepareForReading();
         b.PrepareForReading();
-        RoaringBitmapData orResult = Or(ctx, a, b);
+        RoaringBitmap orResult = Or(ctx, a, b);
         try
         {
             Assert.Equal(200 + 200 + 100, orResult.Count); // container0(200) + container1(200 union) + container2(100)
         }
         finally
         {
-            orResult.Dispose(ctx);
+            orResult.Dispose();
         }
 
-        RoaringBitmapData andResult = And(ctx, a, b);
+        RoaringBitmap andResult = And(ctx, a, b);
         try
         {
             Assert.Equal(100, andResult.Count); // only container1 intersection
         }
         finally
         {
-            andResult.Dispose(ctx);
+            andResult.Dispose();
             a.Dispose();
             b.Dispose();
         }
@@ -416,8 +392,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void IteratorReturnsAllValuesInOrder()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData bitmapData = default;
-        RoaringBitmap bitmap = new(ref bitmapData, ctx);
+        RoaringBitmap bitmap = new(ctx);
         long[] expected = { 5, 10, 100, 1000, 65536, 65537, 131072 };
         foreach (long val in expected)
             bitmap.Add(val);
@@ -438,8 +413,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void IteratorWorksWithSmallBuffer()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData bitmapData = default;
-        RoaringBitmap bitmap = new(ref bitmapData, ctx);
+        RoaringBitmap bitmap = new(ctx);
         for (int i = 0; i < 100; i++)
             bitmap.Add(i);
 
@@ -468,8 +442,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void IteratorHandlesBitmapContainers()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData bitmapData = default;
-        RoaringBitmap bitmap = new(ref bitmapData, ctx);
+        RoaringBitmap bitmap = new(ctx);
         // Dense enough for bitmap container
         for (int i = 0; i < 5000; i++)
             bitmap.Add(i);
@@ -497,8 +470,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void IteratorHandlesFullContainer()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData bitmapData = default;
-        RoaringBitmap bitmap = new(ref bitmapData, ctx);
+        RoaringBitmap bitmap = new(ctx);
         for (int i = 0; i < 65536; i++)
             bitmap.Add(i);
 
@@ -520,8 +492,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void IteratorHandlesMultipleContainers()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData bitmapData = default;
-        RoaringBitmap bitmap = new(ref bitmapData, ctx);
+        RoaringBitmap bitmap = new(ctx);
         bitmap.Add(10);
         bitmap.Add(65546); // container 1, value 10
         bitmap.Add(131082); // container 2, value 10
@@ -543,8 +514,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void EmptyBitmapIteratorReturnsZero()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData bitmapData = default;
-        RoaringBitmap bitmap = new(ref bitmapData, ctx);
+        RoaringBitmap bitmap = new(ctx);
         var iterator = bitmap.GetIterator();
         Span<long> buffer = stackalloc long[10];
         bitmap.PrepareForReading();
@@ -562,8 +532,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void RangeContainerCreatedForSequentialAdds()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData bitmapData = default;
-        RoaringBitmap bitmap = new(ref bitmapData, ctx);
+        RoaringBitmap bitmap = new(ctx);
         // Sequential adds from 0 should create a Range container
         for (int i = 0; i < 1000; i++)
             bitmap.Add(i);
@@ -580,8 +549,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void RangeContainerFullContainer()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData bitmapData = default;
-        RoaringBitmap bitmap = new(ref bitmapData, ctx);
+        RoaringBitmap bitmap = new(ctx);
         // Fill entire container sequentially — should be Range with count=65536
         for (int i = 0; i < 65536; i++)
             bitmap.Add(i);
@@ -598,8 +566,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void RangeContainerIteratesCorrectly()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData bitmapData = default;
-        RoaringBitmap bitmap = new(ref bitmapData, ctx);
+        RoaringBitmap bitmap = new(ctx);
         for (int i = 0; i < 10000; i++)
             bitmap.Add(i);
 
@@ -621,10 +588,8 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void SetOpsWithRangeContainers()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData aData = default;
-        RoaringBitmap a = new(ref aData, ctx);
-        RoaringBitmapData bData = default;
-        RoaringBitmap b = new(ref bData, ctx);
+        RoaringBitmap a = new(ctx);
+        RoaringBitmap b = new(ctx);
         HashSet<long> setA = new();
         HashSet<long> setB = new();
 
@@ -645,25 +610,25 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         // AND
         a.PrepareForReading();
         b.PrepareForReading();
-        RoaringBitmapData andResult = And(ctx, a, b);
+        RoaringBitmap andResult = And(ctx, a, b);
         HashSet<long> expectedAnd = new(setA);
         expectedAnd.IntersectWith(setB);
         Assert.Equal(expectedAnd.Count, andResult.Count);
-        andResult.Dispose(ctx);
+        andResult.Dispose();
 
         // OR
-        RoaringBitmapData orResult = Or(ctx, a, b);
+        RoaringBitmap orResult = Or(ctx, a, b);
         HashSet<long> expectedOr = new(setA);
         expectedOr.UnionWith(setB);
         Assert.Equal(expectedOr.Count, orResult.Count);
-        orResult.Dispose(ctx);
+        orResult.Dispose();
 
         // ANDNOT
-        RoaringBitmapData andNotResult = AndNot(ctx, a, b);
+        RoaringBitmap andNotResult = AndNot(ctx, a, b);
         HashSet<long> expectedAndNot = new(setA);
         expectedAndNot.ExceptWith(setB);
         Assert.Equal(expectedAndNot.Count, andNotResult.Count);
-        andNotResult.Dispose(ctx);
+        andNotResult.Dispose();
         a.Dispose();
         b.Dispose();
     }
@@ -673,8 +638,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void RangeContainerGapConvertsToArrayOrBitmap()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData bitmapData = default;
-        RoaringBitmap bitmap = new(ref bitmapData, ctx);
+        RoaringBitmap bitmap = new(ctx);
         // Build a range 0..99
         for (int i = 0; i < 100; i++)
             bitmap.Add(i);
@@ -701,8 +665,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void LargeScaleAddAndIterate()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData bitmapData = default;
-        RoaringBitmap bitmap = new(ref bitmapData, ctx);
+        RoaringBitmap bitmap = new(ctx);
         int totalValues = 100_000;
         HashSet<long> expected = new();
         Random rng = new(123);
@@ -739,10 +702,8 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void SetOpsCorrectnessAgainstHashSet()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData aData = default;
-        RoaringBitmap a = new(ref aData, ctx);
-        RoaringBitmapData bData = default;
-        RoaringBitmap b = new(ref bData, ctx);
+        RoaringBitmap a = new(ctx);
+        RoaringBitmap b = new(ctx);
         HashSet<long> setA = new();
         HashSet<long> setB = new();
 
@@ -760,41 +721,40 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         // AND
         a.PrepareForReading();
         b.PrepareForReading();
-        RoaringBitmapData andResult = And(ctx, a, b);
+        RoaringBitmap andResult = And(ctx, a, b);
         HashSet<long> expectedAnd = new(setA);
         expectedAnd.IntersectWith(setB);
         Assert.Equal(expectedAnd.Count, andResult.Count);
         foreach (long v in expectedAnd)
             Assert.True(andResult.Contains(v));
-        andResult.Dispose(ctx);
+        andResult.Dispose();
 
         // OR
-        RoaringBitmapData orResult = Or(ctx, a, b);
+        RoaringBitmap orResult = Or(ctx, a, b);
         HashSet<long> expectedOr = new(setA);
         expectedOr.UnionWith(setB);
         Assert.Equal(expectedOr.Count, orResult.Count);
-        orResult.Dispose(ctx);
+        orResult.Dispose();
 
         // ANDNOT
-        RoaringBitmapData andNotResult = AndNot(ctx, a, b);
+        RoaringBitmap andNotResult = AndNot(ctx, a, b);
         HashSet<long> expectedAndNot = new(setA);
         expectedAndNot.ExceptWith(setB);
         Assert.Equal(expectedAndNot.Count, andNotResult.Count);
-        andNotResult.Dispose(ctx);
+        andNotResult.Dispose();
         a.Dispose();
         b.Dispose();
     }
 
     #endregion
 
-    #region WP1: New methods (Clear, Count, AddRange, LazyOrWith, RepairAfterLazy)
+    #region WP1: New methods (Clear, Count, AddRange, OrWith, RepairAfterLazy)
 
     [RavenFact(RavenTestCategory.Corax)]
     public void Count_ReturnsCorrectValue()
     {
         using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData bitmapData = default;
-        RoaringBitmap bitmap = new(ref bitmapData, bsc);
+        RoaringBitmap bitmap = new(bsc);
         Assert.Equal(0, bitmap.Count);
 
         for (int i = 0; i < 1000; i++)
@@ -812,8 +772,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void Clear_ResetsToEmpty()
     {
         using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData bitmapData = default;
-        RoaringBitmap bitmap = new(ref bitmapData, bsc);
+        RoaringBitmap bitmap = new(bsc);
         for (int i = 0; i < 100_000; i++)
             bitmap.Add(i);
         bitmap.PrepareForReading();
@@ -836,8 +795,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void Clear_RepeatedClearAndReuse()
     {
         using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData bitmapData = default;
-        RoaringBitmap bitmap = new(ref bitmapData, bsc);
+        RoaringBitmap bitmap = new(bsc);
 
         for (int round = 0; round < 10; round++)
         {
@@ -855,8 +813,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void AddRange_SortedValues()
     {
         using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData bitmapData = default;
-        RoaringBitmap bitmap = new(ref bitmapData, bsc);
+        RoaringBitmap bitmap = new(bsc);
         var values = new long[10_000];
         for (int i = 0; i < values.Length; i++)
             values[i] = i * 3; // sparse but sorted
@@ -895,13 +852,11 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
             prev = v;
         }
 
-        RoaringBitmapData bitmapRangeData = default;
-        RoaringBitmap bitmapRange = new(ref bitmapRangeData, bsc);
+        RoaringBitmap bitmapRange = new(bsc);
         bitmapRange.AddRange(unique.ToArray());
         bitmapRange.PrepareForReading();
 
-        RoaringBitmapData bitmapSingleData = default;
-        RoaringBitmap bitmapSingle = new(ref bitmapSingleData, bsc);
+        RoaringBitmap bitmapSingle = new(bsc);
         foreach (var v in set)
             bitmapSingle.Add(v);
         bitmapSingle.PrepareForReading();
@@ -924,38 +879,33 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     public void AddRange_EmptySpan()
     {
         using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData bitmapData = default;
-        RoaringBitmap bitmap = new(ref bitmapData, bsc);
+        RoaringBitmap bitmap = new(bsc);
         bitmap.AddRange(ReadOnlySpan<long>.Empty);
         Assert.True(bitmap.IsEmpty);
         bitmap.Dispose();
     }
 
     [RavenFact(RavenTestCategory.Corax)]
-    public void LazyOrWith_ComputesCorrectCardinalityAfterRepair()
+    public void OrWith_ComputesCorrectCardinalityAfterRepair()
     {
         using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
-        RoaringBitmapData aData = default;
-        RoaringBitmap a = new(ref aData, bsc);
-        RoaringBitmapData bData = default;
-        RoaringBitmap b = new(ref bData, bsc);
+        RoaringBitmap a = new(bsc);
+        RoaringBitmap b = new(bsc);
         for (int i = 0; i < 10_000; i++) a.Add(i * 2);     // evens
         for (int i = 0; i < 10_000; i++) b.Add(i * 2 + 1); // odds
         a.PrepareForReading();
         b.PrepareForReading();
 
-        RoaringBitmapData resultData = a.CloneData();
-        RoaringBitmap result = new(ref resultData, bsc);
-        RoaringBitmapData bCloneData = b.CloneData();
-        result.LazyOrWith(ref bCloneData);
-        result.RepairAfterLazy();
+        RoaringBitmap result = a.Clone();
+        RoaringBitmap bClone = b.Clone();
+        result.OrWith(ref bClone);
 
         Assert.Equal(20_000, result.Count);
 
         result.Dispose();
         a.Dispose();
         b.Dispose();
-        bCloneData.Dispose(bsc);
+        bClone.Dispose();
     }
 
     #endregion

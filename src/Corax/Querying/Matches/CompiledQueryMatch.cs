@@ -26,7 +26,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
     private readonly int _opCount;
     private readonly CancellationToken _token;
 
-    private RoaringBitmapData _bitmapData;
+    private RoaringBitmap _bitmapData;
     private RoaringBitmapIterator _iterator;
     private bool _executed;
     private long _count;
@@ -55,7 +55,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
         _allocator = allocator;
         _searcher = searcher;
         _token = token;
-        _bitmapData = default;
+        _bitmapData = new RoaringBitmap(allocator);
         _iterator = default;
         _executed = false;
         _count = -1;
@@ -116,7 +116,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
     }
 
     [UnscopedRef]
-    public ref RoaringBitmapData GetBitmapData()
+    public ref RoaringBitmap GetBitmapData()
     {
         if (!_executed) Execute();
         return ref _bitmapData;
@@ -200,9 +200,9 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
         if (_executed) return;
 
         // Allocate bitmap pool: [0] = main, [1..N] = scratch
-        Span<RoaringBitmapData> bitmaps = new RoaringBitmapData[_bitmapCount];
+        Span<RoaringBitmap> bitmaps = new RoaringBitmap[_bitmapCount];
+        for (int i = 0; i < bitmaps.Length; i++) bitmaps[i] = new RoaringBitmap(_allocator);
         bitmaps[0] = _bitmapData; // main bitmap (owned by this struct)
-        // bitmaps[1..] are default (zeroed), no initialization needed
 
         try
         {
@@ -235,22 +235,22 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
 
             // Take ownership of bitmaps[0] (may have been swapped during entry scan)
             _bitmapData = bitmaps[0];
-            _bitmapData.PrepareForReading(_allocator);
+            _bitmapData.PrepareForReading();
             _count = _bitmapData.Count;
-            _iterator = _bitmapData.GetIterator(_allocator);
+            _iterator = _bitmapData.GetIterator();
             _executed = true; // Mark only after successful execution
         }
         finally
         {
             // Dispose scratch bitmaps only (not [0], which is _bitmapData)
             for (int i = 1; i < bitmaps.Length; i++)
-                bitmaps[i].Dispose(_allocator);
+                bitmaps[i].Dispose();
         }
     }
 
     public void Dispose()
     {
         _iterator.Dispose();
-        _bitmapData.Dispose(_allocator);
+        _bitmapData.Dispose();
     }
 }

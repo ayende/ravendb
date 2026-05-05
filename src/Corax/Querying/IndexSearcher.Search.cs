@@ -57,7 +57,7 @@ public partial class IndexSearcher
         // instance plus a flag tracking whether anything was accumulated.
         var searchBitmap = new BitmapMatch(Allocator);
         bool searchBitmapHasValue = false;
-        Voron.Data.RoaringBitmaps.RoaringBitmapData tempBitmapData = default;
+        Voron.Data.RoaringBitmaps.RoaringBitmap tempBitmapData = new(Allocator);
 
         List<Slice> termMatches = null;
         var terms = new ContextBoundNativeList<Slice>(Allocator);
@@ -127,7 +127,7 @@ public partial class IndexSearcher
         {
             // Build bitmap directly from term posting lists instead of calling AllInQuery/InQuery
             var termBitmap = new BitmapMatch(Allocator);
-            var tempTermBitmapData = default(Voron.Data.RoaringBitmaps.RoaringBitmapData);
+            var tempTermBitmapData = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
 
             if (@operator == Constants.Search.Operator.And)
             {
@@ -163,7 +163,7 @@ public partial class IndexSearcher
             else
                 Primitives.QueryPrimitives.AndWithMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState, ref tempBitmapData, Allocator);
 
-            tempTermBitmapData.Dispose(Allocator);
+            tempTermBitmapData.Dispose();
         }
 
         if (searchBitmapHasValue)
@@ -177,7 +177,7 @@ public partial class IndexSearcher
         }
 
         wildcardAnalyzer?.Dispose();
-        tempBitmapData.Dispose(Allocator);
+        tempBitmapData.Dispose();
 
         return searchQuery ?? TermMatch.CreateEmpty(this, Allocator);
 
@@ -228,7 +228,7 @@ public partial class IndexSearcher
         // instance plus a flag tracking whether anything was accumulated.
         var searchBitmap = new BitmapMatch(Allocator);
         bool searchBitmapHasValue = false;
-        Voron.Data.RoaringBitmaps.RoaringBitmapData tempBitmapData = default;
+        Voron.Data.RoaringBitmaps.RoaringBitmap tempBitmapData = new(Allocator);
 
         List<Slice> termMatches = null;
         var terms = new ContextBoundNativeList<Slice>(Allocator);
@@ -265,7 +265,7 @@ public partial class IndexSearcher
                     //When single term outputs multiple terms we've to jump into phraseQuery
                     if (terms.Count > 1)
                         goto PhraseQuery;
-                    
+
                     foreach (var term in terms.GetEnumerator())
                     {
                         if (term.Size == 0)
@@ -277,14 +277,14 @@ public partial class IndexSearcher
                 }
 
                 Slice analyzedTerm = default;
-                
+
                 if (termType is not Constants.Search.SearchMatchOptions.Exists)
                 {
                     analyzedTerm = EncodeAndApplyAnalyzer(field, analyzer, termReadyToAnalyze);
                     if (analyzedTerm.Size == 0)
                         continue; //skip empty results
                 }
-                
+
                 var query = termType switch
                 {
                     Constants.Search.SearchMatchOptions.TermMatch => throw new InvalidDataException(
@@ -314,7 +314,7 @@ public partial class IndexSearcher
             PhraseQuery:
             // Build bitmap directly from term posting lists for phrase query
             var phraseBitmap = new BitmapMatch(Allocator);
-            var tempPhraseBitmapData = default(Voron.Data.RoaringBitmaps.RoaringBitmapData);
+            var tempPhraseBitmapData = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
             bool firstPhraseTerm = true;
             foreach (var term in terms.GetEnumerator())
             {
@@ -331,7 +331,7 @@ public partial class IndexSearcher
             }
 
             var phraseMatch = PhraseQuery(phraseBitmap, field, terms.ToSpan());
-            tempPhraseBitmapData.Dispose(Allocator);
+            tempPhraseBitmapData.Dispose();
 
             searchBitmapHasValue = true;
             if (@operator == Constants.Search.Operator.Or)
@@ -344,7 +344,7 @@ public partial class IndexSearcher
         {
             // Build bitmap directly from term posting lists instead of calling AllInQuery/InQuery
             var termBitmap = new BitmapMatch(Allocator);
-            var tempTermBitmapData = default(Voron.Data.RoaringBitmaps.RoaringBitmapData);
+            var tempTermBitmapData = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
 
             if (@operator == Constants.Search.Operator.And)
             {
@@ -380,7 +380,7 @@ public partial class IndexSearcher
             else
                 Primitives.QueryPrimitives.AndWithMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState, ref tempBitmapData, Allocator);
 
-            tempTermBitmapData.Dispose(Allocator);
+            tempTermBitmapData.Dispose();
         }
 
         if (searchBitmapHasValue)
@@ -394,7 +394,7 @@ public partial class IndexSearcher
         }
 
         wildcardAnalyzer?.Dispose();
-        tempBitmapData.Dispose(Allocator);
+        tempBitmapData.Dispose();
 
         return searchQuery ?? TermMatch.CreateEmpty(this, Allocator);
         
@@ -438,7 +438,7 @@ public partial class IndexSearcher
         // instance plus a flag tracking whether anything was accumulated.
         var searchBitmap = new BitmapMatch(Allocator);
         bool searchBitmapHasValue = false;
-        Voron.Data.RoaringBitmaps.RoaringBitmapData tempBitmapData = default;
+        Voron.Data.RoaringBitmaps.RoaringBitmap tempBitmapData = new(Allocator);
         List<Slice> termMatches = null;
         var terms = new ContextBoundNativeList<Slice>(Allocator);
 
@@ -509,7 +509,7 @@ public partial class IndexSearcher
             // Phrase query part (wildcards are not supported in phrase queries).
             // Build bitmap directly from term posting lists for phrase query
             var phraseBitmap = new BitmapMatch(Allocator);
-            var tempPhraseBitmapData = default(Voron.Data.RoaringBitmaps.RoaringBitmapData);
+            var tempPhraseBitmapData = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
             bool firstPhraseTerm = true;
             foreach (var term in terms.GetEnumerator())
             {
@@ -526,7 +526,7 @@ public partial class IndexSearcher
             }
 
             var phraseMatch = PhraseQuery(phraseBitmap, field, terms.ToSpan());
-            tempPhraseBitmapData.Dispose(Allocator);
+            tempPhraseBitmapData.Dispose();
 
             searchBitmapHasValue = true;
             if (@operator == Constants.Search.Operator.Or)
@@ -539,7 +539,7 @@ public partial class IndexSearcher
         {
             // Build bitmap directly from term posting lists instead of calling AllInQuery/InQuery
             var termBitmap = new BitmapMatch(Allocator);
-            var tempTermBitmapData = default(Voron.Data.RoaringBitmaps.RoaringBitmapData);
+            var tempTermBitmapData = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
 
             if (@operator == Constants.Search.Operator.And)
             {
@@ -575,13 +575,13 @@ public partial class IndexSearcher
             else
                 Primitives.QueryPrimitives.AndWithMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState, ref tempBitmapData, Allocator);
 
-            tempTermBitmapData.Dispose(Allocator);
+            tempTermBitmapData.Dispose();
         }
 
         if (searchBitmapHasValue)
             searchQuery = searchBitmap;
 
-        tempBitmapData.Dispose(Allocator);
+        tempBitmapData.Dispose();
         return searchQuery ?? TermMatch.CreateEmpty(this, Allocator);
 
         void AssertFieldIsSearched()
