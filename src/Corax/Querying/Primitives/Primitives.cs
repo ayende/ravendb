@@ -22,7 +22,7 @@ namespace Corax.Querying.Primitives;
 
 /// <summary>
 /// Static methods called by compiled query functions (DynamicMethod IL).
-/// Each primitive operates on a RoaringBitmapData accumulator.
+/// Each primitive operates on a RoaringBitmap accumulator.
 /// Pre-compiled, SIMD-tuned, individually benchmarkable.
 /// </summary>
 public static class QueryPrimitives
@@ -50,9 +50,8 @@ public static class QueryPrimitives
     /// is truncated so the bitmap never overshoots the requested limit.
     /// </summary>
     [SkipLocalsInit]
-    public static void FillFromPostings(ref PostingList.Iterator iterator, ref RoaringBitmapData data, ByteStringContext allocator, long limit = long.MaxValue)
+    public static void FillFromPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ByteStringContext allocator, long limit = long.MaxValue)
     {
-        scoped RoaringBitmap bitmap = new(ref data, allocator);
         Span<long> buffer = stackalloc long[FillBufferSize];
 
         // Track running total locally — AddRange leaves bitmap-container cardinalities
@@ -93,19 +92,17 @@ public static class QueryPrimitives
     /// the 50K range instead of all 10M entries.
     /// </summary>
     [SkipLocalsInit]
-    public static void AndWithPostings(ref PostingList.Iterator iterator, ref RoaringBitmapData data, ref RoaringBitmapData tempData, ByteStringContext allocator)
+    public static void AndWithPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap, ByteStringContext allocator)
     {
-        if (data.IsEmpty)
+        if (bitmap.IsEmpty)
             return;
 
-        scoped RoaringBitmap bitmap = new(ref data, allocator);
-        scoped RoaringBitmap tempBitmap = new(ref tempData, allocator);
         tempBitmap.Clear();
 
         // Bound the posting list scan to the bitmap's container key range.
         // Each container key covers 65536 entry IDs.
-        long minKey = data.MinContainerKey;
-        long maxKey = data.MaxContainerKey;
+        long minKey = bitmap.MinContainerKey;
+        long maxKey = bitmap.MaxContainerKey;
         Debug.Assert(minKey is not -1 && maxKey is not -1,"shouldn't happen, we checked IsEmpty") ;
 
         long seekFrom = minKey * RoaringBitmap.ContainerSize;
@@ -141,9 +138,8 @@ public static class QueryPrimitives
     /// Idempotent — setting an already-set bit is a no-op.
     /// </summary>
     [SkipLocalsInit]
-    public static void OrWithPostings(ref PostingList.Iterator iterator, ref RoaringBitmapData data, ByteStringContext allocator)
+    public static void OrWithPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ByteStringContext allocator)
     {
-        scoped RoaringBitmap bitmap = new(ref data, allocator);
         Span<long> buffer = stackalloc long[FillBufferSize];
         while (iterator.Fill(buffer, out int read) && read > 0)
         {
@@ -157,17 +153,15 @@ public static class QueryPrimitives
     /// only reads posting list pages that overlap with the bitmap's container range.
     /// </summary>
     [SkipLocalsInit]
-    public static void AndNotWithPostings(ref PostingList.Iterator iterator, ref RoaringBitmapData data, ref RoaringBitmapData tempData, ByteStringContext allocator)
+    public static void AndNotWithPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap, ByteStringContext allocator)
     {
-        if (data.IsEmpty)
+        if (bitmap.IsEmpty)
             return;
 
-        scoped RoaringBitmap bitmap = new(ref data, allocator);
-        scoped RoaringBitmap tempBitmap = new(ref tempData, allocator);
         tempBitmap.Clear();
 
-        long minKey = data.MinContainerKey;
-        long maxKey = data.MaxContainerKey;
+        long minKey = bitmap.MinContainerKey;
+        long maxKey = bitmap.MaxContainerKey;
         Debug.Assert(minKey is not -1 && maxKey is not -1,"shouldn't happen, we checked IsEmpty") ;
 
         long seekFrom = minKey * RoaringBitmap.ContainerSize;
@@ -196,10 +190,10 @@ public static class QueryPrimitives
     /// Iterate bitmap contents into an output span. Returns count of entries written.
     /// Stops when output is full or bitmap is exhausted.
     /// </summary>
-    public static int IterateInto(ref RoaringBitmapData data, Span<long> output, ByteStringContext allocator, ref RoaringBitmapIterator iterator)
+    public static int IterateInto(ref RoaringBitmap bitmap, Span<long> output, ByteStringContext allocator, ref RoaringBitmapIterator iterator)
     {
-        data.PrepareForReading(allocator);
-        return iterator.Fill(ref data, output);
+        bitmap.PrepareForReading();
+        return iterator.Fill(ref bitmap, output);
     }
 
     /// <summary>
@@ -239,21 +233,19 @@ public static class QueryPrimitives
     ///     skipping the per-batch IQueryMatch + function-pointer indirection.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     [SkipLocalsInit]
-    public static void FillFromMatch(Matches.Meta.IQueryMatch match, ref RoaringBitmapData data, ByteStringContext allocator)
+    public static void FillFromMatch(Matches.Meta.IQueryMatch match, ref RoaringBitmap bitmap, ByteStringContext allocator)
     {
-        scoped RoaringBitmap bitmap = new(ref data, allocator);
         if (match is Matches.Meta.IBitmapQueryMatch bm)
         {
-            ref RoaringBitmapData srcData = ref bm.GetBitmapData();
+            ref RoaringBitmap srcData = ref bm.GetBitmapData();
             if (srcData.IsEmpty)
                 return;
-            bitmap.LazyOrWith(ref srcData);
-            bitmap.RepairAfterLazy();
+            bitmap.OrWith(ref srcData);
             return;
         }
         if (match is Matches.TermMatch tm && tm.TryGetLargePostingListIterator(out var iter))
         {
-            FillFromPostings(ref iter, ref data, allocator);
+            FillFromPostings(ref iter, ref bitmap, allocator);
             return;
         }
         Span<long> buffer = stackalloc long[FillBufferSize];
@@ -271,23 +263,21 @@ public static class QueryPrimitives
     ///     the full posting list into a temp bitmap.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     [SkipLocalsInit]
-    public static void AndWithMatch(Matches.Meta.IQueryMatch match, ref RoaringBitmapData data, ref RoaringBitmapData tempData, ByteStringContext allocator)
+    public static void AndWithMatch(Matches.Meta.IQueryMatch match, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap, ByteStringContext allocator)
     {
-        scoped RoaringBitmap bitmap = new(ref data, allocator);
         if (match is Matches.Meta.IBitmapQueryMatch bm)
         {
-            ref RoaringBitmapData srcData = ref bm.GetBitmapData();
+            ref RoaringBitmap srcData = ref bm.GetBitmapData();
             bitmap.AndWith(ref srcData);
             return;
         }
         if (match is Matches.TermMatch tm && tm.TryGetLargePostingListIterator(out var iter))
         {
-            AndWithPostings(ref iter, ref data, ref tempData, allocator);
+            AndWithPostings(ref iter, ref bitmap, ref tempBitmap, allocator);
             return;
         }
-        scoped RoaringBitmap tempBitmap = new(ref tempData, allocator);
         tempBitmap.Clear();
-        FillFromMatch(match, ref tempData, allocator);
+        FillFromMatch(match, ref tempBitmap, allocator);
         bitmap.AndWith(ref tempBitmap);
     }
 
@@ -296,23 +286,21 @@ public static class QueryPrimitives
     /// galloping <see cref="AndNotWithPostings"/> for TermMatch with a large posting list.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     [SkipLocalsInit]
-    public static void AndNotWithMatch(Matches.Meta.IQueryMatch match, ref RoaringBitmapData data, ref RoaringBitmapData tempData, ByteStringContext allocator)
+    public static void AndNotWithMatch(Matches.Meta.IQueryMatch match, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap, ByteStringContext allocator)
     {
-        scoped RoaringBitmap bitmap = new(ref data, allocator);
         if (match is Matches.Meta.IBitmapQueryMatch bm)
         {
-            ref RoaringBitmapData srcData = ref bm.GetBitmapData();
+            ref RoaringBitmap srcData = ref bm.GetBitmapData();
             bitmap.AndNotWith(ref srcData);
             return;
         }
         if (match is Matches.TermMatch tm && tm.TryGetLargePostingListIterator(out var iter))
         {
-            AndNotWithPostings(ref iter, ref data, ref tempData, allocator);
+            AndNotWithPostings(ref iter, ref bitmap, ref tempBitmap, allocator);
             return;
         }
-        scoped RoaringBitmap tempBitmap = new(ref tempData, allocator);
         tempBitmap.Clear();
-        FillFromMatch(match, ref tempData, allocator);
+        FillFromMatch(match, ref tempBitmap, allocator);
         bitmap.AndNotWith(ref tempBitmap);
     }
 
@@ -328,10 +316,9 @@ public static class QueryPrimitives
     public static unsafe void FillBitmapFromTermSource(
         ref Planning.TermSource source,
         Voron.Impl.LowLevelTransaction llt,
-        ref RoaringBitmapData data,
+        ref RoaringBitmap bitmap,
         ByteStringContext allocator)
     {
-        scoped RoaringBitmap bitmap = new(ref data, allocator);
         switch (source.Kind)
         {
             case Planning.TermSourceKind.Empty:
@@ -342,11 +329,11 @@ public static class QueryPrimitives
                 return;
 
             case Planning.TermSourceKind.SmallPostingList:
-                AddSmallPostingListToBitmap(llt, source.SmallPostingListId, ref data, allocator);
+                AddSmallPostingListToBitmap(llt, source.SmallPostingListId, ref bitmap, allocator);
                 return;
 
             case Planning.TermSourceKind.PostingList:
-                FillFromPostings(ref source.LargeIterator, ref data, allocator);
+                FillFromPostings(ref source.LargeIterator, ref bitmap, allocator);
                 return;
 
             default:
@@ -362,14 +349,13 @@ public static class QueryPrimitives
     public static unsafe void AndWithTermSource(
         ref Planning.TermSource source,
         Voron.Impl.LowLevelTransaction llt,
-        ref RoaringBitmapData data,
-        ref RoaringBitmapData tempData,
+        ref RoaringBitmap bitmap,
+        ref RoaringBitmap tempBitmap,
         ByteStringContext allocator)
     {
-        if (data.IsEmpty)
+        if (bitmap.IsEmpty)
             return;
 
-        scoped RoaringBitmap bitmap = new(ref data, allocator);
         switch (source.Kind)
         {
             case Planning.TermSourceKind.Empty:
@@ -379,7 +365,7 @@ public static class QueryPrimitives
             case Planning.TermSourceKind.Single:
             {
                 long entryId = source.SingleEntryId;
-                bool keep = data.Contains(entryId);
+                bool keep = bitmap.Contains(entryId);
                 bitmap.Clear();
                 if (keep)
                     bitmap.Add(entryId);
@@ -388,15 +374,14 @@ public static class QueryPrimitives
 
             case Planning.TermSourceKind.SmallPostingList:
             {
-                scoped RoaringBitmap tempBitmap = new(ref tempData, allocator);
                 tempBitmap.Clear();
-                AddSmallPostingListToBitmap(llt, source.SmallPostingListId, ref tempData, allocator);
+                AddSmallPostingListToBitmap(llt, source.SmallPostingListId, ref tempBitmap, allocator);
                 bitmap.AndWith(ref tempBitmap);
                 return;
             }
 
             case Planning.TermSourceKind.PostingList:
-                AndWithPostings(ref source.LargeIterator, ref data, ref tempData, allocator);
+                AndWithPostings(ref source.LargeIterator, ref bitmap, ref tempBitmap, allocator);
                 return;
 
             default:
@@ -410,15 +395,13 @@ public static class QueryPrimitives
     public static unsafe void AndNotWithTermSource(
         ref Planning.TermSource source,
         Voron.Impl.LowLevelTransaction llt,
-        ref RoaringBitmapData data,
-        ref RoaringBitmapData tempData,
+        ref RoaringBitmap bitmap,
+        ref RoaringBitmap tempBitmap,
         ByteStringContext allocator)
     {
-        if (data.IsEmpty)
+        if (bitmap.IsEmpty)
             return;
 
-        scoped RoaringBitmap bitmap = new(ref data, allocator);
-        scoped RoaringBitmap tempBitmap = new(ref tempData, allocator);
         switch (source.Kind)
         {
             case Planning.TermSourceKind.Empty:
@@ -432,12 +415,12 @@ public static class QueryPrimitives
 
             case Planning.TermSourceKind.SmallPostingList:
                 tempBitmap.Clear();
-                AddSmallPostingListToBitmap(llt, source.SmallPostingListId, ref tempData, allocator);
+                AddSmallPostingListToBitmap(llt, source.SmallPostingListId, ref tempBitmap, allocator);
                 bitmap.AndNotWith(ref tempBitmap);
                 return;
 
             case Planning.TermSourceKind.PostingList:
-                AndNotWithPostings(ref source.LargeIterator, ref data, ref tempData, allocator);
+                AndNotWithPostings(ref source.LargeIterator, ref bitmap, ref tempBitmap, allocator);
                 return;
 
             default:
@@ -452,10 +435,9 @@ public static class QueryPrimitives
     private static unsafe void AddSmallPostingListToBitmap(
         Voron.Impl.LowLevelTransaction llt,
         long smallPostingListId,
-        ref RoaringBitmapData data,
+        ref RoaringBitmap bitmap,
         ByteStringContext allocator)
     {
-        scoped RoaringBitmap bitmap = new(ref data, allocator);
         Container.Get(llt, (Voron.Data.Containers.ContainerEntryId)smallPostingListId, out var item);
         _ = VariableSizeEncoding.Read<int>(item.Address, out var offset);
 
@@ -496,10 +478,9 @@ public static class QueryPrimitives
     public static unsafe void FillBitmapFromTermProvider(
         ITermProvider provider,
         LowLevelTransaction llt,
-        ref RoaringBitmapData data,
+        ref RoaringBitmap bitmap,
         ByteStringContext allocator)
     {
-        scoped RoaringBitmap bitmap = new(ref data, allocator);
         Span<long> plIds = stackalloc long[PostingListIdBatchSize];
         Span<long> entryBuffer = stackalloc long[FillBufferSize];
         int entryCount = 0;
@@ -602,7 +583,7 @@ public static class QueryPrimitives
                             ref readonly var setState = ref MemoryMarshal.AsRef<PostingListState>(setStateSpan);
                             var postingList = new PostingList(llt, Slices.Empty, in setState);
                             var iterator = postingList.Iterate();
-                            FillFromPostings(ref iterator, ref data, allocator);
+                            FillFromPostings(ref iterator, ref bitmap, allocator);
                             break;
                         }
 

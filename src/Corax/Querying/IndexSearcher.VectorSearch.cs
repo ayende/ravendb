@@ -31,7 +31,7 @@ public partial class IndexSearcher
             return shouldScan;
         }
 
-        public static RoaringBitmapData LoadFilterMatches(IndexSearcher indexSearcher, ref IQueryMatch query, out bool owned)
+        public static RoaringBitmap LoadFilterMatches(IndexSearcher indexSearcher, ref IQueryMatch query, out bool owned)
         {
             // Fast path: the upstream pipeline (CompiledQueryMatch / BitmapMatch / PostFilterMatch
             // wrapping a bitmap) already has the bitmap built. Borrow the data directly — we only
@@ -40,24 +40,23 @@ public partial class IndexSearcher
             if (query is IBitmapQueryMatch bitmapMatch)
             {
                 owned = false;
-                ref RoaringBitmapData borrowed = ref bitmapMatch.GetBitmapData();
-                borrowed.PrepareForReading(indexSearcher.Allocator);
+                ref RoaringBitmap borrowed = ref bitmapMatch.GetBitmapData();
+                borrowed.PrepareForReading();
                 return borrowed;
             }
 
             owned = true;
-            RoaringBitmapData filter = default;
-            RoaringBitmap filterBitmap = new(ref filter, indexSearcher.Allocator);
+            RoaringBitmap filter = new(indexSearcher.Allocator);
 
             using var _ = indexSearcher.Allocator.Allocate(4096, out Span<long> workingBuffer);
             int read;
             while ((read = query.Fill(workingBuffer)) > 0)
             {
                 for (int i = 0; i < read; i++)
-                    filterBitmap.Add(workingBuffer[i]);
+                    filter.Add(workingBuffer[i]);
             }
 
-            filterBitmap.PrepareForReading();
+            filter.PrepareForReading();
             return filter;
         }
 
@@ -81,7 +80,7 @@ public partial class IndexSearcher
             private readonly Lookup<Int64LookupKey> _nodesByVectorId;
             private readonly long _vectorRootPage;
 
-            public RandomNodesFromFilterEnumerator(IndexSearcher indexSearcher, FieldMetadata metadata, RoaringBitmapData filterResults, Random random = null)
+            public RandomNodesFromFilterEnumerator(IndexSearcher indexSearcher, FieldMetadata metadata, RoaringBitmap filterResults, Random random = null)
             {
                 _indexSearcher = indexSearcher;
                 _random = random ?? Random.Shared;
@@ -105,7 +104,7 @@ public partial class IndexSearcher
 
                 // Materialize all entry IDs from the bitmap, then shuffle for random access
                 _entryIds = new long[filterCount];
-                var iterator = filterResults.GetIterator(indexSearcher.Allocator);
+                var iterator = filterResults.GetIterator();
                 Span<long> batch = stackalloc long[256];
                 int totalRead = 0;
                 int read;
@@ -194,7 +193,7 @@ public partial class IndexSearcher
             }
         }
 
-        public static bool TryConvertDocumentsIdsToNodesIds(IndexSearcher indexSearcher, in FieldMetadata metadata, ref RoaringBitmapData filterResults, out ContextBoundNativeList<long> nodesIdsToScan)
+        public static bool TryConvertDocumentsIdsToNodesIds(IndexSearcher indexSearcher, in FieldMetadata metadata, ref RoaringBitmap filterResults, out ContextBoundNativeList<long> nodesIdsToScan)
         {
             var searchState = new Hnsw.SearchState(indexSearcher.Transaction.LowLevelTransaction, metadata.FieldName);
             var vectorsByHash = indexSearcher._transaction.CompactTreeFor(Hnsw.VectorsIdByHashSlice);
@@ -214,7 +213,7 @@ public partial class IndexSearcher
             // and then filter the documents stored in the posting list of each node individually.
             // Ideally, each node represents only a single document.
             Page p = default;
-            var iterator = filterResults.GetIterator(indexSearcher.Allocator);
+            var iterator = filterResults.GetIterator();
             Span<long> batch = stackalloc long[256];
             int read;
             while ((read = iterator.Fill(ref filterResults, batch)) > 0)

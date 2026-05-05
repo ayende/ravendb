@@ -30,9 +30,9 @@ public partial class IndexSearcher
             var allEntries = AllEntries();
             Primitives.QueryPrimitives.FillFromMatch(allEntries, ref allEntriesBitmap.BitmapState, Allocator);
 
-            var tempBitmapData = default(Voron.Data.RoaringBitmaps.RoaringBitmapData);
+            var tempBitmapData = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
             Primitives.QueryPrimitives.AndNotWithMatch(match, ref allEntriesBitmap.BitmapState, ref tempBitmapData, Allocator);
-            tempBitmapData.Dispose(Allocator);
+            tempBitmapData.Dispose();
 
             return allEntriesBitmap;
         }

@@ -28,7 +28,7 @@ public unsafe struct RoaringBitmapIterator : IDisposable
     private int _positionInContainer;
     private ulong _bitmapCurrentWord; // Bitmap only: remaining bits in current word
 
-    public RoaringBitmapIterator(ref RoaringBitmapData data, ByteStringContext ctx)
+    public RoaringBitmapIterator(ref RoaringBitmap data, ByteStringContext ctx)
     {
         _ctx = ctx;
         _containerIndex = 0;
@@ -71,7 +71,7 @@ public unsafe struct RoaringBitmapIterator : IDisposable
     /// Fill the buffer with the next batch of values from the bitmap.
     /// Returns the number of values written.
     /// </summary>
-    public int Fill(ref RoaringBitmapData data, Span<long> buffer)
+    public int Fill(ref RoaringBitmap data, Span<long> buffer)
     {
         int written = 0;
         if (_entryCount == 0)
