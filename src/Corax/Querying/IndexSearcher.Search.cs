@@ -189,7 +189,6 @@ public partial class IndexSearcher
                 yield break;
             }
             
-            //TODO Reuse Sparrow's WhitespaceTokenizer instead of manual char loop
             int i = 0;
 
             while (i < source.Length)
