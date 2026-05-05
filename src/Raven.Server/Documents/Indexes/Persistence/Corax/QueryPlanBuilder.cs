@@ -2847,11 +2847,14 @@ internal static class QueryPlanBuilder
 
             if (field.OrderingType == OrderByFieldType.Score)
             {
-                // Score ordering always uses ascending=true (→ EntryComparerByScore → K-largest heap → highest scores first).
-                // Both "ORDER BY score()" and "ORDER BY score() DESC" mean "most relevant first" in a search engine context.
-                // The parser cannot distinguish "no direction" from "explicit ASC" (both set Ascending=true),
-                // so we treat all score orderings identically: highest scores first.
-                sortArray[sortIndex++] = new OrderMetadata(true, MatchCompareFieldType.Score);
+                // EntryComparerByScore.Compare is intentionally inverted (returns y.CompareTo(x)),
+                // so ascending=true → highest scores first (the default "most relevant first" search engine order).
+                // ascending=false → Descending<EntryComparerByScore> → lowest scores first.
+                //
+                // Parser behaviour: ORDER BY score()          → Ascending=true
+                //                   ORDER BY score() ASC      → Ascending=true
+                //                   ORDER BY score() DESC     → Ascending=false
+                sortArray[sortIndex++] = new OrderMetadata(true, MatchCompareFieldType.Score, field.Ascending);
 
                 continue;
             }
@@ -2996,9 +2999,9 @@ internal static class QueryPlanBuilder
         {
             if (orderByFields[i].OrderingType == OrderByFieldType.Score)
             {
-                // Score ordering always uses ascending=true (→ EntryComparerByScore → K-largest heap → highest scores first).
-                // Both "ORDER BY score()" and "ORDER BY score() DESC" mean "most relevant first" in a search engine context.
-                var meta = new OrderMetadata(true, MatchCompareFieldType.Score);
+                // ascending=true  → EntryComparerByScore (inverted comparer) → highest scores first
+                // ascending=false → Descending<EntryComparerByScore>          → lowest scores first
+                var meta = new OrderMetadata(true, MatchCompareFieldType.Score, orderByFields[i].Ascending);
                 return indexSearcher.OrderBy(match, meta, nullFirst: false, take: takeInt, token: token);
             }
         }

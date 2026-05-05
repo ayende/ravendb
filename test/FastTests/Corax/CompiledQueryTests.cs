@@ -489,6 +489,65 @@ public class CompiledQueryTests : RavenTestBase
         }
     }
 
+    /// <summary>
+    /// Verifies score ordering direction contracts:
+    ///   ORDER BY score()     → highest scores first  (default, search-engine convention)
+    ///   ORDER BY score() ASC → highest scores first  (ASC is idiomatic for "most relevant" in RavenDB)
+    ///   ORDER BY score() DESC → lowest scores first  (explicit reversal)
+    /// </summary>
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public async Task OrderByScore_DirectionSemantics()
+    {
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+
+        using var store = GetDocumentStore(options);
+
+        // Three docs with different boost factors in the query give reliably distinct scores.
+        // Name values are unique so each doc matches exactly one boost() clause.
+        using (var session = store.OpenAsyncSession())
+        {
+            await session.StoreAsync(new TestDoc { Name = "doc-a", Category = "cat-x", Status = "active" });
+            await session.StoreAsync(new TestDoc { Name = "doc-b", Category = "cat-x", Status = "active" });
+            await session.StoreAsync(new TestDoc { Name = "doc-c", Category = "cat-x", Status = "active" });
+            await session.SaveChangesAsync();
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        // boost() factors ensure doc-a > doc-b > doc-c in score.
+        const string where = "boost(Name = 'doc-a', 100) OR boost(Name = 'doc-b', 10) OR boost(Name = 'doc-c', 1)";
+
+        using (var session = store.OpenAsyncSession())
+        {
+            // No direction / default: highest score first.
+            var defaultOrder = await session.Advanced.AsyncRawQuery<TestDoc>(
+                $"from TestDocs where {where} order by score()")
+                .ToListAsync();
+            Assert.Equal(3, defaultOrder.Count);
+            Assert.Equal("doc-a", defaultOrder[0].Name);
+            Assert.Equal("doc-b", defaultOrder[1].Name);
+            Assert.Equal("doc-c", defaultOrder[2].Name);
+
+            // ASC: same as default — highest score first.
+            var ascOrder = await session.Advanced.AsyncRawQuery<TestDoc>(
+                $"from TestDocs where {where} order by score() asc")
+                .ToListAsync();
+            Assert.Equal(3, ascOrder.Count);
+            Assert.Equal("doc-a", ascOrder[0].Name);
+            Assert.Equal("doc-b", ascOrder[1].Name);
+            Assert.Equal("doc-c", ascOrder[2].Name);
+
+            // DESC: lowest score first.
+            var descOrder = await session.Advanced.AsyncRawQuery<TestDoc>(
+                $"from TestDocs where {where} order by score() desc")
+                .ToListAsync();
+            Assert.Equal(3, descOrder.Count);
+            Assert.Equal("doc-c", descOrder[0].Name);
+            Assert.Equal("doc-b", descOrder[1].Name);
+            Assert.Equal("doc-a", descOrder[2].Name);
+        }
+    }
+
     [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
     public async Task RegexQuery_BitmapPipeline()
     {
