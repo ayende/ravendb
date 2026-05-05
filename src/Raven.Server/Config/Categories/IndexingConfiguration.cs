@@ -96,7 +96,7 @@ namespace Raven.Server.Config.Categories
             EncryptedTransactionSizeLimit = defaultEncryptedTransactionSizeLimit;
             MaxAllocationsAtDictionaryTraining = defaultMaxAllocationsAtDictionaryTraining;
 
-            MaxMemoizationSize = Size.Max(new Size(512, SizeUnit.Megabytes), totalMem / 10);
+            MaxFacetQueryFilterSize = Size.Max(new Size(512, SizeUnit.Megabytes), totalMem / 10);
 
             MaxNumberOfThreadsForLocalEmbeddingsGeneration = Environment.ProcessorCount switch
             {
@@ -584,12 +584,13 @@ namespace Raven.Server.Config.Categories
         public bool CoraxIncludeSpatialDistance { get; set; }
         
 
-        [Description("The maximum amount of memory that Corax can use for a memoization clause during query processing")]
+        [Description("The maximum amount of memory Corax can use when materialising a faceted-query base filter into a HashSet before switching to the streaming scan fallback.")]
         [DefaultValue(DefaultValueSetInConstructor)]
         [SizeUnit(SizeUnit.Megabytes)]
         [IndexUpdateType(IndexUpdateType.Refresh)]
-        [ConfigurationEntry("Indexing.Corax.MaxMemoizationSizeInMb", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]
-        public Size MaxMemoizationSize { get; set; }
+        [ConfigurationEntry("Indexing.Corax.MaxFacetQueryFilterSizeInMb", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]
+        [ConfigurationEntry("Indexing.Corax.MaxMemoizationSizeInMb", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]  // old name, kept for backward compat
+        public Size MaxFacetQueryFilterSize { get; set; }
 
         [Description("Expert: The maximum amount of MB that we'll allocate for training indexing dictionaries.")]
         [DefaultValue(DefaultValueSetInConstructor)]
