@@ -91,7 +91,7 @@ public unsafe ref partial struct RoaringBitmap : IDisposable
         for (int i = 0; i < count; i++)
         {
             if (types[i] != ContainerType.Free && entries[i].Storage.HasValue)
-                _data._freeStorages.Add(_ctx, entries[i].Storage);
+                ReturnStorageToFreeList(entries[i].Storage);
         }
 
         _data._entries.Clear();
@@ -105,24 +105,50 @@ public unsafe ref partial struct RoaringBitmap : IDisposable
     }
 
     /// <summary>
-    /// Acquire storage of at least <paramref name="neededBytes"/>. Walks <see cref="_data._freeStorages"/>
-    /// linearly looking for a storage with sufficient capacity; reused storage is unlinked via swap-with-last.
-    /// Falls back to a fresh ctx allocation when nothing on the free list fits.
+    /// Push <paramref name="bs"/> onto the head of the storage free list.
+    /// The first <c>sizeof(ByteString)</c> bytes of <paramref name="bs"/>'s data are
+    /// overwritten with the current head, forming the intrusive next-pointer.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ReturnStorageToFreeList(ByteString bs)
+    {
+        *(ByteString*)bs.Ptr = _data._nextFreeStorage; // chain: new node's next = old head
+        _data._nextFreeStorage = bs;                   // new head = bs
+    }
+
+    /// <summary>
+    /// Acquire storage of at least <paramref name="neededBytes"/>. Walks the intrusive
+    /// storage free list for the best (smallest sufficient) fit, unlinks it in-place,
+    /// and returns it. Falls back to a fresh ctx allocation when nothing fits.
     /// </summary>
     private void AllocateOrRecycle(int neededBytes, out ByteString storage)
     {
-        var raw = _data._freeStorages.RawItems;
-        int n = _data._freeStorages.Count;
-        for (int i = 0; i < n; i++)
+        // `scan` is a managed ref to the ByteString field that holds the current node.
+        // Starting at the head field, it advances to each node's embedded next-pointer.
+        // `bestRef` tracks the field pointing to the best-fit node found so far, so we
+        // can unlink the winner with a single assignment after the walk.
+        ref ByteString scan = ref _data._nextFreeStorage;
+        ref ByteString bestRef = ref Unsafe.NullRef<ByteString>();
+        int bestLen = int.MaxValue;
+
+        while (scan.HasValue)
         {
-            if (raw[i].Length >= neededBytes)
+            if (scan.Length >= neededBytes && scan.Length < bestLen)
             {
-                storage = raw[i];
-                raw[i] = raw[n - 1];
-                _data._freeStorages.Count = n - 1;
-                return;
+                bestRef = ref scan;
+                bestLen = scan.Length;
             }
+            // Advance: the next ByteString is stored in the first bytes of scan's data.
+            scan = ref *(ByteString*)scan.Ptr;
         }
+
+        if (Unsafe.IsNullRef(ref bestRef) == false)
+        {
+            storage = bestRef;                       // read the winner
+            bestRef = *(ByteString*)storage.Ptr;     // unlink: point prev's next to winner's next
+            return;
+        }
+
         _ctx.Allocate(neededBytes, out storage);
     }
 
@@ -352,7 +378,7 @@ public unsafe ref partial struct RoaringBitmap : IDisposable
                     AllocateOrRecycle(neededBytes, out ByteString newStorage);
                     new Span<byte>(entry.Data, entry.Cardinality * sizeof(ushort))
                         .CopyTo(new Span<byte>(newStorage.Ptr, newStorage.Length));
-                    _ctx.Release(ref entry.Storage);
+                    ReturnStorageToFreeList(entry.Storage); // recycle old; new is larger
                     entry.Data = newStorage.Ptr;
                     entry.Storage = newStorage;
                 }
@@ -771,7 +797,7 @@ public unsafe ref partial struct RoaringBitmap : IDisposable
         ref ContainerEntry entry = ref _data._entries[slot];
         if (entry.Storage.HasValue)
         {
-            recipient._data._freeStorages.Add(recipient.Allocator, entry.Storage);
+            recipient.ReturnStorageToFreeList(entry.Storage);
             entry.Storage = default;
         }
         FreeContainer(key, slot);
@@ -1150,7 +1176,7 @@ public unsafe ref partial struct RoaringBitmap : IDisposable
     {
         ref ContainerEntry entry = ref _data._entries[slot];
         if (entry.Storage.HasValue)
-            _data._freeStorages.Add(_ctx, entry.Storage);
+            ReturnStorageToFreeList(entry.Storage);
 
         entry = default;
         _data._types.RawItems[slot] = ContainerType.Free;
@@ -1243,7 +1269,7 @@ public unsafe ref partial struct RoaringBitmap : IDisposable
             Unsafe.CopyBlockUnaligned(newStorage.Ptr, entry.Data, (uint)copyBytes);
 
         if (entry.Storage.HasValue)
-            _ctx.Release(ref entry.Storage);
+            ReturnStorageToFreeList(entry.Storage);
         entry.Storage = newStorage;
         entry.Data = newStorage.Ptr;
     }
@@ -1350,7 +1376,7 @@ public unsafe ref partial struct RoaringBitmap : IDisposable
             entry.Cardinality = updatedCount;
         }
         if (entry.Storage.HasValue)
-            _ctx.Release(ref entry.Storage);
+            ReturnStorageToFreeList(entry.Storage);
 
         entry.Storage = newStorage;
         entry.Data = newStorage.Ptr;
@@ -1374,15 +1400,14 @@ public unsafe ref partial struct RoaringBitmap : IDisposable
             _data._entries.Dispose(_ctx);
         }
 
-        // Release every storage parked on the free list — these are storages that were
-        // freed via Clear/FreeContainer but never recycled before Dispose.
-        if (_data._freeStorages.IsValid)
+        // Release every storage parked on the storage free list — these are storages that
+        // were recycled via FreeContainer/Clear but never re-used before Dispose.
+        ByteString freeNode = _data._nextFreeStorage;
+        while (freeNode.HasValue)
         {
-            ByteString* raw = _data._freeStorages.RawItems;
-            int n = _data._freeStorages.Count;
-            for (int i = 0; i < n; i++)
-                _ctx.Release(ref raw[i]);
-            _data._freeStorages.Dispose(_ctx);
+            ByteString nextNode = *(ByteString*)freeNode.Ptr; // read next before releasing
+            _ctx.Release(ref freeNode);
+            freeNode = nextNode;
         }
 
         if (_data._types.IsValid)

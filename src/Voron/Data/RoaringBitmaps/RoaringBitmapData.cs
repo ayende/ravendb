@@ -23,7 +23,12 @@ public unsafe struct RoaringBitmapData
     /// <see cref="ContainerEntry.NextFreeSlot"/> uses the same encoding for chaining.
     /// </summary>
     internal int _freeListHead;
-    internal NativeList<ByteString> _freeStorages;
+    /// <summary>
+    /// Head of the storage free list — an intrusive singly-linked list.
+    /// The first <c>sizeof(ByteString)</c> bytes of each free storage contain the next
+    /// <see cref="ByteString"/> in the chain. Default (zero) means the list is empty.
+    /// </summary>
+    internal ByteString _nextFreeStorage;
 
     public readonly int ContainerCount => _containerCount;
 
