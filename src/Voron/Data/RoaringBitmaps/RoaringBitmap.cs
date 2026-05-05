@@ -50,10 +50,7 @@ public unsafe ref partial struct RoaringBitmap : IDisposable
     {
         _data = ref data;
         _ctx = ctx;
-        // A zero-capacity entries list means no slots have ever been allocated
-        // (default struct), so the free-list sentinel has not been set yet.
-        if (_data._entries.Capacity == 0)
-            _data._freeListHead = FreeSlotTerminator;
+        // _freeListHead == 0 is the terminator; default(RoaringBitmapData) already has it.
     }
 
     public const int BitmapContainerSizeInBytes = 8192; // 8KB
@@ -65,7 +62,8 @@ public unsafe ref partial struct RoaringBitmap : IDisposable
     internal const int ContainerValueMaskPublic = ContainerValueMask;
     private const int LazyCardinality = -1;
 
-    private const int FreeSlotTerminator = -2; // end of free list
+    // _freeListHead / NextFreeSlot use a 1-based encoding: 0 = empty (zero-init), slot+1 = real index.
+    // This lets default(RoaringBitmapData) be a valid empty bitmap without any explicit init.
     private const int IndexAbsent = -1;        // key is not present in index
     internal const int IndexAbsentPublic = IndexAbsent;
 
@@ -99,7 +97,7 @@ public unsafe ref partial struct RoaringBitmap : IDisposable
         _data._entries.Clear();
         _data._types.Clear();
         _data._containerCount = 0;
-        _data._freeListHead = FreeSlotTerminator;
+        _data._freeListHead = 0; // 0 = empty (entries are gone, free list is empty too)
 
         int* indexRaw = _data._index.RawItems;
         int indexLen = _data._index.Count;
@@ -1121,11 +1119,11 @@ public unsafe ref partial struct RoaringBitmap : IDisposable
         EnsureIndexCoversKey(key);
 
         int slot;
-        if (_data._freeListHead != FreeSlotTerminator)
+        if (_data._freeListHead != 0) // 0 = empty; non-zero = slot+1 (1-based)
         {
-            slot = _data._freeListHead;
+            slot = _data._freeListHead - 1; // decode: real index = stored - 1
             Debug.Assert(_data._types.RawItems[slot] == ContainerType.Free, "Expected free entry");
-            _data._freeListHead = (int)_data._entries[slot].NextFreeSlot;
+            _data._freeListHead = (int)_data._entries[slot].NextFreeSlot; // next encoded value (0 or slot+1)
             _data._entries[slot] = entry;
             _data._types.RawItems[slot] = type;
         }
@@ -1156,8 +1154,8 @@ public unsafe ref partial struct RoaringBitmap : IDisposable
 
         entry = default;
         _data._types.RawItems[slot] = ContainerType.Free;
-        entry.NextFreeSlot = (uint)_data._freeListHead;
-        _data._freeListHead = slot;
+        entry.NextFreeSlot = (uint)_data._freeListHead; // current head (0 or prev_slot+1)
+        _data._freeListHead = slot + 1;                 // encode: store as real_index + 1
 
         _data._index.RawItems[key] = IndexAbsent;
         _data._containerCount--;

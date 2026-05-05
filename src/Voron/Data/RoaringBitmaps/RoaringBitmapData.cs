@@ -17,6 +17,11 @@ public unsafe struct RoaringBitmapData
     internal NativeList<ContainerType> _types;
     internal NativeList<int> _index;
     internal int _containerCount;
+    /// <summary>
+    /// Head of the entry free list, 1-based: 0 = empty, n = real slot index (n-1).
+    /// Zero-init (default struct) is therefore a valid empty state.
+    /// <see cref="ContainerEntry.NextFreeSlot"/> uses the same encoding for chaining.
+    /// </summary>
     internal int _freeListHead;
     internal NativeList<ByteString> _freeStorages;
 
