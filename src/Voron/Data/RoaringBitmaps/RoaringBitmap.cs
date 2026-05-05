@@ -738,12 +738,6 @@ public unsafe ref partial struct RoaringBitmap : IDisposable
     {
         int* myIdx = _data._index.RawItems;
         int myLen = _data._index.Count;
-        // Donate freed left-side storages to `other`'s free list when the two bitmaps
-        // share an allocator. `other` is being consumed by callers under our
-        // consume-after-use contract; arming its scratch pool here means a later
-        // Clear+fill on the same instance has buffers ready without round-tripping
-        // through ctx.Allocate. Different ctx → fall back to self-pool (FreeContainer).
-        bool sharedCtx = ReferenceEquals(_ctx, other._ctx);
 
         for (int key = 0; key < myLen; key++)
         {
@@ -754,11 +748,10 @@ public unsafe ref partial struct RoaringBitmap : IDisposable
             int otherSlot = other.GetSlotForKey(key);
             if (otherSlot < 0)
             {
-                // Not in other - remove
-                if (sharedCtx)
-                    DonateStorageThenFreeContainer(key, mySlot, ref other);
-                else
-                    FreeContainer(key, mySlot);
+                // Not in other - remove; donate storage to other's free list so any
+                // remaining container conversions on that side can reuse it without
+                // round-tripping through ctx.Allocate.
+                DonateStorageThenFreeContainer(key, mySlot, ref other);
             }
             else
             {
@@ -766,12 +759,7 @@ public unsafe ref partial struct RoaringBitmap : IDisposable
                 ref ContainerEntry otherEntry = ref other.GetEntryBySlot(otherSlot);
                 AndContainerInPlace(ref myEntry, ref _data._types.RawItems[mySlot], ref otherEntry, other._data._types.RawItems[otherSlot]);
                 if (myEntry.Cardinality == 0)
-                {
-                    if (sharedCtx)
-                        DonateStorageThenFreeContainer(key, mySlot, ref other);
-                    else
-                        FreeContainer(key, mySlot);
-                }
+                    DonateStorageThenFreeContainer(key, mySlot, ref other);
             }
         }
     }
@@ -785,7 +773,7 @@ public unsafe ref partial struct RoaringBitmap : IDisposable
     /// <summary>Donate this slot's storage to <paramref name="recipient"/>'s free pool
     /// before freeing the entry. Used during AndWith / AndNotWith to arm the consumed
     /// right-side bitmap with buffers that this side would otherwise have stranded on
-    /// its own pool. Caller must verify ctx-equality first.</summary>
+    /// its own pool.</summary>
     private void DonateStorageThenFreeContainer(long key, int slot, scoped ref RoaringBitmap recipient)
     {
         ref ContainerEntry entry = ref _data._entries[slot];
@@ -804,7 +792,6 @@ public unsafe ref partial struct RoaringBitmap : IDisposable
     {
         int myLen = _data._index.Count;
         int* myIdx = _data._index.RawItems;
-        bool sharedCtx = ReferenceEquals(_ctx, other._ctx);
 
         for (int key = 0; key < myLen; key++)
         {
@@ -819,12 +806,7 @@ public unsafe ref partial struct RoaringBitmap : IDisposable
             ref ContainerEntry otherEntry = ref other.GetEntryBySlot(otherSlot);
             AndNotContainerInPlace(ref _data._entries[mySlot], ref _data._types.RawItems[mySlot], ref otherEntry, other._data._types.RawItems[otherSlot]);
             if (_data._entries[mySlot].Cardinality == 0)
-            {
-                if (sharedCtx)
-                    DonateStorageThenFreeContainer(key, mySlot, ref other);
-                else
-                    FreeContainer(key, mySlot);
-            }
+                DonateStorageThenFreeContainer(key, mySlot, ref other);
         }
     }
 
