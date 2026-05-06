@@ -117,9 +117,9 @@ public partial class IndexSearcher
 
                 searchBitmapHasValue = true;
                 if (@operator == Constants.Search.Operator.Or)
-                    Primitives.QueryPrimitives.FillFromMatch(query, ref searchBitmap.BitmapState, Allocator);
+                    Primitives.QueryPrimitives.FillFromMatch(query, ref searchBitmap.BitmapState);
                 else
-                    Primitives.QueryPrimitives.AndWithMatch(query, ref searchBitmap.BitmapState, ref tempBitmapData, Allocator);
+                    Primitives.QueryPrimitives.AndWithMatch(query, ref searchBitmap.BitmapState, ref tempBitmapData);
             }
         }
 
@@ -138,12 +138,12 @@ public partial class IndexSearcher
                     var termQuery = TermQuery(field, term);
                     if (first)
                     {
-                        Primitives.QueryPrimitives.FillFromMatch(termQuery, ref termBitmap.BitmapState, Allocator);
+                        Primitives.QueryPrimitives.FillFromMatch(termQuery, ref termBitmap.BitmapState);
                         first = false;
                     }
                     else
                     {
-                        Primitives.QueryPrimitives.AndWithMatch(termQuery, ref termBitmap.BitmapState, ref tempTermBitmapData, Allocator);
+                        Primitives.QueryPrimitives.AndWithMatch(termQuery, ref termBitmap.BitmapState, ref tempTermBitmapData);
                     }
                 }
             }
@@ -153,15 +153,15 @@ public partial class IndexSearcher
                 foreach (var term in termMatches)
                 {
                     var termQuery = TermQuery(field, term);
-                    Primitives.QueryPrimitives.FillFromMatch(termQuery, ref termBitmap.BitmapState, Allocator);
+                    Primitives.QueryPrimitives.FillFromMatch(termQuery, ref termBitmap.BitmapState);
                 }
             }
 
             searchBitmapHasValue = true;
             if (@operator == Constants.Search.Operator.Or)
-                Primitives.QueryPrimitives.FillFromMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState, Allocator);
+                Primitives.QueryPrimitives.FillFromMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState);
             else
-                Primitives.QueryPrimitives.AndWithMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState, ref tempBitmapData, Allocator);
+                Primitives.QueryPrimitives.AndWithMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState, ref tempBitmapData);
 
             tempTermBitmapData.Dispose();
         }
@@ -297,9 +297,9 @@ public partial class IndexSearcher
 
                 searchBitmapHasValue = true;
                 if (@operator == Constants.Search.Operator.Or)
-                    Primitives.QueryPrimitives.FillFromMatch(query, ref searchBitmap.BitmapState, Allocator);
+                    Primitives.QueryPrimitives.FillFromMatch(query, ref searchBitmap.BitmapState);
                 else
-                    Primitives.QueryPrimitives.AndWithMatch(query, ref searchBitmap.BitmapState, ref tempBitmapData, Allocator);
+                    Primitives.QueryPrimitives.AndWithMatch(query, ref searchBitmap.BitmapState, ref tempBitmapData);
 
                 continue;
             }
@@ -320,12 +320,12 @@ public partial class IndexSearcher
                 var termQuery = TermQuery(field, term);
                 if (firstPhraseTerm)
                 {
-                    Primitives.QueryPrimitives.FillFromMatch(termQuery, ref phraseBitmap.BitmapState, Allocator);
+                    Primitives.QueryPrimitives.FillFromMatch(termQuery, ref phraseBitmap.BitmapState);
                     firstPhraseTerm = false;
                 }
                 else
                 {
-                    Primitives.QueryPrimitives.AndWithMatch(termQuery, ref phraseBitmap.BitmapState, ref tempPhraseBitmapData, Allocator);
+                    Primitives.QueryPrimitives.AndWithMatch(termQuery, ref phraseBitmap.BitmapState, ref tempPhraseBitmapData);
                 }
             }
 
@@ -334,9 +334,9 @@ public partial class IndexSearcher
 
             searchBitmapHasValue = true;
             if (@operator == Constants.Search.Operator.Or)
-                Primitives.QueryPrimitives.FillFromMatch(phraseMatch, ref searchBitmap.BitmapState, Allocator);
+                Primitives.QueryPrimitives.FillFromMatch(phraseMatch, ref searchBitmap.BitmapState);
             else
-                Primitives.QueryPrimitives.AndWithMatch(phraseMatch, ref searchBitmap.BitmapState, ref tempBitmapData, Allocator);
+                Primitives.QueryPrimitives.AndWithMatch(phraseMatch, ref searchBitmap.BitmapState, ref tempBitmapData);
         }
 
         if (termMatches?.Count > 0)
@@ -354,12 +354,12 @@ public partial class IndexSearcher
                     var termQuery = TermQuery(field, term);
                     if (first)
                     {
-                        Primitives.QueryPrimitives.FillFromMatch(termQuery, ref termBitmap.BitmapState, Allocator);
+                        Primitives.QueryPrimitives.FillFromMatch(termQuery, ref termBitmap.BitmapState);
                         first = false;
                     }
                     else
                     {
-                        Primitives.QueryPrimitives.AndWithMatch(termQuery, ref termBitmap.BitmapState, ref tempTermBitmapData, Allocator);
+                        Primitives.QueryPrimitives.AndWithMatch(termQuery, ref termBitmap.BitmapState, ref tempTermBitmapData);
                     }
                 }
             }
@@ -369,15 +369,15 @@ public partial class IndexSearcher
                 foreach (var term in termMatches)
                 {
                     var termQuery = TermQuery(field, term);
-                    Primitives.QueryPrimitives.FillFromMatch(termQuery, ref termBitmap.BitmapState, Allocator);
+                    Primitives.QueryPrimitives.FillFromMatch(termQuery, ref termBitmap.BitmapState);
                 }
             }
 
             searchBitmapHasValue = true;
             if (@operator == Constants.Search.Operator.Or)
-                Primitives.QueryPrimitives.FillFromMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState, Allocator);
+                Primitives.QueryPrimitives.FillFromMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState);
             else
-                Primitives.QueryPrimitives.AndWithMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState, ref tempBitmapData, Allocator);
+                Primitives.QueryPrimitives.AndWithMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState, ref tempBitmapData);
 
             tempTermBitmapData.Dispose();
         }
@@ -498,9 +498,9 @@ public partial class IndexSearcher
 
                 searchBitmapHasValue = true;
                 if (@operator == Constants.Search.Operator.Or)
-                    Primitives.QueryPrimitives.FillFromMatch(query, ref searchBitmap.BitmapState, Allocator);
+                    Primitives.QueryPrimitives.FillFromMatch(query, ref searchBitmap.BitmapState);
                 else
-                    Primitives.QueryPrimitives.AndWithMatch(query, ref searchBitmap.BitmapState, ref tempBitmapData, Allocator);
+                    Primitives.QueryPrimitives.AndWithMatch(query, ref searchBitmap.BitmapState, ref tempBitmapData);
 
                 continue;
             }
@@ -515,12 +515,12 @@ public partial class IndexSearcher
                 var termQuery = TermQuery(field, term);
                 if (firstPhraseTerm)
                 {
-                    Primitives.QueryPrimitives.FillFromMatch(termQuery, ref phraseBitmap.BitmapState, Allocator);
+                    Primitives.QueryPrimitives.FillFromMatch(termQuery, ref phraseBitmap.BitmapState);
                     firstPhraseTerm = false;
                 }
                 else
                 {
-                    Primitives.QueryPrimitives.AndWithMatch(termQuery, ref phraseBitmap.BitmapState, ref tempPhraseBitmapData, Allocator);
+                    Primitives.QueryPrimitives.AndWithMatch(termQuery, ref phraseBitmap.BitmapState, ref tempPhraseBitmapData);
                 }
             }
 
@@ -529,9 +529,9 @@ public partial class IndexSearcher
 
             searchBitmapHasValue = true;
             if (@operator == Constants.Search.Operator.Or)
-                Primitives.QueryPrimitives.FillFromMatch(phraseMatch, ref searchBitmap.BitmapState, Allocator);
+                Primitives.QueryPrimitives.FillFromMatch(phraseMatch, ref searchBitmap.BitmapState);
             else
-                Primitives.QueryPrimitives.AndWithMatch(phraseMatch, ref searchBitmap.BitmapState, ref tempBitmapData, Allocator);
+                Primitives.QueryPrimitives.AndWithMatch(phraseMatch, ref searchBitmap.BitmapState, ref tempBitmapData);
         }
 
         if (termMatches?.Count > 0)
@@ -549,12 +549,12 @@ public partial class IndexSearcher
                     var termQuery = TermQuery(field, term);
                     if (first)
                     {
-                        Primitives.QueryPrimitives.FillFromMatch(termQuery, ref termBitmap.BitmapState, Allocator);
+                        Primitives.QueryPrimitives.FillFromMatch(termQuery, ref termBitmap.BitmapState);
                         first = false;
                     }
                     else
                     {
-                        Primitives.QueryPrimitives.AndWithMatch(termQuery, ref termBitmap.BitmapState, ref tempTermBitmapData, Allocator);
+                        Primitives.QueryPrimitives.AndWithMatch(termQuery, ref termBitmap.BitmapState, ref tempTermBitmapData);
                     }
                 }
             }
@@ -564,15 +564,15 @@ public partial class IndexSearcher
                 foreach (var term in termMatches)
                 {
                     var termQuery = TermQuery(field, term);
-                    Primitives.QueryPrimitives.FillFromMatch(termQuery, ref termBitmap.BitmapState, Allocator);
+                    Primitives.QueryPrimitives.FillFromMatch(termQuery, ref termBitmap.BitmapState);
                 }
             }
 
             searchBitmapHasValue = true;
             if (@operator == Constants.Search.Operator.Or)
-                Primitives.QueryPrimitives.FillFromMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState, Allocator);
+                Primitives.QueryPrimitives.FillFromMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState);
             else
-                Primitives.QueryPrimitives.AndWithMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState, ref tempBitmapData, Allocator);
+                Primitives.QueryPrimitives.AndWithMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState, ref tempBitmapData);
 
             tempTermBitmapData.Dispose();
         }

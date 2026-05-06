@@ -2512,8 +2512,8 @@ internal static class QueryPlanBuilder
         // FillFromMatch for the BitmapMatch result fast-paths via IBitmapQueryMatch.
         var bitmapMatch = new BitmapMatch(indexSearcher.Allocator);
         var tempData = new RoaringBitmap(indexSearcher.Allocator);
-        QueryPrimitives.FillFromMatch(indexSearcher.AllEntries(), ref bitmapMatch.BitmapState, indexSearcher.Allocator);
-        QueryPrimitives.AndNotWithMatch(termMatch, ref bitmapMatch.BitmapState, ref tempData, indexSearcher.Allocator);
+        QueryPrimitives.FillFromMatch(indexSearcher.AllEntries(), ref bitmapMatch.BitmapState);
+        QueryPrimitives.AndNotWithMatch(termMatch, ref bitmapMatch.BitmapState, ref tempData);
         tempData.Dispose();
         return bitmapMatch;
     }
