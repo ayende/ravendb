@@ -186,7 +186,7 @@ public unsafe sealed partial class SortingMatch<TInner> : SortingMatch
             // Bitmap-backed matches (CompiledQueryMatch) can avoid full materialization.
             // Walk the CompactTree index and intersect batches via AndWith, stopping early
             // when the LIMIT is reached. This avoids MemoizationMatch's O(N) copy.
-            if (match._inner is Corax.Querying.Matches.Meta.IBitmapQueryMatch bitmapMatch)
+            if (match._inner is IBitmapQueryMatch bitmapMatch)
             {
                 match.TotalResults = bitmapMatch.Count;
                 if (match.TotalResults == 0)
@@ -194,8 +194,10 @@ public unsafe sealed partial class SortingMatch<TInner> : SortingMatch
 
                 if (typeof(TDirection) == typeof(RandomDirection))
                 {
-                    // Random requires full materialization — no shortcut
-                    SortResultsFromBitmap<TEntryComparer>(match);
+                    // Bitmap path: reservoir-sample k entries from the bitmap iterator in one
+                    // O(N) pass. No need to materialise all N entries — only the k=_take
+                    // slots are ever live in memory at once.
+                    ReservoirSampleFromBitmap(match);
                 }
                 else if (typeof(TDirection) == typeof(NoIterationOptimization))
                 {
@@ -266,14 +268,63 @@ public unsafe sealed partial class SortingMatch<TInner> : SortingMatch
         return 0;
     }
 
+    private static void ReservoirSampleFromBitmap(SortingMatch<TInner> match)
+    {
+        var random = new Random(match._orderMetadata.RandomSeed);
+        int take = match._take;
+
+        Span<long> page = stackalloc long[1024];
+
+        if (take < 0)
+        {
+            // No LIMIT: materialize the whole bitmap, then Fisher-Yates shuffle in place.
+            int read;
+            while ((read = match._inner.Fill(page)) > 0)
+                for (int i = 0; i < read; i++)
+                    match._results.Add(page[i]);
+
+            // Fisher-Yates: swap from the end backward so every permutation is equiprobable.
+            for (int i = match._results.Count - 1; i > 0; i--)
+            {
+                int j = random.Next(i + 1);
+                (match._results[i], match._results[j]) = (match._results[j], match._results[i]);
+            }
+        }
+        else
+        {
+            // With LIMIT k: Algorithm R — one O(N) pass, O(k) live memory.
+            // Entry at position i is kept with probability k/(i+1), replacing a random slot.
+            int seen = 0;
+            int read;
+            while ((read = match._inner.Fill(page)) > 0)
+            {
+                for (int i = 0; i < read; i++, seen++)
+                {
+                    long id = page[i];
+                    if (match._results.Count < take)
+                    {
+                        match._results.Add(id);
+                    }
+                    else
+                    {
+                        int slot = random.Next(seen + 1);
+                        if (slot < take)
+                            match._results[slot] = id;
+                    }
+                }
+            }
+        }
+    }
+
     private static void SortByRandom(SortingMatch<TInner> match, Span<long> results)
     {
         var random = new Random(match._orderMetadata.RandomSeed);
-        var take = Math.Min(match._take, results.Length);
+        // take < 0 means "no limit" — shuffle all results.
+        var take = match._take < 0 ? results.Length : Math.Min(match._take, results.Length);
         while (match._results.Count < take)
         {
             int index = random.Next(match._results.Count, results.Length);
-            // fisher yates
+            // Fisher-Yates partial shuffle: grow the selected prefix one entry at a time.
             var replaced = results[match._results.Count];
             var selected = results[index];
             results[match._results.Count] = selected;
@@ -290,9 +341,12 @@ public unsafe sealed partial class SortingMatch<TInner> : SortingMatch
         private TDirection _termsIt;
         private readonly long _min;
         private readonly long _max;
+        private readonly long _nonExistingPostingListId;
+        private readonly long _nullPostingListId;
+
         private readonly bool _nullFirst;
         private readonly bool _isForward;
-        private readonly Querying.IndexSearcher _searcher;
+        private readonly IndexSearcher _searcher;
         private readonly LowLevelTransaction _llt;
 
         private const int BufferSize = 1024;
@@ -305,13 +359,10 @@ public unsafe sealed partial class SortingMatch<TInner> : SortingMatch
         private ByteStringContext<ByteStringMemoryCache>.InternalScope _itBufferScope, _containerItemsScope;
         private readonly PageLocator _pageLocator;
         private bool _hasSmallListReader;
-
-        private long _nonExistingPostingListId;
         private bool _nonExistingPostingListRead;
-        private long _nullPostingListId;
         private bool _nullPostingListRead;
 
-        public SortedIndexReader(LowLevelTransaction llt, Querying.IndexSearcher searcher, TDirection it, FieldMetadata metadata, long min, long max, bool nullFirst, bool isForward)
+        public SortedIndexReader(LowLevelTransaction llt, IndexSearcher searcher, TDirection it, FieldMetadata metadata, long min, long max, bool nullFirst, bool isForward)
         {
             _termsIt = it;
             _min = min;
@@ -501,10 +552,10 @@ public unsafe sealed partial class SortingMatch<TInner> : SortingMatch
 
         int maxResults = match._take == -1 ? int.MaxValue : match._take;
 
-        var indexesScope = allocator.Allocate(SortingMatch.SortBatchSize * sizeof(long), out ByteString bs);
-        Span<long> indexesBuffer = new(bs.Ptr,SortingMatch.SortBatchSize);
-        var sortedIdsScope = allocator.Allocate( sizeof(long) * SortingMatch.SortBatchSize, out bs);
-        Span<long> sortedIdBuffer = new(bs.Ptr, SortingMatch.SortBatchSize);
+        var indexesScope = allocator.Allocate(SortBatchSize * sizeof(long), out ByteString bs);
+        Span<long> indexesBuffer = new(bs.Ptr,SortBatchSize);
+        var sortedIdsScope = allocator.Allocate( sizeof(long) * SortBatchSize, out bs);
+        Span<long> sortedIdBuffer = new(bs.Ptr, SortBatchSize);
 
         var totalRead = 0;
         var reader = GetReader(match, allMatches[0], allMatches[^1]);
@@ -615,7 +666,7 @@ public unsafe sealed partial class SortingMatch<TInner> : SortingMatch
     /// Avoids the MemoizationMatch full materialization that SortUsingIndex requires.
     /// </summary>
     private static void SortUsingIndexFromBitmap<TEntryComparer, TDirection>(
-        SortingMatch<TInner> match, Corax.Querying.Matches.Meta.IBitmapQueryMatch bitmapMatch)
+        SortingMatch<TInner> match, IBitmapQueryMatch bitmapMatch)
         where TDirection : struct, ILookupIterator
         where TEntryComparer : struct, IEntryComparer, IComparer<UnmanagedSpan>
     {
@@ -625,8 +676,8 @@ public unsafe sealed partial class SortingMatch<TInner> : SortingMatch
 
         int maxResults = match._take == -1 ? int.MaxValue : match._take;
 
-        var sortedIdsScope = allocator.Allocate(sizeof(long) * SortingMatch.SortBatchSize, out ByteString bs);
-        Span<long> sortedIdBuffer = new(bs.Ptr, SortingMatch.SortBatchSize);
+        var sortedIdsScope = allocator.Allocate(sizeof(long) * SortBatchSize, out ByteString bs);
+        Span<long> sortedIdBuffer = new(bs.Ptr, SortBatchSize);
 
         var reader = GetReader(match, entryCmp, bitmapMatch.MinEntryId, bitmapMatch.MaxEntryId);
 

@@ -109,7 +109,7 @@ internal static class QueryPlanBuilder
 
         if (planParams.HasBoost)
         {
-            // When BM25 scoring is needed, UseTermSource=true skips Fill() on the
+            // When BM25 scoring is needed, TermSource dispatch skips Fill() on the
             // TermMatch objects in _resolvedMatches, leaving Bm25Relevance._matchBuffer
             // empty. Score() binary-searches an empty buffer → returns 0 for every entry,
             // producing arbitrary (wrong) sort order.
@@ -120,7 +120,7 @@ internal static class QueryPlanBuilder
             var ops = plan.Ops;
             if (ops != null)
                 for (int i = 0; i < ops.Length; i++)
-                    ops[i].UseTermSource = false;
+                    ops[i].Dispatch = MatchDispatch.DirectSource;
             plan.OperandOrdering |= (1 << 30);
         }
 
@@ -152,7 +152,7 @@ internal static class QueryPlanBuilder
             PopulateHighlightingTerms(plan, highlightingTerms, planParams.Metadata);
 
         IQueryMatch result = new CompiledQueryMatch(
-            compiledPlan, plan.RequiredBitmaps, plan.Ops?.Length ?? 0, resolvedMatches, termSources,
+            compiledPlan, plan.RequiredBitmaps, plan.Ops?.Length ?? 0, resolvedMatches, termSources, null,
             longParams, doubleParams, sliceParams, fieldRootPages,
             indexSearcher, planParams.Allocator, take, token);
 
@@ -1029,7 +1029,7 @@ internal static class QueryPlanBuilder
     }
 
     /// <summary>Convert an IN value to its string representation, handling booleans and dates.</summary>
-    private static (string value, ValueTokenType type) ConvertInValue(object value, ValueTokenType literalType, ref bool hasTime)
+    private static (string Value, ValueTokenType Type) ConvertInValue(object value, ValueTokenType literalType, ref bool hasTime)
     {
         if (value == null)
             return (null, ValueTokenType.String);
@@ -1253,7 +1253,7 @@ internal static class QueryPlanBuilder
                             Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex,
                             EstimatedCardinality = clauses[i].Cardinality / clauses[i].InTerms.Count,
-                            UseTermSource = true
+                            Dispatch = MatchDispatch.TermSource
                         });
                         matchIndex++;
                     }
@@ -1267,7 +1267,7 @@ internal static class QueryPlanBuilder
                             Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex,
                             EstimatedCardinality = clauses[i].Cardinality / clauses[i].OrSubClauses.Count,
-                            UseTermSource = IsTermSourceEligibleClause(sub)
+                            Dispatch = GetDispatch(sub)
                         });
                         matchIndex++;
                     }
@@ -1288,7 +1288,7 @@ internal static class QueryPlanBuilder
                             Kind = PlanOpKind.FillFromPostings,
                             ParamIndex = matchIndex,
                             EstimatedCardinality = subClauses[0].Cardinality,
-                            UseTermSource = IsTermSourceEligibleClause(subClauses[0])
+                            Dispatch = GetDispatch(subClauses[0])
                         });
                         for (int s = 1; s < subClauses.Count; s++)
                         {
@@ -1297,7 +1297,7 @@ internal static class QueryPlanBuilder
                                 Kind = PlanOpKind.AndWithPostings,
                                 ParamIndex = matchIndex + s,
                                 EstimatedCardinality = subClauses[s].Cardinality,
-                                UseTermSource = IsTermSourceEligibleClause(subClauses[s]),
+                                Dispatch = GetDispatch(subClauses[s]),
                                 SkipEarlyExit = true // don't abort on empty — remaining OR terms may still match
                             });
                         }
@@ -1323,7 +1323,7 @@ internal static class QueryPlanBuilder
                             Kind = PlanOpKind.FillFromPostings,
                             ParamIndex = matchIndex,
                             EstimatedCardinality = subClauses[0].Cardinality,
-                            UseTermSource = IsTermSourceEligibleClause(subClauses[0])
+                            Dispatch = GetDispatch(subClauses[0])
                         });
                         for (int s = 1; s < subClauses.Count; s++)
                         {
@@ -1333,7 +1333,7 @@ internal static class QueryPlanBuilder
                                 ParamIndex = matchIndex + s,
                                 BitmapLocal = 0,
                                 EstimatedCardinality = subClauses[s].Cardinality,
-                                UseTermSource = IsTermSourceEligibleClause(subClauses[s]),
+                                Dispatch = GetDispatch(subClauses[s]),
                                 SkipEarlyExit = true // don't abort — OR chain continues
                             });
                         }
@@ -1362,7 +1362,7 @@ internal static class QueryPlanBuilder
                         Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                         ParamIndex = matchIndex,
                         EstimatedCardinality = clauses[i].Cardinality,
-                        UseTermSource = isNotEqualsInOr ? false : IsTermSourceEligibleClause(clauses[i])
+                        Dispatch = isNotEqualsInOr ? MatchDispatch.DirectSource : GetDispatch(clauses[i])
                     });
                     matchIndex++;
                 }
@@ -1391,7 +1391,7 @@ internal static class QueryPlanBuilder
                 Kind = PlanOpKind.AndNotWithPostings,
                 ParamIndex = 1, // Will be resolved to the negated term
                 EstimatedCardinality = clauses[0].Cardinality,
-                UseTermSource = IsTermSourceEligibleClause(clauses[0])
+                Dispatch = GetDispatch(clauses[0])
             });
             ops.Add(new PlanOp { Kind = PlanOpKind.IterateInto });
 
@@ -1457,7 +1457,7 @@ internal static class QueryPlanBuilder
                             ParamIndex = matchIndex + s,
                             BitmapLocal = 0,
                             EstimatedCardinality = subClauses[s].Cardinality,
-                            UseTermSource = IsTermSourceEligibleClause(subClauses[s])
+                            Dispatch = GetDispatch(subClauses[s])
                         });
                     }
                     matchIndex += subClauses.Count;
@@ -1474,7 +1474,7 @@ internal static class QueryPlanBuilder
                             ParamIndex = matchIndex + t,
                             BitmapLocal = 0,
                             EstimatedCardinality = clauses[0].Cardinality / terms.Count,
-                            UseTermSource = true
+                            Dispatch = MatchDispatch.TermSource
                         });
                     }
                     matchIndex += terms.Count;
@@ -1489,7 +1489,7 @@ internal static class QueryPlanBuilder
                         ParamIndex = matchIndex,
                         BitmapLocal = 0,
                         EstimatedCardinality = clauses[0].Cardinality / terms.Count,
-                        UseTermSource = true
+                        Dispatch = MatchDispatch.TermSource
                     });
                     for (int t = 1; t < terms.Count; t++)
                     {
@@ -1499,7 +1499,7 @@ internal static class QueryPlanBuilder
                             ParamIndex = matchIndex + t,
                             BitmapLocal = 0,
                             EstimatedCardinality = clauses[0].Cardinality / terms.Count,
-                            UseTermSource = true
+                            Dispatch = MatchDispatch.TermSource
                         });
                         ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
                     }
@@ -1512,7 +1512,7 @@ internal static class QueryPlanBuilder
                         Kind = PlanOpKind.FillFromPostings,
                         ParamIndex = 0,
                         EstimatedCardinality = clauses[0].Cardinality,
-                        UseTermSource = IsTermSourceEligibleClause(clauses[0])
+                        Dispatch = GetDispatch(clauses[0])
                     });
                     matchIndex = 1;
                 }
@@ -1563,7 +1563,7 @@ internal static class QueryPlanBuilder
                             ParamIndex = matchIndex + s,
                             BitmapLocal = 1, // target bitmap[1]
                             EstimatedCardinality = subClauses[s].Cardinality,
-                            UseTermSource = IsTermSourceEligibleClause(subClauses[s])
+                            Dispatch = GetDispatch(subClauses[s])
                         });
                     }
 
@@ -1594,7 +1594,7 @@ internal static class QueryPlanBuilder
                             ParamIndex = matchIndex + t,
                             BitmapLocal = 1,
                             EstimatedCardinality = clauses[i].Cardinality / terms.Count,
-                            UseTermSource = true
+                            Dispatch = MatchDispatch.TermSource
                         });
                     }
                     // Negated In (NOT IN): subtract the OR'd terms from the result bitmap.
@@ -1621,7 +1621,7 @@ internal static class QueryPlanBuilder
                             ParamIndex = matchIndex + t,
                             BitmapLocal = 0,
                             EstimatedCardinality = clauses[i].Cardinality / terms.Count,
-                            UseTermSource = true
+                            Dispatch = MatchDispatch.TermSource
                         });
                         ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
                     }
@@ -1638,7 +1638,7 @@ internal static class QueryPlanBuilder
                         ParamIndex = matchIndex,
                         BitmapLocal = 0,
                         EstimatedCardinality = clauses[i].Cardinality,
-                        UseTermSource = IsTermSourceEligibleClause(clauses[i])
+                        Dispatch = GetDispatch(clauses[i])
                     });
 
                     if (!isNegated)
@@ -2198,7 +2198,7 @@ internal static class QueryPlanBuilder
     /// clause is multi-term / non-term-shaped (Spatial, Vector, Search, Range,
     /// StartsWith, EndsWith, Regex, AllEntries) keep <c>Kind == TermSourceKind.Empty</c>;
     /// only Equals / NotEquals / In / AllIn / OrGroup-of-(Not)Equals slots populate.
-    /// The IL emitter consults <see cref="PlanOp.UseTermSource"/> to decide which
+    /// The IL emitter consults <see cref="PlanOp.Dispatch"/> to decide which
     /// array to read.
     /// </summary>
     public static TermSource[] ResolveTermSources(QueryPlan plan, IndexSearcher indexSearcher,
@@ -2301,6 +2301,16 @@ internal static class QueryPlanBuilder
         if (clause.BoostFactor > 0)
             return false;
         return clause.ClauseType is ClauseType.Equals or ClauseType.NotEquals;
+    }
+
+    /// <summary>Resolve the <see cref="MatchDispatch"/> mode for a clause at plan-build time.
+    /// Equals / NotEquals (unboosted) → <c>TermSource</c> (native posting-list, no IQueryMatch wrapper).
+    /// All other clause types → <c>DirectSource</c> (IQueryMatch interface dispatch).</summary>
+    private static MatchDispatch GetDispatch(ClauseInfo clause)
+    {
+        if (IsTermSourceEligibleClause(clause))
+            return MatchDispatch.TermSource;
+        return MatchDispatch.DirectSource;
     }
 
     /// <summary>Resolve a single Equals / NotEquals clause to a posting-list ID and
