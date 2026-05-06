@@ -25,15 +25,15 @@ using Voron.Util.PFor;
 namespace Corax.Querying.Matches.SortingMatches;
 
 [DebuggerDisplay("{DebugView,nq}")]
-public unsafe partial struct SortingMatch<TInner> : IQueryMatch
+public unsafe sealed partial class SortingMatch<TInner> : SortingMatch
     where TInner : IQueryMatch
 {
     private readonly IndexSearcher _searcher;
     private TInner _inner;
     private readonly OrderMetadata _orderMetadata;
     private readonly CancellationToken _cancellationToken;
-    private readonly NullsSortMode _defaultNullsSortMode;
-    private readonly delegate*<ref SortingMatch<TInner>, Span<long>, int> _fillFunc;
+    private readonly bool _nullFirst;
+    private readonly delegate*<SortingMatch<TInner>, Span<long>, int> _fillFunc;
     private readonly int _take;
     private const int NotStarted = -1;
     private ByteStringContext<ByteStringMemoryCache>.InternalScope _entriesBufferScope;
@@ -45,22 +45,17 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
 
 
     private SortingDataTransfer _sortingDataTransfer;
-    public long TotalResults;
-    public SkipSortingResult AttemptToSkipSorting() => throw new NotSupportedException();
-
-    public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
-
+    public override SkipSortingResult AttemptToSkipSorting() => throw new NotSupportedException();
     
-    private readonly bool NullIsSmallest =>
-        (_orderMetadata.NullsSortMode ?? _defaultNullsSortMode) == NullsSortMode.NullsSmallest;
-
-    public SortingMatch(IndexSearcher searcher, in TInner inner, OrderMetadata orderMetadata, in CancellationToken cancellationToken, NullsSortMode defaultNullsSortMode, int take = -1)
+    public override DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
+    
+    public SortingMatch(IndexSearcher searcher, in TInner inner, OrderMetadata orderMetadata, in CancellationToken cancellationToken, bool nullFirst, int take = -1)
     {
         _searcher = searcher;
         _inner = inner;
         _orderMetadata = orderMetadata;
         _cancellationToken = cancellationToken;
-        _defaultNullsSortMode = defaultNullsSortMode;
+        _nullFirst = nullFirst;
         _take = take;
         _alreadyReadIdx = 0;
         _results = new ContextBoundNativeList<long>(searcher.Allocator);
@@ -166,7 +161,7 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
         }
     }
         
-    private static delegate*<ref SortingMatch<TInner>, Span<long>, int> SortBy<TEntryComparer,TFwdIt,TBackIt>(OrderMetadata metadata)
+    private static delegate*<SortingMatch<TInner>, Span<long>, int> SortBy<TEntryComparer,TFwdIt,TBackIt>(OrderMetadata metadata)
         where TEntryComparer : struct, IEntryComparer, IComparer<UnmanagedSpan>
         where TFwdIt : struct,  ILookupIterator
         where TBackIt : struct, ILookupIterator
@@ -180,7 +175,7 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
     }
 
 
-    private static int Fill<TEntryComparer, TDirection>(ref SortingMatch<TInner> match, Span<long> matches)
+    private static int Fill<TEntryComparer, TDirection>(SortingMatch<TInner> match, Span<long> matches)
         where TEntryComparer : struct, IEntryComparer, IComparer<UnmanagedSpan>
         where TDirection : struct, ILookupIterator
     {
@@ -200,17 +195,17 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
                 if (typeof(TDirection) == typeof(RandomDirection))
                 {
                     // Random requires full materialization — no shortcut
-                    SortResultsFromBitmap<TEntryComparer>(ref match);
+                    SortResultsFromBitmap<TEntryComparer>(match);
                 }
                 else if (typeof(TDirection) == typeof(NoIterationOptimization))
                 {
                     // Score/spatial/alphanumeric: no index to walk, must materialize + heap sort
-                    SortResultsFromBitmap<TEntryComparer>(ref match);
+                    SortResultsFromBitmap<TEntryComparer>(match);
                 }
                 else
                 {
                     // Index walk: intersect CompactTree batches with bitmap via AndWith
-                    SortUsingIndexFromBitmap<TEntryComparer, TDirection>(ref match, bitmapMatch);
+                    SortUsingIndexFromBitmap<TEntryComparer, TDirection>(match, bitmapMatch);
                 }
             }
             else
@@ -245,7 +240,7 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
                     return 0;
                 }
 
-                SortResults<TEntryComparer>(ref match, allMatches[..filled]);
+                SortResults<TEntryComparer>(match, allMatches[..filled]);
                 scope.Dispose();
             }
         }
@@ -271,7 +266,7 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
         return 0;
     }
 
-    private static void SortByRandom(ref SortingMatch<TInner> match, Span<long> results)
+    private static void SortByRandom(SortingMatch<TInner> match, Span<long> results)
     {
         var random = new Random(match._orderMetadata.RandomSeed);
         var take = Math.Min(match._take, results.Length);
@@ -295,7 +290,7 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
         private TDirection _termsIt;
         private readonly long _min;
         private readonly long _max;
-        private readonly bool _nullIsSmallest;
+        private readonly bool _nullFirst;
         private readonly bool _isForward;
         private readonly Querying.IndexSearcher _searcher;
         private readonly LowLevelTransaction _llt;
@@ -316,12 +311,12 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
         private long _nullPostingListId;
         private bool _nullPostingListRead;
 
-        public SortedIndexReader(LowLevelTransaction llt, Querying.IndexSearcher searcher, TDirection it, FieldMetadata metadata, long min, long max, bool nullIsSmallest, bool isForward)
+        public SortedIndexReader(LowLevelTransaction llt, Querying.IndexSearcher searcher, TDirection it, FieldMetadata metadata, long min, long max, bool nullFirst, bool isForward)
         {
             _termsIt = it;
             _min = min;
             _max = max;
-            _nullIsSmallest = nullIsSmallest;
+            _nullFirst = nullFirst;
             _isForward = isForward;
             _termsIt.Reset();
             _llt = llt;
@@ -410,7 +405,7 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
             _bufferIdx = 0;
             _bufferCount = 0;
             
-            bool nullsFirst = _isForward ? _nullIsSmallest : !_nullIsSmallest;
+            bool nullsFirst = _isForward ? _nullFirst : !_nullFirst;
             var buffer = new Span<long>(_itBuffer, BufferSize);
             if (nullsFirst)
                 LoadNonExistingAndNullIntoBuffer(buffer);
@@ -496,7 +491,7 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
         }
     }
 
-    private static void SortUsingIndex<TEntryComparer, TDirection>(ref SortingMatch<TInner> match, Span<long> allMatches)
+    private static void SortUsingIndex<TEntryComparer, TDirection>(SortingMatch<TInner> match, Span<long> allMatches)
         where TDirection : struct, ILookupIterator
         where TEntryComparer : struct,  IEntryComparer, IComparer<UnmanagedSpan>
     {
@@ -512,7 +507,7 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
         Span<long> sortedIdBuffer = new(bs.Ptr, SortingMatch.SortBatchSize);
 
         var totalRead = 0;
-        var reader = GetReader(ref match, allMatches[0], allMatches[^1]);
+        var reader = GetReader(match, allMatches[0], allMatches[^1]);
         var forceUsingOnlyIndex = match._searcher._testingConfiguration is { ForceSortingUsingIndex: true };
         while (match._results.Count < maxResults)
         {
@@ -529,7 +524,7 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
                     // if we scanned through the index more than twice the amount of records of the query, but still
                     // didn't find enough to fill the page size, we'll fall back to normal sorting, instead of using the
                     // index method. That would prevent degenerate cases.
-                    SortResults<TEntryComparer>(ref match, allMatches[..notMatchedYet]);
+                    SortResults<TEntryComparer>(match, allMatches[..notMatchedYet]);
                 }
 
                 return;
@@ -574,27 +569,27 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
         indexesScope.Dispose();
         
         
-        SortedIndexReader<TDirection> GetReader(ref SortingMatch<TInner> match, long min, long max)
+        SortedIndexReader<TDirection> GetReader(SortingMatch<TInner> match, long min, long max)
         {
             if (typeof(TDirection) == typeof(Lookup<CompactTree.CompactKeyLookup>.ForwardIterator) ||
                 typeof(TDirection) == typeof(Lookup<CompactTree.CompactKeyLookup>.BackwardIterator))
             {
-                var termsTree = match._searcher.GetTermsFor(entryCmp.GetSortFieldName(ref match));
-                return new SortedIndexReader<TDirection>(llt, match._searcher, termsTree.IterateValues<TDirection>(), match._orderMetadata.Field, min, max, match.NullIsSmallest, match._orderMetadata.Ascending);
+                var termsTree = match._searcher.GetTermsFor(entryCmp.GetSortFieldName(match));
+                return new SortedIndexReader<TDirection>(llt, match._searcher, termsTree.IterateValues<TDirection>(), match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending);
             }
 
             if (typeof(TDirection) == typeof(Lookup<Int64LookupKey>.ForwardIterator) ||
                 typeof(TDirection) == typeof(Lookup<Int64LookupKey>.BackwardIterator))
             {
-                var termsTree = match._searcher.GetLongTermsFor(entryCmp.GetSortFieldName(ref match));
-                return new SortedIndexReader<TDirection>(llt, match._searcher, termsTree.Iterate<TDirection>(), match._orderMetadata.Field, min, max, match.NullIsSmallest, match._orderMetadata.Ascending);
+                var termsTree = match._searcher.GetLongTermsFor(entryCmp.GetSortFieldName(match));
+                return new SortedIndexReader<TDirection>(llt, match._searcher, termsTree.Iterate<TDirection>(), match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending);
             }
 
             if (typeof(TDirection) == typeof(Lookup<DoubleLookupKey>.ForwardIterator) ||
                 typeof(TDirection) == typeof(Lookup<DoubleLookupKey>.BackwardIterator))
             {
-                var termsTree = match._searcher.GetDoubleTermsFor(entryCmp.GetSortFieldName(ref match));
-                return new SortedIndexReader<TDirection>(llt, match._searcher, termsTree.Iterate<TDirection>(), match._orderMetadata.Field, min, max, match.NullIsSmallest, match._orderMetadata.Ascending);
+                var termsTree = match._searcher.GetDoubleTermsFor(entryCmp.GetSortFieldName(match));
+                return new SortedIndexReader<TDirection>(llt, match._searcher, termsTree.Iterate<TDirection>(), match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending);
             }
 
             throw new NotSupportedException(typeof(TDirection).FullName);
@@ -620,7 +615,7 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
     /// Avoids the MemoizationMatch full materialization that SortUsingIndex requires.
     /// </summary>
     private static void SortUsingIndexFromBitmap<TEntryComparer, TDirection>(
-        ref SortingMatch<TInner> match, Corax.Querying.Matches.Meta.IBitmapQueryMatch bitmapMatch)
+        SortingMatch<TInner> match, Corax.Querying.Matches.Meta.IBitmapQueryMatch bitmapMatch)
         where TDirection : struct, ILookupIterator
         where TEntryComparer : struct, IEntryComparer, IComparer<UnmanagedSpan>
     {
@@ -633,7 +628,7 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
         var sortedIdsScope = allocator.Allocate(sizeof(long) * SortingMatch.SortBatchSize, out ByteString bs);
         Span<long> sortedIdBuffer = new(bs.Ptr, SortingMatch.SortBatchSize);
 
-        var reader = GetReader(ref match, entryCmp, bitmapMatch.MinEntryId, bitmapMatch.MaxEntryId);
+        var reader = GetReader(match, entryCmp, bitmapMatch.MinEntryId, bitmapMatch.MaxEntryId);
 
         while (match._results.Count < maxResults)
         {
@@ -654,26 +649,26 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
         reader.Dispose();
         sortedIdsScope.Dispose();
 
-        SortedIndexReader<TDirection> GetReader(ref SortingMatch<TInner> match, TEntryComparer entryCmp, long min, long max)
+        SortedIndexReader<TDirection> GetReader(SortingMatch<TInner> match, TEntryComparer entryCmp, long min, long max)
         {
             if (typeof(TDirection) == typeof(Lookup<CompactTree.CompactKeyLookup>.ForwardIterator) ||
                 typeof(TDirection) == typeof(Lookup<CompactTree.CompactKeyLookup>.BackwardIterator))
             {
-                var termsTree = match._searcher.GetTermsFor(entryCmp.GetSortFieldName(ref match));
+                var termsTree = match._searcher.GetTermsFor(entryCmp.GetSortFieldName(match));
                 return new SortedIndexReader<TDirection>(llt, match._searcher, termsTree.IterateValues<TDirection>(), match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending);
             }
 
             if (typeof(TDirection) == typeof(Lookup<Int64LookupKey>.ForwardIterator) ||
                 typeof(TDirection) == typeof(Lookup<Int64LookupKey>.BackwardIterator))
             {
-                var termsTree = match._searcher.GetLongTermsFor(entryCmp.GetSortFieldName(ref match));
+                var termsTree = match._searcher.GetLongTermsFor(entryCmp.GetSortFieldName(match));
                 return new SortedIndexReader<TDirection>(llt, match._searcher, termsTree.Iterate<TDirection>(), match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending);
             }
 
             if (typeof(TDirection) == typeof(Lookup<DoubleLookupKey>.ForwardIterator) ||
                 typeof(TDirection) == typeof(Lookup<DoubleLookupKey>.BackwardIterator))
             {
-                var termsTree = match._searcher.GetDoubleTermsFor(entryCmp.GetSortFieldName(ref match));
+                var termsTree = match._searcher.GetDoubleTermsFor(entryCmp.GetSortFieldName(match));
                 return new SortedIndexReader<TDirection>(llt, match._searcher, termsTree.Iterate<TDirection>(), match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending);
             }
 
@@ -685,7 +680,7 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
     /// For sort types without an index to walk (score, spatial, alphanumeric, random),
     /// materialize all bitmap entries directly (without MemoizationMatch overhead) and heap sort.
     /// </summary>
-    private static void SortResultsFromBitmap<TEntryComparer>(ref SortingMatch<TInner> match)
+    private static void SortResultsFromBitmap<TEntryComparer>(SortingMatch<TInner> match)
         where TEntryComparer : struct, IEntryComparer, IComparer<UnmanagedSpan>
     {
         var allocator = match._searcher.Allocator;
@@ -705,7 +700,7 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
             return;
         }
 
-        SortResults<TEntryComparer>(ref match, allMatches[..filled]);
+        SortResults<TEntryComparer>(match, allMatches[..filled]);
 
         scope.Dispose();
     }
@@ -739,7 +734,7 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
         return l;
     }
     
-    private static void SortResults<TEntryComparer>(ref SortingMatch<TInner> match, Span<long> batchResults) 
+    private static void SortResults<TEntryComparer>(SortingMatch<TInner> match, Span<long> batchResults) 
         where TEntryComparer : struct,  IEntryComparer, IComparer<UnmanagedSpan>
     {
         var llt = match._searcher.Transaction.LowLevelTransaction;
@@ -757,15 +752,15 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
 
         // Initialize the important infrastructure for the sorting.
         TEntryComparer entryComparer = new();
-        entryComparer.Init(ref match);
+        entryComparer.Init(match);
         
-        entryComparer.SortBatch(ref match, llt, llt.PageLocator, batchResults, batchTermIds, termsPtr);
+        entryComparer.SortBatch(match, llt, llt.PageLocator, batchResults, batchTermIds, termsPtr);
 
         bufScope.Dispose();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal void SetSortingDataTransfer(in SortingDataTransfer sortingDataTransfer)
+    public override void SetScoreAndDistanceBuffer(in SortingDataTransfer sortingDataTransfer)
     {
         _sortingDataTransfer = sortingDataTransfer;
         if (_sortingDataTransfer.IncludeScores)
@@ -774,29 +769,29 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
             _distancesResults = new(_searcher.Allocator);
     }
 
-    public long Count => _inner.Count;
+    public override long Count => _inner.Count;
 
-    public QueryCountConfidence Confidence => throw new NotSupportedException();
+    public override QueryCountConfidence Confidence => throw new NotSupportedException();
 
-    public bool IsBoosting => _inner.IsBoosting || _orderMetadata.FieldType == MatchCompareFieldType.Score;
+    public override bool IsBoosting => _inner.IsBoosting || _orderMetadata.FieldType == MatchCompareFieldType.Score;
 
-    public int AndWith(Span<long> buffer, int matches)
+    public override int AndWith(Span<long> buffer, int matches)
     {
         throw new NotSupportedException($"{nameof(SortingMatch<TInner>)} does not support the operation of {nameof(AndWith)}.");
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public int Fill(Span<long> matches)
+    public override int Fill(Span<long> matches)
     {
-        return _fillFunc(ref this, matches);
+        return _fillFunc(this, matches);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void Score(Span<long> matches, Span<float> scores, float boostFactor) 
+    public override void Score(Span<long> matches, Span<float> scores, float boostFactor)
     {
     }
 
-    public QueryInspectionNode Inspect()
+    public override QueryInspectionNode Inspect()
     {
         var parameters = new Dictionary<string, string>()
         {
