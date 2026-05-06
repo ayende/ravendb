@@ -1,120 +1,41 @@
-﻿using System;
-using System.Diagnostics;
-using System.Runtime.CompilerServices;
+using System;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Matches.SortingMatches.Meta;
 
-namespace Corax.Querying.Matches.SortingMatches
+namespace Corax.Querying.Matches.SortingMatches;
+
+/// <summary>
+/// Abstract base for single-field sorting matches. Allows callers in
+/// <c>CoraxIndexReadOperation</c> to pattern-match on <c>SortingMatch</c> without knowing
+/// the <c>TInner</c> type parameter, and to read <see cref="TotalResults"/> after sorting.
+///
+/// Architecture note: the original design used a non-generic erasure struct that stored a
+/// <c>delegate*</c> function pointer per operation, routing every <c>Fill</c> call through a
+/// direct (non-virtual) pointer. That avoided vtable dispatch on the hot path at the cost of
+/// considerable boilerplate. The current design uses a plain abstract class: <c>Fill</c> and
+/// the other <c>IQueryMatch</c> members dispatch through the interface vtable when called via
+/// the <c>IQueryMatch queryMatch</c> variable in the read operation. Because the concrete
+/// subclass (<see cref="SortingMatch{TInner}"/>) is <c>sealed</c>, the JIT can devirtualize
+/// those calls at sites where the concrete type is statically known, but not at the
+/// <c>IQueryMatch</c> call site in <c>CoraxIndexReadOperation</c>. The trade-off is simpler
+/// code with one interface dispatch per <c>Fill</c> batch instead of one function-pointer
+/// indirection.
+/// </summary>
+public abstract class SortingMatch : IQueryMatch
 {
-    [DebuggerDisplay("{DebugView,nq}")]
-    public unsafe struct SortingMatch : IQueryMatch
-    {
-        public const int SortBatchSize = 8192;
+    public const int SortBatchSize = 8192;
 
-        private readonly FunctionTable _functionTable;
-        private IQueryMatch _inner;
+    /// <summary>Total number of matching entries (set after the first Fill call).</summary>
+    public long TotalResults;
 
-        private SortingMatch(IQueryMatch match, FunctionTable functionTable)
-        {
-            _inner = match;
-            _functionTable = functionTable;
-        }
-
-        public long TotalResults => _functionTable.TotalResultsFunc(ref this);
-        
-        public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
-        
-        public long Count => throw new NotSupportedException();
-        public SkipSortingResult AttemptToSkipSorting() => _inner.AttemptToSkipSorting();
-
-        public QueryCountConfidence Confidence => throw new NotSupportedException();
-
-        public bool IsBoosting => _inner.IsBoosting;
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public int Fill(Span<long> buffer)
-        {
-            return _functionTable.FillFunc(ref this, buffer);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public int AndWith(Span<long> buffer, int matches)
-        {
-            throw new NotSupportedException($"{nameof(SortingMatch)} does not support the operation of {nameof(AndWith)}.");
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void SetScoreAndDistanceBuffer(in SortingDataTransfer sortingDataTransfer) => _functionTable.SetSortingDataTransfer(ref this, sortingDataTransfer);
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void Score(Span<long> matches, Span<float> scores, float boostFactor)
-        {
-            _inner.Score(matches, scores, boostFactor);
-        }
-
-        internal sealed class FunctionTable
-        {
-            public readonly delegate*<ref SortingMatch, Span<long>, int> FillFunc;
-            public readonly delegate*<ref SortingMatch, long> TotalResultsFunc;
-            public readonly delegate*<ref SortingMatch, in SortingDataTransfer, void> SetSortingDataTransfer;
-
-            public FunctionTable(delegate*<ref SortingMatch, Span<long>, int> fillFunc,
-                delegate*<ref SortingMatch, long> totalResultsFunc,
-                delegate*<ref SortingMatch, in SortingDataTransfer, void> setSortingDataTransferFunc)
-            {
-                FillFunc = fillFunc;
-                TotalResultsFunc = totalResultsFunc;
-                SetSortingDataTransfer = setSortingDataTransferFunc;
-            }
-        }
-
-        private static class StaticFunctionCache<TInner>
-            where TInner : IQueryMatch
-        {
-            public static readonly FunctionTable FunctionTable;
-
-            static StaticFunctionCache()
-            {
-                static long CountFunc(ref SortingMatch match)
-                {
-                    return ((SortingMatch<TInner>)match._inner).TotalResults;
-                }
-                static int FillFunc(ref SortingMatch match, Span<long> matches)
-                {
-                    if (match._inner is SortingMatch<TInner> inner)
-                    {
-                        var result = inner.Fill(matches);
-                        match._inner = inner;
-                        return result;
-                    }
-                    return 0;
-                }
-
-                static void SetScoreBufferFunc(ref SortingMatch match, in SortingDataTransfer sortingDataTransfer)
-                {
-                    if (match._inner is SortingMatch<TInner> inner)
-                    {
-                        inner.SetSortingDataTransfer(sortingDataTransfer);
-                        match._inner = inner;
-                    }
-                }
-
-                FunctionTable = new FunctionTable(&FillFunc, &CountFunc, &SetScoreBufferFunc);
-            }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static SortingMatch Create<TInner>(in SortingMatch<TInner> query)
-            where TInner : IQueryMatch
-        {
-            return new SortingMatch(query, StaticFunctionCache<TInner>.FunctionTable);
-        }
-
-        public QueryInspectionNode Inspect()
-        {
-            return _inner.Inspect();
-        }
-
-        string DebugView => Inspect().ToString();
-    }
+    public abstract bool IsBoosting { get; }
+    public abstract DuplicatesOccurrence DuplicatesOccurrenceStatus { get; }
+    public abstract long Count { get; }
+    public abstract QueryCountConfidence Confidence { get; }
+    public abstract SkipSortingResult AttemptToSkipSorting();
+    public abstract int Fill(Span<long> buffer);
+    public abstract int AndWith(Span<long> buffer, int matches);
+    public abstract void Score(Span<long> matches, Span<float> scores, float boostFactor);
+    public abstract QueryInspectionNode Inspect();
+    public abstract void SetScoreAndDistanceBuffer(in SortingDataTransfer sortingDataTransfer);
 }

@@ -712,11 +712,9 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     {
                         case SortingMatch sm:
                             sm.SetScoreAndDistanceBuffer(sortingData);
-                            queryMatch = sm;
                             break;
                         case SortingMultiMatch smm:
                             smm.SetSortingDataTransfer(sortingData);
-                            queryMatch = smm;
                             break;
                     }
                 }

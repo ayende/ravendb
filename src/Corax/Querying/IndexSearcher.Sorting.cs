@@ -13,7 +13,7 @@ public unsafe partial class IndexSearcher
     public SortingMatch OrderBy<TInner>(in TInner set, OrderMetadata metadata, bool nullFirst, int take = Constants.IndexSearcher.TakeAll, in CancellationToken token = default)
         where TInner : IQueryMatch
     {
-        return SortingMatch.Create(new SortingMatch<TInner>(this,  set, metadata, token, nullFirst, take));
+        return new SortingMatch<TInner>(this, set, metadata, token, nullFirst, take);
     }
     
         
@@ -22,6 +22,6 @@ public unsafe partial class IndexSearcher
         int take = Constants.IndexSearcher.TakeAll, in CancellationToken token = default)
         where TInner : IQueryMatch
     {
-        return SortingMultiMatch.Create(new SortingMultiMatch<TInner>(this,  set, metadata, nullFirst, take, token: token));
+        return new SortingMultiMatch<TInner>(this, set, metadata, nullFirst, take, token: token);
     }
 }
