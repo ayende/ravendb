@@ -1599,5 +1599,120 @@ namespace FastTests.Corax
             public string Id;
             public double Content;
         }
+
+        [RavenFact(RavenTestCategory.Corax)]
+        public void RandomOrderOnBitmapMatchProducesActualRandomOrder()
+        {
+            // Regression: the bitmap path for ORDER BY random() was calling
+            // SortResultsFromBitmap<EntryComparerByTerm>, which sorted by term name instead
+            // of shuffling. ReservoirSampleFromBitmap must be called instead.
+            //
+            // We use BitmapMatch directly (rather than going through RQL / CompiledQueryMatch)
+            // so the test is independent of the QueryILEmitter.
+
+            const int N = 32;
+            var entries = Enumerable.Range(1, N)
+                .Select(i => new IndexSingleEntry { Id = $"entry/{i:D3}", Content = i.ToString() })
+                .ToList();
+
+            using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
+            IndexEntries(bsc, entries, CreateKnownFields(bsc));
+
+            using var searcher = new IndexSearcher(Env, CreateKnownFields(Allocator));
+
+            // Collect all entry IDs from a plain TermQuery that matches all docs.
+            // We use ExistsQuery to get all entry IDs, then build a BitmapMatch from them.
+            var allEntryIds = new List<long>();
+            {
+                Span<long> buf = stackalloc long[256];
+                var exists = searcher.ExistsQuery(searcher.FieldMetadataBuilder("Content", ContentIndex));
+                int r;
+                while ((r = exists.Fill(buf)) > 0)
+                    for (int i = 0; i < r; i++)
+                        allEntryIds.Add(buf[i]);
+            }
+
+            Assert.Equal(N, allEntryIds.Count);
+            var allEntryIdsSorted = allEntryIds.OrderBy(x => x).ToList();
+
+            static List<long> RunOrder(IndexSearcher searcher, List<long> allEntryIds, ByteStringContext allocator, int seed)
+            {
+                // Build a BitmapMatch from the known entry IDs — this implements IBitmapQueryMatch,
+                // which triggers the bitmap-specific code path in SortingMatch.
+                var bitmapMatch = new BitmapMatch(allocator);
+                foreach (long id in allEntryIds)
+                    bitmapMatch.BitmapState.Add(id);
+
+                var orderMeta = new OrderMetadata(seed);
+                var sortMatch = searcher.OrderBy(bitmapMatch, orderMeta, nullFirst: false);
+                var results = new List<long>();
+                Span<long> buf = stackalloc long[256];
+                int r;
+                while ((r = sortMatch.Fill(buf)) > 0)
+                    for (int i = 0; i < r; i++)
+                        results.Add(buf[i]);
+                return results;
+            }
+
+            // Same seed → identical order both times.
+            var run1 = RunOrder(searcher, allEntryIds, Allocator, seed: 42);
+            var run2 = RunOrder(searcher, allEntryIds, Allocator, seed: 42);
+            Assert.Equal(run1, run2);
+
+            // Different seed → different order (with 32 entries this is virtually certain).
+            var run3 = RunOrder(searcher, allEntryIds, Allocator, seed: 99);
+            Assert.NotEqual(run1, run3);
+
+            // Must be a permutation — nothing lost, nothing duplicated.
+            Assert.Equal(allEntryIdsSorted, run1.OrderBy(x => x).ToList());
+
+            // Must NOT be in ascending entry-ID order — that was the bug (term sort behaviour).
+            Assert.NotEqual(allEntryIdsSorted, run1);
+        }
+
+        [RavenFact(RavenTestCategory.Corax)]
+        public void RandomOrderOnBitmapMatchWithTakeSelectsCorrectSubset()
+        {
+            // Verify LIMIT is respected: reservoir sampling must return exactly _take
+            // distinct entries, all from the original set.
+            const int N = 32;
+            const int Take = 7;
+
+            var entries = Enumerable.Range(1, N)
+                .Select(i => new IndexSingleEntry { Id = $"entry/{i:D3}", Content = i.ToString() })
+                .ToList();
+
+            using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
+            IndexEntries(bsc, entries, CreateKnownFields(bsc));
+
+            using var searcher = new IndexSearcher(Env, CreateKnownFields(Allocator));
+
+            var allEntryIds = new HashSet<long>();
+            {
+                Span<long> buf = stackalloc long[256];
+                var exists = searcher.ExistsQuery(searcher.FieldMetadataBuilder("Content", ContentIndex));
+                int r;
+                while ((r = exists.Fill(buf)) > 0)
+                    for (int i = 0; i < r; i++)
+                        allEntryIds.Add(buf[i]);
+            }
+
+            var bitmapMatch = new BitmapMatch(Allocator);
+            foreach (long id in allEntryIds)
+                bitmapMatch.BitmapState.Add(id);
+
+            var orderMeta = new OrderMetadata(7);
+            var sortMatch = searcher.OrderBy(bitmapMatch, orderMeta, nullFirst: false, take: Take);
+            var results = new List<long>();
+            Span<long> buf2 = stackalloc long[256];
+            int read;
+            while ((read = sortMatch.Fill(buf2)) > 0)
+                for (int i = 0; i < read; i++)
+                    results.Add(buf2[i]);
+
+            Assert.Equal(Take, results.Count);
+            Assert.All(results, id => Assert.Contains(id, allEntryIds));
+            Assert.Equal(Take, results.Distinct().Count());
+        }
     }
 }
