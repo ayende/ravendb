@@ -1153,7 +1153,19 @@ internal static class QueryPlanBuilder
                         valueType = ValueTokenType.Double;
                 }
                 else
+                {
+                    // DateTime/DateTimeOffset parameters arrive as LazyStringValue from JSON.
+                    // Detect date strings and convert to ticks so range queries hit the numeric tree.
+                    var str = value.ToString();
+                    if (str != null && str.Length > 18 && str.Length < 35 && str.Contains('T')
+                        && DateTime.TryParse(str, System.Globalization.CultureInfo.InvariantCulture,
+                            System.Globalization.DateTimeStyles.RoundtripKind, out var parsed))
+                    {
+                        valueType = ValueTokenType.Long;
+                        return parsed.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    }
                     valueType = ValueTokenType.String;
+                }
             }
             return value?.ToString();
         }
