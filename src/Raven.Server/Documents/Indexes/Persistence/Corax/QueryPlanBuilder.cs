@@ -1761,7 +1761,7 @@ internal static class QueryPlanBuilder
     }
 
     /// <summary>Extract typed parameter values from clauses for entry scan.
-    /// Called per-query at execution time. The values populate the QueryScanContext spans.</summary>
+    /// Called per-query at execution time. The values populate the CompiledQueryMatch arrays.</summary>
     public static void ExtractScanParameters(QueryPlan plan, IndexSearcher indexSearcher,
         out long[] longParams, out double[] doubleParams, out Voron.Slice[] sliceParams, out long[] fieldRootPages)
     {
