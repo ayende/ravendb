@@ -214,16 +214,7 @@ public struct MultiVectorSearchMatch : IQueryMatch
             return 0;
 
         var results = _matches.Results;
-        int kept = 0;
-        int ri = 0;
-        for (int i = 0; i < matches && ri < results.Length; i++)
-        {
-            while (ri < results.Length && results[ri] < buffer[i])
-                ri++;
-            if (ri < results.Length && results[ri] == buffer[i])
-                buffer[kept++] = buffer[i];
-        }
-        return kept;
+        return MergeHelper.And(buffer[..matches], buffer[..matches], results);
     }
 
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)

@@ -4,7 +4,6 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
-using System.Runtime.Intrinsics.X86;
 using Corax.Querying.Matches.Meta;
 using Corax.Utils;
 using Sparrow;
@@ -431,75 +430,7 @@ namespace Corax.Querying.Matches
 
                         Debug.Assert((ulong)(smallerEndPtr - smallerPtr) <= (ulong)(largerEndPtr - largerPtr));
 
-                        if (applyVectorization)
-                        {
-                            while (true)
-                            {
-                                // TODO: In here we can do SIMD galloping with gather operations. Therefore we will be able to do
-                                //       multiple checks at once and find the right amount of skipping using a table. 
-
-                                // If the value to compare is bigger than the biggest element in the block, we advance the block. 
-                                if ((ulong)*smallerPtr > (ulong)*(largerPtr + N - 1))
-                                {
-                                    if (largerPtr + N >= largerEndPtr)
-                                        break;
-
-                                    largerPtr += N;
-                                    continue;
-                                }
-
-                                // If the value to compare is smaller than the smallest element in the block, we advance the scalar value.
-                                if ((ulong)*smallerPtr < (ulong)*largerPtr)
-                                {
-                                    smallerPtr++;
-                                    if (smallerPtr >= smallerEndPtr)
-                                        break;
-
-                                    continue;
-                                }
-
-                                if (largerEndPtr - largerPtr < N)
-                                    break; // boundary guardian for vector load.
-
-                                Vector256<ulong> value = Vector256.Create((ulong)*smallerPtr);
-                                Vector256<ulong> blockValues = Vector256.Load((ulong*)largerPtr);
-
-                                // We are going to select which direction we are going to be moving forward. 
-                                if (Vector256.EqualsAny(value, blockValues))
-                                {
-                                    // We found the value, therefore we need to store this value in the destination.
-                                    *dstPtr = *smallerPtr;
-                                    dstPtr++;
-                                }
-
-                                smallerPtr++;
-                                if (smallerPtr >= smallerEndPtr)
-                                    break;
-                            }
-                        }
-
-                        // The scalar version. This shouldn't cost much either way. 
-                        while (smallerPtr < smallerEndPtr && largerPtr < largerEndPtr)
-                        {
-                            ulong leftValue = (ulong)*smallerPtr;
-                            ulong rightValue = (ulong)*largerPtr;
-
-                            if (leftValue > rightValue)
-                            {
-                                largerPtr++;
-                            }
-                            else if (leftValue < rightValue)
-                            {
-                                smallerPtr++;
-                            }
-                            else
-                            {
-                                *dstPtr = (long)leftValue;
-                                dstPtr++;
-                                smallerPtr++;
-                                largerPtr++;
-                            }
-                        }
+                        dstPtr += MergeHelper.AndVectorizedBlock(dstPtr, applyVectorization, ref smallerPtr, smallerEndPtr, ref largerPtr, largerEndPtr);
 
                         inputPtr = isSmallerInput ? smallerPtr : largerPtr;
 
