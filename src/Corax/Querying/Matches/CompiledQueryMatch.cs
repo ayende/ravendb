@@ -136,30 +136,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
     public int AndWith(Span<long> buffer, int matches)
     {
         if (!_executed) Execute();
-        int kept = 0;
-        int i = 0;
-        while (i < matches)
-        {
-            long containerKey = buffer[i] >> RoaringBitmap.ContainerKeyShift;
-            int containerSlot = _bitmapData.GetSlotForKey(containerKey);
-
-            if (containerSlot < 0)
-            {
-                long nextContainerStart = (containerKey + 1) << RoaringBitmap.ContainerKeyShift;
-                while (i < matches && buffer[i] < nextContainerStart)
-                    i++;
-                continue;
-            }
-
-            long containerEnd = (containerKey + 1) << RoaringBitmap.ContainerKeyShift;
-            while (i < matches && buffer[i] < containerEnd)
-            {
-                if (_bitmapData.Contains(buffer[i]))
-                    buffer[kept++] = buffer[i];
-                i++;
-            }
-        }
-        return kept;
+        return _bitmapData.AndWithSorted(buffer, matches);
     }
 
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)

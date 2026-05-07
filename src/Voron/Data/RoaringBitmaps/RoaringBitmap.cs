@@ -696,6 +696,120 @@ public unsafe partial struct RoaringBitmap : IDisposable
     }
 
     /// <summary>
+    /// Filter a sorted buffer in-place, keeping only values present in this bitmap.
+    /// Exploits sorted order: looks up each container key once, skips entire missing
+    /// container ranges, and checks membership within a container without per-element
+    /// key lookups.
+    /// </summary>
+    public readonly int AndWithSorted(Span<long> buffer, int count)
+    {
+        int kept = 0;
+        int i = 0;
+        int* idx = _index.RawItems;
+        int idxLen = _index.Count;
+        ContainerEntry* entries = _entries.RawItems;
+        ContainerType* types = _types.RawItems;
+
+        while (i < count)
+        {
+            long containerKey = buffer[i] >> ContainerKeyShift;
+
+            // Fast reject: container key out of range or absent.
+            if (containerKey < 0 || containerKey >= idxLen || idx[containerKey] < 0)
+            {
+                // Skip all entries in this container key.
+                long nextContainerStart = (containerKey + 1) << ContainerKeyShift;
+                // Branchless linear scan for small runs; the common case is a short skip.
+                while (i < count && buffer[i] < nextContainerStart)
+                    i++;
+                continue;
+            }
+
+            int slot = idx[containerKey];
+            ref ContainerEntry entry = ref entries[slot];
+            ContainerType type = types[slot];
+            long containerEnd = (containerKey + 1) << ContainerKeyShift;
+
+            // Process all entries in this container.
+            switch (type)
+            {
+                case ContainerType.Bitmap:
+                {
+                    ulong* bmp = (ulong*)entry.Data;
+                    while (i < count && buffer[i] < containerEnd)
+                    {
+                        ushort low = (ushort)(buffer[i] & ContainerValueMask);
+                        if (BitmapContains(bmp, low))
+                            buffer[kept++] = buffer[i];
+                        i++;
+                    }
+                    break;
+                }
+
+                case ContainerType.Range:
+                {
+                    int rangeStart = entry.RangeStart;
+                    int rangeEnd = rangeStart + entry.Cardinality;
+                    while (i < count && buffer[i] < containerEnd)
+                    {
+                        ushort low = (ushort)(buffer[i] & ContainerValueMask);
+                        if (low >= rangeStart && low < rangeEnd)
+                            buffer[kept++] = buffer[i];
+                        i++;
+                    }
+                    break;
+                }
+
+                case ContainerType.Array:
+                {
+                    // Sorted array — use two-pointer merge.
+                    ushort* arr = entry.ArrayData;
+                    int arrLen = entry.Cardinality;
+                    int ai = 0;
+                    while (i < count && buffer[i] < containerEnd && ai < arrLen)
+                    {
+                        ushort low = (ushort)(buffer[i] & ContainerValueMask);
+                        if (low < arr[ai])
+                            i++;
+                        else if (low > arr[ai])
+                            ai++;
+                        else
+                        {
+                            buffer[kept++] = buffer[i];
+                            i++;
+                            ai++;
+                        }
+                    }
+                    // Skip remaining buffer entries in this container (no more array entries to match).
+                    while (i < count && buffer[i] < containerEnd)
+                        i++;
+                    break;
+                }
+
+                case ContainerType.ArrayUnsorted:
+                {
+                    // Fall back to per-element Contains for unsorted arrays.
+                    while (i < count && buffer[i] < containerEnd)
+                    {
+                        ushort low = (ushort)(buffer[i] & ContainerValueMask);
+                        if (SimdLinearContains(entry.ArrayData, entry.Cardinality, low))
+                            buffer[kept++] = buffer[i];
+                        i++;
+                    }
+                    break;
+                }
+
+                default:
+                    // Free or unknown — skip.
+                    while (i < count && buffer[i] < containerEnd)
+                        i++;
+                    break;
+            }
+        }
+        return kept;
+    }
+
+    /// <summary>
     /// Return the value of the nth set bit (0-based rank). Walks containers in key
     /// order, subtracting each container's cardinality from <paramref name="rank"/>
     /// until the target container is found, then resolves within that container.

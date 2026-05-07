@@ -64,13 +64,7 @@ public struct BitmapMatch(ByteStringContext allocator) : IBitmapQueryMatch, IDis
 
     public int AndWith(Span<long> buffer, int matches)
     {
-        int kept = 0;
-        for (int i = 0; i < matches; i++)
-        {
-            if (_bitmapState.Contains(buffer[i]))
-                buffer[kept++] = buffer[i];
-        }
-        return kept;
+        return _bitmapState.AndWithSorted(buffer, matches);
     }
 
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)
