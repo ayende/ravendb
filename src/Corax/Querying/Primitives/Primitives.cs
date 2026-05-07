@@ -527,6 +527,44 @@ public static class QueryPrimitives
         }
     }
 
+    /// <summary>AND the bitmap with the union of all posting lists produced by the term provider.
+    /// Fills a scratch bitmap from the provider, then ANDs the result bitmap with it.
+    /// If the provider produces no matches, the bitmap is cleared.</summary>
+    public static void AndBitmapWithTermProvider(
+        ITermProvider provider,
+        LowLevelTransaction llt,
+        ref RoaringBitmap bitmap,
+        ref RoaringBitmap tempBitmap)
+    {
+        if (bitmap.IsEmpty)
+            return;
+        tempBitmap.Clear();
+        FillBitmapFromTermProvider(provider, llt, ref tempBitmap);
+        if (tempBitmap.IsEmpty)
+        {
+            bitmap.Clear();
+            return;
+        }
+        bitmap.AndWith(ref tempBitmap);
+    }
+
+    /// <summary>ANDNOT the bitmap with the union of all posting lists produced by the term provider
+    /// (subtract matching entries). If the provider produces no matches, the bitmap is unchanged.</summary>
+    public static void AndNotBitmapWithTermProvider(
+        ITermProvider provider,
+        LowLevelTransaction llt,
+        ref RoaringBitmap bitmap,
+        ref RoaringBitmap tempBitmap)
+    {
+        if (bitmap.IsEmpty)
+            return;
+        tempBitmap.Clear();
+        FillBitmapFromTermProvider(provider, llt, ref tempBitmap);
+        if (tempBitmap.IsEmpty)
+            return; // subtracting nothing is a no-op
+        bitmap.AndNotWith(ref tempBitmap);
+    }
+
     /// <summary>
     /// Sort the entry buffer and add the sorted range to the bitmap.
     /// Entries from different posting lists are not guaranteed to be sorted,

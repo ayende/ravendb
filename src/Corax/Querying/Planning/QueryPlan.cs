@@ -27,6 +27,26 @@ public enum PlanOpKind : byte
     SwapBitmaps,
 }
 
+/// <summary>Selects the execution-time source array for term ops in a <see cref="PlanOp"/>.</summary>
+public enum MatchDispatch : byte
+{
+    /// <summary>Use <c>ctx.DirectSources[ParamIndex]</c> — IQueryMatch interface dispatch.
+    /// Used for vector, spatial, search, boosted, and any clause the planner cannot
+    /// express as a TermSource or TermProvider.</summary>
+    DirectSource,
+
+    /// <summary>Use <c>ctx.TermSources[ParamIndex]</c> — native posting-list dispatch.
+    /// Single value / SmallPostingList / PostingList.Iterator resolved at plan-compile time.
+    /// Used for Equals and NotEquals clauses.</summary>
+    TermSource,
+
+    /// <summary>Use <c>ctx.TermProviders[ParamIndex]</c> — multi-term bitmap fill.
+    /// The ITermProvider iterates the CompactTree at execution time, decoding each
+    /// matching posting list directly into the bitmap without an intermediate flat buffer.
+    /// Used for StartsWith / EndsWith / Contains / Exists / Regex / range clauses.</summary>
+    TermProvider,
+}
+
 public struct PlanOp
 {
     public PlanOpKind Kind;
@@ -36,14 +56,17 @@ public struct PlanOp
     public int BitmapLocal;
     public long EstimatedCardinality;
 
-    /// <summary>When true and the op is a term op (Fill/And/Or/AndNot WithPostings),
-    /// <see cref="ParamIndex"/> indexes <see cref="QueryScanContext.TermSources"/>
-    /// (native posting-list dispatch — single value / small posting list /
-    /// PostingList.Iterator). When false it indexes
-    /// <see cref="QueryScanContext.DirectSources"/> and goes through the
-    /// IQueryMatch wrapper. Vector / spatial / multi-term clauses always stay on
-    /// the IQueryMatch path.</summary>
-    public bool UseTermSource;
+    /// <summary>Controls how <see cref="ParamIndex"/> is resolved at execution time
+    /// for term ops (Fill/And/Or/AndNot WithPostings):
+    /// <list type="bullet">
+    /// <item><see cref="MatchDispatch.DirectSource"/> — <c>ctx.DirectSources[ParamIndex]</c>
+    ///   (IQueryMatch interface dispatch; vector, spatial, search, boosted clauses).</item>
+    /// <item><see cref="MatchDispatch.TermSource"/> — <c>ctx.TermSources[ParamIndex]</c>
+    ///   (native posting-list dispatch; Equals / NotEquals / In / AllIn).</item>
+    /// <item><see cref="MatchDispatch.TermProvider"/> — <c>ctx.TermProviders[ParamIndex]</c>
+    ///   (multi-term bitmap fill; StartsWith / EndsWith / Contains / Exists / Regex / ranges).</item>
+    /// </list></summary>
+    public MatchDispatch Dispatch;
 
     /// <summary>When true, suppress the empty-check early exit after
     /// <see cref="PlanOpKind.AndWithPostings"/>. Used for AND sub-chains inside

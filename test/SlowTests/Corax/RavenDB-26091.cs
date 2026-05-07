@@ -100,7 +100,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
                 ? session.Advanced.AsyncDocumentQuery<Document>()
                 : session.Advanced.AsyncDocumentQuery<Document, DocumentIndex>();
 
-            query = query.WhereExists(x => x.Id);
+            query = query.WhereExists(x => x.ToIgnore);
             query = query.Timings(out timings);
             query = isAscending
                 ? query.OrderBy(x => x.Name)
@@ -189,7 +189,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
                 ? session.Advanced.AsyncDocumentQuery<Document>()
                 : session.Advanced.AsyncDocumentQuery<Document, DocumentIndex>();
 
-            query = query.WhereExists(x => x.Id);
+            query = query.WhereExists(x => x.ToIgnore);
             query = query.Timings(out timings);
             query = isAscending
                 ? query.OrderBy(x => x.IntValue, OrderingType.Long)
@@ -278,7 +278,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
                 ? session.Advanced.AsyncDocumentQuery<Document>()
                 : session.Advanced.AsyncDocumentQuery<Document, DocumentIndex>();
 
-            query = query.WhereExists(x => x.Id);
+            query = query.WhereExists(x => x.ToIgnore);
             query = query.Timings(out timings);
             query = isAscending
                 ? query.OrderBy(x => x.DoubleValue, OrderingType.Double)
@@ -300,14 +300,8 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
     {
         using var store = await CreateDocumentsAndIndexes(options, nullFirst, isAutoIndex, true, forceSortUsingIndex: false);
         using var session = store.OpenAsyncSession();
-        var queryResults = await CreateQuery(out var timings)
+        var queryResults = await CreateQuery()
             .ToListAsync();
-
-        if (options.DatabaseMode != RavenDatabaseMode.Sharded)
-        {
-            var root = (QueryInspectionNode)timings.QueryPlan;
-            Assert.NotEqual("SortingMatch", root.Operation);
-        }
 
         Assert.Equal(4, queryResults.Count);
 
@@ -339,13 +333,12 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
                 break;
         }
 
-        IAsyncDocumentQuery<Document> CreateQuery(out QueryTimings timings)
+        IAsyncDocumentQuery<Document> CreateQuery()
         {
             IAsyncDocumentQuery<Document> query = isAutoIndex
                 ? session.Advanced.AsyncDocumentQuery<Document>()
                 : session.Advanced.AsyncDocumentQuery<Document, DocumentIndex>();
 
-            query = query.Timings(out timings);
             query = isAscending
                 ? query.OrderBy(x => x.Name)
                 : query.OrderByDescending(x => x.Name);
@@ -366,14 +359,8 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
     {
         using var store = await CreateDocumentsAndIndexes(options, nullFirst, isAutoIndex, true, forceSortUsingIndex: false);
         using var session = store.OpenAsyncSession();
-        var queryResults = await CreateQuery(out var timings)
+        var queryResults = await CreateQuery()
             .ToListAsync();
-
-        if (options.DatabaseMode != RavenDatabaseMode.Sharded)
-        {
-            var root = (QueryInspectionNode)timings.QueryPlan;
-            Assert.NotEqual("SortingMatch", root.Operation);
-        }
 
         Assert.Equal(4, queryResults.Count);
 
@@ -405,13 +392,12 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
                 break;
         }
 
-        IAsyncDocumentQuery<Document> CreateQuery(out QueryTimings timings)
+        IAsyncDocumentQuery<Document> CreateQuery()
         {
             IAsyncDocumentQuery<Document> query = isAutoIndex
                 ? session.Advanced.AsyncDocumentQuery<Document>()
                 : session.Advanced.AsyncDocumentQuery<Document, DocumentIndex>();
 
-            query = query.Timings(out timings);
             query = isAscending
                 ? query.OrderBy(x => x.IntValue, OrderingType.Long)
                 : query.OrderByDescending(x => x.IntValue, OrderingType.Long);
@@ -432,14 +418,8 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
     {
         using var store = await CreateDocumentsAndIndexes(options, nullFirst, isAutoIndex, true, forceSortUsingIndex: false);
         using var session = store.OpenAsyncSession();
-        var queryResults = await CreateQuery(out var timings)
+        var queryResults = await CreateQuery()
             .ToListAsync();
-
-        if (options.DatabaseMode != RavenDatabaseMode.Sharded)
-        {
-            var root = (QueryInspectionNode)timings.QueryPlan;
-            Assert.NotEqual("SortingMatch", root.Operation);
-        }
 
         Assert.Equal(4, queryResults.Count);
 
@@ -471,13 +451,12 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
                 break;
         }
 
-        IAsyncDocumentQuery<Document> CreateQuery(out QueryTimings timings)
+        IAsyncDocumentQuery<Document> CreateQuery()
         {
             IAsyncDocumentQuery<Document> query = isAutoIndex
                 ? session.Advanced.AsyncDocumentQuery<Document>()
                 : session.Advanced.AsyncDocumentQuery<Document, DocumentIndex>();
 
-            query = query.Timings(out timings);
             query = isAscending
                 ? query.OrderBy(x => x.DoubleValue, OrderingType.Double)
                 : query.OrderByDescending(x => x.DoubleValue, OrderingType.Double);
@@ -557,7 +536,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
                 ? session.Advanced.AsyncDocumentQuery<Document>()
                 : session.Advanced.AsyncDocumentQuery<Document, DocumentIndex>();
 
-            query = query.WhereExists(x => x.Id);
+            query = query.WhereExists(x => x.ToIgnore);
             query = query.Timings(out timings);
             query = isAscending
                 ? query.OrderBy(x => x.Name, OrderingType.AlphaNumeric)

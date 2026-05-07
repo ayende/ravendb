@@ -20,11 +20,11 @@ public ref struct QueryScanContext
     public IndexSearcher Searcher;
 
     /// <summary>Direct sources — matches that produce entry IDs via Fill().
-    /// TermMatch, MultiTermMatch, AllEntriesMatch, SpatialMatch, VectorSearchMatch.</summary>
+    /// TermMatch, TermProviderMatch, AllEntriesMatch, SpatialMatch, VectorSearchMatch.</summary>
     public Span<IQueryMatch> DirectSources;
 
     /// <summary>Native posting-list sources for term ops. Indexed by
-    /// <see cref="PlanOp.ParamIndex"/> when <see cref="PlanOp.UseTermSource"/> is set.
+    /// <see cref="PlanOp.ParamIndex"/> when <see cref="PlanOp.Dispatch"/> is TermSource.
     /// Each TermSource holds a Single entry id, SmallPostingList container id, or
     /// PostingList.Iterator — passed to FillBitmapFromTermSource /
     /// AndWithTermSource / AndNotWithTermSource directly, bypassing the IQueryMatch
@@ -36,10 +36,11 @@ public ref struct QueryScanContext
     /// re-fetch it per op.</summary>
     public LowLevelTransaction Llt;
 
-    /// <summary>Term providers — iterate CompactTree terms, each yielding a posting list.
-    /// The emitted IL iterates providers in a batch loop, OR-ing each term's
-    /// posting list directly into the bitmap. Reserved for future use when
-    /// MultiTermMatch internals are refactored.</summary>
+    /// <summary>Term providers for multi-term ops. Indexed by <see cref="PlanOp.ParamIndex"/>
+    /// when <see cref="PlanOp.Dispatch"/> is TermProvider.
+    /// The emitted IL calls FillBitmapFromTermProvider / AndBitmapWithTermProvider /
+    /// AndNotBitmapWithTermProvider, which iterate the CompactTree and decode each
+    /// matching posting list directly into the bitmap.</summary>
     public Span<ITermProvider> TermProviders;
 
     /// <summary>Pre-resolved field root pages for entry scan predicates.</summary>

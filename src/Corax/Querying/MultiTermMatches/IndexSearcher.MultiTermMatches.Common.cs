@@ -14,13 +14,13 @@ namespace Corax.Querying;
 
 public partial class IndexSearcher
 {
-    private MultiTermMatch MultiTermMatchBuilder<TTermProvider>(in FieldMetadata field, Slice term, bool streamingEnabled = false, bool validatePostfixLen = false, in CancellationToken token = default)
+    private IQueryMatch TermProviderMatchBuilder<TTermProvider>(in FieldMetadata field, Slice term, bool streamingEnabled = false, bool validatePostfixLen = false, in CancellationToken token = default)
         where TTermProvider : struct, ITermProvider
     {
         var terms = _fieldsTree?.CompactTreeFor(field.FieldName);
         if (terms == null)
-            return MultiTermMatch.CreateEmpty(_transaction.Allocator);
-        
+            return TermMatch.CreateEmpty(this, _transaction.Allocator);
+
         CompactKey termKey;
         if (term.Size != 0)
         {
@@ -32,7 +32,7 @@ public partial class IndexSearcher
         {
             termKey = null;
         }
-        
+
         CompactKey seekKey = null;
         if (TryRewriteTermWhenPerformingBackwardStreaming<TTermProvider>(streamingEnabled, term, out var seekTerm))
         {
@@ -40,17 +40,17 @@ public partial class IndexSearcher
             seekKey.Set(seekTerm.AsReadOnlySpan());
             seekKey.ChangeDictionary(terms.DictionaryId);
         }
-        
-        return MultiTermMatch.Create(new MultiTermMatch<TTermProvider>(this, field, _transaction.Allocator, 
-            GetMultiTermMatchProvider<TTermProvider>(field, terms, termKey, seekKey, validatePostfixLen, token), streamingEnabled: streamingEnabled, token: token));
+
+        ITermProvider provider = GetMultiTermMatchProvider<TTermProvider>(field, terms, termKey, seekKey, validatePostfixLen, token);
+        return new TermProviderMatch(provider, _transaction.LowLevelTransaction, _transaction.Allocator);
     }
 
-    private MultiTermMatch MultiTermMatchBuilder<TTermProvider>(in FieldMetadata field, string term, bool streamingEnabled, CancellationToken token)
+    private IQueryMatch TermProviderMatchBuilder<TTermProvider>(in FieldMetadata field, string term, bool streamingEnabled, CancellationToken token)
         where TTermProvider : struct, ITermProvider
     {
         var terms = _fieldsTree?.CompactTreeFor(field.FieldName);
         if (terms == null)
-            return MultiTermMatch.CreateEmpty(_transaction.Allocator);
+            return TermMatch.CreateEmpty(this, _transaction.Allocator);
 
         var slicedTerm = EncodeAndApplyAnalyzer(field, term);
         var termKey = _fieldsTree.Llt.AcquireCompactKey();
@@ -63,9 +63,8 @@ public partial class IndexSearcher
             seekKey.Set(seekTerm.AsReadOnlySpan());
         }
 
-        return MultiTermMatch.Create(new MultiTermMatch<TTermProvider>(this, field, _transaction.Allocator, 
-            GetMultiTermMatchProvider<TTermProvider>(field, terms, termKey, seekKey,  validatePostfixLen: false, token: token), 
-            streamingEnabled, token: token));
+        ITermProvider provider = GetMultiTermMatchProvider<TTermProvider>(field, terms, termKey, seekKey, validatePostfixLen: false, token: token);
+        return new TermProviderMatch(provider, _transaction.LowLevelTransaction, _transaction.Allocator);
     }
 
     private bool TryRewriteTermWhenPerformingBackwardStreaming<TTermProvider>(bool streamingEnabled, Slice termSlice, out Slice termForSeek)
@@ -125,45 +124,45 @@ public partial class IndexSearcher
     {
         if (typeof(TTermProvider) == typeof(StartsWithTermProvider<Lookup<CompactKeyLookup>.ForwardIterator>))
             return (TTermProvider)(object)new StartsWithTermProvider<Lookup<CompactKeyLookup>.ForwardIterator>(this, termTree, field, term, seekTerm, validatePostfixLen, token);
-        
+
         if (typeof(TTermProvider) == typeof(StartsWithTermProvider<Lookup<CompactKeyLookup>.BackwardIterator>))
             return (TTermProvider)(object)new StartsWithTermProvider<Lookup<CompactKeyLookup>.BackwardIterator>(this, termTree, field, term, seekTerm, validatePostfixLen, token);
-        
+
         if (typeof(TTermProvider) == typeof(NotStartsWithTermProvider<Lookup<CompactKeyLookup>.ForwardIterator>))
             return (TTermProvider)(object)new NotStartsWithTermProvider<Lookup<CompactKeyLookup>.ForwardIterator>(this, termTree, field, term, validatePostfixLen, token);
-        
+
         if (typeof(TTermProvider) == typeof(NotStartsWithTermProvider<Lookup<CompactKeyLookup>.BackwardIterator>))
             return (TTermProvider)(object)new NotStartsWithTermProvider<Lookup<CompactKeyLookup>.BackwardIterator>(this, termTree, field, term, validatePostfixLen, token);
-        
+
         Debug.Assert(validatePostfixLen == false, "Not supported for the rest of this");
-        
+
         if (typeof(TTermProvider) == typeof(EndsWithTermProvider<Lookup<CompactKeyLookup>.ForwardIterator>))
             return (TTermProvider)(object)new EndsWithTermProvider<Lookup<CompactKeyLookup>.ForwardIterator>(this, termTree, field, term);
-        
+
         if (typeof(TTermProvider) == typeof(EndsWithTermProvider<Lookup<CompactKeyLookup>.BackwardIterator>))
             return (TTermProvider)(object)new EndsWithTermProvider<Lookup<CompactKeyLookup>.BackwardIterator>(this, termTree, field, term);
-        
+
         if (typeof(TTermProvider) == typeof(NotEndsWithTermProvider<Lookup<CompactKeyLookup>.ForwardIterator>))
             return (TTermProvider)(object)new NotEndsWithTermProvider<Lookup<CompactKeyLookup>.ForwardIterator>(this, termTree, field, term);
-        
+
         if (typeof(TTermProvider) == typeof(NotEndsWithTermProvider<Lookup<CompactKeyLookup>.BackwardIterator>))
             return (TTermProvider)(object)new NotEndsWithTermProvider<Lookup<CompactKeyLookup>.BackwardIterator>(this, termTree, field, term);
-        
+
         if (typeof(TTermProvider) == typeof(ContainsTermProvider<Lookup<CompactKeyLookup>.ForwardIterator>))
             return (TTermProvider)(object)new ContainsTermProvider<Lookup<CompactKeyLookup>.ForwardIterator>(this, termTree, field, term);
-        
+
         if (typeof(TTermProvider) == typeof(ContainsTermProvider<Lookup<CompactKeyLookup>.BackwardIterator>))
             return (TTermProvider)(object)new ContainsTermProvider<Lookup<CompactKeyLookup>.BackwardIterator>(this, termTree, field, term);
-        
+
         if (typeof(TTermProvider) == typeof(NotContainsTermProvider<Lookup<CompactKeyLookup>.ForwardIterator>))
             return (TTermProvider)(object)new NotContainsTermProvider<Lookup<CompactKeyLookup>.ForwardIterator>(this, termTree, field, term);
-        
+
         if (typeof(TTermProvider) == typeof(NotContainsTermProvider<Lookup<CompactKeyLookup>.BackwardIterator>))
             return (TTermProvider)(object)new NotContainsTermProvider<Lookup<CompactKeyLookup>.BackwardIterator>(this, termTree, field, term);
-        
+
         if (typeof(TTermProvider) == typeof(ExistsTermProvider<Lookup<CompactKeyLookup>.ForwardIterator>))
             return (TTermProvider)(object)new ExistsTermProvider<Lookup<CompactKeyLookup>.ForwardIterator>(this, termTree, field);
-        
+
         if (typeof(TTermProvider) == typeof(ExistsTermProvider<Lookup<CompactKeyLookup>.BackwardIterator>))
             return (TTermProvider)(object)new ExistsTermProvider<Lookup<CompactKeyLookup>.BackwardIterator>(this, termTree, field);
 
