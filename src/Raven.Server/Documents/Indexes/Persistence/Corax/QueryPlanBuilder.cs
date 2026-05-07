@@ -1416,7 +1416,7 @@ internal static class QueryPlanBuilder
             }
             ops.Add(new PlanOp { Kind = PlanOpKind.IterateInto });
         }
-        else if (clauses.Count == 1 && clauses[0].ClauseType == ClauseType.Equals)
+        else if (clauses.Count == 1 && clauses[0].ClauseType == ClauseType.Equals && clauses[0].IsNegated == false)
         {
             ops.Add(new PlanOp
             {
@@ -1425,7 +1425,8 @@ internal static class QueryPlanBuilder
                 EstimatedCardinality = clauses[0].Cardinality
             });
         }
-        else if (clauses.Count == 1 && clauses[0].ClauseType == ClauseType.NotEquals)
+        else if (clauses.Count == 1 && (clauses[0].ClauseType == ClauseType.NotEquals
+            || (clauses[0].ClauseType == ClauseType.Equals && clauses[0].IsNegated)))
         {
             ops.Add(new PlanOp
             {
