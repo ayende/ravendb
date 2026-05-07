@@ -172,7 +172,7 @@ public static class QueryPrimitives
     {
         if (match is IBitmapQueryMatch bm)
         {
-            ref RoaringBitmap srcData = ref bm.GetBitmapData();
+            ref RoaringBitmap srcData = ref bm.BitmapState;
             if (srcData.IsEmpty)
                 return;
             bitmap.OrWith(ref srcData);
@@ -204,7 +204,7 @@ public static class QueryPrimitives
     {
         if (match is IBitmapQueryMatch bm)
         {
-            ref RoaringBitmap srcData = ref bm.GetBitmapData();
+            ref RoaringBitmap srcData = ref bm.BitmapState;
             bitmap.AndWith(ref srcData);
             return;
         }
@@ -227,7 +227,7 @@ public static class QueryPrimitives
     {
         if (match is IBitmapQueryMatch bm)
         {
-            ref RoaringBitmap srcData = ref bm.GetBitmapData();
+            ref RoaringBitmap srcData = ref bm.BitmapState;
             bitmap.AndNotWith(ref srcData);
             return;
         }
