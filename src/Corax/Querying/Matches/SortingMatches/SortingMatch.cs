@@ -173,7 +173,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
                 // Non-bitmap path (PostFilterMatch, VectorSearchMatch, etc.)
                 // Materialize all results by calling Fill repeatedly.
                 var count = match._inner.Count;
-                int bufferSize = count > 0 && count < 1024 * 1024 ? (int)count : 4096;
+                int bufferSize = count is > 0 and < 1024 * 1024 ? (int)count : 4096;
                 var scope = match._searcher.Allocator.Allocate(bufferSize * sizeof(long), out var bs);
                 var allMatches = new Span<long>(bs.Ptr, bufferSize);
                 int filled = 0;
@@ -239,7 +239,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
             int read;
             while ((read = bitmapMatch.Fill(page)) > 0)
                 for (int i = 0; i < read; i++)
-                    match._results.Add(page[i]);
+                    match._results.Add(page[i]); 
 
             // Fisher-Yates: swap from the end backward so every permutation is equiprobable.
             for (int i = match._results.Count - 1; i > 0; i--)
@@ -273,24 +273,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
             }
         }
     }
-
-    private static void SortByRandom(SortingMatch<TInner> match, Span<long> results)
-    {
-        var random = new Random(match._orderMetadata.RandomSeed);
-        // take < 0 means "no limit" — shuffle all results.
-        var take = match._take < 0 ? results.Length : Math.Min(match._take, results.Length);
-        while (match._results.Count < take)
-        {
-            int index = random.Next(match._results.Count, results.Length);
-            // Fisher-Yates partial shuffle: grow the selected prefix one entry at a time.
-            var replaced = results[match._results.Count];
-            var selected = results[index];
-            results[match._results.Count] = selected;
-            results[index] = replaced;
-            match._results.Add(selected);
-        }
-    }
-
+    
     private ref struct SortedIndexReader<TDirection>
         where TDirection : struct, ILookupIterator
     {
