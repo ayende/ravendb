@@ -293,23 +293,17 @@ internal static class QueryPlanBuilder
 
             if (clauses.Count == 0)
             {
-                if (spatialClauses != null)
+                // No filter clauses remain — only spatial and/or vector.
+                // Use AllEntries as the base and attach post-filter phases.
+                // Vector clauses must NOT be put back into the flat plan because:
+                // (a) the bitmap pipeline would lose distance ordering (bitmaps
+                //     iterate in entry-ID order, not distance order), and
+                // (b) ResolveClause would fail on vector clauses that have no FieldName.
+                if (spatialClauses != null || vectorClauses != null)
                 {
-                    // Purely spatial (or spatial + vector): AllEntries as filter base,
-                    // spatial narrows it, then vector selects from the result.
                     var plan = BuildAllEntriesPlan();
                     AttachPostFilterPhases(plan, spatialClauses, vectorClauses);
                     return plan;
-                }
-
-                // Purely vector with no other filter clauses: put vector clauses back
-                // into the flat plan. The bitmap pipeline handles deduplication for
-                // multi-vector results, and VectorSearchMatch runs unfiltered.
-                if (vectorClauses != null)
-                {
-                    for (int i = vectorClauses.Count - 1; i >= 0; i--)
-                        clauses.Add(vectorClauses[i]);
-                    vectorClauses = null;
                 }
             }
         }
@@ -2622,23 +2616,27 @@ internal static class QueryPlanBuilder
 
         // Requires all of: Allocator, Index, IndexFieldsMapping to be non-null.
         // Use proper field metadata from the index schema for simple clauses.
-        // Spatial/Vector/Search have their own field resolution paths.
-        FieldMetadata fieldMeta;
-        bool useBuilderParams = builderParams != null
-            && clause.ClauseType != ClauseType.Spatial
+        // Spatial/Vector/Search have their own field resolution paths and do not
+        // use fieldMeta — skip construction to avoid null FieldName assertions.
+        FieldMetadata fieldMeta = default;
+        bool needsFieldMeta = clause.ClauseType != ClauseType.Spatial
             && clause.ClauseType != ClauseType.Vector
             && clause.ClauseType != ClauseType.Search;
-        if (useBuilderParams)
+        if (needsFieldMeta)
         {
-            string resolvedFieldName = clause.FieldName;
-            // For exact queries on auto-indexes, use the _exact field variant
-            if (clause.IsExact && builderParams.Metadata.IsDynamic)
-                resolvedFieldName = AutoIndexField.GetExactAutoIndexFieldName(resolvedFieldName);
-            fieldMeta = QueryBuilderHelper.GetFieldMetadata(in builderParams, resolvedFieldName, exact: clause.IsExact, hasBoost: builderParams.HasBoost);
-        }
-        else
-        {
-            fieldMeta = indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);
+            bool useBuilderParams = builderParams != null;
+            if (useBuilderParams)
+            {
+                string resolvedFieldName = clause.FieldName;
+                // For exact queries on auto-indexes, use the _exact field variant
+                if (clause.IsExact && builderParams.Metadata.IsDynamic)
+                    resolvedFieldName = AutoIndexField.GetExactAutoIndexFieldName(resolvedFieldName);
+                fieldMeta = QueryBuilderHelper.GetFieldMetadata(in builderParams, resolvedFieldName, exact: clause.IsExact, hasBoost: builderParams.HasBoost);
+            }
+            else
+            {
+                fieldMeta = indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);
+            }
         }
 
         switch (clause.ClauseType)
@@ -3367,7 +3365,7 @@ internal static class QueryPlanBuilder
             if (((builderParameters.FieldsToFetch != null && builderParameters.FieldsToFetch.IndexFields.TryGetValue(fieldName, out var indexField)) || (builderParameters.Index.Definition.IndexFields.TryGetValue(fieldName, out indexField))) && indexField.Vector is AutoVectorOptions avo)
             {
                 embeddingsGenerationTaskIdentifier = avo.EmbeddingsGenerationTaskIdentifier;
-                return avo.EmbeddingsGenerationTaskIdentifier != null;
+                return string.IsNullOrEmpty(avo.EmbeddingsGenerationTaskIdentifier) == false;
             }
 
             embeddingsGenerationTaskIdentifier = null;
