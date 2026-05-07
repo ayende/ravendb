@@ -13,19 +13,11 @@ namespace Corax.Querying.Matches;
 /// (search, OR/AND of terms) produce a bitmap result that needs to be wrapped
 /// as an IQueryMatch for the rest of the pipeline.
 /// </summary>
-public unsafe struct BitmapMatch : IQueryMatch, IBitmapQueryMatch, IDisposable
+public struct BitmapMatch(ByteStringContext allocator) : IBitmapQueryMatch, IDisposable
 {
-    private RoaringBitmap _bitmapState;
-    private readonly ByteStringContext _allocator;
+    private RoaringBitmap _bitmapState = new(allocator);
     private RoaringBitmapIterator _iterator;
-    private bool _iteratorInitialized;
-
-    public BitmapMatch(ByteStringContext allocator)
-    {
-        _bitmapState = new RoaringBitmap(allocator);
-        _allocator = allocator;
-        _iteratorInitialized = false;
-    }
+    private bool _iteratorInitialized = false;
 
     /// <summary>Get a mutable reference to the internal bitmap state for building.
     /// The returned ref is intentionally unscoped because callers thread it through
@@ -34,21 +26,12 @@ public unsafe struct BitmapMatch : IQueryMatch, IBitmapQueryMatch, IDisposable
     [UnscopedRef]
     public ref RoaringBitmap BitmapState => ref _bitmapState;
 
-    /// <summary>Returns the allocator for this bitmap match.</summary>
-    public ByteStringContext Allocator => _allocator;
-
     public long Count => _bitmapState.Count;
     public QueryCountConfidence Confidence => QueryCountConfidence.High;
     public bool IsBoosting => false;
     public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
 
     public bool Contains(long entryId) => _bitmapState.Contains(entryId);
-
-    /// <summary>
-    /// Returns a reference to the underlying bitmap data for downstream consumption.
-    /// </summary>
-    [UnscopedRef]
-    public ref RoaringBitmap GetBitmapData() => ref _bitmapState;
 
     public long MinEntryId
     {
@@ -70,7 +53,7 @@ public unsafe struct BitmapMatch : IQueryMatch, IBitmapQueryMatch, IDisposable
 
     public int Fill(Span<long> matches)
     {
-        if (!_iteratorInitialized)
+        if (_iteratorInitialized is false)
         {
             _bitmapState.PrepareForReading();
             _iterator = _bitmapState.GetIterator();

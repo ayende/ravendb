@@ -25,7 +25,7 @@ using Voron.Util.PFor;
 namespace Corax.Querying.Matches.SortingMatches;
 
 [DebuggerDisplay("{DebugView,nq}")]
-public unsafe sealed partial class SortingMatch<TInner> : SortingMatch
+public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     where TInner : IQueryMatch
 {
     private readonly IndexSearcher _searcher;
@@ -84,40 +84,19 @@ public unsafe sealed partial class SortingMatch<TInner> : SortingMatch
         
         public bool IsForward => throw new NotSupportedException($"{nameof(RandomDirection)} has no direction and should not be used in parts of code where it is required.");
 
-        public void Init<T>(T parent)
-        {
-            throw new NotImplementedException();
-        }
+        public void Init<T>(T parent) => throw new NotSupportedException();
 
-        public void Reset()
-        {
-            throw new NotImplementedException();
-        }
+        public void Reset() => throw new NotSupportedException();
 
-        public int Fill(Span<long> results, long lastId, bool includeMax)
-        {
-            throw new NotImplementedException();
-        }
+        public int Fill(Span<long> results, long lastId, bool includeMax) => throw new NotSupportedException();
         
-        public bool Skip(long count)
-        {
-            throw new NotImplementedException();
-        }
+        public bool Skip(long count) => throw new NotSupportedException();
 
-        public bool MoveNext(out long value)
-        {
-            throw new NotImplementedException();
-        }
+        public bool MoveNext(out long value) => throw new NotSupportedException();
 
-        public bool MoveNext<TLookupKey>(out TLookupKey key, out long value, out bool hasPreviousValue)
-        {
-            throw new NotImplementedException();
-        }
+        public bool MoveNext<TLookupKey>(out TLookupKey key, out long value, out bool hasPreviousValue) => throw new NotSupportedException();
 
-        public void Seek<TLookupKey>(TLookupKey key)
-        {
-            throw new NotImplementedException();
-        }
+        public void Seek<TLookupKey>(TLookupKey key) => throw new NotSupportedException();
     }
     
     private struct NoIterationOptimization : ILookupIterator
@@ -125,40 +104,19 @@ public unsafe sealed partial class SortingMatch<TInner> : SortingMatch
         public bool IsForward => throw new NotSupportedException($"{nameof(NoIterationOptimization)} has no direction and should not be used in parts of code where it is required.");
 
         
-        public void Init<T>(T parent)
-        {
-            throw new NotImplementedException();
-        }
+        public void Init<T>(T parent) => throw new NotSupportedException();
 
-        public void Reset()
-        {
-            throw new NotImplementedException();
-        }
+        public void Reset() => throw new NotSupportedException();
 
-        public int Fill(Span<long> results, long lastId = long.MaxValue, bool includeMax = true)
-        {
-            throw new NotImplementedException();
-        }
+        public int Fill(Span<long> results, long lastId = long.MaxValue, bool includeMax = true) => throw new NotSupportedException();
         
-        public bool Skip(long count)
-        {
-            throw new NotImplementedException();
-        }
+        public bool Skip(long count) => throw new NotSupportedException();
 
-        public bool MoveNext(out long value)
-        {
-            throw new NotImplementedException();
-        }
+        public bool MoveNext(out long value) => throw new NotSupportedException();
 
-        public bool MoveNext<TLookupKey>(out TLookupKey key, out long value, out bool hasPreviousValue)
-        {
-            throw new NotImplementedException();
-        }
+        public bool MoveNext<TLookupKey>(out TLookupKey key, out long value, out bool hasPreviousValue) => throw new NotSupportedException();
 
-        public void Seek<TLookupKey>(TLookupKey key)
-        {
-            throw new NotImplementedException();
-        }
+        public void Seek<TLookupKey>(TLookupKey key) => throw new NotSupportedException();
     }
         
     private static delegate*<SortingMatch<TInner>, Span<long>, int> SortBy<TEntryComparer,TFwdIt,TBackIt>(OrderMetadata metadata)
@@ -195,7 +153,7 @@ public unsafe sealed partial class SortingMatch<TInner> : SortingMatch
                 if (typeof(TDirection) == typeof(RandomDirection))
                 {
                     // Bitmap path: reservoir-sample k entries from the bitmap iterator in one
-                    // O(N) pass. No need to materialise all N entries — only the k=_take
+                    // O(N) pass. No need to materialize all N entries — only the k=_take
                     // slots are ever live in memory at once.
                     ReservoirSampleFromBitmap(match, bitmapMatch);
                 }

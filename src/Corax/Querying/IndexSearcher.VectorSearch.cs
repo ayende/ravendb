@@ -40,7 +40,7 @@ public partial class IndexSearcher
             if (query is IBitmapQueryMatch bitmapMatch)
             {
                 owned = false;
-                ref RoaringBitmap borrowed = ref bitmapMatch.GetBitmapData();
+                ref RoaringBitmap borrowed = ref bitmapMatch.BitmapState;
                 borrowed.PrepareForReading();
                 return borrowed;
             }

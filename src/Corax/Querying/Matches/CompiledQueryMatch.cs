@@ -118,10 +118,13 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
     }
 
     [UnscopedRef]
-    public ref RoaringBitmap GetBitmapData()
+    public ref RoaringBitmap BitmapState
     {
-        if (!_executed) Execute();
-        return ref _bitmapData;
+        get
+        {
+            if (!_executed) Execute();
+            return ref _bitmapData;
+        }
     }
 
     public int Fill(Span<long> matches)
