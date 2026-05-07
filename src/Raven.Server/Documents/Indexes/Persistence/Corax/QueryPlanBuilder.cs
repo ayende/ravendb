@@ -2582,6 +2582,44 @@ internal static class QueryPlanBuilder
     {
         // Use proper field metadata from the index schema when available.
         // This ensures correct analyzer application for static index fields.
+        // Nested OrGroup/AndGroup clauses should have been expanded by ResolveMatches.
+        // If one reaches here, it means a group clause appeared in a context that doesn't
+        // expand it (e.g. an OrGroup sub-clause inside an AndGroup). Build a BitmapMatch
+        // by resolving each sub-clause and merging via bitmap OR/AND.
+        if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
+        {
+            var bm = new BitmapMatch(indexSearcher.Allocator);
+            var temp = new Voron.Data.RoaringBitmaps.RoaringBitmap(indexSearcher.Allocator);
+            foreach (var sub in clause.OrSubClauses)
+            {
+                var subMatch = ResolveClause(sub, indexSearcher, parameters, builderParams);
+                global::Corax.Querying.Primitives.QueryPrimitives.FillFromMatch(subMatch, ref bm.BitmapState);
+            }
+            temp.Dispose();
+            return bm;
+        }
+        if (clause.ClauseType == ClauseType.AndGroup && clause.AndSubClauses != null)
+        {
+            var bm = new BitmapMatch(indexSearcher.Allocator);
+            var temp = new Voron.Data.RoaringBitmaps.RoaringBitmap(indexSearcher.Allocator);
+            bool first = true;
+            foreach (var sub in clause.AndSubClauses)
+            {
+                var subMatch = ResolveClause(sub, indexSearcher, parameters, builderParams);
+                if (first)
+                {
+                    global::Corax.Querying.Primitives.QueryPrimitives.FillFromMatch(subMatch, ref bm.BitmapState);
+                    first = false;
+                }
+                else if (sub.IsNegated)
+                    global::Corax.Querying.Primitives.QueryPrimitives.AndNotWithMatch(subMatch, ref bm.BitmapState, ref temp);
+                else
+                    global::Corax.Querying.Primitives.QueryPrimitives.AndWithMatch(subMatch, ref bm.BitmapState, ref temp);
+            }
+            temp.Dispose();
+            return bm;
+        }
+
         // Requires all of: Allocator, Index, IndexFieldsMapping to be non-null.
         // Use proper field metadata from the index schema for simple clauses.
         // Spatial/Vector/Search have their own field resolution paths.
