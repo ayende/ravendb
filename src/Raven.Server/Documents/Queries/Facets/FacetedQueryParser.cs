@@ -474,7 +474,7 @@ namespace Raven.Server.Documents.Queries.Facets
                 };
             }
 
-            public MultiTermMatch GetQuery(IndexSearcher searcher, in FieldMetadata metadata, bool forward = true)
+            public IQueryMatch GetQuery(IndexSearcher searcher, in FieldMetadata metadata, bool forward = true)
             {
                 var type = IsNumerical ? RangeType.Double : RangeType.None;
                 var lowValueRange = RangeTypeToCoraxRange(_leftSide);

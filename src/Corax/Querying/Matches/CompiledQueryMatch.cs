@@ -15,6 +15,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
     private readonly QueryILEmitter.CompiledExecuteDelegate _compiledDelegate;
     private readonly IQueryMatch[] _resolvedMatches;
     private readonly TermSource[] _termSources;
+    private readonly ITermProvider[] _termProviders;
     private readonly long[] _longParams;
     private readonly double[] _doubleParams;
     private readonly Slice[] _sliceParams;
@@ -37,7 +38,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
     private int _entryScanTakenAtOp;
 
     public CompiledQueryMatch(CompiledPlan compiledPlan, int bitmapCount, int opCount,
-        IQueryMatch[] resolvedMatches, TermSource[] termSources,
+        IQueryMatch[] resolvedMatches, TermSource[] termSources, ITermProvider[] termProviders,
         long[] longParams, double[] doubleParams, Slice[] sliceParams, long[] fieldRootPages,
         IndexSearcher searcher, ByteStringContext allocator, long limit, CancellationToken token)
     {
@@ -47,6 +48,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
         _opCount = opCount;
         _resolvedMatches = resolvedMatches;
         _termSources = termSources;
+        _termProviders = termProviders;
         _longParams = longParams;
         _doubleParams = doubleParams;
         _sliceParams = sliceParams;
@@ -190,7 +192,16 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
             }
         }
 
-        return new QueryInspectionNode(nameof(CompiledQueryMatch), parameters: parameters);
+        // Report as "MultiTermMatch" for backward compatibility with query plan inspection tests.
+        // Children are the resolved inner matches (e.g., ExistsTermProvider, TermQuery, etc.).
+        var children = new List<QueryInspectionNode>();
+        if (_resolvedMatches != null)
+        {
+            for (int i = 0; i < _resolvedMatches.Length; i++)
+                children.Add(_resolvedMatches[i].Inspect());
+        }
+
+        return new QueryInspectionNode("MultiTermMatch", parameters: parameters, children: children);
     }
 
     public SkipSortingResult AttemptToSkipSorting() => SkipSortingResult.ResultsNativelySorted;
@@ -218,7 +229,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
                 DirectSources = _resolvedMatches.AsSpan(),
                 TermSources = _termSources != null ? _termSources.AsSpan() : Span<TermSource>.Empty,
                 Llt = _searcher.Transaction.LowLevelTransaction,
-                TermProviders = Span<ITermProvider>.Empty,
+                TermProviders = _termProviders != null ? _termProviders.AsSpan() : Span<ITermProvider>.Empty,
                 FieldRootPages = _fieldRootPages.AsSpan(),
                 LongParams = _longParams.AsSpan(),
                 DoubleParams = _doubleParams.AsSpan(),

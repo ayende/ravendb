@@ -2629,9 +2629,14 @@ internal static class QueryPlanBuilder
 
             case ClauseType.In:
             case ClauseType.AllIn:
-                // In and AllIn sub-terms are expanded into separate matches by ResolveMatches.
-                throw new InvalidOperationException(
-                    $"{clause.ClauseType} should be expanded by ResolveMatches, not resolved as a single clause.");
+                // Normally In/AllIn terms are expanded into separate match slots by ResolveMatches
+                // (one slot per term, OR'd by the IL emitter). But when an In clause appears as a
+                // sub-clause inside an AndGroup (e.g. "WHERE (A AND field IN (x, y)) OR ..."),
+                // it reaches ResolveClause as a single unit and must become one IQueryMatch that
+                // covers all terms. Use InQuery which builds a TermProviderMatch over InTermProvider.
+                if (clause.InTerms != null && clause.InTerms.Count > 0)
+                    return indexSearcher.InQuery(fieldMeta, clause.InTerms);
+                return indexSearcher.EmptyMatch();
 
             case ClauseType.Exists:
                 return indexSearcher.ExistsQuery(fieldMeta);

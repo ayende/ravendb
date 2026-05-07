@@ -79,6 +79,7 @@ namespace FastTests.Issues
                 "Indexing.Corax.DocumentsLimitForCompressionDictionaryCreation",
                 "Indexing.Corax.IncludeDocumentScore",
                 "Indexing.Corax.IncludeSpatialDistance",
+                "Indexing.Corax.MaxFacetQueryFilterSizeInMb",
                 "Indexing.Corax.MaxMemoizationSizeInMb",
                 "Indexing.Corax.MaxAllocationsAtDictionaryTrainingInMb",
                 "Indexing.Corax.Static.ComplexFieldIndexingBehavior",

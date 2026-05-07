@@ -104,7 +104,7 @@ public class RavenDB_25410(ITestOutputHelper output) : StorageTest(output)
         {
             _fillExecuted = true;
             ref var count = ref _count;
-            var toReturn = Math.Min(8, Math.Abs(_count - 16));
+            var toReturn = Math.Min(matches.Length, Math.Min(8, Math.Abs(_count - 16)));
             if (toReturn == 0)
                 return 0;
 

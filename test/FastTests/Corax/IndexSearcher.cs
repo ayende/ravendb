@@ -12,6 +12,7 @@ using Corax.Mappings;
 using Corax.Pipeline;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
+using Corax.Querying.Planning;
 using Corax.Querying.Matches.SortingMatches;
 using Corax.Querying.Matches.SortingMatches.Meta;
 using Corax.Utils;
@@ -1446,9 +1447,10 @@ namespace FastTests.Corax
                 planParams,
                 null,
                 long.MaxValue,
-                out _,
+                out var debugPlan,
                 highlightingTerms: null,
                 CancellationToken.None);
+            Output?.WriteLine($"PLAN for [{rqlQuery}]:\n{QueryILEmitter.GenerateExplainSource(debugPlan)}");
 
             // Execute the compiled match to collect entry IDs
             var results = new List<long>();

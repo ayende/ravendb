@@ -197,12 +197,12 @@ public unsafe sealed partial class SortingMatch<TInner> : SortingMatch
                     // Bitmap path: reservoir-sample k entries from the bitmap iterator in one
                     // O(N) pass. No need to materialise all N entries — only the k=_take
                     // slots are ever live in memory at once.
-                    ReservoirSampleFromBitmap(match);
+                    ReservoirSampleFromBitmap(match, bitmapMatch);
                 }
                 else if (typeof(TDirection) == typeof(NoIterationOptimization))
                 {
                     // Score/spatial/alphanumeric: no index to walk, must materialize + heap sort
-                    SortResultsFromBitmap<TEntryComparer>(match);
+                    SortResultsFromBitmap<TEntryComparer>(match, bitmapMatch);
                 }
                 else
                 {
@@ -268,7 +268,7 @@ public unsafe sealed partial class SortingMatch<TInner> : SortingMatch
         return 0;
     }
 
-    private static void ReservoirSampleFromBitmap(SortingMatch<TInner> match)
+    private static void ReservoirSampleFromBitmap(SortingMatch<TInner> match, IBitmapQueryMatch bitmapMatch)
     {
         var random = new Random(match._orderMetadata.RandomSeed);
         int take = match._take;
@@ -279,7 +279,7 @@ public unsafe sealed partial class SortingMatch<TInner> : SortingMatch
         {
             // No LIMIT: materialize the whole bitmap, then Fisher-Yates shuffle in place.
             int read;
-            while ((read = match._inner.Fill(page)) > 0)
+            while ((read = bitmapMatch.Fill(page)) > 0)
                 for (int i = 0; i < read; i++)
                     match._results.Add(page[i]);
 
@@ -296,7 +296,7 @@ public unsafe sealed partial class SortingMatch<TInner> : SortingMatch
             // Entry at position i is kept with probability k/(i+1), replacing a random slot.
             int seen = 0;
             int read;
-            while ((read = match._inner.Fill(page)) > 0)
+            while ((read = bitmapMatch.Fill(page)) > 0)
             {
                 for (int i = 0; i < read; i++, seen++)
                 {
@@ -424,7 +424,7 @@ public unsafe sealed partial class SortingMatch<TInner> : SortingMatch
                             var item = _containerItems[_smallPostingListIndex++];
                             _ = VariableSizeEncoding.Read<int>(item.Address, out var offset); // discard count here
                             var start = FastPForDecoder.ReadStart(item.Address + offset);
-                            if(start > _max)
+                            if((long)EntryIdEncodings.DecodeAndDiscardFrequency(start) > _max)
                                 continue;
                             if (_smallListReader.WasInitialized == false)
                             {
@@ -731,19 +731,17 @@ public unsafe sealed partial class SortingMatch<TInner> : SortingMatch
     /// For sort types without an index to walk (score, spatial, alphanumeric, random),
     /// materialize all bitmap entries directly (without MemoizationMatch overhead) and heap sort.
     /// </summary>
-    private static void SortResultsFromBitmap<TEntryComparer>(SortingMatch<TInner> match)
+    private static void SortResultsFromBitmap<TEntryComparer>(SortingMatch<TInner> match, IBitmapQueryMatch bitmapMatch)
         where TEntryComparer : struct, IEntryComparer, IComparer<UnmanagedSpan>
     {
         var allocator = match._searcher.Allocator;
         int total = (int)match.TotalResults;
 
+        // TotalResults == bitmapMatch.Count, so one Fill call covers everything.
         var scope = allocator.Allocate(total * sizeof(long), out ByteString bs);
         var allMatches = new Span<long>(bs.Ptr, total);
 
-        int filled = 0;
-        int read;
-        while ((read = match._inner.Fill(allMatches[filled..])) > 0)
-            filled += read;
+        int filled = bitmapMatch.Fill(allMatches);
 
         if (filled == 0)
         {
