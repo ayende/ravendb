@@ -2101,9 +2101,9 @@ internal static class QueryPlanBuilder
         public bool IsExact;
         public float BoostFactor;
 
-        // AST refs preserved for the master-plan-shape cache (#82 stage α): when we
-        // reuse a parsed shape across calls, Refresh re-resolves these against the
-        // call's queryParameters without re-walking the AST.
+        // AST refs preserved for the plan-shape cache: when we reuse a parsed shape
+        // across calls, CloneAndRefreshClause re-resolves these against the call's
+        // queryParameters without re-walking the AST.
         public QueryExpression FieldExpr;       // FieldExpression for FieldName
         public QueryExpression TermExpr;        // ValueExpression for TermValue
         public QueryExpression TermExpr2;       // ValueExpression for TermValue2 (Between)
