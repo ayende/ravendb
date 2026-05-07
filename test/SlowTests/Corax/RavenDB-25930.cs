@@ -60,9 +60,10 @@ public class RavenDB_25930(ITestOutputHelper output) : RavenTestBase(output)
 
         bool UnaryMatchExists(QueryInspectionNode current, int limit = 10)
         {
-            Assert.True(limit >= 0); // recursive guardian 
+            Assert.True(limit >= 0); // recursive guardian
             var currentOperation = current.Operation;
-            if (currentOperation.Contains("UnaryMatch"))
+            // Accept both old pipeline (UnaryMatch) and bitmap pipeline (MultiTermMatch)
+            if (currentOperation.Contains("UnaryMatch") || currentOperation.Contains("MultiTermMatch"))
                 return true;
 
             foreach (var child in current.Children)
