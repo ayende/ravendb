@@ -230,19 +230,21 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     {
         var random = new Random(match._orderMetadata.RandomSeed);
         int take = match._take;
+        ref var bitmap = ref bitmapMatch.BitmapState;
+        long totalCount = bitmapMatch.Count;
 
-        Span<long> page = stackalloc long[1024];
+        if (totalCount == 0)
+            return;
 
         if (take < 0)
         {
-            // No LIMIT: materialize the whole bitmap, then Fisher-Yates shuffle in place.
-            int read;
-            while ((read = bitmapMatch.Fill(page)) > 0)
-                for (int i = 0; i < read; i++)
-                    match._results.Add(page[i]); 
+            // No LIMIT: materialize the whole bitmap in one Fill, then Fisher-Yates shuffle.
+            match._results.EnsureCapacityFor((int)totalCount);
+            Span<long> bulk = match._results.ToFullCapacitySpan();
+            int filled = bitmapMatch.Fill(bulk);
+            match._results.Count = filled;
 
-            // Fisher-Yates: swap from the end backward so every permutation is equiprobable.
-            for (int i = match._results.Count - 1; i > 0; i--)
+            for (int i = filled - 1; i > 0; i--)
             {
                 int j = random.Next(i + 1);
                 (match._results[i], match._results[j]) = (match._results[j], match._results[i]);
@@ -250,26 +252,25 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         }
         else
         {
-            // With LIMIT k: Algorithm R — one O(N) pass, O(k) live memory.
-            // Entry at position i is kept with probability k/(i+1), replacing a random slot.
-            int seen = 0;
-            int read;
-            while ((read = bitmapMatch.Fill(page)) > 0)
+            // With LIMIT k: pick k random ranks from [0, totalCount), deduplicated,
+            // then use bitmap.Select() to resolve each rank to an entry ID directly.
+            int k = (int)Math.Min(take, totalCount);
+            match._results.EnsureCapacityFor(k);
+
+            // Generate k unique random ranks using Floyd's algorithm (O(k), no rejection).
+            var selected = new HashSet<long>(k);
+            for (long i = totalCount - k; i < totalCount; i++)
             {
-                for (int i = 0; i < read; i++, seen++)
-                {
-                    long id = page[i];
-                    if (match._results.Count < take)
-                    {
-                        match._results.Add(id);
-                    }
-                    else
-                    {
-                        int slot = random.Next(seen + 1);
-                        if (slot < take)
-                            match._results[slot] = id;
-                    }
-                }
+                long r = random.NextInt64(i + 1);
+                if (selected.Add(r) == false)
+                    selected.Add(i);
+            }
+
+            foreach (long rank in selected)
+            {
+                long entryId = bitmap.Select(rank);
+                if (entryId >= 0)
+                    match._results.Add(entryId);
             }
         }
     }
