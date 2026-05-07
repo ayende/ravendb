@@ -5,40 +5,37 @@ using Sparrow;
 
 namespace Corax.Querying.Matches.Meta
 {
-    internal sealed unsafe class MergeHelper
+    internal static unsafe class MergeHelper
     {
         /// <summary>
-        /// dst and left *may* be the same thing, we can assume that dst is at least as large as the smallest of those
+        /// dst and left *may* be the same thing; we can assume that dst is at least as large as the smallest of those
         /// </summary>
         public static int And(Span<long> dst, Span<long> left, Span<long> right)
         {
             fixed (long* dstPtr = dst, leftPtr = left, rightPtr = right)
             {
-                return And(dstPtr, dst.Length, leftPtr, left.Length, rightPtr, right.Length);
+                return And(dstPtr, leftPtr, left.Length, rightPtr, right.Length);
             }
         }
 
         /// <summary>
-        /// dst and left *may* be the same thing, we can assume that dst is at least as large as the smallest of those
+        ///  dst and left *may* be the same thing; we can assume that dst is at least as large as the smallest of those
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static int And(long* dst, int dstLength, long* left, int leftLength, long* right, int rightLength)
+        private static int And(long* dst, long* left, int leftLength, long* right, int rightLength)
         {
             if (AdvInstructionSet.IsAcceleratedVector256)
-                return AndVectorized(dst, dstLength, left, leftLength, right, rightLength);
+                return AndVectorized(dst, left, leftLength, right, rightLength);
 
-            return AndScalar(dst, dstLength, left, leftLength, right, rightLength);
+            return AndScalar(dst, left, leftLength, right, rightLength);
         }
 
         /// <summary>
         /// Vector256 implementation of vectorized AND that works on both Intel/AMD and ARM.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int AndVectorized(long* dst, int dstLength, long* left, int leftLength, long* right, int rightLength)
+        private static int AndVectorized(long* dst, long* left, int leftLength, long* right, int rightLength)
         {
-            // This is effectively a constant.
-            uint N = (uint)Vector256<ulong>.Count;
-
             long* smallerPtr, largerPtr;
             long* smallerEndPtr, largerEndPtr;
 
@@ -49,7 +46,7 @@ namespace Corax.Querying.Matches.Meta
                 smallerEndPtr = left + leftLength;
                 largerPtr = right;
                 largerEndPtr = right + rightLength;
-                applyVectorization = rightLength > N && leftLength > 0;
+                applyVectorization = rightLength > Vector256<ulong>.Count && leftLength > 0;
             }
             else
             {
@@ -57,7 +54,7 @@ namespace Corax.Querying.Matches.Meta
                 smallerEndPtr = right + rightLength;
                 largerPtr = left;
                 largerEndPtr = left + leftLength;
-                applyVectorization = leftLength > N && rightLength > 0;
+                applyVectorization = leftLength > Vector256<ulong>.Count && rightLength > 0;
             }
 
             return AndVectorizedBlock(dst, applyVectorization, ref smallerPtr, smallerEndPtr, ref largerPtr, largerEndPtr);
@@ -71,7 +68,6 @@ namespace Corax.Querying.Matches.Meta
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal static int And(long* dst, long* left, int leftLength, ref long* right, long* rightEnd)
         {
-            uint N = (uint)Vector256<ulong>.Count;
             int rightLength = (int)(rightEnd - right);
 
             long* smallerPtr, largerPtr;
@@ -86,7 +82,7 @@ namespace Corax.Querying.Matches.Meta
                 largerPtr = right;
                 largerEndPtr = rightEnd;
                 leftIsSmaller = true;
-                applyVectorization = rightLength > N && leftLength > 0;
+                applyVectorization = rightLength > Vector256<ulong>.Count && leftLength > 0;
             }
             else
             {
@@ -95,7 +91,7 @@ namespace Corax.Querying.Matches.Meta
                 largerPtr = left;
                 largerEndPtr = left + leftLength;
                 leftIsSmaller = false;
-                applyVectorization = leftLength > N && rightLength > 0;
+                applyVectorization = leftLength > Vector256<ulong>.Count && rightLength > 0;
             }
 
             int count = AndVectorizedBlock(dst, applyVectorization, ref smallerPtr, smallerEndPtr, ref largerPtr, largerEndPtr);
@@ -113,28 +109,24 @@ namespace Corax.Querying.Matches.Meta
         /// Caller must ensure (smallerEndPtr - smallerPtr) &lt;= (largerEndPtr - largerPtr).
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal static int AndVectorizedBlock(
+        private static int AndVectorizedBlock(
             long* dstPtr, bool applyVectorization,
             ref long* smallerPtr, long* smallerEndPtr,
             ref long* largerPtr, long* largerEndPtr)
         {
-            uint N = (uint)Vector256<ulong>.Count;
             long* dstStart = dstPtr;
 
             if (applyVectorization)
             {
                 while (true)
                 {
-                    // TODO: In here we can do SIMD galloping with gather operations. Therefore, we will be able to do
-                    // multiple checks at once and find the right amount of skipping using a table.
-
                     // If the value to compare is bigger than the biggest element in the block, we advance the block.
-                    if ((ulong)*smallerPtr > (ulong)*(largerPtr + N - 1))
+                    if ((ulong)*smallerPtr > (ulong)*(largerPtr + Vector256<ulong>.Count - 1))
                     {
-                        if (largerPtr + N >= largerEndPtr)
+                        if (largerPtr + Vector256<ulong>.Count >= largerEndPtr)
                             break;
 
-                        largerPtr += N;
+                        largerPtr += Vector256<ulong>.Count;
                         continue;
                     }
 
@@ -148,7 +140,7 @@ namespace Corax.Querying.Matches.Meta
                         continue;
                     }
 
-                    if (largerEndPtr - largerPtr < N)
+                    if (largerEndPtr - largerPtr < Vector256<ulong>.Count)
                         break; // boundary guardian for vector load.
 
                     Vector256<ulong> value = Vector256.Create((ulong)*smallerPtr);
@@ -157,7 +149,7 @@ namespace Corax.Querying.Matches.Meta
                     // We are going to select which direction we are going to be moving forward.
                     if (Vector256.EqualsAny(value, blockValues))
                     {
-                        // We found the value, therefore we need to store this value in the destination.
+                        // We found the value, therefore, we need to store this value in the destination.
                         *dstPtr = *smallerPtr;
                         dstPtr++;
                     }
@@ -199,7 +191,7 @@ namespace Corax.Querying.Matches.Meta
         /// dst and left *may* be the same thing, we can assume that dst is at least as large as the smallest of those
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int AndScalar(long* dst, int dstLength, long* left, int leftLength, long* right, int rightLength)
+        private static int AndScalar(long* dst, long* left, int leftLength, long* right, int rightLength)
         {
             long* dstPtr = dst;
             long* leftPtr = left;
