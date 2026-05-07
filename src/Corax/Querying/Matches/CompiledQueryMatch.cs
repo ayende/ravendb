@@ -7,35 +7,43 @@ using Corax.Querying.Planning;
 using Voron.Data.RoaringBitmaps;
 using Sparrow.Server;
 using Voron;
+using Voron.Impl;
 
 namespace Corax.Querying.Matches;
 
 public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDisposable
 {
     private readonly QueryILEmitter.CompiledExecuteDelegate _compiledDelegate;
-    private readonly IQueryMatch[] _resolvedMatches;
-    private readonly TermSource[] _termSources;
-    private readonly ITermProvider[] _termProviders;
-    private readonly long[] _longParams;
-    private readonly double[] _doubleParams;
-    private readonly Slice[] _sliceParams;
-    private readonly long[] _fieldRootPages;
+    internal readonly IQueryMatch[] _resolvedMatches;
+    internal readonly TermSource[] _termSources;
+    internal readonly ITermProvider[] _termProviders;
+    internal readonly long[] _longParams;
+    internal readonly double[] _doubleParams;
+    internal readonly Slice[] _sliceParams;
+    internal readonly long[] _fieldRootPages;
     private readonly string _explainSource;
     private readonly ByteStringContext _allocator;
-    private readonly IndexSearcher _searcher;
+    internal readonly IndexSearcher _searcher;
     private readonly int _bitmapCount;
     private readonly int _opCount;
-    private readonly CancellationToken _token;
+    internal readonly CancellationToken _token;
 
     private RoaringBitmap _bitmapData;
     private RoaringBitmapIterator _iterator;
     private bool _executed;
     private long _count;
 
+    // Bitmap pool: [0] = main result, [1..N] = scratch.
+    // Allocated once in Execute(), then accessed by the compiled delegate via IL.
+    internal RoaringBitmap[] _bitmaps;
+
+    // LowLevelTransaction cached at Execute() time so the emitted IL does not re-fetch it per op.
+    internal LowLevelTransaction _llt;
+
     // Telemetry — populated during Execute if timings are requested
-    private long[] _timings;
-    private long[] _resultCounts;
-    private int _entryScanTakenAtOp;
+    internal long[] _timings;
+    internal long[] _resultCounts;
+    internal int _entryScanTakenAtOp;
 
     public CompiledQueryMatch(CompiledPlan compiledPlan, int bitmapCount, int opCount,
         IQueryMatch[] resolvedMatches, TermSource[] termSources, ITermProvider[] termProviders,
@@ -58,6 +66,8 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
         _searcher = searcher;
         _token = token;
         _bitmapData = new RoaringBitmap(allocator);
+        _bitmaps = null;
+        _llt = null;
         _iterator = default;
         _executed = false;
         _count = -1;
@@ -191,41 +201,27 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
         if (_executed) return;
 
         // Allocate bitmap pool: [0] = main, [1..N] = scratch
-        Span<RoaringBitmap> bitmaps = new RoaringBitmap[_bitmapCount];
-        for (int i = 0; i < bitmaps.Length; i++) bitmaps[i] = new RoaringBitmap(_allocator);
-        bitmaps[0] = _bitmapData; // main bitmap (owned by this struct)
+        if (_bitmaps == null || _bitmaps.Length < _bitmapCount)
+            _bitmaps = new RoaringBitmap[_bitmapCount];
+
+        for (int i = 0; i < _bitmaps.Length; i++) _bitmaps[i] = new RoaringBitmap(_allocator);
+        _bitmaps[0] = _bitmapData; // main bitmap (owned by this struct)
+
+        // Cache LLT for the delegate
+        _llt = _searcher.Transaction.LowLevelTransaction;
+
+        // Only allocate timing arrays when telemetry is requested (opCount > 0).
+        // Caller passes opCount = 0 to skip allocation.
+        _timings = _opCount > 0 ? new long[_opCount] : null;
+        _resultCounts = _opCount > 0 ? new long[_opCount] : null;
+        _entryScanTakenAtOp = -1;
 
         try
         {
-            // Only allocate timing arrays when telemetry is requested (opCount > 0).
-            // Caller passes opCount = 0 to skip allocation.
-            _timings = _opCount > 0 ? new long[_opCount] : null;
-            _resultCounts = _opCount > 0 ? new long[_opCount] : null;
-
-            var ctx = new QueryScanContext
-            {
-                Bitmaps = bitmaps,
-                Searcher = _searcher,
-                DirectSources = _resolvedMatches.AsSpan(),
-                TermSources = _termSources != null ? _termSources.AsSpan() : Span<TermSource>.Empty,
-                Llt = _searcher.Transaction.LowLevelTransaction,
-                TermProviders = _termProviders != null ? _termProviders.AsSpan() : Span<ITermProvider>.Empty,
-                FieldRootPages = _fieldRootPages.AsSpan(),
-                LongParams = _longParams.AsSpan(),
-                DoubleParams = _doubleParams.AsSpan(),
-                SliceParams = _sliceParams.AsSpan(),
-                Token = _token,
-                Timings = _timings != null ? _timings.AsSpan() : Span<long>.Empty,
-                ResultCounts = _resultCounts != null ? _resultCounts.AsSpan() : Span<long>.Empty,
-                EntryScanTakenAtOp = -1
-            };
-
-            _compiledDelegate(ref ctx);
-
-            _entryScanTakenAtOp = ctx.EntryScanTakenAtOp;
+            _compiledDelegate(ref this);
 
             // Take ownership of bitmaps[0] (may have been swapped during entry scan)
-            _bitmapData = bitmaps[0];
+            _bitmapData = _bitmaps[0];
             _bitmapData.PrepareForReading();
             _count = _bitmapData.Count;
             _iterator = _bitmapData.GetIterator();
@@ -234,8 +230,8 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
         finally
         {
             // Dispose scratch bitmaps only (not [0], which is _bitmapData)
-            for (int i = 1; i < bitmaps.Length; i++)
-                bitmaps[i].Dispose();
+            for (int i = 1; i < _bitmaps.Length; i++)
+                _bitmaps[i].Dispose();
         }
     }
 
