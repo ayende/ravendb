@@ -696,6 +696,98 @@ public unsafe partial struct RoaringBitmap : IDisposable
     }
 
     /// <summary>
+    /// Return the value of the nth set bit (0-based rank). Walks containers in key
+    /// order, subtracting each container's cardinality from <paramref name="rank"/>
+    /// until the target container is found, then resolves within that container.
+    /// Returns -1 if rank is out of range.
+    /// </summary>
+    public long Select(long rank)
+    {
+        if (rank < 0)
+            return -1;
+
+        int* idx = _index.RawItems;
+        int idxLen = _index.Count;
+        ContainerEntry* entries = _entries.RawItems;
+        ContainerType* types = _types.RawItems;
+
+        for (int key = 0; key < idxLen; key++)
+        {
+            int slot = idx[key];
+            if (slot < 0)
+                continue;
+
+            ref ContainerEntry entry = ref entries[slot];
+            ContainerType type = types[slot];
+            if (type == ContainerType.Free)
+                continue;
+
+            int card = entry.Cardinality;
+            if (card is LazyCardinality)
+            {
+                Debug.Assert(type is ContainerType.Bitmap);
+                entry.Cardinality = card = BitmapContainerCardinality(entry.Data);
+            }
+
+            if (rank < card)
+            {
+                // The target is within this container.
+                long baseValue = (long)key << ContainerKeyShift;
+                return baseValue + SelectInContainer(ref entry, type, (int)rank);
+            }
+            rank -= card;
+        }
+        return -1;
+    }
+
+    /// <summary>Find the nth set value inside a single container (0-based).</summary>
+    private static int SelectInContainer(ref ContainerEntry entry, ContainerType type, int rank)
+    {
+        switch (type)
+        {
+            case ContainerType.Array:
+                return entry.ArrayData[rank];
+
+            case ContainerType.ArrayUnsorted:
+            {
+                // Must sort to define a stable ordering for select.
+                // (PrepareForReading handles this globally, but Select may be called before.)
+                Span<ushort> span = new(entry.ArrayData, entry.Cardinality);
+                span.Sort();
+                return span[rank];
+            }
+
+            case ContainerType.Range:
+                return entry.RangeStart + rank;
+
+            case ContainerType.Bitmap:
+            {
+                ulong* bmp = (ulong*)entry.Data;
+                for (int word = 0; word < BitmapContainerSizeInUInt64; word++)
+                {
+                    ulong w = bmp[word];
+                    int bits = BitOperations.PopCount(w);
+                    if (rank < bits)
+                    {
+                        // The target is within this word — find the rank-th set bit.
+                        while (rank > 0)
+                        {
+                            w &= w - 1; // clear lowest set bit
+                            rank--;
+                        }
+                        return word * 64 + BitOperations.TrailingZeroCount(w);
+                    }
+                    rank -= bits;
+                }
+                return -1; // shouldn't reach here if rank was valid
+            }
+
+            default:
+                return -1;
+        }
+    }
+
+    /// <summary>
     /// Create a deep copy of this bitmap. All container data is cloned into the same ByteStringContext.
     /// The source bitmap is not modified. The clone preserves container types (Range, Array, Bitmap).
     /// </summary>
