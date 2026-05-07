@@ -299,12 +299,22 @@ public partial class IndexSearcher
             return termMatch.Count;
         }
         
-        var termSlice = term switch
+        Slice termSlice;
+        try
         {
-            Constants.EmptyString => Constants.EmptyStringSlice,
-            _ => EncodeAndApplyAnalyzer(binding, term)
-        };
-        
+            termSlice = term switch
+            {
+                Constants.EmptyString => Constants.EmptyStringSlice,
+                _ => EncodeAndApplyAnalyzer(binding, term)
+            };
+        }
+        catch (NotSupportedException)
+        {
+            // Analyzer produced multiple tokens — a multi-word phrase doesn't
+            // match any single indexed term (e.g. MoreLikeThis passing un-tokenized text).
+            return 0;
+        }
+
         return NumberOfDocumentsUnderSpecificTerm((CompactTree)terms, (Slice)termSlice);
     }
 
