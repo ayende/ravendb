@@ -17,9 +17,6 @@ public static class QueryILEmitter
 {
     public delegate void CompiledExecuteDelegate(ref QueryScanContext ctx);
 
-    // FillBufferSize and EntryScanBatchSize from QueryPrimitives are shared
-    // so all stackalloc sizes stay in sync. See Primitives.cs for documentation.
-
     // QueryScanContext fields
     private static readonly FieldInfo s_ctxBitmaps = typeof(QueryScanContext).GetField(nameof(QueryScanContext.Bitmaps))!;
     private static readonly FieldInfo s_ctxTermSources = typeof(QueryScanContext).GetField(nameof(QueryScanContext.TermSources))!;

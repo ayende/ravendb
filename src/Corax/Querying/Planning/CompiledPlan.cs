@@ -1,10 +1,12 @@
 using System;
-using System.Threading;
 
 namespace Corax.Querying.Planning;
 
 public sealed class CompiledPlan
 {
+    /// <summary>IL-emitted delegate that executes the posting-list scan plan.
+    /// Takes a <see cref="QueryScanContext"/> by ref and fills / intersects the
+    /// bitmap slots according to the compiled <see cref="PlanOp"/> sequence.</summary>
     public QueryILEmitter.CompiledExecuteDelegate CompiledDelegate { get; init; }
     public int Ordering { get; init; }
 
@@ -43,15 +45,8 @@ public sealed class CompiledPlan
     {
         get
         {
-            var cached = Volatile.Read(ref _explainSource);
-            if (cached != null)
-                return cached;
-            var provider = ExplainSourceProvider;
-            var generated = provider != null ? provider() : "";
-            // First-write-wins; concurrent reads each compute but only one's result sticks.
-            // The provider is pure (depends only on the plan), so any winner is correct.
-            Interlocked.CompareExchange(ref _explainSource, generated, null);
-            return Volatile.Read(ref _explainSource);
+            _explainSource ??= ExplainSourceProvider?.Invoke() ?? "";
+            return _explainSource;
         }
     }
 }

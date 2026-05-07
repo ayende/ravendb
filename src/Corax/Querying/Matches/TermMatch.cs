@@ -516,10 +516,9 @@ namespace Corax.Querying.Matches
         internal bool TryGetPostingListIterator(out PostingList.Iterator iterator)
         {
             // Empty / Single / Small all leave _set at default (zeroed Iterator).
-            // YieldSet (line ~566) initializes _set = postingList.Iterate(). PostingList
-            // also stamps _totalResults = NumberOfEntries which is always > 0; combined
-            // with _containerReader being default (not initialized for the Set path) we
-            // can disambiguate cheaply.
+            // Only the Set path initializes _set and stamps _totalResults > 0;
+            // _containerReader stays default for the Set path, so zero-init makes
+            // the check below sufficient to disambiguate.
             iterator = _set;
             return _totalResults > 1 && _containerReader.IsValid == false;
         }

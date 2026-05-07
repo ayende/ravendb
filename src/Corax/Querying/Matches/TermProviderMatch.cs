@@ -8,11 +8,10 @@ using Voron.Impl;
 namespace Corax.Querying.Matches;
 
 /// <summary>
-/// Replaces MultiTermMatch&lt;TTermProvider&gt; for non-planning callers.
 /// Lazily fills a RoaringBitmap from the ITermProvider on first Fill() call,
 /// then iterates the bitmap for subsequent fills.
-/// Created by IndexSearcher factory methods (StartWithQuery, EndsWithQuery, etc.)
-/// for use outside the CompiledQueryMatch pipeline.
+/// Created by IndexSearcher factory methods (StartsWithQuery, EndsWithQuery, InQuery,
+/// ExistsQuery, RegexQuery, range queries, etc.) for use outside the CompiledQueryMatch pipeline.
 /// </summary>
 public sealed class TermProviderMatch : IQueryMatch
 {
@@ -59,6 +58,9 @@ public sealed class TermProviderMatch : IQueryMatch
     public int AndWith(Span<long> buffer, int matches)
     {
         Initialize();
+        // Cannot use AndWithSorted here: the buffer comes from SortedIndexReader
+        // which returns entry IDs in sort-field order (e.g. alphabetical), not in
+        // entry-ID order. The bitmap's container structure requires ID-sorted input.
         int kept = 0;
         for (int i = 0; i < matches; i++)
         {
