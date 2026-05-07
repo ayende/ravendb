@@ -603,6 +603,7 @@ internal static class QueryPlanBuilder
             TermExpr2 = src.TermExpr2,
             InTermExprs = src.InTermExprs,
             BoostFactorExpr = src.BoostFactorExpr,
+            SearchOperator = src.SearchOperator,
             // Cardinality intentionally left at -1 (default) — re-estimated per call.
         };
         if (src.OrSubClauses != null)
@@ -642,6 +643,7 @@ internal static class QueryPlanBuilder
             TermExpr2 = src.TermExpr2,
             InTermExprs = src.InTermExprs,
             BoostFactorExpr = src.BoostFactorExpr,
+            SearchOperator = src.SearchOperator,
         };
 
         // Field name: dynamic when the AST has a FieldExpression with parameter parts;
@@ -732,9 +734,8 @@ internal static class QueryPlanBuilder
     private static void ParseComparison(BinaryExpression be, List<ClauseInfo> clauses,
         BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
     {
-        if (be.Left is not FieldExpression field)
-            return;
-        string fieldName = GetFieldName(field, metadata, queryParameters);
+        if (TryGetFieldName(be.Left, metadata, queryParameters, out string fieldName, out FieldExpression field) == false)
+            throw new InvalidQueryException($"Comparison left side must be a field expression or id(), but got: {be.Left.Type}");
         string termValue = GetTermValue(be.Right, queryParameters, out var valueType);
 
         clauses.Add(new ClauseInfo
@@ -752,9 +753,8 @@ internal static class QueryPlanBuilder
     private static void ParseRangeComparison(BinaryExpression be, List<ClauseInfo> clauses,
         BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
     {
-        if (be.Left is not FieldExpression field)
-            return;
-        string fieldName = GetFieldName(field, metadata, queryParameters);
+        if (TryGetFieldName(be.Left, metadata, queryParameters, out string fieldName, out FieldExpression field) == false)
+            throw new InvalidQueryException($"Range comparison left side must be a field expression or id(), but got: {be.Left.Type}");
         string termValue = GetTermValue(be.Right, queryParameters, out var valueType);
 
         clauses.Add(new ClauseInfo
@@ -779,14 +779,14 @@ internal static class QueryPlanBuilder
     private static void ParseBetween(BetweenExpression between, List<ClauseInfo> clauses,
         BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
     {
-        if (between.Source is not FieldExpression field)
-            return;
+        if (TryGetFieldName(between.Source, metadata, queryParameters, out string resolvedFieldName, out FieldExpression field) == false)
+            throw new InvalidQueryException($"BETWEEN source must be a field expression or id(), but got: {between.Source.Type}");
 
         var minValue = GetTermValue(between.Min, queryParameters, out var minType);
         var maxValue = GetTermValue(between.Max, queryParameters, out _);
         clauses.Add(new ClauseInfo
         {
-            FieldName = GetFieldName(field, metadata, queryParameters),
+            FieldName = resolvedFieldName,
             TermValue = minValue,
             TermValue2 = maxValue,
             TermValueType = minType,
@@ -801,8 +801,8 @@ internal static class QueryPlanBuilder
     private static void ParseIn(InExpression inExpr, List<ClauseInfo> clauses,
         BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
     {
-        if (inExpr.Source is not FieldExpression field)
-            return;
+        if (TryGetFieldName(inExpr.Source, metadata, queryParameters, out string resolvedFieldName, out FieldExpression field) == false)
+            throw new InvalidQueryException($"IN source must be a field expression or id(), but got: {inExpr.Source.Type}");
 
         var terms = new List<string>();
         var termTypes = new List<ValueTokenType>();
@@ -834,7 +834,7 @@ internal static class QueryPlanBuilder
 
         clauses.Add(new ClauseInfo
         {
-            FieldName = GetFieldName(field, metadata, queryParameters),
+            FieldName = resolvedFieldName,
             InTerms = terms,
             InTermTypes = termTypes,
             ClauseType = inExpr.All ? ClauseType.AllIn : ClauseType.In,
@@ -997,11 +997,21 @@ internal static class QueryPlanBuilder
         if (method.Arguments[0] is not FieldExpression searchField)
             return;
 
+        var searchOp = Constants.Search.Operator.Or;
+        if (method.Arguments.Count >= 3 && method.Arguments[2] is FieldExpression opField
+            && opField.Compound.Count == 1)
+        {
+            var op = opField.Compound[0].Value;
+            if (string.Equals("AND", op, StringComparison.OrdinalIgnoreCase))
+                searchOp = Constants.Search.Operator.And;
+        }
+
         clauses.Add(new ClauseInfo
         {
             FieldName = GetFieldName(searchField, metadata, queryParameters),
             TermValue = GetTermValue(method.Arguments[1], queryParameters),
             ClauseType = ClauseType.Search,
+            SearchOperator = searchOp,
             OriginalIndex = clauses.Count,
             FieldExpr = searchField,
             TermExpr = method.Arguments[1]
@@ -1118,6 +1128,31 @@ internal static class QueryPlanBuilder
         if (metadata != null)
             return metadata.GetIndexFieldName(field, queryParameters).Value;
         return field.FieldValue;
+    }
+
+    /// <summary>Try to extract a field name from a query expression that may be either a
+    /// <see cref="FieldExpression"/> (normal field) or a <see cref="MethodExpression"/>
+    /// for the <c>id()</c> function. Returns false if the expression is neither.</summary>
+    private static bool TryGetFieldName(QueryExpression expr, QueryMetadata metadata,
+        BlittableJsonReaderObject queryParameters, out string fieldName, out FieldExpression fieldExpr)
+    {
+        if (expr is FieldExpression fe)
+        {
+            fieldName = GetFieldName(fe, metadata, queryParameters);
+            fieldExpr = fe;
+            return true;
+        }
+
+        if (expr is MethodExpression me && string.Equals(me.Name.Value, "id", StringComparison.OrdinalIgnoreCase))
+        {
+            fieldName = Raven.Client.Constants.Documents.Indexing.Fields.DocumentIdFieldName;
+            fieldExpr = null;
+            return true;
+        }
+
+        fieldName = null;
+        fieldExpr = null;
+        return false;
     }
 
 
@@ -2079,6 +2114,7 @@ internal static class QueryPlanBuilder
         public QueryExpression TermExpr2;       // ValueExpression for TermValue2 (Between)
         public List<QueryExpression> InTermExprs; // ValueExpressions for InTerms
         public QueryExpression BoostFactorExpr; // ValueExpression for BoostFactor
+        public Constants.Search.Operator SearchOperator; // for Search (AND/OR)
     }
 
     /// <summary>
@@ -2716,7 +2752,7 @@ internal static class QueryPlanBuilder
 
                 return indexSearcher.SearchQuery(searchMeta,
                     searchValues,
-                    Constants.Search.Operator.Or,
+                    clause.SearchOperator,
                     searchQueryOptions);
             }
 
