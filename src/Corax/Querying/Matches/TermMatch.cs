@@ -364,9 +364,6 @@ namespace Corax.Querying.Matches
             static int AndWithVectorizedFunc<TBoostingMode>(ref TermMatch term, Span<long> buffer, int matches) where TBoostingMode : IBoostingMarker
             {
                 const int BlockSize = 4096;
-                uint N = (uint)Vector256<long>.Count;
-
-                Debug.Assert(Vector256<long>.Count == 4);
 
                 term._set.Seek(EntryIdEncodings.PrepareIdForSeekInPostingList(buffer[0] - 1));
 
@@ -401,42 +398,10 @@ namespace Corax.Querying.Matches
                         if (read == 0)
                             continue;
 
-                        long* smallerPtr, largerPtr;
-                        long* smallerEndPtr, largerEndPtr;
-
-                        bool applyVectorization;
-
-                        // read => leftLength
-                        // matches => rightLength
-                        bool isSmallerInput;
-                        if (read < (inputEndPtr - inputPtr))
-                        {
-                            smallerPtr = blockStartPtr;
-                            smallerEndPtr = blockStartPtr + read;
-                            isSmallerInput = false;
-                            largerPtr = inputPtr;
-                            largerEndPtr = inputEndPtr;
-                            applyVectorization = matches > N && read > 0;
-                        }
-                        else
-                        {
-                            smallerPtr = inputPtr;
-                            smallerEndPtr = inputEndPtr;
-                            isSmallerInput = true;
-                            largerPtr = blockStartPtr;
-                            largerEndPtr = blockStartPtr + read;
-                            applyVectorization = read > N && matches > 0;
-                        }
-
-                        Debug.Assert((ulong)(smallerEndPtr - smallerPtr) <= (ulong)(largerEndPtr - largerPtr));
-
-                        dstPtr += MergeHelper.AndVectorizedBlock(dstPtr, applyVectorization, ref smallerPtr, smallerEndPtr, ref largerPtr, largerEndPtr);
-
-                        inputPtr = isSmallerInput ? smallerPtr : largerPtr;
+                        dstPtr += MergeHelper.And(dstPtr, blockStartPtr, read, ref inputPtr, inputEndPtr);
 
                         // In AndWith operation the end buffer has to be exactly the same size as input or be smaller.
                         Debug.Assert(inputEndPtr >= dstPtr);
-                        Debug.Assert((isSmallerInput ? largerPtr : smallerPtr) - blockStartPtr <= BlockSize);
                     }
 
                     return (int)((ulong*)dstPtr - (ulong*)inputStartPtr);

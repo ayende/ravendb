@@ -64,6 +64,49 @@ namespace Corax.Querying.Matches.Meta
         }
 
         /// <summary>
+        /// Intersect left[0..leftLength) with right[*rightPtr..*rightEndPtr), writing matches
+        /// to dst. Advances *rightPtr to its final position so the caller can track how far
+        /// the right array was consumed (used by TermMatch's block-by-block AND loop).
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static int And(long* dst, long* left, int leftLength, ref long* right, long* rightEnd)
+        {
+            uint N = (uint)Vector256<ulong>.Count;
+            int rightLength = (int)(rightEnd - right);
+
+            long* smallerPtr, largerPtr;
+            long* smallerEndPtr, largerEndPtr;
+            bool leftIsSmaller;
+            bool applyVectorization;
+
+            if (leftLength < rightLength)
+            {
+                smallerPtr = left;
+                smallerEndPtr = left + leftLength;
+                largerPtr = right;
+                largerEndPtr = rightEnd;
+                leftIsSmaller = true;
+                applyVectorization = rightLength > N && leftLength > 0;
+            }
+            else
+            {
+                smallerPtr = right;
+                smallerEndPtr = rightEnd;
+                largerPtr = left;
+                largerEndPtr = left + leftLength;
+                leftIsSmaller = false;
+                applyVectorization = leftLength > N && rightLength > 0;
+            }
+
+            int count = AndVectorizedBlock(dst, applyVectorization, ref smallerPtr, smallerEndPtr, ref largerPtr, largerEndPtr);
+
+            // Update right to its final position so the caller knows how far the
+            // input was consumed.
+            right = leftIsSmaller ? largerPtr : smallerPtr;
+            return count;
+        }
+
+        /// <summary>
         /// Merges [smallerPtr, smallerEndPtr) with [largerPtr, largerEndPtr) into dst.
         /// Advances smallerPtr and largerPtr to their final positions.
         /// Returns the number of matches written.
