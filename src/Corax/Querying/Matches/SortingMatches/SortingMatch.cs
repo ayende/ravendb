@@ -503,7 +503,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         var sortedIdsScope = allocator.Allocate(sizeof(long) * SortBatchSize, out ByteString bs);
         Span<long> sortedIdBuffer = new(bs.Ptr, SortBatchSize);
 
-        var reader = GetReader(match, entryCmp, bitmapMatch.MinEntryId, bitmapMatch.MaxEntryId);
+        var reader = GetReader(bitmapMatch.MinEntryId, bitmapMatch.MaxEntryId);
 
         while (match._results.Count < maxResults)
         {
@@ -524,7 +524,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         reader.Dispose();
         sortedIdsScope.Dispose();
 
-        SortedIndexReader<TDirection> GetReader(SortingMatch<TInner> match, TEntryComparer entryCmp, long min, long max)
+        SortedIndexReader<TDirection> GetReader(long min, long max)
         {
             if (typeof(TDirection) == typeof(Lookup<CompactTree.CompactKeyLookup>.ForwardIterator) ||
                 typeof(TDirection) == typeof(Lookup<CompactTree.CompactKeyLookup>.BackwardIterator))
@@ -576,23 +576,6 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         SortResults<TEntryComparer>(match, allMatches[..filled]);
 
         scope.Dispose();
-    }
-
-    private static string[] DebugTerms(LowLevelTransaction llt, Span<UnmanagedSpan> terms)
-    {
-        using var s = new CompactKeyCacheScope(llt);
-        var l = new string[terms.Length];
-        for (int i = 0; i < terms.Length; i++)
-        {
-            var item = terms[i];
-            int remainderBits = item.Address[0] >> 4;
-            int encodedKeyLengthInBits = (item.Length - 1) * 8 - remainderBits;
-            long dicId = CompactTree.GetDictionaryId(llt);
-            s.Key.Set(encodedKeyLengthInBits, item.ToSpan()[1..], dicId);
-            l[i] = s.Key.ToString();
-        }
-
-        return l;
     }
     
     private static void SortResults<TEntryComparer>(SortingMatch<TInner> match, Span<long> batchResults) 
@@ -675,7 +658,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         }
         
         return new QueryInspectionNode($"{nameof(SortingMatch)}",
-            children: new List<QueryInspectionNode> { _inner.Inspect()},
+            children: [_inner.Inspect()],
             parameters: parameters);
     }
 
