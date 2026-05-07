@@ -39,7 +39,7 @@ public sealed class CoraxDocumentConverter : CoraxDocumentConverterBase
                 
                 object vector;
 
-                if (autoVectorOptions.EmbeddingsGenerationTaskIdentifier != null)
+                if (string.IsNullOrEmpty(autoVectorOptions.EmbeddingsGenerationTaskIdentifier) == false)
                     vector = AbstractStaticIndexBase.LoadVectorBase(indexField.Name, autoVectorOptions.SourceFieldName, autoVectorOptions.EmbeddingsGenerationTaskIdentifier, null, null);
                 else
                 {
