@@ -1376,7 +1376,7 @@ internal static class QueryPlanBuilder
                         {
                             ops.Add(new PlanOp
                             {
-                                Kind = PlanOpKind.AndWithPostings,
+                                Kind = subClauses[s].IsNegated ? PlanOpKind.AndNotWithPostings : PlanOpKind.AndWithPostings,
                                 ParamIndex = matchIndex + s,
                                 BitmapLocal = 0,
                                 EstimatedCardinality = subClauses[s].Cardinality,
