@@ -73,10 +73,14 @@ public class PlanCache
         // a fresh dict takes over.
         if (current.Count > MaxDistinctQueries / 2)
         {
+            // Two-generation rotation: demote current → previous, install fresh current.
+            // Race between concurrent threads is benign: the CAS on _current ensures only
+            // one fresh dict wins; losers get the winner's dict back from CAS and publish
+            // there. An empty fresh dict can't re-trigger this block (Count == 0), so
+            // cascading rotations are impossible.
             var fresh = new ConcurrentDictionary<string, PerQueryPlans>();
-            var prev = Interlocked.Exchange(ref _previous, current);
-            Interlocked.CompareExchange(ref _current, fresh, current);
-            current = Volatile.Read(ref _current);
+            Interlocked.Exchange(ref _previous, current);
+            current = Interlocked.CompareExchange(ref _current, fresh, current);
         }
 
         var per = current.GetOrAdd(queryText, _ => new PerQueryPlans(MaxPlansPerQuery));

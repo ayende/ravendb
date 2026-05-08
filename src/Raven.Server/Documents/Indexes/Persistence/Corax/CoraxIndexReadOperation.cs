@@ -1122,7 +1122,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 using (closeServerTransaction)
                 {
                     builderParameters = new(IndexSearcher, _allocator, serverContext, context, query, _index, query.QueryParameters, QueryBuilderFactories,
-                        _fieldMappings, null, null /* allow highlighting? */, -1, deduplicationDisabled: true, indexReadOperation: this, token: token);
+                        _fieldMappings, null, null /* allow highlighting? */, global::Corax.Constants.IndexSearcher.TakeAll, deduplicationDisabled: true, indexReadOperation: this, token: token);
                     moreLikeThisQuery = BuildMoreLikeThisQuery(builderParameters, query.Metadata.Query.Where);
                 }
             }
@@ -1149,7 +1149,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             }
 
             builderParameters = new(IndexSearcher, _allocator, null, context, query, _index, query.QueryParameters, QueryBuilderFactories,
-                _fieldMappings, null, null /* allow highlighting? */, -1, deduplicationDisabled:true, indexReadOperation: this, token: token);
+                _fieldMappings, null, null /* allow highlighting? */, global::Corax.Constants.IndexSearcher.TakeAll, deduplicationDisabled:true, indexReadOperation: this, token: token);
             using var mlt = new RavenRavenMoreLikeThis(builderParameters, options);
             long? baseDocId = null;
 
