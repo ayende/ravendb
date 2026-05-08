@@ -818,7 +818,9 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 if (queryTimings != null)
                 {
                     var inspectionNode = queryPlan != null
-                        ? QueryPlanBuilder.BuildInspectionGraph(queryPlan, queryMatch)
+                        ? QueryPlanBuilder.BuildInspectionGraph(queryPlan,
+                            innerDisposableMatch as IQueryMatch ?? queryMatch,
+                            sortingWrapper: ReferenceEquals(queryMatch, innerDisposableMatch) ? null : queryMatch)
                         : queryMatch.Inspect();
                     queryTimings.SetQueryPlan(inspectionNode);
                 }
