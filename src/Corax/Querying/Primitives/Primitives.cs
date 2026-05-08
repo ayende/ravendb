@@ -165,6 +165,43 @@ public static class QueryPrimitives
     }
 
     /// <summary>
+    /// Limit-aware AND: same bounded range scan as <see cref="AndWithPostings"/>
+    /// to build the posting list bitmap, then uses container-level AND with early
+    /// exit once the intersection has ≥ limit entries. Remaining un-intersected
+    /// containers are removed. For unsorted queries any N valid results are sufficient.
+    /// </summary>
+    [SkipLocalsInit]
+    private static void AndWithPostingsLimited(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap, long limit)
+    {
+        if (bitmap.IsEmpty)
+            return;
+
+        tempBitmap.Clear();
+
+        long minKey = bitmap.MinContainerKey;
+        long maxKey = bitmap.MaxContainerKey;
+        Debug.Assert(minKey is not -1 && maxKey is not -1);
+
+        long seekFrom = minKey * RoaringBitmap.ContainerSize;
+        long pruneAfter = (maxKey + 1) * RoaringBitmap.ContainerSize - 1;
+
+        if (!iterator.Seek(seekFrom))
+        {
+            bitmap.Clear();
+            return;
+        }
+
+        Span<long> buffer = stackalloc long[FillBufferSize];
+        while (iterator.Fill(buffer, out int read, pruneAfter) && read > 0)
+        {
+            EntryIdEncodings.DecodeAndDiscardFrequency(buffer, read);
+            tempBitmap.AddRange(buffer[..read]);
+        }
+
+        bitmap.AndWithLimited(ref tempBitmap, limit);
+    }
+
+    /// <summary>
     /// ANDNOT the bitmap with a posting list. Same bounded range scan as AndWith —
     /// only reads posting list pages that overlap with the bitmap's container range.
     /// </summary>
@@ -358,7 +395,10 @@ public static class QueryPrimitives
                 return;
 
             case Planning.TermSourceKind.PostingList:
-                AndWithPostings(ref source.LargeIterator, ref bitmap, ref tempBitmap);
+                if (limit < long.MaxValue)
+                    AndWithPostingsLimited(ref source.LargeIterator, ref bitmap, ref tempBitmap, limit);
+                else
+                    AndWithPostings(ref source.LargeIterator, ref bitmap, ref tempBitmap);
                 return;
 
             default:

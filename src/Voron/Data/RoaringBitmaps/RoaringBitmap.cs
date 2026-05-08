@@ -1140,6 +1140,68 @@ public unsafe partial struct RoaringBitmap : IDisposable
         }
     }
 
+    /// <summary>
+    /// Limit-aware AND: same container-level intersection as <see cref="AndWith"/>,
+    /// but stops processing containers once the result has ≥ limit entries.
+    /// Remaining containers in this bitmap that haven't been intersected are removed.
+    /// For unsorted queries, any N valid results are sufficient.
+    /// </summary>
+    public void AndWithLimited(scoped ref RoaringBitmap other, long limit)
+    {
+        int* myIdx = _index.RawItems;
+        int myLen = _index.Count;
+        long accumulated = 0;
+        int stoppedAtKey = -1;
+
+        for (int key = 0; key < myLen; key++)
+        {
+            int mySlot = myIdx[key];
+            if (mySlot < 0)
+                continue;
+
+            int otherSlot = other.GetSlotForKey(key);
+            if (otherSlot < 0)
+            {
+                DonateStorageThenFreeContainer(key, mySlot, ref other);
+            }
+            else
+            {
+                ref ContainerEntry myEntry = ref _entries[mySlot];
+                ref ContainerEntry otherEntry = ref other._entries[otherSlot];
+                AndContainerInPlace(ref myEntry, ref _types.RawItems[mySlot], ref otherEntry, other._types.RawItems[otherSlot]);
+                int card = myEntry.Cardinality;
+                if (card == LazyCardinality)
+                {
+                    card = BitmapContainerCardinality(myEntry.Data);
+                    myEntry.Cardinality = card;
+                }
+                if (card == 0)
+                    DonateStorageThenFreeContainer(key, mySlot, ref other);
+                else
+                    accumulated += card;
+            }
+
+            if (accumulated >= limit)
+            {
+                stoppedAtKey = key + 1;
+                break;
+            }
+        }
+
+        // Remove remaining un-intersected containers — they weren't checked against
+        // other, so they'd be false positives.
+        if (stoppedAtKey >= 0)
+        {
+            for (int key = stoppedAtKey; key < myLen; key++)
+            {
+                int mySlot = myIdx[key];
+                if (mySlot < 0)
+                    continue;
+                DonateStorageThenFreeContainer(key, mySlot, ref other);
+            }
+        }
+    }
+
     /// <summary>Donate this slot's storage to <paramref name="recipient"/>'s free pool
     /// before freeing the entry. Used during AndWith / AndNotWith to arm the consumed
     /// right-side bitmap with buffers that this side would otherwise have stranded on
