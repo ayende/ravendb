@@ -11,77 +11,106 @@ namespace Corax.Querying.Planning;
 /// Caches compiled query plans per index instance.
 /// Lives on IndexSearcher — GC'd when the index is replaced.
 ///
-/// Two-level structure: outer keyed by query text (ConcurrentDictionary), inner is a
-/// fixed 32-slot SoA (struct-of-arrays) per query text — parallel int[] for orderings
+/// Two-generation structure: two ConcurrentDictionaries hold PerQueryPlans entries.
+/// New entries always go into the current generation. Lookups check current first,
+/// then the previous generation. When the current generation exceeds half the max
+/// capacity, it becomes the previous generation and a fresh dict takes over. The
+/// old previous generation is dropped, evicting its plans.
+///
+/// Per-query: fixed 32-slot SoA (struct-of-arrays) — parallel int[] for orderings
 /// and type signatures plus a CompiledPlan[] for the payloads. SIMD compares scan all
 /// 32 slots in 4 Vector256 iterations (or 8 Vector128 iterations on smaller hardware).
-///
-/// The vast majority of queries have ≤ 8 distinct (ordering, typesig) combinations,
-/// which all fit in the first SIMD lane group — so the typical lookup is one vector
-/// load + one Equals + one ExtractMostSignificantBits + one TrailingZeroCount.
 /// </summary>
 public class PlanCache
 {
-    private const int MaxPlansPerQuery = 32;
-    private const int MaxDistinctQueries = 2048;
+    public int MaxPlansPerQuery { get; }
+    public int MaxDistinctQueries { get; }
 
-    private readonly ConcurrentDictionary<string, PerQueryPlans> _cache = new();
+    private ConcurrentDictionary<string, PerQueryPlans> _current;
+    private ConcurrentDictionary<string, PerQueryPlans> _previous;
+
+    public PlanCache(int maxPlansPerQuery = 32, int maxDistinctQueries = 2048)
+    {
+        // MaxPlansPerQuery must be a multiple of 8 for SIMD Vector256 alignment
+        if (maxPlansPerQuery % 8 != 0)
+            maxPlansPerQuery = ((maxPlansPerQuery / 8) + 1) * 8;
+        MaxPlansPerQuery = maxPlansPerQuery;
+        MaxDistinctQueries = maxDistinctQueries;
+        _current = new ConcurrentDictionary<string, PerQueryPlans>();
+        _previous = null;
+    }
 
     public CompiledPlan Get(string queryText, int ordering, int typeSignature = 0)
         => Get(queryText, ordering, typeSignature, default);
 
-    /// <summary>Lookup honouring the full per-predicate kind vector. Required when the
-    /// scan-predicate count exceeds 16: the int <paramref name="typeSignature"/> packs
-    /// only the first 16 kinds and acts as a lossy hash, so two plans can share a slot
-    /// — disambiguation walks the slot's <see cref="CompiledPlan.Next"/> chain comparing
-    /// <see cref="CompiledPlan.FullKinds"/> via <c>SequenceEqual</c>.</summary>
     public CompiledPlan Get(string queryText, int ordering, int typeSignature, ReadOnlySpan<byte> kinds)
     {
-        if (!_cache.TryGetValue(queryText, out var per))
-            return null;
-        return per.TryLookup(ordering, typeSignature, kinds);
+        // Check current generation first
+        var current = Volatile.Read(ref _current);
+        if (current.TryGetValue(queryText, out var per))
+        {
+            var result = per.TryLookup(ordering, typeSignature, kinds, MaxPlansPerQuery);
+            if (result != null)
+                return result;
+        }
+
+        // Check previous generation
+        var prev = Volatile.Read(ref _previous);
+        if (prev != null && prev.TryGetValue(queryText, out per))
+        {
+            return per.TryLookup(ordering, typeSignature, kinds, MaxPlansPerQuery);
+        }
+
+        return null;
     }
 
     public void Add(string queryText, CompiledPlan plan)
     {
-        // Cap total distinct queries to prevent unbounded growth.
-        // Stop caching new queries past the cap rather than evicting — eviction would
-        // require a global LRU with locking; the bound is generous enough that hitting
-        // it implies query churn we'd rather not silently absorb.
-        if (_cache.Count > MaxDistinctQueries)
-            return;
+        var current = Volatile.Read(ref _current);
 
-        var per = _cache.GetOrAdd(queryText, _ => new PerQueryPlans());
-        per.Publish(plan);
+        // When the current generation exceeds half the max, rotate.
+        // The old previous is dropped (GC'd), current becomes previous,
+        // a fresh dict takes over.
+        if (current.Count > MaxDistinctQueries / 2)
+        {
+            var fresh = new ConcurrentDictionary<string, PerQueryPlans>();
+            var prev = Interlocked.Exchange(ref _previous, current);
+            Interlocked.CompareExchange(ref _current, fresh, current);
+            current = Volatile.Read(ref _current);
+        }
+
+        var per = current.GetOrAdd(queryText, _ => new PerQueryPlans(MaxPlansPerQuery));
+        per.Publish(plan, MaxPlansPerQuery);
     }
 
     /// <summary>
-    /// 32-slot per-query plan cache. Lookup is SIMD scan over parallel int arrays;
+    /// Fixed-slot per-query plan cache. Lookup is SIMD scan over parallel int arrays;
     /// matched candidates are revalidated against the plan's own embedded keys to
-    /// guard against torn-write races (key written before plan ref or vice versa).
-    /// Insertion fills sequentially while there's room, then random-evicts.
+    /// guard against torn-write races.
     /// </summary>
-    private sealed class PerQueryPlans
+    internal sealed class PerQueryPlans
     {
-        private readonly int[] _orderings = new int[MaxPlansPerQuery];
-        private readonly int[] _typesigs = new int[MaxPlansPerQuery];
-        private readonly CompiledPlan[] _plans = new CompiledPlan[MaxPlansPerQuery];
+        private readonly int[] _orderings;
+        private readonly int[] _typesigs;
+        private readonly CompiledPlan[] _plans;
         private int _filled;
 
-        public CompiledPlan TryLookup(int ordering, int typesig, ReadOnlySpan<byte> kinds)
+        public PerQueryPlans(int maxSlots)
         {
-            if (Vector256.IsHardwareAccelerated)
-                return Vec256Lookup(ordering, typesig, kinds);
-            if (Vector128.IsHardwareAccelerated)
-                return Vec128Lookup(ordering, typesig, kinds);
-            return ScalarLookup(ordering, typesig, kinds);
+            _orderings = new int[maxSlots];
+            _typesigs = new int[maxSlots];
+            _plans = new CompiledPlan[maxSlots];
         }
 
-        // ResolveCandidate walks the slot's chain (head + Next pointers) looking for the
-        // plan whose embedded (Ordering, TypeSignature, FullKinds) matches the lookup.
-        // For ≤16 kinds the int typesig is the full identity — chain length is 1 and no
-        // SequenceEqual call ever runs. For >16 kinds the SIMD-int match was a hash, so we
-        // walk the chain comparing FullKinds against the caller's span.
+        public CompiledPlan TryLookup(int ordering, int typesig, ReadOnlySpan<byte> kinds, int maxSlots)
+        {
+            if (Vector256.IsHardwareAccelerated)
+                return Vec256Lookup(ordering, typesig, kinds, maxSlots);
+            if (Vector128.IsHardwareAccelerated)
+                return Vec128Lookup(ordering, typesig, kinds, maxSlots);
+            return ScalarLookup(ordering, typesig, kinds, maxSlots);
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static CompiledPlan ResolveCandidate(CompiledPlan head, int ordering, int typesig, ReadOnlySpan<byte> kinds)
         {
@@ -90,7 +119,7 @@ public class PlanCache
                 if (p.Ordering != ordering || p.TypeSignature != typesig)
                     continue;
                 if (p.FullKinds == null)
-                    return p; // ≤16 kinds path: int typesig was exact identity.
+                    return p;
                 if (kinds.SequenceEqual(p.FullKinds))
                     return p;
             }
@@ -98,11 +127,11 @@ public class PlanCache
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private CompiledPlan Vec256Lookup(int ordering, int typesig, ReadOnlySpan<byte> kinds)
+        private CompiledPlan Vec256Lookup(int ordering, int typesig, ReadOnlySpan<byte> kinds, int maxSlots)
         {
             var ordVec = Vector256.Create(ordering);
             var typVec = Vector256.Create(typesig);
-            for (int i = 0; i < MaxPlansPerQuery; i += 8)
+            for (int i = 0; i < maxSlots; i += 8)
             {
                 var ords = Vector256.LoadUnsafe(ref _orderings[i]);
                 var typs = Vector256.LoadUnsafe(ref _typesigs[i]);
@@ -122,11 +151,11 @@ public class PlanCache
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private CompiledPlan Vec128Lookup(int ordering, int typesig, ReadOnlySpan<byte> kinds)
+        private CompiledPlan Vec128Lookup(int ordering, int typesig, ReadOnlySpan<byte> kinds, int maxSlots)
         {
             var ordVec = Vector128.Create(ordering);
             var typVec = Vector128.Create(typesig);
-            for (int i = 0; i < MaxPlansPerQuery; i += 4)
+            for (int i = 0; i < maxSlots; i += 4)
             {
                 var ords = Vector128.LoadUnsafe(ref _orderings[i]);
                 var typs = Vector128.LoadUnsafe(ref _typesigs[i]);
@@ -145,9 +174,9 @@ public class PlanCache
             return null;
         }
 
-        private CompiledPlan ScalarLookup(int ordering, int typesig, ReadOnlySpan<byte> kinds)
+        private CompiledPlan ScalarLookup(int ordering, int typesig, ReadOnlySpan<byte> kinds, int maxSlots)
         {
-            for (int i = 0; i < MaxPlansPerQuery; i++)
+            for (int i = 0; i < maxSlots; i++)
             {
                 if (_orderings[i] != ordering || _typesigs[i] != typesig)
                     continue;
@@ -159,34 +188,22 @@ public class PlanCache
             return null;
         }
 
-        public void Publish(CompiledPlan plan)
+        public void Publish(CompiledPlan plan, int maxSlots)
         {
-            // No dedup check: the caller already does TryLookup before compiling, so a
-            // duplicate Publish only happens under a benign race between two threads that
-            // both saw the lookup miss. Both versions are equivalent; the extra one gets
-            // GC'd when the slot is overwritten or the master plan retires. Skipping the
-            // check keeps Publish's hot path branch-free.
-
-            // >16-typed-params chain path: if we have FullKinds and an existing slot
-            // already shares our (ordering, typesig) int packing, prepend onto its chain
-            // instead of stealing a fresh slot. SequenceEqual lets the chain hold
-            // genuinely-distinct plans whose int hash collides.
-            if (plan.FullKinds != null && TryChainPrepend(plan))
+            // Try chain prepend for >16-kind plans that share (ordering, typesig) hash
+            if (plan.FullKinds != null && TryChainPrepend(plan, maxSlots))
                 return;
 
             int slot;
             while (true)
             {
                 int filled = Volatile.Read(ref _filled);
-                if (filled >= MaxPlansPerQuery)
+                if (filled >= maxSlots)
                 {
-                    // Cache full — random eviction. No LRU bookkeeping; mis-evictions just
-                    // trigger a recompile next time, which is correctness-preserving.
-                    slot = Random.Shared.Next(0, MaxPlansPerQuery);
+                    // Cache full — random eviction.
+                    slot = Random.Shared.Next(0, maxSlots);
                     break;
                 }
-                // Try to claim the next sequential slot. CAS failure means another thread
-                // won the race; retry with the new filled value.
                 if (Interlocked.CompareExchange(ref _filled, filled + 1, filled) == filled)
                 {
                     slot = filled;
@@ -194,31 +211,29 @@ public class PlanCache
                 }
             }
 
-            // Write plan ref first (with Volatile semantics), then keys. Lookup uses
-            // embedded-key revalidation so any interleaving is safe.
             Volatile.Write(ref _plans[slot], plan);
             Volatile.Write(ref _orderings[slot], plan.Ordering);
             Volatile.Write(ref _typesigs[slot], plan.TypeSignature);
         }
 
-        private bool TryChainPrepend(CompiledPlan plan)
+        private bool TryChainPrepend(CompiledPlan plan, int maxSlots)
         {
-            for (int i = 0; i < MaxPlansPerQuery; i++)
+            for (int i = 0; i < maxSlots; i++)
             {
                 if (_orderings[i] != plan.Ordering || _typesigs[i] != plan.TypeSignature)
                     continue;
-                // CAS the chain head: prepend iff slot is occupied AND nobody else swaps it
-                // out from under us. Lookup readers see a consistent linked list at all times.
                 while (true)
                 {
                     var head = Volatile.Read(ref _plans[i]);
                     if (head == null)
-                        return false; // race: slot was emptied; fall back to slot insert
+                        // Slot was emptied — don't drop the plan, fall back to slot insert
+                        return false;
                     plan.Next = head;
                     if (Interlocked.CompareExchange(ref _plans[i], plan, head) == head)
                         return true;
                 }
             }
+            // No matching slot found — fall back to normal slot insert (don't drop!)
             return false;
         }
     }
