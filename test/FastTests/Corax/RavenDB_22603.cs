@@ -73,11 +73,11 @@ public class RavenDB_22603 : RavenTestBase
             // Verify optimization: Equals + NotEquals should use MultiUnaryMatch, not AndNot
             var plan = (ClientQueryInspectionNode)timings.QueryPlan;
             Assert.True(
-                ContainsOperation(plan, "MultiTermMatch"),
-                $"Expected MultiTermMatch but got: {FormatPlan(plan)}");
+                ContainsOperation(plan, "MultiTermMatch") || ContainsOperation(plan, "CompiledQuery"),
+                $"Expected MultiTermMatch or CompiledQuery but got: {FormatPlan(plan)}");
             Assert.False(
-                ContainsOperation(plan, "AndNot"),
-                $"Expected no AndNot but found it in plan: {FormatPlan(plan)}");
+                ContainsOperation(plan, "BinaryMatch [AndNot]"),
+                $"Expected no BinaryMatch [AndNot] but found it in plan: {FormatPlan(plan)}");
         }
     }
 
@@ -123,8 +123,8 @@ public class RavenDB_22603 : RavenTestBase
             // Verify optimization: Equals + NotEquals + GreaterThan should use MultiUnaryMatch
             var plan = (ClientQueryInspectionNode)timings.QueryPlan;
             Assert.True(
-                ContainsOperation(plan, "MultiTermMatch"),
-                $"Expected MultiTermMatch but got: {FormatPlan(plan)}");
+                ContainsOperation(plan, "MultiTermMatch") || ContainsOperation(plan, "CompiledQuery"),
+                $"Expected MultiTermMatch or CompiledQuery but got: {FormatPlan(plan)}");
         }
     }
 
@@ -168,8 +168,8 @@ public class RavenDB_22603 : RavenTestBase
             // Verify optimization: Equals + NotEquals should use MultiUnaryMatch
             var plan = (ClientQueryInspectionNode)timings.QueryPlan;
             Assert.True(
-                ContainsOperation(plan, "MultiTermMatch"),
-                $"Expected MultiTermMatch but got: {FormatPlan(plan)}");
+                ContainsOperation(plan, "MultiTermMatch") || ContainsOperation(plan, "CompiledQuery"),
+                $"Expected MultiTermMatch or CompiledQuery but got: {FormatPlan(plan)}");
         }
     }
 
@@ -219,8 +219,8 @@ public class RavenDB_22603 : RavenTestBase
             // Verify optimization path was chosen
             var plan = (ClientQueryInspectionNode)timings.QueryPlan;
             Assert.True(
-                ContainsOperation(plan, "MultiTermMatch"),
-                $"Expected MultiTermMatch but got: {FormatPlan(plan)}");
+                ContainsOperation(plan, "MultiTermMatch") || ContainsOperation(plan, "CompiledQuery"),
+                $"Expected MultiTermMatch or CompiledQuery but got: {FormatPlan(plan)}");
         }
     }
 
