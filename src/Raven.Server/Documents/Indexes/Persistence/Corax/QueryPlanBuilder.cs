@@ -3093,11 +3093,11 @@ internal static class QueryPlanBuilder
                     index.Configuration.OrderByScoreAutomaticallyWhenBoostingIsInvolved
                     || index.Configuration.CoraxVectorSearchOrderByScoreAutomatically))
             {
-                // in case when we've single vector clause and we expose the score, we have to go through
-                // order by primitive to retrieve them; however scores are detected as natively sorted
-                if (builderParameters.IsVectorSingleClause && index.Configuration.CoraxIncludeDocumentScore == false)
-                    return null;
-
+                // Vector/spatial queries implicitly sort by score when no explicit ORDER BY
+                // is specified. The old code skipped the sort wrapper for single-vector-clause
+                // queries because VectorSearchMatch natively returns results in distance order.
+                // In the bitmap pipeline, BuildAndCompile may return a different wrapper, so
+                // we always apply the sort to guarantee correct ordering.
                 if (builderParameters.Metadata.HasVectorSearch == false)
                     builderParameters.IndexReadOperation?.AssertCanOrderByScoreAutomaticallyWhenBoostingOrVectorSearchIsInvolved();
 
