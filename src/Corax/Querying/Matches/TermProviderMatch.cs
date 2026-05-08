@@ -13,7 +13,7 @@ namespace Corax.Querying.Matches;
 /// Created by IndexSearcher factory methods (StartsWithQuery, EndsWithQuery, InQuery,
 /// ExistsQuery, RegexQuery, range queries, etc.) for use outside the CompiledQueryMatch pipeline.
 /// </summary>
-public sealed class TermProviderMatch : IQueryMatch
+public sealed class TermProviderMatch : IQueryMatch, IBitmapQueryMatch
 {
     private readonly ITermProvider _provider;
     private readonly LowLevelTransaction _llt;
@@ -40,6 +40,41 @@ public sealed class TermProviderMatch : IQueryMatch
         {
             Initialize();
             return _bitmap.Count;
+        }
+    }
+
+    public bool Contains(long entryId)
+    {
+        Initialize();
+        return _bitmap.Contains(entryId);
+    }
+
+    public long MinEntryId
+    {
+        get
+        {
+            Initialize();
+            long minKey = _bitmap.MinContainerKey;
+            return minKey < 0 ? 0 : minKey * RoaringBitmap.ContainerSize;
+        }
+    }
+
+    public long MaxEntryId
+    {
+        get
+        {
+            Initialize();
+            long maxKey = _bitmap.MaxContainerKey;
+            return maxKey < 0 ? 0 : (maxKey + 1) * RoaringBitmap.ContainerSize - 1;
+        }
+    }
+
+    public ref RoaringBitmap BitmapState
+    {
+        get
+        {
+            Initialize();
+            return ref _bitmap;
         }
     }
 
