@@ -51,9 +51,12 @@ namespace Corax.Querying.Matches.TermProviders
             ReadOnlySpan<byte> decodedStartsWith = _startWith.Decoded();
             int count = 0;
 
+            using var scope = new CompactKeyCacheScope(_tree._inner.Llt);
+            var compactKey = scope.Key;
+
             while (count < postingListIds.Length)
             {
-                if (_iterator.MoveNext(out var compactKey, out long postingListId, out _) == false)
+                if (_iterator.MoveNext(compactKey, out long postingListId, out _) == false)
                     break;
 
                 var key = compactKey.Decoded();
