@@ -199,7 +199,31 @@ internal static class QueryPlanBuilder
         if (orGroupNode != null)
             root.Children.Add(orGroupNode);
 
+        // Vector/spatial search matches live outside the compiled bitmap plan.
+        // Walk the executed match's Inspect() tree to find VectorSearchMatch nodes
+        // and append them so the query plan includes SimilarityMethod etc.
+        if (plan.VectorSelects is { Length: > 0 } || plan.SpatialFilters is { Length: > 0 })
+        {
+            var matchInspection = executedMatch.Inspect();
+            AppendVectorNodes(matchInspection, root);
+        }
+
         return root;
+    }
+
+    private static void AppendVectorNodes(QueryInspectionNode source, QueryInspectionNode target)
+    {
+        if (source.Operation.Contains("VectorSearch") || source.Operation.Contains("Spatial"))
+        {
+            target.Children.Add(source);
+            return;
+        }
+
+        if (source.Children != null)
+        {
+            foreach (var child in source.Children)
+                AppendVectorNodes(child, target);
+        }
     }
 
     private static List<ClauseInfo> FlattenClausesForInspection(QueryPlan plan)
