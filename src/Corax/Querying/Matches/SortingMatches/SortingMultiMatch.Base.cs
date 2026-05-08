@@ -13,6 +13,10 @@ namespace Corax.Querying.Matches.SortingMatches;
 /// through the <c>IQueryMatch</c> vtable at the call site in <c>CoraxIndexReadOperation</c>,
 /// while the <c>sealed</c> concrete subclass (<see cref="SortingMultiMatch{TInner}"/>)
 /// allows the JIT to devirtualize where the concrete type is statically visible.
+///
+/// Sharing note: see the comment on <see cref="SortingMatch"/> — the IEntryComparer interfaces
+/// and SortBatch signatures differ between single-field and multi-field sorting, preventing
+/// straightforward code sharing without a comparer unification refactor.
 /// </summary>
 public abstract class SortingMultiMatch : IQueryMatch
 {

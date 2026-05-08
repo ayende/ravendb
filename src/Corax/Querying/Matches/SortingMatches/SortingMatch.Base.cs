@@ -20,6 +20,13 @@ namespace Corax.Querying.Matches.SortingMatches;
 /// <c>IQueryMatch</c> call site in <c>CoraxIndexReadOperation</c>. The trade-off is simpler
 /// code with one interface dispatch per <c>Fill</c> batch instead of one function-pointer
 /// indirection.
+///
+/// Sharing note: <see cref="SortingMatch{TInner}"/> and <see cref="SortingMultiMatch{TInner}"/>
+/// have similar Fill/Sort patterns, but their <c>IEntryComparer</c> interfaces differ (single-field
+/// vs multi-field with 3 generic comparer parameters) and the methods take their own concrete match
+/// type as a parameter for JIT specialization. Extracting shared code here would require either
+/// virtualizing field access (vtable cost on the hot path) or a large comparer refactor with no
+/// runtime benefit. Keep the implementations side-by-side until a comparer unification is done.
 /// </summary>
 public abstract class SortingMatch : IQueryMatch
 {
