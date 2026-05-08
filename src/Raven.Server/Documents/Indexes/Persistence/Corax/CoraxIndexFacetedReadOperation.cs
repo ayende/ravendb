@@ -86,7 +86,7 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
         if (query.Metadata.Query.Where is not null)
         {
             var parameters = new QueryBuilderParameters(_indexSearcher, _allocator, null, null, query, _index,
-                query.QueryParameters, _queryBuilderFactories, _fieldMappings, null, null, -1,
+                query.QueryParameters, _queryBuilderFactories, _fieldMappings, null, null, global::Corax.Constants.IndexSearcher.TakeAll,
                 deduplicationDisabled: true, token: token);
 
             IQueryMatch baseQuery = QueryPlanBuilder.BuildAndCompile(
@@ -269,7 +269,7 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
         Dictionary<string, Dictionary<string, FacetValues>> facetsByRange = new();
 
         var parameters = new QueryBuilderParameters(_indexSearcher, _allocator, null, null, query, _index, query.QueryParameters, _queryBuilderFactories,
-            _fieldMappings, null, null, -1, deduplicationDisabled: false, token: token, queryTime: queryTime);
+            _fieldMappings, null, null, global::Corax.Constants.IndexSearcher.TakeAll, deduplicationDisabled: false, token: token, queryTime: queryTime);
 
         IQueryMatch baseQuery = query.Metadata.Query.Where == null
             ? _indexSearcher.AllEntries()

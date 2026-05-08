@@ -65,6 +65,7 @@ public partial class IndexSearcher
         /// and converts each entry to its corresponding HNSW node ID(s) on demand.
         /// Designed for probing random starting nodes during approximate filtered nearest neighbor search.
         /// </summary>
+        [System.Runtime.CompilerServices.SkipLocalsInit]
         public struct RandomNodesFromFilterEnumerator : IEnumerator<long>
         {
             private List<long> _results;

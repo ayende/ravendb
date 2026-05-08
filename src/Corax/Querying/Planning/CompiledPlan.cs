@@ -1,5 +1,3 @@
-using System;
-
 namespace Corax.Querying.Planning;
 
 public sealed class CompiledPlan
@@ -8,6 +6,9 @@ public sealed class CompiledPlan
     /// Takes a <see cref="QueryScanContext"/> by ref and fills / intersects the
     /// bitmap slots according to the compiled <see cref="PlanOp"/> sequence.</summary>
     public QueryILEmitter.CompiledExecuteDelegate CompiledDelegate { get; init; }
+    /// <summary>Packed operand ordering used as part of the cache key.
+    /// Two plans with the same query text but different operand orderings (due to
+    /// different cardinality estimates) produce different IL, so this distinguishes them.</summary>
     public int Ordering { get; init; }
 
     /// <summary>Packed parameter type signature (2 bits per param: 0=long, 1=double, 2=string).
