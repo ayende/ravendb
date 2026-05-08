@@ -102,6 +102,9 @@ public struct VectorSearchMatch : IQueryMatch
         if (_filterQueryLoaded == false)
         {
             _filterQueryLoaded = true;
+            // When filterQuery is IBitmapQueryMatch (e.g. CompiledQueryMatch), LoadFilterMatches
+            // borrows the bitmap directly without re-materialization. No separate fast-path
+            // needed here — the optimization lives in VectorSearchUtils.LoadFilterMatches.
             _filterResults = IndexSearcher.VectorSearchUtils.LoadFilterMatches(_indexSearcher, ref _filterQuery, out _ownsFilterResults);
             _hasFilterResults = true;
             _filterMatchesCount = _filterResults.Count;

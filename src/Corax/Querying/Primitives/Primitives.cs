@@ -299,12 +299,9 @@ public static class QueryPrimitives
                 }
 
             case Planning.TermSourceKind.SmallPostingList:
-                {
-                    tempBitmap.Clear();
-                    AddSmallPostingListToBitmap(llt, source.SmallPostingListId, ref tempBitmap);
-                    bitmap.AndWith(ref tempBitmap);
-                    return;
-                }
+                MaterializeTermSourceIntoBitmap(ref source, llt, ref tempBitmap);
+                bitmap.AndWith(ref tempBitmap);
+                return;
 
             case Planning.TermSourceKind.PostingList:
                 AndWithPostings(ref source.LargeIterator, ref bitmap, ref tempBitmap);
@@ -333,14 +330,8 @@ public static class QueryPrimitives
                 return;
 
             case Planning.TermSourceKind.Single:
-                tempBitmap.Clear();
-                tempBitmap.Add(source.SingleEntryId);
-                bitmap.AndNotWith(ref tempBitmap);
-                return;
-
             case Planning.TermSourceKind.SmallPostingList:
-                tempBitmap.Clear();
-                AddSmallPostingListToBitmap(llt, source.SmallPostingListId, ref tempBitmap);
+                MaterializeTermSourceIntoBitmap(ref source, llt, ref tempBitmap);
                 bitmap.AndNotWith(ref tempBitmap);
                 return;
 
@@ -350,6 +341,29 @@ public static class QueryPrimitives
 
             default:
                 throw new InvalidOperationException($"Unknown TermSourceKind: {source.Kind}");
+        }
+    }
+
+    /// <summary>Materialize a Single or SmallPostingList TermSource into the temp bitmap
+    /// (clears it first). Shared by AndWithTermSource and AndNotWithTermSource to avoid
+    /// duplicating the clear-then-populate pattern for these small-source cases.</summary>
+    private static void MaterializeTermSourceIntoBitmap(
+        ref Planning.TermSource source,
+        LowLevelTransaction llt,
+        ref RoaringBitmap tempBitmap)
+    {
+        tempBitmap.Clear();
+        switch (source.Kind)
+        {
+            case Planning.TermSourceKind.Single:
+                tempBitmap.Add(source.SingleEntryId);
+                return;
+            case Planning.TermSourceKind.SmallPostingList:
+                AddSmallPostingListToBitmap(llt, source.SmallPostingListId, ref tempBitmap);
+                return;
+            default:
+                Debug.Fail($"MaterializeTermSourceIntoBitmap called with unexpected kind: {source.Kind}");
+                return;
         }
     }
 

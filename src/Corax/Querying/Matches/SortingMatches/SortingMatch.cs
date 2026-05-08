@@ -178,18 +178,28 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
                 var allMatches = new Span<long>(bs.Ptr, bufferSize);
                 int filled = 0;
                 int r;
-                while ((r = match._inner.Fill(allMatches[filled..])) > 0)
+                if (count is > 0 and < 1024 * 1024)
                 {
-                    filled += r;
-                    if (filled >= allMatches.Length)
+                    // Count is known and reasonable — buffer is pre-sized, no growing needed.
+                    while ((r = match._inner.Fill(allMatches[filled..])) > 0)
+                        filled += r;
+                }
+                else
+                {
+                    // Count unknown or too large — use growing buffer pattern.
+                    while ((r = match._inner.Fill(allMatches[filled..])) > 0)
                     {
-                        var newSize = allMatches.Length * 2;
-                        var newScope = match._searcher.Allocator.Allocate(newSize * sizeof(long), out var newBs);
-                        var newBuf = new Span<long>(newBs.Ptr, newSize);
-                        allMatches[..filled].CopyTo(newBuf);
-                        scope.Dispose();
-                        scope = newScope;
-                        allMatches = newBuf;
+                        filled += r;
+                        if (filled >= allMatches.Length)
+                        {
+                            var newSize = allMatches.Length * 2;
+                            var newScope = match._searcher.Allocator.Allocate(newSize * sizeof(long), out var newBs);
+                            var newBuf = new Span<long>(newBs.Ptr, newSize);
+                            allMatches[..filled].CopyTo(newBuf);
+                            scope.Dispose();
+                            scope = newScope;
+                            allMatches = newBuf;
+                        }
                     }
                 }
 
@@ -559,6 +569,10 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         where TEntryComparer : struct, IEntryComparer, IComparer<UnmanagedSpan>
     {
         var allocator = match._searcher.Allocator;
+
+        if (match.TotalResults > int.MaxValue)
+            throw new InvalidOperationException($"TotalResults ({match.TotalResults}) exceeds int.MaxValue — cannot materialize all bitmap entries for sorting.");
+
         int total = (int)match.TotalResults;
 
         // TotalResults == bitmapMatch.Count, so one Fill call covers everything.

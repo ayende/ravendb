@@ -184,6 +184,10 @@ public enum ScanCompareOp : byte
 public struct SpatialFilterOp
 {
     public int MatchIndex;
+
+    /// <summary>Opaque reference to ClauseInfo (Raven.Server) — stored as object because
+    /// QueryPlan lives in Corax which cannot reference Raven.Server types. Cast back to
+    /// ClauseInfo in QueryPlanBuilder.ResolveVectorItems/ResolveSpatialFilters.</summary>
     public object Clause;
 }
 
@@ -192,6 +196,10 @@ public struct SpatialFilterOp
 public struct VectorSelectOp
 {
     public int MatchIndex;
+
+    /// <summary>Opaque reference to ClauseInfo (Raven.Server) — stored as object because
+    /// QueryPlan lives in Corax which cannot reference Raven.Server types. Cast back to
+    /// ClauseInfo in QueryPlanBuilder.ResolveVectorItems/ResolveSpatialFilters.</summary>
     public object Clause;
 }
 
