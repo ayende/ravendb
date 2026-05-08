@@ -8,7 +8,6 @@ using Corax.Utils;
 using Voron.Data.RoaringBitmaps;
 using Sparrow;
 using Sparrow.Compression;
-using Sparrow.Server;
 using Sparrow.Server.Utils;
 using Voron;
 using Voron.Data.Containers;
@@ -35,12 +34,12 @@ public static class QueryPrimitives
     // Bitmap count threshold below which entry scan is considered cheaper than
     // bitmap AND with a posting list. Below this, individual entry blob reads
     // are cheaper than decoding the full posting list.
-    private const long EntryScanCountThreshold = 32_000;
+    internal const long EntryScanCountThreshold = 32_000;
 
     // Cost multiplier: entry scan is chosen when bitmapCount * EntryScanCostMultiplier
     // is less than the posting list size. Approximates the relative cost of reading
     // entry blobs vs. decoding posting list pages.
-    private const long EntryScanCostMultiplier = 64;
+    internal const long EntryScanCostMultiplier = 64;
 
     /// <summary>
     /// Fill a bitmap from a posting list. Walks leaf pages, decodes PFor blocks,
@@ -68,7 +67,7 @@ public static class QueryPrimitives
     }
 
     /// <summary>
-    /// AND bitmap with a posting list using galloping page-scan.
+    /// AND bitmap with a posting list using bounded range scan.
     /// Uses bitmap's container key range to bound the posting list scan:
     /// Seek() jumps past entries below the bitmap's min, and pruneGreaterThan
     /// stops reading past the bitmap's max. Only posting list pages that overlap
@@ -114,7 +113,7 @@ public static class QueryPrimitives
     }
 
     /// <summary>
-    /// ANDNOT the bitmap with a posting list. Same galloping bounds as AndWith —
+    /// ANDNOT the bitmap with a posting list. Same bounded range scan as AndWith —
     /// only reads posting list pages that overlap with the bitmap's container range.
     /// </summary>
     [SkipLocalsInit]
@@ -147,7 +146,7 @@ public static class QueryPrimitives
 
     /// <summary>
     /// Runtime check: should we switch from bitmap AND to per-entry scan?
-    /// Compares cost of reading bitmap.Count entry blobs vs galloping through
+    /// Compares cost of reading bitmap.Count entry blobs vs scanning through
     /// the posting list. Returns true when entry scan is cheaper.
     /// Called directly from IL-emitted code.
     /// </summary>
@@ -191,7 +190,7 @@ public static class QueryPrimitives
     /// <summary>Fill temp bitmap from match, then AND with target.
     /// Fast paths:
     ///   - Match exposes a RoaringBitmap (IBitmapQueryMatch): AND in place against the borrowed bitmap.
-    ///   - Match is a TermMatch backed by a large posting list: use the galloping page-scan
+    ///   - Match is a TermMatch backed by a large posting list: use the bounded range scan
     ///     <see cref="AndWithPostings"/>, which bounds the posting-list scan to the bitmap's
     ///     container range — only reads pages that can intersect, instead of materializing
     ///     the full posting list into a temp bitmap.</summary>
@@ -217,7 +216,7 @@ public static class QueryPrimitives
 
     /// <summary>Fill temp bitmap from match, then ANDNOT from target.
     /// Fast paths mirror <see cref="AndWithMatch"/> — bitmap-borrow for IBitmapQueryMatch,
-    /// galloping <see cref="AndNotWithPostings"/> for TermMatch with a large posting list.</summary>
+    /// bounded range scan <see cref="AndNotWithPostings"/> for TermMatch with a large posting list.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     [SkipLocalsInit]
     public static void AndNotWithMatch(IQueryMatch match, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap)
@@ -269,7 +268,7 @@ public static class QueryPrimitives
         }
     }
 
-    /// <summary>AND the bitmap with a TermSource. Galloping page-scan when the
+    /// <summary>AND the bitmap with a TermSource. Bounded range scan when the
     /// source is a large PostingList; per-key membership / temp-bitmap-fill for
     /// the smaller cases. Empty source clears the bitmap (intersection with
     /// nothing = nothing).</summary>
@@ -323,8 +322,7 @@ public static class QueryPrimitives
         ref Planning.TermSource source,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
-        ref RoaringBitmap tempBitmap,
-        ByteStringContext allocator)
+        ref RoaringBitmap tempBitmap)
     {
         if (bitmap.IsEmpty)
             return;

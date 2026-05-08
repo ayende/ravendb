@@ -64,10 +64,6 @@ public static class QueryILEmitter
     private static readonly MethodInfo s_bitmapAdd =
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.Add), new[] { typeof(long) })!;
 
-    // IndexSearcher.Allocator — used by QueryPrimitives methods that still take an allocator
-    private static readonly MethodInfo s_searcherAllocatorGetter =
-        typeof(IndexSearcher).GetProperty(nameof(IndexSearcher.Allocator))!.GetGetMethod()!;
-
     // RoaringBitmapIterator
     private static readonly MethodInfo s_iterFill =
         typeof(RoaringBitmapIterator).GetMethod(nameof(RoaringBitmapIterator.Fill),
@@ -224,11 +220,10 @@ public static class QueryILEmitter
                     EmitCancellationCheck(il);
                     if (op.Dispatch == MatchDispatch.TermSource)
                     {
-                        // QueryPrimitives.FillBitmapFromTermSource(ref TermSources[i], llt, ref bitmap[0], allocator)
+                        // QueryPrimitives.FillBitmapFromTermSource(ref TermSources[i], llt, ref bitmap[0])
                         EmitLoadTermSourceRef(il, op.ParamIndex);
                         EmitLoadLlt(il);
                         EmitLoadBitmapRef(il, 0);
-                        EmitLoadAllocator(il);
                         il.Emit(OpCodes.Call, s_fillBitmapFromTermSource);
                     }
                     else if (op.Dispatch == MatchDispatch.TermProvider)
@@ -252,12 +247,11 @@ public static class QueryILEmitter
                     EmitCancellationCheck(il);
                     if (op.Dispatch == MatchDispatch.TermSource)
                     {
-                        // QueryPrimitives.AndWithTermSource(ref TermSources[i], llt, ref bitmap[0], ref bitmap[1], allocator)
+                        // QueryPrimitives.AndWithTermSource(ref TermSources[i], llt, ref bitmap[0], ref bitmap[1])
                         EmitLoadTermSourceRef(il, op.ParamIndex);
                         EmitLoadLlt(il);
                         EmitLoadBitmapRef(il, 0);
                         EmitLoadBitmapRef(il, 1);
-                        EmitLoadAllocator(il);
                         il.Emit(OpCodes.Call, s_andWithTermSource);
                     }
                     else if (op.Dispatch == MatchDispatch.TermProvider)
@@ -292,11 +286,10 @@ public static class QueryILEmitter
                     EmitCancellationCheck(il);
                     if (op.Dispatch == MatchDispatch.TermSource)
                     {
-                        // QueryPrimitives.FillBitmapFromTermSource(ref TermSources[i], llt, ref bitmap[slot], allocator)
+                        // QueryPrimitives.FillBitmapFromTermSource(ref TermSources[i], llt, ref bitmap[slot])
                         EmitLoadTermSourceRef(il, op.ParamIndex);
                         EmitLoadLlt(il);
                         EmitLoadBitmapRef(il, op.BitmapLocal);
-                        EmitLoadAllocator(il);
                         il.Emit(OpCodes.Call, s_fillBitmapFromTermSource);
                     }
                     else if (op.Dispatch == MatchDispatch.TermProvider)
@@ -317,6 +310,10 @@ public static class QueryILEmitter
                     break;
 
                 case PlanOpKind.ClearBitmap:
+                    // In an OR chain, ClearBitmap serves two roles:
+                    // - At OR entry: clears the slot before the first iteration fills it.
+                    // - At OR iteration end: resets the slot so the next iteration's
+                    //   SwapBitmaps finds it empty, ready to accumulate fresh results.
                     EmitLoadBitmapRef(il, op.BitmapLocal);
                     il.Emit(OpCodes.Call, s_clear);
                     break;
@@ -355,12 +352,11 @@ public static class QueryILEmitter
                     EmitCancellationCheck(il);
                     if (op.Dispatch == MatchDispatch.TermSource)
                     {
-                        // QueryPrimitives.AndNotWithTermSource(ref TermSources[i], llt, ref bitmap[0], ref bitmap[1], allocator)
+                        // QueryPrimitives.AndNotWithTermSource(ref TermSources[i], llt, ref bitmap[0], ref bitmap[1])
                         EmitLoadTermSourceRef(il, op.ParamIndex);
                         EmitLoadLlt(il);
                         EmitLoadBitmapRef(il, 0);
                         EmitLoadBitmapRef(il, 1);
-                        EmitLoadAllocator(il);
                         il.Emit(OpCodes.Call, s_andNotWithTermSource);
                     }
                     else if (op.Dispatch == MatchDispatch.TermProvider)
@@ -879,14 +875,6 @@ public static class QueryILEmitter
         il.Emit(OpCodes.Ldelema, typeof(RoaringBitmap)); // ref RoaringBitmap
     }
 
-    /// <summary>Load ctx._searcher.Allocator — ByteStringContext for methods needing allocation.</summary>
-    private static void EmitLoadAllocator(ILGenerator il)
-    {
-        il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Ldfld, s_ctxSearcher);
-        il.Emit(OpCodes.Callvirt, s_searcherAllocatorGetter);
-    }
-
     /// <summary>Load ctx._resolvedMatches[index] — pushes an IQueryMatch object reference on the stack.
     /// Uses direct array element access (ldelem.ref).</summary>
     private static void EmitLoadMatch(ILGenerator il, int index)
@@ -1145,7 +1133,7 @@ public static class QueryILEmitter
                     sb.AppendLine("ctx.Bitmaps[0].RepairAfterLazy();");
                     break;
                 case PlanOpKind.CheckAndMaybeEntryScan:
-                    sb.AppendLine($"if (ctx.Bitmaps[0].Count < 32000 && ctx.Bitmaps[0].Count * 64 < ctx.DirectSources[{op.ParamIndex}].Count) goto EntryScan;");
+                    sb.AppendLine($"if (ctx.Bitmaps[0].Count < {Primitives.QueryPrimitives.EntryScanCountThreshold} && ctx.Bitmaps[0].Count * {Primitives.QueryPrimitives.EntryScanCostMultiplier} < ctx.DirectSources[{op.ParamIndex}].Count) goto EntryScan;");
                     break;
                 case PlanOpKind.IterateInto:
                     sb.AppendLine("return; // result is in ctx.Bitmaps[0]; caller iterates via QueryPrimitives.IterateInto");
