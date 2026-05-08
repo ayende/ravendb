@@ -146,7 +146,15 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
     public int AndWith(Span<long> buffer, int matches)
     {
         if (!_executed) Execute();
-        return _bitmapData.AndWithSorted(buffer, matches);
+        // Cannot use AndWithSorted: callers (SortUsingIndexFromBitmap) pass entry IDs
+        // in sort-field order (e.g. alphabetical by Name), not in entry-ID order.
+        int kept = 0;
+        for (int i = 0; i < matches; i++)
+        {
+            if (_bitmapData.Contains(buffer[i]))
+                buffer[kept++] = buffer[i];
+        }
+        return kept;
     }
 
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)
