@@ -160,6 +160,14 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
         }
     }
 
+    /// <summary>Get execution telemetry for external inspection graph builders.</summary>
+    public void GetTelemetry(out long[] timings, out long[] resultCounts, out int entryScanTakenAtOp)
+    {
+        timings = _timings;
+        resultCounts = _resultCounts;
+        entryScanTakenAtOp = _entryScanTakenAtOp;
+    }
+
     public QueryInspectionNode Inspect()
     {
         var parameters = new Dictionary<string, string>

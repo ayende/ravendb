@@ -13,6 +13,7 @@ using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Matches.SortingMatches;
 using Corax.Querying.Matches.SortingMatches.Meta;
+using Corax.Querying.Planning;
 using Corax.Utils;
 using Raven.Client.Documents.Indexes;
 using Raven.Client.Documents.Queries.Explanation;
@@ -622,6 +623,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
             long docsToLoad = pageSize;
             bool runQuery = true;
+            QueryPlan queryPlan = null;
             while (runQuery)
             {
                 IQueryMatch queryMatch;
@@ -666,7 +668,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                                 HasBoost = builderParameters.HasBoost
                             };
                             queryMatch = QueryPlanBuilder.BuildAndCompile(
-                                planParams, builderParameters, take, out _, highlightings.Terms, token);
+                                planParams, builderParameters, take, out queryPlan, highlightings.Terms, token);
 
                             innerDisposableMatch = queryMatch as IDisposable;
 
@@ -838,8 +840,13 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 
 
                 Done:
-                // Since some primitives are lazily initialized, we must call Inspect after at least one Fill call.
-                queryTimings?.SetQueryPlan(queryMatch.Inspect());
+                if (queryTimings != null)
+                {
+                    var inspectionNode = queryPlan != null
+                        ? QueryPlanBuilder.BuildInspectionGraph(queryPlan, queryMatch)
+                        : queryMatch.Inspect();
+                    queryTimings.SetQueryPlan(inspectionNode);
+                }
 
                 // Dispose the compiled match (and its bitmap allocations) deterministically.
                 // When the bitmap pipeline applies sorting, queryMatch becomes a SortingMatch
