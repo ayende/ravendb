@@ -9,7 +9,7 @@ using Corax.Mappings;
 using Corax.Pipeline;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
-using Corax.Querying.Matches.TermProviders;
+using Corax.Querying.Matches.TermsProviders;
 using Corax.Utils;
 using Sparrow;
 using Sparrow.Server;
@@ -345,23 +345,23 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         return termAmount;
     }
 
-    public bool TryGetTermsOfField(in FieldMetadata field, out ExistsTermProvider<Lookup<CompactKeyLookup>.ForwardIterator> existsTermProvider)
+    public bool TryGetTermsOfField(in FieldMetadata field, out ExistsTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator> existsTermsProvider)
     {
-        return TryGetTermsOfField<Lookup<CompactKeyLookup>.ForwardIterator>(field, out existsTermProvider);
+        return TryGetTermsOfField<Lookup<CompactKeyLookup>.ForwardIterator>(field, out existsTermsProvider);
     }
 
-    public bool TryGetTermsOfField<TLookupIterator>(in FieldMetadata field, out ExistsTermProvider<TLookupIterator> existsTermProvider)
+    public bool TryGetTermsOfField<TLookupIterator>(in FieldMetadata field, out ExistsTermsProvider<TLookupIterator> existsTermsProvider)
         where TLookupIterator : struct, ILookupIterator
     {
         var terms = _fieldsTree?.CompactTreeFor(field.FieldName);
 
         if (terms == null)
         {
-            existsTermProvider = default;
+            existsTermsProvider = default;
             return false;
         }
 
-        existsTermProvider = new ExistsTermProvider<TLookupIterator>(this, terms, field);
+        existsTermsProvider = new ExistsTermsProvider<TLookupIterator>(this, terms, field);
         return true;
     }
 

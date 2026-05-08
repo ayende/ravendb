@@ -60,7 +60,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
             Assert.Equal(1, secondLevel.Children.Count);
 
             var thirdLevel = secondLevel.Children[0];
-            Assert.Equal("ExistsTermProvider", thirdLevel.Operation);
+            Assert.Equal("ExistsTermsProvider", thirdLevel.Operation);
             Assert.Empty(thirdLevel.Children);
         }
 
@@ -149,7 +149,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
             Assert.Equal(1, secondLevel.Children.Count);
 
             var thirdLevel = secondLevel.Children[0];
-            Assert.Equal("ExistsTermProvider", thirdLevel.Operation);
+            Assert.Equal("ExistsTermsProvider", thirdLevel.Operation);
             Assert.Empty(thirdLevel.Children);
         }
 
@@ -238,7 +238,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
             Assert.Equal(1, secondLevel.Children.Count);
 
             var thirdLevel = secondLevel.Children[0];
-            Assert.Equal("ExistsTermProvider", thirdLevel.Operation);
+            Assert.Equal("ExistsTermsProvider", thirdLevel.Operation);
             Assert.Empty(thirdLevel.Children);
         }
 
@@ -496,7 +496,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
             Assert.Equal(1, secondLevel.Children.Count);
 
             var thirdLevel = secondLevel.Children[0];
-            Assert.Equal("ExistsTermProvider", thirdLevel.Operation);
+            Assert.Equal("ExistsTermsProvider", thirdLevel.Operation);
             Assert.Empty(thirdLevel.Children);
         }
 
@@ -585,7 +585,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
             Assert.Equal(1, secondLevel.Children.Count);
 
             var thirdLevel = secondLevel.Children[0];
-            Assert.Equal("ExistsTermProvider", thirdLevel.Operation);
+            Assert.Equal("ExistsTermsProvider", thirdLevel.Operation);
             Assert.Empty(thirdLevel.Children);
         }
 

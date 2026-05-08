@@ -4,7 +4,7 @@ using System.Threading;
 using Corax.Mappings;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
-using Corax.Querying.Matches.TermProviders;
+using Corax.Querying.Matches.TermsProviders;
 using Voron;
 using Voron.Data.Lookups;
 using static Voron.Data.CompactTrees.CompactTree;
@@ -154,11 +154,11 @@ public partial class IndexSearcher
         if (terms == null)
             return TermMatch.CreateEmpty(this, _transaction.Allocator);
 
-        ITermProvider provider = forward
-            ? new TermRangeProvider<Lookup<CompactKeyLookup>.ForwardIterator, TLow, THigh>(this, terms, field, low, high)
-            : (ITermProvider)new TermRangeProvider<Lookup<CompactKeyLookup>.BackwardIterator, TLow, THigh>(this, terms, field, low, high);
+        ITermsProvider provider = forward
+            ? new TermsRangeProvider<Lookup<CompactKeyLookup>.ForwardIterator, TLow, THigh>(this, terms, field, low, high)
+            : (ITermsProvider)new TermsRangeProvider<Lookup<CompactKeyLookup>.BackwardIterator, TLow, THigh>(this, terms, field, low, high);
 
-        return new TermProviderMatch(provider, _transaction.LowLevelTransaction, _transaction.Allocator);
+        return new TermsProviderMatch(provider, _transaction.LowLevelTransaction, _transaction.Allocator);
     }
 
     private IQueryMatch RangeBuilder<TLow, THigh>(FieldMetadata field, long low, long high, bool forward, bool streamingEnabled, long maxNumberOfTerms, CancellationToken token)
@@ -170,11 +170,11 @@ public partial class IndexSearcher
         if (set == null)
             return TermMatch.CreateEmpty(this, _transaction.Allocator);
 
-        ITermProvider provider = forward
-            ? new TermNumericRangeProvider<Lookup<Int64LookupKey>.ForwardIterator, TLow, THigh, Int64LookupKey>(this, set, field, low, high)
-            : (ITermProvider)new TermNumericRangeProvider<Lookup<Int64LookupKey>.BackwardIterator, TLow, THigh, Int64LookupKey>(this, set, field, low, high);
+        ITermsProvider provider = forward
+            ? new TermsNumericRangeProvider<Lookup<Int64LookupKey>.ForwardIterator, TLow, THigh, Int64LookupKey>(this, set, field, low, high)
+            : (ITermsProvider)new TermsNumericRangeProvider<Lookup<Int64LookupKey>.BackwardIterator, TLow, THigh, Int64LookupKey>(this, set, field, low, high);
 
-        return new TermProviderMatch(provider, _transaction.LowLevelTransaction, _transaction.Allocator);
+        return new TermsProviderMatch(provider, _transaction.LowLevelTransaction, _transaction.Allocator);
     }
 
     private IQueryMatch RangeBuilder<TLow, THigh>(FieldMetadata field, double low, double high, bool forward, bool streamingEnabled, long maxNumberOfTerms, CancellationToken token)
@@ -186,10 +186,10 @@ public partial class IndexSearcher
         if (set == null)
             return TermMatch.CreateEmpty(this, _transaction.Allocator);
 
-        ITermProvider provider = forward
-            ? new TermNumericRangeProvider<Lookup<DoubleLookupKey>.ForwardIterator, TLow, THigh, DoubleLookupKey>(this, set, field, low, high)
-            : (ITermProvider)new TermNumericRangeProvider<Lookup<DoubleLookupKey>.BackwardIterator, TLow, THigh, DoubleLookupKey>(this, set, field, low, high);
+        ITermsProvider provider = forward
+            ? new TermsNumericRangeProvider<Lookup<DoubleLookupKey>.ForwardIterator, TLow, THigh, DoubleLookupKey>(this, set, field, low, high)
+            : (ITermsProvider)new TermsNumericRangeProvider<Lookup<DoubleLookupKey>.BackwardIterator, TLow, THigh, DoubleLookupKey>(this, set, field, low, high);
 
-        return new TermProviderMatch(provider, _transaction.LowLevelTransaction, _transaction.Allocator);
+        return new TermsProviderMatch(provider, _transaction.LowLevelTransaction, _transaction.Allocator);
     }
 }

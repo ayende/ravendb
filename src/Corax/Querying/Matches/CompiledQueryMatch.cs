@@ -11,22 +11,22 @@ using Voron.Impl;
 
 namespace Corax.Querying.Matches;
 
-public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDisposable
+public struct CompiledQueryMatch : IBitmapQueryMatch, IDisposable
 {
-    private readonly QueryILEmitter.CompiledExecuteDelegate _compiledDelegate;
-    internal readonly IQueryMatch[] _resolvedMatches;
-    internal readonly TermSource[] _termSources;
-    internal readonly ITermProvider[] _termProviders;
-    internal readonly long[] _longParams;
-    internal readonly double[] _doubleParams;
-    internal readonly Slice[] _sliceParams;
-    internal readonly long[] _fieldRootPages;
+    private readonly QueryIlEmitter.CompiledExecuteDelegate _compiledDelegate;
+    public readonly IQueryMatch[] ResolvedMatches;
+    public readonly TermSource[] TermSources;
+    public readonly ITermsProvider[] TermsProviders;
+    public readonly long[] LongParams;
+    public readonly double[] DoubleParams;
+    public readonly Slice[] SliceParams;
+    public readonly long[] FieldRootPages;
     private readonly string _explainSource;
     private readonly ByteStringContext _allocator;
-    internal readonly IndexSearcher _searcher;
+    public readonly IndexSearcher Searcher;
     private readonly int _bitmapCount;
     private readonly int _opCount;
-    internal readonly CancellationToken _token;
+    public readonly CancellationToken Token;
 
     private RoaringBitmap _bitmapData;
     private RoaringBitmapIterator _iterator;
@@ -35,46 +35,45 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
 
     // Bitmap pool: [0] = main result, [1..N] = scratch.
     // Allocated once in Execute(), then accessed by the compiled delegate via IL.
-    internal RoaringBitmap[] _bitmaps;
+    public RoaringBitmap[] Bitmaps;
 
     // LowLevelTransaction cached at Execute() time so the emitted IL does not re-fetch it per op.
-    internal LowLevelTransaction _llt;
+    public LowLevelTransaction Llt;
 
     /// <summary>Limit for early-exit during bitmap accumulation (unsorted queries only).
     /// When set, FillFromPostings stops after limit entries and OR branches are
     /// skipped once the bitmap has enough. Set to long.MaxValue when an ORDER BY
     /// is present (sorting needs the full bitmap for Contains checks).</summary>
-    public long Limit { get => _limit; set => _limit = value; }
-    internal long _limit;
+    public long Limit;
 
     // Telemetry — populated during Execute if timings are requested
-    internal long[] _timings;
-    internal long[] _resultCounts;
-    internal int _entryScanTakenAtOp;
+    public long[] Timings;
+    public long[] ResultCounts;
+    public int EntryScanTakenAtOp;
 
     public CompiledQueryMatch(CompiledPlan compiledPlan, int bitmapCount, int opCount,
-        IQueryMatch[] resolvedMatches, TermSource[] termSources, ITermProvider[] termProviders,
+        IQueryMatch[] resolvedMatches, TermSource[] termSources, ITermsProvider[] termsProviders,
         long[] longParams, double[] doubleParams, Slice[] sliceParams, long[] fieldRootPages,
         IndexSearcher searcher, ByteStringContext allocator, CancellationToken token)
     {
         _compiledDelegate = compiledPlan.CompiledDelegate;
         _bitmapCount = bitmapCount;
         _opCount = opCount;
-        _resolvedMatches = resolvedMatches;
-        _termSources = termSources;
-        _termProviders = termProviders;
-        _longParams = longParams;
-        _doubleParams = doubleParams;
-        _sliceParams = sliceParams;
-        _fieldRootPages = fieldRootPages;
+        ResolvedMatches = resolvedMatches;
+        TermSources = termSources;
+        TermsProviders = termsProviders;
+        LongParams = longParams;
+        DoubleParams = doubleParams;
+        SliceParams = sliceParams;
+        FieldRootPages = fieldRootPages;
         _explainSource = compiledPlan.ExplainSource;
         _allocator = allocator;
-        _searcher = searcher;
-        _token = token;
-        _limit = long.MaxValue;
+        Searcher = searcher;
+        Token = token;
+        Limit = long.MaxValue;
         _bitmapData = new RoaringBitmap(allocator);
-        _bitmaps = null;
-        _llt = null;
+        Bitmaps = null;
+        Llt = null;
         _iterator = default;
         _executed = false;
         _count = -1;
@@ -95,11 +94,11 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
     {
         get
         {
-            if (_resolvedMatches == null)
+            if (ResolvedMatches == null)
                 return false;
-            for (int i = 0; i < _resolvedMatches.Length; i++)
+            for (int i = 0; i < ResolvedMatches.Length; i++)
             {
-                if (_resolvedMatches[i].IsBoosting)
+                if (ResolvedMatches[i].IsBoosting)
                     return true;
             }
             return false;
@@ -166,21 +165,21 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
 
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)
     {
-        if (_resolvedMatches == null)
+        if (ResolvedMatches == null)
             return;
 
-        for (int i = 0; i < _resolvedMatches.Length; i++)
+        for (int i = 0; i < ResolvedMatches.Length; i++)
         {
-            _resolvedMatches[i].Score(matches, scores, boostFactor);
+            ResolvedMatches[i].Score(matches, scores, boostFactor);
         }
     }
 
     /// <summary>Get execution telemetry for external inspection graph builders.</summary>
     public void GetTelemetry(out long[] timings, out long[] resultCounts, out int entryScanTakenAtOp)
     {
-        timings = _timings;
-        resultCounts = _resultCounts;
-        entryScanTakenAtOp = _entryScanTakenAtOp;
+        timings = Timings;
+        resultCounts = ResultCounts;
+        entryScanTakenAtOp = EntryScanTakenAtOp;
     }
 
     public QueryInspectionNode Inspect()
@@ -190,28 +189,28 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
             ["Explain"] = _explainSource ?? "N/A"
         };
 
-        if (_entryScanTakenAtOp >= 0)
-            parameters["EntryScanAt"] = _entryScanTakenAtOp.ToString();
+        if (EntryScanTakenAtOp >= 0)
+            parameters["EntryScanAt"] = EntryScanTakenAtOp.ToString();
 
-        if (_timings != null && _timings.Length > 0)
+        if (Timings != null && Timings.Length > 0)
         {
             double tickFreq = System.Diagnostics.Stopwatch.Frequency / 1000.0; // ticks per ms
-            for (int i = 0; i < _timings.Length; i++)
+            for (int i = 0; i < Timings.Length; i++)
             {
-                if (_timings[i] > 0)
-                    parameters[$"Op{i}_ms"] = (_timings[i] / tickFreq).ToString("F3");
-                if (i < _resultCounts.Length && _resultCounts[i] > 0)
-                    parameters[$"Op{i}_count"] = _resultCounts[i].ToString();
+                if (Timings[i] > 0)
+                    parameters[$"Op{i}_ms"] = (Timings[i] / tickFreq).ToString("F3");
+                if (i < ResultCounts.Length && ResultCounts[i] > 0)
+                    parameters[$"Op{i}_count"] = ResultCounts[i].ToString();
             }
         }
 
         // Report as "MultiTermMatch" for backward compatibility with query plan inspection tests.
-        // Children are the resolved inner matches (e.g., ExistsTermProvider, TermQuery, etc.).
+        // Children are the resolved inner matches (e.g., ExistsTermsProvider, TermQuery, etc.).
         var children = new List<QueryInspectionNode>();
-        if (_resolvedMatches != null)
+        if (ResolvedMatches != null)
         {
-            for (int i = 0; i < _resolvedMatches.Length; i++)
-                children.Add(_resolvedMatches[i].Inspect());
+            for (int i = 0; i < ResolvedMatches.Length; i++)
+                children.Add(ResolvedMatches[i].Inspect());
         }
 
         return new QueryInspectionNode("MultiTermMatch", parameters: parameters, children: children);
@@ -224,27 +223,27 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
         if (_executed) return;
 
         // Allocate bitmap pool: [0] = main, [1..N] = scratch
-        if (_bitmaps == null || _bitmaps.Length < _bitmapCount)
-            _bitmaps = new RoaringBitmap[_bitmapCount];
+        if (Bitmaps == null || Bitmaps.Length < _bitmapCount)
+            Bitmaps = new RoaringBitmap[_bitmapCount];
 
-        for (int i = 0; i < _bitmaps.Length; i++) _bitmaps[i] = new RoaringBitmap(_allocator);
-        _bitmaps[0] = _bitmapData; // main bitmap (owned by this struct)
+        for (int i = 0; i < Bitmaps.Length; i++) Bitmaps[i] = new RoaringBitmap(_allocator);
+        Bitmaps[0] = _bitmapData; // main bitmap (owned by this struct)
 
         // Cache LLT for the delegate
-        _llt = _searcher.Transaction.LowLevelTransaction;
+        Llt = Searcher.Transaction.LowLevelTransaction;
 
         // Only allocate timing arrays when telemetry is requested (opCount > 0).
         // Caller passes opCount = 0 to skip allocation.
-        _timings = _opCount > 0 ? new long[_opCount] : null;
-        _resultCounts = _opCount > 0 ? new long[_opCount] : null;
-        _entryScanTakenAtOp = -1;
+        Timings = _opCount > 0 ? new long[_opCount] : null;
+        ResultCounts = _opCount > 0 ? new long[_opCount] : null;
+        EntryScanTakenAtOp = -1;
 
         try
         {
             _compiledDelegate(ref this);
 
             // Take ownership of bitmaps[0] (may have been swapped during entry scan)
-            _bitmapData = _bitmaps[0];
+            _bitmapData = Bitmaps[0];
             _bitmapData.PrepareForReading();
             _count = _bitmapData.Count;
             _iterator = _bitmapData.GetIterator();
@@ -253,8 +252,8 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
         finally
         {
             // Dispose scratch bitmaps only (not [0], which is _bitmapData)
-            for (int i = 1; i < _bitmaps.Length; i++)
-                _bitmaps[i].Dispose();
+            for (int i = 1; i < Bitmaps.Length; i++)
+                Bitmaps[i].Dispose();
         }
     }
 

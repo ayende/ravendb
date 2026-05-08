@@ -2,7 +2,7 @@
 
 namespace Corax.Querying.Matches.Meta
 {
-    public interface ITermProvider
+    public interface ITermsProvider
     {
         bool IsFillSupported { get; }
 

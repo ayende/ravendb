@@ -7,10 +7,10 @@ using Corax.Mappings;
 using Corax.Querying.Matches.Meta;
 using Voron;
 
-namespace Corax.Querying.Matches.TermProviders
+namespace Corax.Querying.Matches.TermsProviders
 {
     [DebuggerDisplay("{DebugView,nq}")]
-    public struct InTermProvider<TTermsType> : ITermProvider
+    public struct InTermsProvider<TTermsType> : ITermsProvider
     {
         private readonly IndexSearcher _searcher;
         private readonly List<TTermsType> _terms;
@@ -18,7 +18,7 @@ namespace Corax.Querying.Matches.TermProviders
         private readonly FieldMetadata _field;
         private readonly FieldMetadata _exactField;
 
-        public InTermProvider(IndexSearcher searcher, in FieldMetadata field, List<TTermsType> terms)
+        public InTermsProvider(IndexSearcher searcher, in FieldMetadata field, List<TTermsType> terms)
         {
             _field = field;
             _exactField = field.ChangeAnalyzer(FieldIndexingMode.Exact);
@@ -103,7 +103,7 @@ namespace Corax.Querying.Matches.TermProviders
         
         public QueryInspectionNode Inspect()
         {
-            return new QueryInspectionNode($"{nameof(InTermProvider<TTermsType>)}",
+            return new QueryInspectionNode($"{nameof(InTermsProvider<TTermsType>)}",
                             parameters: new Dictionary<string, string>()
                             {
                                 { Constants.QueryInspectionNode.FieldName, _field.ToString() },
@@ -114,7 +114,7 @@ namespace Corax.Querying.Matches.TermProviders
         [DoesNotReturn]
         private static TermMatch ThrowInvalidTermType()
         {
-            throw new InvalidDataException($"In {nameof(InTermProvider<TTermsType>)} type {nameof(TTermsType)} has to be `string` or `Slice`.");
+            throw new InvalidDataException($"In {nameof(InTermsProvider<TTermsType>)} type {nameof(TTermsType)} has to be `string` or `Slice`.");
         }
         
         string DebugView => Inspect().ToString();

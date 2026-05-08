@@ -18,10 +18,10 @@ using Voron.Data.PostingLists;
 using Voron.Util;
 using Range = Corax.Querying.Matches.Meta.Range;
 
-namespace Corax.Querying.Matches.TermProviders;
+namespace Corax.Querying.Matches.TermsProviders;
 
 [DebuggerDisplay("{DebugView,nq}")]
-public struct TermRangeProvider<TLookupIterator, TLow, THigh> : ITermProvider, IAggregationProvider
+public struct TermsRangeProvider<TLookupIterator, TLow, THigh> : ITermsProvider, IAggregationProvider
     where TLookupIterator : struct, ILookupIterator
     where TLow : struct, Range.Marker
     where THigh : struct, Range.Marker
@@ -38,7 +38,7 @@ public struct TermRangeProvider<TLookupIterator, TLow, THigh> : ITermProvider, I
     private bool _shouldIncludeLastTerm;
     private long _endContainerId;
 
-    public TermRangeProvider(Querying.IndexSearcher indexSearcher, CompactTree tree, in FieldMetadata field, Slice low, Slice high)
+    public TermsRangeProvider(Querying.IndexSearcher indexSearcher, CompactTree tree, in FieldMetadata field, Slice low, Slice high)
     {
         _indexSearcher = indexSearcher;
         _field = field;
@@ -209,7 +209,7 @@ public struct TermRangeProvider<TLookupIterator, TLow, THigh> : ITermProvider, I
             ? null
             : _high.ToString();
 
-        return new QueryInspectionNode(nameof(TermRangeProvider<TLookupIterator, TLow, THigh>),
+        return new QueryInspectionNode(nameof(TermsRangeProvider<TLookupIterator, TLow, THigh>),
             parameters: new Dictionary<string, string>()
             {
                 { Constants.QueryInspectionNode.FieldName, _field.ToString() },
