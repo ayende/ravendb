@@ -1470,12 +1470,17 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 string baseDocument = null;
                 IQueryMatch baseDocumentQuery = null;
                 var firstArgument = moreLikeThisExpression.Arguments[0];
-                if (firstArgument is BinaryExpression)
+                if (firstArgument is BinaryExpression be)
                 {
-                    baseDocumentQuery = BuildCompiledQueryMatch(builderParameters);
+                    // moreLikeThis(id() = 'datas/4-A', ...) — build a query from just the
+                    // inner binary expression (not the full WHERE which wraps it in moreLikeThis).
+                    baseDocumentQuery = BuildQueryFromExpression(builderParameters, be);
                 }
                 else
                 {
+                    // Value argument: either a boolean (true → all entries) or a document ID string.
+                    // moreLikeThis(true, ...) → compare against all entries
+                    // moreLikeThis('datas/4-A', ...) → baseDocument is loaded from DocumentsStorage later
                     var firstArgumentValue = QueryBuilderHelper.GetValueAsString(QueryBuilderHelper.GetValue(metadata.Query, metadata, queryParameters, firstArgument).Value);
                     if (bool.TryParse(firstArgumentValue, out var firstArgumentBool))
                     {
@@ -1485,6 +1490,8 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     }
                     else
                     {
+                        // Document ID as a string — the MoreLikeThis reader loads the document
+                        // and extracts terms from it (not via index lookup).
                         baseDocument = firstArgumentValue;
                     }
                 }
@@ -1499,6 +1506,17 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     Options = options
                 };
             }
+        }
+
+        /// <summary>
+        /// Build a query match from the inner BinaryExpression of a moreLikeThis clause,
+        /// e.g. the <c>id() = 'datas/4-A'</c> part of <c>moreLikeThis(id() = 'datas/4-A', ...)</c>.
+        /// Resolves the expression directly instead of going through the full plan pipeline
+        /// (which would see the moreLikeThis wrapper and produce AllEntries).
+        /// </summary>
+        private static IQueryMatch BuildQueryFromExpression(QueryBuilderParameters builderParameters, QueryExpression expression)
+        {
+            return QueryPlanBuilder.BuildFromSubExpression(builderParameters, expression);
         }
 
         private static IQueryMatch BuildCompiledQueryMatch(QueryBuilderParameters builderParameters)

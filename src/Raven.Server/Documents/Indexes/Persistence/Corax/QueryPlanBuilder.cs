@@ -377,6 +377,46 @@ internal static class QueryPlanBuilder
         return result;
     }
 
+    /// <summary>
+    /// Build a query match from a sub-expression (e.g. the inner BinaryExpression
+    /// of a moreLikeThis clause). Parses and resolves the expression directly
+    /// without going through the full plan/compile pipeline.
+    /// </summary>
+    public static IQueryMatch BuildFromSubExpression(QueryBuilderParameters builderParams, QueryExpression expression)
+    {
+        var indexSearcher = builderParams.IndexSearcher;
+        var clauses = new List<ClauseInfo>();
+        bool hasMixed = false;
+        ParseExpression(expression, indexSearcher, clauses, builderParams.QueryParameters,
+            builderParams.Metadata, ref hasMixed);
+
+        if (clauses.Count == 0)
+            return indexSearcher.AllEntries();
+
+        if (clauses.Count == 1)
+            return ResolveClause(clauses[0], indexSearcher, builderParams: builderParams);
+
+        // Multiple clauses (AND chain) — resolve each and AND them via bitmap
+        var bitmap = new BitmapMatch(indexSearcher.Allocator);
+        var temp = new RoaringBitmap(indexSearcher.Allocator);
+        bool first = true;
+        foreach (var clause in clauses)
+        {
+            var match = ResolveClause(clause, indexSearcher, builderParams: builderParams);
+            if (first)
+            {
+                QueryPrimitives.FillFromMatch(match, ref bitmap.BitmapState);
+                first = false;
+            }
+            else
+            {
+                QueryPrimitives.AndWithMatch(match, ref bitmap.BitmapState, ref temp);
+            }
+        }
+        temp.Dispose();
+        return bitmap;
+    }
+
     public static QueryPlan BuildPlan(PlanParameters p)
     {
         var query = p.Metadata.Query;
