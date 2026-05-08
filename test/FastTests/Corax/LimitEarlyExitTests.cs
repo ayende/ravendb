@@ -171,6 +171,51 @@ public class LimitEarlyExitTests(ITestOutputHelper output) : RavenTestBase(outpu
 
     [RavenTheory(RavenTestCategory.Querying | RavenTestCategory.Corax)]
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public void SkipAndTakeReturnsCorrectPage(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        InsertDocuments(store, 500);
+
+        using var session = store.OpenSession();
+        // skip 5, take 10 → bitmap needs at least 15 entries
+        var results = session.Advanced.RawQuery<Doc>(
+                "from index 'DocIndex' where Tag = 'even' limit 5, 10")
+            .ToList();
+
+        Assert.Equal(10, results.Count);
+        foreach (var r in results)
+            Assert.Equal("even", r.Tag);
+    }
+
+    [RavenTheory(RavenTestCategory.Querying | RavenTestCategory.Corax)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public async Task SkipAndTakeDoesNotScanAll(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        InsertDocuments(store, 500);
+
+        using var session = store.OpenAsyncSession();
+        var results = await session.Advanced
+            .AsyncDocumentQuery<Doc, DocIndex>()
+            .WhereEquals("Tag", "even")
+            .Skip(5)
+            .Take(10)
+            .Timings(out QueryTimings timings)
+            .ToListAsync();
+
+        Assert.Equal(10, results.Count);
+
+        var plan = (QueryInspectionNode)timings.QueryPlan;
+        Assert.NotNull(plan);
+        Assert.Equal("CompiledQuery", plan.Operation);
+        var scanned = long.Parse(plan.Parameters["ScannedEntries"]);
+        // skip=5, take=10 → bitmap needs 15 entries, much less than 250
+        Assert.True(scanned < 250,
+            $"Expected early exit to scan fewer than 250 entries, but scanned {scanned}");
+    }
+
+    [RavenTheory(RavenTestCategory.Querying | RavenTestCategory.Corax)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
     public void NoLimitReturnsAll(Options options)
     {
         using var store = GetDocumentStore(options);
