@@ -1450,7 +1450,8 @@ namespace FastTests.Corax
                 out var debugPlan,
                 highlightingTerms: null,
                 CancellationToken.None);
-            Output?.WriteLine($"PLAN for [{rqlQuery}]:\n{QueryILEmitter.GenerateExplainSource(debugPlan)}");
+
+
 
             // Execute the compiled match to collect entry IDs
             var results = new List<long>();
