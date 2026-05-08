@@ -42,7 +42,7 @@ public static class QueryPrimitives
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxFillFromMatch(Matches.CompiledQueryMatch ctx, int paramIndex)
-        => FillFromMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[0]);
+        => FillFromMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[0], ctx.Limit);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxOrFillFromTermSource(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
@@ -269,7 +269,7 @@ public static class QueryPrimitives
     ///     skipping the per-batch IQueryMatch + function-pointer indirection.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     [SkipLocalsInit]
-    public static void FillFromMatch(IQueryMatch match, ref RoaringBitmap bitmap)
+    public static void FillFromMatch(IQueryMatch match, ref RoaringBitmap bitmap, long limit = long.MaxValue)
     {
         if (match is IBitmapQueryMatch bm)
         {
@@ -281,14 +281,19 @@ public static class QueryPrimitives
         }
         if (match is Matches.TermMatch tm && tm.TryGetPostingListIterator(out var iter))
         {
-            FillFromPostings(ref iter, ref bitmap);
+            FillFromPostings(ref iter, ref bitmap, limit);
             return;
         }
         Span<long> buffer = stackalloc long[FillBufferSize];
         int read;
+        long total = 0;
         while ((read = match.Fill(buffer)) > 0)
         {
+            long remaining = limit - total;
+            read = (int)Math.Min(read, remaining);
+            if (read <= 0) break;
             bitmap.AddRange(buffer.Slice(0, read));
+            total += read;
         }
     }
 
