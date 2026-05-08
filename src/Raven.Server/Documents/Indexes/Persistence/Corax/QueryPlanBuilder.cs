@@ -75,6 +75,182 @@ internal static class QueryPlanBuilder
         public bool HasBoost;
     }
 
+    /// <summary>
+    /// Build a structured QueryInspectionNode tree from the compiled plan for Studio visualization.
+    /// Walks PlanOp[] and maps each op back to its ClauseInfo for field/term display.
+    /// Annotates with timing and row counts from the executed CompiledQueryMatch.
+    /// </summary>
+    public static QueryInspectionNode BuildInspectionGraph(QueryPlan plan, IQueryMatch executedMatch)
+    {
+        long[] timings = null;
+        long[] resultCounts = null;
+        int entryScanAt = -1;
+
+        if (executedMatch is CompiledQueryMatch compiled)
+        {
+            compiled.GetTelemetry(out timings, out resultCounts, out entryScanAt);
+        }
+
+        double tickFreq = System.Diagnostics.Stopwatch.Frequency / 1000.0;
+        var ops = plan.Ops;
+        if (ops == null || ops.Length == 0)
+            return executedMatch.Inspect(); // fallback
+
+        // Build a flattened clause list matching the ParamIndex layout
+        var flatClauses = FlattenClausesForInspection(plan);
+
+        var rootParams = new Dictionary<string, string>();
+        if (plan.IsAllEntries)
+            rootParams["Plan"] = "AllEntries";
+
+        var root = new QueryInspectionNode("CompiledQuery", parameters: rootParams);
+
+        // Track OR group nesting via SwapBitmaps/OrBitmaps
+        QueryInspectionNode orGroupNode = null;
+
+        for (int i = 0; i < ops.Length; i++)
+        {
+            var op = ops[i];
+
+            if (op.Kind == PlanOpKind.SwapBitmaps)
+            {
+                orGroupNode = new QueryInspectionNode("AND-Group");
+                continue;
+            }
+            if (op.Kind == PlanOpKind.OrBitmaps)
+            {
+                if (orGroupNode != null)
+                {
+                    root.Children.Add(orGroupNode);
+                    orGroupNode = null;
+                }
+                continue;
+            }
+
+            if (op.Kind is PlanOpKind.ClearBitmap or PlanOpKind.CheckEmpty
+                or PlanOpKind.RepairAfterLazy or PlanOpKind.IterateInto)
+                continue;
+
+            string opName = op.Kind switch
+            {
+                PlanOpKind.FillFromPostings => "Fill",
+                PlanOpKind.AndWithPostings => "AND",
+                PlanOpKind.OrWithPostings => "OR",
+                PlanOpKind.LazyOrWithPostings => "OR",
+                PlanOpKind.AndNotWithPostings => "ANDNOT",
+                PlanOpKind.AndBitmaps => "AND-Bitmaps",
+                PlanOpKind.AndNotBitmaps => "ANDNOT-Bitmaps",
+                PlanOpKind.CheckAndMaybeEntryScan => "EntryScanCheck",
+                PlanOpKind.DirectIterate => "DirectIterate",
+                _ => op.Kind.ToString()
+            };
+
+            var parameters = new Dictionary<string, string>();
+
+            parameters["Dispatch"] = op.Dispatch switch
+            {
+                MatchDispatch.TermSource => "Term",
+                MatchDispatch.TermProvider => "MultiTerm",
+                MatchDispatch.DirectSource => "Match",
+                _ => op.Dispatch.ToString()
+            };
+
+            if (op.ParamIndex >= 0 && op.ParamIndex < flatClauses.Count)
+            {
+                var clause = flatClauses[op.ParamIndex];
+                if (clause != null)
+                {
+                    if (clause.FieldName != null)
+                        parameters["FieldName"] = clause.FieldName;
+                    if (clause.TermValue != null)
+                        parameters["Term"] = clause.TermValue;
+                    if (clause.TermValue2 != null)
+                        parameters["Term2"] = clause.TermValue2;
+                    if (clause.ClauseType != ClauseType.Equals)
+                        parameters["ClauseType"] = clause.ClauseType.ToString();
+                    if (clause.IsNegated)
+                        parameters["Negated"] = "true";
+                    if (clause.InTerms != null && clause.InTerms.Count > 0)
+                        parameters["Terms"] = string.Join(", ", clause.InTerms.Take(5))
+                            + (clause.InTerms.Count > 5 ? $" ... ({clause.InTerms.Count} total)" : "");
+                }
+            }
+
+            if (op.EstimatedCardinality > 0 && op.EstimatedCardinality < long.MaxValue)
+                parameters["EstimatedRows"] = op.EstimatedCardinality.ToString("N0");
+
+            if (resultCounts != null && i < resultCounts.Length && resultCounts[i] > 0)
+                parameters["Count"] = resultCounts[i].ToString();
+
+            if (timings != null && i < timings.Length && timings[i] > 0)
+                parameters["Ms"] = (timings[i] / tickFreq).ToString("F3");
+
+            if (i == entryScanAt)
+                parameters["EntryScan"] = "triggered";
+
+            var node = new QueryInspectionNode(opName, parameters: parameters);
+
+            if (orGroupNode != null)
+                orGroupNode.Children.Add(node);
+            else
+                root.Children.Add(node);
+        }
+
+        if (orGroupNode != null)
+            root.Children.Add(orGroupNode);
+
+        return root;
+    }
+
+    private static List<ClauseInfo> FlattenClausesForInspection(QueryPlan plan)
+    {
+        var result = new List<ClauseInfo>();
+        if (plan.Clauses == null)
+            return result;
+
+        foreach (var obj in plan.Clauses)
+        {
+            if (obj is not ClauseInfo clause)
+            {
+                result.Add(null);
+                continue;
+            }
+
+            if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
+            {
+                foreach (var sub in clause.OrSubClauses)
+                    result.Add(sub);
+            }
+            else if (clause.ClauseType == ClauseType.AndGroup && clause.AndSubClauses != null)
+            {
+                foreach (var sub in clause.AndSubClauses)
+                    result.Add(sub);
+            }
+            else if ((clause.ClauseType == ClauseType.In || clause.ClauseType == ClauseType.AllIn) && clause.InTerms != null)
+            {
+                foreach (var term in clause.InTerms)
+                {
+                    result.Add(new ClauseInfo
+                    {
+                        FieldName = clause.FieldName,
+                        TermValue = term,
+                        ClauseType = clause.ClauseType,
+                        IsNegated = clause.IsNegated
+                    });
+                }
+            }
+            else
+            {
+                result.Add(clause);
+            }
+        }
+
+        if (plan.AllNegated)
+            result.Add(new ClauseInfo { ClauseType = ClauseType.Exists, FieldName = "(AllEntries)" });
+
+        return result;
+    }
+
     public static QueryPlan BuildPlan(
         IndexSearcher indexSearcher,
         QueryMetadata metadata,
