@@ -41,9 +41,12 @@ namespace Corax.Querying.Matches.TermProviders
             var contains = _term.Decoded();
             int count = 0;
 
+            using var scope = new CompactKeyCacheScope(_tree._inner.Llt);
+            var key = scope.Key;
+
             while (count < postingListIds.Length)
             {
-                if (_iterator.MoveNext(out var key, out long postingListId, out _) == false)
+                if (_iterator.MoveNext(key, out long postingListId, out _) == false)
                     break;
 
                 if (!key.Decoded().Contains(contains))
