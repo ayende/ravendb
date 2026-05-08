@@ -218,7 +218,7 @@ public struct VectorSearchMatch : IQueryMatch
             return 0;
         }
         
-        Sorting.SortAndMinOnDuplicates(matches[..read], distancesBuffer[..read]);
+        read = Sorting.SortAndMinOnDuplicates(matches[..read], distancesBuffer[..read]);
         distancesBuffer[..read].Sort(matches[..read]);
         return read;
     }
@@ -253,14 +253,13 @@ public struct VectorSearchMatch : IQueryMatch
 
         } while (currentRead != 0);
         
-        if (_singleVectorSearchDoNotSort == false)
         {
-            //Truncate the buffer to the actual size
             var matchesCount = Sorting.SortAndMinOnDuplicates(matches.Results, distances.Results);
             distances.Truncate(matchesCount);
             matches.Truncate(matchesCount);
         }
-        else if (_vectorSearchRetriever.IsSortedByDistance == false)
+        
+        if (_singleVectorSearchDoNotSort && _vectorSearchRetriever.IsSortedByDistance == false)
         {
             distances.Results.Sort(matches.Results);
         }
