@@ -112,24 +112,35 @@ public unsafe sealed partial class SortingMultiMatch<TInner> : SortingMultiMatch
         where TComparer3 : struct, IEntryComparer, IComparer<int>, IComparer<UnmanagedSpan>  
     
     {
-        // This method should also be re-entrant for the case where we have already pre-sorted everything and 
-        // we will just need to acquire via pages the totality of the results. 
+        // This method should also be re-entrant for the case where we have already pre-sorted everything and
+        // we will just need to acquire via pages the totality of the results.
         if (match.TotalResults == NotStarted)
         {
             match._token.ThrowIfCancellationRequested();
 
-            // Materialize all results from inner match (bitmap or PostFilterMatch)
-            match.TotalResults = match._inner.Count;
-            if (match.TotalResults == 0)
-                return 0;
-
-            int total = (int)Math.Min(match.TotalResults, 1024 * 1024);
-            var scope = match._searcher.Allocator.Allocate(total * sizeof(long), out var bs);
-            var allMatches = new Span<long>(bs.Ptr, total);
+            // Use Count as a buffer size hint, but don't trust it for early-exit:
+            // some matches (VectorSearchMatch) report Count=0 with Low confidence
+            // because their results are computed lazily during Fill.
+            var countHint = match._inner.Count;
+            int bufferSize = countHint > 0 && countHint < 1024 * 1024 ? (int)countHint : 4096;
+            var scope = match._searcher.Allocator.Allocate(bufferSize * sizeof(long), out var bs);
+            var allMatches = new Span<long>(bs.Ptr, bufferSize);
             int filled = 0;
             int r;
             while ((r = match._inner.Fill(allMatches[filled..])) > 0)
+            {
                 filled += r;
+                if (filled >= allMatches.Length)
+                {
+                    var newSize = allMatches.Length * 2;
+                    var newScope = match._searcher.Allocator.Allocate(newSize * sizeof(long), out var newBs);
+                    var newBuf = new Span<long>(newBs.Ptr, newSize);
+                    allMatches[..filled].CopyTo(newBuf);
+                    scope.Dispose();
+                    scope = newScope;
+                    allMatches = newBuf;
+                }
+            }
 
             if (filled == 0)
             {
