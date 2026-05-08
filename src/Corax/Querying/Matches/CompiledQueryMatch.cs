@@ -48,9 +48,8 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
     public CompiledQueryMatch(CompiledPlan compiledPlan, int bitmapCount, int opCount,
         IQueryMatch[] resolvedMatches, TermSource[] termSources, ITermProvider[] termProviders,
         long[] longParams, double[] doubleParams, Slice[] sliceParams, long[] fieldRootPages,
-        IndexSearcher searcher, ByteStringContext allocator, long limit, CancellationToken token)
+        IndexSearcher searcher, ByteStringContext allocator, CancellationToken token)
     {
-        _ = limit; // not yet used; reserved for limit-aware bitmap-build early-exit
         _compiledDelegate = compiledPlan.CompiledDelegate;
         _bitmapCount = bitmapCount;
         _opCount = opCount;
