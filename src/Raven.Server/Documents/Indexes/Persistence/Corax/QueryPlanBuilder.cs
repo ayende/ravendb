@@ -377,23 +377,6 @@ internal static class QueryPlanBuilder
         return result;
     }
 
-    /// <summary>
-    /// Per-IndexSearcher cache from query text to parsed shape (ClauseInfo list with
-    /// AST refs, no resolved parameter values). The IndexSearcher is held via a
-    /// ConditionalWeakTable so the cache is reclaimed when the searcher is GC'd.
-    ///
-    /// Cardinality estimation, clause sorting, and op emission still run live every
-    /// call — only the AST walk and ClauseInfo construction are cached.
-    /// </summary>
-    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IndexSearcher, System.Collections.Concurrent.ConcurrentDictionary<string, ParsedShape>> _shapeCachesBySearcher = new();
-
-    private sealed class ParsedShape
-    {
-        public List<ClauseInfo> Clauses;
-        public BooleanOp RootOp;
-        public bool HasMixedAndOr;
-    }
-
     public static QueryPlan BuildPlan(PlanParameters p)
     {
         var query = p.Metadata.Query;
@@ -404,49 +387,9 @@ internal static class QueryPlanBuilder
         if (query.Where == null)
             return BuildAllEntriesPlan();
 
-        var queryText = query.QueryText;
-        var perSearcherCache = _shapeCachesBySearcher.GetValue(indexSearcher,
-            _ => new System.Collections.Concurrent.ConcurrentDictionary<string, ParsedShape>());
-
-        List<ClauseInfo> clauses;
-        bool hasMixedAndOr;
-        BooleanOp rootOp;
-        if (perSearcherCache.TryGetValue(queryText, out var cachedShape))
-        {
-            // Cache hit — clone the parsed shape and refresh values from the call's params.
-            // The parse result is structural (AST refs + clause types); the per-call
-            // values (TermValue / InTerms / BoostFactor / FieldName-when-dynamic) are
-            // re-derived against queryParameters here.
-            clauses = new List<ClauseInfo>(cachedShape.Clauses.Count);
-            foreach (var src in cachedShape.Clauses)
-                clauses.Add(CloneAndRefreshClause(src, queryParameters, metadata));
-            rootOp = cachedShape.RootOp;
-            hasMixedAndOr = cachedShape.HasMixedAndOr;
-        }
-        else
-        {
-            hasMixedAndOr = false;
-            clauses = new List<ClauseInfo>();
-            rootOp = ParseExpression(query.Where, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
-
-            // Constant-folded queries (True/False) skip caching — they're handled by the
-            // direct All-Entries / Empty-plan paths below and never reach the cardinality /
-            // ordering / emit path that would benefit from shape reuse.
-            if (rootOp != BooleanOp.True && rootOp != BooleanOp.False && clauses.Count > 0)
-            {
-                // Cache an immutable deep-clone so subsequent in-flight Cardinality /
-                // sort mutations on `clauses` do not alias the cached shape.
-                var cachedList = new List<ClauseInfo>(clauses.Count);
-                foreach (var c in clauses)
-                    cachedList.Add(CloneClauseTemplate(c));
-                perSearcherCache.TryAdd(queryText, new ParsedShape
-                {
-                    Clauses = cachedList,
-                    RootOp = rootOp,
-                    HasMixedAndOr = hasMixedAndOr
-                });
-            }
-        }
+        bool hasMixedAndOr = false;
+        var clauses = new List<ClauseInfo>();
+        var rootOp = ParseExpression(query.Where, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
 
         // Mixed AND/OR trees are handled via OrGroup clauses
 
@@ -780,150 +723,6 @@ internal static class QueryPlanBuilder
     /// state (Cardinality, resolved values) so the cached entry stays a clean template.
     /// Recurses through OrSubClauses so nested OrGroup shapes are also templates.
     /// </summary>
-    private static ClauseInfo CloneClauseTemplate(ClauseInfo src)
-    {
-        var dst = new ClauseInfo
-        {
-            FieldName = src.FieldName,
-            ClauseType = src.ClauseType,
-            OriginalIndex = src.OriginalIndex,
-            IsNegated = src.IsNegated,
-            IsExact = src.IsExact,
-            BoostFactor = src.BoostFactor,
-            MethodExpression = src.MethodExpression,
-            FieldExpr = src.FieldExpr,
-            TermExpr = src.TermExpr,
-            TermExpr2 = src.TermExpr2,
-            InTermExprs = src.InTermExprs,
-            BoostFactorExpr = src.BoostFactorExpr,
-            SearchOperator = src.SearchOperator,
-            // Cardinality intentionally left at -1 (default) — re-estimated per call.
-        };
-        if (src.OrSubClauses != null)
-        {
-            dst.OrSubClauses = new List<ClauseInfo>(src.OrSubClauses.Count);
-            foreach (var sub in src.OrSubClauses)
-                dst.OrSubClauses.Add(CloneClauseTemplate(sub));
-        }
-        if (src.AndSubClauses != null)
-        {
-            dst.AndSubClauses = new List<ClauseInfo>(src.AndSubClauses.Count);
-            foreach (var sub in src.AndSubClauses)
-                dst.AndSubClauses.Add(CloneClauseTemplate(sub));
-        }
-        return dst;
-    }
-
-    /// <summary>
-    /// Produce a per-call ClauseInfo from a cached shape entry: copy AST refs and
-    /// structural fields, then re-resolve every parameter-dependent value
-    /// (FieldName, TermValue, TermValue2, InTerms, BoostFactor) against the live
-    /// queryParameters. Cardinality is left at -1 so the existing estimation pass
-    /// runs with current data.
-    /// </summary>
-    private static ClauseInfo CloneAndRefreshClause(ClauseInfo src,
-        BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
-    {
-        var dst = new ClauseInfo
-        {
-            ClauseType = src.ClauseType,
-            OriginalIndex = src.OriginalIndex,
-            IsNegated = src.IsNegated,
-            IsExact = src.IsExact,
-            MethodExpression = src.MethodExpression,
-            FieldExpr = src.FieldExpr,
-            TermExpr = src.TermExpr,
-            TermExpr2 = src.TermExpr2,
-            InTermExprs = src.InTermExprs,
-            BoostFactorExpr = src.BoostFactorExpr,
-            SearchOperator = src.SearchOperator,
-        };
-
-        // Field name: dynamic when the AST has a FieldExpression with parameter parts;
-        // for the common static case, GetFieldName returns the same string every call.
-        dst.FieldName = src.FieldExpr is FieldExpression fe
-            ? GetFieldName(fe, metadata, queryParameters)
-            : src.FieldName;
-
-        if (src.TermExpr != null)
-        {
-            dst.TermValue = GetTermValue(src.TermExpr, queryParameters, out var tt);
-            dst.TermValueType = tt;
-        }
-        else
-        {
-            dst.TermValue = src.TermValue;
-            dst.TermValueType = src.TermValueType;
-        }
-
-        if (src.TermExpr2 != null)
-            dst.TermValue2 = GetTermValue(src.TermExpr2, queryParameters);
-        else
-            dst.TermValue2 = src.TermValue2;
-
-        if (src.InTermExprs != null)
-        {
-            var terms = new List<string>(src.InTermExprs.Count);
-            var termTypes = new List<ValueTokenType>(src.InTermExprs.Count);
-            bool hasTime = false;
-            foreach (var expr in src.InTermExprs)
-            {
-                if (expr is ValueExpression ve)
-                {
-                    var resolved = ve.GetValue(queryParameters);
-                    if (resolved is Sparrow.Json.BlittableJsonReaderArray arr)
-                    {
-                        for (int a = 0; a < arr.Length; a++)
-                        {
-                            var (elemVal, elemTyp) = ConvertInValue(arr[a], ValueTokenType.Parameter, ref hasTime);
-                            terms.Add(elemVal);
-                            termTypes.Add(elemTyp);
-                        }
-                    }
-                    else
-                    {
-                        var (resVal, resTyp) = ConvertInValue(resolved, ve.Value, ref hasTime);
-                        terms.Add(resVal);
-                        termTypes.Add(resTyp);
-                    }
-                }
-            }
-            dst.InTerms = terms;
-            dst.InTermTypes = termTypes;
-        }
-
-        if (src.BoostFactorExpr != null)
-        {
-            var factorStr = GetTermValue(src.BoostFactorExpr, queryParameters);
-            float boostFactor = 1f;
-            if (factorStr != null)
-                float.TryParse(factorStr,
-                    System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out boostFactor);
-            dst.BoostFactor = boostFactor;
-        }
-        else
-        {
-            dst.BoostFactor = src.BoostFactor;
-        }
-
-        if (src.OrSubClauses != null)
-        {
-            dst.OrSubClauses = new List<ClauseInfo>(src.OrSubClauses.Count);
-            foreach (var sub in src.OrSubClauses)
-                dst.OrSubClauses.Add(CloneAndRefreshClause(sub, queryParameters, metadata));
-        }
-
-        if (src.AndSubClauses != null)
-        {
-            dst.AndSubClauses = new List<ClauseInfo>(src.AndSubClauses.Count);
-            foreach (var sub in src.AndSubClauses)
-                dst.AndSubClauses.Add(CloneAndRefreshClause(sub, queryParameters, metadata));
-        }
-
-        return dst;
-    }
-
     private static void ParseComparison(BinaryExpression be, List<ClauseInfo> clauses,
         BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
     {
@@ -937,9 +736,7 @@ internal static class QueryPlanBuilder
             TermValue = termValue,
             TermValueType = valueType,
             ClauseType = be.Operator == OperatorType.NotEqual ? ClauseType.NotEquals : ClauseType.Equals,
-            OriginalIndex = clauses.Count,
-            FieldExpr = field,
-            TermExpr = be.Right
+            OriginalIndex = clauses.Count
         });
     }
 
@@ -964,8 +761,6 @@ internal static class QueryPlanBuilder
                 _ => ClauseType.Equals
             },
             OriginalIndex = clauses.Count,
-            FieldExpr = field,
-            TermExpr = be.Right
         });
     }
 
@@ -984,10 +779,7 @@ internal static class QueryPlanBuilder
             TermValue2 = maxValue,
             TermValueType = minType,
             ClauseType = ClauseType.Between,
-            OriginalIndex = clauses.Count,
-            FieldExpr = field,
-            TermExpr = between.Min,
-            TermExpr2 = between.Max
+            OriginalIndex = clauses.Count
         });
     }
 
@@ -999,13 +791,11 @@ internal static class QueryPlanBuilder
 
         var terms = new List<string>();
         var termTypes = new List<ValueTokenType>();
-        var inTermExprs = new List<QueryExpression>();
         bool hasTime = false;
         foreach (var value in inExpr.Values)
         {
             if (value is ValueExpression ve)
             {
-                inTermExprs.Add(ve);
                 var resolvedValue = ve.GetValue(queryParameters);
                 if (resolvedValue is Sparrow.Json.BlittableJsonReaderArray arr)
                 {
@@ -1031,9 +821,7 @@ internal static class QueryPlanBuilder
             InTerms = terms,
             InTermTypes = termTypes,
             ClauseType = inExpr.All ? ClauseType.AllIn : ClauseType.In,
-            OriginalIndex = clauses.Count,
-            FieldExpr = field,
-            InTermExprs = inTermExprs
+            OriginalIndex = clauses.Count
         });
     }
 
@@ -1075,8 +863,7 @@ internal static class QueryPlanBuilder
                     {
                         FieldName = GetFieldName(existsField, metadata, queryParameters),
                         ClauseType = ClauseType.Exists,
-                        OriginalIndex = clauses.Count,
-                        FieldExpr = existsField
+                        OriginalIndex = clauses.Count
                     });
                 }
                 break;
@@ -1099,11 +886,9 @@ internal static class QueryPlanBuilder
                 if (method.Arguments.Count > 0)
                     ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
                 float boostFactor = 1f;
-                QueryExpression boostFactorExpr = null;
                 if (method.Arguments.Count > 1)
                 {
-                    boostFactorExpr = method.Arguments[1];
-                    var factorStr = GetTermValue(boostFactorExpr, queryParameters);
+                    var factorStr = GetTermValue(method.Arguments[1], queryParameters);
                     if (factorStr != null)
                         float.TryParse(factorStr, System.Globalization.NumberStyles.Float,
                             System.Globalization.CultureInfo.InvariantCulture, out boostFactor);
@@ -1111,7 +896,6 @@ internal static class QueryPlanBuilder
                 for (int c = beforeCount; c < clauses.Count; c++)
                 {
                     clauses[c].BoostFactor = boostFactor;
-                    clauses[c].BoostFactorExpr = boostFactorExpr;
                 }
                 break;
             }
@@ -1124,9 +908,7 @@ internal static class QueryPlanBuilder
                         FieldName = GetFieldName(regexField, metadata, queryParameters),
                         TermValue = GetTermValue(method.Arguments[1], queryParameters),
                         ClauseType = ClauseType.Regex,
-                        OriginalIndex = clauses.Count,
-                        FieldExpr = regexField,
-                        TermExpr = method.Arguments[1]
+                        OriginalIndex = clauses.Count
                     });
                 }
                 break;
@@ -1205,9 +987,7 @@ internal static class QueryPlanBuilder
             TermValue = GetTermValue(method.Arguments[1], queryParameters),
             ClauseType = ClauseType.Search,
             SearchOperator = searchOp,
-            OriginalIndex = clauses.Count,
-            FieldExpr = searchField,
-            TermExpr = method.Arguments[1]
+            OriginalIndex = clauses.Count
         });
     }
 
@@ -1225,9 +1005,7 @@ internal static class QueryPlanBuilder
             FieldName = GetFieldName(field, metadata, queryParameters),
             TermValue = GetTermValue(method.Arguments[1], queryParameters),
             ClauseType = type,
-            OriginalIndex = clauses.Count,
-            FieldExpr = field,
-            TermExpr = method.Arguments[1]
+            OriginalIndex = clauses.Count
         });
     }
 
@@ -2338,14 +2116,6 @@ internal static class QueryPlanBuilder
         public bool IsExact;
         public float BoostFactor;
 
-        // AST refs preserved for the plan-shape cache: when we reuse a parsed shape
-        // across calls, CloneAndRefreshClause re-resolves these against the call's
-        // queryParameters without re-walking the AST.
-        public QueryExpression FieldExpr;       // FieldExpression for FieldName
-        public QueryExpression TermExpr;        // ValueExpression for TermValue
-        public QueryExpression TermExpr2;       // ValueExpression for TermValue2 (Between)
-        public List<QueryExpression> InTermExprs; // ValueExpressions for InTerms
-        public QueryExpression BoostFactorExpr; // ValueExpression for BoostFactor
         public Constants.Search.Operator SearchOperator; // for Search (AND/OR)
     }
 
