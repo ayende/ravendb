@@ -4,6 +4,7 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
 using Sparrow;
 using Sparrow.Server;
 using Voron.Util;
@@ -810,29 +811,60 @@ public unsafe partial struct RoaringBitmap : IDisposable
     }
 
     /// <summary>
-    /// Return the value of the nth set bit (0-based rank). Walks containers in key
-    /// order, subtracting each container's cardinality from <paramref name="rank"/>
-    /// until the target container is found, then resolves within that container.
-    /// Returns -1 if rank is out of range.
+    /// Bulk Select: for each rank in <paramref name="ranks"/>, write the corresponding
+    /// set-bit value into <paramref name="results"/> at the same index. Out-of-range
+    /// or negative ranks produce -1. <paramref name="ranks"/> is mutated (sorted in place).
+    /// <paramref name="ranks"/> and <paramref name="results"/> must NOT alias - we read
+    /// from ranks while writing to results in permuted order, so aliasing would corrupt input.
+    ///
+    /// Sorts ranks once, then walks containers a single time while accumulating
+    /// cardinality — O(C + N log N) instead of O(C * N) for repeated single-rank Select.
     /// </summary>
-    public long Select(long rank)
+    public void Select(ByteStringContext allocator, Span<long> ranks, Span<long> results)
     {
-        if (rank < 0)
-            return -1;
+        int n = ranks.Length;
+        Debug.Assert(results.Length >= n);
+        Debug.Assert(ranks.Overlaps(results) == false, "ranks and results must not alias");
+        if (n == 0)
+            return;
 
+        // Track each rank's original position so we can scatter results back in input order
+        // after sorting ranks ascending for the single-pass container walk.
+        using var _ = allocator.Allocate(n * sizeof(int), out ByteString work);
+        var indexes = new Span<int>(work.Ptr, n);
+
+        for (int i = 0; i < n; i++)
+            indexes[i] = i;
+
+        // Parallel sort: ranks ascending; indexes follow the same permutation so
+        // indexes[i] is the original position of the rank now at ranks[i].
+        ranks.Sort(indexes);
+
+        int rankIdx = 0;
+
+        // Negative ranks sort to the front - emit -1 for each.
+        while (rankIdx < n && ranks[rankIdx] < 0)
+        {
+            results[indexes[rankIdx]] = -1;
+            rankIdx++;
+        }
+
+        // Walk containers in key order, accumulating cardinality. Each rank lands
+        // inside the first container whose accumulated cardinality exceeds it.
         int* idx = _index.RawItems;
         int idxLen = _index.Count;
         ContainerEntry* entries = _entries.RawItems;
         ContainerType* types = _types.RawItems;
 
-        for (int key = 0; key < idxLen; key++)
+        long accCard = 0;
+        for (int key = 0; key < idxLen && rankIdx < n; key++)
         {
             int slot = idx[key];
             if (slot < 0)
                 continue;
 
             ref ContainerEntry entry = ref entries[slot];
-            ContainerType type = types[slot];
+            ref ContainerType type = ref types[slot];
             if (type == ContainerType.Free)
                 continue;
 
@@ -843,18 +875,33 @@ public unsafe partial struct RoaringBitmap : IDisposable
                 entry.Cardinality = card = BitmapContainerCardinality(entry.Data);
             }
 
-            if (rank < card)
-            {
-                // The target is within this container.
-                long baseValue = (long)key << ContainerKeyShift;
-                return baseValue + SelectInContainer(ref entry, type, (int)rank);
+            if (type == ContainerType.ArrayUnsorted)
+            {   // Sort-on-first-select for ArrayUnsorted
+                new Span<ushort>(entry.ArrayData, card).Sort();
+                type = ContainerType.Array;
             }
-            rank -= card;
+
+            long containerEnd = accCard + card;
+            long baseValue = (long)key << ContainerKeyShift;
+            while (rankIdx < n && ranks[rankIdx] < containerEnd)
+            {
+                int localRank = (int)(ranks[rankIdx] - accCard);
+                results[indexes[rankIdx]] = baseValue + SelectInContainer(ref entry, type, localRank);
+                rankIdx++;
+            }
+            accCard = containerEnd;
         }
-        return -1;
+
+        // Anything still unprocessed is past the end of the bitmap.
+        while (rankIdx < n)
+        {
+            results[indexes[rankIdx]] = -1;
+            rankIdx++;
+        }
     }
 
-    /// <summary>Find the nth set value inside a single container (0-based).</summary>
+    /// <summary>Find the nth set value inside a single container (0-based).
+    /// Caller is responsible for upgrading ArrayUnsorted to Array first.</summary>
     private static int SelectInContainer(ref ContainerEntry entry, ContainerType type, int rank)
     {
         switch (type)
@@ -862,31 +909,52 @@ public unsafe partial struct RoaringBitmap : IDisposable
             case ContainerType.Array:
                 return entry.ArrayData[rank];
 
-            case ContainerType.ArrayUnsorted:
-            {
-                // Must sort to define a stable ordering for select.
-                // (PrepareForReading handles this globally, but Select may be called before.)
-                Span<ushort> span = new(entry.ArrayData, entry.Cardinality);
-                span.Sort();
-                return span[rank];
-            }
-
             case ContainerType.Range:
                 return entry.RangeStart + rank;
 
             case ContainerType.Bitmap:
             {
                 ulong* bmp = (ulong*)entry.Data;
-                for (int word = 0; word < BitmapContainerSizeInUInt64; word++)
+                int word = 0;
+
+                // scan 8 ulongs at a time. popcnt is a 1-cycle instruction with
+                // four-way ILP on modern x86, so an unrolled batch of 8 retires in ~3 cycles.
+                // The JIT may also fuse this into AVX-512 VPOPCNTQ when supported.
+                const int Unroll = 8;
+                while (word + Unroll <= BitmapContainerSizeInUInt64)
+                {
+                    int blockBits =   BitOperations.PopCount(bmp[word])
+                                    + BitOperations.PopCount(bmp[word + 1])
+                                    + BitOperations.PopCount(bmp[word + 2])
+                                    + BitOperations.PopCount(bmp[word + 3])
+                                    + BitOperations.PopCount(bmp[word + 4])
+                                    + BitOperations.PopCount(bmp[word + 5])
+                                    + BitOperations.PopCount(bmp[word + 6])
+                                    + BitOperations.PopCount(bmp[word + 7]);
+                    if (rank < blockBits)
+                        break;
+                    rank -= blockBits;
+                    word += Unroll;
+                }
+
+                for (; word < BitmapContainerSizeInUInt64; word++)
                 {
                     ulong w = bmp[word];
                     int bits = BitOperations.PopCount(w);
                     if (rank < bits)
                     {
-                        // The target is within this word — find the rank-th set bit.
+                        // Win 1: BMI2 PDEP deposits a single 1-bit at the rank-th set
+                        // position in w; trailing-zeros gives its bit index. One instruction.
+                        if (Bmi2.X64.IsSupported)
+                        {
+                            ulong target = Bmi2.X64.ParallelBitDeposit(1UL << rank, w);
+                            return word * 64 + BitOperations.TrailingZeroCount(target);
+                        }
+
+                        // Fallback: clear the lowest set bit `rank` times.
                         while (rank > 0)
                         {
-                            w &= w - 1; // clear lowest set bit
+                            w &= w - 1;
                             rank--;
                         }
                         return word * 64 + BitOperations.TrailingZeroCount(w);

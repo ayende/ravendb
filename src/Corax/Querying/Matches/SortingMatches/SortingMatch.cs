@@ -263,7 +263,9 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         else
         {
             // With LIMIT k: pick k random ranks from [0, totalCount), deduplicated,
-            // then use bitmap.Select() to resolve each rank to an entry ID directly.
+            // then resolve all ranks to entry IDs in a single bulk Select call —
+            // one container walk instead of one per rank.
+            var allocator = match._searcher.Allocator;
             int k = (int)Math.Min(take, totalCount);
             match._results.EnsureCapacityFor(k);
 
@@ -276,12 +278,14 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
                     selected.Add(i);
             }
 
+            // Materialize ranks into a contiguous buffer; results land directly in _results.
+            using var ranksList = new ContextBoundNativeList<long>(allocator, k);
             foreach (long rank in selected)
-            {
-                long entryId = bitmap.Select(rank);
-                if (entryId >= 0)
-                    match._results.Add(entryId);
-            }
+                ranksList.AddUnsafe(rank);
+
+            // Floyd's only emits ranks in [0, totalCount), so every result is valid.
+            match._results.Count = k;
+            bitmap.Select(allocator, ranksList.ToSpan(), match._results.ToSpan());
         }
     }
     
