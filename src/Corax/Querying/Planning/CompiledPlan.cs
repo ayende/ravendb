@@ -29,24 +29,7 @@ public sealed class CompiledPlan
     /// common case (chain length 1).</summary>
     public CompiledPlan Next;
 
-    /// <summary>Provider that generates the EXPLAIN pseudocode on first access. Lazily
-    /// materialized — Inspect() / EXPLAIN diagnostics are the only consumers, so the
-    /// majority of plans never pay the string-build cost. Set once at compile time and
-    /// captures the QueryPlan; the first .ExplainSource read replaces it with the
-    /// materialized string.</summary>
-    public Func<string> ExplainSourceProvider { get; init; }
-
-    private string _explainSource;
-
-    /// <summary>EXPLAIN pseudocode for this plan. First read materializes via
-    /// <see cref="ExplainSourceProvider"/> and caches; subsequent reads return the
-    /// cached value. Returns "" when no provider was set.</summary>
-    public string ExplainSource
-    {
-        get
-        {
-            _explainSource ??= ExplainSourceProvider?.Invoke() ?? "";
-            return _explainSource;
-        }
-    }
+    /// <summary>EXPLAIN pseudocode for this plan. Generated in the same pass as
+    /// the IL emission so they cannot drift out of sync.</summary>
+    public string ExplainSource { get; init; }
 }
