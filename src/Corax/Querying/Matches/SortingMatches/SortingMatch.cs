@@ -7,6 +7,7 @@ using System.Threading;
 using Corax.Indexing;
 using Corax.Mappings;
 using Corax.Querying.Matches.Meta;
+using Voron.Data.RoaringBitmaps;
 using Corax.Querying.Matches.SortingMatches.Meta;
 using Corax.Utils;
 using Corax.Utils.Spatial;
@@ -517,6 +518,11 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         var sortedIdsScope = allocator.Allocate(sizeof(long) * SortBatchSize, out ByteString bs);
         Span<long> sortedIdBuffer = new(bs.Ptr, SortBatchSize);
 
+        // Track emitted entry IDs to deduplicate multi-value fields, which produce
+        // multiple entries in the sort index for the same document entry ID.
+        // Multi-value fields produce duplicate entry IDs in the sort index
+        // (one per value). Track emitted IDs to skip duplicates.
+        using var emittedBitmap = new RoaringBitmap(allocator);
         var reader = GetReader(bitmapMatch.MinEntryId, bitmapMatch.MaxEntryId);
 
         while (match._results.Count < maxResults)
@@ -532,7 +538,14 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
             read = bitmapMatch.AndWith(sortedIdBuffer, read);
 
             for (int i = 0; i < read && match._results.Count < maxResults; i++)
-                match._results.Add(sortedIdBuffer[i]);
+            {
+                long id = sortedIdBuffer[i];
+                if (emittedBitmap.Contains(id) == false)
+                {
+                    emittedBitmap.Add(id);
+                    match._results.Add(id);
+                }
+            }
         }
 
         reader.Dispose();
