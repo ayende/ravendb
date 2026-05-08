@@ -32,65 +32,53 @@ public static class QueryPrimitives
     // Called from DynamicMethod IL. Take ref CompiledQueryMatch so the
     // emitter just pushes ldarg.0 + int constants — no per-field ldfld chains.
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxFillFromTermSource(ref Matches.CompiledQueryMatch ctx, int paramIndex)
-    {
-        FillBitmapFromTermSource(ref ctx._termSources[paramIndex], ctx._llt, ref ctx._bitmaps[0], ctx._limit);
-    }
+        => FillBitmapFromTermSource(ref ctx._termSources[paramIndex], ctx._llt, ref ctx._bitmaps[0], ctx._limit);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxFillFromTermProvider(ref Matches.CompiledQueryMatch ctx, int paramIndex)
-    {
-        FillBitmapFromTermProvider(ctx._termProviders[paramIndex], ctx._llt, ref ctx._bitmaps[0], ctx._limit);
-    }
+        => FillBitmapFromTermProvider(ctx._termProviders[paramIndex], ctx._llt, ref ctx._bitmaps[0], ctx._limit);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxFillFromMatch(ref Matches.CompiledQueryMatch ctx, int paramIndex)
-    {
-        FillFromMatch(ctx._resolvedMatches[paramIndex], ref ctx._bitmaps[0]);
-    }
+        => FillFromMatch(ctx._resolvedMatches[paramIndex], ref ctx._bitmaps[0]);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxOrFillFromTermSource(ref Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
-    {
-        FillBitmapFromTermSource(ref ctx._termSources[paramIndex], ctx._llt, ref ctx._bitmaps[bitmapSlot], ctx._limit);
-    }
+        => FillBitmapFromTermSource(ref ctx._termSources[paramIndex], ctx._llt, ref ctx._bitmaps[bitmapSlot], ctx._limit);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxOrFillFromTermProvider(ref Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
-    {
-        FillBitmapFromTermProvider(ctx._termProviders[paramIndex], ctx._llt, ref ctx._bitmaps[bitmapSlot], ctx._limit);
-    }
+        => FillBitmapFromTermProvider(ctx._termProviders[paramIndex], ctx._llt, ref ctx._bitmaps[bitmapSlot], ctx._limit);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxOrFillFromMatch(ref Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
-    {
-        FillFromMatch(ctx._resolvedMatches[paramIndex], ref ctx._bitmaps[bitmapSlot]);
-    }
+        => FillFromMatch(ctx._resolvedMatches[paramIndex], ref ctx._bitmaps[bitmapSlot]);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndFromTermSource(ref Matches.CompiledQueryMatch ctx, int paramIndex)
-    {
-        AndWithTermSource(ref ctx._termSources[paramIndex], ctx._llt, ref ctx._bitmaps[0], ref ctx._bitmaps[1], ctx._limit);
-    }
+        => AndWithTermSource(ref ctx._termSources[paramIndex], ctx._llt, ref ctx._bitmaps[0], ref ctx._bitmaps[1], ctx._limit);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndFromTermProvider(ref Matches.CompiledQueryMatch ctx, int paramIndex)
-    {
-        AndBitmapWithTermProvider(ctx._termProviders[paramIndex], ctx._llt, ref ctx._bitmaps[0], ref ctx._bitmaps[1]);
-    }
+        => AndBitmapWithTermProvider(ctx._termProviders[paramIndex], ctx._llt, ref ctx._bitmaps[0], ref ctx._bitmaps[1]);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndFromMatch(ref Matches.CompiledQueryMatch ctx, int paramIndex)
-    {
-        AndWithMatch(ctx._resolvedMatches[paramIndex], ref ctx._bitmaps[0], ref ctx._bitmaps[1]);
-    }
+        => AndWithMatch(ctx._resolvedMatches[paramIndex], ref ctx._bitmaps[0], ref ctx._bitmaps[1]);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndNotFromTermSource(ref Matches.CompiledQueryMatch ctx, int paramIndex)
-    {
-        AndNotWithTermSource(ref ctx._termSources[paramIndex], ctx._llt, ref ctx._bitmaps[0], ref ctx._bitmaps[1]);
-    }
+        => AndNotWithTermSource(ref ctx._termSources[paramIndex], ctx._llt, ref ctx._bitmaps[0], ref ctx._bitmaps[1]);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndNotFromTermProvider(ref Matches.CompiledQueryMatch ctx, int paramIndex)
-    {
-        AndNotBitmapWithTermProvider(ctx._termProviders[paramIndex], ctx._llt, ref ctx._bitmaps[0], ref ctx._bitmaps[1]);
-    }
+        => AndNotBitmapWithTermProvider(ctx._termProviders[paramIndex], ctx._llt, ref ctx._bitmaps[0], ref ctx._bitmaps[1]);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndNotFromMatch(ref Matches.CompiledQueryMatch ctx, int paramIndex)
-    {
-        AndNotWithMatch(ctx._resolvedMatches[paramIndex], ref ctx._bitmaps[0], ref ctx._bitmaps[1]);
-    }
+        => AndNotWithMatch(ctx._resolvedMatches[paramIndex], ref ctx._bitmaps[0], ref ctx._bitmaps[1]);
 
     // Batch size for entry scan: how many bitmap entries to read per iteration.
     internal const int EntryScanBatchSize = 256;
