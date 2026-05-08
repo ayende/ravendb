@@ -307,11 +307,10 @@ internal static class QueryPlanBuilder
             // Capture the QueryPlan in a closure so the EXPLAIN string is generated only
             // when something reads it (Inspect() / EXPLAIN diagnostics). Most queries
             // never pay this cost.
-            var capturedPlan = plan;
             compiledPlan = new CompiledPlan
             {
-                CompiledDelegate = QueryILEmitter.EmitDelegate(plan),
-                ExplainSourceProvider = () => QueryILEmitter.GenerateExplainSource(capturedPlan),
+                CompiledDelegate = QueryILEmitter.EmitDelegate(plan, out var explainText),
+                ExplainSource = explainText,
                 Ordering = plan.OperandOrdering,
                 TypeSignature = plan.TypeSignature,
                 FullKinds = plan.FullKinds
@@ -1919,9 +1918,8 @@ internal static class QueryPlanBuilder
             }
         }
 
-        // EXPLAIN source is now generated lazily by CompiledPlan.ExplainSource on first
-        // read (via QueryILEmitter.GenerateExplainSource). The vast majority of plans
-        // never get inspected, so the eager build was pure overhead.
+        // EXPLAIN source is generated in the same pass as IL emission (EmitDelegate)
+        // so the pseudocode and the actual IL cannot drift out of sync.
         var plan = new QueryPlan
         {
             Ops = ops.ToArray(),

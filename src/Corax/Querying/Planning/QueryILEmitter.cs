@@ -165,11 +165,19 @@ public static class QueryILEmitter
             nameof(Primitives.QueryPrimitives.ShouldSwitchToEntryScan),
             new[] { typeof(long), typeof(long) })!;
 
-    public static CompiledExecuteDelegate EmitDelegate(QueryPlan plan)
+    public static CompiledExecuteDelegate EmitDelegate(QueryPlan plan, out string explainSource)
     {
         var ops = plan.Ops;
         if (ops == null || ops.Length == 0)
+        {
+            explainSource = "// Empty plan";
             return EmptyExecute;
+        }
+
+        // Generate EXPLAIN pseudocode in the same pass as IL emission so they
+        // can never drift out of sync. Each op appends to this builder.
+        var explain = new StringBuilder();
+        explain.AppendLine("// Compiled query — pseudocode mirroring the emitted IL.");
 
         var dm = new DynamicMethod(
             "CompiledQuery",
@@ -209,6 +217,9 @@ public static class QueryILEmitter
         for (int i = 0; i < ops.Length; i++)
         {
             ref PlanOp op = ref ops[i];
+
+            // EXPLAIN: append pseudocode for this op (same pass as IL, cannot drift)
+            AppendExplainLine(explain, ref op, i);
 
             // Timing: record start tick before each op
             EmitTimingStart(il, startTickLocal);
@@ -429,6 +440,10 @@ public static class QueryILEmitter
             il.Emit(OpCodes.Ret);
         }
 
+        if (hasEntryScan)
+            explain.AppendLine("EntryScan: // walks bitmap[0] re-checking per-entry predicates");
+
+        explainSource = explain.ToString();
         return (CompiledExecuteDelegate)dm.CreateDelegate(typeof(CompiledExecuteDelegate));
     }
 
@@ -1055,96 +1070,86 @@ public static class QueryILEmitter
 
     private static void EmptyExecute(ref CompiledQueryMatch ctx) { }
 
-    public static string GenerateExplainSource(QueryPlan plan)
+    /// <summary>Append one EXPLAIN pseudocode line for a PlanOp. Called from the
+    /// IL emission loop so EXPLAIN and IL are generated in the same pass and
+    /// cannot drift out of sync.</summary>
+    private static void AppendExplainLine(StringBuilder sb, ref PlanOp op, int opIndex)
     {
-        if (plan.Ops == null || plan.Ops.Length == 0)
-            return "// Empty plan";
-
-        var sb = new StringBuilder();
-        sb.AppendLine("// Compiled query (DynamicMethod) — pseudocode mirroring the emitted IL.");
-        sb.AppendLine("// Mutating ops dispatch through Corax.Querying.Primitives.QueryPrimitives,");
-        sb.AppendLine("// which picks bitmap-borrow / posting-list / generic-Fill paths at runtime.");
-
-        for (int i = 0; i < plan.Ops.Length; i++)
+        string src = op.Dispatch switch
         {
-            ref PlanOp op = ref plan.Ops[i];
-            string src = op.Dispatch switch
-            {
-                MatchDispatch.TermSource   => $"ctx.TermSources[{op.ParamIndex}]",
-                MatchDispatch.TermProvider => $"ctx.TermProviders[{op.ParamIndex}]",
-                _                          => $"ctx.DirectSources[{op.ParamIndex}]"
-            };
-            switch (op.Kind)
-            {
-                case PlanOpKind.FillFromPostings:
-                case PlanOpKind.DirectIterate:
-                    sb.AppendLine(op.Dispatch switch
-                    {
-                        MatchDispatch.TermSource   => $"QueryPrimitives.FillBitmapFromTermSource(ref {src}, ctx.Llt, ref ctx.Bitmaps[0]);",
-                        MatchDispatch.TermProvider => $"QueryPrimitives.FillBitmapFromTermProvider({src}, ctx.Llt, ref ctx.Bitmaps[0]);",
-                        _                          => $"QueryPrimitives.FillFromMatch({src}, ref ctx.Bitmaps[0]);"
-                    });
-                    break;
-                case PlanOpKind.AndWithPostings:
-                    sb.AppendLine(op.Dispatch switch
-                    {
-                        MatchDispatch.TermSource   => $"QueryPrimitives.AndWithTermSource(ref {src}, ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);",
-                        MatchDispatch.TermProvider => $"QueryPrimitives.AndBitmapWithTermProvider({src}, ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);",
-                        _                          => $"QueryPrimitives.AndWithMatch({src}, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);"
-                    });
+            MatchDispatch.TermSource   => $"ctx.TermSources[{op.ParamIndex}]",
+            MatchDispatch.TermProvider => $"ctx.TermProviders[{op.ParamIndex}]",
+            _                          => $"ctx.DirectSources[{op.ParamIndex}]"
+        };
+        switch (op.Kind)
+        {
+            case PlanOpKind.FillFromPostings:
+            case PlanOpKind.DirectIterate:
+                sb.AppendLine(op.Dispatch switch
+                {
+                    MatchDispatch.TermSource   => $"QueryPrimitives.FillBitmapFromTermSource(ref {src}, ctx.Llt, ref ctx.Bitmaps[0]);",
+                    MatchDispatch.TermProvider => $"QueryPrimitives.FillBitmapFromTermProvider({src}, ctx.Llt, ref ctx.Bitmaps[0]);",
+                    _                          => $"QueryPrimitives.FillFromMatch({src}, ref ctx.Bitmaps[0]);"
+                });
+                break;
+            case PlanOpKind.AndWithPostings:
+                sb.AppendLine(op.Dispatch switch
+                {
+                    MatchDispatch.TermSource   => $"QueryPrimitives.AndWithTermSource(ref {src}, ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);",
+                    MatchDispatch.TermProvider => $"QueryPrimitives.AndBitmapWithTermProvider({src}, ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);",
+                    _                          => $"QueryPrimitives.AndWithMatch({src}, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);"
+                });
+                if (op.SkipEarlyExit == false)
                     sb.AppendLine("if (ctx.Bitmaps[0].IsEmpty) return;");
-                    break;
-                case PlanOpKind.OrWithPostings:
-                case PlanOpKind.LazyOrWithPostings:
-                    sb.AppendLine(op.Dispatch switch
-                    {
-                        MatchDispatch.TermSource   => $"QueryPrimitives.FillBitmapFromTermSource(ref {src}, ctx.Llt, ref ctx.Bitmaps[{op.BitmapLocal}]);",
-                        MatchDispatch.TermProvider => $"QueryPrimitives.FillBitmapFromTermProvider({src}, ctx.Llt, ref ctx.Bitmaps[{op.BitmapLocal}]);",
-                        _                          => $"QueryPrimitives.FillFromMatch({src}, ref ctx.Bitmaps[{op.BitmapLocal}]);"
-                    });
-                    break;
-                case PlanOpKind.ClearBitmap:
-                    sb.AppendLine($"ctx.Bitmaps[{op.BitmapLocal}].Clear();");
-                    break;
-                case PlanOpKind.AndBitmaps:
-                    sb.AppendLine($"ctx.Bitmaps[{op.BitmapLocal}].AndWith(ref ctx.Bitmaps[{op.ParamIndex2}]);");
-                    break;
-                case PlanOpKind.AndNotBitmaps:
-                    sb.AppendLine($"ctx.Bitmaps[{op.BitmapLocal}].AndNotWith(ref ctx.Bitmaps[{op.ParamIndex2}]);");
-                    break;
-                case PlanOpKind.OrBitmaps:
-                    sb.AppendLine($"ctx.Bitmaps[{op.BitmapLocal}].OrWith(ref ctx.Bitmaps[{op.ParamIndex2}]);");
-                    break;
-                case PlanOpKind.SwapBitmaps:
-                    sb.AppendLine($"ctx.Bitmaps[{op.BitmapLocal}].SwapContents(ref ctx.Bitmaps[{op.ParamIndex2}]);");
-                    break;
-                case PlanOpKind.CheckEmpty:
-                    sb.AppendLine($"if (ctx.Bitmaps[{op.BitmapLocal}].IsEmpty) return;");
-                    break;
-                case PlanOpKind.AndNotWithPostings:
-                    sb.AppendLine(op.Dispatch switch
-                    {
-                        MatchDispatch.TermSource   => $"QueryPrimitives.AndNotWithTermSource(ref {src}, ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);",
-                        MatchDispatch.TermProvider => $"QueryPrimitives.AndNotBitmapWithTermProvider({src}, ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);",
-                        _                          => $"QueryPrimitives.AndNotWithMatch({src}, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);"
-                    });
-                    break;
-                case PlanOpKind.RepairAfterLazy:
-                    sb.AppendLine("ctx.Bitmaps[0].RepairAfterLazy();");
-                    break;
-                case PlanOpKind.CheckAndMaybeEntryScan:
-                    sb.AppendLine($"if (ctx.Bitmaps[0].Count < {Primitives.QueryPrimitives.EntryScanCountThreshold} && ctx.Bitmaps[0].Count * {Primitives.QueryPrimitives.EntryScanCostMultiplier} < ctx.DirectSources[{op.ParamIndex}].Count) goto EntryScan;");
-                    break;
-                case PlanOpKind.IterateInto:
-                    sb.AppendLine("return; // result is in ctx.Bitmaps[0]; caller iterates via QueryPrimitives.IterateInto");
-                    break;
-                default:
-                    sb.AppendLine($"// {op.Kind}");
-                    break;
-            }
+                break;
+            case PlanOpKind.OrWithPostings:
+            case PlanOpKind.LazyOrWithPostings:
+                sb.AppendLine(op.Dispatch switch
+                {
+                    MatchDispatch.TermSource   => $"QueryPrimitives.FillBitmapFromTermSource(ref {src}, ctx.Llt, ref ctx.Bitmaps[{op.BitmapLocal}]);",
+                    MatchDispatch.TermProvider => $"QueryPrimitives.FillBitmapFromTermProvider({src}, ctx.Llt, ref ctx.Bitmaps[{op.BitmapLocal}]);",
+                    _                          => $"QueryPrimitives.FillFromMatch({src}, ref ctx.Bitmaps[{op.BitmapLocal}]);"
+                });
+                break;
+            case PlanOpKind.ClearBitmap:
+                sb.AppendLine($"ctx.Bitmaps[{op.BitmapLocal}].Clear();");
+                break;
+            case PlanOpKind.AndBitmaps:
+                sb.AppendLine($"ctx.Bitmaps[{op.BitmapLocal}].AndWith(ref ctx.Bitmaps[{op.ParamIndex2}]);");
+                break;
+            case PlanOpKind.AndNotBitmaps:
+                sb.AppendLine($"ctx.Bitmaps[{op.BitmapLocal}].AndNotWith(ref ctx.Bitmaps[{op.ParamIndex2}]);");
+                break;
+            case PlanOpKind.OrBitmaps:
+                sb.AppendLine($"ctx.Bitmaps[{op.BitmapLocal}].OrWith(ref ctx.Bitmaps[{op.ParamIndex2}]);");
+                break;
+            case PlanOpKind.SwapBitmaps:
+                sb.AppendLine($"ctx.Bitmaps[{op.BitmapLocal}].SwapContents(ref ctx.Bitmaps[{op.ParamIndex2}]);");
+                break;
+            case PlanOpKind.CheckEmpty:
+                sb.AppendLine($"if (ctx.Bitmaps[{op.BitmapLocal}].IsEmpty) return;");
+                break;
+            case PlanOpKind.AndNotWithPostings:
+                sb.AppendLine(op.Dispatch switch
+                {
+                    MatchDispatch.TermSource   => $"QueryPrimitives.AndNotWithTermSource(ref {src}, ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);",
+                    MatchDispatch.TermProvider => $"QueryPrimitives.AndNotBitmapWithTermProvider({src}, ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);",
+                    _                          => $"QueryPrimitives.AndNotWithMatch({src}, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);"
+                });
+                break;
+            case PlanOpKind.RepairAfterLazy:
+                sb.AppendLine("ctx.Bitmaps[0].RepairAfterLazy();");
+                break;
+            case PlanOpKind.CheckAndMaybeEntryScan:
+                sb.AppendLine($"if (ctx.Bitmaps[0].Count < {Primitives.QueryPrimitives.EntryScanCountThreshold} && ctx.Bitmaps[0].Count * {Primitives.QueryPrimitives.EntryScanCostMultiplier} < ctx.DirectSources[{op.ParamIndex}].Count) goto EntryScan;");
+                break;
+            case PlanOpKind.IterateInto:
+                sb.AppendLine("return; // result is in ctx.Bitmaps[0]");
+                break;
+            default:
+                sb.AppendLine($"// {op.Kind}");
+                break;
         }
-        sb.AppendLine("EntryScan: // emitted IL walks ctx.Bitmaps[0] and re-checks per-entry predicates");
-        return sb.ToString();
     }
 }
 
