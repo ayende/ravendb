@@ -132,13 +132,8 @@ public unsafe sealed partial class SortingMultiMatch<TInner> : SortingMultiMatch
                 filled += r;
                 if (filled >= allMatches.Length)
                 {
-                    var newSize = allMatches.Length * 2;
-                    var newScope = match._searcher.Allocator.Allocate(newSize * sizeof(long), out var newBs);
-                    var newBuf = new Span<long>(newBs.Ptr, newSize);
-                    allMatches[..filled].CopyTo(newBuf);
-                    scope.Dispose();
-                    scope = newScope;
-                    allMatches = newBuf;
+                    match._searcher.Allocator.GrowAllocation(ref bs, ref scope, allMatches.Length * sizeof(long));
+                    allMatches = new Span<long>(bs.Ptr, bs.Length / sizeof(long));
                 }
             }
 
