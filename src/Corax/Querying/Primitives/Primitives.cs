@@ -28,6 +28,70 @@ public static class QueryPrimitives
     // Buffer size for stackalloc Fill operations (posting-list batch reads).
     internal const int FillBufferSize = 4096;
 
+    // ── IL entry points ──────────────────────────────────────────────
+    // Called from DynamicMethod IL. Take ref CompiledQueryMatch so the
+    // emitter just pushes ldarg.0 + int constants — no per-field ldfld chains.
+
+    public static void CtxFillFromTermSource(ref Matches.CompiledQueryMatch ctx, int paramIndex)
+    {
+        FillBitmapFromTermSource(ref ctx._termSources[paramIndex], ctx._llt, ref ctx._bitmaps[0], ctx._limit);
+    }
+
+    public static void CtxFillFromTermProvider(ref Matches.CompiledQueryMatch ctx, int paramIndex)
+    {
+        FillBitmapFromTermProvider(ctx._termProviders[paramIndex], ctx._llt, ref ctx._bitmaps[0], ctx._limit);
+    }
+
+    public static void CtxFillFromMatch(ref Matches.CompiledQueryMatch ctx, int paramIndex)
+    {
+        FillFromMatch(ctx._resolvedMatches[paramIndex], ref ctx._bitmaps[0]);
+    }
+
+    public static void CtxOrFillFromTermSource(ref Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
+    {
+        FillBitmapFromTermSource(ref ctx._termSources[paramIndex], ctx._llt, ref ctx._bitmaps[bitmapSlot], ctx._limit);
+    }
+
+    public static void CtxOrFillFromTermProvider(ref Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
+    {
+        FillBitmapFromTermProvider(ctx._termProviders[paramIndex], ctx._llt, ref ctx._bitmaps[bitmapSlot], ctx._limit);
+    }
+
+    public static void CtxOrFillFromMatch(ref Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
+    {
+        FillFromMatch(ctx._resolvedMatches[paramIndex], ref ctx._bitmaps[bitmapSlot]);
+    }
+
+    public static void CtxAndFromTermSource(ref Matches.CompiledQueryMatch ctx, int paramIndex)
+    {
+        AndWithTermSource(ref ctx._termSources[paramIndex], ctx._llt, ref ctx._bitmaps[0], ref ctx._bitmaps[1], ctx._limit);
+    }
+
+    public static void CtxAndFromTermProvider(ref Matches.CompiledQueryMatch ctx, int paramIndex)
+    {
+        AndBitmapWithTermProvider(ctx._termProviders[paramIndex], ctx._llt, ref ctx._bitmaps[0], ref ctx._bitmaps[1]);
+    }
+
+    public static void CtxAndFromMatch(ref Matches.CompiledQueryMatch ctx, int paramIndex)
+    {
+        AndWithMatch(ctx._resolvedMatches[paramIndex], ref ctx._bitmaps[0], ref ctx._bitmaps[1]);
+    }
+
+    public static void CtxAndNotFromTermSource(ref Matches.CompiledQueryMatch ctx, int paramIndex)
+    {
+        AndNotWithTermSource(ref ctx._termSources[paramIndex], ctx._llt, ref ctx._bitmaps[0], ref ctx._bitmaps[1]);
+    }
+
+    public static void CtxAndNotFromTermProvider(ref Matches.CompiledQueryMatch ctx, int paramIndex)
+    {
+        AndNotBitmapWithTermProvider(ctx._termProviders[paramIndex], ctx._llt, ref ctx._bitmaps[0], ref ctx._bitmaps[1]);
+    }
+
+    public static void CtxAndNotFromMatch(ref Matches.CompiledQueryMatch ctx, int paramIndex)
+    {
+        AndNotWithMatch(ctx._resolvedMatches[paramIndex], ref ctx._bitmaps[0], ref ctx._bitmaps[1]);
+    }
+
     // Batch size for entry scan: how many bitmap entries to read per iteration.
     internal const int EntryScanBatchSize = 256;
 
