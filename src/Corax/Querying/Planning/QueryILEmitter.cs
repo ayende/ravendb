@@ -26,6 +26,7 @@ public static class QueryILEmitter
     private static readonly FieldInfo s_ctxSearcher = typeof(CompiledQueryMatch).GetField("_searcher", InternalInstance)!;
     private static readonly FieldInfo s_ctxToken = typeof(CompiledQueryMatch).GetField("_token", InternalInstance)!;
     private static readonly FieldInfo s_ctxEntryScanTakenAtOp = typeof(CompiledQueryMatch).GetField("_entryScanTakenAtOp", InternalInstance)!;
+    private static readonly FieldInfo s_ctxLimit = typeof(CompiledQueryMatch).GetField("_limit", InternalInstance)!;
 
     // Timing helpers
     private static readonly MethodInfo s_getTimestamp =
@@ -51,6 +52,7 @@ public static class QueryILEmitter
     private static readonly MethodInfo s_clear =
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.Clear), Type.EmptyTypes)!;
     private static readonly MethodInfo s_isEmptyGetter = typeof(RoaringBitmap).GetProperty(nameof(RoaringBitmap.IsEmpty))!.GetGetMethod()!;
+    private static readonly MethodInfo s_countGetter = typeof(RoaringBitmap).GetProperty(nameof(RoaringBitmap.Count))!.GetGetMethod()!;
     private static readonly MethodInfo s_repairAfterLazy =
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.RepairAfterLazy), Type.EmptyTypes)!;
     private static readonly MethodInfo s_bitmapCountGetter = typeof(RoaringBitmap).GetProperty(nameof(RoaringBitmap.Count))!.GetGetMethod()!;
@@ -231,18 +233,20 @@ public static class QueryILEmitter
                     EmitCancellationCheck(il);
                     if (op.Dispatch == MatchDispatch.TermSource)
                     {
-                        // QueryPrimitives.FillBitmapFromTermSource(ref TermSources[i], llt, ref bitmap[0])
+                        // QueryPrimitives.FillBitmapFromTermSource(ref TermSources[i], llt, ref bitmap[0], limit)
                         EmitLoadTermSourceRef(il, op.ParamIndex);
                         EmitLoadLlt(il);
                         EmitLoadBitmapRef(il, 0);
+                        EmitLoadLimit(il);
                         il.Emit(OpCodes.Call, s_fillBitmapFromTermSource);
                     }
                     else if (op.Dispatch == MatchDispatch.TermProvider)
                     {
-                        // QueryPrimitives.FillBitmapFromTermProvider(TermProviders[i], llt, ref bitmap[0])
+                        // QueryPrimitives.FillBitmapFromTermProvider(TermProviders[i], llt, ref bitmap[0], limit)
                         EmitLoadTermProvider(il, op.ParamIndex);
                         EmitLoadLlt(il);
                         EmitLoadBitmapRef(il, 0);
+                        EmitLoadLimit(il);
                         il.Emit(OpCodes.Call, s_fillBitmapFromTermProvider);
                     }
                     else
@@ -258,11 +262,12 @@ public static class QueryILEmitter
                     EmitCancellationCheck(il);
                     if (op.Dispatch == MatchDispatch.TermSource)
                     {
-                        // QueryPrimitives.AndWithTermSource(ref TermSources[i], llt, ref bitmap[0], ref bitmap[1])
+                        // QueryPrimitives.AndWithTermSource(ref TermSources[i], llt, ref bitmap[0], ref bitmap[1], limit)
                         EmitLoadTermSourceRef(il, op.ParamIndex);
                         EmitLoadLlt(il);
                         EmitLoadBitmapRef(il, 0);
                         EmitLoadBitmapRef(il, 1);
+                        EmitLoadLimit(il);
                         il.Emit(OpCodes.Call, s_andWithTermSource);
                     }
                     else if (op.Dispatch == MatchDispatch.TermProvider)
@@ -297,18 +302,20 @@ public static class QueryILEmitter
                     EmitCancellationCheck(il);
                     if (op.Dispatch == MatchDispatch.TermSource)
                     {
-                        // QueryPrimitives.FillBitmapFromTermSource(ref TermSources[i], llt, ref bitmap[slot])
+                        // QueryPrimitives.FillBitmapFromTermSource(ref TermSources[i], llt, ref bitmap[slot], limit)
                         EmitLoadTermSourceRef(il, op.ParamIndex);
                         EmitLoadLlt(il);
                         EmitLoadBitmapRef(il, op.BitmapLocal);
+                        EmitLoadLimit(il);
                         il.Emit(OpCodes.Call, s_fillBitmapFromTermSource);
                     }
                     else if (op.Dispatch == MatchDispatch.TermProvider)
                     {
-                        // QueryPrimitives.FillBitmapFromTermProvider(TermProviders[i], llt, ref bitmap[slot])
+                        // QueryPrimitives.FillBitmapFromTermProvider(TermProviders[i], llt, ref bitmap[slot], limit)
                         EmitLoadTermProvider(il, op.ParamIndex);
                         EmitLoadLlt(il);
                         EmitLoadBitmapRef(il, op.BitmapLocal);
+                        EmitLoadLimit(il);
                         il.Emit(OpCodes.Call, s_fillBitmapFromTermProvider);
                     }
                     else
@@ -345,6 +352,12 @@ public static class QueryILEmitter
                     EmitLoadBitmapRef(il, op.BitmapLocal);   // target
                     EmitLoadBitmapRef(il, op.ParamIndex2);    // source
                     il.Emit(OpCodes.Call, s_orWith);
+                    // Limit check: if bitmap[target].Count >= _limit, skip remaining OR branches
+                    EmitLoadBitmapRef(il, op.BitmapLocal);
+                    il.Emit(OpCodes.Call, s_countGetter);
+                    il.Emit(OpCodes.Conv_I8);
+                    EmitLoadLimit(il);
+                    il.Emit(OpCodes.Bge, doneLabel);
                     break;
 
                 case PlanOpKind.SwapBitmaps:
@@ -927,6 +940,12 @@ public static class QueryILEmitter
     {
         il.Emit(OpCodes.Ldarg_0);
         il.Emit(OpCodes.Ldfld, s_ctxLlt);
+    }
+
+    private static void EmitLoadLimit(ILGenerator il)
+    {
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Ldfld, s_ctxLimit);
     }
 
     /// <summary>Emit: startTick = Stopwatch.GetTimestamp()</summary>

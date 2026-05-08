@@ -40,6 +40,13 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
     // LowLevelTransaction cached at Execute() time so the emitted IL does not re-fetch it per op.
     internal LowLevelTransaction _llt;
 
+    /// <summary>Limit for early-exit during bitmap accumulation (unsorted queries only).
+    /// When set, FillFromPostings stops after limit entries and OR branches are
+    /// skipped once the bitmap has enough. Set to long.MaxValue when an ORDER BY
+    /// is present (sorting needs the full bitmap for Contains checks).</summary>
+    public long Limit { get => _limit; set => _limit = value; }
+    internal long _limit;
+
     // Telemetry — populated during Execute if timings are requested
     internal long[] _timings;
     internal long[] _resultCounts;
@@ -64,6 +71,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IBitmapQueryMatch, IDispo
         _allocator = allocator;
         _searcher = searcher;
         _token = token;
+        _limit = long.MaxValue;
         _bitmapData = new RoaringBitmap(allocator);
         _bitmaps = null;
         _llt = null;

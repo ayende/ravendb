@@ -244,7 +244,8 @@ public static class QueryPrimitives
     public static void FillBitmapFromTermSource(
         ref Planning.TermSource source,
         LowLevelTransaction llt,
-        ref RoaringBitmap bitmap)
+        ref RoaringBitmap bitmap,
+        long limit = long.MaxValue)
     {
         switch (source.Kind)
         {
@@ -260,7 +261,7 @@ public static class QueryPrimitives
                 return;
 
             case Planning.TermSourceKind.PostingList:
-                FillFromPostings(ref source.LargeIterator, ref bitmap);
+                FillFromPostings(ref source.LargeIterator, ref bitmap, limit);
                 return;
 
             default:
@@ -277,7 +278,8 @@ public static class QueryPrimitives
         ref Planning.TermSource source,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
-        ref RoaringBitmap tempBitmap)
+        ref RoaringBitmap tempBitmap,
+        long limit = long.MaxValue)
     {
         if (bitmap.IsEmpty)
             return;
@@ -406,7 +408,8 @@ public static class QueryPrimitives
     public static unsafe void FillBitmapFromTermProvider(
         ITermProvider provider,
         LowLevelTransaction llt,
-        ref RoaringBitmap bitmap)
+        ref RoaringBitmap bitmap,
+        long limit = long.MaxValue)
     {
         Span<long> plIds = stackalloc long[FillBufferSize];
         Span<long> entryBuffer = stackalloc long[FillBufferSize];
@@ -429,7 +432,7 @@ public static class QueryPrimitives
         try
         {
             int read;
-            while ((read = provider.FillPostingListIds(plIds)) > 0)
+            while (bitmap.Count < limit && (read = provider.FillPostingListIds(plIds)) > 0)
             {
                 for (int b = 0; b < buckets.Length; b++)
                     buckets[b].Clear();
