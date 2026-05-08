@@ -18,7 +18,7 @@ namespace Corax.Querying.Planning;
 
 public static class QueryIlEmitter
 {
-    public delegate void CompiledExecuteDelegate(ref CompiledQueryMatch ctx);
+    public delegate void CompiledExecuteDelegate(CompiledQueryMatch ctx);
 
     // CompiledQueryMatch fields (accessed by emitted IL)
     private static readonly FieldInfo CtxBitmaps = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Bitmaps));
@@ -171,7 +171,7 @@ public static class QueryIlEmitter
         var dm = new DynamicMethod(
             "CompiledQuery",
             typeof(void),
-            [typeof(CompiledQueryMatch).MakeByRefType()],
+            [typeof(CompiledQueryMatch)],
             typeof(CompiledQueryMatch).Module,
             skipVisibility: true)
             {
@@ -976,7 +976,7 @@ public static class QueryIlEmitter
         }
     }
 
-    private static void EmptyExecute(ref CompiledQueryMatch ctx) { }
+    private static void EmptyExecute(CompiledQueryMatch ctx) { }
 
     /// <summary>Append one EXPLAIN pseudocode line for a PlanOp. Called from the
     /// IL emission loop, so EXPLAIN and IL are generated in the same pass and
@@ -1068,7 +1068,7 @@ public static class EntryScanHelper
 {
     /// <summary>Record timing for a plan op. Called by emitted IL.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void RecordTiming(ref CompiledQueryMatch ctx, int opIndex, long startTick)
+    public static void RecordTiming(CompiledQueryMatch ctx, int opIndex, long startTick)
     {
         var timings = ctx.Timings;
         if (timings != null && opIndex < timings.Length)
@@ -1077,7 +1077,7 @@ public static class EntryScanHelper
 
     /// <summary>Record bitmap result count after a plan op. Called by emitted IL.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void RecordResultCount(ref CompiledQueryMatch ctx, int opIndex)
+    public static void RecordResultCount(CompiledQueryMatch ctx, int opIndex)
     {
         var resultCounts = ctx.ResultCounts;
         if (resultCounts != null && opIndex < resultCounts.Length)

@@ -11,7 +11,7 @@ using Voron.Impl;
 
 namespace Corax.Querying.Matches;
 
-public struct CompiledQueryMatch : IBitmapQueryMatch, IDisposable
+public class CompiledQueryMatch : IBitmapQueryMatch, IDisposable
 {
     private readonly QueryIlEmitter.CompiledExecuteDelegate _compiledDelegate;
     public readonly IQueryMatch[] ResolvedMatches;
@@ -133,7 +133,6 @@ public struct CompiledQueryMatch : IBitmapQueryMatch, IDisposable
         }
     }
 
-    [UnscopedRef]
     public ref RoaringBitmap BitmapState
     {
         get
@@ -240,7 +239,7 @@ public struct CompiledQueryMatch : IBitmapQueryMatch, IDisposable
 
         try
         {
-            _compiledDelegate(ref this);
+            _compiledDelegate(this);
 
             // Take ownership of bitmaps[0] (may have been swapped during entry scan)
             _bitmapData = Bitmaps[0];

@@ -1,18 +1,14 @@
-using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using FastTests;
 using Raven.Client.Documents;
 using Raven.Client.Documents.Indexes;
+using Raven.Client.Documents.Queries.Timings;
 using Tests.Infrastructure;
 using Xunit;
 
 namespace FastTests.Corax;
 
-/// <summary>
-/// Tests that LIMIT early-exit in the bitmap pipeline produces correct results.
-/// The optimization stops reading posting lists once the bitmap has enough entries
-/// for unsorted queries. These tests verify correctness, not performance.
-/// </summary>
 public class LimitEarlyExitTests(ITestOutputHelper output) : RavenTestBase(output)
 {
     [RavenTheory(RavenTestCategory.Querying | RavenTestCategory.Corax)]
@@ -23,7 +19,6 @@ public class LimitEarlyExitTests(ITestOutputHelper output) : RavenTestBase(outpu
         InsertDocuments(store, 500);
 
         using var session = store.OpenSession();
-        // No ORDER BY → limit-aware bitmap accumulation
         var results = session.Advanced.RawQuery<Doc>(
                 "from index 'DocIndex' where Tag = 'even' limit 10")
             .ToList();
@@ -35,19 +30,44 @@ public class LimitEarlyExitTests(ITestOutputHelper output) : RavenTestBase(outpu
 
     [RavenTheory(RavenTestCategory.Querying | RavenTestCategory.Corax)]
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public async Task SingleClauseWithLimitDoesNotScanAll(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        InsertDocuments(store, 500);
+
+        using var session = store.OpenAsyncSession();
+        var results = await session.Advanced
+            .AsyncDocumentQuery<Doc, DocIndex>()
+            .WhereEquals("Tag", "even")
+            .Take(10)
+            .Timings(out QueryTimings timings)
+            .ToListAsync();
+
+        Assert.Equal(10, results.Count);
+
+        var plan = (QueryInspectionNode)timings.QueryPlan;
+        Assert.NotNull(plan);
+        Assert.Equal("CompiledQuery", plan.Operation);
+        Assert.True(plan.Parameters.ContainsKey("ScannedEntries"),
+            $"ScannedEntries missing. Parameters: {string.Join(", ", plan.Parameters.Keys)}");
+        var scanned = long.Parse(plan.Parameters["ScannedEntries"]);
+        Assert.True(scanned < 250,
+            $"Expected early exit to scan fewer than 250 entries, but scanned {scanned}");
+    }
+
+    [RavenTheory(RavenTestCategory.Querying | RavenTestCategory.Corax)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
     public void SingleClauseWithLimitAndOrderBy(Options options)
     {
         using var store = GetDocumentStore(options);
         InsertDocuments(store, 500);
 
         using var session = store.OpenSession();
-        // ORDER BY → full bitmap needed, limit applies at sort level
         var results = session.Advanced.RawQuery<Doc>(
                 "from index 'DocIndex' where Tag = 'even' order by Value limit 10")
             .ToList();
 
         Assert.Equal(10, results.Count);
-        // Should be sorted ascending by Value
         for (int i = 1; i < results.Count; i++)
             Assert.True(results[i].Value >= results[i - 1].Value);
         foreach (var r in results)
@@ -62,12 +82,38 @@ public class LimitEarlyExitTests(ITestOutputHelper output) : RavenTestBase(outpu
         InsertDocuments(store, 500);
 
         using var session = store.OpenSession();
-        // OR chain — limit should stop once enough from first branches
         var results = session.Advanced.RawQuery<Doc>(
                 "from index 'DocIndex' where Tag = 'even' or Tag = 'odd' limit 10")
             .ToList();
 
         Assert.Equal(10, results.Count);
+    }
+
+    [RavenTheory(RavenTestCategory.Querying | RavenTestCategory.Corax)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public async Task OrChainWithLimitDoesNotScanAll(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        InsertDocuments(store, 500);
+
+        using var session = store.OpenAsyncSession();
+        var results = await session.Advanced
+            .AsyncDocumentQuery<Doc, DocIndex>()
+            .WhereEquals("Tag", "even")
+            .OrElse()
+            .WhereEquals("Tag", "odd")
+            .Take(10)
+            .Timings(out QueryTimings timings)
+            .ToListAsync();
+
+        Assert.Equal(10, results.Count);
+
+        var plan = (QueryInspectionNode)timings.QueryPlan;
+        Assert.NotNull(plan);
+        Assert.Equal("CompiledQuery", plan.Operation);
+        var scanned = long.Parse(plan.Parameters["ScannedEntries"]);
+        Assert.True(scanned < 500,
+            $"Expected early exit to scan fewer than 500 entries, but scanned {scanned}");
     }
 
     [RavenTheory(RavenTestCategory.Querying | RavenTestCategory.Corax)]
@@ -78,7 +124,6 @@ public class LimitEarlyExitTests(ITestOutputHelper output) : RavenTestBase(outpu
         InsertDocuments(store, 500);
 
         using var session = store.OpenSession();
-        // AND — both conditions must hold, limit applies after intersection
         var results = session.Advanced.RawQuery<Doc>(
                 "from index 'DocIndex' where Tag = 'even' and Value < 100 limit 10")
             .ToList();
@@ -99,7 +144,6 @@ public class LimitEarlyExitTests(ITestOutputHelper output) : RavenTestBase(outpu
         InsertDocuments(store, 20);
 
         using var session = store.OpenSession();
-        // Only 10 'even' docs exist, limit is 100
         var results = session.Advanced.RawQuery<Doc>(
                 "from index 'DocIndex' where Tag = 'even' limit 100")
             .ToList();
@@ -138,6 +182,29 @@ public class LimitEarlyExitTests(ITestOutputHelper output) : RavenTestBase(outpu
             .ToList();
 
         Assert.Equal(50, results.Count);
+    }
+
+    [RavenTheory(RavenTestCategory.Querying | RavenTestCategory.Corax)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public async Task NoLimitScansAll(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        InsertDocuments(store, 100);
+
+        using var session = store.OpenAsyncSession();
+        var results = await session.Advanced
+            .AsyncDocumentQuery<Doc, DocIndex>()
+            .WhereEquals("Tag", "even")
+            .Timings(out QueryTimings timings)
+            .ToListAsync();
+
+        Assert.Equal(50, results.Count);
+
+        var plan = (QueryInspectionNode)timings.QueryPlan;
+        Assert.NotNull(plan);
+        Assert.Equal("CompiledQuery", plan.Operation);
+        var scanned = long.Parse(plan.Parameters["ScannedEntries"]);
+        Assert.Equal(50, scanned);
     }
 
     private void InsertDocuments(IDocumentStore store, int count)
