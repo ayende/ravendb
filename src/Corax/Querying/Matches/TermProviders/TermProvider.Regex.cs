@@ -41,7 +41,7 @@ public struct RegexTermProvider<TLookupIterator> : ITermProvider
     {
         int count = 0;
 
-        using var scope = new CompactKeyCacheScope(_tree._inner.Llt);
+        using var scope = new CompactKeyCacheScope(_searcher.Transaction.LowLevelTransaction);
         var compactKey = scope.Key;
 
         while (count < postingListIds.Length)

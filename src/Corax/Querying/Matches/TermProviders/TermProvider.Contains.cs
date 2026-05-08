@@ -41,7 +41,7 @@ namespace Corax.Querying.Matches.TermProviders
             var contains = _term.Decoded();
             int count = 0;
 
-            using var scope = new CompactKeyCacheScope(_tree._inner.Llt);
+            using var scope = new CompactKeyCacheScope(_searcher.Transaction.LowLevelTransaction);
             var key = scope.Key;
 
             while (count < postingListIds.Length)

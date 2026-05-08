@@ -11,14 +11,14 @@ namespace Corax.Querying.Matches.TermProviders
         where TLookupIterator : struct, ILookupIterator
     {
         private readonly CompactTree _tree;
-        private readonly Querying.IndexSearcher _searcher;
+        private readonly IndexSearcher _searcher;
         private readonly FieldMetadata _field;
 
         private readonly CompactKey _endsWith;
 
         private CompactTree.Iterator<TLookupIterator> _iterator;
 
-        public EndsWithTermProvider(Querying.IndexSearcher searcher, CompactTree tree, in FieldMetadata field, CompactKey endsWith)
+        public EndsWithTermProvider(IndexSearcher searcher, CompactTree tree, in FieldMetadata field, CompactKey endsWith)
         {
             _tree = tree;
             _searcher = searcher;
@@ -40,15 +40,15 @@ namespace Corax.Querying.Matches.TermProviders
             var suffix = _endsWith.Decoded();
             int count = 0;
 
-            using var scope = new CompactKeyCacheScope(_tree._inner.Llt);
+            using var scope = new CompactKeyCacheScope(_searcher.Transaction.LowLevelTransaction);
             var key = scope.Key;
 
             while (count < postingListIds.Length)
             {
-                if (_iterator.MoveNext(key, out long postingListId, out _) == false)
+                if (!_iterator.MoveNext(key, out long postingListId, out _))
                     break;
 
-                if (key.Decoded().EndsWith(suffix) == false)
+                if (!key.Decoded().EndsWith(suffix))
                     continue;
 
                 postingListIds[count++] = postingListId;
@@ -69,7 +69,7 @@ namespace Corax.Querying.Matches.TermProviders
             while (_iterator.MoveNext(out var key, out _, out _))
             {
                 var termSlice = key.Decoded();
-                if (termSlice.EndsWith(suffix) == false)
+                if (!termSlice.EndsWith(suffix))
                 {
                     continue;
                 }
@@ -85,7 +85,7 @@ namespace Corax.Querying.Matches.TermProviders
         public QueryInspectionNode Inspect()
         {
             return new QueryInspectionNode($"{nameof(EndsWithTermProvider<TLookupIterator>)}",
-                parameters: new Dictionary<string, string>()
+                parameters: new Dictionary<string, string>
                 {
                     { Constants.QueryInspectionNode.FieldName, _field.ToString() },
                     { Constants.QueryInspectionNode.Suffix, _endsWith.ToString()}
