@@ -86,9 +86,11 @@ internal static class QueryPlanBuilder
         long[] resultCounts = null;
         int entryScanAt = -1;
 
+        long scannedEntries = -1;
         if (executedMatch is CompiledQueryMatch compiled)
         {
             compiled.GetTelemetry(out timings, out resultCounts, out entryScanAt);
+            scannedEntries = compiled.Count;
         }
 
         double tickFreq = System.Diagnostics.Stopwatch.Frequency / 1000.0;
@@ -102,6 +104,8 @@ internal static class QueryPlanBuilder
         var rootParams = new Dictionary<string, string>();
         if (plan.IsAllEntries)
             rootParams["Plan"] = "AllEntries";
+        if (scannedEntries >= 0)
+            rootParams["ScannedEntries"] = scannedEntries.ToString();
 
         var root = new QueryInspectionNode("CompiledQuery", parameters: rootParams);
 
