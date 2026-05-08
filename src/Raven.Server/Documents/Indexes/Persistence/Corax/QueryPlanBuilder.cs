@@ -857,16 +857,19 @@ internal static class QueryPlanBuilder
                 break;
 
             case MethodType.Exists:
-                if (method.Arguments.Count > 0 && method.Arguments[0] is FieldExpression existsField)
+            {
+                if (method.Arguments.Count == 0)
+                    throw new InvalidQueryException("exists() requires a field argument.");
+                if (TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var existsFieldName, out _) == false)
+                    throw new InvalidQueryException($"exists() argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
+                clauses.Add(new ClauseInfo
                 {
-                    clauses.Add(new ClauseInfo
-                    {
-                        FieldName = GetFieldName(existsField, metadata, queryParameters),
-                        ClauseType = ClauseType.Exists,
-                        OriginalIndex = clauses.Count
-                    });
-                }
+                    FieldName = existsFieldName,
+                    ClauseType = ClauseType.Exists,
+                    OriginalIndex = clauses.Count
+                });
                 break;
+            }
 
             case MethodType.Exact:
             {
@@ -901,17 +904,20 @@ internal static class QueryPlanBuilder
             }
 
             case MethodType.Regex:
-                if (method.Arguments.Count >= 2 && method.Arguments[0] is FieldExpression regexField)
+            {
+                if (method.Arguments.Count < 2)
+                    throw new InvalidQueryException($"regex() requires at least 2 arguments (field, pattern), but got {method.Arguments.Count}.");
+                if (TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var regexFieldName, out _) == false)
+                    throw new InvalidQueryException($"regex() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
+                clauses.Add(new ClauseInfo
                 {
-                    clauses.Add(new ClauseInfo
-                    {
-                        FieldName = GetFieldName(regexField, metadata, queryParameters),
-                        TermValue = GetTermValue(method.Arguments[1], queryParameters),
-                        ClauseType = ClauseType.Regex,
-                        OriginalIndex = clauses.Count
-                    });
-                }
+                    FieldName = regexFieldName,
+                    TermValue = GetTermValue(method.Arguments[1], queryParameters),
+                    ClauseType = ClauseType.Regex,
+                    OriginalIndex = clauses.Count
+                });
                 break;
+            }
 
             case MethodType.Spatial_Within:
             case MethodType.Spatial_Contains:
@@ -967,10 +973,10 @@ internal static class QueryPlanBuilder
         BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
     {
         if (method.Arguments.Count < 2)
-            return;
+            throw new InvalidQueryException($"search() requires at least 2 arguments (field, term), but got {method.Arguments.Count}.");
 
-        if (method.Arguments[0] is not FieldExpression searchField)
-            return;
+        if (TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var fieldName, out _) == false)
+            throw new InvalidQueryException($"search() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
 
         var searchOp = Constants.Search.Operator.Or;
         if (method.Arguments.Count >= 3 && method.Arguments[2] is FieldExpression opField
@@ -983,7 +989,7 @@ internal static class QueryPlanBuilder
 
         clauses.Add(new ClauseInfo
         {
-            FieldName = GetFieldName(searchField, metadata, queryParameters),
+            FieldName = fieldName,
             TermValue = GetTermValue(method.Arguments[1], queryParameters),
             ClauseType = ClauseType.Search,
             SearchOperator = searchOp,
@@ -995,14 +1001,14 @@ internal static class QueryPlanBuilder
         BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ClauseType type)
     {
         if (method.Arguments.Count < 2)
-            return;
+            throw new InvalidQueryException($"{type}() requires at least 2 arguments (field, term), but got {method.Arguments.Count}.");
 
-        if (method.Arguments[0] is not FieldExpression field)
-            return;
+        if (TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var fieldName, out _) == false)
+            throw new InvalidQueryException($"{type}() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
 
         clauses.Add(new ClauseInfo
         {
-            FieldName = GetFieldName(field, metadata, queryParameters),
+            FieldName = fieldName,
             TermValue = GetTermValue(method.Arguments[1], queryParameters),
             ClauseType = type,
             OriginalIndex = clauses.Count
@@ -1140,9 +1146,10 @@ internal static class QueryPlanBuilder
         return field.FieldValue;
     }
 
-    /// <summary>Try to extract a field name from a query expression that may be either a
-    /// <see cref="FieldExpression"/> (normal field) or a <see cref="MethodExpression"/>
-    /// for the <c>id()</c> function. Returns false if the expression is neither.</summary>
+    /// <summary>Try to extract a field name from a query expression that may be a
+    /// <see cref="FieldExpression"/> (normal field), a <see cref="ValueExpression"/>
+    /// (quoted field name like <c>'Order'</c>), or a <see cref="MethodExpression"/>
+    /// for the <c>id()</c> function. Returns false if the expression is none of these.</summary>
     private static bool TryGetFieldName(QueryExpression expr, QueryMetadata metadata,
         BlittableJsonReaderObject queryParameters, out string fieldName, out FieldExpression fieldExpr)
     {
@@ -1151,6 +1158,20 @@ internal static class QueryPlanBuilder
             fieldName = GetFieldName(fe, metadata, queryParameters);
             fieldExpr = fe;
             return true;
+        }
+
+        // Quoted field names (e.g. 'Order' for reserved words) are parsed as ValueExpression
+        if (expr is ValueExpression ve)
+        {
+            var resolved = ve.GetValue(queryParameters)?.ToString();
+            if (resolved != null)
+            {
+                fieldName = metadata != null
+                    ? metadata.GetIndexFieldName(new Raven.Server.Documents.Queries.QueryFieldName(resolved, ve.Value == ValueTokenType.String), queryParameters).Value
+                    : resolved;
+                fieldExpr = null;
+                return true;
+            }
         }
 
         if (expr is MethodExpression me && string.Equals(me.Name.Value, "id", StringComparison.OrdinalIgnoreCase))
