@@ -195,24 +195,6 @@ public partial class IndexSearcher
     }
 
     /// <summary>
-    /// Get the PostingListState for a container ID without creating a full PostingList.
-    /// Used by ShouldSwitchToEntryScan for O(1) cardinality check.
-    /// </summary>
-    public PostingListState GetPostingListState(long containerId)
-    {
-        if ((containerId & (long)TermIdMask.PostingList) != 0)
-        {
-            var setId = EntryIdEncodings.GetContainerId(containerId);
-            var setStateSpan = Container.GetReadOnly(_transaction.LowLevelTransaction, setId);
-            return MemoryMarshal.AsRef<PostingListState>(setStateSpan);
-        }
-
-        // For small posting lists and single entries, create a synthetic state
-        // with just NumberOfEntries set.
-        return new PostingListState { NumberOfEntries = NumberOfDocumentsUnderSpecificTerm(containerId) };
-    }
-
-    /// <summary>
     /// Returns the raw posting list ID (with TermIdMask encoding) for a string term,
     /// or -1 if the term does not exist in the index.
     /// </summary>
