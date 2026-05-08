@@ -722,6 +722,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 }
 
                 // We don't need to do any processing for the query beyond counting if we are getting a count.
+                var totalResultsBefore = totalResults.Value;
                 while (query.IsCountQuery == false || typeof(TDistinct) == typeof(HasDistinct))
                 {
                     token.ThrowIfCancellationRequested();
@@ -874,6 +875,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
                 if (docsToLoad == 0 ||
                     sortingMatchTotalResults == totalResults.Value ||
+                    totalResults.Value == totalResultsBefore || // no progress this iteration — match exhausted
                     scannedDocuments.Value >= query.FilterLimit)
                 {
                     totalResults.Value = (int)Math.Min(sortingMatchTotalResults, int.MaxValue);
