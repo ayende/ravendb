@@ -7,9 +7,9 @@ using Corax.Querying.Matches.Meta;
 using Voron.Data.CompactTrees;
 using Voron.Data.Lookups;
 
-namespace Corax.Querying.Matches.TermProviders;
+namespace Corax.Querying.Matches.TermsProviders;
 
-public struct RegexTermProvider<TLookupIterator> : ITermProvider
+public struct RegexTermsProvider<TLookupIterator> : ITermsProvider
     where TLookupIterator : struct, ILookupIterator
 {
     private readonly CompactTree _tree;
@@ -19,7 +19,7 @@ public struct RegexTermProvider<TLookupIterator> : ITermProvider
 
     private CompactTree.Iterator<TLookupIterator> _iterator;
 
-    public RegexTermProvider(Querying.IndexSearcher searcher, CompactTree tree, in FieldMetadata field, Regex regex)
+    public RegexTermsProvider(Querying.IndexSearcher searcher, CompactTree tree, in FieldMetadata field, Regex regex)
     {
         _searcher = searcher;
         _regex = regex;
@@ -83,7 +83,7 @@ public struct RegexTermProvider<TLookupIterator> : ITermProvider
 
     public QueryInspectionNode Inspect()
     {
-        return new QueryInspectionNode($"{nameof(RegexTermProvider<TLookupIterator>)}",
+        return new QueryInspectionNode($"{nameof(RegexTermsProvider<TLookupIterator>)}",
             parameters: new Dictionary<string, string>()
             {
                 { Constants.QueryInspectionNode.FieldName, _field.ToString() },

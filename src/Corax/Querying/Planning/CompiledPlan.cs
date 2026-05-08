@@ -5,7 +5,7 @@ public sealed class CompiledPlan
     /// <summary>IL-emitted delegate that executes the posting-list scan plan.
     /// Takes a <see cref="QueryScanContext"/> by ref and fills / intersects the
     /// bitmap slots according to the compiled <see cref="PlanOp"/> sequence.</summary>
-    public QueryILEmitter.CompiledExecuteDelegate CompiledDelegate { get; init; }
+    public QueryIlEmitter.CompiledExecuteDelegate CompiledDelegate { get; init; }
     /// <summary>Packed operand ordering used as part of the cache key.
     /// Two plans with the same query text but different operand orderings (due to
     /// different cardinality estimates) produce different IL, so this distinguishes them.</summary>

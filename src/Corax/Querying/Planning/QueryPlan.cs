@@ -5,7 +5,7 @@ namespace Corax.Querying.Planning;
 public enum PlanOpKind : byte
 {
     /// <summary>Fill bitmap[0] from a term source, term provider, or IQueryMatch.
-    /// Dispatches to QueryPrimitives.FillBitmapFromTermSource / FillBitmapFromTermProvider / FillFromMatch
+    /// Dispatches to QueryPrimitives.FillBitmapFromTermSource / FillBitmapFromTermsProvider / FillFromMatch
     /// depending on <see cref="PlanOp.Dispatch"/>.</summary>
     FillFromPostings,
 
@@ -70,7 +70,7 @@ public enum MatchDispatch : byte
 {
     /// <summary>Use <c>ctx.DirectSources[ParamIndex]</c> — IQueryMatch interface dispatch.
     /// Used for vector, spatial, search, boosted, and any clause the planner cannot
-    /// express as a TermSource or TermProvider.</summary>
+    /// express as a TermSource or TermsProvider.</summary>
     DirectSource,
 
     /// <summary>Use <c>ctx.TermSources[ParamIndex]</c> — native posting-list dispatch.
@@ -78,11 +78,11 @@ public enum MatchDispatch : byte
     /// Used for Equals and NotEquals clauses.</summary>
     TermSource,
 
-    /// <summary>Use <c>ctx.TermProviders[ParamIndex]</c> — multi-term bitmap fill.
-    /// The ITermProvider iterates the CompactTree at execution time, decoding each
+    /// <summary>Use <c>ctx.TermsProviders[ParamIndex]</c> — multi-term bitmap fill.
+    /// The ITermsProvider iterates the CompactTree at execution time, decoding each
     /// matching posting list directly into the bitmap without an intermediate flat buffer.
     /// Used for StartsWith / EndsWith / Contains / Exists / Regex / range clauses.</summary>
-    TermProvider,
+    TermsProvider,
 }
 
 public struct PlanOp
@@ -101,7 +101,7 @@ public struct PlanOp
     ///   (IQueryMatch interface dispatch; vector, spatial, search, boosted clauses).</item>
     /// <item><see cref="MatchDispatch.TermSource"/> — <c>ctx.TermSources[ParamIndex]</c>
     ///   (native posting-list dispatch; Equals / NotEquals / In / AllIn).</item>
-    /// <item><see cref="MatchDispatch.TermProvider"/> — <c>ctx.TermProviders[ParamIndex]</c>
+    /// <item><see cref="MatchDispatch.TermsProvider"/> — <c>ctx.TermsProviders[ParamIndex]</c>
     ///   (multi-term bitmap fill; StartsWith / EndsWith / Contains / Exists / Regex / ranges).</item>
     /// </list></summary>
     public MatchDispatch Dispatch;
@@ -114,7 +114,7 @@ public struct PlanOp
 }
 
 /// <summary>Three-way native posting-list source attached to a term op.
-/// Mirrors the encoding used by <see cref="ITermProvider.FillPostingListIds"/>:
+/// Mirrors the encoding used by <see cref="ITermsProvider.FillPostingListIds"/>:
 /// the low 2 bits of a CompactTree value distinguish Single / SmallPostingList /
 /// PostingList. Resolved up-front by <c>ResolveTermSources</c>; consumed by
 /// <c>FillBitmapFromTermSource</c> / <c>AndWithTermSource</c> /

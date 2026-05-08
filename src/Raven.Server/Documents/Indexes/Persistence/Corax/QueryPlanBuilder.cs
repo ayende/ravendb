@@ -150,7 +150,7 @@ internal static class QueryPlanBuilder
             parameters["Dispatch"] = op.Dispatch switch
             {
                 MatchDispatch.TermSource => "Term",
-                MatchDispatch.TermProvider => "MultiTerm",
+                MatchDispatch.TermsProvider => "MultiTerm",
                 MatchDispatch.DirectSource => "Match",
                 _ => op.Dispatch.ToString()
             };
@@ -333,7 +333,7 @@ internal static class QueryPlanBuilder
             // never pay this cost.
             compiledPlan = new CompiledPlan
             {
-                CompiledDelegate = QueryILEmitter.EmitDelegate(plan, out var explainText),
+                CompiledDelegate = QueryIlEmitter.EmitDelegate(plan, out var explainText),
                 ExplainSource = explainText,
                 Ordering = plan.OperandOrdering,
                 TypeSignature = plan.TypeSignature,
@@ -2786,7 +2786,7 @@ internal static class QueryPlanBuilder
                 // (one slot per term, OR'd by the IL emitter). But when an In clause appears as a
                 // sub-clause inside an AndGroup (e.g. "WHERE (A AND field IN (x, y)) OR ..."),
                 // it reaches ResolveClause as a single unit and must become one IQueryMatch that
-                // covers all terms. Use InQuery which builds a TermProviderMatch over InTermProvider.
+                // covers all terms. Use InQuery which builds a TermsProviderMatch over InTermsProvider.
                 if (clause.InTerms != null && clause.InTerms.Count > 0)
                     return indexSearcher.InQuery(fieldMeta, clause.InTerms);
                 return indexSearcher.EmptyMatch();

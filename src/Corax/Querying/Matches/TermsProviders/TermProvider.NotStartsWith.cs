@@ -1,35 +1,41 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Threading;
 using Corax.Mappings;
 using Corax.Querying.Matches.Meta;
-using Voron;
 using Voron.Data.CompactTrees;
 using Voron.Data.Lookups;
 
-namespace Corax.Querying.Matches.TermProviders
+namespace Corax.Querying.Matches.TermsProviders
 {
-    public struct ContainsTermProvider<TLookupIterator> : ITermProvider
+    [DebuggerDisplay("{DebugView,nq}")]
+    public struct NotStartsWithTermsProvider<TLookupIterator> : ITermsProvider
         where TLookupIterator : struct, ILookupIterator
     {
         private readonly CompactTree _tree;
         private readonly Querying.IndexSearcher _searcher;
         private readonly FieldMetadata _field;
-        private readonly CompactKey _term;
+        private readonly CompactKey _startWith;
+        private readonly bool _validatePostfixLen;
+        private readonly CancellationToken _token;
 
         private CompactTree.Iterator<TLookupIterator> _iterator;
 
 
-        public ContainsTermProvider(Querying.IndexSearcher searcher, CompactTree tree, in FieldMetadata field, CompactKey term)
+        public NotStartsWithTermsProvider(Querying.IndexSearcher searcher, CompactTree tree, in FieldMetadata field, CompactKey startWith, bool validatePostfixLen, CancellationToken token)
         {
-            _tree = tree;
             _searcher = searcher;
             _field = field;
             _iterator = tree.Iterate<TLookupIterator>();
             _iterator.Reset();
-            _term = term;
+            _startWith = startWith;
+            _validatePostfixLen = validatePostfixLen;
+            _token = token;
+            _tree = tree;
         }
 
-        public bool IsFillSupported => false;
+        public bool IsFillSupported { get; }
 
         public int Fill(Span<long> containers)
         {
@@ -38,7 +44,7 @@ namespace Corax.Querying.Matches.TermProviders
 
         public int FillPostingListIds(Span<long> postingListIds)
         {
-            var contains = _term.Decoded();
+            var startWith = _startWith.Decoded();
             int count = 0;
 
             using var scope = new CompactKeyCacheScope(_searcher.Transaction.LowLevelTransaction);
@@ -49,8 +55,17 @@ namespace Corax.Querying.Matches.TermProviders
                 if (_iterator.MoveNext(key, out long postingListId, out _) == false)
                     break;
 
-                if (!key.Decoded().Contains(contains))
-                    continue;
+                _token.ThrowIfCancellationRequested();
+                var termSlice = key.Decoded();
+
+                if (termSlice.StartsWith(startWith))
+                {
+                    if (_validatePostfixLen == false ||
+                        termSlice[^1] == startWith.Length)
+                    {
+                        continue;
+                    }
+                }
 
                 postingListIds[count++] = postingListId;
             }
@@ -60,37 +75,44 @@ namespace Corax.Querying.Matches.TermProviders
 
         public void Reset()
         {
-            _iterator = _tree.Iterate<TLookupIterator>();
             _iterator.Reset();
         }
 
         public bool Next(out TermMatch term)
         {
-            var contains = _term.Decoded();
+            var startWith = _startWith.Decoded();
             while (_iterator.MoveNext(out var key, out _, out _))
             {
+                _token.ThrowIfCancellationRequested();
                 var termSlice = key.Decoded();
-                if (!termSlice.Contains(contains))
+                
+                if (termSlice.StartsWith(startWith))
                 {
-                    continue;
+                    if (_validatePostfixLen == false || // starts with the prefix, so skip
+                        termSlice[^1] == startWith.Length) // didn't pass the postfix marker validation,see: RavenDB-21131
+                    {
+                        continue;
+                    }
                 }
 
                 term = _searcher.TermQuery(_field, key, _tree);
                 return true;
             }
-
+            
             term = TermMatch.CreateEmpty(_searcher, _searcher.Allocator);
             return false;
         }
 
         public QueryInspectionNode Inspect()
         {
-            return new QueryInspectionNode($"{nameof(ContainsTermProvider<TLookupIterator>)}",
+            return new QueryInspectionNode($"{nameof(NotStartsWithTermsProvider<TLookupIterator>)}",
                             parameters: new Dictionary<string, string>()
                             {
                                 { Constants.QueryInspectionNode.FieldName, _field.ToString() },
-                                { Constants.QueryInspectionNode.Term, _term.ToString()}
+                                { Constants.QueryInspectionNode.Prefix, _startWith.ToString()}
                             });
         }
+
+        string DebugView => Inspect().ToString();
     }
 }

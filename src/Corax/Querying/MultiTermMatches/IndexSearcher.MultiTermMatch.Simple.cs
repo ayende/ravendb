@@ -5,7 +5,7 @@ using System.Threading;
 using Corax.Mappings;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
-using Corax.Querying.Matches.TermProviders;
+using Corax.Querying.Matches.TermsProviders;
 using Voron;
 using Voron.Data.Lookups;
 using static Voron.Data.CompactTrees.CompactTree;
@@ -24,10 +24,10 @@ public partial class IndexSearcher
     {
         return (forward, isNegated) switch
         {
-            (true, false) => TermProviderMatchBuilder<StartsWithTermProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, startWith, streamingEnabled, token),
-            (false, false) => TermProviderMatchBuilder<StartsWithTermProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, startWith, streamingEnabled, token),
-            (true, true) => TermProviderMatchBuilder<NotStartsWithTermProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, startWith, streamingEnabled, token),
-            (false, true) => TermProviderMatchBuilder<NotStartsWithTermProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, startWith, streamingEnabled, token)
+            (true, false) => TermsProviderMatchBuilder<StartsWithTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, startWith, streamingEnabled, token),
+            (false, false) => TermsProviderMatchBuilder<StartsWithTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, startWith, streamingEnabled, token),
+            (true, true) => TermsProviderMatchBuilder<NotStartsWithTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, startWith, streamingEnabled, token),
+            (false, true) => TermsProviderMatchBuilder<NotStartsWithTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, startWith, streamingEnabled, token)
         };
     }
 
@@ -35,10 +35,10 @@ public partial class IndexSearcher
     {
         return (forward, isNegated) switch
         {
-            (true, false) => TermProviderMatchBuilder<StartsWithTermProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, startWith, streamingEnabled, validatePostfixLen, token),
-            (false, false) => TermProviderMatchBuilder<StartsWithTermProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, startWith, streamingEnabled, validatePostfixLen, token),
-            (true, true) => TermProviderMatchBuilder<NotStartsWithTermProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, startWith, streamingEnabled, validatePostfixLen, token),
-            (false, true) => TermProviderMatchBuilder<NotStartsWithTermProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, startWith, streamingEnabled, validatePostfixLen, token)
+            (true, false) => TermsProviderMatchBuilder<StartsWithTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, startWith, streamingEnabled, validatePostfixLen, token),
+            (false, false) => TermsProviderMatchBuilder<StartsWithTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, startWith, streamingEnabled, validatePostfixLen, token),
+            (true, true) => TermsProviderMatchBuilder<NotStartsWithTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, startWith, streamingEnabled, validatePostfixLen, token),
+            (false, true) => TermsProviderMatchBuilder<NotStartsWithTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, startWith, streamingEnabled, validatePostfixLen, token)
         };
     }
 
@@ -47,10 +47,10 @@ public partial class IndexSearcher
     {
         return (forward, isNegated) switch
         {
-            (true, false) => TermProviderMatchBuilder<EndsWithTermProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, endsWith, streamingEnabled, token),
-            (false, false) => TermProviderMatchBuilder<EndsWithTermProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, endsWith, streamingEnabled, token),
-            (true, true) => TermProviderMatchBuilder<NotEndsWithTermProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, endsWith, streamingEnabled, token),
-            (false, true) => TermProviderMatchBuilder<NotEndsWithTermProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, endsWith, streamingEnabled, token)
+            (true, false) => TermsProviderMatchBuilder<EndsWithTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, endsWith, streamingEnabled, token),
+            (false, false) => TermsProviderMatchBuilder<EndsWithTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, endsWith, streamingEnabled, token),
+            (true, true) => TermsProviderMatchBuilder<NotEndsWithTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, endsWith, streamingEnabled, token),
+            (false, true) => TermsProviderMatchBuilder<NotEndsWithTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, endsWith, streamingEnabled, token)
         };
     }
 
@@ -59,10 +59,10 @@ public partial class IndexSearcher
     {
         return (forward, isNegated) switch
         {
-            (true, false) => TermProviderMatchBuilder<EndsWithTermProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, endsWith, streamingEnabled, validatePostfixLen: false, token: token),
-            (false, false) => TermProviderMatchBuilder<EndsWithTermProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, endsWith, streamingEnabled, validatePostfixLen: false, token: token),
-            (true, true) => TermProviderMatchBuilder<NotEndsWithTermProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, endsWith, streamingEnabled, validatePostfixLen: false, token: token),
-            (false, true) => TermProviderMatchBuilder<NotEndsWithTermProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, endsWith, streamingEnabled, validatePostfixLen: false, token: token)
+            (true, false) => TermsProviderMatchBuilder<EndsWithTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, endsWith, streamingEnabled, validatePostfixLen: false, token: token),
+            (false, false) => TermsProviderMatchBuilder<EndsWithTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, endsWith, streamingEnabled, validatePostfixLen: false, token: token),
+            (true, true) => TermsProviderMatchBuilder<NotEndsWithTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, endsWith, streamingEnabled, validatePostfixLen: false, token: token),
+            (false, true) => TermsProviderMatchBuilder<NotEndsWithTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, endsWith, streamingEnabled, validatePostfixLen: false, token: token)
         };
     }
 
@@ -73,10 +73,10 @@ public partial class IndexSearcher
     {
         return (forward, isNegated) switch
         {
-            (true, false) => TermProviderMatchBuilder<ContainsTermProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, containsTerm, token: token),
-            (false, false) => TermProviderMatchBuilder<ContainsTermProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, containsTerm, token: token),
-            (true, true) => TermProviderMatchBuilder<NotContainsTermProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, containsTerm, token: token),
-            (false, true) => TermProviderMatchBuilder<NotContainsTermProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, containsTerm, token: token)
+            (true, false) => TermsProviderMatchBuilder<ContainsTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, containsTerm, token: token),
+            (false, false) => TermsProviderMatchBuilder<ContainsTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, containsTerm, token: token),
+            (true, true) => TermsProviderMatchBuilder<NotContainsTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, containsTerm, token: token),
+            (false, true) => TermsProviderMatchBuilder<NotContainsTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, containsTerm, token: token)
         };
     }
 
@@ -84,8 +84,8 @@ public partial class IndexSearcher
     public IQueryMatch ExistsQuery(in FieldMetadata field, bool forward = true, bool streamingEnabled = false, in CancellationToken token = default)
     {
         return forward
-            ? TermProviderMatchBuilder<ExistsTermProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, default(Slice), streamingEnabled: streamingEnabled, token: token)
-            : TermProviderMatchBuilder<ExistsTermProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, default(Slice), streamingEnabled: streamingEnabled, token: token);
+            ? TermsProviderMatchBuilder<ExistsTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, default(Slice), streamingEnabled: streamingEnabled, token: token)
+            : TermsProviderMatchBuilder<ExistsTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, default(Slice), streamingEnabled: streamingEnabled, token: token);
     }
 
     public IQueryMatch RegexQuery(in FieldMetadata field, Regex regex, bool forward = true, bool streamingEnabled = false, in CancellationToken token = default)
@@ -94,11 +94,11 @@ public partial class IndexSearcher
         if (terms == null)
             return TermMatch.CreateEmpty(this, _transaction.Allocator);
 
-        ITermProvider provider = forward
-            ? new RegexTermProvider<Lookup<CompactKeyLookup>.ForwardIterator>(this, terms, field, regex)
-            : (ITermProvider)new RegexTermProvider<Lookup<CompactKeyLookup>.BackwardIterator>(this, terms, field, regex);
+        ITermsProvider provider = forward
+            ? new RegexTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>(this, terms, field, regex)
+            : (ITermsProvider)new RegexTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>(this, terms, field, regex);
 
-        return new TermProviderMatch(provider, _transaction.LowLevelTransaction, _transaction.Allocator);
+        return new TermsProviderMatch(provider, _transaction.LowLevelTransaction, _transaction.Allocator);
     }
 
     /// <summary>
@@ -113,7 +113,7 @@ public partial class IndexSearcher
 
     public IQueryMatch InQuery(in FieldMetadata field, List<string> terms)
     {
-        ITermProvider provider = new InTermProvider<string>(this, field, terms);
-        return new TermProviderMatch(provider, _transaction.LowLevelTransaction, _transaction.Allocator);
+        ITermsProvider provider = new InTermsProvider<string>(this, field, terms);
+        return new TermsProviderMatch(provider, _transaction.LowLevelTransaction, _transaction.Allocator);
     }
 }

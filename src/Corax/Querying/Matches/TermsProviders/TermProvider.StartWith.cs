@@ -8,10 +8,10 @@ using Corax.Querying.Matches.Meta;
 using Voron.Data.CompactTrees;
 using Voron.Data.Lookups;
 
-namespace Corax.Querying.Matches.TermProviders
+namespace Corax.Querying.Matches.TermsProviders
 {
     [DebuggerDisplay("{DebugView,nq}")]
-    public struct StartsWithTermProvider<TLookupIterator> : ITermProvider
+    public struct StartsWithTermsProvider<TLookupIterator> : ITermsProvider
         where TLookupIterator : struct, ILookupIterator
     {
         private readonly CompactTree _tree;
@@ -25,7 +25,7 @@ namespace Corax.Querying.Matches.TermProviders
 
         private CompactTree.Iterator<TLookupIterator> _iterator;
 
-        public StartsWithTermProvider(Querying.IndexSearcher searcher, CompactTree tree, in FieldMetadata field, CompactKey startWith, CompactKey seekTerm, bool validatePostfixLen, CancellationToken token)
+        public StartsWithTermsProvider(Querying.IndexSearcher searcher, CompactTree tree, in FieldMetadata field, CompactKey startWith, CompactKey seekTerm, bool validatePostfixLen, CancellationToken token)
         {
             _searcher = searcher;
             _field = field;
@@ -140,7 +140,7 @@ namespace Corax.Querying.Matches.TermProviders
 
         public QueryInspectionNode Inspect()
         {
-            return new QueryInspectionNode($"{nameof(StartsWithTermProvider<TLookupIterator>)}",
+            return new QueryInspectionNode($"{nameof(StartsWithTermsProvider<TLookupIterator>)}",
                             parameters: new Dictionary<string, string>()
                             {
                                 { Constants.QueryInspectionNode.FieldName, _field.ToString() },

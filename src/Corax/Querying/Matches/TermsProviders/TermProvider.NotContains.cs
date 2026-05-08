@@ -2,33 +2,33 @@
 using System.Collections.Generic;
 using Corax.Mappings;
 using Corax.Querying.Matches.Meta;
+using Voron;
 using Voron.Data.CompactTrees;
 using Voron.Data.Lookups;
 
-namespace Corax.Querying.Matches.TermProviders
+namespace Corax.Querying.Matches.TermsProviders
 {
-    public struct EndsWithTermProvider<TLookupIterator> : ITermProvider
+    public struct NotContainsTermsProvider<TLookupIterator> : ITermsProvider
         where TLookupIterator : struct, ILookupIterator
     {
         private readonly CompactTree _tree;
-        private readonly IndexSearcher _searcher;
+        private readonly Querying.IndexSearcher _searcher;
         private readonly FieldMetadata _field;
-
-        private readonly CompactKey _endsWith;
+        private readonly CompactKey _term;
 
         private CompactTree.Iterator<TLookupIterator> _iterator;
 
-        public EndsWithTermProvider(IndexSearcher searcher, CompactTree tree, in FieldMetadata field, CompactKey endsWith)
+        public NotContainsTermsProvider(Querying.IndexSearcher searcher, CompactTree tree, in FieldMetadata field, CompactKey term)
         {
             _tree = tree;
             _searcher = searcher;
             _field = field;
             _iterator = tree.Iterate<TLookupIterator>();
             _iterator.Reset();
-            _endsWith = endsWith;
+            _term = term;
         }
 
-        public bool IsFillSupported => false;
+        public bool IsFillSupported { get; }
 
         public int Fill(Span<long> containers)
         {
@@ -37,7 +37,7 @@ namespace Corax.Querying.Matches.TermProviders
 
         public int FillPostingListIds(Span<long> postingListIds)
         {
-            var suffix = _endsWith.Decoded();
+            var contains = _term.Decoded();
             int count = 0;
 
             using var scope = new CompactKeyCacheScope(_searcher.Transaction.LowLevelTransaction);
@@ -45,10 +45,10 @@ namespace Corax.Querying.Matches.TermProviders
 
             while (count < postingListIds.Length)
             {
-                if (!_iterator.MoveNext(key, out long postingListId, out _))
+                if (_iterator.MoveNext(key, out long postingListId, out _) == false)
                     break;
 
-                if (!key.Decoded().EndsWith(suffix))
+                if (key.Decoded().Contains(contains))
                     continue;
 
                 postingListIds[count++] = postingListId;
@@ -65,11 +65,11 @@ namespace Corax.Querying.Matches.TermProviders
 
         public bool Next(out TermMatch term)
         {
-            var suffix = _endsWith.Decoded();
+            var contains = _term.Decoded();
             while (_iterator.MoveNext(out var key, out _, out _))
             {
                 var termSlice = key.Decoded();
-                if (!termSlice.EndsWith(suffix))
+                if (termSlice.Contains(contains))
                 {
                     continue;
                 }
@@ -84,12 +84,12 @@ namespace Corax.Querying.Matches.TermProviders
 
         public QueryInspectionNode Inspect()
         {
-            return new QueryInspectionNode($"{nameof(EndsWithTermProvider<TLookupIterator>)}",
-                parameters: new Dictionary<string, string>
-                {
-                    { Constants.QueryInspectionNode.FieldName, _field.ToString() },
-                    { Constants.QueryInspectionNode.Suffix, _endsWith.ToString()}
-                });
+            return new QueryInspectionNode($"{nameof(NotContainsTermsProvider<TLookupIterator>)}",
+                            parameters: new Dictionary<string, string>()
+                            {
+                                { Constants.QueryInspectionNode.FieldName, _field.ToString() },
+                                { Constants.QueryInspectionNode.Term, _term.ToString()}
+                            });
         }
     }
 }
