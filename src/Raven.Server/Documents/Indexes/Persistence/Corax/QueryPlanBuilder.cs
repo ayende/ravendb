@@ -80,7 +80,7 @@ internal static class QueryPlanBuilder
     /// Walks PlanOp[] and maps each op back to its ClauseInfo for field/term display.
     /// Annotates with timing and row counts from the executed CompiledQueryMatch.
     /// </summary>
-    public static QueryInspectionNode BuildInspectionGraph(QueryPlan plan, IQueryMatch executedMatch)
+    public static QueryInspectionNode BuildInspectionGraph(QueryPlan plan, IQueryMatch executedMatch, IQueryMatch sortingWrapper = null)
     {
         long[] timings = null;
         long[] resultCounts = null;
@@ -206,6 +206,17 @@ internal static class QueryPlanBuilder
         {
             var matchInspection = executedMatch.Inspect();
             AppendVectorNodes(matchInspection, root);
+        }
+
+        // If a sorting wrapper is present, use its Inspect() to get the sort node
+        // with all parameters (field name, ascending, field type, etc.) and replace
+        // its child with the plan-based compiled query graph.
+        if (sortingWrapper != null)
+        {
+            var sortNode = sortingWrapper.Inspect();
+            sortNode.Children.Clear();
+            sortNode.Children.Add(root);
+            return sortNode;
         }
 
         return root;
@@ -855,6 +866,19 @@ internal static class QueryPlanBuilder
             }
         }
 
+        if (terms.Count == 0)
+        {
+            // Empty IN() matches nothing — emit an empty-result marker.
+            // For AND chains this zeroes the bitmap; for standalone queries it returns 0 results.
+            clauses.Add(new ClauseInfo
+            {
+                FieldName = resolvedFieldName,
+                ClauseType = ClauseType.EmptyIn,
+                OriginalIndex = clauses.Count
+            });
+            return;
+        }
+
         clauses.Add(new ClauseInfo
         {
             FieldName = resolvedFieldName,
@@ -1352,6 +1376,19 @@ internal static class QueryPlanBuilder
 
     private static QueryPlan EmitPlan(List<ClauseInfo> clauses, bool isOr)
     {
+        // Empty IN() in an AND chain means zero results — emit an empty plan.
+        // In an OR chain, just remove the EmptyIn clauses (they contribute nothing).
+        for (int i = clauses.Count - 1; i >= 0; i--)
+        {
+            if (clauses[i].ClauseType != ClauseType.EmptyIn)
+                continue;
+
+            if (isOr == false)
+                return new QueryPlan { Ops = [], IsAllEntries = false };
+
+            clauses.RemoveAt(i);
+        }
+
         var ops = new List<PlanOp>();
         bool needsThreeBitmaps = false;
 
@@ -2156,6 +2193,7 @@ internal static class QueryPlanBuilder
         Vector,
         OrGroup,  // A group of OR'd sub-clauses
         AndGroup, // A group of AND'd sub-clauses inside an OR chain
+        EmptyIn,  // IN() with empty list — matches nothing
     }
 
     internal class ClauseInfo

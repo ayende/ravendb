@@ -54,14 +54,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
             Assert.Equal("Sequence", root.Parameters["FieldType"]);
 
             Assert.Equal(1, root.Children.Count);
-
-            var secondLevel = root.Children[0];
-            Assert.Equal("MultiTermMatch", secondLevel.Operation);
-            Assert.Equal(1, secondLevel.Children.Count);
-
-            var thirdLevel = secondLevel.Children[0];
-            Assert.Equal("ExistsTermsProvider", thirdLevel.Operation);
-            Assert.Empty(thirdLevel.Children);
+            Assert.Equal("CompiledQuery", root.Children[0].Operation);
         }
 
         Assert.Equal(4, queryResults.Count);
@@ -143,14 +136,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
             Assert.Equal("Integer", root.Parameters["FieldType"]);
 
             Assert.Equal(1, root.Children.Count);
-
-            var secondLevel = root.Children[0];
-            Assert.Equal("MultiTermMatch", secondLevel.Operation);
-            Assert.Equal(1, secondLevel.Children.Count);
-
-            var thirdLevel = secondLevel.Children[0];
-            Assert.Equal("ExistsTermsProvider", thirdLevel.Operation);
-            Assert.Empty(thirdLevel.Children);
+            Assert.Equal("CompiledQuery", root.Children[0].Operation);
         }
 
         Assert.Equal(4, queryResults.Count);
@@ -232,14 +218,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
             Assert.Equal("Floating", root.Parameters["FieldType"]);
 
             Assert.Equal(1, root.Children.Count);
-
-            var secondLevel = root.Children[0];
-            Assert.Equal("MultiTermMatch", secondLevel.Operation);
-            Assert.Equal(1, secondLevel.Children.Count);
-
-            var thirdLevel = secondLevel.Children[0];
-            Assert.Equal("ExistsTermsProvider", thirdLevel.Operation);
-            Assert.Empty(thirdLevel.Children);
+            Assert.Equal("CompiledQuery", root.Children[0].Operation);
         }
 
         Assert.Equal(4, queryResults.Count);
@@ -490,14 +469,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
             Assert.Equal("Alphanumeric", root.Parameters["FieldType"]);
 
             Assert.Equal(1, root.Children.Count);
-
-            var secondLevel = root.Children[0];
-            Assert.Equal("MultiTermMatch", secondLevel.Operation);
-            Assert.Equal(1, secondLevel.Children.Count);
-
-            var thirdLevel = secondLevel.Children[0];
-            Assert.Equal("ExistsTermsProvider", thirdLevel.Operation);
-            Assert.Empty(thirdLevel.Children);
+            Assert.Equal("CompiledQuery", root.Children[0].Operation);
         }
 
         Assert.Equal(4, queryResults.Count);
@@ -579,14 +551,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
             Assert.Equal("Kilometers", root.Parameters["Units"]);
 
             Assert.Equal(1, root.Children.Count);
-
-            var secondLevel = root.Children[0];
-            Assert.Equal("MultiTermMatch", secondLevel.Operation);
-            Assert.Equal(1, secondLevel.Children.Count);
-
-            var thirdLevel = secondLevel.Children[0];
-            Assert.Equal("ExistsTermsProvider", thirdLevel.Operation);
-            Assert.Empty(thirdLevel.Children);
+            Assert.Equal("CompiledQuery", root.Children[0].Operation);
         }
 
         Assert.Equal(4, queryResults.Count);
@@ -638,9 +603,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
     public async Task AlphanumericalNullPagingTest(Options options, bool nullFirst)
     {
         options.ModifyDatabaseRecord += record =>
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.NullsSortMode)] = nullFirst
-                ? nameof(NullsSortMode.NullsSmallest)
-                : nameof(NullsSortMode.NullsLargest);
+            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.NullFirst)] = nullFirst.ToString();
 
         using var store = GetDocumentStore(options);
         using var session = store.OpenAsyncSession();
@@ -760,9 +723,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
     {
         options.ModifyDatabaseRecord += record =>
         {
-            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.NullsSortMode)] = nullFirst
-                ? nameof(NullsSortMode.NullsSmallest)
-                : nameof(NullsSortMode.NullsLargest);
+            record.Settings[RavenConfiguration.GetKey(x => x.Indexing.NullFirst)] = nullFirst.ToString();
             record.Settings[RavenConfiguration.GetKey(x => x.Indexing.AutoIndexingEngineType)] = "Corax";
         };
 
