@@ -1243,6 +1243,45 @@ internal static class QueryPlanBuilder
         return (str, ValueTokenType.String);
     }
 
+    /// <summary>
+    /// Replaces the search analyzer with an appropriate wildcard analyzer.
+    /// LuceneAnalyzerAdapter wrapping KeywordAnalyzer has IsExactAnalyzer=false
+    /// (because LuceneAnalyzerAdapter passes NoTransformers), so the generic
+    /// CreateWildcardAnalyzer in the Legacy path would incorrectly lowercase the term.
+    /// This matches the old CoraxQueryBuilder.ReplaceAnalyzerForWildcardQueries logic.
+    /// </summary>
+    private static FieldMetadata ReplaceAnalyzerForWildcardQueries(
+        FieldMetadata searchMeta,
+        QueryBuilderParameters builderParams,
+        PlanParameters parameters)
+    {
+        var result = searchMeta;
+        var indexFieldsMapping = builderParams?.IndexFieldsMapping ?? parameters?.IndexFieldsMapping;
+
+        if (searchMeta.IsDynamic && indexFieldsMapping != null)
+            result = searchMeta.ChangeAnalyzer(searchMeta.Mode, indexFieldsMapping.SearchAnalyzer(searchMeta.FieldName.ToString()));
+
+        if (searchMeta.Analyzer is Persistence.Lucene.LuceneAnalyzerAdapter laa && indexFieldsMapping != null)
+        {
+            global::Corax.Analyzers.Analyzer replacementAnalyzer = laa.Analyzer switch
+            {
+                global::Lucene.Net.Analysis.KeywordAnalyzer => indexFieldsMapping.ExactAnalyzer(searchMeta.FieldName.ToString()),
+                Persistence.Lucene.Analyzers.RavenStandardAnalyzer
+                    or Persistence.Lucene.Analyzers.NGramAnalyzer => indexFieldsMapping.DefaultAnalyzer,
+                global::Lucene.Net.Analysis.Standard.StandardAnalyzer when laa.Analyzer.GetType() == typeof(global::Lucene.Net.Analysis.Standard.StandardAnalyzer)
+                    => indexFieldsMapping.DefaultAnalyzer,
+                Persistence.Lucene.Analyzers.LowerCaseKeywordAnalyzer
+                    or Persistence.Lucene.Analyzers.Collation.CollationAnalyzer => indexFieldsMapping.DefaultAnalyzer,
+                _ => null
+            };
+
+            if (replacementAnalyzer != null)
+                result = searchMeta.ChangeAnalyzer(global::Corax.FieldIndexingMode.Search, replacementAnalyzer);
+        }
+
+        return result;
+    }
+
     /// <summary>Split search term value respecting quoted phrases.
     /// "nonexists \"second third\" nonexsts" → ["nonexists", "second third", "nonexsts"]
     /// Same logic as old CoraxQueryBuilder.GetValues().</summary>
@@ -2949,13 +2988,14 @@ internal static class QueryPlanBuilder
                 else
                     searchQueryOptions = IndexSearcher.SearchQueryOptions.Legacy;
 
-                // For wildcard queries with WildcardAdjustments, use Legacy mode
-                // which handles wildcard analyzer replacement internally
+                // For wildcard queries with WildcardAdjustments, replace the analyzer
+                // on the search metadata to handle wildcard prefix/suffix correctly.
+                // This matches the old CoraxQueryBuilder.ReplaceAnalyzerForWildcardQueries logic.
                 if (searchQueryOptions == IndexSearcher.SearchQueryOptions.PhraseQueryWithWildcardAdjustments
                     && clause.TermValue != null && clause.TermValue.Length >= 1
                     && (clause.TermValue[0] == '*' || (clause.TermValue.Length >= 2 && clause.TermValue[^1] == '*')))
                 {
-                    searchQueryOptions = IndexSearcher.SearchQueryOptions.Legacy;
+                    searchMeta = ReplaceAnalyzerForWildcardQueries(searchMeta, builderParams, parameters);
                 }
 
                 // Split search value respecting quoted phrases (same as old CoraxQueryBuilder.GetValues)
