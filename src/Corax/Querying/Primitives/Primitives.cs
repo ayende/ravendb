@@ -46,15 +46,27 @@ public static class QueryPrimitives
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxOrFillFromTermSource(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
-        => FillBitmapFromTermSource(ref ctx.TermSources[paramIndex], ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ctx.Limit);
+    {
+        long remaining = bitmapSlot == 0 ? ctx.Limit - ctx.Bitmaps[0].Count : ctx.Limit;
+        if (remaining <= 0) return;
+        FillBitmapFromTermSource(ref ctx.TermSources[paramIndex], ctx.Llt, ref ctx.Bitmaps[bitmapSlot], remaining);
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxOrFillFromTermsProvider(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
-        => FillBitmapFromTermsProvider(ctx.TermsProviders[paramIndex], ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ctx.Limit);
+    {
+        long remaining = bitmapSlot == 0 ? ctx.Limit - ctx.Bitmaps[0].Count : ctx.Limit;
+        if (remaining <= 0) return;
+        FillBitmapFromTermsProvider(ctx.TermsProviders[paramIndex], ctx.Llt, ref ctx.Bitmaps[bitmapSlot], remaining);
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxOrFillFromMatch(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
-        => FillFromMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot]);
+    {
+        long remaining = bitmapSlot == 0 ? ctx.Limit - ctx.Bitmaps[0].Count : ctx.Limit;
+        if (remaining <= 0) return;
+        FillFromMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot], remaining);
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndFromTermSource(Matches.CompiledQueryMatch ctx, int paramIndex)

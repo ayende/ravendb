@@ -261,6 +261,15 @@ public static class QueryIlEmitter
                         MatchDispatch.TermsProvider => CtxOrFillFromTermsProvider,
                         _ => CtxOrFillFromMatch
                     });
+                    // Limit check after OR fill into bitmap[0]
+                    if (op.BitmapLocal == 0)
+                    {
+                        EmitLoadBitmapRef(il, 0);
+                        il.Emit(OpCodes.Call, CountGetter);
+                        il.Emit(OpCodes.Conv_I8);
+                        EmitLoadLimit(il);
+                        il.Emit(OpCodes.Bge, doneLabel);
+                    }
                     break;
 
                 case PlanOpKind.ClearBitmap:
