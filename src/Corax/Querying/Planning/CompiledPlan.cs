@@ -41,12 +41,8 @@ public sealed class InspectionOp
     public string Terms;
     public bool IsNegated;
     public long EstimatedCardinality;
-    public InspectionOrGroup OrGroup;
-}
 
-public enum InspectionOrGroup : byte
-{
-    None,
-    Start,
-    End
+    /// <summary>True when this op is part of an AND-group inside an OR chain.
+    /// Used to nest these ops under an "AND-Group" node in the inspection tree.</summary>
+    public bool InsideAndGroup;
 }
