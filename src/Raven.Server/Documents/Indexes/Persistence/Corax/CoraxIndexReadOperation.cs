@@ -645,11 +645,10 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                                 queryMatch = QueryPlanBuilder.OrderBy(
                                     builderParameters, queryMatch, orderByFields, hasEmptySorts);
                             }
-                            else if (take > 0 && queryMatch is global::Corax.Querying.Matches.CompiledQueryMatch)
+                            else if (take > 0 && queryMatch is global::Corax.Querying.Matches.CompiledQueryMatch compiledMatch)
                             {
                                 // No ORDER BY — enable limit-aware bitmap accumulation.
-                                // Unsafe.Unbox gives a ref to the boxed struct interior.
-                                System.Runtime.CompilerServices.Unsafe.Unbox<global::Corax.Querying.Matches.CompiledQueryMatch>(queryMatch).Limit = take;
+                                compiledMatch.Limit = take;
                             }
                         }
 
