@@ -211,35 +211,17 @@ public static class QueryIlEmitter
             EmitTimingStart(il, startTickLocal);
 
             // Resolve dispatch once per op — used by both IL emission and EXPLAIN.
-            string src = op.Dispatch switch
+            var (src, fillMethod, andMethod, orMethod, andNotMethod) = op.Dispatch switch
             {
-                MatchDispatch.TermSource   => $"ctx.TermSources[{op.ParamIndex}]",
-                MatchDispatch.TermsProvider => $"ctx.TermsProviders[{op.ParamIndex}]",
-                _                          => $"ctx.ResolvedMatches[{op.ParamIndex}]"
-            };
-            MethodInfo fillMethod = op.Dispatch switch
-            {
-                MatchDispatch.TermSource   => CtxFillFromTermSource,
-                MatchDispatch.TermsProvider => CtxFillFromTermsProvider,
-                _                          => CtxFillFromMatch
-            };
-            MethodInfo andMethod = op.Dispatch switch
-            {
-                MatchDispatch.TermSource   => CtxAndFromTermSource,
-                MatchDispatch.TermsProvider => CtxAndFromTermsProvider,
-                _                          => CtxAndFromMatch
-            };
-            MethodInfo orMethod = op.Dispatch switch
-            {
-                MatchDispatch.TermSource   => CtxOrFillFromTermSource,
-                MatchDispatch.TermsProvider => CtxOrFillFromTermsProvider,
-                _                          => CtxOrFillFromMatch
-            };
-            MethodInfo andNotMethod = op.Dispatch switch
-            {
-                MatchDispatch.TermSource   => CtxAndNotFromTermSource,
-                MatchDispatch.TermsProvider => CtxAndNotFromTermsProvider,
-                _                          => CtxAndNotFromMatch
+                MatchDispatch.TermSource => (
+                    $"ctx.TermSources[{op.ParamIndex}]",
+                    CtxFillFromTermSource, CtxAndFromTermSource, CtxOrFillFromTermSource, CtxAndNotFromTermSource),
+                MatchDispatch.TermsProvider => (
+                    $"ctx.TermsProviders[{op.ParamIndex}]",
+                    CtxFillFromTermsProvider, CtxAndFromTermsProvider, CtxOrFillFromTermsProvider, CtxAndNotFromTermsProvider),
+                _ => (
+                    $"ctx.ResolvedMatches[{op.ParamIndex}]",
+                    CtxFillFromMatch, CtxAndFromMatch, (MethodInfo)CtxOrFillFromMatch, CtxAndNotFromMatch)
             };
 
             switch (op.Kind)
