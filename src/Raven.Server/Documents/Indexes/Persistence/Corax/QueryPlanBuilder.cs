@@ -110,8 +110,8 @@ internal static class QueryPlanBuilder
         {
             var t = template[i];
 
-            if (t.OrGroupLevel > 0) { orGroupNode = new QueryInspectionNode("AND-Group"); continue; }
-            if (t.OrGroupLevel < 0) { if (orGroupNode != null) { root.Children.Add(orGroupNode); orGroupNode = null; } continue; }
+            if (t.OrGroup == InspectionOrGroup.Start) { orGroupNode = new QueryInspectionNode("AND-Group"); continue; }
+            if (t.OrGroup == InspectionOrGroup.End) { if (orGroupNode != null) { root.Children.Add(orGroupNode); orGroupNode = null; } continue; }
 
             var parameters = new Dictionary<string, string>();
             if (t.Dispatch != null) parameters["Dispatch"] = t.Dispatch;
@@ -192,8 +192,8 @@ internal static class QueryPlanBuilder
         for (int i = 0; i < ops.Length; i++)
         {
             ref PlanOp op = ref ops[i];
-            if (op.Kind == PlanOpKind.SwapBitmaps) { result.Add(new InspectionOp { OrGroupLevel = 1 }); continue; }
-            if (op.Kind == PlanOpKind.OrBitmaps) { result.Add(new InspectionOp { OrGroupLevel = -1 }); continue; }
+            if (op.Kind == PlanOpKind.SwapBitmaps) { result.Add(new InspectionOp { OrGroup = InspectionOrGroup.Start }); continue; }
+            if (op.Kind == PlanOpKind.OrBitmaps) { result.Add(new InspectionOp { OrGroup = InspectionOrGroup.End }); continue; }
             if (op.Kind is PlanOpKind.ClearBitmap or PlanOpKind.CheckEmpty or PlanOpKind.RepairAfterLazy or PlanOpKind.IterateInto) continue;
 
             var inspOp = new InspectionOp

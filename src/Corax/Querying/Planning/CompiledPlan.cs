@@ -41,7 +41,12 @@ public sealed class InspectionOp
     public string Terms;
     public bool IsNegated;
     public long EstimatedCardinality;
+    public InspectionOrGroup OrGroup;
+}
 
-    /// <summary>Nesting control: 1 = start OR group, -1 = end OR group, 0 = flat.</summary>
-    public int OrGroupLevel;
+public enum InspectionOrGroup : byte
+{
+    None,
+    Start,
+    End
 }
