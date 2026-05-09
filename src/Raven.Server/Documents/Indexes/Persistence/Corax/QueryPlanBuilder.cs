@@ -106,8 +106,14 @@ internal static class QueryPlanBuilder
         {
             var t = template[i];
 
-            if (t.OrGroup == InspectionOrGroup.Start) { orGroupNode = new QueryInspectionNode("AND-Group"); continue; }
-            if (t.OrGroup == InspectionOrGroup.End) { if (orGroupNode != null) { root.Children.Add(orGroupNode); orGroupNode = null; } continue; }
+            // Group AND ops within OR chains under a parent node
+            if (t.InsideAndGroup && orGroupNode == null)
+                orGroupNode = new QueryInspectionNode("AND-Group");
+            else if (!t.InsideAndGroup && orGroupNode != null)
+            {
+                root.Children.Add(orGroupNode);
+                orGroupNode = null;
+            }
 
             var parameters = new Dictionary<string, string>();
             if (t.Dispatch != null) parameters["Dispatch"] = t.Dispatch;
@@ -185,11 +191,24 @@ internal static class QueryPlanBuilder
         }
 
         var result = new List<InspectionOp>();
+        bool insideAndGroup = false;
         for (int i = 0; i < ops.Length; i++)
         {
             ref PlanOp op = ref ops[i];
-            if (op.Kind == PlanOpKind.SwapBitmaps) { result.Add(new InspectionOp { OrGroup = InspectionOrGroup.Start }); continue; }
-            if (op.Kind == PlanOpKind.OrBitmaps) { result.Add(new InspectionOp { OrGroup = InspectionOrGroup.End }); continue; }
+            // OR chains like: (A AND B) OR (C AND D)
+            // are compiled as:
+            //   SwapBitmaps       ← save bitmap[0], start fresh in bitmap[2]
+            //   Fill(A)           ← these ops form an AND-group
+            //   And(B)            ←
+            //   OrBitmaps         ← merge bitmap[2] into bitmap[0]
+            //   SwapBitmaps       ← start next AND-group
+            //   Fill(C)           ←
+            //   And(D)            ←
+            //   OrBitmaps         ← merge
+            // SwapBitmaps marks the start of an AND-group within the OR chain.
+            // OrBitmaps marks the end — it merges the group result back.
+            if (op.Kind == PlanOpKind.SwapBitmaps) { insideAndGroup = true; continue; }
+            if (op.Kind == PlanOpKind.OrBitmaps) { insideAndGroup = false; continue; }
             if (op.Kind is PlanOpKind.ClearBitmap or PlanOpKind.CheckEmpty or PlanOpKind.RepairAfterLazy or PlanOpKind.IterateInto) continue;
 
             var inspOp = new InspectionOp
@@ -206,7 +225,8 @@ internal static class QueryPlanBuilder
                     _ => op.Kind.ToString()
                 },
                 Dispatch = op.Dispatch switch { MatchDispatch.TermSource => "Term", MatchDispatch.TermsProvider => "MultiTerm", _ => "Match" },
-                EstimatedCardinality = op.EstimatedCardinality
+                EstimatedCardinality = op.EstimatedCardinality,
+                InsideAndGroup = insideAndGroup
             };
 
             if (op.ParamIndex >= 0 && op.ParamIndex < flatClauses.Count)
