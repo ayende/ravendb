@@ -106,8 +106,20 @@ internal static class QueryPlanBuilder
         {
             var t = template[i];
 
-            // For queries like: (A AND B) OR (C AND D)
-            // the inspection tree nests each AND-group under its own node:
+            // For queries like: WHERE (A AND B) OR (C AND D)
+            // the plan ops are:
+            //   ClearBitmap[2]           ← prepare scratch
+            //   SwapBitmaps[0,2]         ← save main, work in scratch  → InsideAndGroup = true
+            //   FillFromPostings(A)      ← first AND-group
+            //   AndWithPostings(B)       ←
+            //   OrBitmaps[0,2]           ← merge scratch into main     → InsideAndGroup = false
+            //   ClearBitmap[2]
+            //   SwapBitmaps[0,2]         ← second AND-group            → InsideAndGroup = true
+            //   FillFromPostings(C)      ←
+            //   AndWithPostings(D)       ←
+            //   OrBitmaps[0,2]           ← merge                      → InsideAndGroup = false
+            //
+            // The inspection tree groups these into:
             //   CompiledQuery
             //     AND-Group
             //       Fill(A)
@@ -115,9 +127,6 @@ internal static class QueryPlanBuilder
             //     AND-Group
             //       Fill(C)
             //       AND(D)
-            // Ops with InsideAndGroup=true are collected under the current
-            // AND-Group node. When we hit an op outside the group, we close
-            // the node and attach it to the root.
             if (t.InsideAndGroup && orGroupNode == null)
                 orGroupNode = new QueryInspectionNode("AND-Group");
             else if (!t.InsideAndGroup && orGroupNode != null)
