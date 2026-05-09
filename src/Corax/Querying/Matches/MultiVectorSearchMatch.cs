@@ -56,7 +56,6 @@ public struct MultiVectorSearchMatch : IQueryMatch
     private bool _hasFilterResults;
     private bool _ownsFilterResults;
     private IQueryMatch _filterQuery;
-    private long _filterMatchesCount;
 
     public MultiVectorSearchMatch(IndexSearcher searcher, in FieldMetadata metadata, in VectorValue[] vectorsToSearch, in float minimumMatch, in int numberOfCandidates,
         in bool isExact, in bool singleVectorSearchDoNotSortByIds, IQueryMatch filterQuery, int scanningThreshold = ScanningThreshold, Random random = null)
@@ -87,17 +86,16 @@ public struct MultiVectorSearchMatch : IQueryMatch
             // needed here — the optimization lives in VectorSearchUtils.LoadFilterMatches.
             _filterResults = IndexSearcher.VectorSearchUtils.LoadFilterMatches(_indexSearcher, ref _filterQuery, out _ownsFilterResults);
             _hasFilterResults = true;
-            _filterMatchesCount = _filterResults.Count;
 
             // Shortcut for empty filter
-            if (_filterMatchesCount == 0)
+            if (_filterResults.Count == 0)
             {
                 _isEmpty = true;
                 return;
             }
         }
 
-        _scanningQuery = IndexSearcher.VectorSearchUtils.ShouldScan(_indexSearcher, _filterMatchesCount, _isExact, _filterQuery, _scanningThreshold, _numberOfCandidates);
+        _scanningQuery = IndexSearcher.VectorSearchUtils.ShouldScan(_indexSearcher, _filterResults.Count, _isExact, _filterQuery, _scanningThreshold, _numberOfCandidates);
         if (_scanningQuery)
         {
             var hasNodes = IndexSearcher.VectorSearchUtils.TryConvertDocumentsIdsToNodesIds(_indexSearcher, _metadata, ref _filterResults, out _nodesIdsToScan);
@@ -126,9 +124,6 @@ public struct MultiVectorSearchMatch : IQueryMatch
                 false when _filterQuery != null => Hnsw.ApproximateFilteredNearest(llt, _metadata.FieldName, _numberOfCandidates, vector, _minimumMatch, new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(_indexSearcher, _metadata, _filterResults, _random)),
                 false => Hnsw.ApproximateNearest(llt, _metadata.FieldName, _numberOfCandidates, vector, _minimumMatch, _filterQuery != null),
             };
-
-            if (_hasFilterResults)
-                _vectorsRetrievers[i].FilterCount = _filterMatchesCount;
 
             allEmpty &= _vectorsRetrievers[i].IsEmpty;
         }
@@ -178,7 +173,9 @@ public struct MultiVectorSearchMatch : IQueryMatch
                 Debug.Assert(matchBuffer.Length == distanceBuffer.Length, "matchBuffer.Length == distanceBuffer.Length");
 
 
-                currentRead = vectorSearcher.Fill(matchBuffer, distanceBuffer, _hasFilterResults ? _filterResults.Contains : null);
+                currentRead = _hasFilterResults
+                    ? vectorSearcher.Fill(matchBuffer, distanceBuffer, ref _filterResults)
+                    : vectorSearcher.Fill(matchBuffer, distanceBuffer);
                 
                 _matches.AddUsage(currentRead);
                 _distances.AddUsage(currentRead);
