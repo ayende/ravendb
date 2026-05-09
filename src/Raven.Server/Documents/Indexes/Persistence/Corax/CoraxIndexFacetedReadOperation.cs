@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using Corax;
 using Corax.Mappings;
+using IQueryMatch = Corax.Querying.Matches.Meta.IQueryMatch;
 using Corax.Utils;
 using Raven.Client.Documents.Indexes;
 using Raven.Client.Documents.Queries.Facets;
@@ -14,7 +15,6 @@ using Raven.Server.Documents.Queries.Facets;
 using Raven.Server.Documents.Queries.Timings;
 using Raven.Server.ServerWide.Context;
 using Sparrow;
-using Sparrow.Logging;
 using Sparrow.Server;
 using Sparrow.Server.Logging;
 using Voron;
@@ -30,7 +30,6 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
     private readonly Dictionary<string, long> _fieldNameToRootPage = new();
     private readonly IndexSearcher _indexSearcher;
     private readonly ByteStringContext _allocator;
-    private readonly Dictionary<string, Slice> _fieldNameCache;
 
     public CoraxIndexFacetedReadOperation(Index index, RavenLogger logger, Transaction readTransaction, QueryBuilderFactories queryBuilderFactories,
         IndexFieldsMapping fieldsMapping) : base(index, queryBuilderFactories, logger)
@@ -40,9 +39,8 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
         _fieldMappings = fieldsMapping;
         _indexSearcher = new IndexSearcher(readTransaction, _fieldMappings)
         {
-            MaxMemoizationSizeInBytes = index.Configuration.MaxMemoizationSize.GetValue(SizeUnit.Bytes)
+            MaxFacetQueryFilterSizeInBytes = index.Configuration.MaxFacetQueryFilterSize.GetValue(SizeUnit.Bytes)
         };
-        _fieldNameCache = new();
     }
 
     public override List<FacetResult> FacetedQuery(FacetQuery facetQuery, QueryTimingsScope queryTimings, DocumentsOperationContext context,
@@ -63,12 +61,11 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
         }
 
         return canUseIndexedFacetQuery
-            ? IndexedFacetedQuery(results, facetQuery, queryTimings, context, getSpatialField, queryTime, token)
-            : ScanningFacetedQuery(results, facetQuery, queryTimings, context, getSpatialField, queryTime, token);
+            ? IndexedFacetedQuery(results, facetQuery, queryTimings, queryTime, token)
+            : ScanningFacetedQuery(results, facetQuery, queryTimings, queryTime, token);
     }
 
-    private List<FacetResult> IndexedFacetedQuery(Dictionary<string, FacetedQueryParser.FacetResult> results, FacetQuery facetQuery, QueryTimingsScope queryTimings,
-        DocumentsOperationContext context, Func<string, SpatialField> getSpatialField, QueryTimeScope queryTime, CancellationToken token)
+    private List<FacetResult> IndexedFacetedQuery(Dictionary<string, FacetedQueryParser.FacetResult> results, FacetQuery facetQuery, QueryTimingsScope queryTimings, QueryTimeScope queryTime, CancellationToken token)
     {
         var query = facetQuery.Query;
         Dictionary<string, Dictionary<string, FacetValues>> facetsByName = new();
@@ -82,30 +79,61 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
         // deduplicationDisabled: true is safe here because the HashSet absorbs duplicates
         // and skipping the query-level dedup saves work during materialization.
         HashSet<long> baseQueryMatchingIds = null;
+        global::Corax.Querying.Matches.Meta.IBitmapQueryMatch baseQueryBitmap = null;
+        // baseQueryDisposable owns the bitmap allocations of a CompiledQueryMatch base query;
+        // disposed at the end of this method (or before the scanning fallback runs).
+        IDisposable baseQueryDisposable = null;
         if (query.Metadata.Query.Where is not null)
         {
-            var parameters = new CoraxQueryBuilder.Parameters(_indexSearcher, _allocator, null, null, query, _index,
-                query.QueryParameters, _queryBuilderFactories, _fieldMappings, null, null, -1,
+            var parameters = new QueryBuilderParameters(_indexSearcher, _allocator, null, null, query, _index,
+                query.QueryParameters, _queryBuilderFactories, _fieldMappings, null, null, global::Corax.Constants.IndexSearcher.TakeAll,
                 deduplicationDisabled: true, token: token);
-            var baseQuery = CoraxQueryBuilder.BuildQuery(parameters, out _);
-            queryTimings?.SetQueryPlan(baseQuery.Inspect());
-            var maxMatchingIds = _indexSearcher.MaxMemoizationSizeInBytes / sizeof(long);
-            baseQueryMatchingIds = new HashSet<long>();
-            int read;
-            while ((read = baseQuery.Fill(ids)) != 0)
-            {
-                for (int i = 0; i < read; i++)
-                    baseQueryMatchingIds.Add(ids[i]);
 
-                token.ThrowIfCancellationRequested();
-
-                // When exceeded, fall back to the scanning path which streams with bounded memory.
-                if (baseQueryMatchingIds.Count > maxMatchingIds)
+            IQueryMatch baseQuery = QueryPlanBuilder.BuildAndCompile(
+                new QueryPlanBuilder.PlanParameters
                 {
-                    CoraxIndexReadOperation.QueryPool.Return(ids);
-                    return ScanningFacetedQuery(results, facetQuery, queryTimings, context, getSpatialField, queryTime, token);
-                }
+                    IndexSearcher = _indexSearcher,
+                    Metadata = query.Metadata,
+                    QueryParameters = query.QueryParameters,
+                    Index = _index,
+                    IndexFieldsMapping = _fieldMappings,
+                    Allocator = _allocator,
+                    HasDynamics = parameters.HasDynamics,
+                    DynamicFields = parameters.DynamicFields,
+                    HasBoost = parameters.HasBoost
+                }, parameters, out _, out _, highlightingTerms: null, wantTimings: false, token);
+            baseQueryDisposable = baseQuery as IDisposable;
+            queryTimings?.SetQueryPlan(baseQuery.Inspect());
+
+            // If the base query is bitmap-backed, use it directly for Contains checks
+            // instead of materializing into a HashSet.
+            if (baseQuery is global::Corax.Querying.Matches.Meta.IBitmapQueryMatch bqBitmap)
+            {
+                // Force execution so bitmap is populated
+                _ = bqBitmap.Count;
+                baseQueryBitmap = bqBitmap;
             }
+            else
+            {
+                var maxMatchingIds = _indexSearcher.MaxFacetQueryFilterSizeInBytes / sizeof(long);
+                baseQueryMatchingIds = new HashSet<long>();
+                int read;
+                while ((read = baseQuery.Fill(ids)) != 0)
+                {
+                    for (int i = 0; i < read; i++)
+                        baseQueryMatchingIds.Add(ids[i]);
+
+                    token.ThrowIfCancellationRequested();
+
+                    // When exceeded, fall back to the scanning path which streams with bounded memory.
+                    if (baseQueryMatchingIds.Count > maxMatchingIds)
+                    {
+                        baseQueryDisposable?.Dispose();
+                        CoraxIndexReadOperation.QueryPool.Return(ids);
+                        return ScanningFacetedQuery(results, facetQuery, queryTimings, queryTime, token);
+                    }
+                }
+            } // end else (non-bitmap path)
         }
 
         foreach (var result in results)
@@ -120,19 +148,18 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
                 var metadata = GetFieldMetadata(result.Key);
 
                 var provider = _indexSearcher.TextualAggregation(metadata, forward: result.Value.Options.TermSortMode is not FacetTermSortMode.ValueDesc);
-                // When WHERE is present we must NOT set SortedIds: UpdateFacetResults uses it as the
+                // When WHERE is present, we must NOT set SortedIds: UpdateFacetResults uses it as the
                 // authoritative term list and would emit FacetValue{count=0} for every term in it,
                 // including terms filtered out by the WHERE clause.
-                List<string> sortedIds;
-                using var aggregationScope = provider.AggregateByTerms(out sortedIds, out var counts);
-                if (baseQueryMatchingIds == null)
+                using var aggregationScope = provider.AggregateByTerms(out List<string> sortedIds, out var counts);
+                if (baseQueryMatchingIds == null && baseQueryBitmap == null)
                     result.Value.SortedIds = sortedIds;
 
                 var idX = 0;
                 foreach (var term in CollectionsMarshal.AsSpan(sortedIds))
                 {
                     long count;
-                    if (baseQueryMatchingIds != null)
+                    if (baseQueryMatchingIds != null || baseQueryBitmap != null)
                     {
                         var queryTerm = ReferenceEquals(term, Constants.ProjectionNullValue) ? null
                             : ReferenceEquals(term, Constants.ProjectionEmptyString) ? Constants.EmptyString
@@ -144,7 +171,7 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
                         {
                             for (int i = 0; i < read; i++)
                             {
-                                if (baseQueryMatchingIds.Contains(ids[i]))
+                                if (baseQueryBitmap?.Contains(ids[i]) ?? baseQueryMatchingIds.Contains(ids[i]))
                                     count++;
                             }
                         }
@@ -191,7 +218,7 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
                 var fieldMetadata = GetFieldMetadata(range.Field);
                 long count;
 
-                if (baseQueryMatchingIds != null)
+                if (baseQueryMatchingIds != null || baseQueryBitmap != null)
                 {
                     var rangeQuery = range.GetQuery(_indexSearcher, fieldMetadata);
                     count = 0;
@@ -200,7 +227,7 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
                     {
                         for (int i = 0; i < read; i++)
                         {
-                            if (baseQueryMatchingIds.Contains(ids[i]))
+                            if (baseQueryBitmap?.Contains(ids[i]) ?? baseQueryMatchingIds.Contains(ids[i]))
                                 count++;
                         }
                     }
@@ -222,6 +249,7 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
         UpdateFacetResults(results, query, facetsByName);
         CompleteFacetCalculationsStage(results, query);
 
+        baseQueryDisposable?.Dispose();
         CoraxIndexReadOperation.QueryPool.Return(ids);
         return results.Values
             .Select(x => x.Result)
@@ -233,68 +261,87 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
             _index.Definition.HasDynamicFields ? new Lazy<List<string>>(() => _indexSearcher.GetFields()) : null, exact: true, hasBoost: true);
     }
 
-    private List<FacetResult> ScanningFacetedQuery(Dictionary<string, FacetedQueryParser.FacetResult> results, FacetQuery facetQuery, QueryTimingsScope queryTimings,
-        DocumentsOperationContext context,
-        Func<string, SpatialField> getSpatialField, QueryTimeScope queryTime, CancellationToken token)
+    private List<FacetResult> ScanningFacetedQuery(Dictionary<string, FacetedQueryParser.FacetResult> results, FacetQuery facetQuery, QueryTimingsScope queryTimings, QueryTimeScope queryTime, CancellationToken token)
     {
         var query = facetQuery.Query;
         Dictionary<string, Dictionary<string, FacetValues>> facetsByName = new();
         Dictionary<string, Dictionary<string, FacetValues>> facetsByRange = new();
 
-        var parameters = new CoraxQueryBuilder.Parameters(_indexSearcher, _allocator, null, null, query, _index, query.QueryParameters, _queryBuilderFactories,
-            _fieldMappings, null, null, -1, deduplicationDisabled: false, token: token, queryTime: queryTime);
-        var baseQuery = CoraxQueryBuilder.BuildQuery(parameters, out _);
+        var parameters = new QueryBuilderParameters(_indexSearcher, _allocator, null, null, query, _index, query.QueryParameters, _queryBuilderFactories,
+            _fieldMappings, null, null, global::Corax.Constants.IndexSearcher.TakeAll, deduplicationDisabled: false, token: token, queryTime: queryTime);
+
+        IQueryMatch baseQuery = query.Metadata.Query.Where == null
+            ? _indexSearcher.AllEntries()
+            : QueryPlanBuilder.BuildAndCompile(
+                new QueryPlanBuilder.PlanParameters
+                {
+                    IndexSearcher = _indexSearcher,
+                    Metadata = query.Metadata,
+                    QueryParameters = query.QueryParameters,
+                    Index = _index,
+                    IndexFieldsMapping = _fieldMappings,
+                    Allocator = _allocator,
+                    HasDynamics = parameters.HasDynamics,
+                    DynamicFields = parameters.DynamicFields,
+                    HasBoost = parameters.HasBoost
+                }, parameters, out _, out _, highlightingTerms: null, wantTimings: false, token);
 
         var coraxPageSize = CoraxBufferSize(_indexSearcher, facetQuery.Query.PageSize, query);
         var ids = CoraxIndexReadOperation.QueryPool.Rent(coraxPageSize);
 
         Page page = default;
-        int read = 0;
         CreateMappingForRanges(results, facetsByRange, facetQuery);
 
-        while ((read = baseQuery.Fill(ids)) != 0)
+        try
         {
-            for (int docId = 0; docId < read; docId++)
+            int read;
+            while ((read = baseQuery.Fill(ids)) != 0)
             {
-                var reader = _indexSearcher.GetEntryTermsReader(ids[docId], ref page);
-                foreach (var result in results)
+                for (int docId = 0; docId < read; docId++)
                 {
-                    token.ThrowIfCancellationRequested();
-
-                    using var facetTiming = queryTimings?.For($"{nameof(QueryTimingsScope.Names.AggregateBy)}/{result.Key}");
-
-                    if (result.Value.Ranges == null || result.Value.Ranges.Count == 0)
+                    var reader = _indexSearcher.GetEntryTermsReader(ids[docId], ref page);
+                    foreach (var result in results)
                     {
-                        HandleFacetsPerDocument(ref reader, result, facetsByName, facetQuery.Legacy, facetTiming, token);
-                        continue;
-                    }
+                        token.ThrowIfCancellationRequested();
 
-                    // Cache facetByRange because we will fulfill data in batches instead of whole collection
-                    if (facetsByRange.TryGetValue(result.Key, out var facetValues) == false)
-                    {
-                        facetValues = new();
-                        facetsByRange.Add(result.Key, facetValues);
-                    }
+                        using var facetTiming = queryTimings?.For($"{nameof(QueryTimingsScope.Names.AggregateBy)}/{result.Key}");
 
-                    HandleRangeFacetsPerDocument(ref reader, result.Key, result.Value, facetQuery.Legacy, facetTiming, facetValues, token);
+                        if (result.Value.Ranges == null || result.Value.Ranges.Count == 0)
+                        {
+                            HandleFacetsPerDocument(ref reader, result, facetsByName, facetQuery.Legacy, token);
+                            continue;
+                        }
+
+                        // Cache facetByRange because we will fulfill data in batches instead of whole collection
+                        if (facetsByRange.TryGetValue(result.Key, out var facetValues) == false)
+                        {
+                            facetValues = new();
+                            facetsByRange.Add(result.Key, facetValues);
+                        }
+
+                        HandleRangeFacetsPerDocument(ref reader, result.Value, facetValues, token);
+                    }
                 }
+
+                token.ThrowIfCancellationRequested();
             }
 
-            token.ThrowIfCancellationRequested();
+            UpdateRangeResults(results, facetsByRange);
+
+            UpdateFacetResults(results, query, facetsByName);
+
+            CompleteFacetCalculationsStage(results, query);
+            queryTimings?.SetQueryPlan(baseQuery.Inspect());
+
+            return results.Values
+                .Select(x => x.Result)
+                .ToList();
         }
-
-        UpdateRangeResults(results, facetsByRange);
-
-        UpdateFacetResults(results, query, facetsByName);
-
-        CompleteFacetCalculationsStage(results, query);
-        queryTimings?.SetQueryPlan(baseQuery.Inspect());
-
-
-        CoraxIndexReadOperation.QueryPool.Return(ids);
-        return results.Values
-            .Select(x => x.Result)
-            .ToList();
+        finally
+        {
+            (baseQuery as IDisposable)?.Dispose();
+            CoraxIndexReadOperation.QueryPool.Return(ids);
+        }
     }
 
     private void UpdateRangeResults(Dictionary<string, FacetedQueryParser.FacetResult> results, Dictionary<string, Dictionary<string, FacetValues>> facetsByRange)
@@ -356,10 +403,7 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
         }
     }
 
-    private void HandleRangeFacetsPerDocument(ref EntryTermsReader reader,
-        string name, FacetedQueryParser.FacetResult result,
-        bool legacy,
-        QueryTimingsScope queryTimings,
+    private void HandleRangeFacetsPerDocument(ref EntryTermsReader reader, FacetedQueryParser.FacetResult result,
         Dictionary<string, FacetValues> facetValues,
         CancellationToken token)
     {
@@ -417,7 +461,6 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
         KeyValuePair<string, FacetedQueryParser.FacetResult> result,
         Dictionary<string, Dictionary<string, FacetValues>> facetsByName,
         bool legacy,
-        QueryTimingsScope queryTimings,
         CancellationToken token)
     {
         var needToApplyAggregation = result.Value.Aggregations.Count > 0;
