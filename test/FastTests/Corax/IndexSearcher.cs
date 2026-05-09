@@ -1448,6 +1448,7 @@ namespace FastTests.Corax
                 null,
                 long.MaxValue,
                 out var debugPlan,
+                out _,
                 highlightingTerms: null,
                 CancellationToken.None);
 

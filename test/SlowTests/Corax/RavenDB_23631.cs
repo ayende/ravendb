@@ -97,7 +97,7 @@ public class RavenDB_23631(ITestOutputHelper output) : StorageTest(output)
             Allocator = Allocator,
             Token = default
         };
-        var match = QueryPlanBuilder.BuildAndCompile(planParams, null, long.MaxValue, out _, null, default);
+        var match = QueryPlanBuilder.BuildAndCompile(planParams, null, long.MaxValue, out _, out _, null, default);
         var list = new List<string>();
         Span<long> ids = stackalloc long[256];
         int count;

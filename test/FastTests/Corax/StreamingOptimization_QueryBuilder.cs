@@ -602,7 +602,7 @@ public class StreamingOptimization_QueryBuilder(ITestOutputHelper output) : Rave
                     Allocator = bsc,
                     Token = default
                 };
-                var coraxQuery = QueryPlanBuilder.BuildAndCompile(planParams, null, long.MaxValue, out _, null, default);
+                var coraxQuery = QueryPlanBuilder.BuildAndCompile(planParams, null, long.MaxValue, out _, out _, null, default);
 
                 return coraxQuery;
             }
