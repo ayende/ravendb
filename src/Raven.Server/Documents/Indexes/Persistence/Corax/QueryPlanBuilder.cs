@@ -36,11 +36,10 @@ using IndexSearcher = Corax.Querying.IndexSearcher;
 namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 
 /// <summary>
-/// Builds a QueryPlan from a parsed RQL query. Replaces CoraxQueryBuilder
-/// for query execution in Corax 2.0.
+/// Builds a QueryPlan from a parsed RQL query.
 ///
 /// Expression types handled:
-/// - BinaryExpression (AND, OR, =, !=, >, >=, <, <=)
+/// - BinaryExpression (AND, OR, =, !=, >, >=, &lt;, &lt;=)
 /// - BetweenExpression
 /// - InExpression
 /// - NegatedExpression
@@ -193,11 +192,10 @@ internal static class QueryPlanBuilder
         if (ops == null || ops.Length == 0) return [];
 
         var flatClauses = new List<ClauseInfo>();
-        if (plan.Clauses != null)
+        if (plan.QueryBuilderPlanState is List<ClauseInfo> clauses)
         {
-            foreach (var obj in plan.Clauses)
+            foreach (var clause in clauses)
             {
-                if (obj is not ClauseInfo clause) { flatClauses.Add(null); continue; }
                 if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
                     foreach (var sub in clause.OrSubClauses) flatClauses.Add(sub);
                 else if (clause.ClauseType == ClauseType.AndGroup && clause.AndSubClauses != null)
@@ -369,8 +367,8 @@ internal static class QueryPlanBuilder
             var vectorItems = ResolveVectorItems(plan, indexSearcher, planParams, builderParameters);
             bool hasActualFilter = !plan.IsAllEntries || plan.SpatialFilters is { Length: > 0 };
             IQueryMatch vectorFilter = hasActualFilter ? result : null;
-            for (int vs = 0; vs < vectorItems.Length; vs++)
-                result = vectorItems[vs].Materialize(vectorFilter);
+            foreach (var item in vectorItems)
+                result = item.Materialize(vectorFilter);
         }
 
         return result;
@@ -421,7 +419,6 @@ internal static class QueryPlanBuilder
         var query = p.Metadata.Query;
         var indexSearcher = p.IndexSearcher;
         var queryParameters = p.QueryParameters;
-        var token = p.Token;
         var metadata = p.Metadata;
         if (query.Where == null)
             return BuildAllEntriesPlan();
@@ -460,13 +457,13 @@ internal static class QueryPlanBuilder
             {
                 if (clauses[i].ClauseType == ClauseType.Spatial)
                 {
-                    spatialClauses ??= new List<ClauseInfo>();
+                    spatialClauses ??= [];
                     spatialClauses.Add(clauses[i]);
                     clauses.RemoveAt(i);
                 }
                 else if (clauses[i].ClauseType == ClauseType.Vector)
                 {
-                    vectorClauses ??= new List<ClauseInfo>();
+                    vectorClauses ??= [];
                     vectorClauses.Add(clauses[i]);
                     clauses.RemoveAt(i);
                 }
@@ -538,8 +535,8 @@ internal static class QueryPlanBuilder
 
         // Append spatial and vector clauses to the plan's Clauses array.
         // Their match indices are computed relative to the existing clauses.
-        var existingClauses = plan.Clauses ?? Array.Empty<object>();
-        int existingCount = existingClauses.Length;
+        var clauses = plan.QueryBuilderPlanState as List<ClauseInfo> ?? [];
+        int existingCount = clauses.Count;
 
         // Count the total match slots already used by existing clauses
         // (OrGroups/In/AllIn expand to multiple matches)
@@ -549,17 +546,15 @@ internal static class QueryPlanBuilder
             existingMatchCount = 1;
         for (int i = 0; i < existingCount; i++)
         {
-            if (existingClauses[i] is ClauseInfo ci)
-            {
-                if (ci.ClauseType == ClauseType.OrGroup && ci.OrSubClauses != null)
-                    existingMatchCount += ci.OrSubClauses.Count;
-                else if (ci.ClauseType == ClauseType.AndGroup && ci.AndSubClauses != null)
-                    existingMatchCount += ci.AndSubClauses.Count;
-                else if ((ci.ClauseType == ClauseType.AllIn || ci.ClauseType == ClauseType.In) && ci.InTerms != null)
-                    existingMatchCount += ci.InTerms.Count;
-                else
-                    existingMatchCount++;
-            }
+            var ci = clauses[i];
+            if (ci.ClauseType == ClauseType.OrGroup && ci.OrSubClauses != null)
+                existingMatchCount += ci.OrSubClauses.Count;
+            else if (ci.ClauseType == ClauseType.AndGroup && ci.AndSubClauses != null)
+                existingMatchCount += ci.AndSubClauses.Count;
+            else if ((ci.ClauseType == ClauseType.AllIn || ci.ClauseType == ClauseType.In) && ci.InTerms != null)
+                existingMatchCount += ci.InTerms.Count;
+            else
+                existingMatchCount++;
         }
         // Account for AllNegated extra slot (AllEntries appended by ResolveMatches)
         if (plan.AllNegated)
@@ -567,10 +562,6 @@ internal static class QueryPlanBuilder
 
         int spatialCount = spatialClauses?.Count ?? 0;
         int vectorCount = vectorClauses?.Count ?? 0;
-        int totalExtra = spatialCount + vectorCount;
-
-        var newClauses = new object[existingCount + totalExtra];
-        Array.Copy(existingClauses, newClauses, existingCount);
 
         int matchIndex = existingMatchCount;
 
@@ -579,7 +570,7 @@ internal static class QueryPlanBuilder
             plan.SpatialFilters = new SpatialFilterOp[spatialCount];
             for (int i = 0; i < spatialCount; i++)
             {
-                newClauses[existingCount + i] = spatialClauses[i];
+                clauses.Add(spatialClauses[i]);
                 plan.SpatialFilters[i] = new SpatialFilterOp { MatchIndex = matchIndex++, Clause = spatialClauses[i] };
             }
         }
@@ -589,12 +580,12 @@ internal static class QueryPlanBuilder
             plan.VectorSelects = new VectorSelectOp[vectorCount];
             for (int i = 0; i < vectorCount; i++)
             {
-                newClauses[existingCount + spatialCount + i] = vectorClauses[i];
+                clauses.Add(vectorClauses[i]);
                 plan.VectorSelects[i] = new VectorSelectOp { MatchIndex = matchIndex++, Clause = vectorClauses[i] };
             }
         }
 
-        plan.Clauses = newClauses;
+        plan.QueryBuilderPlanState = clauses;
     }
 
     private enum BooleanOp { And, Or, True, False, Leaf }
@@ -765,7 +756,7 @@ internal static class QueryPlanBuilder
     private static void ParseComparison(BinaryExpression be, List<ClauseInfo> clauses,
         BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
     {
-        if (TryGetFieldName(be.Left, metadata, queryParameters, out string fieldName, out FieldExpression field) == false)
+        if (TryGetFieldName(be.Left, metadata, queryParameters, out string fieldName) == false)
             throw new InvalidQueryException($"Comparison left side must be a field expression or id(), but got: {be.Left.Type}");
         string termValue = GetTermValue(be.Right, queryParameters, out var valueType);
 
@@ -782,7 +773,7 @@ internal static class QueryPlanBuilder
     private static void ParseRangeComparison(BinaryExpression be, List<ClauseInfo> clauses,
         BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
     {
-        if (TryGetFieldName(be.Left, metadata, queryParameters, out string fieldName, out FieldExpression field) == false)
+        if (TryGetFieldName(be.Left, metadata, queryParameters, out string fieldName) == false)
             throw new InvalidQueryException($"Range comparison left side must be a field expression or id(), but got: {be.Left.Type}");
         string termValue = GetTermValue(be.Right, queryParameters, out var valueType);
 
@@ -806,7 +797,7 @@ internal static class QueryPlanBuilder
     private static void ParseBetween(BetweenExpression between, List<ClauseInfo> clauses,
         BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
     {
-        if (TryGetFieldName(between.Source, metadata, queryParameters, out string resolvedFieldName, out FieldExpression field) == false)
+        if (TryGetFieldName(between.Source, metadata, queryParameters, out string resolvedFieldName) == false)
             throw new InvalidQueryException($"BETWEEN source must be a field expression or id(), but got: {between.Source.Type}");
 
         var minValue = GetTermValue(between.Min, queryParameters, out var minType);
@@ -825,7 +816,7 @@ internal static class QueryPlanBuilder
     private static void ParseIn(InExpression inExpr, List<ClauseInfo> clauses,
         BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
     {
-        if (TryGetFieldName(inExpr.Source, metadata, queryParameters, out string resolvedFieldName, out FieldExpression field) == false)
+        if (TryGetFieldName(inExpr.Source, metadata, queryParameters, out string resolvedFieldName) == false)
             throw new InvalidQueryException($"IN source must be a field expression or id(), but got: {inExpr.Source.Type}");
 
         var terms = new List<string>();
@@ -838,9 +829,9 @@ internal static class QueryPlanBuilder
                 var resolvedValue = ve.GetValue(queryParameters);
                 if (resolvedValue is BlittableJsonReaderArray arr)
                 {
-                    for (int a = 0; a < arr.Length; a++)
+                    foreach (var it in arr)
                     {
-                        var (elemVal, elemTyp) = ConvertInValue(arr[a], ValueTokenType.Parameter, ref hasTime);
+                        var (elemVal, elemTyp) = ConvertInValue(it, ValueTokenType.Parameter, ref hasTime);
                         terms.Add(elemVal);
                         termTypes.Add(elemTyp);
                     }
@@ -912,7 +903,7 @@ internal static class QueryPlanBuilder
             {
                 if (method.Arguments.Count == 0)
                     throw new InvalidQueryException("exists() requires a field argument.");
-                if (TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var existsFieldName, out _) == false)
+                if (TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var existsFieldName) == false)
                     throw new InvalidQueryException($"exists() argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
                 clauses.Add(new ClauseInfo
                 {
@@ -959,7 +950,7 @@ internal static class QueryPlanBuilder
             {
                 if (method.Arguments.Count < 2)
                     throw new InvalidQueryException($"regex() requires at least 2 arguments (field, pattern), but got {method.Arguments.Count}.");
-                if (TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var regexFieldName, out _) == false)
+                if (TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var regexFieldName) == false)
                     throw new InvalidQueryException($"regex() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
                 clauses.Add(new ClauseInfo
                 {
@@ -1027,7 +1018,7 @@ internal static class QueryPlanBuilder
         if (method.Arguments.Count < 2)
             throw new InvalidQueryException($"search() requires at least 2 arguments (field, term), but got {method.Arguments.Count}.");
 
-        if (TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var fieldName, out _) == false)
+        if (TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var fieldName) == false)
             throw new InvalidQueryException($"search() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
 
         var searchOp = Constants.Search.Operator.Or;
@@ -1055,7 +1046,7 @@ internal static class QueryPlanBuilder
         if (method.Arguments.Count < 2)
             throw new InvalidQueryException($"{type}() requires at least 2 arguments (field, term), but got {method.Arguments.Count}.");
 
-        if (TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var fieldName, out _) == false)
+        if (TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var fieldName) == false)
             throw new InvalidQueryException($"{type}() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
 
         clauses.Add(new ClauseInfo
@@ -1093,9 +1084,8 @@ internal static class QueryPlanBuilder
         if (value is LazyNumberValue lnv)
             return (value.ToString(), lnv.TryParseLong(out _) ? ValueTokenType.Long : ValueTokenType.Double);
         var str = value.ToString();
-        if (str != null && str.Length > 18 && str.Length < 35 && str.Contains('T')
-            && DateTime.TryParse(str, System.Globalization.CultureInfo.InvariantCulture,
-                System.Globalization.DateTimeStyles.RoundtripKind, out var parsed))
+        if (str is { Length: > 18 and < 35 } && 
+            DateTime.TryParse(str, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.RoundtripKind, out var parsed))
         {
             hasTime = true;
             return (parsed.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture), ValueTokenType.Long);
@@ -1182,15 +1172,7 @@ internal static class QueryPlanBuilder
             yield return value.Substring(lastStart, value.Length - lastStart);
     }
 
-    /// <summary>Extract field name from a FieldExpression.
-    /// Uses the full compound path (Date.Year stays Date.Year).
-    /// When metadata is available, uses GetIndexFieldName for proper alias resolution.</summary>
-    private static string GetFieldName(FieldExpression field)
-    {
-        return field.FieldValue;
-    }
-
-    /// <summary>Extract field name with proper alias resolution using query metadata.</summary>
+    /// <summary>Extract the field name with proper alias resolution using query metadata.</summary>
     private static string GetFieldName(FieldExpression field, QueryMetadata metadata, BlittableJsonReaderObject queryParameters)
     {
         if (metadata != null)
@@ -1203,12 +1185,11 @@ internal static class QueryPlanBuilder
     /// (quoted field name like <c>'Order'</c>), or a <see cref="MethodExpression"/>
     /// for the <c>id()</c> function. Returns false if the expression is none of these.</summary>
     private static bool TryGetFieldName(QueryExpression expr, QueryMetadata metadata,
-        BlittableJsonReaderObject queryParameters, out string fieldName, out FieldExpression fieldExpr)
+        BlittableJsonReaderObject queryParameters, out string fieldName)
     {
         if (expr is FieldExpression fe)
         {
             fieldName = GetFieldName(fe, metadata, queryParameters);
-            fieldExpr = fe;
             return true;
         }
 
@@ -1221,7 +1202,6 @@ internal static class QueryPlanBuilder
                 fieldName = metadata != null
                     ? metadata.GetIndexFieldName(new QueryFieldName(resolved, ve.Value == ValueTokenType.String), queryParameters).Value
                     : resolved;
-                fieldExpr = null;
                 return true;
             }
         }
@@ -1229,12 +1209,10 @@ internal static class QueryPlanBuilder
         if (expr is MethodExpression me && string.Equals(me.Name.Value, "id", StringComparison.OrdinalIgnoreCase))
         {
             fieldName = Client.Constants.Documents.Indexing.Fields.DocumentIdFieldName;
-            fieldExpr = null;
             return true;
         }
 
         fieldName = null;
-        fieldExpr = null;
         return false;
     }
 
@@ -1256,33 +1234,36 @@ internal static class QueryPlanBuilder
             // For parameters, detect the actual type from the resolved value
             if (valueType == ValueTokenType.Parameter && value != null)
             {
-                if (value is bool)
-                    valueType = (bool)value ? ValueTokenType.True : ValueTokenType.False;
-                else if (value is long or int)
-                    valueType = ValueTokenType.Long;
-                else if (value is double or float or decimal)
-                    valueType = ValueTokenType.Double;
-                else if (value is LazyNumberValue lnv)
+                switch (value)
                 {
-                    // LazyNumberValue wraps JSON numbers — try long first, then double
-                    if (lnv.TryParseLong(out _))
+                    case long or int:
                         valueType = ValueTokenType.Long;
-                    else
+                        break;
+                    case double or float or decimal:
                         valueType = ValueTokenType.Double;
-                }
-                else
-                {
-                    // DateTime/DateTimeOffset parameters arrive as LazyStringValue from JSON.
-                    // Detect date strings and convert to ticks so range queries hit the numeric tree.
-                    var str = value.ToString();
-                    if (str != null && str.Length > 18 && str.Length < 35 && str.Contains('T')
-                        && DateTime.TryParse(str, System.Globalization.CultureInfo.InvariantCulture,
-                            System.Globalization.DateTimeStyles.RoundtripKind, out var parsed))
-                    {
+                        break;
+                    // LazyNumberValue wraps JSON numbers — try long first, then double
+                    case LazyNumberValue lnv when lnv.TryParseLong(out _):
                         valueType = ValueTokenType.Long;
-                        return parsed.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                        break;
+                    case LazyNumberValue:
+                        valueType = ValueTokenType.Double;
+                        break;
+                    default:
+                    {
+                        // DateTime/DateTimeOffset parameters arrive as LazyStringValue from JSON.
+                        // Detect date strings and convert to ticks so range queries hit the numeric tree.
+                        var str = value.ToString();
+                        if (str is { Length: > 18 and < 35 } && str.Contains('T')
+                                                             && DateTime.TryParse(str, System.Globalization.CultureInfo.InvariantCulture,
+                                                                 System.Globalization.DateTimeStyles.RoundtripKind, out var parsed))
+                        {
+                            valueType = ValueTokenType.Long;
+                            return parsed.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                        }
+                        valueType = ValueTokenType.String;
+                        break;
                     }
-                    valueType = ValueTokenType.String;
                 }
             }
             return value?.ToString();
@@ -1320,8 +1301,11 @@ internal static class QueryPlanBuilder
                 long sum = 0;
                 var meta = indexSearcher.FieldMetadataBuilder(clause.FieldName);
                 if (clause.InTerms != null)
-                foreach (var term in clause.InTerms)
-                    sum += indexSearcher.NumberOfDocumentsUnderSpecificTerm(meta, term);
+                {
+                    foreach (var term in clause.InTerms)
+                        sum += indexSearcher.NumberOfDocumentsUnderSpecificTerm(meta, term);
+                }
+
                 return Math.Min(sum, indexSearcher.NumberOfEntries);
 
             case ClauseType.Spatial:
@@ -1384,43 +1368,43 @@ internal static class QueryPlanBuilder
         {
             // OR chain — expand In/OrGroup terms into individual OR ops
             int matchIndex = 0;
-            for (int i = 0; i < clauses.Count; i++)
+            foreach (var it in clauses)
             {
-                if ((clauses[i].ClauseType == ClauseType.In || clauses[i].ClauseType == ClauseType.AllIn) && clauses[i].InTerms != null)
+                if ((it.ClauseType == ClauseType.In || it.ClauseType == ClauseType.AllIn) && it.InTerms != null)
                 {
                     // Each IN term is a single-term lookup → eligible for native dispatch.
-                    foreach (var _ in clauses[i].InTerms)
+                    foreach (var _ in it.InTerms)
                     {
                         ops.Add(new PlanOp
                         {
                             Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex,
-                            EstimatedCardinality = clauses[i].Cardinality / clauses[i].InTerms.Count,
+                            EstimatedCardinality = it.Cardinality / it.InTerms.Count,
                             Dispatch = MatchDispatch.TermSource
                         });
                         matchIndex++;
                     }
                 }
-                else if (clauses[i].ClauseType == ClauseType.OrGroup && clauses[i].OrSubClauses != null)
+                else if (it.ClauseType == ClauseType.OrGroup && it.OrSubClauses != null)
                 {
-                    foreach (var sub in clauses[i].OrSubClauses)
+                    foreach (var sub in it.OrSubClauses)
                     {
                         ops.Add(new PlanOp
                         {
                             Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex,
-                            EstimatedCardinality = clauses[i].Cardinality / clauses[i].OrSubClauses.Count,
+                            EstimatedCardinality = it.Cardinality / it.OrSubClauses.Count,
                             Dispatch = GetDispatch(sub)
                         });
                         matchIndex++;
                     }
                 }
-                else if (clauses[i].ClauseType == ClauseType.AndGroup && clauses[i].AndSubClauses != null)
+                else if (it.ClauseType == ClauseType.AndGroup && it.AndSubClauses != null)
                 {
                     // AND sub-expression inside an OR chain.
                     // Only supported when the AND group is the first element (matchIndex == 0)
                     // or can be merged into slot 0 via OrBitmaps after computing into slot 1.
-                    var subClauses = clauses[i].AndSubClauses;
+                    var subClauses = it.AndSubClauses;
                     if (matchIndex == 0)
                     {
                         // First element: build the AND chain directly in slot 0.
@@ -1492,20 +1476,20 @@ internal static class QueryPlanBuilder
                 }
                 else
                 {
-                    bool isNotEqualsInOr = clauses[i].ClauseType == ClauseType.NotEquals;
+                    bool isNotEqualsInOr = it.ClauseType == ClauseType.NotEquals;
                     if (isNotEqualsInOr)
                     {
                         // NotEquals in OR chain: OR of NOT(X) clauses cannot use the raw term posting list
                         // (FillBitmapFromTermSource would add entries WITH X, not entries WITHOUT X).
                         // Mark the clause so ResolveMatches creates AllEntries ANDNOT TermQuery instead.
-                        clauses[i].IsOrChainNotEquals = true;
+                        it.IsOrChainNotEquals = true;
                     }
                     ops.Add(new PlanOp
                     {
                         Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                         ParamIndex = matchIndex,
-                        EstimatedCardinality = clauses[i].Cardinality,
-                        Dispatch = isNotEqualsInOr ? MatchDispatch.DirectSource : GetDispatch(clauses[i])
+                        EstimatedCardinality = it.Cardinality,
+                        Dispatch = isNotEqualsInOr ? MatchDispatch.DirectSource : GetDispatch(it)
                     });
                     matchIndex++;
                 }
@@ -1547,12 +1531,12 @@ internal static class QueryPlanBuilder
             {
                 Ops = ops.ToArray(),
                 OperandOrdering = 0,
-                Clauses = clauses.ToArray()
+                QueryBuilderPlanState = clauses
             };
         }
         else
         {
-            // AND chain: Fill smallest non-negated, then AndWith/AndNotWith remaining.
+            // AND chain: Fill the smallest non-negated, then AndWith/AndNotWith remaining.
             // If the first clause is negated (all clauses are negated), we need to
             // start from AllEntries and ANDNOT each one.
             bool firstIsNegated = clauses[0].IsNegated || clauses[0].ClauseType == ClauseType.NotEquals;
@@ -1852,7 +1836,7 @@ internal static class QueryPlanBuilder
         {
             Ops = ops.ToArray(),
             OperandOrdering = ordering,
-            Clauses = clauses.ToArray(),
+            QueryBuilderPlanState = clauses,
             AllNegated = allNegated,
             ScanPredicateInfos = scanPredicateInfos,
             TypeSignature = typeSignature,
@@ -1870,46 +1854,35 @@ internal static class QueryPlanBuilder
         var predicates = plan.ScanPredicateInfos;
         if (predicates == null || predicates.Length == 0)
         {
-            longParams = Array.Empty<long>();
-            doubleParams = Array.Empty<double>();
-            sliceParams = Array.Empty<Voron.Slice>();
-            fieldRootPages = Array.Empty<long>();
+            longParams = [];
+            doubleParams = [];
+            sliceParams = [];
+            fieldRootPages = [];
             return;
         }
 
-        var clauses = plan.Clauses;
         var longs = new List<long>();
         var doubles = new List<double>();
         var slices = new List<Voron.Slice>();
         var roots = new List<long>();
 
-        // Walk predicates and clauses in lock-step (same order as BuildScanPredicateInfo visited them).
+        // Walk predicates and clauses in a lock-step (same order as BuildScanPredicateInfo visited them).
         // Using field-name search instead would incorrectly return the first matching clause for
         // every predicate when multiple clauses share the same field (e.g. Name != 'a' AND Name != 'b').
         int scanStart = plan.AllNegated ? 0 : 1;
         int clauseIdx = scanStart;
+        var clauses = plan.QueryBuilderPlanState as List<ClauseInfo>;
         foreach (ScanPredicateInfo pred in predicates)
         {
             // Advance to the next eligible clause for this predicate.
-            ClauseInfo matchingClause = null;
-            while (clauseIdx < (clauses?.Length ?? 0))
-            {
-                if (clauses[clauseIdx] is ClauseInfo ci)
-                {
-                    matchingClause = ci;
-                    clauseIdx++;
-                    break;
-                }
-                clauseIdx++;
-            }
-
+            ClauseInfo matchingClause =  clauses?[clauseIdx++];
             ExtractParamsFromPredicate(pred, matchingClause, indexSearcher, longs, doubles, slices, roots);
         }
 
-        longParams = longs.Count > 0 ? longs.ToArray() : Array.Empty<long>();
-        doubleParams = doubles.Count > 0 ? doubles.ToArray() : Array.Empty<double>();
-        sliceParams = slices.Count > 0 ? slices.ToArray() : Array.Empty<Voron.Slice>();
-        fieldRootPages = roots.Count > 0 ? roots.ToArray() : Array.Empty<long>();
+        longParams = longs.Count > 0 ? longs.ToArray() : [];
+        doubleParams = doubles.Count > 0 ? doubles.ToArray() : [];
+        sliceParams = slices.Count > 0 ? slices.ToArray() : [];
+        fieldRootPages = roots.Count > 0 ? roots.ToArray() : [];
     }
 
     private static void ExtractParamsFromPredicate(ScanPredicateInfo pred, ClauseInfo clause,
@@ -1918,8 +1891,8 @@ internal static class QueryPlanBuilder
     {
         if (pred.OrBranches != null)
         {
-            // Each OrBranch corresponds to a sub-clause of the OrGroup.
-            // Pass sub-clauses positionally to avoid the same field-name ambiguity.
+            // Each OrBranch corresponds to a subclause of the OrGroup.
+            // Pass subclauses positionally to avoid the same field-name ambiguity.
             List<ClauseInfo> subClauses = clause?.OrSubClauses;
             for (int b = 0; b < pred.OrBranches.Length; b++)
             {
@@ -1969,26 +1942,31 @@ internal static class QueryPlanBuilder
     /// </summary>
     public static void PopulateHighlightingTerms(QueryPlan plan, Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms, QueryMetadata metadata)
     {
-        if (highlightingTerms == null || plan.Clauses == null)
+        if (highlightingTerms == null || plan.QueryBuilderPlanState is not List<ClauseInfo> clauses)
             return;
 
-        foreach (var clauseObj in plan.Clauses)
+        foreach (var clauseObj in clauses)
         {
-            if (clauseObj is not ClauseInfo clause || clause.FieldName == null)
+            if (clauseObj?.FieldName == null)
                 continue;
 
-            PopulateHighlightingForClause(clause, highlightingTerms, metadata);
+            PopulateHighlightingForClause(clauseObj, highlightingTerms, metadata);
 
-            // Also handle OrGroup and AndGroup sub-clauses
-            if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
+            switch (clauseObj.ClauseType)
             {
-                foreach (var sub in clause.OrSubClauses)
-                    PopulateHighlightingForClause(sub, highlightingTerms, metadata);
-            }
-            else if (clause.ClauseType == ClauseType.AndGroup && clause.AndSubClauses != null)
-            {
-                foreach (var sub in clause.AndSubClauses)
-                    PopulateHighlightingForClause(sub, highlightingTerms, metadata);
+                // Also handle OrGroup and AndGroup subclauses
+                case ClauseType.OrGroup when clauseObj.OrSubClauses != null:
+                {
+                    foreach (var sub in clauseObj.OrSubClauses)
+                        PopulateHighlightingForClause(sub, highlightingTerms, metadata);
+                    break;
+                }
+                case ClauseType.AndGroup when clauseObj.AndSubClauses != null:
+                {
+                    foreach (var sub in clauseObj.AndSubClauses)
+                        PopulateHighlightingForClause(sub, highlightingTerms, metadata);
+                    break;
+                }
             }
         }
     }
@@ -2002,8 +1980,7 @@ internal static class QueryPlanBuilder
         if (highlightingTerms.TryGetValue(fieldName, out var existingTerm))
         {
             // Already populated (e.g., multiple clauses on same field) — update values if needed
-            if (existingTerm.Values == null)
-                existingTerm.Values = GetHighlightingValues(clause);
+            existingTerm.Values ??= GetHighlightingValues(clause);
             return;
         }
 
@@ -2033,7 +2010,6 @@ internal static class QueryPlanBuilder
                 ? new Tuple<string, string>(clause.TermValue, clause.TermValue2)
                 : clause.TermValue,
             ClauseType.In when clause.InTerms != null => clause.InTerms,
-            ClauseType.Search => clause.TermValue,
             _ => clause.TermValue
         };
     }
@@ -2146,8 +2122,7 @@ internal static class QueryPlanBuilder
         // so we iterate it directly without materializing into a bitmap first.
         return new QueryPlan
         {
-            Ops = new[] { new PlanOp { Kind = PlanOpKind.DirectIterate, ParamIndex = 0 } },
-            Clauses = Array.Empty<ClauseInfo>(),
+            Ops = [new PlanOp { Kind = PlanOpKind.DirectIterate, ParamIndex = 0 }],
             IsAllEntries = true
         };
     }
@@ -2157,8 +2132,7 @@ internal static class QueryPlanBuilder
         // Query that always returns 0 results (e.g. false AND X)
         return new QueryPlan
         {
-            Ops = Array.Empty<PlanOp>(),
-            Clauses = Array.Empty<ClauseInfo>()
+            Ops = [],
         };
     }
 
@@ -2216,6 +2190,7 @@ internal static class QueryPlanBuilder
     public static IQueryMatch[] ResolveMatches(QueryPlan plan, IndexSearcher indexSearcher,
         PlanParameters parameters = null, QueryBuilderParameters builderParams = null)
     {
+        var clauses = plan.QueryBuilderPlanState as List<ClauseInfo> ?? [];
         // All-entries plan with possible post-filter phases
         if (plan.IsAllEntries)
         {
@@ -2226,42 +2201,40 @@ internal static class QueryPlanBuilder
             int vectorCount = plan.VectorSelects?.Length ?? 0;
             int totalExtra = spatialCount + vectorCount;
             if (totalExtra == 0)
-                return new IQueryMatch[] { indexSearcher.AllEntries() };
+                return [indexSearcher.AllEntries()];
 
             var allEntriesMatches = new IQueryMatch[1 + totalExtra];
             allEntriesMatches[0] = indexSearcher.AllEntries();
             // Resolve spatial and vector clauses from the plan's Clauses array.
             // Each clause in plan.Clauses corresponds to a post-filter match at index 1+i.
-            for (int i = 0; i < plan.Clauses.Length; i++)
+            for (int i = 0; i < clauses.Count; i++)
             {
-                if (plan.Clauses[i] is ClauseInfo ci)
-                    allEntriesMatches[1 + i] = ResolveClause(ci, indexSearcher, parameters, builderParams);
+                ClauseInfo clause = clauses[i];
+                allEntriesMatches[1 + i] = ResolveClause(clause, indexSearcher, parameters, builderParams);
             }
             return allEntriesMatches;
         }
 
-        var clauses = plan.Clauses;
-        if (clauses == null || clauses.Length == 0)
-            return Array.Empty<IQueryMatch>();
+        if (clauses.Count == 0)
+            return [];
 
-        // Check for standalone NotEquals pattern: plan has Fill(AllEntries) + ANDNOT(term).
+        // Check for a standalone NotEquals pattern: the plan has Fill(AllEntries) + ANDNOT(term).
         // !plan.AllNegated distinguishes this from the "true AND NOT expr" path (AllNegated=true),
         // which needs normal clause resolution for non-term clauses (startsWith, In, etc.).
-        if (clauses.Length == 1 && ((ClauseInfo)clauses[0]).IsNegated && !plan.AllNegated)
+        if (clauses.Count == 1 && clauses[0].IsNegated && !plan.AllNegated)
         {
-            var clause = (ClauseInfo)clauses[0];
-            return new IQueryMatch[]
-            {
+            var clause = clauses[0];
+            return
+            [
                 indexSearcher.AllEntries(),
                 indexSearcher.TermQuery(indexSearcher.FieldMetadataBuilder(clause.FieldName), clause.TermValue)
-            };
+            ];
         }
 
-        // Flatten OrGroups, AndGroups, In, and AllIn: each sub-clause/term becomes a separate match.
+        // Flatten OrGroups, AndGroups, In, and AllIn: each subclause/term becomes a separate match.
         int totalMatches = 0;
-        for (int i = 0; i < clauses.Length; i++)
+        foreach (ClauseInfo clause in clauses)
         {
-            var clause = (ClauseInfo)clauses[i];
             if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
                 totalMatches += clause.OrSubClauses.Count;
             else if (clause.ClauseType == ClauseType.AndGroup && clause.AndSubClauses != null)
@@ -2274,9 +2247,8 @@ internal static class QueryPlanBuilder
         int extraSlots = plan.AllNegated ? 1 : 0;
         var matches = new IQueryMatch[totalMatches + extraSlots];
         int matchIdx = 0;
-        for (int i = 0; i < clauses.Length; i++)
+        foreach (ClauseInfo clause in clauses)
         {
-            var clause = (ClauseInfo)clauses[i];
             if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
             {
                 foreach (var sub in clause.OrSubClauses)
@@ -2289,7 +2261,7 @@ internal static class QueryPlanBuilder
             }
             else if (clause.ClauseType == ClauseType.AndGroup && clause.AndSubClauses != null)
             {
-                // Each AND sub-clause becomes a separate match slot (used by EmitPlan's
+                // Each AND subclause becomes a separate match slot (used by EmitPlan's
                 // FillFromPostings + AndWithPostings sequence inside the OR chain).
                 foreach (var sub in clause.AndSubClauses)
                 {
@@ -2307,18 +2279,12 @@ internal static class QueryPlanBuilder
             }
             else
             {
-                IQueryMatch match;
-                if (clause.IsOrChainNotEquals)
-                {
+                IQueryMatch match = clause.IsOrChainNotEquals ? 
                     // OR-chain NotEquals: De Morgan — NOT(X) in OR = AllEntries ANDNOT X.
                     // Cannot use the raw term posting list (FillBitmapFromTermSource adds entries
                     // WITH X, not entries WITHOUT X). Pre-materialize AllEntries ANDNOT TermQuery.
-                    match = CreateNotEqualsOrMatch(clause, indexSearcher, parameters, builderParams);
-                }
-                else
-                {
-                    match = ResolveClause(clause, indexSearcher, parameters, builderParams);
-                }
+                    CreateNotEqualsOrMatch(clause, indexSearcher, parameters, builderParams) : 
+                    ResolveClause(clause, indexSearcher, parameters, builderParams);
                 if (clause.BoostFactor > 0)
                     match = indexSearcher.Boost(match, clause.BoostFactor);
                 matches[matchIdx++] = match;
@@ -2344,29 +2310,27 @@ internal static class QueryPlanBuilder
     {
         // IsAllEntries plans never emit term ops (FillFromPostings / AndWith / etc.) —
         // their match[0] is AllEntries, post-filter slots are spatial/vector. No
-        // TermSource population needed.
+        // TermSource population is needed.
         if (plan.IsAllEntries)
-            return Array.Empty<TermSource>();
+            return [];
 
-        var clauses = plan.Clauses;
-        if (clauses == null || clauses.Length == 0)
-            return Array.Empty<TermSource>();
+        if (plan.QueryBuilderPlanState is not List<ClauseInfo>  clauses  || clauses.Count == 0)
+            return [];
 
         // Standalone NotEquals: matches[0] = AllEntries (NOT a term source),
         // matches[1] = the negated term. Mirror that layout.
         // !plan.AllNegated distinguishes this from the "true AND NOT expr" path (AllNegated=true).
-        if (clauses.Length == 1 && ((ClauseInfo)clauses[0]).IsNegated && !plan.AllNegated)
+        if (clauses.Count == 1 && clauses[0].IsNegated && !plan.AllNegated)
         {
             var sources = new TermSource[2];
             // sources[0] stays Empty — AllEntries goes through DirectSources.
-            sources[1] = ResolveSingleTermSource((ClauseInfo)clauses[0], indexSearcher, parameters, builderParams);
+            sources[1] = ResolveSingleTermSource(clauses[0], indexSearcher, parameters, builderParams);
             return sources;
         }
 
         int totalMatches = 0;
-        for (int i = 0; i < clauses.Length; i++)
+        foreach (ClauseInfo clause in clauses)
         {
-            var clause = (ClauseInfo)clauses[i];
             if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
                 totalMatches += clause.OrSubClauses.Count;
             else if (clause.ClauseType == ClauseType.AndGroup && clause.AndSubClauses != null)
@@ -2376,12 +2340,12 @@ internal static class QueryPlanBuilder
             else
                 totalMatches++;
         }
+
         int extraSlots = plan.AllNegated ? 1 : 0;
         var termSources = new TermSource[totalMatches + extraSlots];
         int matchIdx = 0;
-        for (int i = 0; i < clauses.Length; i++)
+        foreach (ClauseInfo clause in clauses)
         {
-            var clause = (ClauseInfo)clauses[i];
             if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
             {
                 foreach (var sub in clause.OrSubClauses)
@@ -2399,7 +2363,7 @@ internal static class QueryPlanBuilder
             }
             else if (clause.ClauseType == ClauseType.AndGroup && clause.AndSubClauses != null)
             {
-                // Each AND sub-clause has its own TermSource slot, mirroring ResolveMatches.
+                // Each AND subclause has its own TermSource slot, mirroring ResolveMatches.
                 foreach (var sub in clause.AndSubClauses)
                 {
                     if (sub.BoostFactor > 0)
@@ -2498,11 +2462,9 @@ internal static class QueryPlanBuilder
             ? clause.InTermTypes[termIndex]
             : ValueTokenType.String;
 
-        FieldMetadata fieldMeta;
-        if (builderParams != null)
-            fieldMeta = QueryBuilderHelper.GetFieldMetadata(in builderParams, clause.FieldName, hasBoost: builderParams.HasBoost);
-        else
-            fieldMeta = indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);
+        FieldMetadata fieldMeta = builderParams != null ? 
+            QueryBuilderHelper.GetFieldMetadata(in builderParams, clause.FieldName, hasBoost: builderParams.HasBoost) : 
+            indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);
 
         long postingListId;
         if (termType == ValueTokenType.Long && long.TryParse(term, out long lVal))
@@ -2602,39 +2564,6 @@ internal static class QueryPlanBuilder
             items[i] = HandleVector(builderParams, clause.MethodExpression, false);
         }
         return items;
-    }
-
-    /// <summary>Find the ClauseInfo that corresponds to a given match index.
-    /// The match index is the flattened position in the resolved IQueryMatch[] array.</summary>
-    private static ClauseInfo FindClauseByMatchIndex(QueryPlan plan, int targetMatchIndex)
-    {
-        if (plan.Clauses == null)
-            return null;
-
-        int matchIndex = 0;
-        for (int i = 0; i < plan.Clauses.Length; i++)
-        {
-            if (plan.Clauses[i] is not ClauseInfo clause)
-                continue;
-
-            int slotCount;
-            if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
-                slotCount = clause.OrSubClauses.Count;
-            else if (clause.ClauseType == ClauseType.AndGroup && clause.AndSubClauses != null)
-                slotCount = clause.AndSubClauses.Count;
-            else if ((clause.ClauseType == ClauseType.AllIn || clause.ClauseType == ClauseType.In) && clause.InTerms != null)
-                slotCount = clause.InTerms.Count;
-            else
-                slotCount = 1;
-
-            if (matchIndex <= targetMatchIndex && targetMatchIndex < matchIndex + slotCount)
-                return clause;
-
-            matchIndex += slotCount;
-        }
-
-        // Check for AllNegated extra slot
-        return null;
     }
 
     /// <summary>Create a pre-materialized <see cref="BitmapMatch"/> for a NotEquals clause
@@ -2816,7 +2745,7 @@ internal static class QueryPlanBuilder
                 // sub-clause inside an AndGroup (e.g. "WHERE (A AND field IN (x, y)) OR ..."),
                 // it reaches ResolveClause as a single unit and must become one IQueryMatch that
                 // covers all terms. Use InQuery which builds a TermsProviderMatch over InTermsProvider.
-                if (clause.InTerms != null && clause.InTerms.Count > 0)
+                if (clause.InTerms is { Count: > 0 })
                     return indexSearcher.InQuery(fieldMeta, clause.InTerms);
                 return indexSearcher.EmptyMatch();
 
@@ -2845,7 +2774,7 @@ internal static class QueryPlanBuilder
                         builderParams.HasDynamics, builderParams.DynamicFields,
                         handleSearch: true, hasBoost: builderParams.HasBoost);
                 }
-                else if (parameters?.Index != null && parameters.IndexFieldsMapping != null)
+                else if (parameters is { Index: not null, IndexFieldsMapping: not null })
                 {
                     string searchFieldName = clause.FieldName;
                     if (parameters.Metadata.IsDynamic)
@@ -2867,7 +2796,7 @@ internal static class QueryPlanBuilder
                 IndexSearcher.SearchQueryOptions searchQueryOptions;
                 if (indexDef != null && IndexDefinitionBaseServerSide.IndexVersion.IsCoraxSearchWildcardAdjustmentSupported(indexDef.Version))
                     searchQueryOptions = IndexSearcher.SearchQueryOptions.PhraseQueryWithWildcardAdjustments;
-                else if (indexDef != null && indexDef.Version >= IndexDefinitionBaseServerSide.IndexVersion.PhraseQuerySupportInCoraxIndexes)
+                else if (indexDef is { Version: >= IndexDefinitionBaseServerSide.IndexVersion.PhraseQuerySupportInCoraxIndexes })
                     searchQueryOptions = IndexSearcher.SearchQueryOptions.PhraseQuery;
                 else
                     searchQueryOptions = IndexSearcher.SearchQueryOptions.Legacy;
@@ -2876,7 +2805,7 @@ internal static class QueryPlanBuilder
                 // on the search metadata to handle wildcard prefix/suffix correctly.
                 // This matches the old CoraxQueryBuilder.ReplaceAnalyzerForWildcardQueries logic.
                 if (searchQueryOptions == IndexSearcher.SearchQueryOptions.PhraseQueryWithWildcardAdjustments
-                    && clause.TermValue != null && clause.TermValue.Length >= 1
+                    && clause.TermValue is { Length: >= 1 }
                     && (clause.TermValue[0] == '*' || (clause.TermValue.Length >= 2 && clause.TermValue[^1] == '*')))
                 {
                     searchMeta = ReplaceAnalyzerForWildcardQueries(searchMeta, builderParams, parameters);
@@ -2941,11 +2870,9 @@ internal static class QueryPlanBuilder
             ? termTypes[termIndex]
             : ValueTokenType.String;
 
-        FieldMetadata fieldMeta;
-        if (builderParams != null)
-            fieldMeta = QueryBuilderHelper.GetFieldMetadata(in builderParams, fieldName, hasBoost: builderParams.HasBoost);
-        else
-            fieldMeta = indexSearcher.FieldMetadataBuilder(fieldName, hasBoost: parameters?.HasBoost ?? false);
+        FieldMetadata fieldMeta = builderParams != null ? 
+            QueryBuilderHelper.GetFieldMetadata(in builderParams, fieldName, hasBoost: builderParams.HasBoost) :
+            indexSearcher.FieldMetadataBuilder(fieldName, hasBoost: parameters?.HasBoost ?? false);
 
         if (termType == ValueTokenType.Long && long.TryParse(term, out long lVal))
             return indexSearcher.TermQuery(fieldMeta, lVal);
@@ -2985,7 +2912,7 @@ internal static class QueryPlanBuilder
                 if (builderParameters.Metadata.HasVectorSearch == false)
                     builderParameters.IndexReadOperation?.AssertCanOrderByScoreAutomaticallyWhenBoostingOrVectorSearchIsInvolved();
 
-                return new[] { new OrderMetadata(true, MatchCompareFieldType.Score) };
+                return [new OrderMetadata(true, MatchCompareFieldType.Score)];
             }
 
             return null;
@@ -3302,8 +3229,8 @@ internal static class QueryPlanBuilder
                 {
                     (method: VectorHelpers.MethodVectorValue.ForDocument, string docId) => CoraxVectorItem.BuildForDocVector(builderParameters, fieldMetadata, docId, numberOfCandidates, minimumMatch, exact),
                     (method: VectorHelpers.MethodVectorValue.ForDocument, StringSegment docIdSegment) => CoraxVectorItem.BuildForDocVector(builderParameters, fieldMetadata, docIdSegment.Value, numberOfCandidates, minimumMatch, exact),
-                    (method: VectorHelpers.MethodVectorValue.ForRaw, string vectorAsBase64) => CoraxVectorItem.BuildSingleVector(builderParameters, fieldMetadata, GenerateEmbeddings.FromBase64Array(VectorOptions.Default, builderParameters.Allocator, vectorAsBase64, false), numberOfCandidates, minimumMatch, exact),
-                    (method: VectorHelpers.MethodVectorValue.ForRaw, StringSegment stringSegmentAsBase64) => CoraxVectorItem.BuildSingleVector(builderParameters, fieldMetadata, GenerateEmbeddings.FromBase64Array(VectorOptions.Default, builderParameters.Allocator, stringSegmentAsBase64.ToString(), false), numberOfCandidates, minimumMatch, exact),
+                    (method: VectorHelpers.MethodVectorValue.ForRaw, string vectorAsBase64) => CoraxVectorItem.BuildSingleVector(builderParameters, fieldMetadata, GenerateEmbeddings.FromBase64Array(VectorOptions.Default, builderParameters.Allocator, vectorAsBase64), numberOfCandidates, minimumMatch, exact),
+                    (method: VectorHelpers.MethodVectorValue.ForRaw, StringSegment stringSegmentAsBase64) => CoraxVectorItem.BuildSingleVector(builderParameters, fieldMetadata, GenerateEmbeddings.FromBase64Array(VectorOptions.Default, builderParameters.Allocator, stringSegmentAsBase64.ToString()), numberOfCandidates, minimumMatch, exact),
                     (_, BlittableJsonReaderArray { Length: > 0 }) => throw new InvalidDataException("Cannot perform search on empty value."),
                     _ => throw new InvalidQueryException(
                         $"Unknown method in value ({methodValue.Name}. Parameter type: {methodParameter.GetType().FullName}, Value: {methodParameter}")
@@ -3602,10 +3529,7 @@ internal static class QueryPlanBuilder
             }
             else
             {
-                if (vectorOptions?.DestinationEmbeddingType is not null)
-                    destinationEmbeddingType = vectorOptions!.DestinationEmbeddingType;
-                else
-                    destinationEmbeddingType = sourceEmbeddingType;
+                destinationEmbeddingType = vectorOptions?.DestinationEmbeddingType ?? sourceEmbeddingType;
             }
 
             ReadOnlyMemory<ReadOnlyMemory<byte>> embeddingValues;

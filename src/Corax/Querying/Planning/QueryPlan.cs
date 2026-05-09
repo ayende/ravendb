@@ -113,13 +113,13 @@ public struct PlanOp
     public bool SkipEarlyExit;
 }
 
-/// <summary>Three-way native posting-list source attached to a term op.
+/// <summary>Three-way native posting-list source attached to term op.
 /// Mirrors the encoding used by <see cref="ITermsProvider.FillPostingListIds"/>:
 /// the low 2 bits of a CompactTree value distinguish Single / SmallPostingList /
 /// PostingList. Resolved up-front by <c>ResolveTermSources</c>; consumed by
 /// <c>FillBitmapFromTermSource</c> / <c>AndWithTermSource</c> /
 /// <c>AndNotWithTermSource</c> at execution time.</summary>
-public unsafe struct TermSource
+public struct TermSource
 {
     public TermSourceKind Kind;
 
@@ -207,7 +207,12 @@ public class QueryPlan
 {
     public PlanOp[] Ops;
     public int OperandOrdering;
-    public object[] Clauses;
+    
+    /// <summary>
+    /// Here we store the opaque state from QueryPlanBuilder, which is used for introspection later.
+    /// We cannot store the real type because they are using  Raven.Server types.
+    /// </summary>
+    public object QueryBuilderPlanState;
     public bool IsAllEntries;
     public bool AllNegated;
 
