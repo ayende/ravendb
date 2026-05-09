@@ -80,13 +80,14 @@ internal static class QueryPlanBuilder
     /// Walks PlanOp[] and maps each op back to its ClauseInfo for field/term display.
     /// Annotates with timing and row counts from the executed CompiledQueryMatch.
     /// </summary>
-    public static QueryInspectionNode BuildInspectionGraph(QueryPlan plan, IQueryMatch executedMatch, IQueryMatch sortingWrapper = null)
+    /// <summary>Build the inspection graph from the cached template + runtime telemetry.</summary>
+    public static QueryInspectionNode BuildInspectionGraph(CompiledPlan compiledPlan, IQueryMatch executedMatch, IQueryMatch sortingWrapper = null)
     {
         long[] timings = null;
         long[] resultCounts = null;
         int entryScanAt = -1;
-
         long scannedEntries = -1;
+
         if (executedMatch is CompiledQueryMatch compiled)
         {
             compiled.GetTelemetry(out timings, out resultCounts, out entryScanAt);
@@ -94,127 +95,53 @@ internal static class QueryPlanBuilder
         }
 
         double tickFreq = System.Diagnostics.Stopwatch.Frequency / 1000.0;
-        var ops = plan.Ops;
-        if (ops == null || ops.Length == 0)
-            return executedMatch.Inspect(); // fallback
-
-        // Build a flattened clause list matching the ParamIndex layout
-        var flatClauses = FlattenClausesForInspection(plan);
+        var template = compiledPlan.InspectionTemplate;
+        if (template == null || template.Length == 0)
+            return executedMatch.Inspect();
 
         var rootParams = new Dictionary<string, string>();
-        if (plan.IsAllEntries)
-            rootParams["Plan"] = "AllEntries";
         if (scannedEntries >= 0)
             rootParams["ScannedEntries"] = scannedEntries.ToString();
 
         var root = new QueryInspectionNode("CompiledQuery", parameters: rootParams);
-
-        // Track OR group nesting via SwapBitmaps/OrBitmaps
         QueryInspectionNode orGroupNode = null;
 
-        for (int i = 0; i < ops.Length; i++)
+        for (int i = 0; i < template.Length; i++)
         {
-            var op = ops[i];
+            var t = template[i];
 
-            if (op.Kind == PlanOpKind.SwapBitmaps)
-            {
-                orGroupNode = new QueryInspectionNode("AND-Group");
-                continue;
-            }
-            if (op.Kind == PlanOpKind.OrBitmaps)
-            {
-                if (orGroupNode != null)
-                {
-                    root.Children.Add(orGroupNode);
-                    orGroupNode = null;
-                }
-                continue;
-            }
-
-            if (op.Kind is PlanOpKind.ClearBitmap or PlanOpKind.CheckEmpty
-                or PlanOpKind.RepairAfterLazy or PlanOpKind.IterateInto)
-                continue;
-
-            string opName = op.Kind switch
-            {
-                PlanOpKind.FillFromPostings => "Fill",
-                PlanOpKind.AndWithPostings => "AND",
-                PlanOpKind.OrWithPostings => "OR",
-                PlanOpKind.LazyOrWithPostings => "OR",
-                PlanOpKind.AndNotWithPostings => "ANDNOT",
-                PlanOpKind.AndBitmaps => "AND-Bitmaps",
-                PlanOpKind.AndNotBitmaps => "ANDNOT-Bitmaps",
-                PlanOpKind.CheckAndMaybeEntryScan => "EntryScanCheck",
-                PlanOpKind.DirectIterate => "DirectIterate",
-                _ => op.Kind.ToString()
-            };
+            if (t.OrGroupLevel > 0) { orGroupNode = new QueryInspectionNode("AND-Group"); continue; }
+            if (t.OrGroupLevel < 0) { if (orGroupNode != null) { root.Children.Add(orGroupNode); orGroupNode = null; } continue; }
 
             var parameters = new Dictionary<string, string>();
-
-            parameters["Dispatch"] = op.Dispatch switch
-            {
-                MatchDispatch.TermSource => "Term",
-                MatchDispatch.TermsProvider => "MultiTerm",
-                MatchDispatch.DirectSource => "Match",
-                _ => op.Dispatch.ToString()
-            };
-
-            if (op.ParamIndex >= 0 && op.ParamIndex < flatClauses.Count)
-            {
-                var clause = flatClauses[op.ParamIndex];
-                if (clause != null)
-                {
-                    if (clause.FieldName != null)
-                        parameters["FieldName"] = clause.FieldName;
-                    if (clause.TermValue != null)
-                        parameters["Term"] = clause.TermValue;
-                    if (clause.TermValue2 != null)
-                        parameters["Term2"] = clause.TermValue2;
-                    if (clause.ClauseType != ClauseType.Equals)
-                        parameters["ClauseType"] = clause.ClauseType.ToString();
-                    if (clause.IsNegated)
-                        parameters["Negated"] = "true";
-                    if (clause.InTerms != null && clause.InTerms.Count > 0)
-                        parameters["Terms"] = string.Join(", ", clause.InTerms.Take(5))
-                            + (clause.InTerms.Count > 5 ? $" ... ({clause.InTerms.Count} total)" : "");
-                }
-            }
-
-            if (op.EstimatedCardinality > 0 && op.EstimatedCardinality < long.MaxValue)
-                parameters["EstimatedRows"] = op.EstimatedCardinality.ToString("N0");
+            if (t.Dispatch != null) parameters["Dispatch"] = t.Dispatch;
+            if (t.FieldName != null) parameters["FieldName"] = t.FieldName;
+            if (t.Term != null) parameters["Term"] = t.Term;
+            if (t.Term2 != null) parameters["Term2"] = t.Term2;
+            if (t.ClauseType != null) parameters["ClauseType"] = t.ClauseType;
+            if (t.IsNegated) parameters["Negated"] = "true";
+            if (t.Terms != null) parameters["Terms"] = t.Terms;
+            if (t.EstimatedCardinality > 0 && t.EstimatedCardinality < long.MaxValue)
+                parameters["EstimatedRows"] = t.EstimatedCardinality.ToString("N0");
 
             if (resultCounts != null && i < resultCounts.Length && resultCounts[i] > 0)
                 parameters["Count"] = resultCounts[i].ToString();
-
             if (timings != null && i < timings.Length && timings[i] > 0)
                 parameters["Ms"] = (timings[i] / tickFreq).ToString("F3");
-
             if (i == entryScanAt)
                 parameters["EntryScan"] = "triggered";
 
-            var node = new QueryInspectionNode(opName, parameters: parameters);
-
-            if (orGroupNode != null)
-                orGroupNode.Children.Add(node);
-            else
-                root.Children.Add(node);
+            var node = new QueryInspectionNode(t.Name, parameters: parameters);
+            if (orGroupNode != null) orGroupNode.Children.Add(node);
+            else root.Children.Add(node);
         }
 
-        if (orGroupNode != null)
-            root.Children.Add(orGroupNode);
+        if (orGroupNode != null) root.Children.Add(orGroupNode);
 
-        // Vector/spatial search matches live outside the compiled bitmap plan.
-        // Walk the executed match's Inspect() tree to find VectorSearchMatch nodes
-        // and append them so the query plan includes SimilarityMethod etc.
-        if (plan.VectorSelects is { Length: > 0 } || plan.SpatialFilters is { Length: > 0 })
-        {
-            var matchInspection = executedMatch.Inspect();
-            AppendVectorNodes(matchInspection, root);
-        }
+        // Vector/spatial nodes from executed match
+        var matchInspection = executedMatch.Inspect();
+        AppendVectorNodes(matchInspection, root);
 
-        // If a sorting wrapper is present, use its Inspect() to get the sort node
-        // with all parameters (field name, ascending, field type, etc.) and replace
-        // its child with the plan-based compiled query graph.
         if (sortingWrapper != null)
         {
             var sortNode = sortingWrapper.Inspect();
@@ -233,62 +160,80 @@ internal static class QueryPlanBuilder
             target.Children.Add(source);
             return;
         }
-
-        if (source.Children != null)
-        {
-            foreach (var child in source.Children)
-                AppendVectorNodes(child, target);
-        }
+        foreach (var child in source.Children)
+            AppendVectorNodes(child, target);
     }
 
-    private static List<ClauseInfo> FlattenClausesForInspection(QueryPlan plan)
+    /// <summary>Build inspection template from plan ops + clauses. Created once, cached.</summary>
+    private static InspectionOp[] BuildInspectionTemplate(QueryPlan plan)
     {
-        var result = new List<ClauseInfo>();
-        if (plan.Clauses == null)
-            return result;
+        var ops = plan.Ops;
+        if (ops == null || ops.Length == 0) return [];
 
-        foreach (var obj in plan.Clauses)
+        var flatClauses = new List<ClauseInfo>();
+        if (plan.Clauses != null)
         {
-            if (obj is not ClauseInfo clause)
+            foreach (var obj in plan.Clauses)
             {
-                result.Add(null);
-                continue;
+                if (obj is not ClauseInfo clause) { flatClauses.Add(null); continue; }
+                if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
+                    foreach (var sub in clause.OrSubClauses) flatClauses.Add(sub);
+                else if (clause.ClauseType == ClauseType.AndGroup && clause.AndSubClauses != null)
+                    foreach (var sub in clause.AndSubClauses) flatClauses.Add(sub);
+                else if (clause.ClauseType is ClauseType.In or ClauseType.AllIn && clause.InTerms != null)
+                    foreach (var term in clause.InTerms)
+                        flatClauses.Add(new ClauseInfo { FieldName = clause.FieldName, TermValue = term, ClauseType = clause.ClauseType, IsNegated = clause.IsNegated });
+                else
+                    flatClauses.Add(clause);
             }
+        }
 
-            if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
+        var result = new List<InspectionOp>();
+        for (int i = 0; i < ops.Length; i++)
+        {
+            ref PlanOp op = ref ops[i];
+            if (op.Kind == PlanOpKind.SwapBitmaps) { result.Add(new InspectionOp { OrGroupLevel = 1 }); continue; }
+            if (op.Kind == PlanOpKind.OrBitmaps) { result.Add(new InspectionOp { OrGroupLevel = -1 }); continue; }
+            if (op.Kind is PlanOpKind.ClearBitmap or PlanOpKind.CheckEmpty or PlanOpKind.RepairAfterLazy or PlanOpKind.IterateInto) continue;
+
+            var inspOp = new InspectionOp
             {
-                foreach (var sub in clause.OrSubClauses)
-                    result.Add(sub);
-            }
-            else if (clause.ClauseType == ClauseType.AndGroup && clause.AndSubClauses != null)
-            {
-                foreach (var sub in clause.AndSubClauses)
-                    result.Add(sub);
-            }
-            else if ((clause.ClauseType == ClauseType.In || clause.ClauseType == ClauseType.AllIn) && clause.InTerms != null)
-            {
-                foreach (var term in clause.InTerms)
+                Name = op.Kind switch
                 {
-                    result.Add(new ClauseInfo
-                    {
-                        FieldName = clause.FieldName,
-                        TermValue = term,
-                        ClauseType = clause.ClauseType,
-                        IsNegated = clause.IsNegated
-                    });
+                    PlanOpKind.FillFromPostings or PlanOpKind.DirectIterate => "Fill",
+                    PlanOpKind.AndWithPostings => "AND",
+                    PlanOpKind.OrWithPostings or PlanOpKind.LazyOrWithPostings => "OR",
+                    PlanOpKind.AndNotWithPostings => "ANDNOT",
+                    PlanOpKind.AndBitmaps => "AND-Bitmaps",
+                    PlanOpKind.AndNotBitmaps => "ANDNOT-Bitmaps",
+                    PlanOpKind.CheckAndMaybeEntryScan => "EntryScanCheck",
+                    _ => op.Kind.ToString()
+                },
+                Dispatch = op.Dispatch switch { MatchDispatch.TermSource => "Term", MatchDispatch.TermsProvider => "MultiTerm", _ => "Match" },
+                EstimatedCardinality = op.EstimatedCardinality
+            };
+
+            if (op.ParamIndex >= 0 && op.ParamIndex < flatClauses.Count)
+            {
+                var clause = flatClauses[op.ParamIndex];
+                if (clause != null)
+                {
+                    inspOp.FieldName = clause.FieldName;
+                    inspOp.Term = clause.TermValue;
+                    inspOp.Term2 = clause.TermValue2;
+                    inspOp.IsNegated = clause.IsNegated;
+                    if (clause.ClauseType != ClauseType.Equals) inspOp.ClauseType = clause.ClauseType.ToString();
+                    if (clause.InTerms is { Count: > 0 })
+                        inspOp.Terms = string.Join(", ", clause.InTerms.Take(5)) + (clause.InTerms.Count > 5 ? $" ... ({clause.InTerms.Count} total)" : "");
                 }
             }
-            else
-            {
-                result.Add(clause);
-            }
+
+            result.Add(inspOp);
         }
 
-        if (plan.AllNegated)
-            result.Add(new ClauseInfo { ClauseType = ClauseType.Exists, FieldName = "(AllEntries)" });
-
-        return result;
+        return result.ToArray();
     }
+
 
     public static QueryPlan BuildPlan(
         IndexSearcher indexSearcher,
@@ -315,6 +260,7 @@ internal static class QueryPlanBuilder
         QueryBuilderParameters builderParameters,
         long take,
         out QueryPlan plan,
+        out CompiledPlan compiledPlanOut,
         Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms,
         CancellationToken token)
     {
@@ -352,11 +298,13 @@ internal static class QueryPlanBuilder
                 ExplainSource = explainText,
                 Ordering = plan.OperandOrdering,
                 TypeSignature = plan.TypeSignature,
-                FullKinds = plan.FullKinds
+                FullKinds = plan.FullKinds,
+                InspectionTemplate = BuildInspectionTemplate(plan)
             };
             planCache.Add(queryText, compiledPlan);
         }
 
+        compiledPlanOut = compiledPlan;
         var resolvedMatches = ResolveMatches(plan, indexSearcher, planParams, builderParameters);
         var termSources = ResolveTermSources(plan, indexSearcher, planParams, builderParameters);
         ExtractScanParameters(plan, indexSearcher,

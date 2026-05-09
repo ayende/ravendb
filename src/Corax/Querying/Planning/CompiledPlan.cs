@@ -2,35 +2,46 @@ namespace Corax.Querying.Planning;
 
 public sealed class CompiledPlan
 {
-    /// <summary>IL-emitted delegate that executes the posting-list scan plan.
-    /// Takes a <see cref="QueryScanContext"/> by ref and fills / intersects the
-    /// bitmap slots according to the compiled <see cref="PlanOp"/> sequence.</summary>
+    /// <summary>IL-emitted delegate that executes the posting-list scan plan.</summary>
     public QueryIlEmitter.CompiledExecuteDelegate CompiledDelegate { get; init; }
-    /// <summary>Packed operand ordering used as part of the cache key.
-    /// Two plans with the same query text but different operand orderings (due to
-    /// different cardinality estimates) produce different IL, so this distinguishes them.</summary>
+
+    /// <summary>Packed operand ordering used as part of the cache key.</summary>
     public int Ordering { get; init; }
 
-    /// <summary>Packed parameter type signature (2 bits per param: 0=long, 1=double, 2=string).
-    /// For ≤ 16 typed scan predicates this is the exact identity. For more, it carries the
-    /// 2-bit-per-kind packing of the FIRST 16 predicates and acts as a lossy hash; in that
-    /// case <see cref="FullKinds"/> is non-null and disambiguates via SequenceEqual on the
-    /// PlanCache chain walk.</summary>
+    /// <summary>Packed parameter type signature (2 bits per param for first 16).</summary>
     public int TypeSignature { get; init; }
 
-    /// <summary>Full per-predicate kind vector. Populated only when there are more than 16
-    /// typed scan predicates (where <see cref="TypeSignature"/>'s int packing becomes a
-    /// hash rather than an identity). Null in the common case so the hot path doesn't pay
-    /// the byte[] allocation.</summary>
+    /// <summary>Full per-predicate kind vector for >16 typed scan predicates.</summary>
     public byte[] FullKinds { get; init; }
 
-    /// <summary>Chain pointer for hash-collision disambiguation in PlanCache. Two plans
-    /// share a slot when their int <see cref="TypeSignature"/> values collide but their
-    /// <see cref="FullKinds"/> differ — only possible when paramCount &gt; 16. Null in the
-    /// common case (chain length 1).</summary>
+    /// <summary>Chain pointer for hash-collision disambiguation in PlanCache.</summary>
     public CompiledPlan Next;
 
-    /// <summary>EXPLAIN pseudocode for this plan. Generated in the same pass as
-    /// the IL emission so they cannot drift out of sync.</summary>
+    /// <summary>EXPLAIN pseudocode. Generated in same pass as IL emission.</summary>
     public string ExplainSource { get; init; }
+
+    /// <summary>Template inspection nodes built during IL emission.
+    /// At query time, cloned and populated with per-execution telemetry
+    /// (timings, result counts, scanned entries) from CompiledQueryMatch.</summary>
+    public InspectionOp[] InspectionTemplate { get; init; }
+}
+
+/// <summary>Pre-built metadata for one query plan inspection node.
+/// Created during IL emission, immutable, shared across cached executions.
+/// At inspection time, each entry becomes a QueryInspectionNode with
+/// runtime telemetry attached.</summary>
+public sealed class InspectionOp
+{
+    public string Name;
+    public string Dispatch;
+    public string FieldName;
+    public string Term;
+    public string Term2;
+    public string ClauseType;
+    public string Terms;
+    public bool IsNegated;
+    public long EstimatedCardinality;
+
+    /// <summary>Nesting control: 1 = start OR group, -1 = end OR group, 0 = flat.</summary>
+    public int OrGroupLevel;
 }
