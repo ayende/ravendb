@@ -73,6 +73,26 @@ public interface IQueryMatch
     DuplicatesOccurrence DuplicatesOccurrenceStatus { get; }
 }
 
+/// <summary>
+/// Implemented by query matches backed by a RoaringBitmap, enabling SortingMatch
+/// to avoid full materialization via MemoizationMatch. Instead, SortingMatch can
+/// walk the CompactTree index and intersect batches via AndWith, stopping early
+/// when the LIMIT is reached.
+/// </summary>
+public interface IBitmapQueryMatch : IQueryMatch
+{
+    bool Contains(long entryId);
+    long MinEntryId { get; }
+    long MaxEntryId { get; }
+
+    /// <summary>
+    /// Returns a reference to the underlying bitmap data. The caller MUST NOT dispose it.
+    /// Used by downstream consumers (vector search filter, faceted lookups) to skip re-materialization.
+    /// </summary>
+    [System.Diagnostics.CodeAnalysis.UnscopedRef]
+    ref Voron.Data.RoaringBitmaps.RoaringBitmap BitmapState { get; }
+}
+
 public enum SkipSortingResult
 {
     ResultsNativelySorted,
