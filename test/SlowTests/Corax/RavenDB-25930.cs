@@ -62,8 +62,10 @@ public class RavenDB_25930(ITestOutputHelper output) : RavenTestBase(output)
         {
             Assert.True(limit >= 0); // recursive guardian
             var currentOperation = current.Operation;
-            // Accept both old pipeline (UnaryMatch) and bitmap pipeline (MultiTermMatch)
-            if (currentOperation.Contains("UnaryMatch") || currentOperation.Contains("MultiTermMatch"))
+            // Accept old pipeline (UnaryMatch), bitmap pipeline (MultiTermMatch),
+            // and compiled query pipeline (CompiledQuery)
+            if (currentOperation.Contains("UnaryMatch") || currentOperation.Contains("MultiTermMatch")
+                || currentOperation.Contains("CompiledQuery"))
                 return true;
 
             foreach (var child in current.Children)
