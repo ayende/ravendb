@@ -9,7 +9,7 @@ using Corax.Mappings;
 using Corax.Pipeline;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
-using Corax.Querying.Matches.TermProviders;
+using Corax.Querying.Matches.TermsProviders;
 using Corax.Utils;
 using Sparrow;
 using Sparrow.Server;
@@ -106,10 +106,11 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     private long _dictionaryId;
     private Lookup<Int64LookupKey> _entryIdToLocation;
     public FieldsCache FieldCache;
+    public Planning.PlanCache PlanCache { get; } = new();
     private bool _nullPostingListsTreeLoaded;
     private bool _nonExistingPostingListsTreeLoaded;
 
-    public long MaxMemoizationSizeInBytes = 128 * 1024 * 1024;
+    public long MaxFacetQueryFilterSizeInBytes = 128 * 1024 * 1024;
 
     public bool DocumentsAreBoosted => GetDocumentBoostTree().NumberOfEntries > 0;
 
@@ -344,23 +345,23 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         return termAmount;
     }
 
-    public bool TryGetTermsOfField(in FieldMetadata field, out ExistsTermProvider<Lookup<CompactKeyLookup>.ForwardIterator> existsTermProvider)
+    public bool TryGetTermsOfField(in FieldMetadata field, out ExistsTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator> existsTermsProvider)
     {
-        return TryGetTermsOfField<Lookup<CompactKeyLookup>.ForwardIterator>(field, out existsTermProvider);
+        return TryGetTermsOfField<Lookup<CompactKeyLookup>.ForwardIterator>(field, out existsTermsProvider);
     }
 
-    public bool TryGetTermsOfField<TLookupIterator>(in FieldMetadata field, out ExistsTermProvider<TLookupIterator> existsTermProvider)
+    public bool TryGetTermsOfField<TLookupIterator>(in FieldMetadata field, out ExistsTermsProvider<TLookupIterator> existsTermsProvider)
         where TLookupIterator : struct, ILookupIterator
     {
         var terms = _fieldsTree?.CompactTreeFor(field.FieldName);
 
         if (terms == null)
         {
-            existsTermProvider = default;
+            existsTermsProvider = default;
             return false;
         }
 
-        existsTermProvider = new ExistsTermProvider<TLookupIterator>(this, terms, field);
+        existsTermsProvider = new ExistsTermsProvider<TLookupIterator>(this, terms, field);
         return true;
     }
 
@@ -579,24 +580,7 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         }
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public IncludeNullMatch<TInner> IncludeNullMatch<TInner>(in FieldMetadata field, in TInner inner, bool forward, bool nullFirsts)
-        where TInner : IQueryMatch
-    {
-        return new IncludeNullMatch<TInner>(this, inner, field, forward, nullFirsts);
-    }
-    
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public IncludeNonExistingMatch<TInner> IncludeNonExistingMatch<TInner>(in FieldMetadata field, in TInner inner, bool forward, bool nullFirsts)
-        where TInner : IQueryMatch
-    {
-        return new IncludeNonExistingMatch<TInner>(this, inner, field, forward, nullFirsts);
-    }
 
-    public DeduplicationMatch<TInner> DeduplicationMatch<TInner>(in TInner inner, bool forceHashset = false) 
-        where TInner : IQueryMatch 
-        => new(this, inner, forceHashset);
-    
     private void InitializeSpecialTermsMarkers()
     {
         if (_nullTermsMarkersLoaded == false)

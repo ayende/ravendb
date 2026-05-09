@@ -226,7 +226,7 @@ namespace Corax
             internal const string BoostFactor = nameof(BoostFactor);
             
             /// <summary>
-            /// Used for MultiUnaryMatch. This primitive can have multiple comparers inside, so we will output the settings as a string.
+            /// Used for entry scan predicates. Multiple comparers are serialized as a string for inspection output.
             /// </summary>
             internal const string Comparer = nameof(Comparer);
             
