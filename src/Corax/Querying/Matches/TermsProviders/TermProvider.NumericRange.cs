@@ -18,10 +18,10 @@ using Voron.Util;
 using Range = Corax.Querying.Matches.Meta.Range;
 
 
-namespace Corax.Querying.Matches.TermProviders
+namespace Corax.Querying.Matches.TermsProviders
 {
     [DebuggerDisplay("{DebugView,nq}")]
-    public struct TermNumericRangeProvider<TLookupIterator, TLow, THigh, TVal> : ITermProvider, IAggregationProvider
+    public struct TermsNumericRangeProvider<TLookupIterator, TLow, THigh, TVal> : ITermsProvider, IAggregationProvider
         where TLookupIterator : struct, ILookupIterator
         where TLow : struct, Range.Marker
         where THigh  : struct, Range.Marker
@@ -37,7 +37,7 @@ namespace Corax.Querying.Matches.TermProviders
         private bool _includeLastTerm = true;
         private bool _isEmpty;
 
-        public TermNumericRangeProvider(Querying.IndexSearcher searcher, Lookup<TVal> set, in FieldMetadata field, TVal low, TVal high)
+        public TermsNumericRangeProvider(Querying.IndexSearcher searcher, Lookup<TVal> set, in FieldMetadata field, TVal low, TVal high)
         {
             _searcher = searcher;
             _set = set;
@@ -149,6 +149,12 @@ namespace Corax.Querying.Matches.TermProviders
             return _iterator.Fill(containers, _lastTermId, _includeLastTerm);
         }
 
+        public int FillPostingListIds(Span<long> postingListIds)
+        {
+            if (_isEmpty) return 0;
+            return _iterator.Fill(postingListIds, _lastTermId, _includeLastTerm);
+        }
+
         public void Reset()
         {
             if (_isEmpty)
@@ -202,7 +208,7 @@ namespace Corax.Querying.Matches.TermProviders
             else
                 highValue = _high.ToString();
             
-            return new QueryInspectionNode(nameof(TermNumericRangeProvider<TLookupIterator, TLow, THigh, TVal>),
+            return new QueryInspectionNode(nameof(TermsNumericRangeProvider<TLookupIterator, TLow, THigh, TVal>),
                             parameters: new Dictionary<string, string>()
                             {
                                 { Constants.QueryInspectionNode.FieldName, _field.ToString() },
@@ -218,7 +224,7 @@ namespace Corax.Querying.Matches.TermProviders
         
         public unsafe IDisposable AggregateByTerms(out List<string> terms, out Span<long> counts)
         {
-            throw new NotSupportedException($"Primitive {nameof(TermNumericRangeProvider<TLookupIterator, TLow, THigh, TVal>)} doesnt support aggregation by terms.");
+            throw new NotSupportedException($"Primitive {nameof(TermsNumericRangeProvider<TLookupIterator, TLow, THigh, TVal>)} doesnt support aggregation by terms.");
         }
         
         public unsafe long AggregateByRange()
@@ -289,6 +295,6 @@ namespace Corax.Querying.Matches.TermProviders
             return totalCount;
         }
 
-        public int NumberOfTerms => throw new NotSupportedException($"{nameof(NumberOfTerms)} is not supported in {nameof(TermNumericRangeProvider<TLookupIterator, TLow, THigh, TVal>)}."); // unknown
+        public int NumberOfTerms => throw new NotSupportedException($"{nameof(NumberOfTerms)} is not supported in {nameof(TermsNumericRangeProvider<TLookupIterator, TLow, THigh, TVal>)}."); // unknown
     }
 }

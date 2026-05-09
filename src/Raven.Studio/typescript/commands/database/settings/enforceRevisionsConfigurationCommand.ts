@@ -6,25 +6,22 @@ class enforceRevisionsConfigurationCommand extends commandBase {
     private readonly db: database | string;
     private readonly includeForceCreated: boolean;
     private readonly collections: string[];
-    private readonly maxOpsPerSecond: number;
-
-    constructor(db: database | string, includeForceCreated = false, collections: string[] = null, maxOpsPerSecond: number = null) {
+    
+    constructor(db: database | string, includeForceCreated = false, collections: string[] = null) {
         super();
-
+        
         this.db = db;
         this.includeForceCreated = includeForceCreated;
         this.collections = collections;
-        this.maxOpsPerSecond = maxOpsPerSecond;
     }
 
     execute(): JQueryPromise<operationIdDto> {
         const url = endpoints.databases.adminRevisions.adminRevisionsConfigEnforce;
-
+        
         const args:  Raven.Client.Documents.Operations.Revisions.EnforceRevisionsConfigurationOperation.Parameters = {
             IncludeForceCreated: this.includeForceCreated,
             Collections: this.collections ?? undefined,
-            ContinuationParameters: undefined,
-            MaxOpsPerSecond: this.maxOpsPerSecond ?? undefined
+            ContinuationParameters: undefined
         };
 
         return this.post<void>(url, JSON.stringify(args), this.db)

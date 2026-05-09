@@ -474,7 +474,7 @@ namespace Raven.Server.Documents.Queries.Facets
                 };
             }
 
-            public MultiTermMatch GetQuery(IndexSearcher searcher, in FieldMetadata metadata, bool forward = true)
+            public IQueryMatch GetQuery(IndexSearcher searcher, in FieldMetadata metadata, bool forward = true)
             {
                 var type = IsNumerical ? RangeType.Double : RangeType.None;
                 var lowValueRange = RangeTypeToCoraxRange(_leftSide);
@@ -496,7 +496,7 @@ namespace Raven.Server.Documents.Queries.Facets
 
                     return lowValueRange == UnaryMatchOperation.GreaterThan
                         ? searcher.GreaterThanQuery(metadata, LowValue, forward)
-                        : searcher.GreatThanOrEqualsQuery(metadata, LowValue, forward);
+                        : searcher.GreaterThanOrEqualsQuery(metadata, LowValue, forward);
                 }
 
                 if (type is RangeType.Double or RangeType.Long)

@@ -201,7 +201,7 @@ namespace Raven.Client.Documents.Linq
             return new RavenQueryProviderProcessor<T>(
                 _provider.QueryGenerator,
                 _provider.CustomizeQuery,
-                AfterQueryExecuted,
+                null,
                 _highlightings,
                 _indexName,
                 _collectionName,

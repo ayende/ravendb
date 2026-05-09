@@ -51,7 +51,7 @@ namespace Raven.Server.Documents.Sharding
 
         public readonly RachisLogIndexNotifications RachisLogIndexNotifications;
 
-        public readonly ConcurrentSet<TcpConnectionOptions> RunningTcpConnections = new();
+        public readonly ConcurrentSet<TcpConnectionOptions> RunningTcpConnections = new ConcurrentSet<TcpConnectionOptions>();
 
         public readonly MetricCounters Metrics;
 
@@ -275,14 +275,6 @@ namespace Raven.Server.Documents.Sharding
             var exceptionAggregator = new ExceptionAggregator(_logger, $"Could not dispose {nameof(ShardedDatabaseContext)} {DatabaseName}");
 
             exceptionAggregator.Execute(() => Replication?.Dispose());
-
-            foreach (var connection in RunningTcpConnections)
-            {
-                exceptionAggregator.Execute(() =>
-                {
-                    connection.Dispose();
-                });
-            }
 
             exceptionAggregator.Execute(() => ShardExecutor?.Dispose());
 

@@ -1,21 +1,22 @@
-﻿using Lucene.Net.Index;
+﻿using System;
+using System.Collections.Generic;
+using Lucene.Net.Index;
 using Lucene.Net.Search;
 using Lucene.Net.Store;
-using Lucene.Net.Util;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Lucene.Collectors
 {
-    public sealed class GatherAllCollector : Collector
-    {
-        private readonly ManagedScoreDocArray _scoreDocArray;
+    public sealed class GatherAllCollector : Collector, IDisposable
+    {       
         private int _docBase;
+        private readonly List<ScoreDoc> _docs;
 
         private Scorer _scorer;
         private float _maxScore;
 
-        public GatherAllCollector()
+        public GatherAllCollector(int numberOfDocsToCollect)
         {
-            _scoreDocArray = new ManagedScoreDocArray();
+            _docs = CollectorsPool.Instance.Allocate();
         }
 
         public override void SetScorer(Scorer scorer)
@@ -29,7 +30,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene.Collectors
             if (score > _maxScore)
                 _maxScore = score;
 
-            _scoreDocArray.Add(doc + _docBase, score);
+            _docs.Add(new ScoreDoc(doc + _docBase, score));
         }
 
         public override void SetNextReader(IndexReader reader, int docBase, IState state)
@@ -41,7 +42,13 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene.Collectors
 
         public TopDocs ToTopDocs()
         {
-            return new TopDocs(_scoreDocArray.Length, _maxScore, _scoreDocArray);
+            return new TopDocs(_docs.Count, _docs.ToArray(), _maxScore);
+        }
+
+        public void Dispose()
+        {
+            _docs.Clear();
+            CollectorsPool.Instance.Free(_docs);
         }
     }
 }

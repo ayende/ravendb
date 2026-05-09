@@ -2085,43 +2085,31 @@ namespace Raven.Client.Util
             }
         }
 
-        internal sealed class NewSupport(bool wrapInParens) : JavascriptConversionExtension
+        internal sealed class NewSupport : JavascriptConversionExtension
         {
-            public static readonly NewSupport Instance = new(true);
+            public static readonly NewSupport Instance = new NewSupport();
 
-            /// <summary>
-            /// Used by the subscriptions projection pipeline (BodyOnly), where the script is appended after 'select ' and the wrapping parens would be redundant.
-            /// </summary>
-            public static readonly NewSupport BodyOnlyInstance = new(false);
+            private NewSupport()
+            {
+            }
 
             public override void ConvertToJavascript(JavascriptConversionContext context)
             {
                 if (context.Node is NewExpression newExp)
                 {
-                    IReadOnlyList<MemberInfo> members = newExp.Members;
-                    
-                    // Try to infer members if not found directly. Useful for the record types, etc.
-                    if (members == null || members.Count == 0)
-                    {
-                        if (TryInferMembersFromConstructor(newExp, out var inferredMembers))
-                        {
-                            members = inferredMembers;
-                        }
-                    }
-                    
-                    if (members is { Count: > 0 })
+                    if (newExp.Members != null && newExp.Members.Count > 0)
                     {
                         context.PreventDefault();
                         var resultWriter = context.GetWriter();
 
                         using (resultWriter.Operation(0))
                         {
-                            resultWriter.Write(wrapInParens ? "({" : "{");
+                            resultWriter.Write("({");
 
                             var posStart = resultWriter.Length;
-                            for (int itMember = 0; itMember < members.Count; itMember++)
+                            for (int itMember = 0; itMember < newExp.Members.Count; itMember++)
                             {
-                                var member = members[itMember];
+                                var member = newExp.Members[itMember];
 
                                 if (resultWriter.Length > posStart)
                                     resultWriter.Write(',');
@@ -2141,10 +2129,8 @@ namespace Raven.Client.Util
                                 context.Visitor.Visit(newExp.Arguments[itMember]);
                             }
 
-                            resultWriter.Write(wrapInParens ? "})":"}");
+                            resultWriter.Write("})");
                         }
-
-                        return;
                     }
 
                     if (LinqMethodsSupport.IsCollection(newExp.Type) &&
@@ -2249,63 +2235,17 @@ namespace Raven.Client.Util
 
             private static void WriteStringLiteral(string str, JavascriptWriter writer)
             {
-                writer.Write(ToJsStringLiteral(str));
-            }
-            
-            private static bool TryInferMembersFromConstructor(NewExpression newExp, out List<MemberInfo> members)
-            {
-                members = null;
+                writer.Write('"');
+                writer.Write(
+                    str
+                        .Replace("\\", "\\\\")
+                        .Replace("\r", "\\r")
+                        .Replace("\n", "\\n")
+                        .Replace("\t", "\\t")
+                        .Replace("\0", "\\0")
+                        .Replace("\"", "\\\""));
 
-                var ctor = newExp.Constructor;
-                if (ctor == null)
-                    return false;
-
-                var parameters = ctor.GetParameters();
-                if (parameters.Length == 0 || parameters.Length != newExp.Arguments.Count)
-                    return false;
-
-                var properties = newExp.Type.GetProperties(BindingFlags.Instance | BindingFlags.Public);
-                if (properties.Length == 0)
-                    return false;
-
-                var resolved = new List<MemberInfo>(parameters.Length);
-                var usedProperties = new HashSet<string>(StringComparer.Ordinal);
-
-                foreach (var parameter in parameters)
-                {
-                    PropertyInfo matchedProperty = null;
-
-                    foreach (var property in properties)
-                    {
-                        if (string.Equals(property.Name, parameter.Name, StringComparison.OrdinalIgnoreCase) == false)
-                            continue;
-
-                        if (property.CanRead == false)
-                            continue;
-
-                        var propertyType = property.PropertyType;
-                        var parameterType = parameter.ParameterType;
-
-                        if (propertyType != parameterType &&
-                            propertyType.IsAssignableFrom(parameterType) == false &&
-                            parameterType.IsAssignableFrom(propertyType) == false)
-                            continue;
-
-                        if (usedProperties.Add(property.Name) == false)
-                            return false;
-
-                        matchedProperty = property;
-                        break;
-                    }
-
-                    if (matchedProperty == null)
-                        return false;
-
-                    resolved.Add(matchedProperty);
-                }
-
-                members = resolved;
-                return true;
+                writer.Write('"');
             }
         }
 
@@ -2894,7 +2834,9 @@ namespace Raven.Client.Util
                 using (writer.Operation(mce))
                 {
                     writer.Write("new RegExp(");
-                    writer.Write(ToJsStringLiteral(pattern));
+                    writer.Write("\"");
+                    writer.Write(EscapeForJsString(pattern));
+                    writer.Write("\"");
 
                     if (flags.Length > 0)
                     {
@@ -2936,58 +2878,19 @@ namespace Raven.Client.Util
                 return flags;
             }
 
-        }
-
-        /// <summary>
-        /// Returns a JS string literal including surrounding quotes, with all special characters escaped.
-        /// e.g. input: key"with"quotes => output: "key\"with\"quotes"
-        /// </summary>
-        internal static string ToJsStringLiteral(string value)
-        {
-            if (value == null)
-                return "null";
-
-            return JsonConvert.ToString(value);
-        }
-
-        internal sealed class PatchPathWrappedConstantSupport : JavascriptConversionExtension
-        {
-            public static readonly PatchPathWrappedConstantSupport Instance = new PatchPathWrappedConstantSupport();
-
-            private PatchPathWrappedConstantSupport()
+            private static string EscapeForJsString(string pattern)
             {
-            }
+                if (pattern == null)
+                    return string.Empty;
 
-            public override void ConvertToJavascript(JavascriptConversionContext context)
-            {
-                if (context.Node is not MemberExpression memberExpression ||
-                    IsWrappedConstantExpression(memberExpression) == false)
-                    return;
-
-                LinqPathProvider.GetValueFromExpressionWithoutConversion(memberExpression, out var value);
-                var writer = context.GetWriter();
-                context.PreventDefault();
-
-                using (writer.Operation(JavascriptOperationTypes.Literal))
-                {
-                    if (value == null)
-                    {
-                        writer.Write("null");
-                        return;
-                    }
-
-                    // For numeric values, write them directly
-                    if (value is int || value is long || value is short || value is byte ||
-                        value is uint || value is ulong || value is ushort || value is sbyte ||
-                        value is float || value is double || value is decimal)
-                    {
-                        writer.Write(value.ToInvariantString());
-                        return;
-                    }
-
-                    // For string and any other type, write as a quoted JS string literal
-                    writer.Write(ToJsStringLiteral(value.ToString()));
-                }
+                return pattern
+                    .Replace("\\", "\\\\")        // Must be first!
+                    .Replace("\"", "\\\"")        // Escape quotes
+                    .Replace("\r", "\\r")         // Escape CR
+                    .Replace("\n", "\\n")         // Escape LF
+                    .Replace("\u2028", "\\u2028") // CRITICAL: Escape Line Separator
+                    .Replace("\u2029", "\\u2029") // CRITICAL: Escape Paragraph Separator
+                    .Replace("\t", "\\t");        // Optional: nice for debugging readablity
             }
         }
 

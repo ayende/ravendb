@@ -302,7 +302,7 @@ namespace Sparrow.Compression
                 else
                     bytesReadWhenOverflow = 3;
 
-                // PERF: We need this for the JIT to understand that this can be profitable.
+                // PERF: We need this for the JIT to understand that this can be profitable. 
                 ref var inputRef = ref Unsafe.Add(ref inputStart, 2);
                 int shift = 2 * bitsToShift;
                 do
@@ -314,10 +314,10 @@ namespace Sparrow.Compression
                     ul |= (b & 0x7Ful) << shift;
                     shift += bitsToShift;
 
-                    inputRef = ref Unsafe.Add(ref inputRef, 1);
+                    inputRef = Unsafe.Add(ref inputRef, 1);
                 }
                 while (b >= 0x80);
-                offset = Unsafe.ByteOffset(ref inputStart, ref inputRef).ToInt32();
+                offset = Unsafe.ByteOffset(ref inputRef, ref inputStart).ToInt32();
 
             End:
                 
@@ -555,6 +555,14 @@ namespace Sparrow.Compression
 
                 if (typeof(T) == typeof(bool))
                     return (T)(object)(destRef == 1);
+                return (T)(object)destRef;
+            }
+
+            if (typeof(T) == typeof(sbyte) || typeof(T) == typeof(byte) || typeof(T) == typeof(bool))
+            {
+                offset = 1;
+                if (typeof(T) == typeof(bool))
+                    return (T)(object)(destRef == 1);
                 return (typeof(T) == typeof(sbyte)) ? (T)(object)(sbyte)destRef : (T)(object)destRef;
             }
 
@@ -679,8 +687,16 @@ namespace Sparrow.Compression
                 else
                     b = (byte)(object)value;
 
-                dest[0] = b;
-                return 1;
+                int i = 0;
+                if (b < 0x80)
+                    goto End;
+                dest[0] = (byte)(b | 0x80);
+                b >>= 7;
+                i++;
+
+            End:
+                dest[i] = b;
+                return i + 1;
             }
 
             if (typeof(T) == typeof(short) || typeof(T) == typeof(ushort))
@@ -802,8 +818,17 @@ namespace Sparrow.Compression
                 else
                     b = (byte)(object)value;
 
-                destRef = b;
-                return 1;
+                int i = 0;
+                if (b < 0x80)
+                    goto End;
+
+                destRef = (byte)(b | 0x80);
+                b >>= 7;
+                i++;
+
+            End:
+                Unsafe.Add(ref destRef, i) = b;
+                return i + 1;
             }
 
             if (typeof(T) == typeof(short) || typeof(T) == typeof(ushort))

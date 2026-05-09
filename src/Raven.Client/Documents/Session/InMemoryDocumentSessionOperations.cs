@@ -312,7 +312,6 @@ namespace Raven.Client.Documents.Session
                     JavascriptConversionExtensions.LinqMethodsSupport.Instance,
                     JavascriptConversionExtensions.NullableSupport.Instance,
                     JavascriptConversionExtensions.PatchDictionaryEnumSupport.Instance,
-                    JavascriptConversionExtensions.PatchPathWrappedConstantSupport.Instance,
                 ])
             {
                 CustomMetadataProvider = new PropertyNameConventionJSMetadataProvider(RequestExecutor.Conventions)

@@ -13,9 +13,9 @@ using Voron.Data.Graphs;
 using Voron.Data.Lookups;
 using Voron.Data.PostingLists;
 
-namespace Corax.Querying.Matches.TermProviders
+namespace Corax.Querying.Matches.TermsProviders
 {
-    public struct ExistsTermProvider<TLookupIterator> : ITermProvider, IAggregationProvider, IIndexedTermsRetriever
+    public struct ExistsTermsProvider<TLookupIterator> : ITermsProvider, IAggregationProvider, IIndexedTermsRetriever
         where TLookupIterator : struct, ILookupIterator
     {
         private readonly long _numberOfTerms;
@@ -33,7 +33,7 @@ namespace Corax.Querying.Matches.TermProviders
         private CompactTree.Iterator<TLookupIterator> _iterator;
         private readonly CompactKey _compactKey;
 
-        public ExistsTermProvider(Querying.IndexSearcher searcher, CompactTree tree, in FieldMetadata field, bool forAggregation = false)
+        public ExistsTermsProvider(Querying.IndexSearcher searcher, CompactTree tree, in FieldMetadata field, bool forAggregation = false)
         {
             _tree = tree;
             _field = field;
@@ -73,11 +73,23 @@ namespace Corax.Querying.Matches.TermProviders
                 {
                     return total;
                 }
-                
+
                 _fetchNulls = false;
             }
-            
+
             return _iterator.Fill(containers);
+        }
+
+        public int FillPostingListIds(Span<long> postingListIds)
+        {
+            if (_fetchNulls)
+            {
+                postingListIds[0] = _postingListId;
+                _fetchNulls = false;
+                return 1;
+            }
+
+            return _iterator.Fill(postingListIds);
         }
 
         public void Reset()
@@ -139,7 +151,7 @@ namespace Corax.Querying.Matches.TermProviders
 
         public QueryInspectionNode Inspect()
         {
-            return new QueryInspectionNode($"{nameof(ExistsTermProvider<TLookupIterator>)}",
+            return new QueryInspectionNode($"{nameof(ExistsTermsProvider<TLookupIterator>)}",
                             parameters: new Dictionary<string, string>()
                             {
                                 { Constants.QueryInspectionNode.FieldName, _field.ToString() }
@@ -226,7 +238,7 @@ namespace Corax.Querying.Matches.TermProviders
 
         public long AggregateByRange()
         {
-            throw new NotSupportedException($"{nameof(ExistsTermProvider<TLookupIterator>)} supports only terms aggregation.");
+            throw new NotSupportedException($"{nameof(ExistsTermsProvider<TLookupIterator>)} supports only terms aggregation.");
         }
         
         private int NumberOfTerms => (int)_numberOfTerms + (_nullExists ? 1 : 0);

@@ -3,7 +3,6 @@ using Raven.Client.Documents.Operations.Revisions;
 using Raven.Server.Documents.Revisions;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
-using Voron.Util.RateLimiting;
 
 namespace Raven.Server.Documents.TransactionMerger.Commands;
 
@@ -16,8 +15,7 @@ internal sealed class EnforceRevisionConfigurationCommand : RevisionsScanningOpe
         List<string> ids,
         EnforceConfigurationResult result,
         bool includeForceCreated,
-        RateGate rateGate,
-        OperationCancelToken token) : base(revisionsStorage, ids, result, rateGate, token)
+        OperationCancelToken token) : base(revisionsStorage, ids, result, token)
     {
         _includeForceCreatedRevisionsOnDeleteInCaseOfNoConfiguration = includeForceCreated;
     }
@@ -25,17 +23,9 @@ internal sealed class EnforceRevisionConfigurationCommand : RevisionsScanningOpe
     protected override long ExecuteCmd(DocumentsOperationContext context)
     {
         MoreWork = false;
-        NeedWait = false;
         for (int i = _ids.Count - 1; i >= 0; i--)
         {
             _token.ThrowIfCancellationRequested();
-
-            if (_rateGate != null && _rateGate.WaitToProceed(0) == false)
-            {
-                NeedWait = true;
-                break;
-            }
-
             var moreWork = false;
             _result.RemovedRevisions += (int)_revisionsStorage.EnforceConfigurationFor(context, _ids[i], _includeForceCreatedRevisionsOnDeleteInCaseOfNoConfiguration == false, ref moreWork);
             if (moreWork == false)
@@ -67,7 +57,7 @@ internal sealed class EnforceRevisionConfigurationCommand : RevisionsScanningOpe
 
         public EnforceRevisionConfigurationCommand ToCommand(DocumentsOperationContext context, DocumentDatabase database)
         {
-            return new EnforceRevisionConfigurationCommand(_revisionsStorage, _ids, new EnforceConfigurationResult(), _includeForceCreated, null, OperationCancelToken.None);
+            return new EnforceRevisionConfigurationCommand(_revisionsStorage, _ids, new EnforceConfigurationResult(), _includeForceCreated, OperationCancelToken.None);
         }
     }
 }

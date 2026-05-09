@@ -125,11 +125,7 @@ export default function DatabaseCustomSorters() {
                 <HrHeader
                     right={
                         hasServerWideCustomSorters ? (
-                            <a
-                                href={appUrl.forServerWideCustomSorters()}
-                                target="_blank"
-                                title="Go to the server-wide custom sorters view"
-                            >
+                            <a href={appUrl.forServerWideCustomSorters()} target="_blank">
                                 <Icon icon="link" />
                                 Server-wide custom sorters
                             </a>

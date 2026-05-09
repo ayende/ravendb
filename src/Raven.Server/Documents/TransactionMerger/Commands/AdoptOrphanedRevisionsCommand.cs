@@ -3,7 +3,6 @@ using Raven.Client.Documents.Operations.Revisions;
 using Raven.Server.Documents.Revisions;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
-using Voron.Util.RateLimiting;
 
 namespace Raven.Server.Documents.TransactionMerger.Commands;
 internal class AdoptOrphanedRevisionsCommand : RevisionsScanningOperationCommand<AdoptOrphanedRevisionsResult>
@@ -12,8 +11,7 @@ internal class AdoptOrphanedRevisionsCommand : RevisionsScanningOperationCommand
         RevisionsStorage revisionsStorage,
         List<string> ids,
         AdoptOrphanedRevisionsResult result,
-        RateGate rateGate,
-        OperationCancelToken token) : base(revisionsStorage, ids, result, rateGate, token)
+        OperationCancelToken token) : base(revisionsStorage, ids, result, token)
     {
         MoreWork = false;
     }
@@ -48,7 +46,7 @@ internal class AdoptOrphanedRevisionsCommand : RevisionsScanningOperationCommand
         
         public AdoptOrphanedRevisionsCommand ToCommand(DocumentsOperationContext context, DocumentDatabase database)
         {
-            return new AdoptOrphanedRevisionsCommand(_revisionsStorage, _ids, new AdoptOrphanedRevisionsResult(), null, OperationCancelToken.None);
+            return new AdoptOrphanedRevisionsCommand(_revisionsStorage, _ids, new AdoptOrphanedRevisionsResult(), OperationCancelToken.None);
         }
     }
 

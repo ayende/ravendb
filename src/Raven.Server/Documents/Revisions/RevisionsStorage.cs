@@ -30,7 +30,6 @@ using Sparrow.Server.Utils;
 using Voron;
 using Voron.Data.Tables;
 using Voron.Exceptions;
-using Voron.Util.RateLimiting;
 using static Raven.Server.Documents.DocumentsStorage;
 using static Raven.Server.Documents.Schemas.Revisions;
 using static Raven.Server.Documents.Schemas.Tombstones;
@@ -346,7 +345,7 @@ namespace Raven.Server.Documents.Revisions
             Debug.Assert(changeVector != null, "Change vector must be set");
             Debug.Assert(lastModifiedTicks != DateTime.MinValue.Ticks, "last modified ticks must be set");
 
-            if (IsExistingNewerTombstone(context, id, changeVector, flags, nonPersistentFlags, lastModifiedTicks))
+            if (IsExistingNewerTombstone(context, id, changeVector, flags, nonPersistentFlags, lastModifiedTicks)) 
                 return false;
 
             BlittableJsonReaderObject.AssertNoModifications(document, id, assertChildren: true);
@@ -1553,7 +1552,7 @@ namespace Raven.Server.Documents.Revisions
             if (nonPersistentFlags.Contain(NonPersistentDocumentFlags.SkipRevisionCreation))
                 return;
 
-            if (IsExistingNewerTombstone(context, id, changeVector, flags, nonPersistentFlags, lastModifiedTicks))
+            if (IsExistingNewerTombstone(context, id, changeVector, flags, nonPersistentFlags, lastModifiedTicks)) 
                 return;
 
             Debug.Assert(changeVector != null, "Change vector must be set");
@@ -1672,7 +1671,7 @@ namespace Raven.Server.Documents.Revisions
                 table.Set(tvb);
             }
         }
-
+        
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe ByteStringContext.InternalScope GetKeyPrefix(DocumentsOperationContext context, LazyStringValue lowerId, out Slice prefixSlice)
         {
@@ -1906,21 +1905,24 @@ namespace Raven.Server.Documents.Revisions
             }
         }
 
+        public Task<IOperationResult> EnforceConfigurationAsync(Action<IOperationProgress> onProgress, OperationCancelToken token)
+        {
+            return EnforceConfigurationAsync(onProgress, new EnforceRevisionsConfigurationOperation.Parameters { IncludeForceCreated = true }, token);
+        }
+
+        public Task<IOperationResult> EnforceConfigurationAsync(Action<IOperationProgress> onProgress, bool includeForceCreated, OperationCancelToken token)
+        {
+            return EnforceConfigurationAsync(onProgress, new EnforceRevisionsConfigurationOperation.Parameters { IncludeForceCreated = includeForceCreated }, token);
+        }
+
         public async Task<IOperationResult> EnforceConfigurationAsync(Action<IOperationProgress> onProgress,
             EnforceRevisionsConfigurationOperation.Parameters parameters,
-           int? maxOpsPerSecond,
-           OperationCancelToken token)
+            OperationCancelToken token)
         {
             var result = new EnforceConfigurationResult();
-
-            using (var rateGate = maxOpsPerSecond.HasValue
-                       ? new RateGate(maxOpsPerSecond.Value, TimeSpan.FromSeconds(1))
-                       : null)
-            {
-                await PerformRevisionsOperationAsync(onProgress, result,
-                    (ids, res, tk) => new EnforceRevisionConfigurationCommand(this, ids, res, parameters.IncludeForceCreated, rateGate, tk),
-                    parameters, rateGate, token);
-            }
+            await PerformRevisionsOperationAsync(onProgress, result,
+                (ids, res, tk) => new EnforceRevisionConfigurationCommand(this, ids, res, parameters.IncludeForceCreated, tk),
+                parameters, token);
 
             return result;
         }
@@ -1931,8 +1933,8 @@ namespace Raven.Server.Documents.Revisions
         {
             var result = new AdoptOrphanedRevisionsResult();
             await PerformRevisionsOperationAsync(onProgress, result,
-                (ids, res, tk) => new AdoptOrphanedRevisionsCommand(this, ids, result, null, tk),
-                parameters, rateGate: null, token);
+                (ids, res, tk) => new AdoptOrphanedRevisionsCommand(this, ids, result, tk),
+                parameters, token);
 
             return result;
         }
@@ -1956,7 +1958,6 @@ namespace Raven.Server.Documents.Revisions
             TOperationResult result,
             Func<List<string>, TOperationResult, OperationCancelToken, RevisionsScanningOperationCommand<TOperationResult>> createCommand,
             RevisionsOperationParameters operationParameters,
-            RateGate rateGate,
             OperationCancelToken token) where TOperationResult : OperationResult
         {
             var databaseName = _database.Name;
@@ -1998,7 +1999,7 @@ namespace Raven.Server.Documents.Revisions
             foreach (var collection in collections)
             {
                 // we need to reset the last scanned etag for each collection.
-                await PerformRevisionsOperationOnSingleCollectionAsync(collection, ids, sw, createCommand, result, parameters, rateGate, token);
+                await PerformRevisionsOperationOnSingleCollectionAsync(collection, ids, sw, createCommand, result, parameters, token);
 
                 var previous = result.LastProcessedEtags.GetValueOrDefault(databaseName, 0);
                 result.LastProcessedEtags[databaseName] = Math.Max(previous, parameters.LastScannedEtag);
@@ -2010,11 +2011,10 @@ namespace Raven.Server.Documents.Revisions
             string collection, List<string> ids, Stopwatch sw,
             Func<List<string>, TOperationResult, OperationCancelToken, RevisionsScanningOperationCommand<TOperationResult>> createCommand,
             TOperationResult result,
-            Parameters parameters, RateGate rateGate, OperationCancelToken token)
+            Parameters parameters, OperationCancelToken token)
             where TOperationResult : OperationResult
         {
             var hasMore = true;
-
             while (hasMore)
             {
                 hasMore = false;
@@ -2027,8 +2027,8 @@ namespace Raven.Server.Documents.Revisions
                     {
                         if (GetRevisionsByCollection(ctx, collection, parameters.LastScannedEtag, out var revisions) == false)
                         {
-                            /*  there is no collection named like that, or that collection doesn't have any revisions,
-                                but we won't throw here because this will fail the whole operation,
+                            /*  there is no collection named like that, or that collection doesn't have any revisions, 
+                                but we won't throw here because this will fail the whole operation, 
                                 so we'll just skip this collection.
                              */
                             return;
@@ -2070,10 +2070,7 @@ namespace Raven.Server.Documents.Revisions
                             token.ThrowIfCancellationRequested();
                             var cmd = createCommand(ids, result, token);
                             await _database.TxMerger.Enqueue(cmd);
-                            moreWork = cmd.MoreWork || cmd.NeedWait;
-
-                            if (cmd.NeedWait)
-                                await rateGate.WaitToProceedAsync();
+                            moreWork = cmd.MoreWork;
                         }
                     }
                 }
@@ -2385,7 +2382,7 @@ namespace Raven.Server.Documents.Revisions
             foreach (var collection in collections)
             {
                 var list = new List<Document>();
-
+            
                 await RevertRevisionsInternal(list, collection, parameters, onProgress, result, token);
 
                 var current = result.LastProcessedEtags.TryGetValue(databaseName, out var existing) ? existing : 0;
@@ -2863,7 +2860,7 @@ namespace Raven.Server.Documents.Revisions
             {
                 if (table.ReadByKey(cv, out TableValueReader tvr) == false)
                     return null;
-
+                
                 return GetMetrics(table, tvr);
             }
         }
@@ -3051,7 +3048,7 @@ namespace Raven.Server.Documents.Revisions
                 throw new ArgumentException("Data size is invalid, possible corruption when parsing BlittableJsonReaderObject", nameof(size));
 
             BlittableJsonReaderObject.BlittableValidation(context, ptr, size);
-
+            
             var result = new Document
             {
                 StorageId = tvr.Id,

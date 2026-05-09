@@ -4,7 +4,7 @@ using System.Linq;
 using Lucene.Net.Index;
 using Lucene.Net.Search;
 using Lucene.Net.Store;
-using Constants = Raven.Client.Constants;
+using Raven.Client;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Lucene.Collectors
 {
@@ -14,18 +14,16 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene.Collectors
         private IndexReader _currentReader;
         private Scorer _currentScorer;
 
-        public IntersectionCollector(Searchable indexSearcher, TopDocs topDocs, IState state)
+        public IntersectionCollector(Searchable indexSearcher, IEnumerable<ScoreDoc> scoreDocs, IState state)
         {
-            var reader = topDocs.ScoreDocArray.GetReader(start: 0);
-
-            while (reader.Read(out int doc, out float score))
+            foreach (var scoreDoc in scoreDocs)
             {
-                var document = indexSearcher.Doc(doc, state);
+                var document = indexSearcher.Doc(scoreDoc.Doc, state);
                 var subQueryResult = new SubQueryResult
                 {
-                    LuceneId = doc,
+                    LuceneId = scoreDoc.Doc,
                     RavenDocId = document.Get(Constants.Documents.Indexing.Fields.DocumentIdFieldName, state) ?? document.Get(Constants.Documents.Indexing.Fields.ReduceKeyHashFieldName, state),
-                    Score = float.IsNaN(score) ? 0.0f : score,
+                    Score = float.IsNaN(scoreDoc.Score) ? 0.0f : scoreDoc.Score,
                     Count = 1
                 };
                 _results[subQueryResult.RavenDocId] = subQueryResult;

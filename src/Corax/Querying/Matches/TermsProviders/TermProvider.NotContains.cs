@@ -6,9 +6,9 @@ using Voron;
 using Voron.Data.CompactTrees;
 using Voron.Data.Lookups;
 
-namespace Corax.Querying.Matches.TermProviders
+namespace Corax.Querying.Matches.TermsProviders
 {
-    public struct NotContainsTermProvider<TLookupIterator> : ITermProvider
+    public struct NotContainsTermsProvider<TLookupIterator> : ITermsProvider
         where TLookupIterator : struct, ILookupIterator
     {
         private readonly CompactTree _tree;
@@ -18,7 +18,7 @@ namespace Corax.Querying.Matches.TermProviders
 
         private CompactTree.Iterator<TLookupIterator> _iterator;
 
-        public NotContainsTermProvider(Querying.IndexSearcher searcher, CompactTree tree, in FieldMetadata field, CompactKey term)
+        public NotContainsTermsProvider(Querying.IndexSearcher searcher, CompactTree tree, in FieldMetadata field, CompactKey term)
         {
             _tree = tree;
             _searcher = searcher;
@@ -33,6 +33,28 @@ namespace Corax.Querying.Matches.TermProviders
         public int Fill(Span<long> containers)
         {
             throw new NotImplementedException();
+        }
+
+        public int FillPostingListIds(Span<long> postingListIds)
+        {
+            var contains = _term.Decoded();
+            int count = 0;
+
+            using var scope = new CompactKeyCacheScope(_searcher.Transaction.LowLevelTransaction);
+            var key = scope.Key;
+
+            while (count < postingListIds.Length)
+            {
+                if (_iterator.MoveNext(key, out long postingListId, out _) == false)
+                    break;
+
+                if (key.Decoded().Contains(contains))
+                    continue;
+
+                postingListIds[count++] = postingListId;
+            }
+
+            return count;
         }
 
         public void Reset()
@@ -62,7 +84,7 @@ namespace Corax.Querying.Matches.TermProviders
 
         public QueryInspectionNode Inspect()
         {
-            return new QueryInspectionNode($"{nameof(NotContainsTermProvider<TLookupIterator>)}",
+            return new QueryInspectionNode($"{nameof(NotContainsTermsProvider<TLookupIterator>)}",
                             parameters: new Dictionary<string, string>()
                             {
                                 { Constants.QueryInspectionNode.FieldName, _field.ToString() },

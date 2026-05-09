@@ -109,13 +109,7 @@ export default function DatabaseCustomSortersListItem(props: DatabaseCustomSorte
                         </RichPanelName>
                     </RichPanelInfo>
                     {serverWideSorterNames.includes(formValues.name) && (
-                        <OverlayTrigger
-                            overlay={
-                                <Tooltip id={tooltipId}>
-                                    This database sorter overrides the server-wide sorter with the same name.
-                                </Tooltip>
-                            }
-                        >
+                        <OverlayTrigger overlay={<Tooltip id={tooltipId}>Overrides server-wide sorter</Tooltip>}>
                             <div className="d-inline-block">
                                 <Icon id={tooltipId} icon="info" color="info" />
                             </div>
@@ -137,7 +131,7 @@ export default function DatabaseCustomSortersListItem(props: DatabaseCustomSorte
                     </RichPanelActions>
                 </RichPanelHeader>
 
-                <Collapse in={isTestMode} mountOnEnter unmountOnExit>
+                <Collapse in={isTestMode}>
                     <div>
                         <DatabaseCustomSorterTest name={formValues.name} />
                     </div>
@@ -239,13 +233,7 @@ function CustomSortersActions({
                     message: "To test, first exit edit mode",
                 }}
             >
-                <Button
-                    variant="secondary"
-                    key="test"
-                    onClick={toggleIsTestMode}
-                    disabled={isEditMode}
-                    title={isTestMode ? "Exit test mode" : "Test custom sorter"}
-                >
+                <Button variant="secondary" key="test" onClick={toggleIsTestMode} disabled={isEditMode}>
                     <Icon icon="rocket" addon={isTestMode ? "cancel" : null} margin="m-0" />
                 </Button>
             </ConditionalPopover>
@@ -268,13 +256,7 @@ function CustomSortersActions({
                             message: "To edit, first exit test mode",
                         }}
                     >
-                        <Button
-                            variant="secondary"
-                            key="edit"
-                            onClick={toggleIsEditMode}
-                            disabled={isTestMode}
-                            title="Edit custom sorter"
-                        >
+                        <Button variant="secondary" key="edit" onClick={toggleIsEditMode} disabled={isTestMode}>
                             <Icon icon={hasDatabaseAdminAccess ? "edit" : "preview"} margin="m-0" />
                         </Button>
                     </ConditionalPopover>
@@ -293,7 +275,6 @@ function CustomSortersActions({
                                 onClick={() => setNameToConfirmDelete(name)}
                                 icon="trash"
                                 isSpinning={asyncDeleteSorter.status === "loading"}
-                                title="Delete custom sorter"
                             />
                         </>
                     )}

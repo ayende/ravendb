@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using Raven.Client.Documents.Operations.Replication;
 using Raven.Server.Documents.Replication.ReplicationItems;
 using Sparrow.Json;
 using Voron;
@@ -12,7 +11,7 @@ namespace Raven.Server.Documents.Replication
         private readonly JsonOperationContext _allowedPathsContext;
         private readonly List<LazyStringValue> _allowedPaths;
         private readonly List<LazyStringValue> _allowedPathsPrefixes;
-        private readonly DocumentInfoHelper _documentInfoHelper;
+        private DocumentInfoHelper _documentInfoHelper;
         private LazyStringValue GetDocumentId(Slice key) => _documentInfoHelper.GetDocumentId(key);
         public string GetItemInformation(ReplicationBatchItem item) => _documentInfoHelper.GetItemInformation(item);
         
@@ -24,7 +23,7 @@ namespace Raven.Server.Documents.Replication
                 AttachmentTombstoneReplicationItem at => AllowId(GetDocumentId(at.Key)),
                 CounterReplicationItem c => AllowId(c.Id),
                 DocumentReplicationItem d => AllowId(d.Id),
-                RevisionTombstoneReplicationItem _ => true, // revision tombstones don't contain any info about the doc. The id here is the change-vector of the deleted revision
+                RevisionTombstoneReplicationItem _ => true, // revision tombstones doesn't contain any info about the doc. The id here is the change-vector of the deleted revision
                 TimeSeriesDeletedRangeItem td => AllowId(GetDocumentId(td.Key)),
                 TimeSeriesReplicationItem t => AllowId(GetDocumentId(t.Key)),
                 _ => throw new ArgumentOutOfRangeException($"{nameof(item)} - {item}")
@@ -56,17 +55,11 @@ namespace Raven.Server.Documents.Replication
             _documentInfoHelper = new DocumentInfoHelper(_allowedPathsContext);
             _allowedPaths = new List<LazyStringValue>();
             _allowedPathsPrefixes = new List<LazyStringValue>();
-
-            var normalizedAllowedPaths = PullReplicationPathFilterUtils.Normalize(allowedPaths);
-            if ((normalizedAllowedPaths?.Length ?? 0) == 0)
-                return;
-
-            foreach (var allowedPath in normalizedAllowedPaths)
+            foreach (var t in allowedPaths)
             {
-                var lazyStringValue = _allowedPathsContext.GetLazyString(allowedPath);
+                var lazyStringValue = _allowedPathsContext.GetLazyString(t);
                 if (lazyStringValue.Size == 0)
                     continue; // shouldn't happen, but let's be safe
-
                 if (lazyStringValue[lazyStringValue.Size - 1] == '*')
                 {
                     lazyStringValue.Truncate(lazyStringValue.Size - 1);

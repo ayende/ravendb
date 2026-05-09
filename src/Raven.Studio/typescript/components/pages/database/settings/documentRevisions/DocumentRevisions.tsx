@@ -126,12 +126,11 @@ export default function DocumentRevisions() {
     });
 
     const asyncEnforceRevisionsConfiguration = useAsyncCallback(
-        async (includeForceCreated: boolean, collections: string[], maxOpsPerSecond: number | null) => {
+        async (includeForceCreated: boolean, collections: string[]) => {
             const dto = await databasesService.enforceRevisionsConfiguration(
                 databaseName,
                 includeForceCreated,
-                collections,
-                maxOpsPerSecond
+                collections
             );
 
             notificationCenter.instance.openDetailsForOperationById(
