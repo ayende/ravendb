@@ -7,6 +7,7 @@ using FastTests.Voron;
 using Tests.Infrastructure;
 using Voron;
 using Voron.Data.Graphs;
+using Voron.Data.RoaringBitmaps;
 using Xunit;
 
 namespace SlowTests.Voron.Graphs;
@@ -53,11 +54,9 @@ public class HnswSearch(ITestOutputHelper output) : StorageTest(output)
                 numberOfCandidates: totalEntries, qV.ToArray(), minimumSimilarity: 0f, hasFilterMatch: true);
             try
             {
-                var filterSet = new HashSet<long>();
+                var filterBitmap = new RoaringBitmap(Allocator);
                 for (int i = 1; i <= totalEntries; i++)
-                    filterSet.Add(i);
-
-                nearest.FilterCount = totalEntries;
+                    filterBitmap.Add(i);
 
                 var matches = new long[128];
                 var distances = new float[128];
@@ -66,7 +65,7 @@ public class HnswSearch(ITestOutputHelper output) : StorageTest(output)
                 int read;
                 do
                 {
-                    read = nearest.Fill(matches, distances, filterSet.Contains);
+                    read = nearest.Fill(matches, distances, ref filterBitmap);
                     allResults.AddRange(matches[..read]);
                 } while (read != 0);
 
@@ -113,11 +112,9 @@ public class HnswSearch(ITestOutputHelper output) : StorageTest(output)
                 numberOfCandidates: 100, qV.ToArray(), minimumSimilarity: 0f, hasFilterMatch: true);
             try
             {
-                var filterSet = new HashSet<long>();
+                var filterBitmap = new RoaringBitmap(Allocator);
                 for (int i = 1; i <= entriesWithSameVector; i++)
-                    filterSet.Add(i);
-
-                nearest.FilterCount = entriesWithSameVector;
+                    filterBitmap.Add(i);
 
                 var matches = new long[matchesBufferSize];
                 var distances = new float[matchesBufferSize];
@@ -126,7 +123,7 @@ public class HnswSearch(ITestOutputHelper output) : StorageTest(output)
                 int read;
                 do
                 {
-                    read = nearest.Fill(matches, distances, filterSet.Contains);
+                    read = nearest.Fill(matches, distances, ref filterBitmap);
                     allResults.AddRange(matches[..read]);
                 } while (read != 0);
 
@@ -185,7 +182,7 @@ public class HnswSearch(ITestOutputHelper output) : StorageTest(output)
             var read = 0;
             do
             {
-                read = nearest.Fill(matches, distances, filter: null);
+                read = nearest.Fill(matches, distances);
                 totalReturned += read;
                 returnedDocuments.AddRange(matches[..read]);
             } while (read != 0);
