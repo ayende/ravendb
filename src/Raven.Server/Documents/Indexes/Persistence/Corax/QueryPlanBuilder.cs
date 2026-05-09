@@ -533,8 +533,7 @@ internal static class QueryPlanBuilder
         if (spatialClauses == null && vectorClauses == null)
             return;
 
-        var clauses = plan.QueryBuilderPlanState as List<ClauseInfo>;
-        Debug.Assert(clauses != null, "QueryBuilderPlanState should be set before AttachPostFilterPhases");
+        var clauses = (List<ClauseInfo>)plan.QueryBuilderPlanState;
 
         int matchIndex = CountMatchSlots(clauses, plan.IsAllEntries, plan.AllNegated);
 
