@@ -106,7 +106,18 @@ internal static class QueryPlanBuilder
         {
             var t = template[i];
 
-            // Group AND ops within OR chains under a parent node
+            // For queries like: (A AND B) OR (C AND D)
+            // the inspection tree nests each AND-group under its own node:
+            //   CompiledQuery
+            //     AND-Group
+            //       Fill(A)
+            //       AND(B)
+            //     AND-Group
+            //       Fill(C)
+            //       AND(D)
+            // Ops with InsideAndGroup=true are collected under the current
+            // AND-Group node. When we hit an op outside the group, we close
+            // the node and attach it to the root.
             if (t.InsideAndGroup && orGroupNode == null)
                 orGroupNode = new QueryInspectionNode("AND-Group");
             else if (!t.InsideAndGroup && orGroupNode != null)
