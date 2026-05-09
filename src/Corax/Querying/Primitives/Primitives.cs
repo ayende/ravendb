@@ -42,7 +42,7 @@ public static class QueryPrimitives
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxFillFromMatch(ref Matches.CompiledQueryMatch ctx, int paramIndex)
-        => FillFromMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[0]);
+        => FillFromMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[0], ctx.Limit);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxOrFillFromTermSource(ref Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
