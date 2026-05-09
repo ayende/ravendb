@@ -66,10 +66,9 @@ public class AzureQueueStorageEtlTests : AzureQueueStorageEtlTestBase
     {
         using (var store = GetDocumentStore())
         {
-            var usersQueueName = "users" + QueueNameSuffix;
             var config = SetupQueueEtlToAzureQueueStorageOnline(store,
-                @$"loadToUsers{QueueNameSuffix}(this)", new[] { "users" },
-                new[] { new EtlQueue { Name = usersQueueName } });
+                @$"loadToUsers(this)", new[] { "users" },
+                new[] { new EtlQueue { Name = $"users" } });
 
             using (var session = store.OpenSession())
             {
@@ -289,7 +288,7 @@ public class AzureQueueStorageEtlTests : AzureQueueStorageEtlTestBase
                         {
                             Name = "simulate",
                             ConnectionStringName = "simulate",
-                            Queues = { new EtlQueue() { Name = "Orders" + QueueNameSuffix } },
+                            Queues = { new EtlQueue() { Name = "Orders" } },
                             BrokerType = QueueBrokerType.AzureQueueStorage,
                             Transforms =
                             {
@@ -307,7 +306,7 @@ public class AzureQueueStorageEtlTests : AzureQueueStorageEtlTestBase
 
                     Assert.Equal(1, result.Summary.Count);
 
-                    Assert.Equal("Orders" + QueueNameSuffix, result.Summary[0].QueueName);
+                    Assert.Equal("Orders", result.Summary[0].QueueName);
                     Assert.Equal("orders/1-A", result.Summary[0].Messages[0].Attributes.Id);
                     Assert.Equal("com.github.users", result.Summary[0].Messages[0].Attributes.Type);
                     Assert.Equal("/registrations/direct-signup",
@@ -324,10 +323,9 @@ public class AzureQueueStorageEtlTests : AzureQueueStorageEtlTestBase
     {
         using (var store = GetDocumentStore())
         {
-            var usersQueueName = "users" + QueueNameSuffix;
             var config = SetupQueueEtlToAzureQueueStorageOnline(store,
-                @$"loadToUsers{QueueNameSuffix}(this)", new[] { "Users" },
-                new[] { new EtlQueue { Name = usersQueueName, DeleteProcessedDocuments = true } });
+                @$"loadToUsers(this)", new[] { "Users" },
+                new[] { new EtlQueue { Name = $"Users", DeleteProcessedDocuments = true } });
 
             var etlDone = Etl.WaitForEtlToComplete(store);
 
@@ -339,7 +337,7 @@ public class AzureQueueStorageEtlTests : AzureQueueStorageEtlTestBase
 
             await AssertEtlDoneAsync(etlDone, TimeSpan.FromMinutes(1), store.Database, config);
 
-            QueueClient queueClient = CreateAzureQueueStorageClient(AzureQueueStorageConnectionString, usersQueueName);
+            QueueClient queueClient = CreateAzureQueueStorageClient(AzureQueueStorageConnectionString, "users");
             var message = await queueClient.ReceiveMessageAsync();
             var user = JsonConvert.DeserializeObject<CloudEventUserData>(message.Value.MessageText).Data;
 
