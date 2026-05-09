@@ -645,9 +645,11 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                                 queryMatch = QueryPlanBuilder.OrderBy(
                                     builderParameters, queryMatch, orderByFields, hasEmptySorts);
                             }
-                            else if (take > 0 && queryMatch is global::Corax.Querying.Matches.CompiledQueryMatch compiledMatch)
+                            else if (take > 0 && query.Metadata.IsDistinct == false
+                                && queryMatch is global::Corax.Querying.Matches.CompiledQueryMatch compiledMatch)
                             {
-                                // No ORDER BY — enable limit-aware bitmap accumulation.
+                                // No ORDER BY and no DISTINCT — enable limit-aware bitmap
+                                // accumulation. Distinct queries need the full bitmap for dedup.
                                 compiledMatch.Limit = take;
                             }
                         }
