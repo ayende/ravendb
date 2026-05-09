@@ -60,7 +60,6 @@ public struct VectorSearchMatch : IQueryMatch
     private bool _ownsFilterResults;
     private IQueryMatch _filterQuery;
     private bool _filterQueryLoaded;
-    private long _filterMatchesCount;
 
     private bool CanStreamResults => IsBoosting == false && _singleVectorSearchDoNotSort;
 
@@ -107,17 +106,16 @@ public struct VectorSearchMatch : IQueryMatch
             // needed here — the optimization lives in VectorSearchUtils.LoadFilterMatches.
             _filterResults = IndexSearcher.VectorSearchUtils.LoadFilterMatches(_indexSearcher, ref _filterQuery, out _ownsFilterResults);
             _hasFilterResults = true;
-            _filterMatchesCount = _filterResults.Count;
 
             // Shortcut for empty filter
-            if (_filterMatchesCount == 0)
+            if (_filterResults.Count == 0)
             {
                 _isEmpty = true;
                 return;
             }
         }
 
-        _scanningQuery = IndexSearcher.VectorSearchUtils.ShouldScan(_indexSearcher, _filterMatchesCount, _isExact, _filterQuery, _scanningThreshold, _numberOfCandidates);
+        _scanningQuery = IndexSearcher.VectorSearchUtils.ShouldScan(_indexSearcher, _filterResults.Count, _isExact, _filterQuery, _scanningThreshold, _numberOfCandidates);
         var llt = _indexSearcher._transaction.LowLevelTransaction;
         var vector = _vectorToSearch.GetEmbeddingMemory();
         var fieldName = _metadata.FieldName;
@@ -147,11 +145,8 @@ public struct VectorSearchMatch : IQueryMatch
                 _ => Hnsw.ApproximateNearest(llt, fieldName, _numberOfCandidates, vector, _minimumMatch, _filterQuery != null),
         };
 
-        if (_hasFilterResults)
-            _vectorSearchRetriever.FilterCount = _filterMatchesCount;
-
         _isEmpty = _scanningQuery
-            ? _filterMatchesCount == 0 || _vectorSearchRetriever.IsEmpty
+            ? _filterResults.Count == 0 || _vectorSearchRetriever.IsEmpty
             : _vectorSearchRetriever.IsEmpty;
     }
     
@@ -207,7 +202,7 @@ public struct VectorSearchMatch : IQueryMatch
 
         var distancesBuffer = _distances.GetSpace();
         
-        var read = _vectorSearchRetriever.Fill(matches, distancesBuffer, _hasFilterResults ? _filterResults.Contains : null);
+        var read = _hasFilterResults ? _vectorSearchRetriever.Fill(matches, distancesBuffer, ref _filterResults) : _vectorSearchRetriever.Fill(matches, distancesBuffer);
         
         if (read == 0)
         {
@@ -246,7 +241,9 @@ public struct VectorSearchMatch : IQueryMatch
             var dBuf = distances.GetSpace();
             Debug.Assert(mBuf.Length == dBuf.Length, "mBuf.Length == dBuf.Length");
 
-            currentRead = _vectorSearchRetriever.Fill(mBuf, dBuf, _hasFilterResults ? _filterResults.Contains : null);
+            currentRead = _hasFilterResults
+                ? _vectorSearchRetriever.Fill(mBuf, dBuf, ref _filterResults)
+                : _vectorSearchRetriever.Fill(mBuf, dBuf);
             
             matches.AddUsage(currentRead);
             distances.AddUsage(currentRead);
