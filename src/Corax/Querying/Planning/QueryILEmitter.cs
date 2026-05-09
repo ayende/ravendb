@@ -163,8 +163,7 @@ public static class QueryIlEmitter
             return EmptyExecute;
         }
 
-        // Generate EXPLAIN pseudocode in the same pass as IL emission so they
-        // can never drift out of sync. Each op appends to this builder.
+        // EXPLAIN pseudocode built in same pass as IL — cannot drift.
         var explain = new StringBuilder();
         explain.AppendLine("// Compiled query — pseudocode mirroring the emitted IL.");
 
@@ -211,12 +210,36 @@ public static class QueryIlEmitter
             // Timing: record start tick before each op
             EmitTimingStart(il, startTickLocal);
 
-            // Source reference for EXPLAIN
+            // Resolve dispatch once per op — used by both IL emission and EXPLAIN.
             string src = op.Dispatch switch
             {
                 MatchDispatch.TermSource   => $"ctx.TermSources[{op.ParamIndex}]",
                 MatchDispatch.TermsProvider => $"ctx.TermsProviders[{op.ParamIndex}]",
                 _                          => $"ctx.ResolvedMatches[{op.ParamIndex}]"
+            };
+            MethodInfo fillMethod = op.Dispatch switch
+            {
+                MatchDispatch.TermSource   => CtxFillFromTermSource,
+                MatchDispatch.TermsProvider => CtxFillFromTermsProvider,
+                _                          => CtxFillFromMatch
+            };
+            MethodInfo andMethod = op.Dispatch switch
+            {
+                MatchDispatch.TermSource   => CtxAndFromTermSource,
+                MatchDispatch.TermsProvider => CtxAndFromTermsProvider,
+                _                          => CtxAndFromMatch
+            };
+            MethodInfo orMethod = op.Dispatch switch
+            {
+                MatchDispatch.TermSource   => CtxOrFillFromTermSource,
+                MatchDispatch.TermsProvider => CtxOrFillFromTermsProvider,
+                _                          => CtxOrFillFromMatch
+            };
+            MethodInfo andNotMethod = op.Dispatch switch
+            {
+                MatchDispatch.TermSource   => CtxAndNotFromTermSource,
+                MatchDispatch.TermsProvider => CtxAndNotFromTermsProvider,
+                _                          => CtxAndNotFromMatch
             };
 
             switch (op.Kind)
@@ -226,12 +249,7 @@ public static class QueryIlEmitter
                     EmitCancellationCheck(il);
                     il.Emit(OpCodes.Ldarg_0);
                     il.Emit(OpCodes.Ldc_I4, op.ParamIndex);
-                    il.Emit(OpCodes.Call, op.Dispatch switch
-                    {
-                        MatchDispatch.TermSource => CtxFillFromTermSource,
-                        MatchDispatch.TermsProvider => CtxFillFromTermsProvider,
-                        _ => CtxFillFromMatch
-                    });
+                    il.Emit(OpCodes.Call, fillMethod);
                     explain.AppendLine($"Fill(bitmap[0], {src});");
                     break;
 
@@ -239,12 +257,7 @@ public static class QueryIlEmitter
                     EmitCancellationCheck(il);
                     il.Emit(OpCodes.Ldarg_0);
                     il.Emit(OpCodes.Ldc_I4, op.ParamIndex);
-                    il.Emit(OpCodes.Call, op.Dispatch switch
-                    {
-                        MatchDispatch.TermSource => CtxAndFromTermSource,
-                        MatchDispatch.TermsProvider => CtxAndFromTermsProvider,
-                        _ => CtxAndFromMatch
-                    });
+                    il.Emit(OpCodes.Call, andMethod);
                     explain.AppendLine($"And(bitmap[0], {src});");
                     if (!op.SkipEarlyExit)
                     {
@@ -261,12 +274,7 @@ public static class QueryIlEmitter
                     il.Emit(OpCodes.Ldarg_0);
                     il.Emit(OpCodes.Ldc_I4, op.ParamIndex);
                     il.Emit(OpCodes.Ldc_I4, op.BitmapLocal);
-                    il.Emit(OpCodes.Call, op.Dispatch switch
-                    {
-                        MatchDispatch.TermSource => CtxOrFillFromTermSource,
-                        MatchDispatch.TermsProvider => CtxOrFillFromTermsProvider,
-                        _ => CtxOrFillFromMatch
-                    });
+                    il.Emit(OpCodes.Call, orMethod);
                     explain.AppendLine($"Or(bitmap[{op.BitmapLocal}], {src});");
                     if (op.BitmapLocal == 0)
                     {
@@ -331,12 +339,7 @@ public static class QueryIlEmitter
                     EmitCancellationCheck(il);
                     il.Emit(OpCodes.Ldarg_0);
                     il.Emit(OpCodes.Ldc_I4, op.ParamIndex);
-                    il.Emit(OpCodes.Call, op.Dispatch switch
-                    {
-                        MatchDispatch.TermSource => CtxAndNotFromTermSource,
-                        MatchDispatch.TermsProvider => CtxAndNotFromTermsProvider,
-                        _ => CtxAndNotFromMatch
-                    });
+                    il.Emit(OpCodes.Call, andNotMethod);
                     explain.AppendLine($"AndNot(bitmap[0], {src});");
                     break;
 
