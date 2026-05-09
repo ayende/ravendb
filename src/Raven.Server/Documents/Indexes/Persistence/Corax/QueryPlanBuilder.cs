@@ -1534,7 +1534,8 @@ internal static class QueryPlanBuilder
             {
                 Kind = PlanOpKind.DirectIterate,
                 ParamIndex = 0,
-                EstimatedCardinality = clauses[0].Cardinality
+                EstimatedCardinality = clauses[0].Cardinality,
+                Dispatch = GetDispatch(clauses[0])
             });
         }
         else if (clauses.Count == 1 && (clauses[0].ClauseType == ClauseType.NotEquals
@@ -2560,7 +2561,9 @@ internal static class QueryPlanBuilder
     private static TermSource DecodePostingListId(long postingListId, IndexSearcher indexSearcher)
     {
         if (postingListId == -1)
+        {
             return default; // Kind == Empty
+        }
 
         var termType = (global::Corax.Indexing.TermIdMask)postingListId & global::Corax.Indexing.TermIdMask.EnsureIsSingleMask;
         switch (termType)
