@@ -6,7 +6,6 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
-using Corax.Querying;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Primitives;
@@ -15,14 +14,11 @@ using Corax.Querying.Matches.SortingMatches.Meta;
 using Corax.Querying.Planning;
 using Corax.Mappings;
 using Corax.Utils;
-using Raven.Client;
 using Raven.Client.Documents.Indexes.Vector;
 using Raven.Client.Exceptions;
 using Raven.Client.Exceptions.Corax;
 using VectorOptions = Raven.Client.Documents.Indexes.Vector.VectorOptions;
-using Raven.Server.Documents.AI.Embeddings;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings;
-using Raven.Server.Documents.Indexes;
 using Raven.Server.Documents.Indexes.Persistence.Corax.QueryOptimizer;
 using Raven.Server.Documents.Indexes.VectorSearch;
 using Raven.Server.Documents.Queries;
@@ -65,8 +61,8 @@ internal static class QueryPlanBuilder
         public IndexSearcher IndexSearcher;
         public QueryMetadata Metadata;
         public BlittableJsonReaderObject QueryParameters;
-        public Raven.Server.Documents.Indexes.Index Index;
-        public global::Corax.Mappings.IndexFieldsMapping IndexFieldsMapping;
+        public Index Index;
+        public IndexFieldsMapping IndexFieldsMapping;
         public FieldsToFetch FieldsToFetch;
         public ByteStringContext Allocator;
         public CancellationToken Token;
@@ -94,7 +90,7 @@ internal static class QueryPlanBuilder
             scannedEntries = compiled.Count;
         }
 
-        double tickFreq = System.Diagnostics.Stopwatch.Frequency / 1000.0;
+        double tickFreq = Stopwatch.Frequency / 1000.0;
         var template = compiledPlan.InspectionTemplate;
         if (template == null || template.Length == 0)
             return executedMatch.Inspect();
@@ -121,7 +117,7 @@ internal static class QueryPlanBuilder
             if (t.ClauseType != null) parameters["ClauseType"] = t.ClauseType;
             if (t.IsNegated) parameters["Negated"] = "true";
             if (t.Terms != null) parameters["Terms"] = t.Terms;
-            if (t.EstimatedCardinality > 0 && t.EstimatedCardinality < long.MaxValue)
+            if (t.EstimatedCardinality is > 0 and < long.MaxValue)
                 parameters["EstimatedRows"] = t.EstimatedCardinality.ToString("N0");
 
             if (resultCounts != null && i < resultCounts.Length && resultCounts[i] > 0)
@@ -164,7 +160,7 @@ internal static class QueryPlanBuilder
             AppendVectorNodes(child, target);
     }
 
-    /// <summary>Build inspection template from plan ops + clauses. Created once, cached.</summary>
+    /// <summary>Build an inspection template from plan ops + clauses. Created once, cached.</summary>
     private static InspectionOp[] BuildInspectionTemplate(QueryPlan plan)
     {
         var ops = plan.Ops;
@@ -800,7 +796,7 @@ internal static class QueryPlanBuilder
             if (value is ValueExpression ve)
             {
                 var resolvedValue = ve.GetValue(queryParameters);
-                if (resolvedValue is Sparrow.Json.BlittableJsonReaderArray arr)
+                if (resolvedValue is BlittableJsonReaderArray arr)
                 {
                     for (int a = 0; a < arr.Length; a++)
                     {
@@ -1053,8 +1049,8 @@ internal static class QueryPlanBuilder
         if (value is long or int)
             return (value.ToString(), ValueTokenType.Long);
         if (value is double or float or decimal)
-            return (((System.IConvertible)value).ToString(System.Globalization.CultureInfo.InvariantCulture), ValueTokenType.Double);
-        if (value is Sparrow.Json.LazyNumberValue lnv)
+            return (((IConvertible)value).ToString(System.Globalization.CultureInfo.InvariantCulture), ValueTokenType.Double);
+        if (value is LazyNumberValue lnv)
             return (value.ToString(), lnv.TryParseLong(out _) ? ValueTokenType.Long : ValueTokenType.Double);
         var str = value.ToString();
         if (str != null && str.Length > 18 && str.Length < 35 && str.Contains('T')
@@ -1085,17 +1081,17 @@ internal static class QueryPlanBuilder
         if (searchMeta.IsDynamic && indexFieldsMapping != null)
             result = searchMeta.ChangeAnalyzer(searchMeta.Mode, indexFieldsMapping.SearchAnalyzer(searchMeta.FieldName.ToString()));
 
-        if (searchMeta.Analyzer is Persistence.Lucene.LuceneAnalyzerAdapter laa && indexFieldsMapping != null)
+        if (searchMeta.Analyzer is Lucene.LuceneAnalyzerAdapter laa && indexFieldsMapping != null)
         {
             global::Corax.Analyzers.Analyzer replacementAnalyzer = laa.Analyzer switch
             {
                 global::Lucene.Net.Analysis.KeywordAnalyzer => indexFieldsMapping.ExactAnalyzer(searchMeta.FieldName.ToString()),
-                Persistence.Lucene.Analyzers.RavenStandardAnalyzer
-                    or Persistence.Lucene.Analyzers.NGramAnalyzer => indexFieldsMapping.DefaultAnalyzer,
+                Lucene.Analyzers.RavenStandardAnalyzer
+                    or Lucene.Analyzers.NGramAnalyzer => indexFieldsMapping.DefaultAnalyzer,
                 global::Lucene.Net.Analysis.Standard.StandardAnalyzer when laa.Analyzer.GetType() == typeof(global::Lucene.Net.Analysis.Standard.StandardAnalyzer)
                     => indexFieldsMapping.DefaultAnalyzer,
-                Persistence.Lucene.Analyzers.LowerCaseKeywordAnalyzer
-                    or Persistence.Lucene.Analyzers.Collation.CollationAnalyzer => indexFieldsMapping.DefaultAnalyzer,
+                Lucene.Analyzers.LowerCaseKeywordAnalyzer
+                    or Lucene.Analyzers.Collation.CollationAnalyzer => indexFieldsMapping.DefaultAnalyzer,
                 _ => null
             };
 
@@ -1183,7 +1179,7 @@ internal static class QueryPlanBuilder
             if (resolved != null)
             {
                 fieldName = metadata != null
-                    ? metadata.GetIndexFieldName(new Raven.Server.Documents.Queries.QueryFieldName(resolved, ve.Value == ValueTokenType.String), queryParameters).Value
+                    ? metadata.GetIndexFieldName(new QueryFieldName(resolved, ve.Value == ValueTokenType.String), queryParameters).Value
                     : resolved;
                 fieldExpr = null;
                 return true;
@@ -1192,7 +1188,7 @@ internal static class QueryPlanBuilder
 
         if (expr is MethodExpression me && string.Equals(me.Name.Value, "id", StringComparison.OrdinalIgnoreCase))
         {
-            fieldName = Raven.Client.Constants.Documents.Indexing.Fields.DocumentIdFieldName;
+            fieldName = Client.Constants.Documents.Indexing.Fields.DocumentIdFieldName;
             fieldExpr = null;
             return true;
         }
@@ -1226,7 +1222,7 @@ internal static class QueryPlanBuilder
                     valueType = ValueTokenType.Long;
                 else if (value is double or float or decimal)
                     valueType = ValueTokenType.Double;
-                else if (value is Sparrow.Json.LazyNumberValue lnv)
+                else if (value is LazyNumberValue lnv)
                 {
                     // LazyNumberValue wraps JSON numbers — try long first, then double
                     if (lnv.TryParseLong(out _))
@@ -2520,14 +2516,14 @@ internal static class QueryPlanBuilder
                 return new TermSource
                 {
                     Kind = TermSourceKind.Single,
-                    SingleEntryId = (long)global::Corax.Utils.EntryIdEncodings.GetContainerId(postingListId),
+                    SingleEntryId = (long)EntryIdEncodings.GetContainerId(postingListId),
                 };
 
             case global::Corax.Indexing.TermIdMask.SmallPostingList:
                 return new TermSource
                 {
                     Kind = TermSourceKind.SmallPostingList,
-                    SmallPostingListId = (long)global::Corax.Utils.EntryIdEncodings.GetContainerId(postingListId),
+                    SmallPostingListId = (long)EntryIdEncodings.GetContainerId(postingListId),
                 };
 
             case global::Corax.Indexing.TermIdMask.PostingList:
@@ -2644,11 +2640,11 @@ internal static class QueryPlanBuilder
         if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
         {
             var bm = new BitmapMatch(indexSearcher.Allocator);
-            var temp = new Voron.Data.RoaringBitmaps.RoaringBitmap(indexSearcher.Allocator);
+            var temp = new RoaringBitmap(indexSearcher.Allocator);
             foreach (var sub in clause.OrSubClauses)
             {
                 var subMatch = ResolveClause(sub, indexSearcher, parameters, builderParams);
-                global::Corax.Querying.Primitives.QueryPrimitives.FillFromMatch(subMatch, ref bm.BitmapState);
+                QueryPrimitives.FillFromMatch(subMatch, ref bm.BitmapState);
             }
             temp.Dispose();
             return bm;
@@ -2656,20 +2652,20 @@ internal static class QueryPlanBuilder
         if (clause.ClauseType == ClauseType.AndGroup && clause.AndSubClauses != null)
         {
             var bm = new BitmapMatch(indexSearcher.Allocator);
-            var temp = new Voron.Data.RoaringBitmaps.RoaringBitmap(indexSearcher.Allocator);
+            var temp = new RoaringBitmap(indexSearcher.Allocator);
             bool first = true;
             foreach (var sub in clause.AndSubClauses)
             {
                 var subMatch = ResolveClause(sub, indexSearcher, parameters, builderParams);
                 if (first)
                 {
-                    global::Corax.Querying.Primitives.QueryPrimitives.FillFromMatch(subMatch, ref bm.BitmapState);
+                    QueryPrimitives.FillFromMatch(subMatch, ref bm.BitmapState);
                     first = false;
                 }
                 else if (sub.IsNegated)
-                    global::Corax.Querying.Primitives.QueryPrimitives.AndNotWithMatch(subMatch, ref bm.BitmapState, ref temp);
+                    QueryPrimitives.AndNotWithMatch(subMatch, ref bm.BitmapState, ref temp);
                 else
-                    global::Corax.Querying.Primitives.QueryPrimitives.AndWithMatch(subMatch, ref bm.BitmapState, ref temp);
+                    QueryPrimitives.AndWithMatch(subMatch, ref bm.BitmapState, ref temp);
             }
             temp.Dispose();
             return bm;
