@@ -533,42 +533,15 @@ internal static class QueryPlanBuilder
         if (spatialClauses == null && vectorClauses == null)
             return;
 
-        // Append spatial and vector clauses to the plan's Clauses array.
-        // Their match indices are computed relative to the existing clauses.
-        var clauses = plan.QueryBuilderPlanState as List<ClauseInfo> ?? [];
-        int existingCount = clauses.Count;
+        var clauses = plan.QueryBuilderPlanState as List<ClauseInfo>;
+        Debug.Assert(clauses != null, "QueryBuilderPlanState should be set before AttachPostFilterPhases");
 
-        // Count the total match slots already used by existing clauses
-        // (OrGroups/In/AllIn expand to multiple matches)
-        int existingMatchCount = 0;
-        // AllEntries plans have an implicit match at index 0 not in Clauses
-        if (plan.IsAllEntries)
-            existingMatchCount = 1;
-        for (int i = 0; i < existingCount; i++)
-        {
-            var ci = clauses[i];
-            if (ci.ClauseType == ClauseType.OrGroup && ci.OrSubClauses != null)
-                existingMatchCount += ci.OrSubClauses.Count;
-            else if (ci.ClauseType == ClauseType.AndGroup && ci.AndSubClauses != null)
-                existingMatchCount += ci.AndSubClauses.Count;
-            else if ((ci.ClauseType == ClauseType.AllIn || ci.ClauseType == ClauseType.In) && ci.InTerms != null)
-                existingMatchCount += ci.InTerms.Count;
-            else
-                existingMatchCount++;
-        }
-        // Account for AllNegated extra slot (AllEntries appended by ResolveMatches)
-        if (plan.AllNegated)
-            existingMatchCount++;
-
-        int spatialCount = spatialClauses?.Count ?? 0;
-        int vectorCount = vectorClauses?.Count ?? 0;
-
-        int matchIndex = existingMatchCount;
+        int matchIndex = CountMatchSlots(clauses, plan.IsAllEntries, plan.AllNegated);
 
         if (spatialClauses != null)
         {
-            plan.SpatialFilters = new SpatialFilterOp[spatialCount];
-            for (int i = 0; i < spatialCount; i++)
+            plan.SpatialFilters = new SpatialFilterOp[spatialClauses.Count];
+            for (int i = 0; i < spatialClauses.Count; i++)
             {
                 clauses.Add(spatialClauses[i]);
                 plan.SpatialFilters[i] = new SpatialFilterOp { MatchIndex = matchIndex++, Clause = spatialClauses[i] };
@@ -577,15 +550,33 @@ internal static class QueryPlanBuilder
 
         if (vectorClauses != null)
         {
-            plan.VectorSelects = new VectorSelectOp[vectorCount];
-            for (int i = 0; i < vectorCount; i++)
+            plan.VectorSelects = new VectorSelectOp[vectorClauses.Count];
+            for (int i = 0; i < vectorClauses.Count; i++)
             {
                 clauses.Add(vectorClauses[i]);
                 plan.VectorSelects[i] = new VectorSelectOp { MatchIndex = matchIndex++, Clause = vectorClauses[i] };
             }
         }
+    }
 
-        plan.QueryBuilderPlanState = clauses;
+    /// <summary>Count how many IQueryMatch slots a clause list expands to.
+    /// OrGroup/AndGroup/In/AllIn each expand to one slot per sub-term.</summary>
+    private static int CountMatchSlots(List<ClauseInfo> clauses, bool isAllEntries, bool allNegated)
+    {
+        int count = isAllEntries ? 1 : 0;
+        foreach (var ci in clauses)
+        {
+            count += ci.ClauseType switch
+            {
+                ClauseType.OrGroup when ci.OrSubClauses != null => ci.OrSubClauses.Count,
+                ClauseType.AndGroup when ci.AndSubClauses != null => ci.AndSubClauses.Count,
+                ClauseType.In or ClauseType.AllIn when ci.InTerms != null => ci.InTerms.Count,
+                _ => 1
+            };
+        }
+        if (allNegated)
+            count++;
+        return count;
     }
 
     private enum BooleanOp { And, Or, True, False, Leaf }
@@ -1546,23 +1537,10 @@ internal static class QueryPlanBuilder
             {
                 // All clauses are negated — start from all entries.
                 // AllEntries match is appended AFTER all clause-expanded matches by ResolveMatches.
-                // Compute the total match count (In/OrGroup/AndGroup expand to multiple slots).
-                int totalMatchCount = 0;
-                foreach (var c in clauses)
-                {
-                    if ((c.ClauseType == ClauseType.In || c.ClauseType == ClauseType.AllIn) && c.InTerms != null)
-                        totalMatchCount += c.InTerms.Count;
-                    else if (c.ClauseType == ClauseType.OrGroup && c.OrSubClauses != null)
-                        totalMatchCount += c.OrSubClauses.Count;
-                    else if (c.ClauseType == ClauseType.AndGroup && c.AndSubClauses != null)
-                        totalMatchCount += c.AndSubClauses.Count;
-                    else
-                        totalMatchCount++;
-                }
                 ops.Add(new PlanOp
                 {
                     Kind = PlanOpKind.FillFromPostings,
-                    ParamIndex = totalMatchCount, // Index of AllEntries in resolved matches
+                    ParamIndex = CountMatchSlots(clauses, isAllEntries: false, allNegated: false), // Index of AllEntries in resolved matches
                     EstimatedCardinality = long.MaxValue
                 });
                 startIndex = 0; // Process all clauses as ANDNOT
@@ -2231,21 +2209,7 @@ internal static class QueryPlanBuilder
             ];
         }
 
-        // Flatten OrGroups, AndGroups, In, and AllIn: each subclause/term becomes a separate match.
-        int totalMatches = 0;
-        foreach (ClauseInfo clause in clauses)
-        {
-            if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
-                totalMatches += clause.OrSubClauses.Count;
-            else if (clause.ClauseType == ClauseType.AndGroup && clause.AndSubClauses != null)
-                totalMatches += clause.AndSubClauses.Count;
-            else if ((clause.ClauseType == ClauseType.AllIn || clause.ClauseType == ClauseType.In) && clause.InTerms != null)
-                totalMatches += clause.InTerms.Count;
-            else
-                totalMatches++;
-        }
-        int extraSlots = plan.AllNegated ? 1 : 0;
-        var matches = new IQueryMatch[totalMatches + extraSlots];
+        var matches = new IQueryMatch[CountMatchSlots(clauses, plan.IsAllEntries, plan.AllNegated)];
         int matchIdx = 0;
         foreach (ClauseInfo clause in clauses)
         {
@@ -2328,21 +2292,7 @@ internal static class QueryPlanBuilder
             return sources;
         }
 
-        int totalMatches = 0;
-        foreach (ClauseInfo clause in clauses)
-        {
-            if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
-                totalMatches += clause.OrSubClauses.Count;
-            else if (clause.ClauseType == ClauseType.AndGroup && clause.AndSubClauses != null)
-                totalMatches += clause.AndSubClauses.Count;
-            else if ((clause.ClauseType == ClauseType.AllIn || clause.ClauseType == ClauseType.In) && clause.InTerms != null)
-                totalMatches += clause.InTerms.Count;
-            else
-                totalMatches++;
-        }
-
-        int extraSlots = plan.AllNegated ? 1 : 0;
-        var termSources = new TermSource[totalMatches + extraSlots];
+        var termSources = new TermSource[CountMatchSlots(clauses, plan.IsAllEntries, plan.AllNegated)];
         int matchIdx = 0;
         foreach (ClauseInfo clause in clauses)
         {
