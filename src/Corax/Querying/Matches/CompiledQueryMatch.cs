@@ -203,8 +203,6 @@ public class CompiledQueryMatch : IBitmapQueryMatch, IDisposable
             }
         }
 
-        // Report as "MultiTermMatch" for backward compatibility with query plan inspection tests.
-        // Children are the resolved inner matches (e.g., ExistsTermsProvider, TermQuery, etc.).
         var children = new List<QueryInspectionNode>();
         if (ResolvedMatches != null)
         {
@@ -212,7 +210,7 @@ public class CompiledQueryMatch : IBitmapQueryMatch, IDisposable
                 children.Add(ResolvedMatches[i].Inspect());
         }
 
-        return new QueryInspectionNode("MultiTermMatch", parameters: parameters, children: children);
+        return new QueryInspectionNode("CompiledQuery", parameters: parameters, children: children);
     }
 
     public SkipSortingResult AttemptToSkipSorting() => SkipSortingResult.ResultsNativelySorted;
