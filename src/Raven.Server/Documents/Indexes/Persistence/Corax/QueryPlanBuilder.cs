@@ -533,7 +533,8 @@ internal static class QueryPlanBuilder
         if (spatialClauses == null && vectorClauses == null)
             return;
 
-        var clauses = (List<ClauseInfo>)plan.QueryBuilderPlanState;
+        var clauses = plan.QueryBuilderPlanState as List<ClauseInfo> ?? [];
+        plan.QueryBuilderPlanState = clauses;
 
         int matchIndex = CountMatchSlots(clauses, plan.IsAllEntries, plan.AllNegated);
 
@@ -562,6 +563,9 @@ internal static class QueryPlanBuilder
     /// OrGroup/AndGroup/In/AllIn each expand to one slot per sub-term.</summary>
     private static int CountMatchSlots(List<ClauseInfo> clauses, bool isAllEntries, bool allNegated)
     {
+        if (clauses == null)
+            return isAllEntries ? 1 : 0;
+
         int count = isAllEntries ? 1 : 0;
         foreach (var ci in clauses)
         {
