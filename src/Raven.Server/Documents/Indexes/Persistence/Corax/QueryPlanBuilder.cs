@@ -16,14 +16,14 @@ using IndexSearcher = Corax.Querying.IndexSearcher;
 namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 
 /// <summary>
-/// Builds a QueryPlan from a parsed RQL query.
+/// Builds a QueryExecution from a parsed RQL query.
 ///
 /// The planner has three independent concerns, each in its own partial file:
 ///
 ///   QueryPlanBuilder.cs (this file) — structural
 ///     Data model (ClauseType, ClauseInfo, PlanParameters), RQL AST parsing,
 ///     cardinality estimation, plan emission (EmitPlan), dispatch classification.
-///     Output: a QueryPlan with PlanOp[] — cacheable, query-text-keyed.
+///     Output: a QueryExecution with PlanOp[] — cacheable, query-text-keyed.
 ///
 ///   QueryPlanBuilder.Resolution.cs — per-execution
 ///     BuildAndCompile entry point, match/term-source resolution, scan parameter
@@ -949,7 +949,7 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>Format a value from the plan's typed arrays as a string for display/highlighting.</summary>
-    internal static string FormatValueFromPlan(PackedParam packed, QueryPlan plan)
+    internal static string FormatValueFromPlan(PackedParam packed, QueryExecution plan)
     {
         if (packed.IsNone) return null;
         int idx = packed.Param1;
@@ -962,7 +962,7 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>Format the second value (BETWEEN high bound) from the plan's typed arrays.</summary>
-    internal static string FormatValue2FromPlan(PackedParam packed, QueryPlan plan)
+    internal static string FormatValue2FromPlan(PackedParam packed, QueryExecution plan)
     {
         if (packed.IsNone) return null;
         int idx = packed.Param2;
@@ -1105,7 +1105,7 @@ internal static partial class QueryPlanBuilder
 
     // ── Plan emission: clause list → PlanOp[] ────────────────────────────
 
-    private static QueryPlan EmitPlan(List<ClauseInfo> clauses, ClauseExecution[] executions, bool isOr)
+    private static QueryExecution EmitPlan(List<ClauseInfo> clauses, ClauseExecution[] executions, bool isOr)
     {
         // Empty IN (InTermCount=0, no null terms) in an AND chain means zero results.
         // In an OR chain, skip empty IN clauses (they contribute nothing).
@@ -1118,7 +1118,7 @@ internal static partial class QueryPlanBuilder
                 continue;
 
             if (isOr == false)
-                return new QueryPlan { Ops = [], IsAllEntries = false, Executions = executions };
+                return new QueryExecution { Ops = [], IsAllEntries = false, Executions = executions };
 
             clauses.RemoveAt(i);
             // Rebuild executions array without the removed clause
@@ -1309,7 +1309,7 @@ internal static partial class QueryPlanBuilder
             // Mark clause so ResolveMatches produces [AllEntries, TermMatch]
             clauses[0].IsNegated = true;
 
-            return new QueryPlan
+            return new QueryExecution
             {
                 Ops = ops.ToArray(),
                 OperandOrdering = 0,
@@ -1621,7 +1621,7 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        var plan = new QueryPlan
+        var plan = new QueryExecution
         {
             Ops = ops.ToArray(),
             OperandOrdering = ordering,
@@ -1638,21 +1638,21 @@ internal static partial class QueryPlanBuilder
 
     // ── Plan helpers ─────────────────────────────────────────────────────
 
-    private static QueryPlan BuildAllEntriesPlan()
+    private static QueryExecution BuildAllEntriesPlan()
     {
         // No bitmap needed — AllEntries already implements IQueryMatch.Fill(),
         // so we iterate it directly without materializing into a bitmap first.
-        return new QueryPlan
+        return new QueryExecution
         {
             Ops = [new PlanOp { Kind = PlanOpKind.DirectIterate, ParamIndex = 0 }],
             IsAllEntries = true
         };
     }
 
-    private static QueryPlan BuildEmptyPlan()
+    private static QueryExecution BuildEmptyPlan()
     {
         // Query that always returns 0 results (e.g. false AND X)
-        return new QueryPlan
+        return new QueryExecution
         {
             Ops = [],
         };
@@ -1661,7 +1661,7 @@ internal static partial class QueryPlanBuilder
     /// <summary>Attach spatial and vector post-filter phases to a query plan.
     /// Spatial/vector clauses are stored in the plan's Clauses array at known indices,
     /// and SpatialFilters/VectorSelects reference those indices for resolution at execution time.</summary>
-    private static void AttachPostFilterPhases(QueryPlan plan, List<ClauseInfo> spatialClauses, ClauseExecution[] spatialExecs,
+    private static void AttachPostFilterPhases(QueryExecution plan, List<ClauseInfo> spatialClauses, ClauseExecution[] spatialExecs,
         List<ClauseInfo> vectorClauses, ClauseExecution[] vectorExecs)
     {
         if (spatialClauses == null && vectorClauses == null)

@@ -1420,7 +1420,7 @@ namespace FastTests.Corax
         
         /// <summary>
         /// Executes an RQL query through QueryPlanBuilder and returns matching entry IDs.
-        /// This properly uses the new query execution pipeline: RQL → AST → QueryPlan → IL compilation → execution.
+        /// This properly uses the new query execution pipeline: RQL → AST → QueryExecution → IL compilation → execution.
         /// </summary>
         private List<long> ExecuteRQLQuery(string rqlQuery)
         {
@@ -1438,7 +1438,7 @@ namespace FastTests.Corax
                 Allocator = Allocator
             };
 
-            // BuildAndCompile: RQL → QueryPlan → IL compilation → CompiledQueryMatch
+            // BuildAndCompile: RQL → QueryExecution → IL compilation → CompiledQueryMatch
             // Pass null for QueryBuilderParameters — the fallback uses FieldMetadataBuilder
             // directly from IndexSearcher, which is sufficient for the simple term/range/bool
             // queries exercised by these unit tests (no vector/spatial/dynamic fields).

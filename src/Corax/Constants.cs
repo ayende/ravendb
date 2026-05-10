@@ -171,7 +171,7 @@ namespace Corax
         }
         
         /// <summary>
-        /// Constants used for QueryPlan.
+        /// Constants used for QueryExecution.
         /// </summary>
         internal static class QueryInspectionNode
         {
