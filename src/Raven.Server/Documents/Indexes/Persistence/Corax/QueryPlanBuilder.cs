@@ -582,14 +582,20 @@ internal static partial class QueryPlanBuilder
                 int beforeCount = clauses.Count;
                 if (method.Arguments.Count > 0)
                     ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
-                // Boost factor is per-execution (could be parameterized).
-                // Store the binding on each inner clause; PopulateClauseValues resolves the factor.
-                ParameterBinding boostBinding = null;
-                if (method.Arguments.Count > 1)
-                    boostBinding = CreateBinding(method.Arguments[1], queryParameters);
-                for (int c = beforeCount; c < clauses.Count; c++)
+                // Append boost factor binding to each inner clause's Bindings array.
+                ParameterBinding boostBinding = method.Arguments.Count > 1
+                    ? CreateBinding(method.Arguments[1], queryParameters) : null;
+                if (boostBinding != null)
                 {
-                    clauses[c].BoostBinding = boostBinding;
+                    for (int c = beforeCount; c < clauses.Count; c++)
+                    {
+                        var old = clauses[c].Bindings;
+                        var extended = new ParameterBinding[(old?.Length ?? 0) + 1];
+                        if (old != null) Array.Copy(old, extended, old.Length);
+                        extended[^1] = boostBinding;
+                        clauses[c].Bindings = extended;
+                        clauses[c].HasBoost = true;
+                    }
                 }
                 break;
             }
@@ -1738,7 +1744,7 @@ internal static partial class QueryPlanBuilder
             return false;
         if (exec != null && exec.BoostFactor > 0)
             return false;
-        if (clause.BoostBinding != null)
+        if (clause.HasBoost)
             return false;
         return clause.ClauseType is ClauseType.Equals or ClauseType.NotEquals;
     }

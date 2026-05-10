@@ -344,9 +344,9 @@ internal static partial class QueryPlanBuilder
                 PopulateClauseValues(clause.AndSubClauses[si], exec.AndSubExecutions[si], queryParameters, writer);
 
         // Resolve boost factor if this clause is boosted
-        if (clause.BoostBinding != null)
+        if (clause.HasBoost && clause.Bindings is { Length: > 0 })
         {
-            var (boostVal, boostType) = ResolveBindingScalar(clause.BoostBinding, queryParameters);
+            var (boostVal, boostType) = ResolveBindingScalar(clause.Bindings[^1], queryParameters);
             if (boostVal != null)
             {
                 exec.BoostFactor = boostType == ParamValueType.Double
