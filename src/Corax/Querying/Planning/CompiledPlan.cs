@@ -17,6 +17,10 @@ public sealed class CompiledPlan
     /// <summary>Chain pointer for hash-collision disambiguation in PlanCache.</summary>
     public CompiledPlan Next;
 
+    /// <summary>Depth of this entry in the chain (0 for head). Used by TryChainPrepend
+    /// to limit chain growth — when depth exceeds MaxChainDepth, the chain is replaced.</summary>
+    public int ChainDepth;
+
     /// <summary>EXPLAIN pseudocode. Generated in same pass as IL emission.</summary>
     public string ExplainSource { get; init; }
 

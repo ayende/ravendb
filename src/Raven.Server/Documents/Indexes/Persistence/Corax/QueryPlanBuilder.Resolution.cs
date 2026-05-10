@@ -66,12 +66,9 @@ internal static partial class QueryPlanBuilder
         var planCache = indexSearcher.PlanCache;
 
         // Step 1: Get or build the clause template (structural, no values)
-        var template = planCache.TryGetTemplate(queryText) as ClauseTemplate;
+        var template = planCache.TryGetTemplate(queryText);
         if (template == null)
-        {
             template = ParseTemplate(planParams);
-            planCache.StoreTemplate(queryText, template);
-        }
 
         // Step 2: Create per-execution state for each clause (template is immutable, not cloned)
         var clauses = new List<ClauseInfo>(template.Clauses.Length);
@@ -216,7 +213,7 @@ internal static partial class QueryPlanBuilder
                 FullKinds = plan.FullKinds,
                 InspectionTemplate = BuildInspectionTemplate(plan)
             };
-            planCache.Add(queryText, compiledPlan);
+            planCache.Add(queryText, compiledPlan, template);
         }
 
         compiledPlanOut = compiledPlan;
