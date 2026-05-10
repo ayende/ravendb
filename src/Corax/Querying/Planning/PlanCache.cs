@@ -11,11 +11,10 @@ namespace Corax.Querying.Planning;
 /// Caches compiled query plans per index instance.
 /// Lives on IndexSearcher — GC'd when the index is replaced.
 ///
-/// Two-generation structure: two ConcurrentDictionaries hold PerQueryPlans entries.
-/// New entries always go into the current generation. Lookups check current first,
-/// then the previous generation. When the current generation exceeds half the max
-/// capacity, it becomes the previous generation and a fresh dict takes over. The
-/// old previous generation is dropped, evicting its plans.
+/// Two-generation structure: a single atomic <see cref="CacheGeneration"/> reference
+/// holds both the current and previous ConcurrentDictionaries. Rotation swaps the
+/// entire generation atomically — no intermediate state where current and previous
+/// point to the same dict.
 ///
 /// Per-query: fixed 32-slot SoA (struct-of-arrays) — parallel int[] for orderings
 /// and type signatures plus a CompiledPlan[] for the payloads. SIMD compares scan all
@@ -26,8 +25,13 @@ public class PlanCache
     public int MaxPlansPerQuery { get; }
     public int MaxDistinctQueries { get; }
 
-    private ConcurrentDictionary<string, PerQueryPlans> _current;
-    private ConcurrentDictionary<string, PerQueryPlans> _previous;
+    /// <summary>Holds both current and previous generation dictionaries as a single
+    /// atomic reference. Rotation replaces the entire record — no torn state.</summary>
+    private sealed record CacheGeneration(
+        ConcurrentDictionary<string, PerQueryPlans> Current,
+        ConcurrentDictionary<string, PerQueryPlans> Previous);
+
+    private CacheGeneration _generation;
 
     public PlanCache(int maxPlansPerQuery = 32, int maxDistinctQueries = 2048)
     {
@@ -36,8 +40,7 @@ public class PlanCache
             maxPlansPerQuery = ((maxPlansPerQuery / 8) + 1) * 8;
         MaxPlansPerQuery = maxPlansPerQuery;
         MaxDistinctQueries = maxDistinctQueries;
-        _current = new ConcurrentDictionary<string, PerQueryPlans>();
-        _previous = null;
+        _generation = new CacheGeneration(new ConcurrentDictionary<string, PerQueryPlans>(), null);
     }
 
     public CompiledPlan Get(string queryText, int ordering, int typeSignature = 0)
@@ -45,18 +48,16 @@ public class PlanCache
 
     public CompiledPlan Get(string queryText, int ordering, int typeSignature, ReadOnlySpan<byte> kinds)
     {
-        // Check current generation first
-        var current = Volatile.Read(ref _current);
-        if (current.TryGetValue(queryText, out var per))
+        var gen = _generation;
+
+        if (gen.Current.TryGetValue(queryText, out var per))
         {
             var result = per.TryLookup(ordering, typeSignature, kinds, MaxPlansPerQuery);
             if (result != null)
                 return result;
         }
 
-        // Check previous generation
-        var prev = Volatile.Read(ref _previous);
-        if (prev != null && prev.TryGetValue(queryText, out per))
+        if (gen.Previous != null && gen.Previous.TryGetValue(queryText, out per))
         {
             return per.TryLookup(ordering, typeSignature, kinds, MaxPlansPerQuery);
         }
@@ -65,51 +66,41 @@ public class PlanCache
     }
 
     /// <summary>Try to retrieve the cached clause template for a query text.
-    /// The template is shared across all ordering variants of the same query.
     /// Stale reads are harmless — worst case is one redundant ParseTemplate call.
-    /// Write side uses Interlocked.CompareExchange (full fence) ensuring correctness.</summary>
+    /// Write side uses ConcurrentDictionary.GetOrAdd ensuring correctness.</summary>
     public ClauseTemplate TryGetTemplate(string queryText)
     {
-        if (_current.TryGetValue(queryText, out var per) && per.Template != null)
+        var gen = _generation;
+
+        if (gen.Current.TryGetValue(queryText, out var per) && per.Template != null)
             return per.Template;
 
-        var prev = _previous;
-        if (prev != null && prev.TryGetValue(queryText, out per))
+        if (gen.Previous != null && gen.Previous.TryGetValue(queryText, out per))
             return per.Template;
 
         return null;
     }
 
-    /// <summary>Store a clause template for a query text. Called once on first execution.
-    /// Subsequent calls are no-ops (first writer wins).</summary>
-    public void StoreTemplate(string queryText, ClauseTemplate template)
+    public void Add(string queryText, CompiledPlan plan, ClauseTemplate template = null)
     {
-        var current = Volatile.Read(ref _current);
-        var per = current.GetOrAdd(queryText, _ => new PerQueryPlans(MaxPlansPerQuery));
-        // First writer wins — benign race (all templates for the same query text are identical)
-        Interlocked.CompareExchange(ref per.Template, template, null);
-    }
-
-    public void Add(string queryText, CompiledPlan plan)
-    {
-        var current = Volatile.Read(ref _current);
+        var gen = _generation;
+        var current = gen.Current;
 
         // When the current generation exceeds half the max, rotate.
-        // The old previous is dropped (GC'd), current becomes previous,
-        // a fresh dict takes over.
+        // Atomic swap of the entire CacheGeneration — no intermediate state.
         if (current.Count > MaxDistinctQueries / 2)
         {
-            // Two-generation rotation: demote current → previous, install fresh current.
-            // Race between concurrent threads is benign: the CAS on _current ensures only
-            // one fresh dict wins; losers get the winner's dict back from CAS and publish
-            // there. An empty fresh dict can't re-trigger this block (Count == 0), so
-            // cascading rotations are impossible.
             var fresh = new ConcurrentDictionary<string, PerQueryPlans>();
-            Interlocked.Exchange(ref _previous, current);
-            current = Interlocked.CompareExchange(ref _current, fresh, current);
+            var newGen = new CacheGeneration(fresh, current);
+            // CAS: only one thread wins the rotation. Losers get the winner's generation.
+            var actual = Interlocked.CompareExchange(ref _generation, newGen, gen);
+            current = actual == gen ? fresh : actual.Current;
         }
 
-        var per = current.GetOrAdd(queryText, _ => new PerQueryPlans(MaxPlansPerQuery));
+        // Lambda allocates here — this is the cache-miss path (rare), so we don't care.
+        var tmpl = template;
+        var maxSlots = MaxPlansPerQuery;
+        var per = current.GetOrAdd(queryText, _ => new PerQueryPlans(maxSlots, tmpl));
         per.Publish(plan, MaxPlansPerQuery);
     }
 
@@ -125,16 +116,15 @@ public class PlanCache
         private readonly CompiledPlan[] _plans;
         private int _filled;
 
-        /// <summary>Cached clause template. Set once on first execution, immutable thereafter.
-        /// Allows subsequent executions to skip AST parsing by re-resolving parameter
-        /// values directly from the blittable using the template's bindings.</summary>
-        public ClauseTemplate Template;
+        /// <summary>Cached clause template. Set in constructor, immutable thereafter.</summary>
+        public readonly ClauseTemplate Template;
 
-        public PerQueryPlans(int maxSlots)
+        public PerQueryPlans(int maxSlots, ClauseTemplate template = null)
         {
             _orderings = new int[maxSlots];
             _typesigs = new int[maxSlots];
             _plans = new CompiledPlan[maxSlots];
+            Template = template;
         }
 
         public CompiledPlan TryLookup(int ordering, int typesig, ReadOnlySpan<byte> kinds, int maxSlots)
@@ -223,6 +213,8 @@ public class PlanCache
             return null;
         }
 
+        private const int MaxChainDepth = 4;
+
         public void Publish(CompiledPlan plan, int maxSlots)
         {
             // Try chain prepend for >16-kind plans that share (ordering, typesig) hash
@@ -261,14 +253,31 @@ public class PlanCache
                 {
                     var head = Volatile.Read(ref _plans[i]);
                     if (head == null)
-                        // Slot was emptied — don't drop the plan, fall back to slot insert
-                        return false;
+                        return false; // Slot was emptied — fall back to slot insert
+
+                    // Validate the head plan itself, not just the parallel arrays.
+                    // The SIMD scan is a fast filter; the head's own fields are the source of truth.
+                    // A concurrent eviction could have overwritten the parallel arrays.
+                    if (head.Ordering != plan.Ordering || head.TypeSignature != plan.TypeSignature)
+                        break; // Slot was reused for a different plan — skip
+
+                    // Limit chain depth to prevent unbounded growth.
+                    // When depth exceeds the limit, replace the entire chain.
+                    if (head.ChainDepth >= MaxChainDepth)
+                    {
+                        plan.Next = null;
+                        plan.ChainDepth = 0;
+                        if (Interlocked.CompareExchange(ref _plans[i], plan, head) == head)
+                            return true;
+                        continue; // CAS failed, retry
+                    }
+
                     plan.Next = head;
+                    plan.ChainDepth = head.ChainDepth + 1;
                     if (Interlocked.CompareExchange(ref _plans[i], plan, head) == head)
                         return true;
                 }
             }
-            // No matching slot found — fall back to normal slot insert (don't drop!)
             return false;
         }
     }
