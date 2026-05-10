@@ -177,84 +177,54 @@ public enum ClauseType : byte
 /// - Planning annotations (Cardinality, IsExact, BoostFactor, IsNegated) are attached per
 ///   clause for operand reordering, dispatch classification, and entry-scan eligibility.
 /// </summary>
+/// <summary>
+/// Structural template for a single WHERE predicate. Immutable after first parse,
+/// cached on ClauseTemplate, shared across all executions of the same query text.
+/// Per-execution data lives in the parallel <see cref="ClauseExecution"/> array.
+/// </summary>
 public sealed class ClauseInfo
 {
     public string FieldName;
-    public ParamValueType TermValueType; // for type-aware scan predicate building
-
-    /// <summary>Packed (type, index) into QueryPlan.LongValues/DoubleValues/StringValues.
-    /// For BETWEEN: Param1 = low-bound index, Param2 = high-bound index.
-    /// For IN/AllIn: Param1 = start index into the typed array. Count is in <see cref="InTermCount"/>.
-    /// See <see cref="PackedParam"/>.</summary>
-    public PackedParam PackedParamValue = PackedParam.None;
-
-    /// <summary>Number of IN/AllIn terms stored contiguously starting at PackedParamValue.Param1.
-    /// Stored separately (not in PackedParam.Param2) because IN clauses can have more than
-    /// 32K terms (e.g. a large array parameter), exceeding the 15-bit Param2 limit.</summary>
-    public int InTermCount;
-
-    /// <summary>True if the IN list contains at least one null term. When set, resolution
-    /// adds a single null-term lookup in addition to the typed array terms.
-    /// Multiple nulls are semantically identical to one.</summary>
-    public bool HasNullTerm;
-
-    public List<ClauseInfo> OrSubClauses;  // for OrGroup
-    /// <summary>Set for NotEquals clauses appearing in OR chains.
-    /// Example: WHERE Name != 'a' OR Age = 25
-    /// The NOT(Name='a') term cannot use the raw posting list (which contains entries
-    /// WITH 'a', not entries WITHOUT 'a'). Instead, ResolveMatches pre-materializes
-    /// AllEntries ANDNOT TermQuery('a') into a BitmapMatch, so FillFromMatch during
-    /// execution correctly ORs in the complement set.</summary>
-    public bool IsOrChainNotEquals;
-    public List<ClauseInfo> AndSubClauses; // for AndGroup (AND sub-expression inside OR)
-
-    /// <summary>Pre-resolved spatial parameters. Null for non-spatial clauses.</summary>
-    public SpatialParams Spatial;
-    public SpatialOperationType SpatialMethodType; // for spatial: Within/Contains/Disjoint/Intersects
-
-    /// <summary>Pre-resolved vector parameters. Null for non-vector clauses.</summary>
-    public VectorParams Vector;
     public ClauseType ClauseType;
-    public long Cardinality = -1;
     public int OriginalIndex;
     public bool IsNegated;
     public bool IsExact;
-    public float BoostFactor;
+    public int SearchOperator; // for Search (AND=1/OR=0)
+    public SpatialOperationType SpatialMethodType;
+    public VectorMethodKind VectorMethod;
 
-    public int SearchOperator; // for Search (AND=1/OR=0) — uses int to avoid Corax.Constants dependency
+    /// <summary>Set for NotEquals in OR chains — resolution pre-materializes AllEntries ANDNOT TermQuery.</summary>
+    public bool IsOrChainNotEquals;
 
-    /// <summary>Parameter bindings for this clause's values, indexed by <see cref="BindingIndex"/> constants.
-    /// Null for parameterless clauses (Exists). Set during first parse, immutable after.</summary>
+    public List<ClauseInfo> OrSubClauses;
+    public List<ClauseInfo> AndSubClauses;
+
+    /// <summary>Parameter bindings indexed by <see cref="BindingIndex"/> constants.</summary>
     public ParameterBinding[] Bindings;
 
-    /// <summary>How to re-resolve the boost factor, if this clause is wrapped in boost().
-    /// Null for non-boosted clauses. The actual factor is resolved per-execution.</summary>
+    /// <summary>Binding for the boost factor (if wrapped in boost()). Null if not boosted.</summary>
     public ParameterBinding BoostBinding;
+}
 
-    /// <summary>Clone structural fields for cache-hit reuse. Per-execution fields
-    /// (PackedParamValue, TermValueType, Cardinality, Spatial, Vector, InTermCount,
-    /// InNullTermIndices) will be overwritten by PopulateParameters.</summary>
-    public ClauseInfo CloneStructure()
-    {
-        return new ClauseInfo
-        {
-            FieldName = FieldName,
-            ClauseType = ClauseType,
-            OriginalIndex = OriginalIndex,
-            IsNegated = IsNegated,
-            IsExact = IsExact,
-            BoostFactor = BoostFactor,
-            SearchOperator = SearchOperator,
-            IsOrChainNotEquals = IsOrChainNotEquals,
-            SpatialMethodType = SpatialMethodType,
-            Bindings = Bindings,
-            BoostBinding = BoostBinding,
-            Vector = Vector != null ? new VectorParams { Method = Vector.Method } : null,
-            OrSubClauses = OrSubClauses?.ConvertAll(c => c.CloneStructure()),
-            AndSubClauses = AndSubClauses?.ConvertAll(c => c.CloneStructure()),
-            Cardinality = -1, // re-estimated per execution
-        };
-    }
+/// <summary>Per-execution state for a clause. Parallel to <see cref="ClauseInfo"/>[] —
+/// populated by PopulateClauseValues each execution, never cached.
+/// Also used for operand reordering (Cardinality) and plan emission (InTermCount).</summary>
+public sealed class ClauseExecution
+{
+    public PackedParam PackedParamValue = PackedParam.None;
+    public ParamValueType TermValueType;
+    public long Cardinality = -1;
+    public int InTermCount;
+    public bool HasNullTerm;
+    public float BoostFactor;
+    public SpatialParams Spatial;
+    public VectorParams Vector;
+
+    /// <summary>Per-execution state for OrGroup sub-clauses. Parallel to <see cref="ClauseInfo.OrSubClauses"/>.</summary>
+    public ClauseExecution[] OrSubExecutions;
+
+    /// <summary>Per-execution state for AndGroup sub-clauses. Parallel to <see cref="ClauseInfo.AndSubClauses"/>.</summary>
+    public ClauseExecution[] AndSubExecutions;
 }
 
 /// <summary>Per-execution spatial query parameters. Resolved from ParameterBinding during
