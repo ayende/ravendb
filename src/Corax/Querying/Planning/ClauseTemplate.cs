@@ -89,28 +89,52 @@ public readonly struct PackedParam
     }
 }
 
-/// <summary>Describes how to resolve a clause's parameter value without the AST.
-/// For literals: the native value is cached directly.
-/// For parameters: the parameter name is stored for blittable lookup.</summary>
+/// <summary>Single parameter reference — either a literal (value cached) or a parameter
+/// name for blittable lookup. Leaf type with no nesting.</summary>
 public sealed class ParameterBinding
 {
-    public bool IsLiteral;
-    public object LiteralValue;       // cached native value for literals (long/double/string)
+    /// <summary>Cached native value for literals (long/double/string). Null for parameters
+    /// and for literal nulls (distinguished by ParameterName being null).</summary>
+    public object LiteralValue;
+
+    /// <summary>Type of the literal value. For parameters: ParamValueType.Parameter.</summary>
     public ParamValueType LiteralType;
-    public string ParameterName;      // for parameters: name to look up in blittable ("p0")
 
-    /// <summary>Second binding for BETWEEN high bound. Null for non-BETWEEN clauses.</summary>
-    public ParameterBinding Second;
+    /// <summary>For parameters: name to look up in blittable ("p0"). Null for literals.</summary>
+    public string ParameterName;
 
-    /// <summary>For IN/AllIn: bindings for each term. Null for non-IN clauses.</summary>
-    public ParameterBinding[] InBindings;
+    public bool IsLiteral => ParameterName == null;
+}
 
-    /// <summary>For Spatial: bindings for shape arguments.
-    /// For Vector (reused): [0]=minimumMatch, [1]=numberOfCandidates, [2]=aiTask.</summary>
-    public ParameterBinding[] SpatialBindings;
+/// <summary>Named binding indices per clause type. Each clause type stores its
+/// parameter bindings in a flat array at these known positions.</summary>
+public static class BindingIndex
+{
+    // Equals, NotEquals, Range (GT/GTE/LT/LTE), StartsWith, EndsWith, Search, Regex:
+    public const int Value = 0;
 
-    /// <summary>For Vector: binding for the vector value argument.</summary>
-    public ParameterBinding VectorValueBinding;
+    // Between:
+    public const int BetweenLow = 0;
+    public const int BetweenHigh = 1;
+
+    // Spatial circle: [0]=distErrPct, [1]=radius, [2]=lat, [3]=lng, [4]=units
+    public const int SpatialCircleBindingCount = 5; // distErrPct + radius + lat + lng + units
+    public const int SpatialDistErrPct = 0;
+    public const int SpatialRadius = 1;
+    public const int SpatialLatitude = 2;
+    public const int SpatialLongitude = 3;
+    public const int SpatialUnits = 4;
+    // Spatial WKT: [0]=distErrPct, [1]=wkt, [2]=units
+    public const int SpatialWkt = 1;
+    public const int SpatialWktUnits = 2;
+
+    // Vector: [0]=vectorValue, [1]=minimumMatch, [2]=numberOfCandidates, [3]=aiTaskName
+    public const int VectorValue = 0;
+    public const int VectorMinMatch = 1;
+    public const int VectorCandidates = 2;
+    public const int VectorAiTask = 3;
+
+    // IN/AllIn: [0..N] = each term binding (array params expand at resolution time)
 }
 
 /// <summary>Predicate types for the query plan clause list.</summary>
@@ -199,9 +223,9 @@ public sealed class ClauseInfo
 
     public int SearchOperator; // for Search (AND=1/OR=0) — uses int to avoid Corax.Constants dependency
 
-    /// <summary>How to re-resolve this clause's value from the blittable on cache hit.
+    /// <summary>Parameter bindings for this clause's values, indexed by <see cref="BindingIndex"/> constants.
     /// Null for parameterless clauses (Exists). Set during first parse, immutable after.</summary>
-    public ParameterBinding Binding;
+    public ParameterBinding[] Bindings;
 
     /// <summary>How to re-resolve the boost factor, if this clause is wrapped in boost().
     /// Null for non-boosted clauses. The actual factor is resolved per-execution.</summary>
@@ -223,7 +247,7 @@ public sealed class ClauseInfo
             SearchOperator = SearchOperator,
             IsOrChainNotEquals = IsOrChainNotEquals,
             SpatialMethodType = SpatialMethodType,
-            Binding = Binding,
+            Bindings = Bindings,
             BoostBinding = BoostBinding,
             Vector = Vector != null ? new VectorParams { Method = Vector.Method } : null,
             OrSubClauses = OrSubClauses?.ConvertAll(c => c.CloneStructure()),
