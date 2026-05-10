@@ -46,9 +46,11 @@ internal static partial class QueryPlanBuilder
     // ── Entry points ─────────────────────────────────────────────────────
 
     /// <summary>
-    /// Plan → compile → resolve pipeline: builds the plan, caches compiled delegates
-    /// by query text, resolves matches and term sources, extracts scan parameters,
-    /// wraps with post-filter phases (spatial, vector).
+    /// Plan → compile → resolve pipeline. On cache hit (template exists for this query text),
+    /// skips AST parsing — re-resolves parameter values from the blittable, re-estimates
+    /// cardinality, re-sorts, and looks up the compiled delegate by ordering.
+    /// On cache miss, parses the AST into a template and caches it.
+    /// Both paths then: populate → sort → emit → compile (if needed) → resolve.
     /// </summary>
     public static IQueryMatch BuildAndCompile(
         PlanParameters planParams,
@@ -59,20 +61,104 @@ internal static partial class QueryPlanBuilder
         Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms,
         CancellationToken token)
     {
-        plan = BuildPlan(planParams);
         var indexSearcher = planParams.IndexSearcher;
         var queryText = planParams.Metadata.Query.QueryText;
+        var planCache = indexSearcher.PlanCache;
 
+        // Step 1: Get or build the clause template (structural, no values)
+        var template = planCache.TryGetTemplate(queryText) as ClauseTemplate;
+        if (template == null)
+        {
+            template = ParseTemplate(planParams);
+            planCache.StoreTemplate(queryText, template);
+        }
+
+        // Step 2: Clone clauses for this execution (per-execution fields will be overwritten)
+        var clauses = new List<ClauseInfo>(template.Clauses.Length);
+        foreach (var cached in template.Clauses)
+            clauses.Add(cached.CloneStructure());
+
+        // Step 3: Populate parameter values into typed arrays
+        var writer = new ValueWriter();
+        foreach (var clause in clauses)
+            PopulateClauseValues(clause, planParams.QueryParameters, writer);
+
+        // Step 4: Estimate cardinality (needs populated values)
+        foreach (var clause in clauses)
+        {
+            if (clause.Cardinality < 0)
+                clause.Cardinality = EstimateCardinality(clause, indexSearcher, writer);
+        }
+
+        // Step 5: Sort operands by cardinality
+        bool isOr = template.IsOr;
+        if (!isOr)
+        {
+            clauses.Sort((a, b) =>
+            {
+                bool aNeg = a.IsNegated || a.ClauseType == ClauseType.NotEquals;
+                bool bNeg = b.IsNegated || b.ClauseType == ClauseType.NotEquals;
+                if (aNeg != bNeg)
+                    return aNeg ? 1 : -1;
+                return a.Cardinality.CompareTo(b.Cardinality);
+            });
+        }
+        else
+        {
+            int insertPos = 0;
+            for (int j = 0; j < clauses.Count; j++)
+            {
+                if (clauses[j].ClauseType == ClauseType.AndGroup)
+                {
+                    ClauseInfo ag = clauses[j];
+                    clauses.RemoveAt(j);
+                    clauses.Insert(insertPos++, ag);
+                }
+            }
+        }
+
+        // Step 6: Emit plan ops + attach spatial/vector post-filters
+        if (template.IsAllEntries && clauses.Count == 0)
+        {
+            plan = BuildAllEntriesPlan();
+        }
+        else
+        {
+            plan = EmitPlan(clauses, isOr);
+        }
+        plan.IsOr = isOr;
+        plan.LongValues = writer.GetLongs();
+        plan.DoubleValues = writer.GetDoubles();
+        plan.StringValues = writer.GetStrings();
+
+        if (template.SpatialClauses != null || template.VectorClauses != null)
+        {
+            var spatialList = template.SpatialClauses != null ? new List<ClauseInfo>(template.SpatialClauses.Length) : null;
+            var vectorList = template.VectorClauses != null ? new List<ClauseInfo>(template.VectorClauses.Length) : null;
+            if (spatialList != null)
+                foreach (var sc in template.SpatialClauses)
+                {
+                    var clone = sc.CloneStructure();
+                    PopulateClauseValues(clone, planParams.QueryParameters, writer);
+                    spatialList.Add(clone);
+                }
+            if (vectorList != null)
+                foreach (var vc in template.VectorClauses)
+                {
+                    var clone = vc.CloneStructure();
+                    PopulateClauseValues(clone, planParams.QueryParameters, writer);
+                    vectorList.Add(clone);
+                }
+            AttachPostFilterPhases(plan, spatialList, vectorList);
+            // Re-store typed arrays after spatial/vector population may have added more
+            plan.LongValues = writer.GetLongs();
+            plan.DoubleValues = writer.GetDoubles();
+            plan.StringValues = writer.GetStrings();
+        }
+
+        // Step 7: Boost handling
         if (planParams.HasBoost)
         {
-            // When BM25 scoring is needed, TermSource dispatch skips Fill() on the
-            // TermMatch objects in _resolvedMatches, leaving Bm25Relevance._matchBuffer
-            // empty. Score() binary-searches an empty buffer → returns 0 for every entry,
-            // producing arbitrary (wrong) sort order.
-            // Force all ops through the IQueryMatch path so TermMatch.Fill() is called
-            // and score buffers are populated before SortingMatch invokes Score().
-            // Bit 30 of OperandOrdering differentiates cached boosted plans from
-            // non-boosted ones so they don't share a compiled delegate.
             var ops = plan.Ops;
             if (ops != null)
                 for (int i = 0; i < ops.Length; i++)
@@ -80,7 +166,7 @@ internal static partial class QueryPlanBuilder
             plan.OperandOrdering |= (1 << 30);
         }
 
-        var planCache = indexSearcher.PlanCache;
+        // Step 8: Look up or compile the delegate for this ordering
         var compiledPlan = planCache.Get(queryText, plan.OperandOrdering, plan.TypeSignature, plan.FullKinds);
         if (compiledPlan == null)
         {
@@ -141,15 +227,18 @@ internal static partial class QueryPlanBuilder
     {
         var indexSearcher = builderParams.IndexSearcher;
         var clauses = new List<ClauseInfo>();
-        var writer = new ValueWriter();
         bool hasMixed = false;
         ParseExpression(expression, indexSearcher, clauses, builderParams.QueryParameters,
-            builderParams.Metadata, ref hasMixed, writer);
+            builderParams.Metadata, ref hasMixed);
 
         if (clauses.Count == 0)
             return indexSearcher.AllEntries();
 
-        // Create a mini plan to carry the typed arrays for resolution
+        // Populate parameters for the sub-expression clauses
+        var writer = new ValueWriter();
+        foreach (var clause in clauses)
+            PopulateClauseValues(clause, builderParams.QueryParameters, writer);
+
         var subPlan = new QueryPlan
         {
             LongValues = writer.GetLongs(),
@@ -179,6 +268,408 @@ internal static partial class QueryPlanBuilder
         }
         temp.Dispose();
         return bitmap;
+    }
+
+    // ── Template caching ──────────────────────────────────────────────
+
+    /// <summary>Resolve a single clause's parameter value using its cached binding.
+    /// Called for each clause during parameter population (both first execution and cache hit).</summary>
+    private static void PopulateClauseValues(ClauseInfo clause, BlittableJsonReaderObject queryParameters, ValueWriter writer)
+    {
+        // Always recurse into sub-clauses first (OrGroup/AndGroup have no binding of their own)
+        if (clause.OrSubClauses != null)
+            foreach (var sub in clause.OrSubClauses)
+                PopulateClauseValues(sub, queryParameters, writer);
+        if (clause.AndSubClauses != null)
+            foreach (var sub in clause.AndSubClauses)
+                PopulateClauseValues(sub, queryParameters, writer);
+
+        // Resolve boost factor if this clause is boosted
+        if (clause.BoostBinding != null)
+        {
+            var (boostVal, boostType) = ResolveBinding(clause.BoostBinding, queryParameters);
+            if (boostVal != null)
+            {
+                clause.BoostFactor = boostType == ValueTokenType.Double
+                    ? (float)(double)boostVal
+                    : boostType == ValueTokenType.Long
+                        ? (long)boostVal
+                        : float.TryParse(boostVal.ToString(), System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture, out float parsed) ? parsed : 1f;
+            }
+        }
+
+        // Spatial and vector resolve their complex parameters from the MethodExpression.
+        // This must happen before the binding null-check because these clause types have no Binding.
+        if (clause.ClauseType == ClauseType.Spatial && clause.MethodExpression != null)
+            ResolveSpatialParamsFromAST(clause, queryParameters);
+        if (clause.ClauseType == ClauseType.Vector && clause.MethodExpression != null)
+            ResolveVectorParamsFromAST(clause, queryParameters);
+
+        var binding = clause.Binding;
+        if (binding == null)
+            return;
+
+        // Re-resolve the value
+        object value;
+        ValueTokenType valueType;
+        if (binding.IsLiteral)
+        {
+            value = binding.LiteralValue;
+            valueType = binding.LiteralType;
+        }
+        else
+        {
+            // Look up parameter by name in the blittable
+            if (queryParameters != null && queryParameters.TryGet(binding.ParameterName, out object raw) && raw != null)
+                (value, valueType) = ResolveParameterValue(raw);
+            else
+                (value, valueType) = (null, ValueTokenType.String);
+        }
+
+        clause.TermValueType = valueType;
+        clause.PackedParamValue = writer.Add(value, valueType);
+
+        // Handle BETWEEN second value
+        if (binding.Second != null)
+        {
+            object value2;
+            ValueTokenType type2;
+            if (binding.Second.IsLiteral)
+            {
+                value2 = binding.Second.LiteralValue;
+                type2 = binding.Second.LiteralType;
+            }
+            else
+            {
+                if (queryParameters != null && queryParameters.TryGet(binding.Second.ParameterName, out object raw2) && raw2 != null)
+                    (value2, type2) = ResolveParameterValue(raw2);
+                else
+                    (value2, type2) = (null, ValueTokenType.String);
+            }
+
+            // Rebuild packed param as a pair
+            clause.PackedParamValue = writer.AddPair(value, value2, valueType);
+        }
+
+        // Handle IN bindings
+        if (binding.InBindings is { Length: > 0 })
+        {
+            var termTypes = new List<ValueTokenType>();
+            var resolvedValues = new List<object>();
+            HashSet<int> nullIndices = null;
+
+            for (int i = 0; i < binding.InBindings.Length; i++)
+            {
+                var inB = binding.InBindings[i];
+                if (inB.IsLiteral)
+                {
+                    resolvedValues.Add(inB.LiteralValue);
+                    termTypes.Add(inB.LiteralType);
+                    if (inB.LiteralValue == null)
+                    {
+                        nullIndices ??= new HashSet<int>();
+                        nullIndices.Add(resolvedValues.Count - 1);
+                    }
+                }
+                else if (inB.IsArrayParameter)
+                {
+                    // Array parameter — expand each element into individual terms
+                    object inRaw = null;
+                    queryParameters?.TryGet(inB.ParameterName, out inRaw);
+                    if (inRaw is BlittableJsonReaderArray arr)
+                    {
+                        bool hasTime = false;
+                        foreach (var elem in arr)
+                        {
+                            var (elemVal, elemType) = ResolveInValue(elem, ValueTokenType.Parameter, ref hasTime);
+                            resolvedValues.Add(elemVal);
+                            termTypes.Add(elemType);
+                            if (elemVal == null)
+                            {
+                                nullIndices ??= new HashSet<int>();
+                                nullIndices.Add(resolvedValues.Count - 1);
+                            }
+                        }
+                    }
+                    else if (inRaw != null)
+                    {
+                        // Single-value parameter (not an array) — treat as one term
+                        bool hasTime = false;
+                        var (singleVal, singleType) = ResolveInValue(inRaw, ValueTokenType.Parameter, ref hasTime);
+                        resolvedValues.Add(singleVal);
+                        termTypes.Add(singleType);
+                    }
+                }
+                else
+                {
+                    // Named parameter (non-array)
+                    object inRaw = null;
+                    queryParameters?.TryGet(inB.ParameterName, out inRaw);
+                    if (inRaw != null)
+                    {
+                        var (pVal, pType) = ResolveParameterValue(inRaw);
+                        resolvedValues.Add(pVal);
+                        termTypes.Add(pType);
+                    }
+                    else
+                    {
+                        resolvedValues.Add(null);
+                        termTypes.Add(ValueTokenType.String);
+                        nullIndices ??= new HashSet<int>();
+                        nullIndices.Add(resolvedValues.Count - 1);
+                    }
+                }
+            }
+
+            // Determine dominant type (same validation as ParseIn)
+            ValueTokenType dominantType = ValueTokenType.Null;
+            for (int i = 0; i < termTypes.Count; i++)
+            {
+                if (resolvedValues[i] == null) continue;
+                if (dominantType == ValueTokenType.Null) { dominantType = termTypes[i]; continue; }
+                // Type mismatch on cache-hit repopulation — shouldn't happen with same query text
+            }
+            if (dominantType == ValueTokenType.Null) dominantType = ValueTokenType.String;
+
+            int packedType = dominantType switch
+            {
+                ValueTokenType.Long => PackedParam.TypeLong,
+                ValueTokenType.Double => PackedParam.TypeDouble,
+                _ => PackedParam.TypeString
+            };
+            int startIdx = packedType switch
+            {
+                PackedParam.TypeLong => writer.LongCount,
+                PackedParam.TypeDouble => writer.DoubleCount,
+                _ => writer.StringCount
+            };
+            for (int i = 0; i < resolvedValues.Count; i++)
+            {
+                if (resolvedValues[i] == null)
+                {
+                    switch (packedType)
+                    {
+                        case PackedParam.TypeLong: writer.AddLong(0); break;
+                        case PackedParam.TypeDouble: writer.AddDouble(0); break;
+                        default: writer.AddString(null); break;
+                    }
+                }
+                else
+                {
+                    writer.Add(resolvedValues[i], dominantType);
+                }
+            }
+
+            clause.PackedParamValue = new PackedParam(packedType, startIdx);
+            clause.InTermCount = resolvedValues.Count;
+            clause.InNullTermIndices = nullIndices;
+        }
+
+        // Spatial/vector params were resolved above (before binding null-check).
+
+    }
+
+    /// <summary>Resolve spatial parameters from the MethodExpression AST node.
+    /// Used during PopulateClauseValues — the MethodExpression is on the cached template.</summary>
+    private static void ResolveSpatialParamsFromAST(ClauseInfo clause, BlittableJsonReaderObject queryParameters)
+    {
+        var method = clause.MethodExpression;
+        var sp = new SpatialParams();
+
+        // distanceErrorPct (3rd argument of the spatial method)
+        if (method.Arguments.Count == 3)
+        {
+            var (depVal, _) = ResolveTermValue(method.Arguments[2], queryParameters);
+            if (depVal != null)
+                sp.DistanceErrorPct = Convert.ToDouble(depVal);
+            else
+                sp.DistanceErrorPct = -1;
+        }
+
+        // Shape sub-expression (2nd argument)
+        if (method.Arguments[1] is MethodExpression shapeExpr)
+        {
+            var shapeType = QueryMethod.GetMethodType(shapeExpr.Name.Value);
+            if (shapeType == MethodType.Spatial_Circle && shapeExpr.Arguments.Count >= 3)
+            {
+                var (rVal, _) = ResolveTermValue(shapeExpr.Arguments[0], queryParameters);
+                var (latVal, _) = ResolveTermValue(shapeExpr.Arguments[1], queryParameters);
+                var (lngVal, _) = ResolveTermValue(shapeExpr.Arguments[2], queryParameters);
+                sp.IsCircle = true;
+                sp.CircleRadius = Convert.ToDouble(rVal);
+                sp.CircleLatitude = Convert.ToDouble(latVal);
+                sp.CircleLongitude = Convert.ToDouble(lngVal);
+                if (shapeExpr.Arguments.Count == 4)
+                {
+                    var (unitsVal, _) = ResolveTermValue(shapeExpr.Arguments[3], queryParameters);
+                    if (unitsVal != null && Enum.TryParse(typeof(SpatialUnits), unitsVal.ToString(), true, out var su))
+                        sp.Units = (SpatialUnits)su;
+                }
+            }
+            else if (shapeType == MethodType.Spatial_Wkt && shapeExpr.Arguments.Count >= 1)
+            {
+                var (wktVal, _) = ResolveTermValue(shapeExpr.Arguments[0], queryParameters);
+                sp.Wkt = wktVal?.ToString();
+                if (shapeExpr.Arguments.Count == 2)
+                {
+                    var (unitsVal, _) = ResolveTermValue(shapeExpr.Arguments[1], queryParameters);
+                    if (unitsVal != null && Enum.TryParse(typeof(SpatialUnits), unitsVal.ToString(), true, out var su))
+                        sp.Units = (SpatialUnits)su;
+                }
+            }
+        }
+
+        clause.Spatial = sp;
+    }
+
+    /// <summary>Resolve vector parameters from the MethodExpression AST node.</summary>
+    private static void ResolveVectorParamsFromAST(ClauseInfo clause, BlittableJsonReaderObject queryParameters)
+    {
+        var method = clause.MethodExpression;
+        var vec = new VectorParams();
+
+        // minimumMatch (3rd argument)
+        if (method.Arguments.Count > 2)
+        {
+            var (simVal, simType) = ResolveTermValue(method.Arguments[2], queryParameters);
+            if (simVal != null && simType != ValueTokenType.Null)
+                vec.MinimumMatch = simType == ValueTokenType.Double ? (float)(double)simVal
+                    : simType == ValueTokenType.Long ? (long)simVal : -1;
+        }
+
+        // numberOfCandidates (4th argument)
+        if (method.Arguments.Count > 3)
+        {
+            var (candVal, candType) = ResolveTermValue(method.Arguments[3], queryParameters);
+            if (candVal != null && candType != ValueTokenType.Null)
+                vec.NumberOfCandidates = Convert.ToInt32(candVal);
+        }
+
+        // Vector value (2nd argument)
+        QueryExpression srcVector = method.Arguments[1];
+        if (srcVector is MethodExpression methodValue)
+        {
+            vec.Method = methodValue.Name.ToString() switch
+            {
+                ClientConstants.VectorSearch.EmbeddingForDocument => VectorMethodKind.ForDocument,
+                ClientConstants.VectorSearch.EmbeddingForRaw => VectorMethodKind.ForRaw,
+                ClientConstants.VectorSearch.EmbeddingText => VectorMethodKind.EmbeddingText,
+                _ => VectorMethodKind.None
+            };
+
+            if (methodValue.Arguments.Count > 0 && methodValue.Arguments[0] is ValueExpression ve0)
+            {
+                var raw = ve0.GetValue(queryParameters);
+                if (raw is BlittableJsonReaderArray or BlittableJsonReaderObject)
+                {
+                    vec.ResolvedValue = raw;
+                    vec.ResolvedValueType = ValueTokenType.Parameter;
+                }
+                else if (raw != null)
+                {
+                    (vec.ResolvedValue, vec.ResolvedValueType) = ResolveParameterValue(raw);
+                }
+            }
+
+            if (vec.Method == VectorMethodKind.EmbeddingText && methodValue.Arguments.Count > 1
+                && methodValue.Arguments[1] is MethodExpression aiMethod && aiMethod.Arguments.Count > 0)
+            {
+                var (taskVal, _) = ResolveTermValue(aiMethod.Arguments[0], queryParameters);
+                vec.AiTaskName = taskVal?.ToString();
+            }
+        }
+        else if (srcVector is ValueExpression vecVe)
+        {
+            var raw = vecVe.GetValue(queryParameters);
+            if (raw is BlittableJsonReaderArray or BlittableJsonReaderObject)
+            {
+                vec.ResolvedValue = raw;
+                vec.ResolvedValueType = ValueTokenType.Parameter;
+            }
+            else if (raw != null)
+            {
+                (vec.ResolvedValue, vec.ResolvedValueType) = ResolveParameterValue(raw);
+            }
+        }
+
+        clause.Vector = vec;
+    }
+
+    private static SpatialParams ResolveSpatialBindings(ParameterBinding binding, BlittableJsonReaderObject queryParameters)
+    {
+        var sp = new SpatialParams();
+        if (binding.SpatialBindings == null)
+            return sp;
+
+        // Spatial bindings: [0]=distErrPct, then for circle: [1]=radius, [2]=lat, [3]=lng, [4]=units
+        // For WKT: [1]=wkt, [2]=units
+        if (binding.SpatialBindings.Length > 0)
+        {
+            var depBinding = binding.SpatialBindings[0];
+            var (depVal, _) = ResolveBinding(depBinding, queryParameters);
+            sp.DistanceErrorPct = depVal != null ? Convert.ToDouble(depVal) : -1;
+        }
+
+        if (binding.SpatialBindings.Length >= 4) // circle
+        {
+            sp.IsCircle = true;
+            var (r, _) = ResolveBinding(binding.SpatialBindings[1], queryParameters);
+            var (lat, _) = ResolveBinding(binding.SpatialBindings[2], queryParameters);
+            var (lng, _) = ResolveBinding(binding.SpatialBindings[3], queryParameters);
+            sp.CircleRadius = Convert.ToDouble(r);
+            sp.CircleLatitude = Convert.ToDouble(lat);
+            sp.CircleLongitude = Convert.ToDouble(lng);
+            if (binding.SpatialBindings.Length > 4)
+            {
+                var (u, _) = ResolveBinding(binding.SpatialBindings[4], queryParameters);
+                if (u != null && Enum.TryParse(typeof(SpatialUnits), u.ToString(), true, out var su))
+                    sp.Units = (SpatialUnits)su;
+            }
+        }
+        else if (binding.SpatialBindings.Length >= 2) // WKT
+        {
+            var (wkt, _) = ResolveBinding(binding.SpatialBindings[1], queryParameters);
+            sp.Wkt = wkt?.ToString();
+            if (binding.SpatialBindings.Length > 2)
+            {
+                var (u, _) = ResolveBinding(binding.SpatialBindings[2], queryParameters);
+                if (u != null && Enum.TryParse(typeof(SpatialUnits), u.ToString(), true, out var su))
+                    sp.Units = (SpatialUnits)su;
+            }
+        }
+
+        return sp;
+    }
+
+    private static void ResolveVectorBindings(ClauseInfo clause, ParameterBinding binding, BlittableJsonReaderObject queryParameters)
+    {
+        var vb = binding.VectorValueBinding;
+        if (vb == null)
+            return;
+
+        var vec = clause.Vector ?? new VectorParams();
+        var (val, valType) = ResolveBinding(vb, queryParameters);
+        // Keep blittable objects (arrays, etc.) as-is
+        if (val is BlittableJsonReaderArray or BlittableJsonReaderObject)
+            valType = ValueTokenType.Parameter;
+        vec.ResolvedValue = val;
+        vec.ResolvedValueType = valType;
+
+        // Re-resolve scalar params (minimumMatch, numberOfCandidates)
+        // These come from separate bindings stored on the ParameterBinding
+        // For now, they're already stored on the template's VectorParams and are immutable
+        // if literal, or need re-resolution if parameterized.
+        clause.Vector = vec;
+    }
+
+    private static (object Value, ValueTokenType Type) ResolveBinding(ParameterBinding binding, BlittableJsonReaderObject queryParameters)
+    {
+        if (binding.IsLiteral)
+            return (binding.LiteralValue, binding.LiteralType);
+        if (queryParameters != null && queryParameters.TryGet(binding.ParameterName, out object raw) && raw != null)
+            return ResolveParameterValue(raw);
+        return (null, ValueTokenType.String);
     }
 
     // ── Typed dispatch helpers ───────────────────────────────────────────

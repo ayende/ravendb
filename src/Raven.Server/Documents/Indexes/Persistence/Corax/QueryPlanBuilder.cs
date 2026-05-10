@@ -64,6 +64,55 @@ internal static partial class QueryPlanBuilder
         public bool HasBoost;
     }
 
+    // ── Cached clause template ────────────────────────────────────────
+
+    /// <summary>Immutable structural template built on first execution of a query text.
+    /// Cached on PerQueryPlans.Template (as object, since PlanCache is in Corax).
+    /// On cache hit, PopulateParameters re-resolves parameter values from the blittable
+    /// using the bindings, skipping AST parsing entirely.</summary>
+    /// <summary>Cached per-query-text template. Each ClauseInfo carries its own Binding
+    /// describing how to re-resolve its value from the blittable on subsequent executions.
+    /// On cache hit, the clauses are cloned (shallow) and their per-execution fields
+    /// (PackedParamValue, TermValueType, Cardinality, Spatial, Vector) are overwritten
+    /// by PopulateParameters.</summary>
+    internal sealed class ClauseTemplate
+    {
+        public ClauseInfo[] Clauses;
+        public bool IsAllEntries;
+        public bool IsOr;              // root boolean operator
+        public bool HasSpatialFilters; // had spatial post-filter clauses
+        public bool HasVectorSelects;  // had vector post-filter clauses
+        /// <summary>Spatial clauses separated from the main filter chain (AND queries only).</summary>
+        public ClauseInfo[] SpatialClauses;
+        /// <summary>Vector clauses separated from the main filter chain (AND queries only).</summary>
+        public ClauseInfo[] VectorClauses;
+    }
+
+    /// <summary>Describes how to resolve a clause's parameter value without the AST.
+    /// For literals: the native value is cached directly.
+    /// For parameters: the parameter name is stored for blittable lookup.</summary>
+    internal sealed class ParameterBinding
+    {
+        public bool IsLiteral;
+        public object LiteralValue;       // cached native value for literals (long/double/string)
+        public ValueTokenType LiteralType;
+        public string ParameterName;      // for parameters: name to look up in blittable ("p0")
+        public bool IsArrayParameter;    // true if this parameter may resolve to an array (IN terms)
+
+        /// <summary>Second binding for BETWEEN high bound. Null for non-BETWEEN clauses.</summary>
+        public ParameterBinding Second;
+
+        /// <summary>For IN/AllIn: bindings for each term. Null for non-IN clauses.
+        /// Each entry is either a literal or parameter-array-element.</summary>
+        public ParameterBinding[] InBindings;
+
+        /// <summary>For Spatial: bindings for shape arguments.</summary>
+        public ParameterBinding[] SpatialBindings;
+
+        /// <summary>For Vector: binding for the vector value argument.</summary>
+        public ParameterBinding VectorValueBinding;
+    }
+
     /// <summary>
     /// Packed parameter reference — a 32-bit value encoding the type and index(es)
     /// of a clause's resolved value within the plan's typed arrays
@@ -294,6 +343,38 @@ internal static partial class QueryPlanBuilder
         public float BoostFactor;
 
         public Constants.Search.Operator SearchOperator; // for Search (AND/OR)
+
+        /// <summary>How to re-resolve this clause's value from the blittable on cache hit.
+        /// Null for parameterless clauses (Exists). Set during first parse, immutable after.</summary>
+        public ParameterBinding Binding;
+
+        /// <summary>How to re-resolve the boost factor, if this clause is wrapped in boost().
+        /// Null for non-boosted clauses. The actual factor is resolved per-execution.</summary>
+        public ParameterBinding BoostBinding;
+
+        /// <summary>Clone structural fields for cache-hit reuse. Per-execution fields
+        /// (PackedParamValue, TermValueType, Cardinality, Spatial, Vector, InTermCount,
+        /// InNullTermIndices) will be overwritten by PopulateParameters.</summary>
+        public ClauseInfo CloneStructure()
+        {
+            return new ClauseInfo
+            {
+                FieldName = FieldName,
+                ClauseType = ClauseType,
+                OriginalIndex = OriginalIndex,
+                IsNegated = IsNegated,
+                IsExact = IsExact,
+                BoostFactor = BoostFactor,
+                SearchOperator = SearchOperator,
+                IsOrChainNotEquals = IsOrChainNotEquals,
+                MethodExpression = MethodExpression,
+                Binding = Binding,
+                BoostBinding = BoostBinding,
+                OrSubClauses = OrSubClauses?.ConvertAll(c => c.CloneStructure()),
+                AndSubClauses = AndSubClauses?.ConvertAll(c => c.CloneStructure()),
+                Cardinality = -1, // re-estimated per execution
+            };
+        }
     }
 
     /// <summary>Pre-resolved spatial query parameters. All values are extracted from the AST
@@ -339,119 +420,78 @@ internal static partial class QueryPlanBuilder
 
     // ── Entry point ──────────────────────────────────────────────────────
 
-    public static QueryPlan BuildPlan(PlanParameters p)
+    /// <summary>Parse the RQL AST into a structural clause template.
+    /// No value resolution, no cardinality estimation, no sorting, no plan emission.
+    /// Those happen in BuildAndCompile after PopulateParameters.</summary>
+    public static ClauseTemplate ParseTemplate(PlanParameters p)
     {
         var query = p.Metadata.Query;
         var indexSearcher = p.IndexSearcher;
         var queryParameters = p.QueryParameters;
         var metadata = p.Metadata;
         if (query.Where == null)
-            return BuildAllEntriesPlan();
+            return new ClauseTemplate { IsAllEntries = true, Clauses = [] };
 
         bool hasMixedAndOr = false;
         var clauses = new List<ClauseInfo>();
-        var writer = new ValueWriter();
-        var rootOp = ParseExpression(query.Where, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, writer);
+        var rootOp = ParseExpression(query.Where, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
 
-        // Mixed AND/OR trees are handled via OrGroup clauses
-
-        if (rootOp == BooleanOp.True)
-            return BuildAllEntriesPlan();
+        if (rootOp == BooleanOp.True || clauses.Count == 0)
+            return new ClauseTemplate { IsAllEntries = true, Clauses = [] };
         if (rootOp == BooleanOp.False)
-            return BuildEmptyPlan();
-        if (clauses.Count == 0)
-            return BuildAllEntriesPlan();
-
-        foreach (var clause in clauses)
-        {
-            if (clause.Cardinality < 0)
-                clause.Cardinality = EstimateCardinality(clause, indexSearcher, writer);
-        }
+            return new ClauseTemplate { Clauses = [] };
 
         bool isOr = rootOp == BooleanOp.Or;
 
-        // Separate spatial and vector clauses from the filter chain.
-        // For AND queries, spatial/vector execute AFTER the bitmap filter:
-        //   FilterOps -> SpatialFilters -> VectorSelects
-        // For OR queries, spatial/vector remain in the flat chain (they produce
-        // candidate sets that are OR'd together).
-        List<ClauseInfo> spatialClauses = null;
-        List<ClauseInfo> vectorClauses = null;
+        // Separate spatial and vector clauses from the filter chain (AND queries only).
+        ClauseInfo[] spatialClauses = null;
+        ClauseInfo[] vectorClauses = null;
         if (!isOr)
         {
+            List<ClauseInfo> spatialList = null, vectorList = null;
             for (int i = clauses.Count - 1; i >= 0; i--)
             {
                 if (clauses[i].ClauseType == ClauseType.Spatial)
                 {
-                    spatialClauses ??= [];
-                    spatialClauses.Add(clauses[i]);
+                    spatialList ??= [];
+                    spatialList.Add(clauses[i]);
                     clauses.RemoveAt(i);
                 }
                 else if (clauses[i].ClauseType == ClauseType.Vector)
                 {
-                    vectorClauses ??= [];
-                    vectorClauses.Add(clauses[i]);
+                    vectorList ??= [];
+                    vectorList.Add(clauses[i]);
                     clauses.RemoveAt(i);
                 }
             }
+            spatialClauses = spatialList?.ToArray();
+            vectorClauses = vectorList?.ToArray();
 
-            if (clauses.Count == 0)
+            if (clauses.Count == 0 && (spatialClauses != null || vectorClauses != null))
             {
-                // No filter clauses remain — only spatial and/or vector.
-                // Use AllEntries as the base and attach post-filter phases.
-                // Vector clauses must NOT be put back into the flat plan because:
-                // (a) the bitmap pipeline would lose distance ordering (bitmaps
-                //     iterate in entry-ID order, not distance order), and
-                // (b) ResolveClause would fail on vector clauses that have no FieldName.
-                if (spatialClauses != null || vectorClauses != null)
+                return new ClauseTemplate
                 {
-                    var plan = BuildAllEntriesPlan();
-                    AttachPostFilterPhases(plan, spatialClauses, vectorClauses);
-                    return plan;
-                }
+                    IsAllEntries = true,
+                    Clauses = [],
+                    IsOr = false,
+                    SpatialClauses = spatialClauses,
+                    VectorClauses = vectorClauses,
+                    HasSpatialFilters = spatialClauses != null,
+                    HasVectorSelects = vectorClauses != null
+                };
             }
         }
 
-        // Sort AND operands: non-negated first (ascending cardinality), then negated.
-        // Negated clauses (NotEquals, IsNegated) can only subtract from an existing
-        // bitmap via ANDNOT — they must never be the seed (first) operand.
-        if (!isOr)
+        return new ClauseTemplate
         {
-            clauses.Sort((a, b) =>
-            {
-                bool aNeg = a.IsNegated || a.ClauseType == ClauseType.NotEquals;
-                bool bNeg = b.IsNegated || b.ClauseType == ClauseType.NotEquals;
-                if (aNeg != bNeg)
-                    return aNeg ? 1 : -1; // non-negated first
-                return a.Cardinality.CompareTo(b.Cardinality);
-            });
-        }
-        else
-        {
-            // For OR chains: move AndGroups to the front so the AND sub-chain always
-            // seeds slot 0 directly (no third bitmap slot needed for scratch).
-            // OR is commutative — reordering is safe.
-            int insertPos = 0;
-            for (int j = 0; j < clauses.Count; j++)
-            {
-                if (clauses[j].ClauseType == ClauseType.AndGroup)
-                {
-                    ClauseInfo ag = clauses[j];
-                    clauses.RemoveAt(j);
-                    clauses.Insert(insertPos++, ag);
-                }
-            }
-        }
-
-        var result = EmitPlan(clauses, isOr);
-        result.LongValues = writer.GetLongs();
-        result.DoubleValues = writer.GetDoubles();
-        result.StringValues = writer.GetStrings();
-
-        if (spatialClauses != null || vectorClauses != null)
-            AttachPostFilterPhases(result, spatialClauses, vectorClauses);
-
-        return result;
+            Clauses = clauses.ToArray(),
+            IsAllEntries = false,
+            IsOr = isOr,
+            SpatialClauses = spatialClauses,
+            VectorClauses = vectorClauses,
+            HasSpatialFilters = spatialClauses != null,
+            HasVectorSelects = vectorClauses != null
+        };
     }
 
     // ── Parsing: RQL AST → flat clause list ──────────────────────────────
@@ -462,31 +502,30 @@ internal static partial class QueryPlanBuilder
         List<ClauseInfo> clauses,
         BlittableJsonReaderObject queryParameters,
         QueryMetadata metadata,
-        ref bool hasMixedAndOr,
-        ValueWriter writer)
+        ref bool hasMixedAndOr)
     {
         switch (expr)
         {
             case BinaryExpression be:
-                return ParseBinaryExpression(be, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, writer);
+                return ParseBinaryExpression(be, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
 
             case BetweenExpression between:
-                ParseBetween(between, clauses, queryParameters, metadata, writer);
+                ParseBetween(between, clauses, queryParameters, metadata);
                 return BooleanOp.Leaf;
 
             case InExpression inExpr:
-                ParseIn(inExpr, clauses, queryParameters, metadata, writer);
+                ParseIn(inExpr, clauses, queryParameters, metadata);
                 return BooleanOp.Leaf;
 
             case NegatedExpression negated:
-                ParseNegated(negated, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, writer);
+                ParseNegated(negated, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
                 return BooleanOp.Leaf;
 
             case TrueExpression:
                 return BooleanOp.True;
 
             case MethodExpression method:
-                ParseMethod(method, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, writer);
+                ParseMethod(method, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
                 return BooleanOp.Leaf;
 
             default:
@@ -501,8 +540,7 @@ internal static partial class QueryPlanBuilder
         List<ClauseInfo> clauses,
         BlittableJsonReaderObject queryParameters,
         QueryMetadata metadata,
-        ref bool hasMixedAndOr,
-        ValueWriter writer)
+        ref bool hasMixedAndOr)
     {
         switch (be.Operator)
         {
@@ -514,7 +552,7 @@ internal static partial class QueryPlanBuilder
                 if (be.Left is BinaryExpression { Operator: OperatorType.Or })
                 {
                     var orClauses = new List<ClauseInfo>();
-                    left = ParseExpression(be.Left, indexSearcher, orClauses, queryParameters, metadata, ref hasMixedAndOr, writer);
+                    left = ParseExpression(be.Left, indexSearcher, orClauses, queryParameters, metadata, ref hasMixedAndOr);
                     clauses.Add(new ClauseInfo
                     {
                         ClauseType = ClauseType.OrGroup,
@@ -524,13 +562,13 @@ internal static partial class QueryPlanBuilder
                 }
                 else
                 {
-                    left = ParseExpression(be.Left, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, writer);
+                    left = ParseExpression(be.Left, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
                 }
 
                 if (be.Right is BinaryExpression { Operator: OperatorType.Or })
                 {
                     var orClauses = new List<ClauseInfo>();
-                    right = ParseExpression(be.Right, indexSearcher, orClauses, queryParameters, metadata, ref hasMixedAndOr, writer);
+                    right = ParseExpression(be.Right, indexSearcher, orClauses, queryParameters, metadata, ref hasMixedAndOr);
                     clauses.Add(new ClauseInfo
                     {
                         ClauseType = ClauseType.OrGroup,
@@ -540,7 +578,7 @@ internal static partial class QueryPlanBuilder
                 }
                 else
                 {
-                    right = ParseExpression(be.Right, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, writer);
+                    right = ParseExpression(be.Right, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
                 }
                 if (left == BooleanOp.True) return right;
                 if (right == BooleanOp.True) return left;
@@ -555,7 +593,7 @@ internal static partial class QueryPlanBuilder
                 if (be.Left is BinaryExpression { Operator: OperatorType.And })
                 {
                     var andClauses = new List<ClauseInfo>();
-                    left = ParseExpression(be.Left, indexSearcher, andClauses, queryParameters, metadata, ref hasMixedAndOr, writer);
+                    left = ParseExpression(be.Left, indexSearcher, andClauses, queryParameters, metadata, ref hasMixedAndOr);
                     clauses.Add(new ClauseInfo
                     {
                         ClauseType = ClauseType.AndGroup,
@@ -565,13 +603,13 @@ internal static partial class QueryPlanBuilder
                 }
                 else
                 {
-                    left = ParseExpression(be.Left, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, writer);
+                    left = ParseExpression(be.Left, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
                 }
 
                 if (be.Right is BinaryExpression { Operator: OperatorType.And })
                 {
                     var andClauses = new List<ClauseInfo>();
-                    right = ParseExpression(be.Right, indexSearcher, andClauses, queryParameters, metadata, ref hasMixedAndOr, writer);
+                    right = ParseExpression(be.Right, indexSearcher, andClauses, queryParameters, metadata, ref hasMixedAndOr);
                     clauses.Add(new ClauseInfo
                     {
                         ClauseType = ClauseType.AndGroup,
@@ -581,7 +619,7 @@ internal static partial class QueryPlanBuilder
                 }
                 else
                 {
-                    right = ParseExpression(be.Right, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, writer);
+                    right = ParseExpression(be.Right, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
                 }
 
                 if (left == BooleanOp.True || right == BooleanOp.True) return BooleanOp.True;
@@ -591,18 +629,18 @@ internal static partial class QueryPlanBuilder
             }
 
             case OperatorType.Equal:
-                ParseComparison(be, clauses, queryParameters, metadata, writer);
+                ParseComparison(be, clauses, queryParameters, metadata);
                 return BooleanOp.Leaf;
 
             case OperatorType.NotEqual:
-                ParseComparison(be, clauses, queryParameters, metadata, writer);
+                ParseComparison(be, clauses, queryParameters, metadata);
                 return BooleanOp.Leaf;
 
             case OperatorType.LessThan:
             case OperatorType.LessThanEqual:
             case OperatorType.GreaterThan:
             case OperatorType.GreaterThanEqual:
-                ParseRangeComparison(be, clauses, queryParameters, metadata, writer);
+                ParseRangeComparison(be, clauses, queryParameters, metadata);
                 return BooleanOp.Leaf;
 
             default:
@@ -612,34 +650,30 @@ internal static partial class QueryPlanBuilder
     }
 
     private static void ParseComparison(BinaryExpression be, List<ClauseInfo> clauses,
-        BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ValueWriter writer)
+        BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
     {
         if (TryGetFieldName(be.Left, metadata, queryParameters, out string fieldName) == false)
             throw new InvalidQueryException($"Comparison left side must be a field expression or id(), but got: {be.Left.Type}");
-        var (value, valueType) = ResolveTermValue(be.Right, queryParameters);
 
         clauses.Add(new ClauseInfo
         {
             FieldName = fieldName,
-            TermValueType = valueType,
-            PackedParamValue = writer.Add(value, valueType),
             ClauseType = be.Operator == OperatorType.NotEqual ? ClauseType.NotEquals : ClauseType.Equals,
-            OriginalIndex = clauses.Count
+            OriginalIndex = clauses.Count,
+            Binding = CreateBinding(be.Right, queryParameters)
         });
     }
 
     private static void ParseRangeComparison(BinaryExpression be, List<ClauseInfo> clauses,
-        BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ValueWriter writer)
+        BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
     {
         if (TryGetFieldName(be.Left, metadata, queryParameters, out string fieldName) == false)
             throw new InvalidQueryException($"Range comparison left side must be a field expression or id(), but got: {be.Left.Type}");
-        var (value, valueType) = ResolveTermValue(be.Right, queryParameters);
 
         clauses.Add(new ClauseInfo
         {
             FieldName = fieldName,
-            TermValueType = valueType,
-            PackedParamValue = writer.Add(value, valueType),
+            Binding = CreateBinding(be.Right, queryParameters),
             ClauseType = be.Operator switch
             {
                 OperatorType.GreaterThan => ClauseType.GreaterThan,
@@ -653,56 +687,68 @@ internal static partial class QueryPlanBuilder
     }
 
     private static void ParseBetween(BetweenExpression between, List<ClauseInfo> clauses,
-        BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ValueWriter writer)
+        BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
     {
         if (TryGetFieldName(between.Source, metadata, queryParameters, out string resolvedFieldName) == false)
             throw new InvalidQueryException($"BETWEEN source must be a field expression or id(), but got: {between.Source.Type}");
 
-        var (minVal, minType) = ResolveTermValue(between.Min, queryParameters);
-        var (maxVal, _) = ResolveTermValue(between.Max, queryParameters);
+        var minBinding = CreateBinding(between.Min, queryParameters);
+        var maxBinding = CreateBinding(between.Max, queryParameters);
+
+        // Type validation for literals (parameter types validated in PopulateParameters)
+        if (minBinding is { IsLiteral: true } && maxBinding is { IsLiteral: true }
+            && minBinding.LiteralType != maxBinding.LiteralType)
+        {
+            throw new InvalidQueryException(
+                $"BETWEEN bounds for field '{resolvedFieldName}' have different types: " +
+                $"low is {minBinding.LiteralType}, high is {maxBinding.LiteralType}. Both must be the same type.");
+        }
+
         clauses.Add(new ClauseInfo
         {
             FieldName = resolvedFieldName,
-            TermValueType = minType,
-            PackedParamValue = writer.AddPair(minVal, maxVal, minType),
             ClauseType = ClauseType.Between,
-            OriginalIndex = clauses.Count
+            OriginalIndex = clauses.Count,
+            Binding = new ParameterBinding
+            {
+                IsLiteral = minBinding?.IsLiteral ?? true,
+                LiteralValue = minBinding?.LiteralValue,
+                LiteralType = minBinding?.LiteralType ?? ValueTokenType.String,
+                ParameterName = minBinding?.ParameterName,
+                Second = maxBinding
+            }
         });
     }
 
     private static void ParseIn(InExpression inExpr, List<ClauseInfo> clauses,
-        BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ValueWriter writer)
+        BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
     {
         if (TryGetFieldName(inExpr.Source, metadata, queryParameters, out string resolvedFieldName) == false)
             throw new InvalidQueryException($"IN source must be a field expression or id(), but got: {inExpr.Source.Type}");
 
-        var termTypes = new List<ValueTokenType>();
-        var resolvedValues = new List<object>();
-        bool hasTime = false;
+        // Capture bindings for each IN term. Array parameters expand at PopulateParameters time.
+        var inBindings = new List<ParameterBinding>();
         foreach (var value in inExpr.Values)
         {
             if (value is ValueExpression ve)
             {
-                var resolvedValue = ve.GetValue(queryParameters);
-                if (resolvedValue is BlittableJsonReaderArray arr)
+                if (ve.Value == ValueTokenType.Parameter)
                 {
-                    foreach (var it in arr)
-                    {
-                        var (elemVal, elemTyp) = ResolveInValue(it, ValueTokenType.Parameter, ref hasTime);
-                        resolvedValues.Add(elemVal);
-                        termTypes.Add(elemTyp);
-                    }
+                    // Parameter — could be a single value or an array. Mark as array-capable.
+                    inBindings.Add(new ParameterBinding { ParameterName = ve.Token.Value, IsArrayParameter = true });
                 }
                 else
                 {
-                    var (resVal, resTyp) = ResolveInValue(resolvedValue, ve.Value, ref hasTime);
-                    resolvedValues.Add(resVal);
-                    termTypes.Add(resTyp);
+                    // Literal value
+                    var rawValue = ve.GetValue(queryParameters);
+                    bool hasTime = false;
+                    var (resolved, resolvedType) = ResolveInValue(rawValue, ve.Value, ref hasTime);
+                    inBindings.Add(new ParameterBinding { IsLiteral = true, LiteralValue = resolved, LiteralType = resolvedType });
                 }
             }
         }
 
-        if (resolvedValues.Count == 0)
+        if (inBindings.Count == 0)
         {
             clauses.Add(new ClauseInfo
             {
@@ -713,78 +759,20 @@ internal static partial class QueryPlanBuilder
             return;
         }
 
-        // All non-null IN terms must be the same type — mixed types are not supported.
-        // Null terms are compatible with any type and are stored as string null.
-        ValueTokenType dominantType = ValueTokenType.Null;
-        for (int i = 0; i < termTypes.Count; i++)
-        {
-            if (resolvedValues[i] == null)
-                continue;
-            if (dominantType == ValueTokenType.Null)
-            {
-                dominantType = termTypes[i];
-                continue;
-            }
-            if (termTypes[i] != dominantType)
-                throw new InvalidQueryException(
-                    $"Mixed types in IN clause for field '{resolvedFieldName}': " +
-                    $"found both {dominantType} and {termTypes[i]}. All IN terms must be the same type.");
-        }
-        if (dominantType == ValueTokenType.Null)
-            dominantType = ValueTokenType.String;
-
-        // Store all terms contiguously in the dominant typed array.
-        // Null values are stored as default (0/0.0/null) in the typed array.
-        // Resolution detects nulls via a parallel flag (the resolvedValues[i] == null check above
-        // sets the sentinel). When the packed type is numeric, null terms need string-path lookup.
-        int packedType = dominantType switch
-        {
-            ValueTokenType.Long => PackedParam.TypeLong,
-            ValueTokenType.Double => PackedParam.TypeDouble,
-            _ => PackedParam.TypeString
-        };
-        int startIdx = packedType switch
-        {
-            PackedParam.TypeLong => writer.LongCount,
-            PackedParam.TypeDouble => writer.DoubleCount,
-            _ => writer.StringCount
-        };
-        HashSet<int> nullIndices = null;
-        for (int i = 0; i < resolvedValues.Count; i++)
-        {
-            if (resolvedValues[i] == null)
-            {
-                nullIndices ??= new HashSet<int>();
-                nullIndices.Add(i);
-                // Placeholder — resolution will use string-null lookup for these positions
-                switch (packedType)
-                {
-                    case PackedParam.TypeLong: writer.AddLong(0); break;
-                    case PackedParam.TypeDouble: writer.AddDouble(0); break;
-                    default: writer.AddString(null); break;
-                }
-            }
-            else
-            {
-                writer.Add(resolvedValues[i], dominantType);
-            }
-        }
         clauses.Add(new ClauseInfo
         {
             FieldName = resolvedFieldName,
-            PackedParamValue = new PackedParam(packedType, startIdx),
-            InTermCount = resolvedValues.Count,
-            InNullTermIndices = nullIndices,
             ClauseType = inExpr.All ? ClauseType.AllIn : ClauseType.In,
-            OriginalIndex = clauses.Count
+            OriginalIndex = clauses.Count,
+            Binding = new ParameterBinding { InBindings = inBindings.ToArray() }
         });
     }
 
     private static void ParseNegated(NegatedExpression negated, IndexSearcher indexSearcher,
-        List<ClauseInfo> clauses, BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ref bool hasMixedAndOr, ValueWriter writer)
+        List<ClauseInfo> clauses, BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ref bool hasMixedAndOr)
     {
         var innerClauses = new List<ClauseInfo>();
-        ParseExpression(negated.Expression, indexSearcher, innerClauses, queryParameters, metadata, ref hasMixedAndOr, writer);
+        ParseExpression(negated.Expression, indexSearcher, innerClauses, queryParameters, metadata, ref hasMixedAndOr);
 
         foreach (var inner in innerClauses)
         {
@@ -794,21 +782,21 @@ internal static partial class QueryPlanBuilder
     }
 
     private static void ParseMethod(MethodExpression method, IndexSearcher indexSearcher,
-        List<ClauseInfo> clauses, BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ref bool hasMixedAndOr, ValueWriter writer)
+        List<ClauseInfo> clauses, BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ref bool hasMixedAndOr)
     {
         var methodType = QueryMethod.GetMethodType(method.Name.Value);
         switch (methodType)
         {
             case MethodType.Search:
-                ParseSearchMethod(method, clauses, queryParameters, metadata, writer);
+                ParseSearchMethod(method, clauses, queryParameters, metadata);
                 break;
 
             case MethodType.StartsWith:
-                ParsePrefixMethod(method, clauses, queryParameters, metadata, ClauseType.StartsWith, writer);
+                ParsePrefixMethod(method, clauses, queryParameters, metadata, ClauseType.StartsWith);
                 break;
 
             case MethodType.EndsWith:
-                ParsePrefixMethod(method, clauses, queryParameters, metadata, ClauseType.EndsWith, writer);
+                ParsePrefixMethod(method, clauses, queryParameters, metadata, ClauseType.EndsWith);
                 break;
 
             case MethodType.Exists:
@@ -831,7 +819,7 @@ internal static partial class QueryPlanBuilder
                 // exact(expr) → recurse, then mark all new clauses as exact
                 int beforeCount = clauses.Count;
                 if (method.Arguments.Count > 0)
-                    ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, writer);
+                    ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
                 for (int c = beforeCount; c < clauses.Count; c++)
                     clauses[c].IsExact = true;
                 break;
@@ -842,18 +830,16 @@ internal static partial class QueryPlanBuilder
                 // boost(expr, factor) → recurse, then set boost factor on new clauses
                 int beforeCount = clauses.Count;
                 if (method.Arguments.Count > 0)
-                    ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, writer);
-                float boostFactor = 1f;
+                    ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+                // Boost factor is per-execution (could be parameterized).
+                // Store the binding on each inner clause; PopulateClauseValues resolves the factor.
+                ParameterBinding boostBinding = null;
                 if (method.Arguments.Count > 1)
-                {
-                    var factorStr = GetTermValue(method.Arguments[1], queryParameters);
-                    if (factorStr != null)
-                        float.TryParse(factorStr, System.Globalization.NumberStyles.Float,
-                            System.Globalization.CultureInfo.InvariantCulture, out boostFactor);
-                }
+                    boostBinding = CreateBinding(method.Arguments[1], queryParameters);
                 for (int c = beforeCount; c < clauses.Count; c++)
                 {
-                    clauses[c].BoostFactor = boostFactor;
+                    clauses[c].BoostFactor = 1f; // mark as boosted; actual value set by PopulateClauseValues
+                    clauses[c].BoostBinding = boostBinding;
                 }
                 break;
             }
@@ -864,14 +850,12 @@ internal static partial class QueryPlanBuilder
                     throw new InvalidQueryException($"regex() requires at least 2 arguments (field, pattern), but got {method.Arguments.Count}.");
                 if (TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var regexFieldName) == false)
                     throw new InvalidQueryException($"regex() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
-                var (regexVal, _) = ResolveTermValue(method.Arguments[1], queryParameters);
-                var regexTerm = regexVal?.ToString();
                 clauses.Add(new ClauseInfo
                 {
                     FieldName = regexFieldName,
-                    PackedParamValue = writer.AddString(regexTerm),
                     ClauseType = ClauseType.Regex,
-                    OriginalIndex = clauses.Count
+                    OriginalIndex = clauses.Count,
+                    Binding = CreateBinding(method.Arguments[1], queryParameters)
                 });
                 break;
             }
@@ -881,62 +865,18 @@ internal static partial class QueryPlanBuilder
             case MethodType.Spatial_Disjoint:
             case MethodType.Spatial_Intersects:
             {
-                // Pre-resolve ALL spatial parameters from the AST during parsing.
-                // Shape construction (spatialField.ReadCircle/ReadShape) is deferred to execution
-                // because it needs the spatial field factory from builderParameters.
-                double distErrPct = -1;
-                if (method.Arguments.Count == 3)
-                {
-                    var (depVal, depType) = ResolveTermValue(method.Arguments[2], queryParameters);
-                    if (depVal != null)
-                        distErrPct = depType == ValueTokenType.Double ? (double)depVal : Convert.ToDouble(depVal);
-                }
-
-                // Resolve field name
+                // Structural only — value resolution happens in PopulateClauseValues
+                // via ResolveSpatialParamsFromAST using the MethodExpression.
+                // Resolve field name (structural — doesn't change with parameters).
                 string spatialFieldName = null;
                 if (TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var sfn))
                     spatialFieldName = sfn;
-
-                // Resolve shape sub-expression arguments
-                var shapeExpr = method.Arguments[1] as MethodExpression;
-                var shapeType = shapeExpr != null ? QueryMethod.GetMethodType(shapeExpr.Name.Value) : MethodType.Unknown;
-
-                var spatial = new SpatialParams { DistanceErrorPct = distErrPct };
-
-                if (shapeType == MethodType.Spatial_Circle && shapeExpr.Arguments.Count >= 3)
-                {
-                    var (rVal, _) = ResolveTermValue(shapeExpr.Arguments[0], queryParameters);
-                    var (latVal, _) = ResolveTermValue(shapeExpr.Arguments[1], queryParameters);
-                    var (lngVal, _) = ResolveTermValue(shapeExpr.Arguments[2], queryParameters);
-                    spatial.IsCircle = true;
-                    spatial.CircleRadius = Convert.ToDouble(rVal);
-                    spatial.CircleLatitude = Convert.ToDouble(latVal);
-                    spatial.CircleLongitude = Convert.ToDouble(lngVal);
-                    if (shapeExpr.Arguments.Count == 4)
-                    {
-                        var (unitsVal, _) = ResolveTermValue(shapeExpr.Arguments[3], queryParameters);
-                        if (unitsVal != null && Enum.TryParse(typeof(SpatialUnits), unitsVal.ToString(), true, out var su))
-                            spatial.Units = (SpatialUnits)su;
-                    }
-                }
-                else if (shapeType == MethodType.Spatial_Wkt && shapeExpr.Arguments.Count >= 1)
-                {
-                    var (wktVal, _) = ResolveTermValue(shapeExpr.Arguments[0], queryParameters);
-                    spatial.Wkt = wktVal?.ToString();
-                    if (shapeExpr.Arguments.Count == 2)
-                    {
-                        var (unitsVal, _) = ResolveTermValue(shapeExpr.Arguments[1], queryParameters);
-                        if (unitsVal != null && Enum.TryParse(typeof(SpatialUnits), unitsVal.ToString(), true, out var su))
-                            spatial.Units = (SpatialUnits)su;
-                    }
-                }
 
                 clauses.Add(new ClauseInfo
                 {
                     FieldName = spatialFieldName,
                     ClauseType = ClauseType.Spatial,
                     MethodExpression = method,
-                    Spatial = spatial,
                     OriginalIndex = clauses.Count
                 });
                 break;
@@ -944,88 +884,12 @@ internal static partial class QueryPlanBuilder
 
             case MethodType.Vector_Search:
             {
-                // Pre-resolve ALL vector parameters from the AST during parsing.
-                // Embedding construction still happens at execution time.
-                float minMatch = -1;
-                int numCandidates = -1;
-                if (method.Arguments.Count > 2)
-                {
-                    var (simVal, simType) = ResolveTermValue(method.Arguments[2], queryParameters);
-                    if (simVal != null && simType != ValueTokenType.Null)
-                        minMatch = simType == ValueTokenType.Double ? (float)(double)simVal
-                            : simType == ValueTokenType.Long ? (long)simVal : -1;
-                }
-                if (method.Arguments.Count > 3)
-                {
-                    var (candVal, candType) = ResolveTermValue(method.Arguments[3], queryParameters);
-                    if (candVal != null && candType != ValueTokenType.Null)
-                        numCandidates = Convert.ToInt32(candVal);
-                }
-
-                // Resolve the vector value argument (argument 1)
-                object resolvedVecValue = null;
-                ValueTokenType resolvedVecType = ValueTokenType.Null;
-                VectorMethodKind vecMethod = VectorMethodKind.None;
-                string aiTaskName = null;
-
-                QueryExpression srcVector = method.Arguments[1];
-                if (srcVector is MethodExpression methodValue)
-                {
-                    // embedding.forDoc / embedding.forRaw / embedding.text
-                    vecMethod = methodValue.Name.ToString() switch
-                    {
-                        ClientConstants.VectorSearch.EmbeddingForDocument => VectorMethodKind.ForDocument,
-                        ClientConstants.VectorSearch.EmbeddingForRaw => VectorMethodKind.ForRaw,
-                        ClientConstants.VectorSearch.EmbeddingText => VectorMethodKind.EmbeddingText,
-                        _ => VectorMethodKind.None
-                    };
-
-                    if (methodValue.Arguments.Count > 0 && methodValue.Arguments[0] is ValueExpression ve0)
-                    {
-                        var raw = ve0.GetValue(queryParameters);
-                        (resolvedVecValue, resolvedVecType) = raw != null ? ResolveParameterValue(raw) : (raw, ve0.Value);
-                        // Keep the original object for arrays/blittables
-                        if (raw is BlittableJsonReaderArray or BlittableJsonReaderObject)
-                        {
-                            resolvedVecValue = raw;
-                            resolvedVecType = ValueTokenType.Parameter;
-                        }
-                    }
-
-                    if (vecMethod == VectorMethodKind.EmbeddingText && methodValue.Arguments.Count > 1
-                        && methodValue.Arguments[1] is MethodExpression aiMethod && aiMethod.Arguments.Count > 0)
-                    {
-                        var (taskVal, _) = ResolveTermValue(aiMethod.Arguments[0], queryParameters);
-                        aiTaskName = taskVal?.ToString();
-                    }
-                }
-                else if (srcVector is ValueExpression vecVe)
-                {
-                    var raw = vecVe.GetValue(queryParameters);
-                    if (raw is BlittableJsonReaderArray or BlittableJsonReaderObject)
-                    {
-                        resolvedVecValue = raw;
-                        resolvedVecType = ValueTokenType.Parameter;
-                    }
-                    else
-                    {
-                        (resolvedVecValue, resolvedVecType) = raw != null ? ResolveParameterValue(raw) : (null, vecVe.Value);
-                    }
-                }
-
+                // Structural only — value resolution happens in PopulateClauseValues
+                // via ResolveVectorParamsFromAST using the MethodExpression.
                 clauses.Add(new ClauseInfo
                 {
                     ClauseType = ClauseType.Vector,
                     MethodExpression = method,
-                    Vector = new VectorParams
-                    {
-                        MinimumMatch = minMatch,
-                        NumberOfCandidates = numCandidates,
-                        ResolvedValue = resolvedVecValue,
-                        ResolvedValueType = resolvedVecType,
-                        Method = vecMethod,
-                        AiTaskName = aiTaskName
-                    },
                     OriginalIndex = clauses.Count
                 });
                 break;
@@ -1047,7 +911,7 @@ internal static partial class QueryPlanBuilder
                 var conditionResult = QueryBuilderHelper.EvaluateConstantExpressionForWhenQuery(
                     (BinaryExpression)method.Arguments[0], queryParameters);
                 if (conditionResult)
-                    ParseExpression(method.Arguments[1], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, writer);
+                    ParseExpression(method.Arguments[1], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
                 // If false, we simply don't add any clause — the branch is eliminated.
                 break;
             }
@@ -1059,7 +923,7 @@ internal static partial class QueryPlanBuilder
     }
 
     private static void ParseSearchMethod(MethodExpression method, List<ClauseInfo> clauses,
-        BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ValueWriter writer)
+        BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
     {
         if (method.Arguments.Count < 2)
             throw new InvalidQueryException($"search() requires at least 2 arguments (field, term), but got {method.Arguments.Count}.");
@@ -1076,20 +940,18 @@ internal static partial class QueryPlanBuilder
                 searchOp = Constants.Search.Operator.And;
         }
 
-        var (searchVal, _) = ResolveTermValue(method.Arguments[1], queryParameters);
-        var searchTerm = searchVal?.ToString();
         clauses.Add(new ClauseInfo
         {
             FieldName = fieldName,
-            PackedParamValue = writer.AddString(searchTerm),
             ClauseType = ClauseType.Search,
             SearchOperator = searchOp,
-            OriginalIndex = clauses.Count
+            OriginalIndex = clauses.Count,
+            Binding = CreateBinding(method.Arguments[1], queryParameters)
         });
     }
 
     private static void ParsePrefixMethod(MethodExpression method, List<ClauseInfo> clauses,
-        BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ClauseType type, ValueWriter writer)
+        BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ClauseType type)
     {
         if (method.Arguments.Count < 2)
             throw new InvalidQueryException($"{type}() requires at least 2 arguments (field, term), but got {method.Arguments.Count}.");
@@ -1097,14 +959,12 @@ internal static partial class QueryPlanBuilder
         if (TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var fieldName) == false)
             throw new InvalidQueryException($"{type}() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
 
-        var (prefixVal, _) = ResolveTermValue(method.Arguments[1], queryParameters);
-        var prefixTerm = prefixVal?.ToString();
         clauses.Add(new ClauseInfo
         {
             FieldName = fieldName,
-            PackedParamValue = writer.AddString(prefixTerm),
             ClauseType = type,
-            OriginalIndex = clauses.Count
+            OriginalIndex = clauses.Count,
+            Binding = CreateBinding(method.Arguments[1], queryParameters)
         });
     }
 
@@ -1159,15 +1019,27 @@ internal static partial class QueryPlanBuilder
     /// No ToString — callers that need a string form call <see cref="FormatValue"/>.</summary>
     private static (object Value, ValueTokenType Type) ResolveTermValue(QueryExpression expr, BlittableJsonReaderObject queryParameters)
     {
+        return ResolveTermValue(expr, queryParameters, out _);
+    }
+
+    /// <summary>Resolve a query expression to its native typed value + type tag,
+    /// also returning the parameter name (if the expression is a parameter reference).
+    /// <paramref name="parameterName"/> is null for literals, non-null for $parameters.</summary>
+    private static (object Value, ValueTokenType Type) ResolveTermValue(QueryExpression expr, BlittableJsonReaderObject queryParameters, out string parameterName)
+    {
+        parameterName = null;
         if (expr is ValueExpression ve)
         {
             var valueType = ve.Value;
             var value = ve.GetValue(queryParameters);
             if (value is bool b)
                 return (b ? "true" : "false", ValueTokenType.String); // Corax stores booleans as lowercase strings
-            if (valueType == ValueTokenType.Parameter && value != null)
+            if (valueType == ValueTokenType.Parameter)
             {
-                return ResolveParameterValue(value);
+                parameterName = ve.Token.Value;
+                if (value != null)
+                    return ResolveParameterValue(value);
+                return (null, ValueTokenType.String);
             }
             // For non-parameter literals, coerce to native type when the token says so
             if (valueType == ValueTokenType.Long && value != null)
@@ -1219,6 +1091,32 @@ internal static partial class QueryPlanBuilder
                 return (str, ValueTokenType.String);
             }
         }
+    }
+
+    /// <summary>Build a ParameterBinding from a query expression. For parameters, captures only the
+    /// name (value resolved later by PopulateParameters). For literals, resolves and caches the
+    /// constant value since it never changes.</summary>
+    private static ParameterBinding CreateBinding(QueryExpression expr, BlittableJsonReaderObject queryParameters)
+    {
+        if (expr is not ValueExpression ve)
+            return null;
+
+        if (ve.Value == ValueTokenType.Parameter)
+            return new ParameterBinding { ParameterName = ve.Token.Value };
+
+        // Null literal — preserve as actual null, not the string "null"
+        if (ve.Value == ValueTokenType.Null)
+            return new ParameterBinding { IsLiteral = true, LiteralValue = null, LiteralType = ValueTokenType.String };
+
+        // Literal — resolve the constant value once
+        var value = ve.GetValue(queryParameters);
+        if (value is bool b)
+            return new ParameterBinding { IsLiteral = true, LiteralValue = b ? "true" : "false", LiteralType = ValueTokenType.String };
+        if (value == null)
+            return new ParameterBinding { IsLiteral = true, LiteralValue = null, LiteralType = ValueTokenType.String };
+
+        var (resolved, resolvedType) = ResolveParameterValue(value);
+        return new ParameterBinding { IsLiteral = true, LiteralValue = resolved, LiteralType = resolvedType };
     }
 
     /// <summary>Format a value from the plan's typed arrays as a string for display/highlighting.</summary>
