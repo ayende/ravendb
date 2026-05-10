@@ -253,7 +253,6 @@ internal static partial class QueryPlanBuilder
     {
         public string FieldName;
         public ValueTokenType TermValueType; // for type-aware scan predicate building
-        public List<string> InTerms;      // for IN (string forms, used for display/highlighting and InQuery fallback)
 
         /// <summary>Packed (type, index) into QueryPlan.LongValues/DoubleValues/StringValues.
         /// For BETWEEN: Param1 = low-bound index, Param2 = high-bound index.
@@ -266,12 +265,18 @@ internal static partial class QueryPlanBuilder
         /// 32K terms (e.g. a large array parameter), exceeding the 15-bit Param2 limit.</summary>
         public int InTermCount;
 
+        /// <summary>Indices of null terms within the IN list. Null for most queries.
+        /// When present, resolution uses string-null lookup for these positions instead
+        /// of reading from the typed array (where null is stored as a 0 sentinel).</summary>
+        public HashSet<int> InNullTermIndices;
+
         public List<ClauseInfo> OrSubClauses;  // for OrGroup
         /// <summary>Set for NotEquals clauses appearing in OR chains.
-        /// Example: WHERE Name != 'a' OR Name != 'b'
-        /// Each NOT(X) term cannot use the raw posting list (which contains entries WITH X,
-        /// not WITHOUT X). Instead, ResolveMatches pre-materializes AllEntries ANDNOT TermQuery(X)
-        /// into a BitmapMatch, so FillFromMatch correctly ORs in the complement set.</summary>
+        /// Example: WHERE Name != 'a' OR Age = 25
+        /// The NOT(Name='a') term cannot use the raw posting list (which contains entries
+        /// WITH 'a', not entries WITHOUT 'a'). Instead, ResolveMatches pre-materializes
+        /// AllEntries ANDNOT TermQuery('a') into a BitmapMatch, so FillFromMatch during
+        /// execution correctly ORs in the complement set.</summary>
         public bool IsOrChainNotEquals;
         public List<ClauseInfo> AndSubClauses; // for AndGroup (AND sub-expression inside OR)
         public MethodExpression MethodExpression; // for Spatial, Vector — AST node for field name resolution
@@ -671,7 +676,6 @@ internal static partial class QueryPlanBuilder
         if (TryGetFieldName(inExpr.Source, metadata, queryParameters, out string resolvedFieldName) == false)
             throw new InvalidQueryException($"IN source must be a field expression or id(), but got: {inExpr.Source.Type}");
 
-        var terms = new List<string>();
         var termTypes = new List<ValueTokenType>();
         var resolvedValues = new List<object>();
         bool hasTime = false;
@@ -686,7 +690,6 @@ internal static partial class QueryPlanBuilder
                     {
                         var (elemVal, elemTyp) = ResolveInValue(it, ValueTokenType.Parameter, ref hasTime);
                         resolvedValues.Add(elemVal);
-                        terms.Add(FormatNativeValue(elemVal));
                         termTypes.Add(elemTyp);
                     }
                 }
@@ -694,13 +697,12 @@ internal static partial class QueryPlanBuilder
                 {
                     var (resVal, resTyp) = ResolveInValue(resolvedValue, ve.Value, ref hasTime);
                     resolvedValues.Add(resVal);
-                    terms.Add(FormatNativeValue(resVal));
                     termTypes.Add(resTyp);
                 }
             }
         }
 
-        if (terms.Count == 0)
+        if (resolvedValues.Count == 0)
         {
             clauses.Add(new ClauseInfo
             {
@@ -732,8 +734,9 @@ internal static partial class QueryPlanBuilder
             dominantType = ValueTokenType.String;
 
         // Store all terms contiguously in the dominant typed array.
-        // Null values are stored as default (0 for long, 0.0 for double, null for string).
-        // Resolution checks the string form (InTerms[i]) for null to handle null term lookup.
+        // Null values are stored as default (0/0.0/null) in the typed array.
+        // Resolution detects nulls via a parallel flag (the resolvedValues[i] == null check above
+        // sets the sentinel). When the packed type is numeric, null terms need string-path lookup.
         int packedType = dominantType switch
         {
             ValueTokenType.Long => PackedParam.TypeLong,
@@ -746,11 +749,14 @@ internal static partial class QueryPlanBuilder
             PackedParam.TypeDouble => writer.DoubleCount,
             _ => writer.StringCount
         };
+        HashSet<int> nullIndices = null;
         for (int i = 0; i < resolvedValues.Count; i++)
         {
             if (resolvedValues[i] == null)
             {
-                // Null placeholder — resolution will check InTerms[i] for null and use string path
+                nullIndices ??= new HashSet<int>();
+                nullIndices.Add(i);
+                // Placeholder — resolution will use string-null lookup for these positions
                 switch (packedType)
                 {
                     case PackedParam.TypeLong: writer.AddLong(0); break;
@@ -766,9 +772,9 @@ internal static partial class QueryPlanBuilder
         clauses.Add(new ClauseInfo
         {
             FieldName = resolvedFieldName,
-            InTerms = terms,
             PackedParamValue = new PackedParam(packedType, startIdx),
             InTermCount = resolvedValues.Count,
+            InNullTermIndices = nullIndices,
             ClauseType = inExpr.All ? ClauseType.AllIn : ClauseType.In,
             OriginalIndex = clauses.Count
         });
@@ -1215,15 +1221,6 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    /// <summary>Format a resolved native value as string. Used during parsing for InTerms display strings.</summary>
-    private static string FormatNativeValue(object value)
-    {
-        if (value == null) return null;
-        if (value is double d)
-            return d.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        return value.ToString();
-    }
-
     /// <summary>Format a value from the plan's typed arrays as a string for display/highlighting.</summary>
     internal static string FormatValueFromPlan(PackedParam packed, QueryPlan plan)
     {
@@ -1403,16 +1400,16 @@ internal static partial class QueryPlanBuilder
             int matchIndex = 0;
             foreach (var it in clauses)
             {
-                if ((it.ClauseType == ClauseType.In || it.ClauseType == ClauseType.AllIn) && it.InTerms != null)
+                if ((it.ClauseType == ClauseType.In || it.ClauseType == ClauseType.AllIn) && it.InTermCount > 0)
                 {
                     // Each IN term is a single-term lookup → eligible for native dispatch.
-                    foreach (var _ in it.InTerms)
+                    for (int t = 0; t < it.InTermCount; t++)
                     {
                         ops.Add(new PlanOp
                         {
                             Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex,
-                            EstimatedCardinality = it.Cardinality / it.InTerms.Count,
+                            EstimatedCardinality = it.Cardinality / it.InTermCount,
                             Dispatch = MatchDispatch.TermSource
                         });
                         matchIndex++;
@@ -1611,48 +1608,48 @@ internal static partial class QueryPlanBuilder
                     }
                     matchIndex += subClauses.Count;
                 }
-                else if (clauses[0].ClauseType == ClauseType.In && clauses[0].InTerms != null)
+                else if (clauses[0].ClauseType == ClauseType.In && clauses[0].InTermCount > 0)
                 {
                     // IN at seed: OR all terms into bitmap[0]. Each IN term is a single-term lookup.
-                    var terms = clauses[0].InTerms;
-                    for (int t = 0; t < terms.Count; t++)
+                    var terms = clauses[0].InTermCount;
+                    for (int t = 0; t < terms; t++)
                     {
                         ops.Add(new PlanOp
                         {
                             Kind = t == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex + t,
                             BitmapLocal = 0,
-                            EstimatedCardinality = clauses[0].Cardinality / terms.Count,
+                            EstimatedCardinality = clauses[0].Cardinality / terms,
                             Dispatch = MatchDispatch.TermSource
                         });
                     }
-                    matchIndex += terms.Count;
+                    matchIndex += terms;
                 }
-                else if (clauses[0].ClauseType == ClauseType.AllIn && clauses[0].InTerms != null)
+                else if (clauses[0].ClauseType == ClauseType.AllIn && clauses[0].InTermCount > 0)
                 {
                     // First clause is AllIn — fill first term, AND remaining. Each term is a single-term lookup.
-                    var terms = clauses[0].InTerms;
+                    var terms = clauses[0].InTermCount;
                     ops.Add(new PlanOp
                     {
                         Kind = PlanOpKind.FillFromPostings,
                         ParamIndex = matchIndex,
                         BitmapLocal = 0,
-                        EstimatedCardinality = clauses[0].Cardinality / terms.Count,
+                        EstimatedCardinality = clauses[0].Cardinality / terms,
                         Dispatch = MatchDispatch.TermSource
                     });
-                    for (int t = 1; t < terms.Count; t++)
+                    for (int t = 1; t < terms; t++)
                     {
                         ops.Add(new PlanOp
                         {
                             Kind = PlanOpKind.AndWithPostings,
                             ParamIndex = matchIndex + t,
                             BitmapLocal = 0,
-                            EstimatedCardinality = clauses[0].Cardinality / terms.Count,
+                            EstimatedCardinality = clauses[0].Cardinality / terms,
                             Dispatch = MatchDispatch.TermSource
                         });
                         ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
                     }
-                    matchIndex += terms.Count;
+                    matchIndex += terms;
                 }
                 else
                 {
@@ -1729,20 +1726,20 @@ internal static partial class QueryPlanBuilder
 
                     matchIndex += subClauses.Count;
                 }
-                else if (clauses[i].ClauseType == ClauseType.In && clauses[i].InTerms != null)
+                else if (clauses[i].ClauseType == ClauseType.In && clauses[i].InTermCount > 0)
                 {
                     // IN in AND chain: OR all terms into bitmap[1], then AND (or ANDNOT for negated) with bitmap[0].
                     // Each IN term is a single-term lookup.
-                    var terms = clauses[i].InTerms;
+                    var terms = clauses[i].InTermCount;
                     ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 1 });
-                    for (int t = 0; t < terms.Count; t++)
+                    for (int t = 0; t < terms; t++)
                     {
                         ops.Add(new PlanOp
                         {
                             Kind = PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex + t,
                             BitmapLocal = 1,
-                            EstimatedCardinality = clauses[i].Cardinality / terms.Count,
+                            EstimatedCardinality = clauses[i].Cardinality / terms,
                             Dispatch = MatchDispatch.TermSource
                         });
                     }
@@ -1756,25 +1753,25 @@ internal static partial class QueryPlanBuilder
                     });
                     if (!clauses[i].IsNegated)
                         ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
-                    matchIndex += terms.Count;
+                    matchIndex += terms;
                 }
-                else if (clauses[i].ClauseType == ClauseType.AllIn && clauses[i].InTerms != null)
+                else if (clauses[i].ClauseType == ClauseType.AllIn && clauses[i].InTermCount > 0)
                 {
                     // AllIn: AND each term's posting list with bitmap[0]. Each term is single-term.
-                    var terms = clauses[i].InTerms;
-                    for (int t = 0; t < terms.Count; t++)
+                    var terms = clauses[i].InTermCount;
+                    for (int t = 0; t < terms; t++)
                     {
                         ops.Add(new PlanOp
                         {
                             Kind = PlanOpKind.AndWithPostings,
                             ParamIndex = matchIndex + t,
                             BitmapLocal = 0,
-                            EstimatedCardinality = clauses[i].Cardinality / terms.Count,
+                            EstimatedCardinality = clauses[i].Cardinality / terms,
                             Dispatch = MatchDispatch.TermSource
                         });
                         ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
                     }
-                    matchIndex += terms.Count;
+                    matchIndex += terms;
                 }
                 else
                 {
@@ -1934,7 +1931,7 @@ internal static partial class QueryPlanBuilder
             {
                 ClauseType.OrGroup when ci.OrSubClauses != null => ci.OrSubClauses.Count,
                 ClauseType.AndGroup when ci.AndSubClauses != null => ci.AndSubClauses.Count,
-                ClauseType.In or ClauseType.AllIn when ci.InTerms != null => ci.InTerms.Count,
+                ClauseType.In or ClauseType.AllIn when ci.InTermCount > 0 => ci.InTermCount,
                 _ => 1
             };
         }
