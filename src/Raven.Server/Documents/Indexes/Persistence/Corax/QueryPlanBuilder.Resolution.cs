@@ -287,12 +287,12 @@ internal static partial class QueryPlanBuilder
         // Resolve boost factor if this clause is boosted
         if (clause.BoostBinding != null)
         {
-            var (boostVal, boostType) = ResolveBinding(clause.BoostBinding, queryParameters);
+            var (boostVal, boostType) = ResolveBindingScalar(clause.BoostBinding, queryParameters);
             if (boostVal != null)
             {
-                clause.BoostFactor = boostType == ValueTokenType.Double
+                clause.BoostFactor = boostType == ParamValueType.Double
                     ? (float)(double)boostVal
-                    : boostType == ValueTokenType.Long
+                    : boostType == ParamValueType.Long
                         ? (long)boostVal
                         : float.TryParse(boostVal.ToString(), System.Globalization.NumberStyles.Float,
                             System.Globalization.CultureInfo.InvariantCulture, out float parsed) ? parsed : 1f;
@@ -317,7 +317,7 @@ internal static partial class QueryPlanBuilder
         if (binding == null)
             return;
 
-        var (value, valueType) = ResolveBindingTyped(binding, queryParameters);
+        var (value, valueType) = ResolveBindingScalar(binding, queryParameters);
 
         clause.TermValueType = valueType;
         clause.PackedParamValue = writer.Add(value, ToValueTokenType(valueType));
@@ -325,7 +325,7 @@ internal static partial class QueryPlanBuilder
         // Handle BETWEEN second value
         if (binding.Second != null)
         {
-            var (value2, _) = ResolveBindingTyped(binding.Second, queryParameters);
+            var (value2, _) = ResolveBindingScalar(binding.Second, queryParameters);
             clause.PackedParamValue = writer.AddPair(value, value2, ToValueTokenType(valueType));
         }
 
@@ -334,7 +334,7 @@ internal static partial class QueryPlanBuilder
         {
             var termTypes = new List<ParamValueType>();
             var resolvedValues = new List<object>();
-            HashSet<int> nullIndices = null;
+            bool hasNullTerm = false;
 
             for (int i = 0; i < binding.InBindings.Length; i++)
             {
@@ -345,17 +345,17 @@ internal static partial class QueryPlanBuilder
                     termTypes.Add(inB.LiteralType);
                     if (inB.LiteralValue == null)
                     {
-                        nullIndices ??= new HashSet<int>();
-                        nullIndices.Add(resolvedValues.Count - 1);
+                        hasNullTerm = true;
                     }
                 }
-                else if (inB.IsArrayParameter)
+                else
                 {
-                    // Array parameter — expand each element into individual terms
+                    // Parameter — resolve from blittable. May be scalar or array.
                     object inRaw = null;
                     queryParameters?.TryGet(inB.ParameterName, out inRaw);
                     if (inRaw is BlittableJsonReaderArray arr)
                     {
+                        // Array parameter — expand each element
                         bool hasTime = false;
                         foreach (var elem in arr)
                         {
@@ -363,36 +363,22 @@ internal static partial class QueryPlanBuilder
                             resolvedValues.Add(elemVal);
                             termTypes.Add(ToParamValueType(elemType));
                             if (elemVal == null)
-                            {
-                                nullIndices ??= new HashSet<int>();
-                                nullIndices.Add(resolvedValues.Count - 1);
-                            }
+                                hasNullTerm = true;
                         }
                     }
                     else if (inRaw != null)
                     {
+                        // Scalar parameter — single term
                         bool hasTime = false;
                         var (singleVal, singleType) = ResolveInValue(inRaw, ValueTokenType.Parameter, ref hasTime);
                         resolvedValues.Add(singleVal);
                         termTypes.Add(ToParamValueType(singleType));
                     }
-                }
-                else
-                {
-                    object inRaw = null;
-                    queryParameters?.TryGet(inB.ParameterName, out inRaw);
-                    if (inRaw != null)
-                    {
-                        var (pVal, pType) = ResolveParameterValue(inRaw);
-                        resolvedValues.Add(pVal);
-                        termTypes.Add(ToParamValueType(pType));
-                    }
                     else
                     {
                         resolvedValues.Add(null);
-                        termTypes.Add(ParamValueType.String);
-                        nullIndices ??= new HashSet<int>();
-                        nullIndices.Add(resolvedValues.Count - 1);
+                        termTypes.Add(ParamValueType.Null);
+                        hasNullTerm = true;
                     }
                 }
             }
@@ -418,26 +404,21 @@ internal static partial class QueryPlanBuilder
                 PackedParam.TypeDouble => writer.DoubleCount,
                 _ => writer.StringCount
             };
+            // Only store non-null values in the typed array. Null terms are handled
+            // separately via HasNullTerm — one null-term lookup covers all nulls.
+            int nonNullCount = 0;
             for (int i = 0; i < resolvedValues.Count; i++)
             {
-                if (resolvedValues[i] == null)
-                {
-                    switch (packedType)
-                    {
-                        case PackedParam.TypeLong: writer.AddLong(0); break;
-                        case PackedParam.TypeDouble: writer.AddDouble(0); break;
-                        default: writer.AddString(null); break;
-                    }
-                }
-                else
+                if (resolvedValues[i] != null)
                 {
                     writer.Add(resolvedValues[i], ToValueTokenType(dominantType));
+                    nonNullCount++;
                 }
             }
 
             clause.PackedParamValue = new PackedParam(packedType, startIdx);
-            clause.InTermCount = resolvedValues.Count;
-            clause.InNullTermIndices = nullIndices;
+            clause.InTermCount = nonNullCount;
+            clause.HasNullTerm = hasNullTerm;
         }
 
         // Spatial/vector params were resolved above (before binding null-check).
@@ -453,7 +434,7 @@ internal static partial class QueryPlanBuilder
         // [0] = distanceErrorPct
         if (bindings.Length > 0 && bindings[0] != null)
         {
-            var (depVal, _) = ResolveBinding(bindings[0], queryParameters);
+            var (depVal, _) = ResolveBindingScalar(bindings[0], queryParameters);
             sp.DistanceErrorPct = depVal != null ? Convert.ToDouble(depVal) : -1;
         }
 
@@ -463,15 +444,15 @@ internal static partial class QueryPlanBuilder
             sp.IsCircle = true;
             if (bindings.Length >= 4)
             {
-                var (r, _) = ResolveBinding(bindings[1], queryParameters);
-                var (lat, _) = ResolveBinding(bindings[2], queryParameters);
-                var (lng, _) = ResolveBinding(bindings[3], queryParameters);
+                var (r, _) = ResolveBindingScalar(bindings[1], queryParameters);
+                var (lat, _) = ResolveBindingScalar(bindings[2], queryParameters);
+                var (lng, _) = ResolveBindingScalar(bindings[3], queryParameters);
                 sp.CircleRadius = Convert.ToDouble(r);
                 sp.CircleLatitude = Convert.ToDouble(lat);
                 sp.CircleLongitude = Convert.ToDouble(lng);
                 if (bindings.Length > 4 && bindings[4] != null)
                 {
-                    var (u, _) = ResolveBinding(bindings[4], queryParameters);
+                    var (u, _) = ResolveBindingScalar(bindings[4], queryParameters);
                     if (u != null && Enum.TryParse(typeof(SpatialUnits), u.ToString(), true, out var su))
                         sp.Units = (int)(SpatialUnits)su;
                 }
@@ -481,11 +462,11 @@ internal static partial class QueryPlanBuilder
         {
             if (bindings.Length >= 2 && bindings[1] != null)
             {
-                var (wkt, _) = ResolveBinding(bindings[1], queryParameters);
+                var (wkt, _) = ResolveBindingScalar(bindings[1], queryParameters);
                 sp.Wkt = wkt?.ToString();
                 if (bindings.Length > 2 && bindings[2] != null)
                 {
-                    var (u, _) = ResolveBinding(bindings[2], queryParameters);
+                    var (u, _) = ResolveBindingScalar(bindings[2], queryParameters);
                     if (u != null && Enum.TryParse(typeof(SpatialUnits), u.ToString(), true, out var su))
                         sp.Units = (int)(SpatialUnits)su;
                 }
@@ -507,20 +488,20 @@ internal static partial class QueryPlanBuilder
         {
             if (binding.SpatialBindings[0] != null)
             {
-                var (simVal, simType) = ResolveBinding(binding.SpatialBindings[0], queryParameters);
-                if (simVal != null && simType != ValueTokenType.Null)
-                    vec.MinimumMatch = simType == ValueTokenType.Double ? (float)(double)simVal
-                        : simType == ValueTokenType.Long ? (long)simVal : -1;
+                var (simVal, simType) = ResolveBindingScalar(binding.SpatialBindings[0], queryParameters);
+                if (simVal != null && simType != ParamValueType.Null)
+                    vec.MinimumMatch = simType == ParamValueType.Double ? (float)(double)simVal
+                        : simType == ParamValueType.Long ? (long)simVal : -1;
             }
             if (binding.SpatialBindings.Length > 1 && binding.SpatialBindings[1] != null)
             {
-                var (candVal, candType) = ResolveBinding(binding.SpatialBindings[1], queryParameters);
-                if (candVal != null && candType != ValueTokenType.Null)
+                var (candVal, candType) = ResolveBindingScalar(binding.SpatialBindings[1], queryParameters);
+                if (candVal != null && candType != ParamValueType.Null)
                     vec.NumberOfCandidates = Convert.ToInt32(candVal);
             }
             if (binding.SpatialBindings.Length > 2 && binding.SpatialBindings[2] != null)
             {
-                var (taskVal, _) = ResolveBinding(binding.SpatialBindings[2], queryParameters);
+                var (taskVal, _) = ResolveBindingScalar(binding.SpatialBindings[2], queryParameters);
                 vec.AiTaskName = taskVal?.ToString();
             }
         }
@@ -528,49 +509,46 @@ internal static partial class QueryPlanBuilder
         // Vector value
         if (binding.VectorValueBinding != null)
         {
-            var (val, valType) = ResolveBinding(binding.VectorValueBinding, queryParameters);
-            if (val is BlittableJsonReaderArray or BlittableJsonReaderObject)
+            var (val, valType) = ResolveBindingRaw(binding.VectorValueBinding, queryParameters);
+            vec.ResolvedValue = val;
+            vec.ResolvedValueType = valType;
+            // For raw blittable values (arrays, objects), preserve as ParamValueType.Parameter.
+            // For scalars from literals, valType is already correct (String/Long/Double).
+            // For scalar parameters, resolve the native type.
+            if (valType == ParamValueType.Parameter && val is not (BlittableJsonReaderArray or BlittableJsonReaderObject))
             {
-                vec.ResolvedValue = val;
-                vec.ResolvedValueType = ParamValueType.Parameter;
-            }
-            else
-            {
-                vec.ResolvedValue = val;
-                vec.ResolvedValueType = ToParamValueType(valType);
+                var (resolved, resolvedType) = ResolveParameterValue(val);
+                vec.ResolvedValue = resolved;
+                vec.ResolvedValueType = ToParamValueType(resolvedType);
             }
         }
 
         clause.Vector = vec;
     }
 
-    /// <summary>Resolve a binding and return the Corax ParamValueType.</summary>
-    private static (object Value, ParamValueType Type) ResolveBindingTyped(ParameterBinding binding, BlittableJsonReaderObject queryParameters)
+    /// <summary>Look up a binding's value from the blittable. Returns the RAW value —
+    /// callers must check for arrays/objects before calling ResolveParameterValue.</summary>
+    private static (object Value, ParamValueType Type) ResolveBindingRaw(ParameterBinding binding, BlittableJsonReaderObject queryParameters)
+    {
+        if (binding.IsLiteral)
+            return (binding.LiteralValue, binding.LiteralType);
+        if (queryParameters != null && queryParameters.TryGet(binding.ParameterName, out object raw) && raw != null)
+            return (raw, ParamValueType.Parameter); // raw from blittable — caller decides how to interpret
+        return (null, ParamValueType.Null);
+    }
+
+    /// <summary>Resolve a binding to a scalar value. Asserts the result is not an array/object.
+    /// For parameters that might be arrays, use ResolveBindingRaw and handle arrays first.</summary>
+    private static (object Value, ParamValueType Type) ResolveBindingScalar(ParameterBinding binding, BlittableJsonReaderObject queryParameters)
     {
         if (binding.IsLiteral)
             return (binding.LiteralValue, binding.LiteralType);
         if (queryParameters != null && queryParameters.TryGet(binding.ParameterName, out object raw) && raw != null)
         {
-            if (raw is BlittableJsonReaderArray or BlittableJsonReaderObject)
-                return (raw, ParamValueType.Parameter);
-            var (val, type) = ResolveParameterValue(raw);
+            var (val, type) = ResolveParameterValue(raw); // asserts not array/object
             return (val, ToParamValueType(type));
         }
-        return (null, ParamValueType.String);
-    }
-
-    private static (object Value, ValueTokenType Type) ResolveBinding(ParameterBinding binding, BlittableJsonReaderObject queryParameters)
-    {
-        if (binding.IsLiteral)
-            return (binding.LiteralValue, ToValueTokenType(binding.LiteralType));
-        if (queryParameters != null && queryParameters.TryGet(binding.ParameterName, out object raw) && raw != null)
-        {
-            // Preserve blittable arrays/objects as-is (used by vector/spatial resolution)
-            if (raw is BlittableJsonReaderArray or BlittableJsonReaderObject)
-                return (raw, ValueTokenType.Parameter);
-            return ResolveParameterValue(raw);
-        }
-        return (null, ValueTokenType.String);
+        return (null, ParamValueType.Null);
     }
 
     // ── Typed dispatch helpers ───────────────────────────────────────────
@@ -670,10 +648,17 @@ internal static partial class QueryPlanBuilder
                     matches[matchIdx++] = match;
                 }
             }
-            else if ((clause.ClauseType == ClauseType.AllIn || clause.ClauseType == ClauseType.In) && clause.InTermCount > 0)
+            else if ((clause.ClauseType == ClauseType.AllIn || clause.ClauseType == ClauseType.In) && (clause.InTermCount > 0 || clause.HasNullTerm))
             {
                 for (int t = 0; t < clause.InTermCount; t++)
                     matches[matchIdx++] = ResolveInTerm(clause, t, indexSearcher, plan, parameters, builderParams);
+                if (clause.HasNullTerm)
+                {
+                    FieldMetadata nullMeta = builderParams != null ?
+                        QueryBuilderHelper.GetFieldMetadata(in builderParams, clause.FieldName, hasBoost: builderParams.HasBoost) :
+                        indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);
+                    matches[matchIdx++] = indexSearcher.TermQuery(nullMeta, (string)null);
+                }
             }
             else
             {
@@ -933,7 +918,7 @@ internal static partial class QueryPlanBuilder
 
     /// <summary>Resolve a single IN term to a typed TermQuery.
     /// IN terms are stored contiguously: PackedParamValue.Param1 = start index, InTermCount = count.
-    /// Null terms (tracked in InNullTermIndices) use string-null lookup regardless of packed type.</summary>
+    /// Only non-null terms are in the typed array. Null is handled separately via HasNullTerm.</summary>
     private static IQueryMatch ResolveInTerm(ClauseInfo clause, int termIndex,
         IndexSearcher indexSearcher, QueryPlan plan,
         PlanParameters parameters, QueryBuilderParameters builderParams)
@@ -941,9 +926,6 @@ internal static partial class QueryPlanBuilder
         FieldMetadata fieldMeta = builderParams != null ?
             QueryBuilderHelper.GetFieldMetadata(in builderParams, clause.FieldName, hasBoost: builderParams.HasBoost) :
             indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);
-
-        if (clause.InNullTermIndices != null && clause.InNullTermIndices.Contains(termIndex))
-            return indexSearcher.TermQuery(fieldMeta, (string)null);
 
         var p = clause.PackedParamValue;
         int idx = p.Param1 + termIndex;
@@ -1031,10 +1013,12 @@ internal static partial class QueryPlanBuilder
                     termSources[matchIdx++] = ResolveSingleTermSource(sub, indexSearcher, plan, parameters, builderParams);
                 }
             }
-            else if ((clause.ClauseType == ClauseType.AllIn || clause.ClauseType == ClauseType.In) && clause.InTermCount > 0)
+            else if ((clause.ClauseType == ClauseType.AllIn || clause.ClauseType == ClauseType.In) && (clause.InTermCount > 0 || clause.HasNullTerm))
             {
                 for (int t = 0; t < clause.InTermCount; t++)
                     termSources[matchIdx++] = ResolveInTermSource(clause, t, indexSearcher, plan, parameters, builderParams);
+                if (clause.HasNullTerm)
+                    matchIdx++; // null-term slot — stays Empty in TermSources (uses DirectSource path)
             }
             else
             {
@@ -1075,12 +1059,6 @@ internal static partial class QueryPlanBuilder
         FieldMetadata fieldMeta = builderParams != null ?
             QueryBuilderHelper.GetFieldMetadata(in builderParams, clause.FieldName, hasBoost: builderParams.HasBoost) :
             indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);
-
-        if (clause.InNullTermIndices != null && clause.InNullTermIndices.Contains(termIndex))
-        {
-            long nullPostingListId = indexSearcher.GetTermPostingListId(fieldMeta, (string)null);
-            return DecodePostingListId(nullPostingListId, indexSearcher);
-        }
 
         var p = clause.PackedParamValue;
         int idx = p.Param1 + termIndex;
@@ -1317,18 +1295,14 @@ internal static partial class QueryPlanBuilder
                 FormatValue2FromPlan(clause.PackedParamValue, plan));
         }
 
-        if (clause.ClauseType is ClauseType.In or ClauseType.AllIn && clause.InTermCount > 0)
+        if (clause.ClauseType is ClauseType.In or ClauseType.AllIn && (clause.InTermCount > 0 || clause.HasNullTerm))
         {
-            // Format IN terms on demand from the typed arrays
             var p = clause.PackedParamValue;
-            var terms = new List<string>(clause.InTermCount);
+            var terms = new List<string>(clause.InTermCount + (clause.HasNullTerm ? 1 : 0));
             for (int t = 0; t < clause.InTermCount; t++)
-            {
-                if (clause.InNullTermIndices != null && clause.InNullTermIndices.Contains(t))
-                    terms.Add(null);
-                else
-                    terms.Add(FormatValueFromPlan(new PackedParam(p.ValueType, p.Param1 + t), plan));
-            }
+                terms.Add(FormatValueFromPlan(new PackedParam(p.ValueType, p.Param1 + t), plan));
+            if (clause.HasNullTerm)
+                terms.Add(null);
             return terms;
         }
 
