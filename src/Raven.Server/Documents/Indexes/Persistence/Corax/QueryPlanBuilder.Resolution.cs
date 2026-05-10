@@ -299,12 +299,19 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        // Spatial and vector resolve their complex parameters from the MethodExpression.
-        // This must happen before the binding null-check because these clause types have no Binding.
-        if (clause.ClauseType == ClauseType.Spatial && clause.MethodExpression != null)
-            ResolveSpatialParamsFromAST(clause, queryParameters);
-        if (clause.ClauseType == ClauseType.Vector && clause.MethodExpression != null)
-            ResolveVectorParamsFromAST(clause, queryParameters);
+        // Spatial and vector resolve via their bindings (no MethodExpression dependency).
+        // This must happen before the main binding null-check because these clause types
+        // use the binding for sub-parameter resolution, not for a single value.
+        if (clause.ClauseType == ClauseType.Spatial && clause.Binding?.SpatialBindings != null)
+        {
+            ResolveSpatialFromBindings(clause, queryParameters);
+            return;
+        }
+        if (clause.ClauseType == ClauseType.Vector && clause.Binding != null)
+        {
+            ResolveVectorFromBindings(clause, queryParameters);
+            return;
+        }
 
         var binding = clause.Binding;
         if (binding == null)
@@ -470,51 +477,49 @@ internal static partial class QueryPlanBuilder
 
     }
 
-    /// <summary>Resolve spatial parameters from the MethodExpression AST node.
-    /// Used during PopulateClauseValues — the MethodExpression is on the cached template.</summary>
-    private static void ResolveSpatialParamsFromAST(ClauseInfo clause, BlittableJsonReaderObject queryParameters)
+    /// <summary>Resolve spatial parameters from cached bindings (no MethodExpression dependency).</summary>
+    private static void ResolveSpatialFromBindings(ClauseInfo clause, BlittableJsonReaderObject queryParameters)
     {
-        var method = clause.MethodExpression;
+        var bindings = clause.Binding.SpatialBindings;
         var sp = new SpatialParams();
 
-        // distanceErrorPct (3rd argument of the spatial method)
-        if (method.Arguments.Count == 3)
+        // [0] = distanceErrorPct
+        if (bindings.Length > 0 && bindings[0] != null)
         {
-            var (depVal, _) = ResolveTermValue(method.Arguments[2], queryParameters);
-            if (depVal != null)
-                sp.DistanceErrorPct = Convert.ToDouble(depVal);
-            else
-                sp.DistanceErrorPct = -1;
+            var (depVal, _) = ResolveBinding(bindings[0], queryParameters);
+            sp.DistanceErrorPct = depVal != null ? Convert.ToDouble(depVal) : -1;
         }
 
-        // Shape sub-expression (2nd argument)
-        if (method.Arguments[1] is MethodExpression shapeExpr)
+        // clause.Binding.IsLiteral stores shape type: true = circle, false = WKT
+        if (clause.Binding.IsLiteral) // circle
         {
-            var shapeType = QueryMethod.GetMethodType(shapeExpr.Name.Value);
-            if (shapeType == MethodType.Spatial_Circle && shapeExpr.Arguments.Count >= 3)
+            sp.IsCircle = true;
+            if (bindings.Length >= 4)
             {
-                var (rVal, _) = ResolveTermValue(shapeExpr.Arguments[0], queryParameters);
-                var (latVal, _) = ResolveTermValue(shapeExpr.Arguments[1], queryParameters);
-                var (lngVal, _) = ResolveTermValue(shapeExpr.Arguments[2], queryParameters);
-                sp.IsCircle = true;
-                sp.CircleRadius = Convert.ToDouble(rVal);
-                sp.CircleLatitude = Convert.ToDouble(latVal);
-                sp.CircleLongitude = Convert.ToDouble(lngVal);
-                if (shapeExpr.Arguments.Count == 4)
+                var (r, _) = ResolveBinding(bindings[1], queryParameters);
+                var (lat, _) = ResolveBinding(bindings[2], queryParameters);
+                var (lng, _) = ResolveBinding(bindings[3], queryParameters);
+                sp.CircleRadius = Convert.ToDouble(r);
+                sp.CircleLatitude = Convert.ToDouble(lat);
+                sp.CircleLongitude = Convert.ToDouble(lng);
+                if (bindings.Length > 4 && bindings[4] != null)
                 {
-                    var (unitsVal, _) = ResolveTermValue(shapeExpr.Arguments[3], queryParameters);
-                    if (unitsVal != null && Enum.TryParse(typeof(SpatialUnits), unitsVal.ToString(), true, out var su))
+                    var (u, _) = ResolveBinding(bindings[4], queryParameters);
+                    if (u != null && Enum.TryParse(typeof(SpatialUnits), u.ToString(), true, out var su))
                         sp.Units = (SpatialUnits)su;
                 }
             }
-            else if (shapeType == MethodType.Spatial_Wkt && shapeExpr.Arguments.Count >= 1)
+        }
+        else // WKT
+        {
+            if (bindings.Length >= 2 && bindings[1] != null)
             {
-                var (wktVal, _) = ResolveTermValue(shapeExpr.Arguments[0], queryParameters);
-                sp.Wkt = wktVal?.ToString();
-                if (shapeExpr.Arguments.Count == 2)
+                var (wkt, _) = ResolveBinding(bindings[1], queryParameters);
+                sp.Wkt = wkt?.ToString();
+                if (bindings.Length > 2 && bindings[2] != null)
                 {
-                    var (unitsVal, _) = ResolveTermValue(shapeExpr.Arguments[1], queryParameters);
-                    if (unitsVal != null && Enum.TryParse(typeof(SpatialUnits), unitsVal.ToString(), true, out var su))
+                    var (u, _) = ResolveBinding(bindings[2], queryParameters);
+                    if (u != null && Enum.TryParse(typeof(SpatialUnits), u.ToString(), true, out var su))
                         sp.Units = (SpatialUnits)su;
                 }
             }
@@ -523,143 +528,52 @@ internal static partial class QueryPlanBuilder
         clause.Spatial = sp;
     }
 
-    /// <summary>Resolve vector parameters from the MethodExpression AST node.</summary>
-    private static void ResolveVectorParamsFromAST(ClauseInfo clause, BlittableJsonReaderObject queryParameters)
+    /// <summary>Resolve vector parameters from cached bindings (no MethodExpression dependency).</summary>
+    private static void ResolveVectorFromBindings(ClauseInfo clause, BlittableJsonReaderObject queryParameters)
     {
-        var method = clause.MethodExpression;
-        var vec = new VectorParams();
+        var binding = clause.Binding;
+        // VectorMethodKind is structural — stored on clause.Vector during parsing
+        var vec = new VectorParams { Method = clause.Vector?.Method ?? VectorMethodKind.None };
 
-        // minimumMatch (3rd argument)
-        if (method.Arguments.Count > 2)
+        // SpatialBindings reused for vector: [0]=minimumMatch, [1]=numberOfCandidates, [2]=aiTask
+        if (binding.SpatialBindings is { Length: > 0 })
         {
-            var (simVal, simType) = ResolveTermValue(method.Arguments[2], queryParameters);
-            if (simVal != null && simType != ValueTokenType.Null)
-                vec.MinimumMatch = simType == ValueTokenType.Double ? (float)(double)simVal
-                    : simType == ValueTokenType.Long ? (long)simVal : -1;
-        }
-
-        // numberOfCandidates (4th argument)
-        if (method.Arguments.Count > 3)
-        {
-            var (candVal, candType) = ResolveTermValue(method.Arguments[3], queryParameters);
-            if (candVal != null && candType != ValueTokenType.Null)
-                vec.NumberOfCandidates = Convert.ToInt32(candVal);
-        }
-
-        // Vector value (2nd argument)
-        QueryExpression srcVector = method.Arguments[1];
-        if (srcVector is MethodExpression methodValue)
-        {
-            vec.Method = methodValue.Name.ToString() switch
+            if (binding.SpatialBindings[0] != null)
             {
-                ClientConstants.VectorSearch.EmbeddingForDocument => VectorMethodKind.ForDocument,
-                ClientConstants.VectorSearch.EmbeddingForRaw => VectorMethodKind.ForRaw,
-                ClientConstants.VectorSearch.EmbeddingText => VectorMethodKind.EmbeddingText,
-                _ => VectorMethodKind.None
-            };
-
-            if (methodValue.Arguments.Count > 0 && methodValue.Arguments[0] is ValueExpression ve0)
-            {
-                var raw = ve0.GetValue(queryParameters);
-                if (raw is BlittableJsonReaderArray or BlittableJsonReaderObject)
-                {
-                    vec.ResolvedValue = raw;
-                    vec.ResolvedValueType = ValueTokenType.Parameter;
-                }
-                else if (raw != null)
-                {
-                    (vec.ResolvedValue, vec.ResolvedValueType) = ResolveParameterValue(raw);
-                }
+                var (simVal, simType) = ResolveBinding(binding.SpatialBindings[0], queryParameters);
+                if (simVal != null && simType != ValueTokenType.Null)
+                    vec.MinimumMatch = simType == ValueTokenType.Double ? (float)(double)simVal
+                        : simType == ValueTokenType.Long ? (long)simVal : -1;
             }
-
-            if (vec.Method == VectorMethodKind.EmbeddingText && methodValue.Arguments.Count > 1
-                && methodValue.Arguments[1] is MethodExpression aiMethod && aiMethod.Arguments.Count > 0)
+            if (binding.SpatialBindings.Length > 1 && binding.SpatialBindings[1] != null)
             {
-                var (taskVal, _) = ResolveTermValue(aiMethod.Arguments[0], queryParameters);
+                var (candVal, candType) = ResolveBinding(binding.SpatialBindings[1], queryParameters);
+                if (candVal != null && candType != ValueTokenType.Null)
+                    vec.NumberOfCandidates = Convert.ToInt32(candVal);
+            }
+            if (binding.SpatialBindings.Length > 2 && binding.SpatialBindings[2] != null)
+            {
+                var (taskVal, _) = ResolveBinding(binding.SpatialBindings[2], queryParameters);
                 vec.AiTaskName = taskVal?.ToString();
             }
         }
-        else if (srcVector is ValueExpression vecVe)
+
+        // Vector value
+        if (binding.VectorValueBinding != null)
         {
-            var raw = vecVe.GetValue(queryParameters);
-            if (raw is BlittableJsonReaderArray or BlittableJsonReaderObject)
+            var (val, valType) = ResolveBinding(binding.VectorValueBinding, queryParameters);
+            if (val is BlittableJsonReaderArray or BlittableJsonReaderObject)
             {
-                vec.ResolvedValue = raw;
+                vec.ResolvedValue = val;
                 vec.ResolvedValueType = ValueTokenType.Parameter;
             }
-            else if (raw != null)
+            else
             {
-                (vec.ResolvedValue, vec.ResolvedValueType) = ResolveParameterValue(raw);
+                vec.ResolvedValue = val;
+                vec.ResolvedValueType = valType;
             }
         }
 
-        clause.Vector = vec;
-    }
-
-    private static SpatialParams ResolveSpatialBindings(ParameterBinding binding, BlittableJsonReaderObject queryParameters)
-    {
-        var sp = new SpatialParams();
-        if (binding.SpatialBindings == null)
-            return sp;
-
-        // Spatial bindings: [0]=distErrPct, then for circle: [1]=radius, [2]=lat, [3]=lng, [4]=units
-        // For WKT: [1]=wkt, [2]=units
-        if (binding.SpatialBindings.Length > 0)
-        {
-            var depBinding = binding.SpatialBindings[0];
-            var (depVal, _) = ResolveBinding(depBinding, queryParameters);
-            sp.DistanceErrorPct = depVal != null ? Convert.ToDouble(depVal) : -1;
-        }
-
-        if (binding.SpatialBindings.Length >= 4) // circle
-        {
-            sp.IsCircle = true;
-            var (r, _) = ResolveBinding(binding.SpatialBindings[1], queryParameters);
-            var (lat, _) = ResolveBinding(binding.SpatialBindings[2], queryParameters);
-            var (lng, _) = ResolveBinding(binding.SpatialBindings[3], queryParameters);
-            sp.CircleRadius = Convert.ToDouble(r);
-            sp.CircleLatitude = Convert.ToDouble(lat);
-            sp.CircleLongitude = Convert.ToDouble(lng);
-            if (binding.SpatialBindings.Length > 4)
-            {
-                var (u, _) = ResolveBinding(binding.SpatialBindings[4], queryParameters);
-                if (u != null && Enum.TryParse(typeof(SpatialUnits), u.ToString(), true, out var su))
-                    sp.Units = (SpatialUnits)su;
-            }
-        }
-        else if (binding.SpatialBindings.Length >= 2) // WKT
-        {
-            var (wkt, _) = ResolveBinding(binding.SpatialBindings[1], queryParameters);
-            sp.Wkt = wkt?.ToString();
-            if (binding.SpatialBindings.Length > 2)
-            {
-                var (u, _) = ResolveBinding(binding.SpatialBindings[2], queryParameters);
-                if (u != null && Enum.TryParse(typeof(SpatialUnits), u.ToString(), true, out var su))
-                    sp.Units = (SpatialUnits)su;
-            }
-        }
-
-        return sp;
-    }
-
-    private static void ResolveVectorBindings(ClauseInfo clause, ParameterBinding binding, BlittableJsonReaderObject queryParameters)
-    {
-        var vb = binding.VectorValueBinding;
-        if (vb == null)
-            return;
-
-        var vec = clause.Vector ?? new VectorParams();
-        var (val, valType) = ResolveBinding(vb, queryParameters);
-        // Keep blittable objects (arrays, etc.) as-is
-        if (val is BlittableJsonReaderArray or BlittableJsonReaderObject)
-            valType = ValueTokenType.Parameter;
-        vec.ResolvedValue = val;
-        vec.ResolvedValueType = valType;
-
-        // Re-resolve scalar params (minimumMatch, numberOfCandidates)
-        // These come from separate bindings stored on the ParameterBinding
-        // For now, they're already stored on the template's VectorParams and are immutable
-        // if literal, or need re-resolution if parameterized.
         clause.Vector = vec;
     }
 
@@ -668,7 +582,12 @@ internal static partial class QueryPlanBuilder
         if (binding.IsLiteral)
             return (binding.LiteralValue, binding.LiteralType);
         if (queryParameters != null && queryParameters.TryGet(binding.ParameterName, out object raw) && raw != null)
+        {
+            // Preserve blittable arrays/objects as-is (used by vector/spatial resolution)
+            if (raw is BlittableJsonReaderArray or BlittableJsonReaderObject)
+                return (raw, ValueTokenType.Parameter);
             return ResolveParameterValue(raw);
+        }
         return (null, ValueTokenType.String);
     }
 
@@ -1004,15 +923,14 @@ internal static partial class QueryPlanBuilder
 
             case ClauseType.Spatial:
             {
-                if (builderParams == null || clause.MethodExpression == null)
+                if (builderParams == null)
                     throw new InvalidOperationException("Spatial resolution requires builder parameters");
-                var spatialMethod = QueryMethod.GetMethodType(clause.MethodExpression.Name.Value);
-                return HandleSpatial(builderParams, clause, spatialMethod);
+                return HandleSpatial(builderParams, clause, clause.SpatialMethodType);
             }
 
             case ClauseType.Vector:
             {
-                if (builderParams == null || clause.MethodExpression == null)
+                if (builderParams == null)
                     throw new InvalidOperationException("Vector resolution requires builder parameters");
                 var vectorItem = HandleVector(builderParams, clause, false);
                 return vectorItem.Materialize(null);
@@ -1452,7 +1370,7 @@ internal static partial class QueryPlanBuilder
         for (int i = 0; i < plan.VectorSelects.Length; i++)
         {
             var clause = plan.VectorSelects[i].Clause as ClauseInfo;
-            if (clause == null || clause.ClauseType != ClauseType.Vector || builderParams == null || clause.MethodExpression == null)
+            if (clause == null || clause.ClauseType != ClauseType.Vector || builderParams == null)
                 throw new InvalidOperationException("Vector select references an invalid clause at index " + i);
 
             items[i] = HandleVector(builderParams, clause, false);
@@ -1466,20 +1384,9 @@ internal static partial class QueryPlanBuilder
         var index = builderParameters.Index;
         var allocator = builderParameters.Allocator;
 
-        // Field name was pre-resolved during parsing; fall back to AST resolution for
-        // dynamic indexes where GetSpatialFieldName needs the spatial sub-expression.
-        string fieldName = clause.FieldName;
-        if (fieldName == null)
-        {
-            var expression = clause.MethodExpression;
-            if (metadata.IsDynamic == false)
-                fieldName = QueryBuilderHelper.ExtractIndexFieldName(metadata.Query, builderParameters.QueryParameters, expression.Arguments[0], metadata);
-            else
-            {
-                var spatialExpression = (MethodExpression)expression.Arguments[0];
-                fieldName = metadata.GetSpatialFieldName(spatialExpression, builderParameters.QueryParameters);
-            }
-        }
+        // Field name was pre-resolved during parsing.
+        string fieldName = clause.FieldName
+            ?? throw new InvalidOperationException("Spatial clause has no pre-resolved field name.");
 
         var fieldMetadata = QueryBuilderHelper.GetFieldMetadata(allocator, fieldName, index, builderParameters.IndexFieldsMapping,
             builderParameters.FieldsToFetch, builderParameters.HasDynamics, builderParameters.DynamicFields, hasBoost: builderParameters.HasBoost);
@@ -1522,7 +1429,6 @@ internal static partial class QueryPlanBuilder
     private static CoraxVectorItem HandleVector(QueryBuilderParameters builderParameters, ClauseInfo clause, bool exact)
     {
         var metadata = builderParameters.Metadata;
-        var me = clause.MethodExpression;
         IndexField indexField;
         string embeddingsGenerationTaskIdentifier;
 
@@ -1534,9 +1440,8 @@ internal static partial class QueryPlanBuilder
             ? clause.Vector.NumberOfCandidates
             : builderParameters.Index.Configuration.CoraxVectorDefaultNumberOfCandidatesForQuerying;
 
-        var fieldName = metadata.IsDynamic == false
-            ? QueryBuilderHelper.ExtractIndexFieldName(metadata.Query, builderParameters.QueryParameters, me.Arguments[0], metadata)
-            : metadata.GetVectorFieldName(me, builderParameters.QueryParameters);
+        var fieldName = clause.FieldName
+            ?? throw new InvalidOperationException("Vector clause has no pre-resolved field name.");
 
         var fieldMetadata = QueryBuilderHelper.GetFieldMetadata(builderParameters, fieldName, hasBoost: builderParameters.HasBoost);
 

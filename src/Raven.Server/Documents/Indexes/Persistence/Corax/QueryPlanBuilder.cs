@@ -328,10 +328,10 @@ internal static partial class QueryPlanBuilder
         /// execution correctly ORs in the complement set.</summary>
         public bool IsOrChainNotEquals;
         public List<ClauseInfo> AndSubClauses; // for AndGroup (AND sub-expression inside OR)
-        public MethodExpression MethodExpression; // for Spatial, Vector — AST node for field name resolution
 
         /// <summary>Pre-resolved spatial parameters. Null for non-spatial clauses.</summary>
         public SpatialParams Spatial;
+        public MethodType SpatialMethodType; // for spatial: Within/Contains/Disjoint/Intersects
 
         /// <summary>Pre-resolved vector parameters. Null for non-vector clauses.</summary>
         public VectorParams Vector;
@@ -367,7 +367,7 @@ internal static partial class QueryPlanBuilder
                 BoostFactor = BoostFactor,
                 SearchOperator = SearchOperator,
                 IsOrChainNotEquals = IsOrChainNotEquals,
-                MethodExpression = MethodExpression,
+                SpatialMethodType = SpatialMethodType,
                 Binding = Binding,
                 BoostBinding = BoostBinding,
                 OrSubClauses = OrSubClauses?.ConvertAll(c => c.CloneStructure()),
@@ -865,32 +865,111 @@ internal static partial class QueryPlanBuilder
             case MethodType.Spatial_Disjoint:
             case MethodType.Spatial_Intersects:
             {
-                // Structural only — value resolution happens in PopulateClauseValues
-                // via ResolveSpatialParamsFromAST using the MethodExpression.
-                // Resolve field name (structural — doesn't change with parameters).
-                string spatialFieldName = null;
-                if (TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var sfn))
+                // Capture bindings for all spatial sub-arguments.
+                // Shape type and field name are structural; parameter values resolved per-execution.
+                string spatialFieldName;
+                if (metadata.IsDynamic && method.Arguments[0] is MethodExpression spatialPointExpr)
+                    spatialFieldName = metadata.GetSpatialFieldName(spatialPointExpr, queryParameters);
+                else if (TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var sfn))
                     spatialFieldName = sfn;
+                else
+                    spatialFieldName = QueryBuilderHelper.ExtractIndexFieldName(metadata.Query, queryParameters, method.Arguments[0], metadata);
+
+                var shapeExpr = method.Arguments[1] as MethodExpression;
+                var shapeType = shapeExpr != null ? QueryMethod.GetMethodType(shapeExpr.Name.Value) : MethodType.Unknown;
+
+                // Build spatial bindings: [0]=distErrPct, then shape-specific args
+                var spatialBindings = new List<ParameterBinding>();
+                // distanceErrorPct (3rd argument, optional)
+                spatialBindings.Add(method.Arguments.Count == 3
+                    ? CreateBinding(method.Arguments[2], queryParameters)
+                    : null);
+
+                bool isCircle = shapeType == MethodType.Spatial_Circle;
+                if (isCircle && shapeExpr.Arguments.Count >= 3)
+                {
+                    spatialBindings.Add(CreateBinding(shapeExpr.Arguments[0], queryParameters)); // radius
+                    spatialBindings.Add(CreateBinding(shapeExpr.Arguments[1], queryParameters)); // lat
+                    spatialBindings.Add(CreateBinding(shapeExpr.Arguments[2], queryParameters)); // lng
+                    spatialBindings.Add(shapeExpr.Arguments.Count == 4 // units (optional)
+                        ? CreateBinding(shapeExpr.Arguments[3], queryParameters) : null);
+                }
+                else if (shapeType == MethodType.Spatial_Wkt && shapeExpr.Arguments.Count >= 1)
+                {
+                    spatialBindings.Add(CreateBinding(shapeExpr.Arguments[0], queryParameters)); // wkt
+                    spatialBindings.Add(shapeExpr.Arguments.Count == 2 // units (optional)
+                        ? CreateBinding(shapeExpr.Arguments[1], queryParameters) : null);
+                }
 
                 clauses.Add(new ClauseInfo
                 {
                     FieldName = spatialFieldName,
                     ClauseType = ClauseType.Spatial,
-                    MethodExpression = method,
-                    OriginalIndex = clauses.Count
+                    SpatialMethodType = methodType,
+                    OriginalIndex = clauses.Count,
+                    Binding = new ParameterBinding
+                    {
+                        SpatialBindings = spatialBindings.ToArray(),
+                        // Store shape type as literal metadata
+                        IsLiteral = isCircle, // reuse: true = circle, false = WKT
+                    }
                 });
                 break;
             }
 
             case MethodType.Vector_Search:
             {
-                // Structural only — value resolution happens in PopulateClauseValues
-                // via ResolveVectorParamsFromAST using the MethodExpression.
+                // Capture bindings for vector sub-arguments.
+                // Resolve field name (structural — uses metadata for dynamic index field naming).
+                string vectorFieldName = metadata.IsDynamic == false
+                    ? QueryBuilderHelper.ExtractIndexFieldName(metadata.Query, queryParameters, method.Arguments[0], metadata)
+                    : metadata.GetVectorFieldName(method, queryParameters);
+
+                VectorMethodKind vecMethod = VectorMethodKind.None;
+                ParameterBinding vectorValueBinding = null;
+                ParameterBinding aiTaskBinding = null;
+                ParameterBinding minimumMatchBinding = null;
+                ParameterBinding numberOfCandidatesBinding = null;
+
+                if (method.Arguments.Count > 2)
+                    minimumMatchBinding = CreateBinding(method.Arguments[2], queryParameters);
+                if (method.Arguments.Count > 3)
+                    numberOfCandidatesBinding = CreateBinding(method.Arguments[3], queryParameters);
+
+                QueryExpression srcVector = method.Arguments[1];
+                if (srcVector is MethodExpression methodValue)
+                {
+                    vecMethod = methodValue.Name.ToString() switch
+                    {
+                        ClientConstants.VectorSearch.EmbeddingForDocument => VectorMethodKind.ForDocument,
+                        ClientConstants.VectorSearch.EmbeddingForRaw => VectorMethodKind.ForRaw,
+                        ClientConstants.VectorSearch.EmbeddingText => VectorMethodKind.EmbeddingText,
+                        _ => VectorMethodKind.None
+                    };
+                    if (methodValue.Arguments.Count > 0)
+                        vectorValueBinding = CreateBinding(methodValue.Arguments[0], queryParameters);
+                    if (vecMethod == VectorMethodKind.EmbeddingText && methodValue.Arguments.Count > 1
+                        && methodValue.Arguments[1] is MethodExpression aiMethod && aiMethod.Arguments.Count > 0)
+                        aiTaskBinding = CreateBinding(aiMethod.Arguments[0], queryParameters);
+                }
+                else
+                {
+                    vectorValueBinding = CreateBinding(srcVector, queryParameters);
+                }
+
                 clauses.Add(new ClauseInfo
                 {
+                    FieldName = vectorFieldName,
                     ClauseType = ClauseType.Vector,
-                    MethodExpression = method,
-                    OriginalIndex = clauses.Count
+                    OriginalIndex = clauses.Count,
+                    Binding = new ParameterBinding
+                    {
+                        VectorValueBinding = vectorValueBinding,
+                        // Store other vector bindings on SpatialBindings (reuse the array)
+                        // [0]=minimumMatch, [1]=numberOfCandidates, [2]=aiTask
+                        SpatialBindings = new[] { minimumMatchBinding, numberOfCandidatesBinding, aiTaskBinding },
+                    },
+                    Vector = new VectorParams { Method = vecMethod } // structural: method kind doesn't change
                 });
                 break;
             }
