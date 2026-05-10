@@ -98,7 +98,6 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
                     Index = _index,
                     IndexFieldsMapping = _fieldMappings,
                     Allocator = _allocator,
-                    Token = token,
                     HasDynamics = parameters.HasDynamics,
                     DynamicFields = parameters.DynamicFields,
                     HasBoost = parameters.HasBoost
@@ -282,7 +281,6 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
                     Index = _index,
                     IndexFieldsMapping = _fieldMappings,
                     Allocator = _allocator,
-                    Token = token,
                     HasDynamics = parameters.HasDynamics,
                     DynamicFields = parameters.DynamicFields,
                     HasBoost = parameters.HasBoost

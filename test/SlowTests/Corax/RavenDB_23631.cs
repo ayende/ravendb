@@ -94,8 +94,7 @@ public class RavenDB_23631(ITestOutputHelper output) : StorageTest(output)
             IndexSearcher = searcher,
             Metadata = queryMetadata,
             QueryParameters = null,
-            Allocator = Allocator,
-            Token = default
+            Allocator = Allocator
         };
         var match = QueryPlanBuilder.BuildAndCompile(planParams, null, long.MaxValue, out _, out _, null, default);
         var list = new List<string>();

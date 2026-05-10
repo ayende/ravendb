@@ -1435,8 +1435,7 @@ namespace FastTests.Corax
                 IndexSearcher = searcher,
                 Metadata = queryMetadata,
                 QueryParameters = null,
-                Allocator = Allocator,
-                Token = CancellationToken.None
+                Allocator = Allocator
             };
 
             // BuildAndCompile: RQL → QueryPlan → IL compilation → CompiledQueryMatch

@@ -630,7 +630,6 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                                 IndexFieldsMapping = _fieldMappings,
                                 FieldsToFetch = fieldsToFetch,
                                 Allocator = _allocator,
-                                Token = token,
                                 HasDynamics = builderParameters.HasDynamics,
                                 DynamicFields = builderParameters.DynamicFields,
                                 HasBoost = builderParameters.HasBoost
@@ -1341,7 +1340,6 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     Index = _index,
                     IndexFieldsMapping = _fieldMappings,
                     Allocator = _allocator,
-                    Token = token,
                     HasDynamics = builderParameters.HasDynamics,
                     DynamicFields = builderParameters.DynamicFields,
                     HasBoost = builderParameters.HasBoost
@@ -1539,7 +1537,6 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 Index = builderParameters.Index,
                 IndexFieldsMapping = builderParameters.IndexFieldsMapping,
                 Allocator = builderParameters.Allocator,
-                Token = builderParameters.Token,
                 HasDynamics = builderParameters.HasDynamics,
                 DynamicFields = builderParameters.DynamicFields,
                 HasBoost = builderParameters.HasBoost
