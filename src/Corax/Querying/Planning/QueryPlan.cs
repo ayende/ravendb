@@ -186,6 +186,7 @@ public struct SpatialFilterOp
 {
     public int MatchIndex;
     public ClauseInfo Clause;
+    public ClauseExecution Exec;
 }
 
 /// <summary>Vector select — wraps the bitmap-producing match as its filterQuery.
@@ -194,6 +195,7 @@ public struct VectorSelectOp
 {
     public int MatchIndex;
     public ClauseInfo Clause;
+    public ClauseExecution Exec;
 }
 
 public class QueryPlan
@@ -201,9 +203,11 @@ public class QueryPlan
     public PlanOp[] Ops;
     public int OperandOrdering;
 
-    /// <summary>Clause list from the query plan builder, used for match/term-source resolution
-    /// and introspection.</summary>
+    /// <summary>Clause list from the query plan builder — structural template data.</summary>
     public List<ClauseInfo> Clauses;
+
+    /// <summary>Per-execution state parallel to Clauses — parameter values, cardinality, etc.</summary>
+    public ClauseExecution[] Executions;
     public bool IsAllEntries;
     public bool AllNegated;
     public bool IsOr;
