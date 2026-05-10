@@ -406,7 +406,7 @@ internal static partial class QueryPlanBuilder
             for (int i = 0; i < bindings.Length; i++)
             {
                 var inB = bindings[i];
-                if (inB.IsLiteral)
+                if (inB.LiteralType != ParamValueType.Parameter)
                 {
                     resolvedValues.Add(inB.LiteralValue);
                     termTypes.Add(inB.LiteralType);
@@ -520,7 +520,9 @@ internal static partial class QueryPlanBuilder
             {
                 var (u, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialUnits], queryParameters);
                 if (u != null && Enum.TryParse(typeof(SpatialUnits), u.ToString(), true, out var su))
-                    sp.Units = (int)(SpatialUnits)su;
+                    sp.Units = (SpatialUnits)su == SpatialUnits.Kilometers
+                            ? global::Corax.Utils.Spatial.SpatialUnits.Kilometers
+                            : global::Corax.Utils.Spatial.SpatialUnits.Miles;
             }
         }
         else // WKT: distErrPct, wkt, [units]
@@ -533,7 +535,9 @@ internal static partial class QueryPlanBuilder
                 {
                     var (u, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialWktUnits], queryParameters);
                     if (u != null && Enum.TryParse(typeof(SpatialUnits), u.ToString(), true, out var su))
-                        sp.Units = (int)(SpatialUnits)su;
+                        sp.Units = (SpatialUnits)su == SpatialUnits.Kilometers
+                            ? global::Corax.Utils.Spatial.SpatialUnits.Kilometers
+                            : global::Corax.Utils.Spatial.SpatialUnits.Miles;
                 }
             }
         }
@@ -589,7 +593,7 @@ internal static partial class QueryPlanBuilder
     /// callers must check for arrays/objects before calling ResolveParameterValue.</summary>
     private static (object Value, ParamValueType Type) ResolveBindingRaw(ParameterBinding binding, BlittableJsonReaderObject queryParameters)
     {
-        if (binding.IsLiteral)
+        if (binding.LiteralType != ParamValueType.Parameter)
             return (binding.LiteralValue, binding.LiteralType);
         if (queryParameters != null && queryParameters.TryGet(binding.ParameterName, out object raw) && raw != null)
             return (raw, ParamValueType.Parameter); // raw from blittable — caller decides how to interpret
@@ -600,7 +604,7 @@ internal static partial class QueryPlanBuilder
     /// For parameters that might be arrays, use ResolveBindingRaw and handle arrays first.</summary>
     private static (object Value, ParamValueType Type) ResolveBindingScalar(ParameterBinding binding, BlittableJsonReaderObject queryParameters)
     {
-        if (binding.IsLiteral)
+        if (binding.LiteralType != ParamValueType.Parameter)
             return (binding.LiteralValue, binding.LiteralType);
         if (queryParameters != null && queryParameters.TryGet(binding.ParameterName, out object raw) && raw != null)
         {
@@ -1462,11 +1466,11 @@ internal static partial class QueryPlanBuilder
         if (sp.IsCircle)
         {
             shape = spatialField.ReadCircle(sp.CircleRadius, sp.CircleLatitude,
-                sp.CircleLongitude, ToSpatialUnits(sp.Units));
+                sp.CircleLongitude, sp.Units.HasValue ? (sp.Units.Value == global::Corax.Utils.Spatial.SpatialUnits.Kilometers ? SpatialUnits.Kilometers : SpatialUnits.Miles) : (SpatialUnits?)null);
         }
         else if (sp.Wkt != null)
         {
-            shape = spatialField.ReadShape(sp.Wkt, ToSpatialUnits(sp.Units));
+            shape = spatialField.ReadShape(sp.Wkt, sp.Units.HasValue ? (sp.Units.Value == global::Corax.Utils.Spatial.SpatialUnits.Kilometers ? SpatialUnits.Kilometers : SpatialUnits.Miles) : (SpatialUnits?)null);
         }
         else
         {
@@ -1509,14 +1513,13 @@ internal static partial class QueryPlanBuilder
         object methodParameter = vec.ResolvedValue;
         ValueTokenType valueTokenType = ToValueTokenType(vec.ResolvedValueType);
 
-        if (vec.Method != VectorMethodKind.None)
+        if (vec.Method != VectorSourceKind.Inline)
         {
             var method = vec.Method switch
             {
-                VectorMethodKind.ForDocument => VectorHelpers.MethodVectorValue.ForDocument,
-                VectorMethodKind.ForRaw => VectorHelpers.MethodVectorValue.ForRaw,
-                VectorMethodKind.EmbeddingText => VectorHelpers.MethodVectorValue.EmbeddingText,
-                _ => throw new InvalidDataException($"Unknown vector method kind: {vec.Method}")
+                VectorSourceKind.FromDocument => VectorHelpers.MethodVectorValue.ForDocument,
+                VectorSourceKind.FromText => VectorHelpers.MethodVectorValue.EmbeddingText,
+                _ => throw new InvalidDataException($"Unknown vector source kind: {vec.Method}")
             };
 
             if (method is not VectorHelpers.MethodVectorValue.EmbeddingText)

@@ -183,11 +183,6 @@ internal static partial class QueryPlanBuilder
         _ => SpatialOperationType.Within
     };
 
-    private static SpatialUnits? ToSpatialUnits(int? units) =>
-        units.HasValue ? (SpatialUnits)units.Value : null;
-
-    private static int? FromSpatialUnits(SpatialUnits su) => (int)su;
-
     private enum BooleanOp { And, Or, True, False, Leaf }
 
     // ── Entry point ──────────────────────────────────────────────────────
@@ -468,7 +463,7 @@ internal static partial class QueryPlanBuilder
         var maxBinding = CreateBinding(between.Max, queryParameters);
 
         // Type validation for literals (parameter types validated in PopulateParameters)
-        if (minBinding is { IsLiteral: true } && maxBinding is { IsLiteral: true }
+        if (minBinding is { LiteralType: not ParamValueType.Parameter } && maxBinding is { LiteralType: not ParamValueType.Parameter }
             && minBinding.LiteralType != maxBinding.LiteralType)
         {
             throw new InvalidQueryException(
@@ -500,7 +495,7 @@ internal static partial class QueryPlanBuilder
                 if (ve.Value == ValueTokenType.Parameter)
                 {
                     // Parameter — could be a single value or an array. Mark as array-capable.
-                    inBindings.Add(new ParameterBinding { ParameterName = ve.Token.Value });
+                    inBindings.Add(new ParameterBinding { ParameterName = ve.Token.Value, LiteralType = ParamValueType.Parameter });
                 }
                 else
                 {
@@ -684,7 +679,7 @@ internal static partial class QueryPlanBuilder
                     ? QueryBuilderHelper.ExtractIndexFieldName(metadata.Query, queryParameters, method.Arguments[0], metadata)
                     : metadata.GetVectorFieldName(method, queryParameters);
 
-                VectorMethodKind vecMethod = VectorMethodKind.None;
+                VectorSourceKind vecMethod = VectorSourceKind.Inline;
                 ParameterBinding vectorValueBinding = null;
                 ParameterBinding aiTaskBinding = null;
                 ParameterBinding minimumMatchBinding = null;
@@ -700,14 +695,14 @@ internal static partial class QueryPlanBuilder
                 {
                     vecMethod = methodValue.Name.ToString() switch
                     {
-                        ClientConstants.VectorSearch.EmbeddingForDocument => VectorMethodKind.ForDocument,
-                        ClientConstants.VectorSearch.EmbeddingForRaw => VectorMethodKind.ForRaw,
-                        ClientConstants.VectorSearch.EmbeddingText => VectorMethodKind.EmbeddingText,
-                        _ => VectorMethodKind.None
+                        ClientConstants.VectorSearch.EmbeddingForDocument => VectorSourceKind.FromDocument,
+                        ClientConstants.VectorSearch.EmbeddingForRaw => VectorSourceKind.Inline,
+                        ClientConstants.VectorSearch.EmbeddingText => VectorSourceKind.FromText,
+                        _ => VectorSourceKind.Inline
                     };
                     if (methodValue.Arguments.Count > 0)
                         vectorValueBinding = CreateBinding(methodValue.Arguments[0], queryParameters);
-                    if (vecMethod == VectorMethodKind.EmbeddingText && methodValue.Arguments.Count > 1
+                    if (vecMethod == VectorSourceKind.FromText && methodValue.Arguments.Count > 1
                         && methodValue.Arguments[1] is MethodExpression aiMethod && aiMethod.Arguments.Count > 0)
                         aiTaskBinding = CreateBinding(aiMethod.Arguments[0], queryParameters);
                 }
@@ -939,7 +934,7 @@ internal static partial class QueryPlanBuilder
             return null;
 
         if (ve.Value == ValueTokenType.Parameter)
-            return new ParameterBinding { ParameterName = ve.Token.Value };
+            return new ParameterBinding { ParameterName = ve.Token.Value, LiteralType = ParamValueType.Parameter };
 
         // Null literal — preserve as actual null, not the string "null"
         if (ve.Value == ValueTokenType.Null)

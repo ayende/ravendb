@@ -25,13 +25,12 @@ public enum SpatialOperationType : byte
     Intersects
 }
 
-/// <summary>Embedding method kind for vector queries.</summary>
-public enum VectorMethodKind : byte
+/// <summary>Where the vector data for a vector.search() query comes from.</summary>
+public enum VectorSourceKind : byte
 {
-    None,           // direct value (not a method call)
-    ForDocument,    // embedding.forDoc(docId)
-    ForRaw,         // embedding.forRaw(base64)
-    EmbeddingText,  // embedding.text(text, ai.task(taskName))
+    Inline,         // direct value or embedding.forRaw — vector data provided in the query
+    FromDocument,   // embedding.forDoc(docId) — vector copied from another document
+    FromText,       // embedding.text(text, ai.task(task)) — server generates embedding from text
 }
 
 /// <summary>
@@ -94,16 +93,15 @@ public readonly struct PackedParam
 public sealed class ParameterBinding
 {
     /// <summary>Cached native value for literals (long/double/string). Null for parameters
-    /// and for literal nulls (distinguished by ParameterName being null).</summary>
+    /// and for literal nulls. Only valid when LiteralType != Parameter.</summary>
     public object LiteralValue;
 
-    /// <summary>Type of the literal value. For parameters: ParamValueType.Parameter.</summary>
+    /// <summary>Type of the value. ParamValueType.Parameter means look up ParameterName
+    /// in the blittable at execution time. Other values mean LiteralValue is cached.</summary>
     public ParamValueType LiteralType;
 
     /// <summary>For parameters: name to look up in blittable ("p0"). Null for literals.</summary>
     public string ParameterName;
-
-    public bool IsLiteral => ParameterName == null;
 }
 
 /// <summary>Named binding indices per clause type. Each clause type stores its
@@ -191,9 +189,14 @@ public sealed class ClauseInfo
     public bool IsExact;
     public int SearchOperator; // for Search (AND=1/OR=0)
     public SpatialOperationType SpatialMethodType;
-    public VectorMethodKind VectorMethod;
+    public VectorSourceKind VectorMethod;
 
-    /// <summary>Set for NotEquals in OR chains — resolution pre-materializes AllEntries ANDNOT TermQuery.</summary>
+    /// <summary>Set for NotEquals clauses appearing in OR chains.
+    /// Example: WHERE Name != 'a' OR Age = 25
+    /// The NOT(Name='a') term cannot use the raw posting list (which contains entries
+    /// WITH 'a', not entries WITHOUT 'a'). Instead, ResolveMatches pre-materializes
+    /// AllEntries ANDNOT TermQuery('a') into a BitmapMatch, so FillFromMatch during
+    /// execution correctly ORs in the complement set.</summary>
     public bool IsOrChainNotEquals;
 
     public List<ClauseInfo> OrSubClauses;
@@ -241,9 +244,7 @@ public sealed class SpatialParams
     public double CircleLongitude;
     // WKT parameter
     public string Wkt;
-    // Shared — stored as enum value from Raven.Client.Documents.Indexes.Spatial.SpatialUnits
-    // (Kilometers=0, Miles=1). Null = use spatial field default.
-    public int? Units;
+    public Corax.Utils.Spatial.SpatialUnits? Units;
 }
 
 /// <summary>Per-execution vector query parameters. Resolved from ParameterBinding during
@@ -256,7 +257,7 @@ public sealed class VectorParams
     public int NumberOfCandidates = -1;  // -1 = use index default
     public object ResolvedValue;         // the raw vector parameter (string, BlittableJsonReaderArray, etc.)
     public ParamValueType ResolvedValueType;
-    public VectorMethodKind Method;      // which embedding method, if any
+    public VectorSourceKind Method;      // which embedding method, if any
     public string AiTaskName;            // AI task identifier for embedding.text
 }
 
