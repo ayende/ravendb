@@ -1,7 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Threading;
 using Corax.Querying.Planning;
 using Corax.Mappings;
 using Raven.Client.Exceptions;
@@ -48,8 +46,6 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 /// </summary>
 internal static partial class QueryPlanBuilder
 {
-    // ── Data model ───────────────────────────────────────────────────────
-
     /// <summary>
     /// Parameters needed by the planner for field metadata resolution,
     /// analyzer setup, and cardinality estimation.
@@ -68,8 +64,6 @@ internal static partial class QueryPlanBuilder
         public bool HasBoost;
     }
 
-    // ── Packed parameter encoding ──────────────────────────────────────
-
     /// <summary>
     /// Packed parameter reference — a 32-bit value encoding the type and index(es)
     /// of a clause's resolved value within the plan's typed arrays
@@ -80,22 +74,22 @@ internal static partial class QueryPlanBuilder
     ///   bits [14:0]  = second parameter index (0..32767, 0x7FFF = no second param)
     ///
     /// For simple predicates (Equals, GT, LT, etc.): Param1 = value index, Param2 = NoParam.
-    /// For BETWEEN: Param1 = low bound index, Param2 = high bound index (same typed array).
+    /// For BETWEEN: Param1 = low-bound index, Param2 = high-bound index (same-typed array).
     /// For IN/AllIn: Param1 = start index, Param2 = term count. All terms must be the same
     ///   type and are stored contiguously in the typed array.
     /// For parameterless clauses (Exists): None sentinel.
     /// </summary>
     internal readonly struct PackedParam
     {
-        public const int NoParam = 0x7FFF;
-        public const int MaxIndex = 0x7FFF; // 32767
+        private const int NoParam = 0x7FFF;
+        private const int MaxIndex = 0x7FFF; // 32767
 
         public const int TypeLong = 0;
         public const int TypeDouble = 1;
         public const int TypeString = 2;
-        public const int TypeNone = 3;
+        private const int TypeNone = 3;
 
-        /// <summary>Sentinel: no parameter (Exists clauses). Spatial and vector clauses
+        /// <summary>Sentinel: no parameter ("exists(Field)" clauses). Spatial and vector clauses
         /// store their numeric parameters directly on ClauseInfo fields instead.</summary>
         public static readonly PackedParam None = new((TypeNone << 30) | (NoParam << 15) | NoParam);
 
@@ -127,7 +121,7 @@ internal static partial class QueryPlanBuilder
 
     /// <summary>
     /// Accumulates typed parameter values during query plan building.
-    /// Each Add call stores the native value in the appropriate typed list
+    /// Each Add call stores the native value in the appropriate-typed list
     /// and returns a <see cref="PackedParam"/> encoding (type + index) for the clause.
     /// Values are stored as their native types — no string round-trips.
     /// </summary>
@@ -154,28 +148,7 @@ internal static partial class QueryPlanBuilder
             _strings.Add(value);
             return new PackedParam(PackedParam.TypeString, _strings.Count - 1);
         }
-
-        public PackedParam AddLongPair(long low, long high)
-        {
-            _longs.Add(low);
-            _longs.Add(high);
-            return new PackedParam(PackedParam.TypeLong, _longs.Count - 2, _longs.Count - 1);
-        }
-
-        public PackedParam AddDoublePair(double low, double high)
-        {
-            _doubles.Add(low);
-            _doubles.Add(high);
-            return new PackedParam(PackedParam.TypeDouble, _doubles.Count - 2, _doubles.Count - 1);
-        }
-
-        public PackedParam AddStringPair(string low, string high)
-        {
-            _strings.Add(low);
-            _strings.Add(high);
-            return new PackedParam(PackedParam.TypeString, _strings.Count - 2, _strings.Count - 1);
-        }
-
+        
         /// <summary>Add a resolved value by its detected type. Used by Parse* methods
         /// after <see cref="ResolveTermValue"/> determines the native type.</summary>
         public PackedParam Add(object value, ValueTokenType type)
@@ -201,6 +174,27 @@ internal static partial class QueryPlanBuilder
                     value2 is double d2 ? d2 : Convert.ToDouble(value2)),
                 _ => AddStringPair(value1?.ToString(), value2?.ToString())
             };
+
+            PackedParam AddLongPair(long low, long high)
+            {
+                _longs.Add(low);
+                _longs.Add(high);
+                return new PackedParam(PackedParam.TypeLong, _longs.Count - 2, _longs.Count - 1);
+            }
+
+            PackedParam AddDoublePair(double low, double high)
+            {
+                _doubles.Add(low);
+                _doubles.Add(high);
+                return new PackedParam(PackedParam.TypeDouble, _doubles.Count - 2, _doubles.Count - 1);
+            }
+
+            PackedParam AddStringPair(string low, string high)
+            {
+                _strings.Add(low);
+                _strings.Add(high);
+                return new PackedParam(PackedParam.TypeString, _strings.Count - 2, _strings.Count - 1);
+            }
         }
 
         public int LongCount => _longs.Count;
@@ -234,8 +228,8 @@ internal static partial class QueryPlanBuilder
         Regex,
         Spatial,
         Vector,
-        OrGroup,  // A group of OR'd sub-clauses
-        AndGroup, // A group of AND'd sub-clauses inside an OR chain
+        OrGroup,  // A group of OR'd subclauses
+        AndGroup, // A group of AND'd subclauses inside an OR chain
         EmptyIn,  // IN() with empty list — matches nothing
     }
 
@@ -249,8 +243,8 @@ internal static partial class QueryPlanBuilder
     /// - Field names are resolved (alias substitution, id() expansion, quoted-name handling).
     /// - Parameter values are resolved from the blittable and stored as native types in the
     ///   plan's typed arrays (LongValues, DoubleValues, StringValues). PackedParam encodes
-    ///   (type, index) so resolution never re-parses strings.
-    /// - Clause type is classified into a flat enum — downstream code switches on one value
+    ///   (type, index), so resolution never reparses strings.
+    /// - A clause type is classified into a flat enum — downstream code switches on one value
     ///   instead of pattern-matching AST node types and method names.
     /// - Planning annotations (Cardinality, IsExact, BoostFactor, IsNegated) are attached per
     ///   clause for operand reordering, dispatch classification, and entry-scan eligibility.
@@ -264,7 +258,7 @@ internal static partial class QueryPlanBuilder
         public List<string> InTerms;      // for IN (string forms, used for display/highlighting and InQuery fallback)
 
         /// <summary>Packed (type, index) into QueryPlan.LongValues/DoubleValues/StringValues.
-        /// For BETWEEN: Param1 = low bound index, Param2 = high bound index.
+        /// For BETWEEN: Param1 = low-bound index, Param2 = high-bound index.
         /// For IN/AllIn: Param1 = start index, Param2 = term count.
         /// See <see cref="PackedParam"/>.</summary>
         public PackedParam PackedParamValue = PackedParam.None;
