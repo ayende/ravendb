@@ -81,7 +81,7 @@ internal static partial class QueryPlanBuilder
     /// </summary>
     internal readonly struct PackedParam
     {
-        private const int NoParam = 0x7FFF;
+        public const int NoParamValue = 0x7FFF;
         private const int MaxIndex = 0x7FFF; // 32767
 
         public const int TypeLong = 0;
@@ -91,17 +91,17 @@ internal static partial class QueryPlanBuilder
 
         /// <summary>Sentinel: no parameter ("exists(Field)" clauses). Spatial and vector clauses
         /// store their numeric parameters directly on ClauseInfo fields instead.</summary>
-        public static readonly PackedParam None = new((TypeNone << 30) | (NoParam << 15) | NoParam);
+        public static readonly PackedParam None = new((TypeNone << 30) | (NoParamValue << 15) | NoParamValue);
 
         private readonly int _value;
 
         private PackedParam(int raw) => _value = raw;
 
-        public PackedParam(int type, int param1, int param2 = NoParam)
+        public PackedParam(int type, int param1, int param2 = NoParamValue)
         {
             if (param1 > MaxIndex)
                 ThrowLimitExceeded(param1);
-            if (param2 != NoParam && param2 > MaxIndex)
+            if (param2 != NoParamValue && param2 > MaxIndex)
                 ThrowLimitExceeded(param2);
             _value = (type << 30) | ((param1 & 0x7FFF) << 15) | (param2 & 0x7FFF);
         }
@@ -252,9 +252,7 @@ internal static partial class QueryPlanBuilder
     internal class ClauseInfo
     {
         public string FieldName;
-        public string TermValue;          // string form — used for display, highlighting, and scan parameter encoding
         public ValueTokenType TermValueType; // for type-aware scan predicate building
-        public string TermValue2;         // for BETWEEN (string form)
         public List<string> InTerms;      // for IN (string forms, used for display/highlighting and InQuery fallback)
 
         /// <summary>Packed (type, index) into QueryPlan.LongValues/DoubleValues/StringValues.
@@ -618,7 +616,6 @@ internal static partial class QueryPlanBuilder
         clauses.Add(new ClauseInfo
         {
             FieldName = fieldName,
-            TermValue = FormatValue(value, valueType),
             TermValueType = valueType,
             PackedParamValue = writer.Add(value, valueType),
             ClauseType = be.Operator == OperatorType.NotEqual ? ClauseType.NotEquals : ClauseType.Equals,
@@ -636,7 +633,6 @@ internal static partial class QueryPlanBuilder
         clauses.Add(new ClauseInfo
         {
             FieldName = fieldName,
-            TermValue = FormatValue(value, valueType),
             TermValueType = valueType,
             PackedParamValue = writer.Add(value, valueType),
             ClauseType = be.Operator switch
@@ -662,8 +658,6 @@ internal static partial class QueryPlanBuilder
         clauses.Add(new ClauseInfo
         {
             FieldName = resolvedFieldName,
-            TermValue = FormatValue(minVal, minType),
-            TermValue2 = FormatValue(maxVal, minType),
             TermValueType = minType,
             PackedParamValue = writer.AddPair(minVal, maxVal, minType),
             ClauseType = ClauseType.Between,
@@ -692,7 +686,7 @@ internal static partial class QueryPlanBuilder
                     {
                         var (elemVal, elemTyp) = ResolveInValue(it, ValueTokenType.Parameter, ref hasTime);
                         resolvedValues.Add(elemVal);
-                        terms.Add(FormatValue(elemVal, elemTyp));
+                        terms.Add(FormatNativeValue(elemVal));
                         termTypes.Add(elemTyp);
                     }
                 }
@@ -700,7 +694,7 @@ internal static partial class QueryPlanBuilder
                 {
                     var (resVal, resTyp) = ResolveInValue(resolvedValue, ve.Value, ref hasTime);
                     resolvedValues.Add(resVal);
-                    terms.Add(FormatValue(resVal, resTyp));
+                    terms.Add(FormatNativeValue(resVal));
                     termTypes.Add(resTyp);
                 }
             }
@@ -869,7 +863,6 @@ internal static partial class QueryPlanBuilder
                 clauses.Add(new ClauseInfo
                 {
                     FieldName = regexFieldName,
-                    TermValue = regexTerm,
                     PackedParamValue = writer.AddString(regexTerm),
                     ClauseType = ClauseType.Regex,
                     OriginalIndex = clauses.Count
@@ -1082,7 +1075,6 @@ internal static partial class QueryPlanBuilder
         clauses.Add(new ClauseInfo
         {
             FieldName = fieldName,
-            TermValue = searchTerm,
             PackedParamValue = writer.AddString(searchTerm),
             ClauseType = ClauseType.Search,
             SearchOperator = searchOp,
@@ -1104,7 +1096,6 @@ internal static partial class QueryPlanBuilder
         clauses.Add(new ClauseInfo
         {
             FieldName = fieldName,
-            TermValue = prefixTerm,
             PackedParamValue = writer.AddString(prefixTerm),
             ClauseType = type,
             OriginalIndex = clauses.Count
@@ -1224,14 +1215,40 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    /// <summary>Format a native typed value as a string for display, highlighting, and scan parameters.
-    /// Inverse of <see cref="ResolveTermValue"/> — only used for string-form outputs.</summary>
-    private static string FormatValue(object value, ValueTokenType type)
+    /// <summary>Format a resolved native value as string. Used during parsing for InTerms display strings.</summary>
+    private static string FormatNativeValue(object value)
     {
         if (value == null) return null;
         if (value is double d)
             return d.ToString(System.Globalization.CultureInfo.InvariantCulture);
         return value.ToString();
+    }
+
+    /// <summary>Format a value from the plan's typed arrays as a string for display/highlighting.</summary>
+    internal static string FormatValueFromPlan(PackedParam packed, QueryPlan plan)
+    {
+        if (packed.IsNone) return null;
+        int idx = packed.Param1;
+        return packed.ValueType switch
+        {
+            PackedParam.TypeLong => plan.LongValues[idx].ToString(),
+            PackedParam.TypeDouble => plan.DoubleValues[idx].ToString(System.Globalization.CultureInfo.InvariantCulture),
+            _ => plan.StringValues[idx]
+        };
+    }
+
+    /// <summary>Format the second value (BETWEEN high bound) from the plan's typed arrays.</summary>
+    internal static string FormatValue2FromPlan(PackedParam packed, QueryPlan plan)
+    {
+        if (packed.IsNone) return null;
+        int idx = packed.Param2;
+        if (idx == PackedParam.NoParamValue) return null;
+        return packed.ValueType switch
+        {
+            PackedParam.TypeLong => plan.LongValues[idx].ToString(),
+            PackedParam.TypeDouble => plan.DoubleValues[idx].ToString(System.Globalization.CultureInfo.InvariantCulture),
+            _ => plan.StringValues[idx]
+        };
     }
 
     /// <summary>Convenience: resolve and format as string in one call. Used by methods that
@@ -2026,7 +2043,7 @@ internal static partial class QueryPlanBuilder
                 break;
         }
 
-        bool isBetween = clause.ClauseType == ClauseType.Between && clause.TermValue2 != null;
+        bool isBetween = clause.ClauseType == ClauseType.Between;
         int idx, idx2;
         switch (valueType)
         {

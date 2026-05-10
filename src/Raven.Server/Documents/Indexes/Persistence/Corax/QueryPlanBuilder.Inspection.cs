@@ -143,8 +143,21 @@ internal static partial class QueryPlanBuilder
                 else if (clause.ClauseType == ClauseType.AndGroup && clause.AndSubClauses != null)
                     foreach (var sub in clause.AndSubClauses) flatClauses.Add(sub);
                 else if (clause.ClauseType is ClauseType.In or ClauseType.AllIn && clause.InTerms != null)
-                    foreach (var term in clause.InTerms)
-                        flatClauses.Add(new ClauseInfo { FieldName = clause.FieldName, TermValue = term, ClauseType = clause.ClauseType, IsNegated = clause.IsNegated });
+                {
+                    // Create synthetic clauses for each IN term for display.
+                    // PackedParamValue points to the contiguous range; offset per term.
+                    var p = clause.PackedParamValue;
+                    for (int t = 0; t < clause.InTerms.Count; t++)
+                    {
+                        flatClauses.Add(new ClauseInfo
+                        {
+                            FieldName = clause.FieldName,
+                            PackedParamValue = new PackedParam(p.ValueType, p.Param1 + t),
+                            ClauseType = clause.ClauseType,
+                            IsNegated = clause.IsNegated
+                        });
+                    }
+                }
                 else
                     flatClauses.Add(clause);
             }
@@ -195,8 +208,8 @@ internal static partial class QueryPlanBuilder
                 if (clause != null)
                 {
                     inspOp.FieldName = clause.FieldName;
-                    inspOp.Term = clause.TermValue;
-                    inspOp.Term2 = clause.TermValue2;
+                    inspOp.Term = FormatValueFromPlan(clause.PackedParamValue, plan);
+                    inspOp.Term2 = FormatValue2FromPlan(clause.PackedParamValue, plan);
                     inspOp.IsNegated = clause.IsNegated;
                     if (clause.ClauseType != ClauseType.Equals) inspOp.ClauseType = clause.ClauseType.ToString();
                     if (clause.InTerms is { Count: > 0 })
