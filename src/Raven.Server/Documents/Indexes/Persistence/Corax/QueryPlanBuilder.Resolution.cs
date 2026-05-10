@@ -500,15 +500,14 @@ internal static partial class QueryPlanBuilder
                 if (builderParams == null || clause.MethodExpression == null)
                     throw new InvalidOperationException("Spatial resolution requires builder parameters");
                 var spatialMethod = QueryMethod.GetMethodType(clause.MethodExpression.Name.Value);
-                return HandleSpatial(builderParams, clause.MethodExpression, spatialMethod);
+                return HandleSpatial(builderParams, clause, spatialMethod);
             }
 
             case ClauseType.Vector:
             {
                 if (builderParams == null || clause.MethodExpression == null)
                     throw new InvalidOperationException("Vector resolution requires builder parameters");
-                var vectorItem = HandleVector(builderParams, clause.MethodExpression, false);
-                // Materialize with null inner — the bitmap provides the candidate set
+                var vectorItem = HandleVector(builderParams, clause, false);
                 return vectorItem.Materialize(null);
             }
 
@@ -525,7 +524,9 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    /// <summary>Resolve a single IN term to a typed TermQuery using the pre-resolved packed param.</summary>
+    /// <summary>Resolve a single IN term to a typed TermQuery.
+    /// IN terms are stored contiguously: PackedParamValue.Param1 = start index, Param2 = count.
+    /// Null terms (InTerms[i] == null) use the string TermQuery path regardless of packed type.</summary>
     private static IQueryMatch ResolveInTerm(ClauseInfo clause, int termIndex,
         IndexSearcher indexSearcher, QueryPlan plan,
         PlanParameters parameters, QueryBuilderParameters builderParams)
@@ -534,8 +535,14 @@ internal static partial class QueryPlanBuilder
             QueryBuilderHelper.GetFieldMetadata(in builderParams, clause.FieldName, hasBoost: builderParams.HasBoost) :
             indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);
 
-        var packed = clause.InPackedParams[termIndex];
-        return TermQueryFromParam(packed, fieldMeta, indexSearcher, plan);
+        // Null IN terms use string null lookup regardless of the dominant type
+        if (clause.InTerms != null && termIndex < clause.InTerms.Count && clause.InTerms[termIndex] == null)
+            return indexSearcher.TermQuery(fieldMeta, (string)null);
+
+        var p = clause.PackedParamValue;
+        int idx = p.Param1 + termIndex;
+        var termPacked = new PackedParam(p.ValueType, idx);
+        return TermQueryFromParam(termPacked, fieldMeta, indexSearcher, plan);
     }
 
     /// <summary>Create a pre-materialized <see cref="BitmapMatch"/> for a NotEquals clause
@@ -663,8 +670,17 @@ internal static partial class QueryPlanBuilder
             QueryBuilderHelper.GetFieldMetadata(in builderParams, clause.FieldName, hasBoost: builderParams.HasBoost) :
             indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);
 
-        var packed = clause.InPackedParams[termIndex];
-        long postingListId = GetTermPostingListIdFromParam(packed, fieldMeta, indexSearcher, plan);
+        // Null IN terms use string null lookup
+        if (clause.InTerms != null && termIndex < clause.InTerms.Count && clause.InTerms[termIndex] == null)
+        {
+            long nullPostingListId = indexSearcher.GetTermPostingListId(fieldMeta, (string)null);
+            return DecodePostingListId(nullPostingListId, indexSearcher);
+        }
+
+        var p = clause.PackedParamValue;
+        int idx = p.Param1 + termIndex;
+        var termPacked = new PackedParam(p.ValueType, idx);
+        long postingListId = GetTermPostingListIdFromParam(termPacked, fieldMeta, indexSearcher, plan);
         return DecodePostingListId(postingListId, indexSearcher);
     }
 
@@ -918,62 +934,57 @@ internal static partial class QueryPlanBuilder
             if (clause == null || clause.ClauseType != ClauseType.Vector || builderParams == null || clause.MethodExpression == null)
                 throw new InvalidOperationException("Vector select references an invalid clause at index " + i);
 
-            items[i] = HandleVector(builderParams, clause.MethodExpression, false);
+            items[i] = HandleVector(builderParams, clause, false);
         }
         return items;
     }
 
-    private static IQueryMatch HandleSpatial(QueryBuilderParameters builderParameters, MethodExpression expression, MethodType spatialMethod)
+    private static IQueryMatch HandleSpatial(QueryBuilderParameters builderParameters, ClauseInfo clause, MethodType spatialMethod)
     {
         var metadata = builderParameters.Metadata;
-        var queryParameters = builderParameters.QueryParameters;
         var index = builderParameters.Index;
-        var indexFieldsMapping = builderParameters.IndexFieldsMapping;
-        var fieldsToFetch = builderParameters.FieldsToFetch;
         var allocator = builderParameters.Allocator;
 
-        string fieldName;
-        if (metadata.IsDynamic == false)
-            fieldName = QueryBuilderHelper.ExtractIndexFieldName(metadata.Query, queryParameters, expression.Arguments[0], metadata);
-        else
+        // Field name was pre-resolved during parsing; fall back to AST resolution for
+        // dynamic indexes where GetSpatialFieldName needs the spatial sub-expression.
+        string fieldName = clause.FieldName;
+        if (fieldName == null)
         {
-            var spatialExpression = (MethodExpression)expression.Arguments[0];
-            fieldName = metadata.GetSpatialFieldName(spatialExpression, builderParameters.QueryParameters);
+            var expression = clause.MethodExpression;
+            if (metadata.IsDynamic == false)
+                fieldName = QueryBuilderHelper.ExtractIndexFieldName(metadata.Query, builderParameters.QueryParameters, expression.Arguments[0], metadata);
+            else
+            {
+                var spatialExpression = (MethodExpression)expression.Arguments[0];
+                fieldName = metadata.GetSpatialFieldName(spatialExpression, builderParameters.QueryParameters);
+            }
         }
 
-        var fieldMetadata = QueryBuilderHelper.GetFieldMetadata(allocator, fieldName, index, indexFieldsMapping, fieldsToFetch, builderParameters.HasDynamics,
-            builderParameters.DynamicFields, hasBoost: builderParameters.HasBoost);
-        var shapeExpression = (MethodExpression)expression.Arguments[1];
+        var fieldMetadata = QueryBuilderHelper.GetFieldMetadata(allocator, fieldName, index, builderParameters.IndexFieldsMapping,
+            builderParameters.FieldsToFetch, builderParameters.HasDynamics, builderParameters.DynamicFields, hasBoost: builderParameters.HasBoost);
 
-        var distanceErrorPct = RavenConstants.Documents.Indexing.Spatial.DefaultDistanceErrorPct;
-        if (expression.Arguments.Count == 3)
-        {
-            var distanceErrorPctValue = QueryBuilderHelper.GetValue(metadata.Query, metadata, queryParameters, (ValueExpression)expression.Arguments[2]);
-            QueryBuilderHelper.AssertValueIsNumber(fieldName, distanceErrorPctValue.Type);
-
-            distanceErrorPct = Convert.ToDouble(distanceErrorPctValue.Value);
-        }
+        var distanceErrorPct = clause.SpatialDistanceErrorPct >= 0
+            ? clause.SpatialDistanceErrorPct
+            : RavenConstants.Documents.Indexing.Spatial.DefaultDistanceErrorPct;
 
         var spatialField = builderParameters.Factories.GetSpatialFieldFactory(fieldName);
+        var units = clause.SpatialUnits ?? spatialField.Units;
 
-        var methodName = shapeExpression.Name;
-        var methodType = QueryMethod.GetMethodType(methodName.Value);
-
-        IShape shape = null;
-        switch (methodType)
+        // Build shape from pre-resolved parameters — no GetValue calls
+        IShape shape;
+        if (clause.IsSpatialCircle)
         {
-            case MethodType.Spatial_Circle:
-                shape = QueryBuilderHelper.HandleCircle(metadata.Query, shapeExpression, metadata, queryParameters, fieldName, spatialField, out _);
-                break;
-            case MethodType.Spatial_Wkt:
-                shape = QueryBuilderHelper.HandleWkt(builderParameters, fieldName, shapeExpression, spatialField, out _);
-                break;
-            default:
-                QueryMethod.ThrowMethodNotSupported(methodType, metadata.QueryText, builderParameters.QueryParameters);
-                break;
+            shape = spatialField.ReadCircle(clause.SpatialCircleRadius, clause.SpatialCircleLatitude,
+                clause.SpatialCircleLongitude, clause.SpatialUnits);
         }
-
-        Debug.Assert(shape != null);
+        else if (clause.SpatialWkt != null)
+        {
+            shape = spatialField.ReadShape(clause.SpatialWkt, clause.SpatialUnits);
+        }
+        else
+        {
+            throw new InvalidOperationException("Spatial clause has no pre-resolved shape parameters.");
+        }
 
         var operation = spatialMethod switch
         {
@@ -987,64 +998,39 @@ internal static partial class QueryPlanBuilder
         return builderParameters.IndexSearcher.SpatialQuery(fieldMetadata, distanceErrorPct, shape, spatialField.GetContext(), operation, token: builderParameters.Token);
     }
 
-    private static CoraxVectorItem HandleVector(QueryBuilderParameters builderParameters, MethodExpression me, bool exact)
+    private static CoraxVectorItem HandleVector(QueryBuilderParameters builderParameters, ClauseInfo clause, bool exact)
     {
         var metadata = builderParameters.Metadata;
+        var me = clause.MethodExpression;
         IndexField indexField;
         string embeddingsGenerationTaskIdentifier;
-        var minimumMatch = builderParameters.Index.Configuration.CoraxVectorSearchDefaultMinimumSimilarity;
-        if (me.Arguments.Count > 2)
-        {
-            var (similarityValue, similiarityValueType) = QueryBuilderHelper.GetValue(builderParameters.Metadata.Query, builderParameters.Metadata, builderParameters.QueryParameters,
-                (ValueExpression)me.Arguments[2]);
-            minimumMatch = similiarityValueType switch
-            {
-                ValueTokenType.Null => builderParameters.Index.Configuration.CoraxVectorSearchDefaultMinimumSimilarity,
-                ValueTokenType.Long => (long)similarityValue,
-                ValueTokenType.Double => (float)(double)similarityValue,
-                _ => throw new NotSupportedException("vector.search() minimumMatch must be a float, but was: " + similiarityValueType)
-            };
-        }
 
-        int numberOfCandidates = builderParameters.Index.Configuration.CoraxVectorDefaultNumberOfCandidatesForQuerying;
-        if (me.Arguments.Count > 3)
-        {
-            var (candidatesValue, candidatesValueType) = QueryBuilderHelper.GetValue(builderParameters.Metadata.Query, builderParameters.Metadata, builderParameters.QueryParameters,
-                (ValueExpression)me.Arguments[3]);
-            numberOfCandidates = candidatesValueType switch
-            {
-                ValueTokenType.Long => Convert.ToInt32(candidatesValue),
-                ValueTokenType.Double => Convert.ToInt32(candidatesValue),
-                ValueTokenType.Null => builderParameters.Index.Configuration.CoraxVectorDefaultNumberOfCandidatesForQuerying,
-                _ => throw new NotSupportedException("vector.search() minimumMatch must be a float, but was: " + candidatesValueType)
-            };
-        }
+        var minimumMatch = clause.VectorMinimumMatch >= 0
+            ? clause.VectorMinimumMatch
+            : builderParameters.Index.Configuration.CoraxVectorSearchDefaultMinimumSimilarity;
+
+        int numberOfCandidates = clause.VectorNumberOfCandidates >= 0
+            ? clause.VectorNumberOfCandidates
+            : builderParameters.Index.Configuration.CoraxVectorDefaultNumberOfCandidatesForQuerying;
 
         var fieldName = metadata.IsDynamic == false
             ? QueryBuilderHelper.ExtractIndexFieldName(metadata.Query, builderParameters.QueryParameters, me.Arguments[0], metadata)
             : metadata.GetVectorFieldName(me, builderParameters.QueryParameters);
 
         var fieldMetadata = QueryBuilderHelper.GetFieldMetadata(builderParameters, fieldName, hasBoost: builderParameters.HasBoost);
-        QueryExpression srcVector = me.Arguments[1];
 
-        if (srcVector is MethodExpression methodValue) // embedding.forDoc(docId) ...
+        // Use pre-resolved vector value and method kind from parsing
+        object methodParameter = clause.ResolvedVectorValue;
+        ValueTokenType valueTokenType = clause.ResolvedVectorValueType;
+
+        if (clause.VectorMethod != VectorMethodKind.None)
         {
-            var supportedMethods = methodValue.Name != ClientConstants.VectorSearch.EmbeddingForDocument
-                                   && methodValue.Name != ClientConstants.VectorSearch.EmbeddingForRaw
-                                   && methodValue.Name != ClientConstants.VectorSearch.EmbeddingText;
-
-            PortableExceptions.ThrowIf<InvalidDataException>(supportedMethods,
-                $"Expected {ClientConstants.VectorSearch.EmbeddingForDocument}() method call, but got: {methodValue.Name}");
-
-            var (methodParameter, valueTokenType) = QueryBuilderHelper.GetValue(metadata.Query, metadata, builderParameters.QueryParameters, (ValueExpression)methodValue.Arguments[0], allowObjectsInParameters: false, allowArraysInParameters: true);
-
-            var method = methodValue.Name.ToString() switch
+            var method = clause.VectorMethod switch
             {
-                ClientConstants.VectorSearch.EmbeddingForDocument => VectorHelpers.MethodVectorValue.ForDocument,
-                ClientConstants.VectorSearch.EmbeddingForRaw => VectorHelpers.MethodVectorValue.ForRaw,
-                ClientConstants.VectorSearch.EmbeddingText => VectorHelpers.MethodVectorValue.EmbeddingText,
-                _ => throw new InvalidDataException(
-                    $"Unknown method in value ({methodValue.Name}. Parameter type: {methodParameter.GetType().FullName}, Value: {methodParameter}")
+                VectorMethodKind.ForDocument => VectorHelpers.MethodVectorValue.ForDocument,
+                VectorMethodKind.ForRaw => VectorHelpers.MethodVectorValue.ForRaw,
+                VectorMethodKind.EmbeddingText => VectorHelpers.MethodVectorValue.EmbeddingText,
+                _ => throw new InvalidDataException($"Unknown vector method kind: {clause.VectorMethod}")
             };
 
             if (method is not VectorHelpers.MethodVectorValue.EmbeddingText)
@@ -1057,14 +1043,11 @@ internal static partial class QueryPlanBuilder
                     (method: VectorHelpers.MethodVectorValue.ForRaw, StringSegment stringSegmentAsBase64) => CoraxVectorItem.BuildSingleVector(builderParameters, fieldMetadata, GenerateEmbeddings.FromBase64Array(VectorOptions.Default, builderParameters.Allocator, stringSegmentAsBase64.ToString()), numberOfCandidates, minimumMatch, exact),
                     (_, BlittableJsonReaderArray { Length: > 0 }) => throw new InvalidDataException("Cannot perform search on empty value."),
                     _ => throw new InvalidQueryException(
-                        $"Unknown method in value ({methodValue.Name}. Parameter type: {methodParameter.GetType().FullName}, Value: {methodParameter}")
+                        $"Unknown method in value ({clause.VectorMethod}. Parameter type: {methodParameter?.GetType().FullName}, Value: {methodParameter}")
                 };
             }
 
-            var aiTaskMethod = (MethodExpression)methodValue.Arguments[1];
-            PortableExceptions.ThrowIfNot<InvalidOperationException>(aiTaskMethod.Name == ClientConstants.VectorSearch.AiTaskMethodName, "Expected to find an AI task method call, but got: " + aiTaskMethod.Name);
-            embeddingsGenerationTaskIdentifier = QueryBuilderHelper.GetValue(metadata.Query, metadata, builderParameters.QueryParameters, (ValueExpression)aiTaskMethod.Arguments[0],
-                allowObjectsInParameters: false, allowArraysInParameters: false).Value.ToString();
+            embeddingsGenerationTaskIdentifier = clause.VectorAiTaskName;
             var vectorOptions = VectorHelpers.GetExplicitVectorOptions(builderParameters, fieldName, out indexField);
             if (vectorOptions != null)
             {
@@ -1081,15 +1064,14 @@ internal static partial class QueryPlanBuilder
             var vector = VectorHelpers.GetEmbeddingsForQueryParameter(builderParameters, valueTokenType, methodParameter, embeddingsGenerationTaskIdentifier, vectorOptions, fieldName);
 
             if (vector.SingleVector != null)
-            {
                 return CoraxVectorItem.BuildSingleVector(builderParameters, fieldMetadata, vector.SingleVector.Value, numberOfCandidates, minimumMatch, exact);
-            }
 
             return CoraxVectorItem.BuildMultiVector(builderParameters, fieldMetadata, vector.MultiVector, numberOfCandidates, minimumMatch, exact);
         }
 
-        var (value, valueType) = QueryBuilderHelper.GetValue(metadata.Query, metadata, builderParameters.QueryParameters, (ValueExpression)srcVector,
-            allowObjectsInParameters: false, allowArraysInParameters: true);
+        // Direct value (not a method call) — use pre-resolved value
+        var value = methodParameter;
+        var valueType = valueTokenType;
 
         (VectorValue? SingleVector, VectorValue[] MultiVector) transformedEmbeddings = (null, null);
         int numberOfDimensions;
