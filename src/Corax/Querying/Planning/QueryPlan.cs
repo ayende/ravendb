@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Voron.Data.PostingLists;
 
 namespace Corax.Querying.Planning;
@@ -180,27 +181,19 @@ public enum ScanCompareOp : byte
 }
 
 /// <summary>Spatial post-filter — ANDed with the candidate bitmap after the filter phase.
-/// MatchIndex points into the resolved IQueryMatch[]; Clause is the originating ClauseInfo.</summary>
+/// MatchIndex points into the resolved IQueryMatch[].</summary>
 public struct SpatialFilterOp
 {
     public int MatchIndex;
-
-    /// <summary>Opaque reference to ClauseInfo (Raven.Server) — stored as object because
-    /// QueryPlan lives in Corax which cannot reference Raven.Server types. Cast back to
-    /// ClauseInfo in QueryPlanBuilder.ResolveVectorItems/ResolveSpatialFilters.</summary>
-    public object Clause;
+    public ClauseInfo Clause;
 }
 
 /// <summary>Vector select — wraps the bitmap-producing match as its filterQuery.
-/// MatchIndex points into the resolved IQueryMatch[]; Clause is the originating ClauseInfo.</summary>
+/// MatchIndex points into the resolved IQueryMatch[].</summary>
 public struct VectorSelectOp
 {
     public int MatchIndex;
-
-    /// <summary>Opaque reference to ClauseInfo (Raven.Server) — stored as object because
-    /// QueryPlan lives in Corax which cannot reference Raven.Server types. Cast back to
-    /// ClauseInfo in QueryPlanBuilder.ResolveVectorItems/ResolveSpatialFilters.</summary>
-    public object Clause;
+    public ClauseInfo Clause;
 }
 
 public class QueryPlan
@@ -208,11 +201,9 @@ public class QueryPlan
     public PlanOp[] Ops;
     public int OperandOrdering;
 
-    /// <summary>
-    /// Here we store the opaque state from QueryPlanBuilder, which is used for introspection later.
-    /// We cannot store the real type because they are using  Raven.Server types.
-    /// </summary>
-    public object QueryBuilderPlanState;
+    /// <summary>Clause list from the query plan builder, used for match/term-source resolution
+    /// and introspection.</summary>
+    public List<ClauseInfo> Clauses;
     public bool IsAllEntries;
     public bool AllNegated;
     public bool IsOr;

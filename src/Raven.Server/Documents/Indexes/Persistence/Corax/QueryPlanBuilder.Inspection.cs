@@ -135,7 +135,7 @@ internal static partial class QueryPlanBuilder
         if (ops == null || ops.Length == 0) return [];
 
         var flatClauses = new List<ClauseInfo>();
-        if (plan.QueryBuilderPlanState is List<ClauseInfo> clauses)
+        if (plan.Clauses is { Count: > 0 } clauses)
         {
             foreach (var clause in clauses)
             {

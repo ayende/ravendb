@@ -66,7 +66,7 @@ public class PlanCache
 
     /// <summary>Try to retrieve the cached clause template for a query text.
     /// The template is shared across all ordering variants of the same query.</summary>
-    public object TryGetTemplate(string queryText)
+    public ClauseTemplate TryGetTemplate(string queryText)
     {
         var current = Volatile.Read(ref _current);
         if (current.TryGetValue(queryText, out var per))
@@ -87,7 +87,7 @@ public class PlanCache
 
     /// <summary>Store a clause template for a query text. Called once on first execution.
     /// Subsequent calls are no-ops (first writer wins).</summary>
-    public void StoreTemplate(string queryText, object template)
+    public void StoreTemplate(string queryText, ClauseTemplate template)
     {
         var current = Volatile.Read(ref _current);
         var per = current.GetOrAdd(queryText, _ => new PerQueryPlans(MaxPlansPerQuery));
@@ -130,10 +130,10 @@ public class PlanCache
         private readonly CompiledPlan[] _plans;
         private int _filled;
 
-        /// <summary>Opaque cached clause template (Raven.Server type). Set once on first
-        /// execution, immutable thereafter. Allows subsequent executions to skip AST
-        /// parsing and plan building by re-resolving parameter values directly.</summary>
-        public object Template;
+        /// <summary>Cached clause template. Set once on first execution, immutable thereafter.
+        /// Allows subsequent executions to skip AST parsing by re-resolving parameter
+        /// values directly from the blittable using the template's bindings.</summary>
+        public ClauseTemplate Template;
 
         public PerQueryPlans(int maxSlots)
         {
