@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -142,12 +143,10 @@ internal static partial class QueryPlanBuilder
                     foreach (var sub in clause.OrSubClauses) flatClauses.Add(sub);
                 else if (clause.ClauseType == ClauseType.AndGroup && clause.AndSubClauses != null)
                     foreach (var sub in clause.AndSubClauses) flatClauses.Add(sub);
-                else if (clause.ClauseType is ClauseType.In or ClauseType.AllIn && clause.InTerms != null)
+                else if (clause.ClauseType is ClauseType.In or ClauseType.AllIn && clause.InTermCount > 0)
                 {
-                    // Create synthetic clauses for each IN term for display.
-                    // PackedParamValue points to the contiguous range; offset per term.
                     var p = clause.PackedParamValue;
-                    for (int t = 0; t < clause.InTerms.Count; t++)
+                    for (int t = 0; t < clause.InTermCount; t++)
                     {
                         flatClauses.Add(new ClauseInfo
                         {
@@ -212,8 +211,15 @@ internal static partial class QueryPlanBuilder
                     inspOp.Term2 = FormatValue2FromPlan(clause.PackedParamValue, plan);
                     inspOp.IsNegated = clause.IsNegated;
                     if (clause.ClauseType != ClauseType.Equals) inspOp.ClauseType = clause.ClauseType.ToString();
-                    if (clause.InTerms is { Count: > 0 })
-                        inspOp.Terms = string.Join(", ", clause.InTerms.Take(5)) + (clause.InTerms.Count > 5 ? $" ... ({clause.InTerms.Count} total)" : "");
+                    if (clause.InTermCount > 0)
+                    {
+                        var p = clause.PackedParamValue;
+                        int displayCount = Math.Min(clause.InTermCount, 5);
+                        var displayTerms = new string[displayCount];
+                        for (int t = 0; t < displayCount; t++)
+                            displayTerms[t] = FormatValueFromPlan(new PackedParam(p.ValueType, p.Param1 + t), plan);
+                        inspOp.Terms = string.Join(", ", displayTerms) + (clause.InTermCount > 5 ? $" ... ({clause.InTermCount} total)" : "");
+                    }
                 }
             }
 

@@ -278,9 +278,9 @@ internal static partial class QueryPlanBuilder
                     matches[matchIdx++] = match;
                 }
             }
-            else if ((clause.ClauseType == ClauseType.AllIn || clause.ClauseType == ClauseType.In) && clause.InTerms != null)
+            else if ((clause.ClauseType == ClauseType.AllIn || clause.ClauseType == ClauseType.In) && clause.InTermCount > 0)
             {
-                for (int t = 0; t < clause.InTerms.Count; t++)
+                for (int t = 0; t < clause.InTermCount; t++)
                     matches[matchIdx++] = ResolveInTerm(clause, t, indexSearcher, plan, parameters, builderParams);
             }
             else
@@ -421,9 +421,25 @@ internal static partial class QueryPlanBuilder
 
             case ClauseType.In:
             case ClauseType.AllIn:
-                if (clause.InTerms is { Count: > 0 })
-                    return indexSearcher.InQuery(fieldMeta, clause.InTerms);
-                return indexSearcher.EmptyMatch();
+            {
+                // IN/AllIn inside an AndGroup reaches here as a single clause.
+                // Expand each term into a TermQuery and merge via bitmap, same as the
+                // top-level plan does with FillFromPostings/OrWithPostings/AndWithPostings.
+                if (clause.InTermCount == 0)
+                    return indexSearcher.EmptyMatch();
+                var bm = new BitmapMatch(indexSearcher.Allocator);
+                var temp = new RoaringBitmap(indexSearcher.Allocator);
+                for (int t = 0; t < clause.InTermCount; t++)
+                {
+                    var termMatch = ResolveInTerm(clause, t, indexSearcher, plan, parameters, builderParams);
+                    if (clause.ClauseType == ClauseType.AllIn && t > 0)
+                        QueryPrimitives.AndWithMatch(termMatch, ref bm.BitmapState, ref temp);
+                    else
+                        QueryPrimitives.FillFromMatch(termMatch, ref bm.BitmapState);
+                }
+                temp.Dispose();
+                return bm;
+            }
 
             case ClauseType.Exists:
                 return indexSearcher.ExistsQuery(fieldMeta);
@@ -526,7 +542,7 @@ internal static partial class QueryPlanBuilder
 
     /// <summary>Resolve a single IN term to a typed TermQuery.
     /// IN terms are stored contiguously: PackedParamValue.Param1 = start index, InTermCount = count.
-    /// Null terms (InTerms[i] == null) use the string TermQuery path regardless of packed type.</summary>
+    /// Null terms (tracked in InNullTermIndices) use string-null lookup regardless of packed type.</summary>
     private static IQueryMatch ResolveInTerm(ClauseInfo clause, int termIndex,
         IndexSearcher indexSearcher, QueryPlan plan,
         PlanParameters parameters, QueryBuilderParameters builderParams)
@@ -535,8 +551,7 @@ internal static partial class QueryPlanBuilder
             QueryBuilderHelper.GetFieldMetadata(in builderParams, clause.FieldName, hasBoost: builderParams.HasBoost) :
             indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);
 
-        // Null IN terms use string null lookup regardless of the dominant type
-        if (clause.InTerms != null && termIndex < clause.InTerms.Count && clause.InTerms[termIndex] == null)
+        if (clause.InNullTermIndices != null && clause.InNullTermIndices.Contains(termIndex))
             return indexSearcher.TermQuery(fieldMeta, (string)null);
 
         var p = clause.PackedParamValue;
@@ -625,9 +640,9 @@ internal static partial class QueryPlanBuilder
                     termSources[matchIdx++] = ResolveSingleTermSource(sub, indexSearcher, plan, parameters, builderParams);
                 }
             }
-            else if ((clause.ClauseType == ClauseType.AllIn || clause.ClauseType == ClauseType.In) && clause.InTerms != null)
+            else if ((clause.ClauseType == ClauseType.AllIn || clause.ClauseType == ClauseType.In) && clause.InTermCount > 0)
             {
-                for (int t = 0; t < clause.InTerms.Count; t++)
+                for (int t = 0; t < clause.InTermCount; t++)
                     termSources[matchIdx++] = ResolveInTermSource(clause, t, indexSearcher, plan, parameters, builderParams);
             }
             else
@@ -670,8 +685,7 @@ internal static partial class QueryPlanBuilder
             QueryBuilderHelper.GetFieldMetadata(in builderParams, clause.FieldName, hasBoost: builderParams.HasBoost) :
             indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);
 
-        // Null IN terms use string null lookup
-        if (clause.InTerms != null && termIndex < clause.InTerms.Count && clause.InTerms[termIndex] == null)
+        if (clause.InNullTermIndices != null && clause.InNullTermIndices.Contains(termIndex))
         {
             long nullPostingListId = indexSearcher.GetTermPostingListId(fieldMeta, (string)null);
             return DecodePostingListId(nullPostingListId, indexSearcher);
@@ -905,14 +919,29 @@ internal static partial class QueryPlanBuilder
 
     private static object GetHighlightingValues(ClauseInfo clause, QueryPlan plan)
     {
-        return clause.ClauseType switch
+        if (clause.ClauseType == ClauseType.Between)
         {
-            ClauseType.Between => new Tuple<string, string>(
+            return new Tuple<string, string>(
                 FormatValueFromPlan(clause.PackedParamValue, plan),
-                FormatValue2FromPlan(clause.PackedParamValue, plan)),
-            ClauseType.In when clause.InTerms != null => clause.InTerms,
-            _ => FormatValueFromPlan(clause.PackedParamValue, plan)
-        };
+                FormatValue2FromPlan(clause.PackedParamValue, plan));
+        }
+
+        if (clause.ClauseType is ClauseType.In or ClauseType.AllIn && clause.InTermCount > 0)
+        {
+            // Format IN terms on demand from the typed arrays
+            var p = clause.PackedParamValue;
+            var terms = new List<string>(clause.InTermCount);
+            for (int t = 0; t < clause.InTermCount; t++)
+            {
+                if (clause.InNullTermIndices != null && clause.InNullTermIndices.Contains(t))
+                    terms.Add(null);
+                else
+                    terms.Add(FormatValueFromPlan(new PackedParam(p.ValueType, p.Param1 + t), plan));
+            }
+            return terms;
+        }
+
+        return FormatValueFromPlan(clause.PackedParamValue, plan);
     }
 
     // ── Vector / Spatial resolution ──────────────────────────────────────
