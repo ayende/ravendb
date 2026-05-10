@@ -299,46 +299,51 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        // Spatial and vector resolve via their bindings (no MethodExpression dependency).
-        // This must happen before the main binding null-check because these clause types
-        // use the binding for sub-parameter resolution, not for a single value.
-        if (clause.ClauseType == ClauseType.Spatial && clause.Binding?.SpatialBindings != null)
+        // Spatial and vector resolve via their bindings array.
+        if (clause.ClauseType == ClauseType.Spatial && clause.Bindings is { Length: > 0 })
         {
             ResolveSpatialFromBindings(clause, queryParameters);
             return;
         }
-        if (clause.ClauseType == ClauseType.Vector && clause.Binding != null)
+        if (clause.ClauseType == ClauseType.Vector && clause.Bindings is { Length: > 0 })
         {
             ResolveVectorFromBindings(clause, queryParameters);
             return;
         }
 
-        var binding = clause.Binding;
-        if (binding == null)
+        var bindings = clause.Bindings;
+        if (bindings == null || bindings.Length == 0)
             return;
 
-        var (value, valueType) = ResolveBindingScalar(binding, queryParameters);
-
-        clause.TermValueType = valueType;
-        clause.PackedParamValue = writer.Add(value, ToValueTokenType(valueType));
-
-        // Handle BETWEEN second value
-        if (binding.Second != null)
+        // Simple clause (Equals, Range, Search, Regex, etc.): single value at Bindings[0]
+        if (clause.ClauseType is not (ClauseType.In or ClauseType.AllIn or ClauseType.Between))
         {
-            var (value2, _) = ResolveBindingScalar(binding.Second, queryParameters);
-            clause.PackedParamValue = writer.AddPair(value, value2, ToValueTokenType(valueType));
+            var (value, valueType) = ResolveBindingScalar(bindings[BindingIndex.Value], queryParameters);
+            clause.TermValueType = valueType;
+            clause.PackedParamValue = writer.Add(value, ToValueTokenType(valueType));
+            return;
         }
 
-        // Handle IN bindings
-        if (binding.InBindings is { Length: > 0 })
+        // BETWEEN: two values at Bindings[0] (low) and Bindings[1] (high)
+        if (clause.ClauseType == ClauseType.Between)
+        {
+            var (low, lowType) = ResolveBindingScalar(bindings[BindingIndex.BetweenLow], queryParameters);
+            var (high, _) = ResolveBindingScalar(bindings[BindingIndex.BetweenHigh], queryParameters);
+            clause.TermValueType = lowType;
+            clause.PackedParamValue = writer.AddPair(low, high, ToValueTokenType(lowType));
+            return;
+        }
+
+        // IN/AllIn: each binding is a term (literal or parameter, possibly array-expanding)
+        if (clause.ClauseType is ClauseType.In or ClauseType.AllIn)
         {
             var termTypes = new List<ParamValueType>();
             var resolvedValues = new List<object>();
             bool hasNullTerm = false;
 
-            for (int i = 0; i < binding.InBindings.Length; i++)
+            for (int i = 0; i < bindings.Length; i++)
             {
-                var inB = binding.InBindings[i];
+                var inB = bindings[i];
                 if (inB.IsLiteral)
                 {
                     resolvedValues.Add(inB.LiteralValue);
@@ -428,45 +433,43 @@ internal static partial class QueryPlanBuilder
     /// <summary>Resolve spatial parameters from cached bindings (no MethodExpression dependency).</summary>
     private static void ResolveSpatialFromBindings(ClauseInfo clause, BlittableJsonReaderObject queryParameters)
     {
-        var bindings = clause.Binding.SpatialBindings;
+        var bindings = clause.Bindings;
         var sp = new SpatialParams();
 
         // [0] = distanceErrorPct
-        if (bindings.Length > 0 && bindings[0] != null)
+        if (bindings.Length > 0 && bindings[BindingIndex.SpatialDistErrPct] != null)
         {
-            var (depVal, _) = ResolveBindingScalar(bindings[0], queryParameters);
+            var (depVal, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialDistErrPct], queryParameters);
             sp.DistanceErrorPct = depVal != null ? Convert.ToDouble(depVal) : -1;
         }
 
-        // clause.Binding.IsLiteral stores shape type: true = circle, false = WKT
-        if (clause.Binding.IsLiteral) // circle
+        // SpatialParams.IsCircle is determined by the number of bindings:
+        // circle has 5 (distErrPct, radius, lat, lng, units), WKT has 3 (distErrPct, wkt, units)
+        if (bindings.Length >= BindingIndex.SpatialCircleBindingCount - 1) // circle: at least distErrPct + radius + lat + lng
         {
             sp.IsCircle = true;
-            if (bindings.Length >= 4)
+            var (r, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialRadius], queryParameters);
+            var (lat, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialLatitude], queryParameters);
+            var (lng, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialLongitude], queryParameters);
+            sp.CircleRadius = Convert.ToDouble(r);
+            sp.CircleLatitude = Convert.ToDouble(lat);
+            sp.CircleLongitude = Convert.ToDouble(lng);
+            if (bindings.Length > BindingIndex.SpatialUnits && bindings[BindingIndex.SpatialUnits] != null)
             {
-                var (r, _) = ResolveBindingScalar(bindings[1], queryParameters);
-                var (lat, _) = ResolveBindingScalar(bindings[2], queryParameters);
-                var (lng, _) = ResolveBindingScalar(bindings[3], queryParameters);
-                sp.CircleRadius = Convert.ToDouble(r);
-                sp.CircleLatitude = Convert.ToDouble(lat);
-                sp.CircleLongitude = Convert.ToDouble(lng);
-                if (bindings.Length > 4 && bindings[4] != null)
-                {
-                    var (u, _) = ResolveBindingScalar(bindings[4], queryParameters);
-                    if (u != null && Enum.TryParse(typeof(SpatialUnits), u.ToString(), true, out var su))
-                        sp.Units = (int)(SpatialUnits)su;
-                }
+                var (u, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialUnits], queryParameters);
+                if (u != null && Enum.TryParse(typeof(SpatialUnits), u.ToString(), true, out var su))
+                    sp.Units = (int)(SpatialUnits)su;
             }
         }
-        else // WKT
+        else // WKT: distErrPct, wkt, [units]
         {
-            if (bindings.Length >= 2 && bindings[1] != null)
+            if (bindings.Length > BindingIndex.SpatialWkt && bindings[BindingIndex.SpatialWkt] != null)
             {
-                var (wkt, _) = ResolveBindingScalar(bindings[1], queryParameters);
+                var (wkt, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialWkt], queryParameters);
                 sp.Wkt = wkt?.ToString();
-                if (bindings.Length > 2 && bindings[2] != null)
+                if (bindings.Length > BindingIndex.SpatialWktUnits && bindings[BindingIndex.SpatialWktUnits] != null)
                 {
-                    var (u, _) = ResolveBindingScalar(bindings[2], queryParameters);
+                    var (u, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialWktUnits], queryParameters);
                     if (u != null && Enum.TryParse(typeof(SpatialUnits), u.ToString(), true, out var su))
                         sp.Units = (int)(SpatialUnits)su;
                 }
@@ -479,42 +482,36 @@ internal static partial class QueryPlanBuilder
     /// <summary>Resolve vector parameters from cached bindings (no MethodExpression dependency).</summary>
     private static void ResolveVectorFromBindings(ClauseInfo clause, BlittableJsonReaderObject queryParameters)
     {
-        var binding = clause.Binding;
-        // VectorMethodKind is structural — stored on clause.Vector during parsing
+        var bindings = clause.Bindings;
         var vec = new VectorParams { Method = clause.Vector?.Method ?? VectorMethodKind.None };
 
-        // SpatialBindings reused for vector: [0]=minimumMatch, [1]=numberOfCandidates, [2]=aiTask
-        if (binding.SpatialBindings is { Length: > 0 })
+        // [1]=minimumMatch, [2]=numberOfCandidates, [3]=aiTask
+        if (bindings.Length > BindingIndex.VectorMinMatch && bindings[BindingIndex.VectorMinMatch] != null)
         {
-            if (binding.SpatialBindings[0] != null)
-            {
-                var (simVal, simType) = ResolveBindingScalar(binding.SpatialBindings[0], queryParameters);
-                if (simVal != null && simType != ParamValueType.Null)
-                    vec.MinimumMatch = simType == ParamValueType.Double ? (float)(double)simVal
-                        : simType == ParamValueType.Long ? (long)simVal : -1;
-            }
-            if (binding.SpatialBindings.Length > 1 && binding.SpatialBindings[1] != null)
-            {
-                var (candVal, candType) = ResolveBindingScalar(binding.SpatialBindings[1], queryParameters);
-                if (candVal != null && candType != ParamValueType.Null)
-                    vec.NumberOfCandidates = Convert.ToInt32(candVal);
-            }
-            if (binding.SpatialBindings.Length > 2 && binding.SpatialBindings[2] != null)
-            {
-                var (taskVal, _) = ResolveBindingScalar(binding.SpatialBindings[2], queryParameters);
-                vec.AiTaskName = taskVal?.ToString();
-            }
+            var (simVal, simType) = ResolveBindingScalar(bindings[BindingIndex.VectorMinMatch], queryParameters);
+            if (simVal != null && simType != ParamValueType.Null)
+                vec.MinimumMatch = simType == ParamValueType.Double ? (float)(double)simVal
+                    : simType == ParamValueType.Long ? (long)simVal : -1;
+        }
+        if (bindings.Length > BindingIndex.VectorCandidates && bindings[BindingIndex.VectorCandidates] != null)
+        {
+            var (candVal, candType) = ResolveBindingScalar(bindings[BindingIndex.VectorCandidates], queryParameters);
+            if (candVal != null && candType != ParamValueType.Null)
+                vec.NumberOfCandidates = Convert.ToInt32(candVal);
+        }
+        if (bindings.Length > BindingIndex.VectorAiTask && bindings[BindingIndex.VectorAiTask] != null)
+        {
+            var (taskVal, _) = ResolveBindingScalar(bindings[BindingIndex.VectorAiTask], queryParameters);
+            vec.AiTaskName = taskVal?.ToString();
         }
 
-        // Vector value
-        if (binding.VectorValueBinding != null)
+        // [0]=vector value (may be scalar, array, or blittable object)
+        if (bindings.Length > BindingIndex.VectorValue && bindings[BindingIndex.VectorValue] != null)
         {
-            var (val, valType) = ResolveBindingRaw(binding.VectorValueBinding, queryParameters);
+            var (val, valType) = ResolveBindingRaw(bindings[BindingIndex.VectorValue], queryParameters);
             vec.ResolvedValue = val;
             vec.ResolvedValueType = valType;
-            // For raw blittable values (arrays, objects), preserve as ParamValueType.Parameter.
-            // For scalars from literals, valType is already correct (String/Long/Double).
-            // For scalar parameters, resolve the native type.
+            // For scalar parameters, resolve the native type
             if (valType == ParamValueType.Parameter && val is not (BlittableJsonReaderArray or BlittableJsonReaderObject))
             {
                 var (resolved, resolvedType) = ResolveParameterValue(val);

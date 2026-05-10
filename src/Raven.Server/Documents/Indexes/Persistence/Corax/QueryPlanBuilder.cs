@@ -432,7 +432,7 @@ internal static partial class QueryPlanBuilder
             FieldName = fieldName,
             ClauseType = be.Operator == OperatorType.NotEqual ? ClauseType.NotEquals : ClauseType.Equals,
             OriginalIndex = clauses.Count,
-            Binding = CreateBinding(be.Right, queryParameters)
+            Bindings = [CreateBinding(be.Right, queryParameters)]
         });
     }
 
@@ -445,7 +445,7 @@ internal static partial class QueryPlanBuilder
         clauses.Add(new ClauseInfo
         {
             FieldName = fieldName,
-            Binding = CreateBinding(be.Right, queryParameters),
+            Bindings = [CreateBinding(be.Right, queryParameters)],
             ClauseType = be.Operator switch
             {
                 OperatorType.GreaterThan => ClauseType.GreaterThan,
@@ -481,14 +481,7 @@ internal static partial class QueryPlanBuilder
             FieldName = resolvedFieldName,
             ClauseType = ClauseType.Between,
             OriginalIndex = clauses.Count,
-            Binding = new ParameterBinding
-            {
-                IsLiteral = minBinding?.IsLiteral ?? true,
-                LiteralValue = minBinding?.LiteralValue,
-                LiteralType = minBinding?.LiteralType ?? ParamValueType.String,
-                ParameterName = minBinding?.ParameterName,
-                Second = maxBinding
-            }
+            Bindings = [minBinding, maxBinding]
         });
     }
 
@@ -515,7 +508,7 @@ internal static partial class QueryPlanBuilder
                     var rawValue = ve.GetValue(queryParameters);
                     bool hasTime = false;
                     var (resolved, resolvedType) = ResolveInValue(rawValue, ve.Value, ref hasTime);
-                    inBindings.Add(new ParameterBinding { IsLiteral = true, LiteralValue = resolved, LiteralType = ToParamValueType(resolvedType) });
+                    inBindings.Add(new ParameterBinding { LiteralValue = resolved, LiteralType = ToParamValueType(resolvedType) });
                 }
             }
         }
@@ -536,7 +529,7 @@ internal static partial class QueryPlanBuilder
             FieldName = resolvedFieldName,
             ClauseType = inExpr.All ? ClauseType.AllIn : ClauseType.In,
             OriginalIndex = clauses.Count,
-            Binding = new ParameterBinding { InBindings = inBindings.ToArray() }
+            Bindings = inBindings.ToArray()
         });
     }
 
@@ -627,7 +620,7 @@ internal static partial class QueryPlanBuilder
                     FieldName = regexFieldName,
                     ClauseType = ClauseType.Regex,
                     OriginalIndex = clauses.Count,
-                    Binding = CreateBinding(method.Arguments[1], queryParameters)
+                    Bindings = [CreateBinding(method.Arguments[1], queryParameters)]
                 });
                 break;
             }
@@ -679,12 +672,7 @@ internal static partial class QueryPlanBuilder
                     ClauseType = ClauseType.Spatial,
                     SpatialMethodType = ToSpatialOp(methodType),
                     OriginalIndex = clauses.Count,
-                    Binding = new ParameterBinding
-                    {
-                        SpatialBindings = spatialBindings.ToArray(),
-                        // Store shape type as literal metadata
-                        IsLiteral = isCircle, // reuse: true = circle, false = WKT
-                    }
+                    Bindings = spatialBindings.ToArray()
                 });
                 break;
             }
@@ -734,13 +722,7 @@ internal static partial class QueryPlanBuilder
                     FieldName = vectorFieldName,
                     ClauseType = ClauseType.Vector,
                     OriginalIndex = clauses.Count,
-                    Binding = new ParameterBinding
-                    {
-                        VectorValueBinding = vectorValueBinding,
-                        // Store other vector bindings on SpatialBindings (reuse the array)
-                        // [0]=minimumMatch, [1]=numberOfCandidates, [2]=aiTask
-                        SpatialBindings = new[] { minimumMatchBinding, numberOfCandidatesBinding, aiTaskBinding },
-                    },
+                    Bindings = [vectorValueBinding, minimumMatchBinding, numberOfCandidatesBinding, aiTaskBinding],
                     Vector = new VectorParams { Method = vecMethod } // structural: method kind doesn't change
                 });
                 break;
@@ -797,7 +779,7 @@ internal static partial class QueryPlanBuilder
             ClauseType = ClauseType.Search,
             SearchOperator = (int)searchOp,
             OriginalIndex = clauses.Count,
-            Binding = CreateBinding(method.Arguments[1], queryParameters)
+            Bindings = [CreateBinding(method.Arguments[1], queryParameters)]
         });
     }
 
@@ -815,7 +797,7 @@ internal static partial class QueryPlanBuilder
             FieldName = fieldName,
             ClauseType = type,
             OriginalIndex = clauses.Count,
-            Binding = CreateBinding(method.Arguments[1], queryParameters)
+            Bindings = [CreateBinding(method.Arguments[1], queryParameters)]
         });
     }
 
@@ -962,17 +944,17 @@ internal static partial class QueryPlanBuilder
 
         // Null literal — preserve as actual null, not the string "null"
         if (ve.Value == ValueTokenType.Null)
-            return new ParameterBinding { IsLiteral = true, LiteralValue = null, LiteralType = ParamValueType.String };
+            return new ParameterBinding { LiteralValue = null, LiteralType = ParamValueType.String };
 
         // Literal — resolve the constant value once
         var value = ve.GetValue(queryParameters);
         if (value is bool b)
-            return new ParameterBinding { IsLiteral = true, LiteralValue = b ? "true" : "false", LiteralType = ParamValueType.String };
+            return new ParameterBinding { LiteralValue = b ? "true" : "false", LiteralType = ParamValueType.String };
         if (value == null)
-            return new ParameterBinding { IsLiteral = true, LiteralValue = null, LiteralType = ParamValueType.String };
+            return new ParameterBinding { LiteralValue = null, LiteralType = ParamValueType.String };
 
         var (resolved, resolvedType) = ResolveParameterValue(value);
-        return new ParameterBinding { IsLiteral = true, LiteralValue = resolved, LiteralType = ToParamValueType(resolvedType) };
+        return new ParameterBinding { LiteralValue = resolved, LiteralType = ToParamValueType(resolvedType) };
     }
 
     /// <summary>Format a value from the plan's typed arrays as a string for display/highlighting.</summary>
