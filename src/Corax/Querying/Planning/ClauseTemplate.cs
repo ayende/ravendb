@@ -98,7 +98,6 @@ public sealed class ParameterBinding
     public object LiteralValue;       // cached native value for literals (long/double/string)
     public ParamValueType LiteralType;
     public string ParameterName;      // for parameters: name to look up in blittable ("p0")
-    public bool IsArrayParameter;     // true if this parameter may resolve to an array (IN terms)
 
     /// <summary>Second binding for BETWEEN high bound. Null for non-BETWEEN clauses.</summary>
     public ParameterBinding Second;
@@ -170,10 +169,10 @@ public sealed class ClauseInfo
     /// 32K terms (e.g. a large array parameter), exceeding the 15-bit Param2 limit.</summary>
     public int InTermCount;
 
-    /// <summary>Indices of null terms within the IN list. Null for most queries.
-    /// When present, resolution uses string-null lookup for these positions instead
-    /// of reading from the typed array (where null is stored as a 0 sentinel).</summary>
-    public HashSet<int> InNullTermIndices;
+    /// <summary>True if the IN list contains at least one null term. When set, resolution
+    /// adds a single null-term lookup in addition to the typed array terms.
+    /// Multiple nulls are semantically identical to one.</summary>
+    public bool HasNullTerm;
 
     public List<ClauseInfo> OrSubClauses;  // for OrGroup
     /// <summary>Set for NotEquals clauses appearing in OR chains.
@@ -234,9 +233,9 @@ public sealed class ClauseInfo
     }
 }
 
-/// <summary>Pre-resolved spatial query parameters. All values are extracted from the AST
-/// during parsing so execution never calls GetValue back on the blittable.
-/// Shape construction (spatialField.ReadCircle / ReadShape) still runs at execution time
+/// <summary>Per-execution spatial query parameters. Resolved from ParameterBinding during
+/// PopulateClauseValues — scalar params looked up by name in the blittable.
+/// Shape construction (spatialField.ReadCircle / ReadShape) also runs at execution time
 /// because it needs the spatial field factory from builderParameters.</summary>
 public sealed class SpatialParams
 {
@@ -253,9 +252,10 @@ public sealed class SpatialParams
     public int? Units;
 }
 
-/// <summary>Pre-resolved vector query parameters. All scalar values and the raw vector
-/// payload are extracted from the AST during parsing. Embedding construction
-/// (base64 decode, AI embedding generation) still runs at execution time.</summary>
+/// <summary>Per-execution vector query parameters. Resolved from ParameterBinding during
+/// PopulateClauseValues — scalar params from blittable lookup, vector payload passed
+/// through as-is. Embedding construction (base64 decode, AI embedding generation)
+/// also runs at execution time.</summary>
 public sealed class VectorParams
 {
     public float MinimumMatch = -1;      // -1 = use index default

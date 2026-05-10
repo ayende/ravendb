@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using Corax.Querying.Planning;
 using Corax.Mappings;
 using Raven.Client.Exceptions;
@@ -506,7 +507,7 @@ internal static partial class QueryPlanBuilder
                 if (ve.Value == ValueTokenType.Parameter)
                 {
                     // Parameter — could be a single value or an array. Mark as array-capable.
-                    inBindings.Add(new ParameterBinding { ParameterName = ve.Token.Value, IsArrayParameter = true });
+                    inBindings.Add(new ParameterBinding { ParameterName = ve.Token.Value });
                 }
                 else
                 {
@@ -909,10 +910,15 @@ internal static partial class QueryPlanBuilder
         return (null, ValueTokenType.Null);
     }
 
-    /// <summary>Detect the native type of a resolved parameter value.
-    /// Shared by <see cref="ResolveTermValue"/> and <see cref="ResolveInValue"/>.</summary>
+    /// <summary>Detect the native type of a resolved SCALAR parameter value.
+    /// Must not be called with arrays or blittable objects — callers must check
+    /// and handle those before calling this method.</summary>
     private static (object Value, ValueTokenType Type) ResolveParameterValue(object value)
     {
+        Debug.Assert(value is not BlittableJsonReaderArray and not BlittableJsonReaderObject,
+            $"ResolveParameterValue called with non-scalar type {value?.GetType().Name}. " +
+            "Caller must handle arrays/objects before calling this method.");
+
         switch (value)
         {
             case long l:
@@ -1148,17 +1154,27 @@ internal static partial class QueryPlanBuilder
             int matchIndex = 0;
             foreach (var it in clauses)
             {
-                if ((it.ClauseType == ClauseType.In || it.ClauseType == ClauseType.AllIn) && it.InTermCount > 0)
+                if ((it.ClauseType == ClauseType.In || it.ClauseType == ClauseType.AllIn) && (it.InTermCount > 0 || it.HasNullTerm))
                 {
-                    // Each IN term is a single-term lookup → eligible for native dispatch.
+                    int totalTerms = it.InTermCount + (it.HasNullTerm ? 1 : 0);
                     for (int t = 0; t < it.InTermCount; t++)
                     {
                         ops.Add(new PlanOp
                         {
                             Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex,
-                            EstimatedCardinality = it.Cardinality / it.InTermCount,
+                            EstimatedCardinality = it.Cardinality / totalTerms,
                             Dispatch = MatchDispatch.TermSource
+                        });
+                        matchIndex++;
+                    }
+                    if (it.HasNullTerm)
+                    {
+                        ops.Add(new PlanOp
+                        {
+                            Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
+                            ParamIndex = matchIndex,
+                            Dispatch = MatchDispatch.DirectSource // null-term via IQueryMatch
                         });
                         matchIndex++;
                     }
@@ -1356,22 +1372,33 @@ internal static partial class QueryPlanBuilder
                     }
                     matchIndex += subClauses.Count;
                 }
-                else if (clauses[0].ClauseType == ClauseType.In && clauses[0].InTermCount > 0)
+                else if (clauses[0].ClauseType == ClauseType.In && (clauses[0].InTermCount > 0 || clauses[0].HasNullTerm))
                 {
-                    // IN at seed: OR all terms into bitmap[0]. Each IN term is a single-term lookup.
+                    // IN at seed: OR all terms into bitmap[0].
                     var terms = clauses[0].InTermCount;
                     for (int t = 0; t < terms; t++)
                     {
                         ops.Add(new PlanOp
                         {
-                            Kind = t == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
+                            Kind = matchIndex + t == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex + t,
                             BitmapLocal = 0,
-                            EstimatedCardinality = clauses[0].Cardinality / terms,
+                            EstimatedCardinality = clauses[0].Cardinality / Math.Max(terms, 1),
                             Dispatch = MatchDispatch.TermSource
                         });
                     }
                     matchIndex += terms;
+                    if (clauses[0].HasNullTerm)
+                    {
+                        ops.Add(new PlanOp
+                        {
+                            Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
+                            ParamIndex = matchIndex,
+                            BitmapLocal = 0,
+                            Dispatch = MatchDispatch.DirectSource
+                        });
+                        matchIndex++;
+                    }
                 }
                 else if (clauses[0].ClauseType == ClauseType.AllIn && clauses[0].InTermCount > 0)
                 {
@@ -1474,10 +1501,8 @@ internal static partial class QueryPlanBuilder
 
                     matchIndex += subClauses.Count;
                 }
-                else if (clauses[i].ClauseType == ClauseType.In && clauses[i].InTermCount > 0)
+                else if (clauses[i].ClauseType == ClauseType.In && (clauses[i].InTermCount > 0 || clauses[i].HasNullTerm))
                 {
-                    // IN in AND chain: OR all terms into bitmap[1], then AND (or ANDNOT for negated) with bitmap[0].
-                    // Each IN term is a single-term lookup.
                     var terms = clauses[i].InTermCount;
                     ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 1 });
                     for (int t = 0; t < terms; t++)
@@ -1487,11 +1512,20 @@ internal static partial class QueryPlanBuilder
                             Kind = PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex + t,
                             BitmapLocal = 1,
-                            EstimatedCardinality = clauses[i].Cardinality / terms,
+                            EstimatedCardinality = clauses[i].Cardinality / Math.Max(terms, 1),
                             Dispatch = MatchDispatch.TermSource
                         });
                     }
-                    // Negated In (NOT IN): subtract the OR'd terms from the result bitmap.
+                    if (clauses[i].HasNullTerm)
+                    {
+                        ops.Add(new PlanOp
+                        {
+                            Kind = PlanOpKind.OrWithPostings,
+                            ParamIndex = matchIndex + terms,
+                            BitmapLocal = 1,
+                            Dispatch = MatchDispatch.DirectSource
+                        });
+                    }
                     var bitmapCombineKind = clauses[i].IsNegated ? PlanOpKind.AndNotBitmaps : PlanOpKind.AndBitmaps;
                     ops.Add(new PlanOp
                     {
@@ -1501,7 +1535,7 @@ internal static partial class QueryPlanBuilder
                     });
                     if (!clauses[i].IsNegated)
                         ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
-                    matchIndex += terms;
+                    matchIndex += terms + (clauses[i].HasNullTerm ? 1 : 0);
                 }
                 else if (clauses[i].ClauseType == ClauseType.AllIn && clauses[i].InTermCount > 0)
                 {
@@ -1680,7 +1714,7 @@ internal static partial class QueryPlanBuilder
             {
                 ClauseType.OrGroup when ci.OrSubClauses != null => ci.OrSubClauses.Count,
                 ClauseType.AndGroup when ci.AndSubClauses != null => ci.AndSubClauses.Count,
-                ClauseType.In or ClauseType.AllIn when ci.InTermCount > 0 => ci.InTermCount,
+                ClauseType.In or ClauseType.AllIn when ci.InTermCount > 0 || ci.HasNullTerm => ci.InTermCount + (ci.HasNullTerm ? 1 : 0),
                 _ => 1
             };
         }
