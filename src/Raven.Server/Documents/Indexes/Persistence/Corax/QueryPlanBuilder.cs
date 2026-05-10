@@ -66,6 +66,116 @@ internal static partial class QueryPlanBuilder
         public bool HasBoost;
     }
 
+    // ── Packed parameter encoding ──────────────────────────────────────
+
+    /// <summary>
+    /// Packed parameter reference encoding.
+    ///
+    /// Each clause value is stored in a typed array (long[], double[], string[])
+    /// on the QueryPlan and referenced by a 32-bit packed integer:
+    ///   bits [31:30] = value type (Long=0, Double=1, String=2, None=3)
+    ///   bits [29:15] = first parameter index (0..32767)
+    ///   bits [14:0]  = second parameter index (0..32767, 0x7FFF = no second param)
+    ///
+    /// For BETWEEN: param1 = low bound index, param2 = high bound index (same typed array).
+    /// For simple predicates: param1 = value index, param2 = NoParam.
+    /// For parameterless clauses (Exists, Spatial, Vector): type = None.
+    ///
+    /// Maximum 32,767 parameters of each type per query.
+    /// </summary>
+    internal static class PackedParam
+    {
+        public const int NoParam = 0x7FFF;
+        public const int MaxIndex = 0x7FFF; // 32767
+
+        public const int TypeLong = 0;
+        public const int TypeDouble = 1;
+        public const int TypeString = 2;
+        public const int TypeNone = 3;
+
+        /// <summary>Sentinel: no parameter (Exists, Spatial, Vector clauses).</summary>
+        public const int None = (TypeNone << 30) | (NoParam << 15) | NoParam;
+
+        public static int Encode(int type, int param1, int param2 = NoParam)
+            => (type << 30) | ((param1 & 0x7FFF) << 15) | (param2 & 0x7FFF);
+
+        public static int GetValueType(int packed) => (packed >>> 30) & 0x3;
+        public static int GetParam1(int packed) => (packed >>> 15) & 0x7FFF;
+        public static int GetParam2(int packed) => packed & 0x7FFF;
+    }
+
+    /// <summary>
+    /// Accumulates typed parameter values during query plan building.
+    /// Each Add call stores the value in the appropriate typed list and
+    /// returns a packed int encoding (type + index) for the clause.
+    /// </summary>
+    private sealed class ValueWriter
+    {
+        private readonly List<long> _longs = new();
+        private readonly List<double> _doubles = new();
+        private readonly List<string> _strings = new();
+
+        public int Add(string value, ValueTokenType type)
+        {
+            switch (type)
+            {
+                case ValueTokenType.Long when long.TryParse(value, out long l):
+                    CheckLimit(_longs.Count);
+                    _longs.Add(l);
+                    return PackedParam.Encode(PackedParam.TypeLong, _longs.Count - 1);
+                case ValueTokenType.Double when double.TryParse(value,
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out double d):
+                    CheckLimit(_doubles.Count);
+                    _doubles.Add(d);
+                    return PackedParam.Encode(PackedParam.TypeDouble, _doubles.Count - 1);
+                default:
+                    CheckLimit(_strings.Count);
+                    _strings.Add(value);
+                    return PackedParam.Encode(PackedParam.TypeString, _strings.Count - 1);
+            }
+        }
+
+        public int AddPair(string value1, string value2, ValueTokenType type)
+        {
+            switch (type)
+            {
+                case ValueTokenType.Long when long.TryParse(value1, out long l1) && long.TryParse(value2, out long l2):
+                    CheckLimit(_longs.Count + 1);
+                    _longs.Add(l1);
+                    _longs.Add(l2);
+                    return PackedParam.Encode(PackedParam.TypeLong, _longs.Count - 2, _longs.Count - 1);
+                case ValueTokenType.Double when double.TryParse(value1,
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out double d1)
+                    && double.TryParse(value2,
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out double d2):
+                    CheckLimit(_doubles.Count + 1);
+                    _doubles.Add(d1);
+                    _doubles.Add(d2);
+                    return PackedParam.Encode(PackedParam.TypeDouble, _doubles.Count - 2, _doubles.Count - 1);
+                default:
+                    CheckLimit(_strings.Count + 1);
+                    _strings.Add(value1);
+                    _strings.Add(value2);
+                    return PackedParam.Encode(PackedParam.TypeString, _strings.Count - 2, _strings.Count - 1);
+            }
+        }
+
+        public long[] GetLongs() => _longs.Count > 0 ? _longs.ToArray() : [];
+        public double[] GetDoubles() => _doubles.Count > 0 ? _doubles.ToArray() : [];
+        public string[] GetStrings() => _strings.Count > 0 ? _strings.ToArray() : [];
+
+        private static void CheckLimit(int currentCount)
+        {
+            if (currentCount >= PackedParam.MaxIndex)
+                throw new InvalidOperationException(
+                    $"Query exceeds maximum parameter count ({PackedParam.MaxIndex}). " +
+                    "Simplify the query or reduce the number of IN terms.");
+        }
+    }
+
     internal enum ClauseType
     {
         Equals,
@@ -89,14 +199,39 @@ internal static partial class QueryPlanBuilder
         EmptyIn,  // IN() with empty list — matches nothing
     }
 
+    /// <summary>
+    /// Intermediate representation of a single WHERE predicate, between the RQL AST
+    /// and the PlanOp[] execution plan.
+    ///
+    /// Why not reuse the AST directly?
+    /// - The AST is a recursive tree (AND(AND(A,B),C)); ClauseInfo is a flat list suitable for
+    ///   plan emission. Mixed AND/OR trees are flattened into OrGroup/AndGroup sub-lists.
+    /// - Field names are resolved (alias substitution, id() expansion, quoted-name handling).
+    /// - Parameter values are resolved from the blittable and stored as native types in the
+    ///   plan's typed arrays (LongValues, DoubleValues, StringValues). PackedParam encodes
+    ///   (type, index) so resolution never re-parses strings.
+    /// - Clause type is classified into a flat enum — downstream code switches on one value
+    ///   instead of pattern-matching AST node types and method names.
+    /// - Planning annotations (Cardinality, IsExact, BoostFactor, IsNegated) are attached per
+    ///   clause for operand reordering, dispatch classification, and entry-scan eligibility.
+    /// </summary>
     internal class ClauseInfo
     {
         public string FieldName;
-        public string TermValue;
-        public ValueTokenType TermValueType; // for type-aware comparison resolution
-        public string TermValue2; // for BETWEEN
-        public List<string> InTerms; // for IN
-        public List<ValueTokenType> InTermTypes; // parallel to InTerms — literal type for each term (avoids wrong long.TryParse for zero-padded string values like "000001")
+        public string TermValue;          // string form — used for display, highlighting, cardinality estimation
+        public ValueTokenType TermValueType; // for type-aware scan predicate building
+        public string TermValue2;         // for BETWEEN (string form)
+        public List<string> InTerms;      // for IN (string forms)
+        public List<ValueTokenType> InTermTypes; // parallel to InTerms — literal type per term
+
+        /// <summary>Packed (type, index) into QueryPlan.LongValues/DoubleValues/StringValues.
+        /// For BETWEEN: encodes both low and high indices. See <see cref="PackedParam"/>.</summary>
+        public int PackedParamValue = PackedParam.None;
+
+        /// <summary>Per-term packed params for IN/AllIn. Parallel to <see cref="InTerms"/>.
+        /// Each entry encodes (type, index) for one IN term.</summary>
+        public int[] InPackedParams;
+
         public List<ClauseInfo> OrSubClauses;  // for OrGroup
         public bool IsOrChainNotEquals; // Set for NotEquals in OR chains; ResolveMatches creates AllEntries ANDNOT TermQuery
         public List<ClauseInfo> AndSubClauses; // for AndGroup (AND sub-expression inside OR)
@@ -126,7 +261,8 @@ internal static partial class QueryPlanBuilder
 
         bool hasMixedAndOr = false;
         var clauses = new List<ClauseInfo>();
-        var rootOp = ParseExpression(query.Where, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+        var writer = new ValueWriter();
+        var rootOp = ParseExpression(query.Where, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, writer);
 
         // Mixed AND/OR trees are handled via OrGroup clauses
 
@@ -219,6 +355,9 @@ internal static partial class QueryPlanBuilder
         }
 
         var result = EmitPlan(clauses, isOr);
+        result.LongValues = writer.GetLongs();
+        result.DoubleValues = writer.GetDoubles();
+        result.StringValues = writer.GetStrings();
 
         if (spatialClauses != null || vectorClauses != null)
             AttachPostFilterPhases(result, spatialClauses, vectorClauses);
@@ -234,30 +373,31 @@ internal static partial class QueryPlanBuilder
         List<ClauseInfo> clauses,
         BlittableJsonReaderObject queryParameters,
         QueryMetadata metadata,
-        ref bool hasMixedAndOr)
+        ref bool hasMixedAndOr,
+        ValueWriter writer)
     {
         switch (expr)
         {
             case BinaryExpression be:
-                return ParseBinaryExpression(be, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+                return ParseBinaryExpression(be, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, writer);
 
             case BetweenExpression between:
-                ParseBetween(between, clauses, queryParameters, metadata);
+                ParseBetween(between, clauses, queryParameters, metadata, writer);
                 return BooleanOp.Leaf;
 
             case InExpression inExpr:
-                ParseIn(inExpr, clauses, queryParameters, metadata);
+                ParseIn(inExpr, clauses, queryParameters, metadata, writer);
                 return BooleanOp.Leaf;
 
             case NegatedExpression negated:
-                ParseNegated(negated, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+                ParseNegated(negated, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, writer);
                 return BooleanOp.Leaf;
 
             case TrueExpression:
                 return BooleanOp.True;
 
             case MethodExpression method:
-                ParseMethod(method, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+                ParseMethod(method, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, writer);
                 return BooleanOp.Leaf;
 
             default:
@@ -272,7 +412,8 @@ internal static partial class QueryPlanBuilder
         List<ClauseInfo> clauses,
         BlittableJsonReaderObject queryParameters,
         QueryMetadata metadata,
-        ref bool hasMixedAndOr)
+        ref bool hasMixedAndOr,
+        ValueWriter writer)
     {
         switch (be.Operator)
         {
@@ -283,9 +424,8 @@ internal static partial class QueryPlanBuilder
 
                 if (be.Left is BinaryExpression { Operator: OperatorType.Or })
                 {
-                    // Left side is OR — parse into a separate clause list and group them
                     var orClauses = new List<ClauseInfo>();
-                    left = ParseExpression(be.Left, indexSearcher, orClauses, queryParameters, metadata, ref hasMixedAndOr);
+                    left = ParseExpression(be.Left, indexSearcher, orClauses, queryParameters, metadata, ref hasMixedAndOr, writer);
                     clauses.Add(new ClauseInfo
                     {
                         ClauseType = ClauseType.OrGroup,
@@ -295,13 +435,13 @@ internal static partial class QueryPlanBuilder
                 }
                 else
                 {
-                    left = ParseExpression(be.Left, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+                    left = ParseExpression(be.Left, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, writer);
                 }
 
                 if (be.Right is BinaryExpression { Operator: OperatorType.Or })
                 {
                     var orClauses = new List<ClauseInfo>();
-                    right = ParseExpression(be.Right, indexSearcher, orClauses, queryParameters, metadata, ref hasMixedAndOr);
+                    right = ParseExpression(be.Right, indexSearcher, orClauses, queryParameters, metadata, ref hasMixedAndOr, writer);
                     clauses.Add(new ClauseInfo
                     {
                         ClauseType = ClauseType.OrGroup,
@@ -311,9 +451,8 @@ internal static partial class QueryPlanBuilder
                 }
                 else
                 {
-                    right = ParseExpression(be.Right, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+                    right = ParseExpression(be.Right, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, writer);
                 }
-                // Constant folding
                 if (left == BooleanOp.True) return right;
                 if (right == BooleanOp.True) return left;
                 if (left == BooleanOp.False || right == BooleanOp.False) return BooleanOp.False;
@@ -326,9 +465,8 @@ internal static partial class QueryPlanBuilder
 
                 if (be.Left is BinaryExpression { Operator: OperatorType.And })
                 {
-                    // Left is an AND sub-expression — parse into a separate list and wrap as AndGroup
                     var andClauses = new List<ClauseInfo>();
-                    left = ParseExpression(be.Left, indexSearcher, andClauses, queryParameters, metadata, ref hasMixedAndOr);
+                    left = ParseExpression(be.Left, indexSearcher, andClauses, queryParameters, metadata, ref hasMixedAndOr, writer);
                     clauses.Add(new ClauseInfo
                     {
                         ClauseType = ClauseType.AndGroup,
@@ -338,13 +476,13 @@ internal static partial class QueryPlanBuilder
                 }
                 else
                 {
-                    left = ParseExpression(be.Left, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+                    left = ParseExpression(be.Left, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, writer);
                 }
 
                 if (be.Right is BinaryExpression { Operator: OperatorType.And })
                 {
                     var andClauses = new List<ClauseInfo>();
-                    right = ParseExpression(be.Right, indexSearcher, andClauses, queryParameters, metadata, ref hasMixedAndOr);
+                    right = ParseExpression(be.Right, indexSearcher, andClauses, queryParameters, metadata, ref hasMixedAndOr, writer);
                     clauses.Add(new ClauseInfo
                     {
                         ClauseType = ClauseType.AndGroup,
@@ -354,10 +492,9 @@ internal static partial class QueryPlanBuilder
                 }
                 else
                 {
-                    right = ParseExpression(be.Right, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+                    right = ParseExpression(be.Right, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, writer);
                 }
 
-                // Constant folding
                 if (left == BooleanOp.True || right == BooleanOp.True) return BooleanOp.True;
                 if (left == BooleanOp.False) return right;
                 if (right == BooleanOp.False) return left;
@@ -365,18 +502,18 @@ internal static partial class QueryPlanBuilder
             }
 
             case OperatorType.Equal:
-                ParseComparison(be, clauses, queryParameters, metadata);
+                ParseComparison(be, clauses, queryParameters, metadata, writer);
                 return BooleanOp.Leaf;
 
             case OperatorType.NotEqual:
-                ParseComparison(be, clauses, queryParameters, metadata);
+                ParseComparison(be, clauses, queryParameters, metadata, writer);
                 return BooleanOp.Leaf;
 
             case OperatorType.LessThan:
             case OperatorType.LessThanEqual:
             case OperatorType.GreaterThan:
             case OperatorType.GreaterThanEqual:
-                ParseRangeComparison(be, clauses, queryParameters, metadata);
+                ParseRangeComparison(be, clauses, queryParameters, metadata, writer);
                 return BooleanOp.Leaf;
 
             default:
@@ -386,7 +523,7 @@ internal static partial class QueryPlanBuilder
     }
 
     private static void ParseComparison(BinaryExpression be, List<ClauseInfo> clauses,
-        BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
+        BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ValueWriter writer)
     {
         if (TryGetFieldName(be.Left, metadata, queryParameters, out string fieldName) == false)
             throw new InvalidQueryException($"Comparison left side must be a field expression or id(), but got: {be.Left.Type}");
@@ -397,13 +534,14 @@ internal static partial class QueryPlanBuilder
             FieldName = fieldName,
             TermValue = termValue,
             TermValueType = valueType,
+            PackedParamValue = writer.Add(termValue, valueType),
             ClauseType = be.Operator == OperatorType.NotEqual ? ClauseType.NotEquals : ClauseType.Equals,
             OriginalIndex = clauses.Count
         });
     }
 
     private static void ParseRangeComparison(BinaryExpression be, List<ClauseInfo> clauses,
-        BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
+        BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ValueWriter writer)
     {
         if (TryGetFieldName(be.Left, metadata, queryParameters, out string fieldName) == false)
             throw new InvalidQueryException($"Range comparison left side must be a field expression or id(), but got: {be.Left.Type}");
@@ -414,6 +552,7 @@ internal static partial class QueryPlanBuilder
             FieldName = fieldName,
             TermValue = termValue,
             TermValueType = valueType,
+            PackedParamValue = writer.Add(termValue, valueType),
             ClauseType = be.Operator switch
             {
                 OperatorType.GreaterThan => ClauseType.GreaterThan,
@@ -427,7 +566,7 @@ internal static partial class QueryPlanBuilder
     }
 
     private static void ParseBetween(BetweenExpression between, List<ClauseInfo> clauses,
-        BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
+        BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ValueWriter writer)
     {
         if (TryGetFieldName(between.Source, metadata, queryParameters, out string resolvedFieldName) == false)
             throw new InvalidQueryException($"BETWEEN source must be a field expression or id(), but got: {between.Source.Type}");
@@ -440,13 +579,14 @@ internal static partial class QueryPlanBuilder
             TermValue = minValue,
             TermValue2 = maxValue,
             TermValueType = minType,
+            PackedParamValue = writer.AddPair(minValue, maxValue, minType),
             ClauseType = ClauseType.Between,
             OriginalIndex = clauses.Count
         });
     }
 
     private static void ParseIn(InExpression inExpr, List<ClauseInfo> clauses,
-        BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
+        BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ValueWriter writer)
     {
         if (TryGetFieldName(inExpr.Source, metadata, queryParameters, out string resolvedFieldName) == false)
             throw new InvalidQueryException($"IN source must be a field expression or id(), but got: {inExpr.Source.Type}");
@@ -479,8 +619,6 @@ internal static partial class QueryPlanBuilder
 
         if (terms.Count == 0)
         {
-            // Empty IN() matches nothing — emit an empty-result marker.
-            // For AND chains this zeroes the bitmap; for standalone queries it returns 0 results.
             clauses.Add(new ClauseInfo
             {
                 FieldName = resolvedFieldName,
@@ -490,21 +628,26 @@ internal static partial class QueryPlanBuilder
             return;
         }
 
+        var inPacked = new int[terms.Count];
+        for (int i = 0; i < terms.Count; i++)
+            inPacked[i] = writer.Add(terms[i], termTypes[i]);
+
         clauses.Add(new ClauseInfo
         {
             FieldName = resolvedFieldName,
             InTerms = terms,
             InTermTypes = termTypes,
+            InPackedParams = inPacked,
             ClauseType = inExpr.All ? ClauseType.AllIn : ClauseType.In,
             OriginalIndex = clauses.Count
         });
     }
 
     private static void ParseNegated(NegatedExpression negated, IndexSearcher indexSearcher,
-        List<ClauseInfo> clauses, BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ref bool hasMixedAndOr)
+        List<ClauseInfo> clauses, BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ref bool hasMixedAndOr, ValueWriter writer)
     {
         var innerClauses = new List<ClauseInfo>();
-        ParseExpression(negated.Expression, indexSearcher, innerClauses, queryParameters, metadata, ref hasMixedAndOr);
+        ParseExpression(negated.Expression, indexSearcher, innerClauses, queryParameters, metadata, ref hasMixedAndOr, writer);
 
         foreach (var inner in innerClauses)
         {
@@ -514,21 +657,21 @@ internal static partial class QueryPlanBuilder
     }
 
     private static void ParseMethod(MethodExpression method, IndexSearcher indexSearcher,
-        List<ClauseInfo> clauses, BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ref bool hasMixedAndOr)
+        List<ClauseInfo> clauses, BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ref bool hasMixedAndOr, ValueWriter writer)
     {
         var methodType = QueryMethod.GetMethodType(method.Name.Value);
         switch (methodType)
         {
             case MethodType.Search:
-                ParseSearchMethod(method, clauses, queryParameters, metadata);
+                ParseSearchMethod(method, clauses, queryParameters, metadata, writer);
                 break;
 
             case MethodType.StartsWith:
-                ParsePrefixMethod(method, clauses, queryParameters, metadata, ClauseType.StartsWith);
+                ParsePrefixMethod(method, clauses, queryParameters, metadata, ClauseType.StartsWith, writer);
                 break;
 
             case MethodType.EndsWith:
-                ParsePrefixMethod(method, clauses, queryParameters, metadata, ClauseType.EndsWith);
+                ParsePrefixMethod(method, clauses, queryParameters, metadata, ClauseType.EndsWith, writer);
                 break;
 
             case MethodType.Exists:
@@ -551,7 +694,7 @@ internal static partial class QueryPlanBuilder
                 // exact(expr) → recurse, then mark all new clauses as exact
                 int beforeCount = clauses.Count;
                 if (method.Arguments.Count > 0)
-                    ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+                    ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, writer);
                 for (int c = beforeCount; c < clauses.Count; c++)
                     clauses[c].IsExact = true;
                 break;
@@ -562,7 +705,7 @@ internal static partial class QueryPlanBuilder
                 // boost(expr, factor) → recurse, then set boost factor on new clauses
                 int beforeCount = clauses.Count;
                 if (method.Arguments.Count > 0)
-                    ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+                    ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, writer);
                 float boostFactor = 1f;
                 if (method.Arguments.Count > 1)
                 {
@@ -584,10 +727,12 @@ internal static partial class QueryPlanBuilder
                     throw new InvalidQueryException($"regex() requires at least 2 arguments (field, pattern), but got {method.Arguments.Count}.");
                 if (TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var regexFieldName) == false)
                     throw new InvalidQueryException($"regex() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
+                var regexTerm = GetTermValue(method.Arguments[1], queryParameters);
                 clauses.Add(new ClauseInfo
                 {
                     FieldName = regexFieldName,
-                    TermValue = GetTermValue(method.Arguments[1], queryParameters),
+                    TermValue = regexTerm,
+                    PackedParamValue = writer.Add(regexTerm, ValueTokenType.String),
                     ClauseType = ClauseType.Regex,
                     OriginalIndex = clauses.Count
                 });
@@ -633,7 +778,7 @@ internal static partial class QueryPlanBuilder
                 var conditionResult = QueryBuilderHelper.EvaluateConstantExpressionForWhenQuery(
                     (BinaryExpression)method.Arguments[0], queryParameters);
                 if (conditionResult)
-                    ParseExpression(method.Arguments[1], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+                    ParseExpression(method.Arguments[1], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, writer);
                 // If false, we simply don't add any clause — the branch is eliminated.
                 break;
             }
@@ -645,7 +790,7 @@ internal static partial class QueryPlanBuilder
     }
 
     private static void ParseSearchMethod(MethodExpression method, List<ClauseInfo> clauses,
-        BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
+        BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ValueWriter writer)
     {
         if (method.Arguments.Count < 2)
             throw new InvalidQueryException($"search() requires at least 2 arguments (field, term), but got {method.Arguments.Count}.");
@@ -662,10 +807,12 @@ internal static partial class QueryPlanBuilder
                 searchOp = Constants.Search.Operator.And;
         }
 
+        var searchTerm = GetTermValue(method.Arguments[1], queryParameters);
         clauses.Add(new ClauseInfo
         {
             FieldName = fieldName,
-            TermValue = GetTermValue(method.Arguments[1], queryParameters),
+            TermValue = searchTerm,
+            PackedParamValue = writer.Add(searchTerm, ValueTokenType.String),
             ClauseType = ClauseType.Search,
             SearchOperator = searchOp,
             OriginalIndex = clauses.Count
@@ -673,7 +820,7 @@ internal static partial class QueryPlanBuilder
     }
 
     private static void ParsePrefixMethod(MethodExpression method, List<ClauseInfo> clauses,
-        BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ClauseType type)
+        BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ClauseType type, ValueWriter writer)
     {
         if (method.Arguments.Count < 2)
             throw new InvalidQueryException($"{type}() requires at least 2 arguments (field, term), but got {method.Arguments.Count}.");
@@ -681,10 +828,12 @@ internal static partial class QueryPlanBuilder
         if (TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var fieldName) == false)
             throw new InvalidQueryException($"{type}() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
 
+        var prefixTerm = GetTermValue(method.Arguments[1], queryParameters);
         clauses.Add(new ClauseInfo
         {
             FieldName = fieldName,
-            TermValue = GetTermValue(method.Arguments[1], queryParameters),
+            TermValue = prefixTerm,
+            PackedParamValue = writer.Add(prefixTerm, ValueTokenType.String),
             ClauseType = type,
             OriginalIndex = clauses.Count
         });
