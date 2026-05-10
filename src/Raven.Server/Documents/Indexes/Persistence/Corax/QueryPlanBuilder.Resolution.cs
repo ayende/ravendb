@@ -56,7 +56,7 @@ internal static partial class QueryPlanBuilder
         PlanParameters planParams,
         QueryBuilderParameters builderParameters,
         long take,
-        out QueryPlan plan,
+        out QueryExecution plan,
         out CompiledPlan compiledPlanOut,
         Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms,
         CancellationToken token)
@@ -277,7 +277,7 @@ internal static partial class QueryPlanBuilder
             PopulateClauseValues(clauses[ci], subExecs[ci], builderParams.QueryParameters, writer);
         }
 
-        var subPlan = new QueryPlan
+        var subPlan = new QueryExecution
         {
             LongValues = writer.GetLongs(),
             DoubleValues = writer.GetDoubles(),
@@ -615,7 +615,7 @@ internal static partial class QueryPlanBuilder
 
     /// <summary>Create a TermQuery using the pre-resolved typed value from the plan's arrays.</summary>
     private static IQueryMatch TermQueryFromParam(PackedParam packed, FieldMetadata fieldMeta,
-        IndexSearcher indexSearcher, QueryPlan plan)
+        IndexSearcher indexSearcher, QueryExecution plan)
     {
         int idx = packed.Param1;
         return packed.ValueType switch
@@ -628,7 +628,7 @@ internal static partial class QueryPlanBuilder
 
     /// <summary>Get a posting-list ID using the pre-resolved typed value.</summary>
     private static long GetTermPostingListIdFromParam(PackedParam packed, FieldMetadata fieldMeta,
-        IndexSearcher indexSearcher, QueryPlan plan)
+        IndexSearcher indexSearcher, QueryExecution plan)
     {
         int idx = packed.Param1;
         return packed.ValueType switch
@@ -647,7 +647,7 @@ internal static partial class QueryPlanBuilder
     /// all the complexity of analyzer application, CompactKey encoding,
     /// posting list resolution, etc.
     /// </summary>
-    public static IQueryMatch[] ResolveMatches(QueryPlan plan, IndexSearcher indexSearcher,
+    public static IQueryMatch[] ResolveMatches(QueryExecution plan, IndexSearcher indexSearcher,
         PlanParameters parameters = null, QueryBuilderParameters builderParams = null)
     {
         var clauses = plan.Clauses ?? [];
@@ -751,7 +751,7 @@ internal static partial class QueryPlanBuilder
     }
 
     private static IQueryMatch ResolveClause(ClauseInfo clause, ClauseExecution exec, IndexSearcher indexSearcher,
-        QueryPlan plan, PlanParameters parameters = null, QueryBuilderParameters builderParams = null)
+        QueryExecution plan, PlanParameters parameters = null, QueryBuilderParameters builderParams = null)
     {
         if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
         {
@@ -998,7 +998,7 @@ internal static partial class QueryPlanBuilder
     /// IN terms are stored contiguously: PackedParamValue.Param1 = start index, InTermCount = count.
     /// Only non-null terms are in the typed array. Null is handled separately via HasNullTerm.</summary>
     private static IQueryMatch ResolveInTerm(ClauseInfo clause, ClauseExecution exec, int termIndex,
-        IndexSearcher indexSearcher, QueryPlan plan,
+        IndexSearcher indexSearcher, QueryExecution plan,
         PlanParameters parameters, QueryBuilderParameters builderParams)
     {
         FieldMetadata fieldMeta = builderParams != null ?
@@ -1017,7 +1017,7 @@ internal static partial class QueryPlanBuilder
     /// pre-compute AllEntries ANDNOT TermQuery(X) into a BitmapMatch so that FillFromMatch
     /// during execution correctly ORs in the set of entries NOT having X.</summary>
     private static IQueryMatch CreateNotEqualsOrMatch(ClauseInfo clause, ClauseExecution exec, IndexSearcher indexSearcher,
-        QueryPlan plan, PlanParameters parameters, QueryBuilderParameters builderParams)
+        QueryExecution plan, PlanParameters parameters, QueryBuilderParameters builderParams)
     {
         FieldMetadata fieldMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
         IQueryMatch termMatch = TermQueryFromParam(exec.PackedParamValue, fieldMeta, indexSearcher, plan);
@@ -1042,7 +1042,7 @@ internal static partial class QueryPlanBuilder
     /// The IL emitter consults <see cref="PlanOp.Dispatch"/> to decide which
     /// array to read.
     /// </summary>
-    public static PostingSource[] ResolveTermSources(QueryPlan plan, IndexSearcher indexSearcher,
+    public static PostingSource[] ResolveTermSources(QueryExecution plan, IndexSearcher indexSearcher,
         PlanParameters parameters = null, QueryBuilderParameters builderParams = null)
     {
         // IsAllEntries plans never emit term ops (FillFromPostings / AndWith / etc.) —
@@ -1124,7 +1124,7 @@ internal static partial class QueryPlanBuilder
     /// decode it into a <see cref="PostingSource"/>. Returns Empty when the clause
     /// is non-term-shaped or the term doesn't exist in the index.</summary>
     private static PostingSource ResolveSingleTermSource(ClauseInfo clause, ClauseExecution exec, IndexSearcher indexSearcher,
-        QueryPlan plan, PlanParameters parameters, QueryBuilderParameters builderParams)
+        QueryExecution plan, PlanParameters parameters, QueryBuilderParameters builderParams)
     {
         if (IsTermSourceEligibleClause(clause, exec) == false)
             return default; // Kind == Empty
@@ -1140,7 +1140,7 @@ internal static partial class QueryPlanBuilder
     /// overload — avoids the long.TryParse false-positive on zero-padded string
     /// values like "000001" (parses as 1L but is indexed as the string "000001").</summary>
     private static PostingSource ResolveInTermSource(ClauseInfo clause, ClauseExecution exec, int termIndex, IndexSearcher indexSearcher,
-        QueryPlan plan, PlanParameters parameters, QueryBuilderParameters builderParams)
+        QueryExecution plan, PlanParameters parameters, QueryBuilderParameters builderParams)
     {
         FieldMetadata fieldMeta = builderParams != null ?
             QueryBuilderHelper.GetFieldMetadata(in builderParams, clause.FieldName, hasBoost: builderParams.HasBoost) :
@@ -1215,7 +1215,7 @@ internal static partial class QueryPlanBuilder
 
     /// <summary>Extract typed parameter values from clauses for entry scan.
     /// Called per-query at execution time. The values populate the CompiledQueryMatch arrays.</summary>
-    public static void ExtractScanParameters(QueryPlan plan, IndexSearcher indexSearcher,
+    public static void ExtractScanParameters(QueryExecution plan, IndexSearcher indexSearcher,
         out long[] longParams, out double[] doubleParams, out Voron.Slice[] sliceParams, out long[] fieldRootPages)
     {
         var predicates = plan.ScanPredicateInfos;
@@ -1256,7 +1256,7 @@ internal static partial class QueryPlanBuilder
     }
 
     private static void ExtractParamsFromPredicate(ScanPredicateInfo pred, ClauseInfo clause, ClauseExecution exec,
-        IndexSearcher indexSearcher, QueryPlan plan, List<long> longs, List<double> doubles,
+        IndexSearcher indexSearcher, QueryExecution plan, List<long> longs, List<double> doubles,
         List<Voron.Slice> slices, List<long> roots)
     {
         if (pred.OrBranches != null)
@@ -1316,7 +1316,7 @@ internal static partial class QueryPlanBuilder
     /// The old CoraxQueryBuilder did this as a side effect during query building.
     /// The bitmap pipeline must do it explicitly after plan building.
     /// </summary>
-    public static void PopulateHighlightingTerms(QueryPlan plan, Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms, QueryMetadata metadata)
+    public static void PopulateHighlightingTerms(QueryExecution plan, Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms, QueryMetadata metadata)
     {
         if (highlightingTerms == null || plan.Clauses is not { Count: > 0 } clauses)
             return;
@@ -1355,7 +1355,7 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    private static void PopulateHighlightingForClause(ClauseInfo clause, ClauseExecution exec, Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms, QueryMetadata metadata, QueryPlan plan)
+    private static void PopulateHighlightingForClause(ClauseInfo clause, ClauseExecution exec, Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms, QueryMetadata metadata, QueryExecution plan)
     {
         string fieldName = clause.FieldName;
         if (fieldName == null)
@@ -1386,7 +1386,7 @@ internal static partial class QueryPlanBuilder
             highlightingTerms[term.DynamicFieldName] = term;
     }
 
-    private static object GetHighlightingValues(ClauseInfo clause, ClauseExecution exec, QueryPlan plan)
+    private static object GetHighlightingValues(ClauseInfo clause, ClauseExecution exec, QueryExecution plan)
     {
         var packed = exec?.PackedParamValue ?? PackedParam.None;
         if (clause.ClauseType == ClauseType.Between)
@@ -1419,7 +1419,7 @@ internal static partial class QueryPlanBuilder
     /// These are NOT materialized yet — the caller materializes them with the bitmap-producing
     /// match as the filterQuery. Returns null if the plan has no vector selects.
     /// </summary>
-    public static CoraxVectorItem[] ResolveVectorItems(QueryPlan plan, IndexSearcher indexSearcher,
+    public static CoraxVectorItem[] ResolveVectorItems(QueryExecution plan, IndexSearcher indexSearcher,
         PlanParameters parameters = null, QueryBuilderParameters builderParams = null)
     {
         if (plan.VectorSelects == null || plan.VectorSelects.Length == 0)

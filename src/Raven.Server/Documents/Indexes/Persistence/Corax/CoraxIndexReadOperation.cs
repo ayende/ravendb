@@ -599,7 +599,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 OrderMetadata[] orderByFields;
 
                 QueryBuilderParameters builderParameters;
-                QueryPlan queryPlan;
+                QueryExecution queryPlan;
                 CompiledPlan compiledPlan = null;
                 using (queryTimings?.For(nameof(QueryTimingsScope.Names.Corax), start: false)?.Start())
                 {

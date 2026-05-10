@@ -36,7 +36,7 @@ public enum VectorSourceKind : byte
 /// <summary>
 /// Packed parameter reference — a 32-bit value encoding the type and index(es)
 /// of a clause's resolved value within the plan's typed arrays
-/// (QueryPlan.LongValues / DoubleValues / StringValues).
+/// (QueryExecution.LongValues / DoubleValues / StringValues).
 ///
 ///   bits [31:30] = value type (Long=0, Double=1, String=2, None=3)
 ///   bits [29:15] = first parameter index (0..32767)

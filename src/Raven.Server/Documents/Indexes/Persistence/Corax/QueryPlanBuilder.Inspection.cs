@@ -129,7 +129,7 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>Build an inspection template from plan ops + clauses. Created once, cached.</summary>
-    private static InspectionOp[] BuildInspectionTemplate(QueryPlan plan)
+    private static InspectionOp[] BuildInspectionTemplate(QueryExecution plan)
     {
         var ops = plan.Ops;
         if (ops == null || ops.Length == 0) return [];

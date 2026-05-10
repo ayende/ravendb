@@ -200,7 +200,7 @@ public struct VectorSearchOp
     public ClauseExecution Exec;
 }
 
-public class QueryPlan
+public class QueryExecution
 {
     public PlanOp[] Ops;
     public int OperandOrdering;

@@ -154,7 +154,7 @@ public static class QueryIlEmitter
             nameof(QueryPrimitives.ShouldSwitchToEntryScan),
             [typeof(long), typeof(long)])!;
 
-    public static CompiledExecuteDelegate EmitDelegate(QueryPlan plan, out string explainSource)
+    public static CompiledExecuteDelegate EmitDelegate(QueryExecution plan, out string explainSource)
     {
         var ops = plan.Ops;
         if (ops == null || ops.Length == 0)
@@ -389,7 +389,7 @@ public static class QueryIlEmitter
     /// The predicate checks are emitted as direct IL — no generic loop, no type switch.
     /// Each predicate's comparison kind (Numerical/Literal) is baked at emitting time.
     /// The actual comparison values come from MultiUnaryItem structs in the context span.</summary>
-    private static void EmitEntryScan(ILGenerator il, QueryPlan plan, LocalBuilder readLocal)
+    private static void EmitEntryScan(ILGenerator il, QueryExecution plan, LocalBuilder readLocal)
     {
         var predicates = plan.ScanPredicateInfos;
         if (predicates == null || predicates.Length == 0)
