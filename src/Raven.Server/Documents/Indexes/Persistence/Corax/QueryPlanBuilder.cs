@@ -97,6 +97,8 @@ internal static class QueryPlanBuilder
         var rootParams = new Dictionary<string, string>();
         if (scannedEntries >= 0)
             rootParams["ScannedEntries"] = scannedEntries.ToString();
+        if (compiledPlan.ExplainSource != null)
+            rootParams["Explain"] = compiledPlan.ExplainSource;
 
         var root = new QueryInspectionNode("CompiledQuery", parameters: rootParams);
         QueryInspectionNode orGroupNode = null;
