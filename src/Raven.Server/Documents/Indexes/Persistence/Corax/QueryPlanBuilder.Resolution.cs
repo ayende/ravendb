@@ -317,52 +317,22 @@ internal static partial class QueryPlanBuilder
         if (binding == null)
             return;
 
-        // Re-resolve the value
-        object value;
-        ValueTokenType valueType;
-        if (binding.IsLiteral)
-        {
-            value = binding.LiteralValue;
-            valueType = binding.LiteralType;
-        }
-        else
-        {
-            // Look up parameter by name in the blittable
-            if (queryParameters != null && queryParameters.TryGet(binding.ParameterName, out object raw) && raw != null)
-                (value, valueType) = ResolveParameterValue(raw);
-            else
-                (value, valueType) = (null, ValueTokenType.String);
-        }
+        var (value, valueType) = ResolveBindingTyped(binding, queryParameters);
 
         clause.TermValueType = valueType;
-        clause.PackedParamValue = writer.Add(value, valueType);
+        clause.PackedParamValue = writer.Add(value, ToValueTokenType(valueType));
 
         // Handle BETWEEN second value
         if (binding.Second != null)
         {
-            object value2;
-            ValueTokenType type2;
-            if (binding.Second.IsLiteral)
-            {
-                value2 = binding.Second.LiteralValue;
-                type2 = binding.Second.LiteralType;
-            }
-            else
-            {
-                if (queryParameters != null && queryParameters.TryGet(binding.Second.ParameterName, out object raw2) && raw2 != null)
-                    (value2, type2) = ResolveParameterValue(raw2);
-                else
-                    (value2, type2) = (null, ValueTokenType.String);
-            }
-
-            // Rebuild packed param as a pair
-            clause.PackedParamValue = writer.AddPair(value, value2, valueType);
+            var (value2, _) = ResolveBindingTyped(binding.Second, queryParameters);
+            clause.PackedParamValue = writer.AddPair(value, value2, ToValueTokenType(valueType));
         }
 
         // Handle IN bindings
         if (binding.InBindings is { Length: > 0 })
         {
-            var termTypes = new List<ValueTokenType>();
+            var termTypes = new List<ParamValueType>();
             var resolvedValues = new List<object>();
             HashSet<int> nullIndices = null;
 
@@ -391,7 +361,7 @@ internal static partial class QueryPlanBuilder
                         {
                             var (elemVal, elemType) = ResolveInValue(elem, ValueTokenType.Parameter, ref hasTime);
                             resolvedValues.Add(elemVal);
-                            termTypes.Add(elemType);
+                            termTypes.Add(ToParamValueType(elemType));
                             if (elemVal == null)
                             {
                                 nullIndices ??= new HashSet<int>();
@@ -401,48 +371,45 @@ internal static partial class QueryPlanBuilder
                     }
                     else if (inRaw != null)
                     {
-                        // Single-value parameter (not an array) — treat as one term
                         bool hasTime = false;
                         var (singleVal, singleType) = ResolveInValue(inRaw, ValueTokenType.Parameter, ref hasTime);
                         resolvedValues.Add(singleVal);
-                        termTypes.Add(singleType);
+                        termTypes.Add(ToParamValueType(singleType));
                     }
                 }
                 else
                 {
-                    // Named parameter (non-array)
                     object inRaw = null;
                     queryParameters?.TryGet(inB.ParameterName, out inRaw);
                     if (inRaw != null)
                     {
                         var (pVal, pType) = ResolveParameterValue(inRaw);
                         resolvedValues.Add(pVal);
-                        termTypes.Add(pType);
+                        termTypes.Add(ToParamValueType(pType));
                     }
                     else
                     {
                         resolvedValues.Add(null);
-                        termTypes.Add(ValueTokenType.String);
+                        termTypes.Add(ParamValueType.String);
                         nullIndices ??= new HashSet<int>();
                         nullIndices.Add(resolvedValues.Count - 1);
                     }
                 }
             }
 
-            // Determine dominant type (same validation as ParseIn)
-            ValueTokenType dominantType = ValueTokenType.Null;
+            // Determine dominant type
+            ParamValueType dominantType = ParamValueType.Null;
             for (int i = 0; i < termTypes.Count; i++)
             {
                 if (resolvedValues[i] == null) continue;
-                if (dominantType == ValueTokenType.Null) { dominantType = termTypes[i]; continue; }
-                // Type mismatch on cache-hit repopulation — shouldn't happen with same query text
+                if (dominantType == ParamValueType.Null) { dominantType = termTypes[i]; continue; }
             }
-            if (dominantType == ValueTokenType.Null) dominantType = ValueTokenType.String;
+            if (dominantType == ParamValueType.Null) dominantType = ParamValueType.String;
 
             int packedType = dominantType switch
             {
-                ValueTokenType.Long => PackedParam.TypeLong,
-                ValueTokenType.Double => PackedParam.TypeDouble,
+                ParamValueType.Long => PackedParam.TypeLong,
+                ParamValueType.Double => PackedParam.TypeDouble,
                 _ => PackedParam.TypeString
             };
             int startIdx = packedType switch
@@ -464,7 +431,7 @@ internal static partial class QueryPlanBuilder
                 }
                 else
                 {
-                    writer.Add(resolvedValues[i], dominantType);
+                    writer.Add(resolvedValues[i], ToValueTokenType(dominantType));
                 }
             }
 
@@ -506,7 +473,7 @@ internal static partial class QueryPlanBuilder
                 {
                     var (u, _) = ResolveBinding(bindings[4], queryParameters);
                     if (u != null && Enum.TryParse(typeof(SpatialUnits), u.ToString(), true, out var su))
-                        sp.Units = (SpatialUnits)su;
+                        sp.Units = (int)(SpatialUnits)su;
                 }
             }
         }
@@ -520,7 +487,7 @@ internal static partial class QueryPlanBuilder
                 {
                     var (u, _) = ResolveBinding(bindings[2], queryParameters);
                     if (u != null && Enum.TryParse(typeof(SpatialUnits), u.ToString(), true, out var su))
-                        sp.Units = (SpatialUnits)su;
+                        sp.Units = (int)(SpatialUnits)su;
                 }
             }
         }
@@ -565,22 +532,37 @@ internal static partial class QueryPlanBuilder
             if (val is BlittableJsonReaderArray or BlittableJsonReaderObject)
             {
                 vec.ResolvedValue = val;
-                vec.ResolvedValueType = ValueTokenType.Parameter;
+                vec.ResolvedValueType = ParamValueType.Parameter;
             }
             else
             {
                 vec.ResolvedValue = val;
-                vec.ResolvedValueType = valType;
+                vec.ResolvedValueType = ToParamValueType(valType);
             }
         }
 
         clause.Vector = vec;
     }
 
-    private static (object Value, ValueTokenType Type) ResolveBinding(ParameterBinding binding, BlittableJsonReaderObject queryParameters)
+    /// <summary>Resolve a binding and return the Corax ParamValueType.</summary>
+    private static (object Value, ParamValueType Type) ResolveBindingTyped(ParameterBinding binding, BlittableJsonReaderObject queryParameters)
     {
         if (binding.IsLiteral)
             return (binding.LiteralValue, binding.LiteralType);
+        if (queryParameters != null && queryParameters.TryGet(binding.ParameterName, out object raw) && raw != null)
+        {
+            if (raw is BlittableJsonReaderArray or BlittableJsonReaderObject)
+                return (raw, ParamValueType.Parameter);
+            var (val, type) = ResolveParameterValue(raw);
+            return (val, ToParamValueType(type));
+        }
+        return (null, ParamValueType.String);
+    }
+
+    private static (object Value, ValueTokenType Type) ResolveBinding(ParameterBinding binding, BlittableJsonReaderObject queryParameters)
+    {
+        if (binding.IsLiteral)
+            return (binding.LiteralValue, ToValueTokenType(binding.LiteralType));
         if (queryParameters != null && queryParameters.TryGet(binding.ParameterName, out object raw) && raw != null)
         {
             // Preserve blittable arrays/objects as-is (used by vector/spatial resolution)
@@ -630,7 +612,7 @@ internal static partial class QueryPlanBuilder
     public static IQueryMatch[] ResolveMatches(QueryPlan plan, IndexSearcher indexSearcher,
         PlanParameters parameters = null, QueryBuilderParameters builderParams = null)
     {
-        var clauses = plan.QueryBuilderPlanState as List<ClauseInfo> ?? [];
+        var clauses = plan.Clauses ?? [];
         // All-entries plan with possible post-filter phases
         if (plan.IsAllEntries)
         {
@@ -913,7 +895,7 @@ internal static partial class QueryPlanBuilder
 
                 return indexSearcher.SearchQuery(searchMeta,
                     searchValues,
-                    clause.SearchOperator,
+                    (Constants.Search.Operator)clause.SearchOperator,
                     searchQueryOptions);
             }
 
@@ -1009,7 +991,7 @@ internal static partial class QueryPlanBuilder
         if (plan.IsAllEntries)
             return [];
 
-        if (plan.QueryBuilderPlanState is not List<ClauseInfo>  clauses  || clauses.Count == 0)
+        if (plan.Clauses is not { Count: > 0 } clauses)
             return [];
 
         // Standalone NotEquals: matches[0] = AllEntries (NOT a term source),
@@ -1192,7 +1174,7 @@ internal static partial class QueryPlanBuilder
         // every predicate when multiple clauses share the same field (e.g. Name != 'a' AND Name != 'b').
         int scanStart = plan.AllNegated ? 0 : 1;
         int clauseIdx = scanStart;
-        var clauses = plan.QueryBuilderPlanState as List<ClauseInfo>;
+        var clauses = plan.Clauses;
         foreach (ScanPredicateInfo pred in predicates)
         {
             // Advance to the next eligible clause for this predicate.
@@ -1267,7 +1249,7 @@ internal static partial class QueryPlanBuilder
     /// </summary>
     public static void PopulateHighlightingTerms(QueryPlan plan, Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms, QueryMetadata metadata)
     {
-        if (highlightingTerms == null || plan.QueryBuilderPlanState is not List<ClauseInfo> clauses)
+        if (highlightingTerms == null || plan.Clauses is not { Count: > 0 } clauses)
             return;
 
         foreach (var clauseObj in clauses)
@@ -1369,7 +1351,7 @@ internal static partial class QueryPlanBuilder
         var items = new CoraxVectorItem[plan.VectorSelects.Length];
         for (int i = 0; i < plan.VectorSelects.Length; i++)
         {
-            var clause = plan.VectorSelects[i].Clause as ClauseInfo;
+            var clause = plan.VectorSelects[i].Clause;
             if (clause == null || clause.ClauseType != ClauseType.Vector || builderParams == null)
                 throw new InvalidOperationException("Vector select references an invalid clause at index " + i);
 
@@ -1378,7 +1360,7 @@ internal static partial class QueryPlanBuilder
         return items;
     }
 
-    private static IQueryMatch HandleSpatial(QueryBuilderParameters builderParameters, ClauseInfo clause, MethodType spatialMethod)
+    private static IQueryMatch HandleSpatial(QueryBuilderParameters builderParameters, ClauseInfo clause, SpatialOperationType spatialMethod)
     {
         var metadata = builderParameters.Metadata;
         var index = builderParameters.Index;
@@ -1403,11 +1385,11 @@ internal static partial class QueryPlanBuilder
         if (sp.IsCircle)
         {
             shape = spatialField.ReadCircle(sp.CircleRadius, sp.CircleLatitude,
-                sp.CircleLongitude, sp.Units);
+                sp.CircleLongitude, ToSpatialUnits(sp.Units));
         }
         else if (sp.Wkt != null)
         {
-            shape = spatialField.ReadShape(sp.Wkt, sp.Units);
+            shape = spatialField.ReadShape(sp.Wkt, ToSpatialUnits(sp.Units));
         }
         else
         {
@@ -1416,11 +1398,11 @@ internal static partial class QueryPlanBuilder
 
         var operation = spatialMethod switch
         {
-            MethodType.Spatial_Within => global::Corax.Utils.Spatial.SpatialRelation.Within,
-            MethodType.Spatial_Disjoint => global::Corax.Utils.Spatial.SpatialRelation.Disjoint,
-            MethodType.Spatial_Intersects => global::Corax.Utils.Spatial.SpatialRelation.Intersects,
-            MethodType.Spatial_Contains => global::Corax.Utils.Spatial.SpatialRelation.Contains,
-            _ => (global::Corax.Utils.Spatial.SpatialRelation)QueryMethod.ThrowMethodNotSupported(spatialMethod, metadata.QueryText, builderParameters.QueryParameters)
+            SpatialOperationType.Within => global::Corax.Utils.Spatial.SpatialRelation.Within,
+            SpatialOperationType.Disjoint => global::Corax.Utils.Spatial.SpatialRelation.Disjoint,
+            SpatialOperationType.Intersects => global::Corax.Utils.Spatial.SpatialRelation.Intersects,
+            SpatialOperationType.Contains => global::Corax.Utils.Spatial.SpatialRelation.Contains,
+            _ => throw new InvalidOperationException($"Unexpected spatial operation type: {spatialMethod}")
         };
 
         return builderParameters.IndexSearcher.SpatialQuery(fieldMetadata, distanceErrorPct, shape, spatialField.GetContext(), operation, token: builderParameters.Token);
@@ -1447,7 +1429,7 @@ internal static partial class QueryPlanBuilder
 
         // Use pre-resolved vector value and method kind from parsing
         object methodParameter = clause.Vector.ResolvedValue;
-        ValueTokenType valueTokenType = clause.Vector.ResolvedValueType;
+        ValueTokenType valueTokenType = ToValueTokenType(clause.Vector.ResolvedValueType);
 
         if (clause.Vector.Method != VectorMethodKind.None)
         {

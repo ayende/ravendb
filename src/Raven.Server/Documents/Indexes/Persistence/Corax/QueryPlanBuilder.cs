@@ -64,110 +64,6 @@ internal static partial class QueryPlanBuilder
         public bool HasBoost;
     }
 
-    // ── Cached clause template ────────────────────────────────────────
-
-    /// <summary>Immutable structural template built on first execution of a query text.
-    /// Cached on PerQueryPlans.Template (as object, since PlanCache is in Corax).
-    /// On cache hit, PopulateParameters re-resolves parameter values from the blittable
-    /// using the bindings, skipping AST parsing entirely.</summary>
-    /// <summary>Cached per-query-text template. Each ClauseInfo carries its own Binding
-    /// describing how to re-resolve its value from the blittable on subsequent executions.
-    /// On cache hit, the clauses are cloned (shallow) and their per-execution fields
-    /// (PackedParamValue, TermValueType, Cardinality, Spatial, Vector) are overwritten
-    /// by PopulateParameters.</summary>
-    internal sealed class ClauseTemplate
-    {
-        public ClauseInfo[] Clauses;
-        public bool IsAllEntries;
-        public bool IsOr;              // root boolean operator
-        public bool HasSpatialFilters; // had spatial post-filter clauses
-        public bool HasVectorSelects;  // had vector post-filter clauses
-        /// <summary>Spatial clauses separated from the main filter chain (AND queries only).</summary>
-        public ClauseInfo[] SpatialClauses;
-        /// <summary>Vector clauses separated from the main filter chain (AND queries only).</summary>
-        public ClauseInfo[] VectorClauses;
-    }
-
-    /// <summary>Describes how to resolve a clause's parameter value without the AST.
-    /// For literals: the native value is cached directly.
-    /// For parameters: the parameter name is stored for blittable lookup.</summary>
-    internal sealed class ParameterBinding
-    {
-        public bool IsLiteral;
-        public object LiteralValue;       // cached native value for literals (long/double/string)
-        public ValueTokenType LiteralType;
-        public string ParameterName;      // for parameters: name to look up in blittable ("p0")
-        public bool IsArrayParameter;    // true if this parameter may resolve to an array (IN terms)
-
-        /// <summary>Second binding for BETWEEN high bound. Null for non-BETWEEN clauses.</summary>
-        public ParameterBinding Second;
-
-        /// <summary>For IN/AllIn: bindings for each term. Null for non-IN clauses.
-        /// Each entry is either a literal or parameter-array-element.</summary>
-        public ParameterBinding[] InBindings;
-
-        /// <summary>For Spatial: bindings for shape arguments.</summary>
-        public ParameterBinding[] SpatialBindings;
-
-        /// <summary>For Vector: binding for the vector value argument.</summary>
-        public ParameterBinding VectorValueBinding;
-    }
-
-    /// <summary>
-    /// Packed parameter reference — a 32-bit value encoding the type and index(es)
-    /// of a clause's resolved value within the plan's typed arrays
-    /// (QueryPlan.LongValues / DoubleValues / StringValues).
-    ///
-    ///   bits [31:30] = value type (Long=0, Double=1, String=2, None=3)
-    ///   bits [29:15] = first parameter index (0..32767)
-    ///   bits [14:0]  = second parameter index (0..32767, 0x7FFF = no second param)
-    ///
-    /// For simple predicates (Equals, GT, LT, etc.): Param1 = value index, Param2 = NoParam.
-    /// For BETWEEN: Param1 = low-bound index, Param2 = high-bound index (same-typed array).
-    /// For IN/AllIn: Param1 = start index into the typed array. Term count is stored separately
-    ///   in ClauseInfo.InTermCount (not packed) because IN can exceed 32K terms.
-    /// For parameterless clauses (Exists): None sentinel.
-    /// </summary>
-    internal readonly struct PackedParam
-    {
-        public const int NoParamValue = 0x7FFF;
-        private const int MaxIndex = 0x7FFF; // 32767
-
-        public const int TypeLong = 0;
-        public const int TypeDouble = 1;
-        public const int TypeString = 2;
-        private const int TypeNone = 3;
-
-        /// <summary>Sentinel: no parameter ("exists(Field)" clauses). Spatial and vector clauses
-        /// store their numeric parameters directly on ClauseInfo fields instead.</summary>
-        public static readonly PackedParam None = new((TypeNone << 30) | (NoParamValue << 15) | NoParamValue);
-
-        private readonly int _value;
-
-        private PackedParam(int raw) => _value = raw;
-
-        public PackedParam(int type, int param1, int param2 = NoParamValue)
-        {
-            if (param1 > MaxIndex)
-                ThrowLimitExceeded(param1);
-            if (param2 != NoParamValue && param2 > MaxIndex)
-                ThrowLimitExceeded(param2);
-            _value = (type << 30) | ((param1 & 0x7FFF) << 15) | (param2 & 0x7FFF);
-        }
-
-        public int ValueType => (_value >>> 30) & 0x3;
-        public int Param1 => (_value >>> 15) & 0x7FFF;
-        public int Param2 => _value & 0x7FFF;
-        public bool IsNone => _value == None._value;
-
-        private static void ThrowLimitExceeded(int index)
-        {
-            throw new InvalidOperationException(
-                $"Query parameter index {index} exceeds maximum ({MaxIndex}). " +
-                "Simplify the query or reduce the number of IN terms.");
-        }
-    }
-
     /// <summary>
     /// Accumulates typed parameter values during query plan building.
     /// Each Add call stores the native value in the appropriate-typed list
@@ -259,162 +155,37 @@ internal static partial class QueryPlanBuilder
         public string[] GetStrings() => _strings.Count > 0 ? _strings.ToArray() : [];
     }
 
-    internal enum ClauseType
+    // ── Type mapping: Raven.Server ↔ Corax ─────────────────────────────
+
+    private static ParamValueType ToParamValueType(ValueTokenType t) => t switch
     {
-        Equals,
-        NotEquals,
-        GreaterThan,
-        GreaterThanOrEqual,
-        LessThan,
-        LessThanOrEqual,
-        Between,
-        In,
-        AllIn,
-        Exists,
-        StartsWith,
-        EndsWith,
-        Search,
-        Regex,
-        Spatial,
-        Vector,
-        OrGroup,  // A group of OR'd subclauses
-        AndGroup, // A group of AND'd subclauses inside an OR chain
-        EmptyIn,  // IN() with empty list — matches nothing
-    }
+        ValueTokenType.Long => ParamValueType.Long,
+        ValueTokenType.Double => ParamValueType.Double,
+        ValueTokenType.Parameter => ParamValueType.Parameter,
+        _ => ParamValueType.String
+    };
 
-    /// <summary>
-    /// Intermediate representation of a single WHERE predicate, between the RQL AST
-    /// and the PlanOp[] execution plan.
-    ///
-    /// Why not reuse the AST directly?
-    /// - The AST is a recursive tree (AND(AND(A,B),C)); ClauseInfo is a flat list suitable for
-    ///   plan emission. Mixed AND/OR trees are flattened into OrGroup/AndGroup sub-lists.
-    /// - Field names are resolved (alias substitution, id() expansion, quoted-name handling).
-    /// - Parameter values are resolved from the blittable and stored as native types in the
-    ///   plan's typed arrays (LongValues, DoubleValues, StringValues). PackedParam encodes
-    ///   (type, index), so resolution never reparses strings.
-    /// - A clause type is classified into a flat enum — downstream code switches on one value
-    ///   instead of pattern-matching AST node types and method names.
-    /// - Planning annotations (Cardinality, IsExact, BoostFactor, IsNegated) are attached per
-    ///   clause for operand reordering, dispatch classification, and entry-scan eligibility.
-    /// </summary>
-    internal class ClauseInfo
+    private static ValueTokenType ToValueTokenType(ParamValueType t) => t switch
     {
-        public string FieldName;
-        public ValueTokenType TermValueType; // for type-aware scan predicate building
+        ParamValueType.Long => ValueTokenType.Long,
+        ParamValueType.Double => ValueTokenType.Double,
+        ParamValueType.Parameter => ValueTokenType.Parameter,
+        _ => ValueTokenType.String
+    };
 
-        /// <summary>Packed (type, index) into QueryPlan.LongValues/DoubleValues/StringValues.
-        /// For BETWEEN: Param1 = low-bound index, Param2 = high-bound index.
-        /// For IN/AllIn: Param1 = start index into the typed array. Count is in <see cref="InTermCount"/>.
-        /// See <see cref="PackedParam"/>.</summary>
-        public PackedParam PackedParamValue = PackedParam.None;
-
-        /// <summary>Number of IN/AllIn terms stored contiguously starting at PackedParamValue.Param1.
-        /// Stored separately (not in PackedParam.Param2) because IN clauses can have more than
-        /// 32K terms (e.g. a large array parameter), exceeding the 15-bit Param2 limit.</summary>
-        public int InTermCount;
-
-        /// <summary>Indices of null terms within the IN list. Null for most queries.
-        /// When present, resolution uses string-null lookup for these positions instead
-        /// of reading from the typed array (where null is stored as a 0 sentinel).</summary>
-        public HashSet<int> InNullTermIndices;
-
-        public List<ClauseInfo> OrSubClauses;  // for OrGroup
-        /// <summary>Set for NotEquals clauses appearing in OR chains.
-        /// Example: WHERE Name != 'a' OR Age = 25
-        /// The NOT(Name='a') term cannot use the raw posting list (which contains entries
-        /// WITH 'a', not entries WITHOUT 'a'). Instead, ResolveMatches pre-materializes
-        /// AllEntries ANDNOT TermQuery('a') into a BitmapMatch, so FillFromMatch during
-        /// execution correctly ORs in the complement set.</summary>
-        public bool IsOrChainNotEquals;
-        public List<ClauseInfo> AndSubClauses; // for AndGroup (AND sub-expression inside OR)
-
-        /// <summary>Pre-resolved spatial parameters. Null for non-spatial clauses.</summary>
-        public SpatialParams Spatial;
-        public MethodType SpatialMethodType; // for spatial: Within/Contains/Disjoint/Intersects
-
-        /// <summary>Pre-resolved vector parameters. Null for non-vector clauses.</summary>
-        public VectorParams Vector;
-        public ClauseType ClauseType;
-        public long Cardinality = -1;
-        public int OriginalIndex;
-        public bool IsNegated;
-        public bool IsExact;
-        public float BoostFactor;
-
-        public Constants.Search.Operator SearchOperator; // for Search (AND/OR)
-
-        /// <summary>How to re-resolve this clause's value from the blittable on cache hit.
-        /// Null for parameterless clauses (Exists). Set during first parse, immutable after.</summary>
-        public ParameterBinding Binding;
-
-        /// <summary>How to re-resolve the boost factor, if this clause is wrapped in boost().
-        /// Null for non-boosted clauses. The actual factor is resolved per-execution.</summary>
-        public ParameterBinding BoostBinding;
-
-        /// <summary>Clone structural fields for cache-hit reuse. Per-execution fields
-        /// (PackedParamValue, TermValueType, Cardinality, Spatial, Vector, InTermCount,
-        /// InNullTermIndices) will be overwritten by PopulateParameters.</summary>
-        public ClauseInfo CloneStructure()
-        {
-            return new ClauseInfo
-            {
-                FieldName = FieldName,
-                ClauseType = ClauseType,
-                OriginalIndex = OriginalIndex,
-                IsNegated = IsNegated,
-                IsExact = IsExact,
-                BoostFactor = BoostFactor,
-                SearchOperator = SearchOperator,
-                IsOrChainNotEquals = IsOrChainNotEquals,
-                SpatialMethodType = SpatialMethodType,
-                Binding = Binding,
-                BoostBinding = BoostBinding,
-                OrSubClauses = OrSubClauses?.ConvertAll(c => c.CloneStructure()),
-                AndSubClauses = AndSubClauses?.ConvertAll(c => c.CloneStructure()),
-                Cardinality = -1, // re-estimated per execution
-            };
-        }
-    }
-
-    /// <summary>Pre-resolved spatial query parameters. All values are extracted from the AST
-    /// during parsing so execution never calls GetValue back on the blittable.
-    /// Shape construction (spatialField.ReadCircle / ReadShape) still runs at execution time
-    /// because it needs the spatial field factory from builderParameters.</summary>
-    internal sealed class SpatialParams
+    private static SpatialOperationType ToSpatialOp(MethodType t) => t switch
     {
-        public double DistanceErrorPct = -1; // -1 = use default
-        public bool IsCircle;                // true = circle, false = WKT
-        // Circle parameters
-        public double CircleRadius;
-        public double CircleLatitude;
-        public double CircleLongitude;
-        // WKT parameter
-        public string Wkt;
-        // Shared
-        public SpatialUnits? Units;
-    }
+        MethodType.Spatial_Within => SpatialOperationType.Within,
+        MethodType.Spatial_Contains => SpatialOperationType.Contains,
+        MethodType.Spatial_Disjoint => SpatialOperationType.Disjoint,
+        MethodType.Spatial_Intersects => SpatialOperationType.Intersects,
+        _ => SpatialOperationType.Within
+    };
 
-    /// <summary>Pre-resolved vector query parameters. All scalar values and the raw vector
-    /// payload are extracted from the AST during parsing. Embedding construction
-    /// (base64 decode, AI embedding generation) still runs at execution time.</summary>
-    internal sealed class VectorParams
-    {
-        public float MinimumMatch = -1;      // -1 = use index default
-        public int NumberOfCandidates = -1;  // -1 = use index default
-        public object ResolvedValue;         // the raw vector parameter (string, BlittableJsonReaderArray, etc.)
-        public ValueTokenType ResolvedValueType;
-        public VectorMethodKind Method;      // which embedding method, if any
-        public string AiTaskName;            // AI task identifier for embedding.text
-    }
+    private static SpatialUnits? ToSpatialUnits(int? units) =>
+        units.HasValue ? (SpatialUnits)units.Value : null;
 
-    internal enum VectorMethodKind : byte
-    {
-        None,           // direct value (not a method call)
-        ForDocument,    // embedding.forDoc(docId)
-        ForRaw,         // embedding.forRaw(base64)
-        EmbeddingText,  // embedding.text(text, ai.task(taskName))
-    }
+    private static int? FromSpatialUnits(SpatialUnits su) => (int)su;
 
     private enum BooleanOp { And, Or, True, False, Leaf }
 
@@ -713,7 +484,7 @@ internal static partial class QueryPlanBuilder
             {
                 IsLiteral = minBinding?.IsLiteral ?? true,
                 LiteralValue = minBinding?.LiteralValue,
-                LiteralType = minBinding?.LiteralType ?? ValueTokenType.String,
+                LiteralType = minBinding?.LiteralType ?? ParamValueType.String,
                 ParameterName = minBinding?.ParameterName,
                 Second = maxBinding
             }
@@ -743,7 +514,7 @@ internal static partial class QueryPlanBuilder
                     var rawValue = ve.GetValue(queryParameters);
                     bool hasTime = false;
                     var (resolved, resolvedType) = ResolveInValue(rawValue, ve.Value, ref hasTime);
-                    inBindings.Add(new ParameterBinding { IsLiteral = true, LiteralValue = resolved, LiteralType = resolvedType });
+                    inBindings.Add(new ParameterBinding { IsLiteral = true, LiteralValue = resolved, LiteralType = ToParamValueType(resolvedType) });
                 }
             }
         }
@@ -905,7 +676,7 @@ internal static partial class QueryPlanBuilder
                 {
                     FieldName = spatialFieldName,
                     ClauseType = ClauseType.Spatial,
-                    SpatialMethodType = methodType,
+                    SpatialMethodType = ToSpatialOp(methodType),
                     OriginalIndex = clauses.Count,
                     Binding = new ParameterBinding
                     {
@@ -1023,7 +794,7 @@ internal static partial class QueryPlanBuilder
         {
             FieldName = fieldName,
             ClauseType = ClauseType.Search,
-            SearchOperator = searchOp,
+            SearchOperator = (int)searchOp,
             OriginalIndex = clauses.Count,
             Binding = CreateBinding(method.Arguments[1], queryParameters)
         });
@@ -1185,17 +956,17 @@ internal static partial class QueryPlanBuilder
 
         // Null literal — preserve as actual null, not the string "null"
         if (ve.Value == ValueTokenType.Null)
-            return new ParameterBinding { IsLiteral = true, LiteralValue = null, LiteralType = ValueTokenType.String };
+            return new ParameterBinding { IsLiteral = true, LiteralValue = null, LiteralType = ParamValueType.String };
 
         // Literal — resolve the constant value once
         var value = ve.GetValue(queryParameters);
         if (value is bool b)
-            return new ParameterBinding { IsLiteral = true, LiteralValue = b ? "true" : "false", LiteralType = ValueTokenType.String };
+            return new ParameterBinding { IsLiteral = true, LiteralValue = b ? "true" : "false", LiteralType = ParamValueType.String };
         if (value == null)
-            return new ParameterBinding { IsLiteral = true, LiteralValue = null, LiteralType = ValueTokenType.String };
+            return new ParameterBinding { IsLiteral = true, LiteralValue = null, LiteralType = ParamValueType.String };
 
         var (resolved, resolvedType) = ResolveParameterValue(value);
-        return new ParameterBinding { IsLiteral = true, LiteralValue = resolved, LiteralType = resolvedType };
+        return new ParameterBinding { IsLiteral = true, LiteralValue = resolved, LiteralType = ToParamValueType(resolvedType) };
     }
 
     /// <summary>Format a value from the plan's typed arrays as a string for display/highlighting.</summary>
@@ -1538,7 +1309,7 @@ internal static partial class QueryPlanBuilder
             {
                 Ops = ops.ToArray(),
                 OperandOrdering = 0,
-                QueryBuilderPlanState = clauses
+                Clauses = clauses
             };
         }
         else
@@ -1828,7 +1599,7 @@ internal static partial class QueryPlanBuilder
         {
             Ops = ops.ToArray(),
             OperandOrdering = ordering,
-            QueryBuilderPlanState = clauses,
+            Clauses = clauses,
             AllNegated = allNegated,
             ScanPredicateInfos = scanPredicateInfos,
             TypeSignature = typeSignature,
@@ -1868,8 +1639,9 @@ internal static partial class QueryPlanBuilder
         if (spatialClauses == null && vectorClauses == null)
             return;
 
-        var clauses = plan.QueryBuilderPlanState as List<ClauseInfo> ?? [];
-        plan.QueryBuilderPlanState = clauses;
+        var clauses = plan.Clauses ?? [];
+        plan.Clauses = clauses;
+        plan.Clauses = clauses;
 
         int matchIndex = CountMatchSlots(clauses, plan.IsAllEntries, plan.AllNegated);
 
@@ -2005,10 +1777,10 @@ internal static partial class QueryPlanBuilder
         ScanValueType valueType;
         switch (clause.TermValueType)
         {
-            case ValueTokenType.Long:
+            case ParamValueType.Long:
                 valueType = ScanValueType.Long;
                 break;
-            case ValueTokenType.Double:
+            case ParamValueType.Double:
                 valueType = ScanValueType.Double;
                 break;
             default:
