@@ -69,21 +69,19 @@ internal static partial class QueryPlanBuilder
     // ── Packed parameter encoding ──────────────────────────────────────
 
     /// <summary>
-    /// Packed parameter reference encoding.
+    /// Packed parameter reference — a 32-bit value encoding the type and index(es)
+    /// of a clause's resolved value within the plan's typed arrays
+    /// (QueryPlan.LongValues / DoubleValues / StringValues).
     ///
-    /// Each clause value is stored in a typed array (long[], double[], string[])
-    /// on the QueryPlan and referenced by a 32-bit packed integer:
     ///   bits [31:30] = value type (Long=0, Double=1, String=2, None=3)
     ///   bits [29:15] = first parameter index (0..32767)
     ///   bits [14:0]  = second parameter index (0..32767, 0x7FFF = no second param)
     ///
-    /// For BETWEEN: param1 = low bound index, param2 = high bound index (same typed array).
-    /// For simple predicates: param1 = value index, param2 = NoParam.
-    /// For parameterless clauses (Exists, Spatial, Vector): type = None.
-    ///
-    /// Maximum 32,767 parameters of each type per query.
+    /// For BETWEEN: Param1 = low bound index, Param2 = high bound index (same typed array).
+    /// For simple predicates: Param1 = value index, Param2 = NoParam.
+    /// For parameterless clauses (Exists, Spatial, Vector): None sentinel.
     /// </summary>
-    internal static class PackedParam
+    internal readonly struct PackedParam
     {
         public const int NoParam = 0x7FFF;
         public const int MaxIndex = 0x7FFF; // 32767
@@ -94,20 +92,39 @@ internal static partial class QueryPlanBuilder
         public const int TypeNone = 3;
 
         /// <summary>Sentinel: no parameter (Exists, Spatial, Vector clauses).</summary>
-        public const int None = (TypeNone << 30) | (NoParam << 15) | NoParam;
+        public static readonly PackedParam None = new((TypeNone << 30) | (NoParam << 15) | NoParam);
 
-        public static int Encode(int type, int param1, int param2 = NoParam)
-            => (type << 30) | ((param1 & 0x7FFF) << 15) | (param2 & 0x7FFF);
+        private readonly int _value;
 
-        public static int GetValueType(int packed) => (packed >>> 30) & 0x3;
-        public static int GetParam1(int packed) => (packed >>> 15) & 0x7FFF;
-        public static int GetParam2(int packed) => packed & 0x7FFF;
+        private PackedParam(int raw) => _value = raw;
+
+        public PackedParam(int type, int param1, int param2 = NoParam)
+        {
+            if (param1 > MaxIndex)
+                ThrowLimitExceeded(param1);
+            if (param2 != NoParam && param2 > MaxIndex)
+                ThrowLimitExceeded(param2);
+            _value = (type << 30) | ((param1 & 0x7FFF) << 15) | (param2 & 0x7FFF);
+        }
+
+        public int ValueType => (_value >>> 30) & 0x3;
+        public int Param1 => (_value >>> 15) & 0x7FFF;
+        public int Param2 => _value & 0x7FFF;
+        public bool IsNone => _value == None._value;
+
+        private static void ThrowLimitExceeded(int index)
+        {
+            throw new InvalidOperationException(
+                $"Query parameter index {index} exceeds maximum ({MaxIndex}). " +
+                "Simplify the query or reduce the number of IN terms.");
+        }
     }
 
     /// <summary>
     /// Accumulates typed parameter values during query plan building.
-    /// Each Add call stores the value in the appropriate typed list and
-    /// returns a packed int encoding (type + index) for the clause.
+    /// Each Add call stores the native value in the appropriate typed list
+    /// and returns a <see cref="PackedParam"/> encoding (type + index) for the clause.
+    /// Values are stored as their native types — no string round-trips.
     /// </summary>
     private sealed class ValueWriter
     {
@@ -115,65 +132,79 @@ internal static partial class QueryPlanBuilder
         private readonly List<double> _doubles = new();
         private readonly List<string> _strings = new();
 
-        public int Add(string value, ValueTokenType type)
+        public PackedParam AddLong(long value)
         {
-            switch (type)
-            {
-                case ValueTokenType.Long when long.TryParse(value, out long l):
-                    CheckLimit(_longs.Count);
-                    _longs.Add(l);
-                    return PackedParam.Encode(PackedParam.TypeLong, _longs.Count - 1);
-                case ValueTokenType.Double when double.TryParse(value,
-                    System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out double d):
-                    CheckLimit(_doubles.Count);
-                    _doubles.Add(d);
-                    return PackedParam.Encode(PackedParam.TypeDouble, _doubles.Count - 1);
-                default:
-                    CheckLimit(_strings.Count);
-                    _strings.Add(value);
-                    return PackedParam.Encode(PackedParam.TypeString, _strings.Count - 1);
-            }
+            _longs.Add(value);
+            return new PackedParam(PackedParam.TypeLong, _longs.Count - 1);
         }
 
-        public int AddPair(string value1, string value2, ValueTokenType type)
+        public PackedParam AddDouble(double value)
         {
-            switch (type)
-            {
-                case ValueTokenType.Long when long.TryParse(value1, out long l1) && long.TryParse(value2, out long l2):
-                    CheckLimit(_longs.Count + 1);
-                    _longs.Add(l1);
-                    _longs.Add(l2);
-                    return PackedParam.Encode(PackedParam.TypeLong, _longs.Count - 2, _longs.Count - 1);
-                case ValueTokenType.Double when double.TryParse(value1,
-                    System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out double d1)
-                    && double.TryParse(value2,
-                    System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out double d2):
-                    CheckLimit(_doubles.Count + 1);
-                    _doubles.Add(d1);
-                    _doubles.Add(d2);
-                    return PackedParam.Encode(PackedParam.TypeDouble, _doubles.Count - 2, _doubles.Count - 1);
-                default:
-                    CheckLimit(_strings.Count + 1);
-                    _strings.Add(value1);
-                    _strings.Add(value2);
-                    return PackedParam.Encode(PackedParam.TypeString, _strings.Count - 2, _strings.Count - 1);
-            }
+            _doubles.Add(value);
+            return new PackedParam(PackedParam.TypeDouble, _doubles.Count - 1);
         }
+
+        public PackedParam AddString(string value)
+        {
+            _strings.Add(value);
+            return new PackedParam(PackedParam.TypeString, _strings.Count - 1);
+        }
+
+        public PackedParam AddLongPair(long low, long high)
+        {
+            _longs.Add(low);
+            _longs.Add(high);
+            return new PackedParam(PackedParam.TypeLong, _longs.Count - 2, _longs.Count - 1);
+        }
+
+        public PackedParam AddDoublePair(double low, double high)
+        {
+            _doubles.Add(low);
+            _doubles.Add(high);
+            return new PackedParam(PackedParam.TypeDouble, _doubles.Count - 2, _doubles.Count - 1);
+        }
+
+        public PackedParam AddStringPair(string low, string high)
+        {
+            _strings.Add(low);
+            _strings.Add(high);
+            return new PackedParam(PackedParam.TypeString, _strings.Count - 2, _strings.Count - 1);
+        }
+
+        /// <summary>Add a resolved value by its detected type. Used by Parse* methods
+        /// after <see cref="ResolveTermValue"/> determines the native type.</summary>
+        public PackedParam Add(object value, ValueTokenType type)
+        {
+            return type switch
+            {
+                ValueTokenType.Long => AddLong(value is long l ? l : Convert.ToInt64(value)),
+                ValueTokenType.Double => AddDouble(value is double d ? d : Convert.ToDouble(value)),
+                _ => AddString(value?.ToString())
+            };
+        }
+
+        /// <summary>Add a pair of resolved values (for BETWEEN).</summary>
+        public PackedParam AddPair(object value1, object value2, ValueTokenType type)
+        {
+            return type switch
+            {
+                ValueTokenType.Long => AddLongPair(
+                    value1 is long l1 ? l1 : Convert.ToInt64(value1),
+                    value2 is long l2 ? l2 : Convert.ToInt64(value2)),
+                ValueTokenType.Double => AddDoublePair(
+                    value1 is double d1 ? d1 : Convert.ToDouble(value1),
+                    value2 is double d2 ? d2 : Convert.ToDouble(value2)),
+                _ => AddStringPair(value1?.ToString(), value2?.ToString())
+            };
+        }
+
+        public long GetLong(int index) => _longs[index];
+        public double GetDouble(int index) => _doubles[index];
+        public string GetString(int index) => _strings[index];
 
         public long[] GetLongs() => _longs.Count > 0 ? _longs.ToArray() : [];
         public double[] GetDoubles() => _doubles.Count > 0 ? _doubles.ToArray() : [];
         public string[] GetStrings() => _strings.Count > 0 ? _strings.ToArray() : [];
-
-        private static void CheckLimit(int currentCount)
-        {
-            if (currentCount >= PackedParam.MaxIndex)
-                throw new InvalidOperationException(
-                    $"Query exceeds maximum parameter count ({PackedParam.MaxIndex}). " +
-                    "Simplify the query or reduce the number of IN terms.");
-        }
     }
 
     internal enum ClauseType
@@ -226,11 +257,11 @@ internal static partial class QueryPlanBuilder
 
         /// <summary>Packed (type, index) into QueryPlan.LongValues/DoubleValues/StringValues.
         /// For BETWEEN: encodes both low and high indices. See <see cref="PackedParam"/>.</summary>
-        public int PackedParamValue = PackedParam.None;
+        public PackedParam PackedParamValue = PackedParam.None;
 
         /// <summary>Per-term packed params for IN/AllIn. Parallel to <see cref="InTerms"/>.
         /// Each entry encodes (type, index) for one IN term.</summary>
-        public int[] InPackedParams;
+        public PackedParam[] InPackedParams;
 
         public List<ClauseInfo> OrSubClauses;  // for OrGroup
         public bool IsOrChainNotEquals; // Set for NotEquals in OR chains; ResolveMatches creates AllEntries ANDNOT TermQuery
@@ -276,7 +307,7 @@ internal static partial class QueryPlanBuilder
         foreach (var clause in clauses)
         {
             if (clause.Cardinality < 0)
-                clause.Cardinality = EstimateCardinality(clause, indexSearcher);
+                clause.Cardinality = EstimateCardinality(clause, indexSearcher, writer);
         }
 
         bool isOr = rootOp == BooleanOp.Or;
@@ -527,14 +558,14 @@ internal static partial class QueryPlanBuilder
     {
         if (TryGetFieldName(be.Left, metadata, queryParameters, out string fieldName) == false)
             throw new InvalidQueryException($"Comparison left side must be a field expression or id(), but got: {be.Left.Type}");
-        string termValue = GetTermValue(be.Right, queryParameters, out var valueType);
+        var (value, valueType) = ResolveTermValue(be.Right, queryParameters);
 
         clauses.Add(new ClauseInfo
         {
             FieldName = fieldName,
-            TermValue = termValue,
+            TermValue = FormatValue(value, valueType),
             TermValueType = valueType,
-            PackedParamValue = writer.Add(termValue, valueType),
+            PackedParamValue = writer.Add(value, valueType),
             ClauseType = be.Operator == OperatorType.NotEqual ? ClauseType.NotEquals : ClauseType.Equals,
             OriginalIndex = clauses.Count
         });
@@ -545,14 +576,14 @@ internal static partial class QueryPlanBuilder
     {
         if (TryGetFieldName(be.Left, metadata, queryParameters, out string fieldName) == false)
             throw new InvalidQueryException($"Range comparison left side must be a field expression or id(), but got: {be.Left.Type}");
-        string termValue = GetTermValue(be.Right, queryParameters, out var valueType);
+        var (value, valueType) = ResolveTermValue(be.Right, queryParameters);
 
         clauses.Add(new ClauseInfo
         {
             FieldName = fieldName,
-            TermValue = termValue,
+            TermValue = FormatValue(value, valueType),
             TermValueType = valueType,
-            PackedParamValue = writer.Add(termValue, valueType),
+            PackedParamValue = writer.Add(value, valueType),
             ClauseType = be.Operator switch
             {
                 OperatorType.GreaterThan => ClauseType.GreaterThan,
@@ -571,15 +602,15 @@ internal static partial class QueryPlanBuilder
         if (TryGetFieldName(between.Source, metadata, queryParameters, out string resolvedFieldName) == false)
             throw new InvalidQueryException($"BETWEEN source must be a field expression or id(), but got: {between.Source.Type}");
 
-        var minValue = GetTermValue(between.Min, queryParameters, out var minType);
-        var maxValue = GetTermValue(between.Max, queryParameters, out _);
+        var (minVal, minType) = ResolveTermValue(between.Min, queryParameters);
+        var (maxVal, _) = ResolveTermValue(between.Max, queryParameters);
         clauses.Add(new ClauseInfo
         {
             FieldName = resolvedFieldName,
-            TermValue = minValue,
-            TermValue2 = maxValue,
+            TermValue = FormatValue(minVal, minType),
+            TermValue2 = FormatValue(maxVal, minType),
             TermValueType = minType,
-            PackedParamValue = writer.AddPair(minValue, maxValue, minType),
+            PackedParamValue = writer.AddPair(minVal, maxVal, minType),
             ClauseType = ClauseType.Between,
             OriginalIndex = clauses.Count
         });
@@ -593,6 +624,7 @@ internal static partial class QueryPlanBuilder
 
         var terms = new List<string>();
         var termTypes = new List<ValueTokenType>();
+        var resolvedValues = new List<object>();
         bool hasTime = false;
         foreach (var value in inExpr.Values)
         {
@@ -603,15 +635,17 @@ internal static partial class QueryPlanBuilder
                 {
                     foreach (var it in arr)
                     {
-                        var (elemVal, elemTyp) = ConvertInValue(it, ValueTokenType.Parameter, ref hasTime);
-                        terms.Add(elemVal);
+                        var (elemVal, elemTyp) = ResolveInValue(it, ValueTokenType.Parameter, ref hasTime);
+                        resolvedValues.Add(elemVal);
+                        terms.Add(FormatValue(elemVal, elemTyp));
                         termTypes.Add(elemTyp);
                     }
                 }
                 else
                 {
-                    var (resVal, resTyp) = ConvertInValue(resolvedValue, ve.Value, ref hasTime);
-                    terms.Add(resVal);
+                    var (resVal, resTyp) = ResolveInValue(resolvedValue, ve.Value, ref hasTime);
+                    resolvedValues.Add(resVal);
+                    terms.Add(FormatValue(resVal, resTyp));
                     termTypes.Add(resTyp);
                 }
             }
@@ -628,9 +662,9 @@ internal static partial class QueryPlanBuilder
             return;
         }
 
-        var inPacked = new int[terms.Count];
+        var inPacked = new PackedParam[terms.Count];
         for (int i = 0; i < terms.Count; i++)
-            inPacked[i] = writer.Add(terms[i], termTypes[i]);
+            inPacked[i] = writer.Add(resolvedValues[i], termTypes[i]);
 
         clauses.Add(new ClauseInfo
         {
@@ -727,12 +761,13 @@ internal static partial class QueryPlanBuilder
                     throw new InvalidQueryException($"regex() requires at least 2 arguments (field, pattern), but got {method.Arguments.Count}.");
                 if (TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var regexFieldName) == false)
                     throw new InvalidQueryException($"regex() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
-                var regexTerm = GetTermValue(method.Arguments[1], queryParameters);
+                var (regexVal, _) = ResolveTermValue(method.Arguments[1], queryParameters);
+                var regexTerm = regexVal?.ToString();
                 clauses.Add(new ClauseInfo
                 {
                     FieldName = regexFieldName,
                     TermValue = regexTerm,
-                    PackedParamValue = writer.Add(regexTerm, ValueTokenType.String),
+                    PackedParamValue = writer.AddString(regexTerm),
                     ClauseType = ClauseType.Regex,
                     OriginalIndex = clauses.Count
                 });
@@ -807,12 +842,13 @@ internal static partial class QueryPlanBuilder
                 searchOp = Constants.Search.Operator.And;
         }
 
-        var searchTerm = GetTermValue(method.Arguments[1], queryParameters);
+        var (searchVal, _) = ResolveTermValue(method.Arguments[1], queryParameters);
+        var searchTerm = searchVal?.ToString();
         clauses.Add(new ClauseInfo
         {
             FieldName = fieldName,
             TermValue = searchTerm,
-            PackedParamValue = writer.Add(searchTerm, ValueTokenType.String),
+            PackedParamValue = writer.AddString(searchTerm),
             ClauseType = ClauseType.Search,
             SearchOperator = searchOp,
             OriginalIndex = clauses.Count
@@ -828,12 +864,13 @@ internal static partial class QueryPlanBuilder
         if (TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var fieldName) == false)
             throw new InvalidQueryException($"{type}() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
 
-        var prefixTerm = GetTermValue(method.Arguments[1], queryParameters);
+        var (prefixVal, _) = ResolveTermValue(method.Arguments[1], queryParameters);
+        var prefixTerm = prefixVal?.ToString();
         clauses.Add(new ClauseInfo
         {
             FieldName = fieldName,
             TermValue = prefixTerm,
-            PackedParamValue = writer.Add(prefixTerm, ValueTokenType.String),
+            PackedParamValue = writer.AddString(prefixTerm),
             ClauseType = type,
             OriginalIndex = clauses.Count
         });
@@ -885,104 +922,134 @@ internal static partial class QueryPlanBuilder
         return false;
     }
 
-    private static string GetTermValue(QueryExpression expr, BlittableJsonReaderObject queryParameters)
-    {
-        return GetTermValue(expr, queryParameters, out _);
-    }
-
-    private static string GetTermValue(QueryExpression expr, BlittableJsonReaderObject queryParameters, out ValueTokenType valueType)
+    /// <summary>Resolve a query expression to its native typed value + type tag.
+    /// Parameters are resolved from the blittable; literals are returned directly.
+    /// No ToString — callers that need a string form call <see cref="FormatValue"/>.</summary>
+    private static (object Value, ValueTokenType Type) ResolveTermValue(QueryExpression expr, BlittableJsonReaderObject queryParameters)
     {
         if (expr is ValueExpression ve)
         {
-            valueType = ve.Value;
+            var valueType = ve.Value;
             var value = ve.GetValue(queryParameters);
             if (value is bool b)
-                return b ? "true" : "false"; // Corax stores booleans as lowercase
-            // For parameters, detect the actual type from the resolved value
+                return (b ? "true" : "false", ValueTokenType.String); // Corax stores booleans as lowercase strings
             if (valueType == ValueTokenType.Parameter && value != null)
             {
-                switch (value)
-                {
-                    case long or int:
-                        valueType = ValueTokenType.Long;
-                        break;
-                    case double or float or decimal:
-                        valueType = ValueTokenType.Double;
-                        break;
-                    // LazyNumberValue wraps JSON numbers — try long first, then double
-                    case LazyNumberValue lnv when lnv.TryParseLong(out _):
-                        valueType = ValueTokenType.Long;
-                        break;
-                    case LazyNumberValue:
-                        valueType = ValueTokenType.Double;
-                        break;
-                    default:
-                    {
-                        // DateTime/DateTimeOffset parameters arrive as LazyStringValue from JSON.
-                        // Detect date strings and convert to ticks so range queries hit the numeric tree.
-                        var str = value.ToString();
-                        if (str is { Length: > 18 and < 35 } && str.Contains('T')
-                                                             && DateTime.TryParse(str, System.Globalization.CultureInfo.InvariantCulture,
-                                                                 System.Globalization.DateTimeStyles.RoundtripKind, out var parsed))
-                        {
-                            valueType = ValueTokenType.Long;
-                            return parsed.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                        }
-                        valueType = ValueTokenType.String;
-                        break;
-                    }
-                }
+                return ResolveParameterValue(value);
             }
-            return value?.ToString();
+            // For non-parameter literals, coerce to native type when the token says so
+            if (valueType == ValueTokenType.Long && value != null)
+            {
+                if (value is long l) return (l, ValueTokenType.Long);
+                if (long.TryParse(value.ToString(), out long parsed)) return (parsed, ValueTokenType.Long);
+            }
+            if (valueType == ValueTokenType.Double && value != null)
+            {
+                if (value is double d) return (d, ValueTokenType.Double);
+                if (double.TryParse(value.ToString(), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out double parsed))
+                    return (parsed, ValueTokenType.Double);
+            }
+            return (value?.ToString(), valueType);
         }
-        valueType = ValueTokenType.Null;
-        return null;
+        return (null, ValueTokenType.Null);
     }
 
-    /// <summary>Convert an IN value to its string representation, handling booleans and dates.</summary>
-    private static (string Value, ValueTokenType Type) ConvertInValue(object value, ValueTokenType literalType, ref bool hasTime)
+    /// <summary>Detect the native type of a resolved parameter value.
+    /// Shared by <see cref="ResolveTermValue"/> and <see cref="ResolveInValue"/>.</summary>
+    private static (object Value, ValueTokenType Type) ResolveParameterValue(object value)
+    {
+        switch (value)
+        {
+            case long l:
+                return (l, ValueTokenType.Long);
+            case int i:
+                return ((long)i, ValueTokenType.Long);
+            case double d:
+                return (d, ValueTokenType.Double);
+            case float f:
+                return ((double)f, ValueTokenType.Double);
+            case decimal dec:
+                return ((double)dec, ValueTokenType.Double);
+            case LazyNumberValue lnv when lnv.TryParseLong(out long lnvLong):
+                return (lnvLong, ValueTokenType.Long);
+            case LazyNumberValue lnv:
+                return ((double)lnv, ValueTokenType.Double);
+            default:
+            {
+                var str = value.ToString();
+                if (str is { Length: > 18 and < 35 } && str.Contains('T')
+                    && DateTime.TryParse(str, System.Globalization.CultureInfo.InvariantCulture,
+                        System.Globalization.DateTimeStyles.RoundtripKind, out var parsed))
+                {
+                    return (parsed.Ticks, ValueTokenType.Long);
+                }
+                return (str, ValueTokenType.String);
+            }
+        }
+    }
+
+    /// <summary>Format a native typed value as a string for display, highlighting, and scan parameters.
+    /// Inverse of <see cref="ResolveTermValue"/> — only used for string-form outputs.</summary>
+    private static string FormatValue(object value, ValueTokenType type)
+    {
+        if (value == null) return null;
+        if (value is double d)
+            return d.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return value.ToString();
+    }
+
+    /// <summary>Convenience: resolve and format as string in one call. Used by methods that
+    /// only need the string form (e.g. boost factor parsing).</summary>
+    private static string GetTermValue(QueryExpression expr, BlittableJsonReaderObject queryParameters)
+    {
+        var (value, _) = ResolveTermValue(expr, queryParameters);
+        return value?.ToString();
+    }
+
+    /// <summary>Resolve an IN value to its native type, handling booleans and dates.</summary>
+    private static (object Value, ValueTokenType Type) ResolveInValue(object value, ValueTokenType literalType, ref bool hasTime)
     {
         if (value == null)
             return (null, ValueTokenType.String);
         if (value is bool b)
-            return (b ? "true" : "false", b ? ValueTokenType.True : ValueTokenType.False);
+            return (b ? "true" : "false", ValueTokenType.String); // booleans → lowercase strings
         if (value is DateTime dt)
         {
             hasTime = true;
-            return (dt.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture), ValueTokenType.Long);
+            return (dt.Ticks, ValueTokenType.Long);
         }
         if (value is DateTimeOffset dto)
         {
             hasTime = true;
-            return (dto.UtcDateTime.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture), ValueTokenType.Long);
+            return (dto.UtcDateTime.Ticks, ValueTokenType.Long);
         }
         if (literalType != ValueTokenType.Parameter)
             return (value.ToString(), literalType);
-        if (value is long or int)
-            return (value.ToString(), ValueTokenType.Long);
-        if (value is double or float or decimal)
-            return (((IConvertible)value).ToString(System.Globalization.CultureInfo.InvariantCulture), ValueTokenType.Double);
-        if (value is LazyNumberValue lnv)
-            return (value.ToString(), lnv.TryParseLong(out _) ? ValueTokenType.Long : ValueTokenType.Double);
-        var str = value.ToString();
-        if (str is { Length: > 18 and < 35 } &&
-            DateTime.TryParse(str, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.RoundtripKind, out var parsed))
-        {
+        // Parameter: detect native type
+        var (resolved, resolvedType) = ResolveParameterValue(value);
+        if (resolvedType == ValueTokenType.Long && value is DateTime or DateTimeOffset)
             hasTime = true;
-            return (parsed.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture), ValueTokenType.Long);
-        }
-        return (str, ValueTokenType.String);
+        return (resolved, resolvedType);
     }
 
     // ── Cardinality estimation ───────────────────────────────────────────
 
-    private static long EstimateCardinality(ClauseInfo clause, IndexSearcher indexSearcher)
+    private static long EstimateCardinality(ClauseInfo clause, IndexSearcher indexSearcher, ValueWriter writer)
     {
         switch (clause.ClauseType)
         {
             case ClauseType.Equals:
-                return indexSearcher.NumberOfDocumentsUnderSpecificTerm(
-                    indexSearcher.FieldMetadataBuilder(clause.FieldName), clause.TermValue);
+            {
+                var fieldMeta = indexSearcher.FieldMetadataBuilder(clause.FieldName);
+                var p = clause.PackedParamValue;
+                return p.ValueType switch
+                {
+                    PackedParam.TypeLong => indexSearcher.NumberOfDocumentsUnderSpecificTerm(fieldMeta, writer.GetLong(p.Param1)),
+                    PackedParam.TypeDouble => indexSearcher.NumberOfDocumentsUnderSpecificTerm(fieldMeta, writer.GetDouble(p.Param1)),
+                    _ => indexSearcher.NumberOfDocumentsUnderSpecificTerm(fieldMeta, writer.GetString(p.Param1))
+                };
+            }
 
             case ClauseType.NotEquals:
             case ClauseType.GreaterThan:
@@ -1004,10 +1071,17 @@ internal static partial class QueryPlanBuilder
                 // Sum of individual term cardinalities
                 long sum = 0;
                 var meta = indexSearcher.FieldMetadataBuilder(clause.FieldName);
-                if (clause.InTerms != null)
+                if (clause.InPackedParams != null)
                 {
-                    foreach (var term in clause.InTerms)
-                        sum += indexSearcher.NumberOfDocumentsUnderSpecificTerm(meta, term);
+                    foreach (var ip in clause.InPackedParams)
+                    {
+                        sum += ip.ValueType switch
+                        {
+                            PackedParam.TypeLong => indexSearcher.NumberOfDocumentsUnderSpecificTerm(meta, writer.GetLong(ip.Param1)),
+                            PackedParam.TypeDouble => indexSearcher.NumberOfDocumentsUnderSpecificTerm(meta, writer.GetDouble(ip.Param1)),
+                            _ => indexSearcher.NumberOfDocumentsUnderSpecificTerm(meta, writer.GetString(ip.Param1))
+                        };
+                    }
                 }
 
                 return Math.Min(sum, indexSearcher.NumberOfEntries);
@@ -1023,21 +1097,20 @@ internal static partial class QueryPlanBuilder
                     foreach (var sub in clause.OrSubClauses)
                     {
                         if (sub.Cardinality < 0)
-                            sub.Cardinality = EstimateCardinality(sub, indexSearcher);
+                            sub.Cardinality = EstimateCardinality(sub, indexSearcher, writer);
                         orSum += sub.Cardinality;
                     }
                 }
                 return Math.Min(orSum, indexSearcher.NumberOfEntries);
 
             case ClauseType.AndGroup:
-                // AND of sub-clauses: cardinality is bounded by the minimum sub-clause cardinality.
                 long andMin = indexSearcher.NumberOfEntries;
                 if (clause.AndSubClauses != null)
                 {
                     foreach (var sub in clause.AndSubClauses)
                     {
                         if (sub.Cardinality < 0)
-                            sub.Cardinality = EstimateCardinality(sub, indexSearcher);
+                            sub.Cardinality = EstimateCardinality(sub, indexSearcher, writer);
                         if (sub.Cardinality < andMin)
                             andMin = sub.Cardinality;
                     }

@@ -184,11 +184,11 @@ internal static partial class QueryPlanBuilder
     // ── Typed dispatch helpers ───────────────────────────────────────────
 
     /// <summary>Create a TermQuery using the pre-resolved typed value from the plan's arrays.</summary>
-    private static IQueryMatch TermQueryFromParam(int packed, FieldMetadata fieldMeta,
+    private static IQueryMatch TermQueryFromParam(PackedParam packed, FieldMetadata fieldMeta,
         IndexSearcher indexSearcher, QueryPlan plan)
     {
-        int idx = PackedParam.GetParam1(packed);
-        return PackedParam.GetValueType(packed) switch
+        int idx = packed.Param1;
+        return packed.ValueType switch
         {
             PackedParam.TypeLong => indexSearcher.TermQuery(fieldMeta, plan.LongValues[idx]),
             PackedParam.TypeDouble => indexSearcher.TermQuery(fieldMeta, plan.DoubleValues[idx]),
@@ -197,11 +197,11 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>Get a posting-list ID using the pre-resolved typed value.</summary>
-    private static long GetTermPostingListIdFromParam(int packed, FieldMetadata fieldMeta,
+    private static long GetTermPostingListIdFromParam(PackedParam packed, FieldMetadata fieldMeta,
         IndexSearcher indexSearcher, QueryPlan plan)
     {
-        int idx = PackedParam.GetParam1(packed);
-        return PackedParam.GetValueType(packed) switch
+        int idx = packed.Param1;
+        return packed.ValueType switch
         {
             PackedParam.TypeLong => indexSearcher.GetTermPostingListId(fieldMeta, plan.LongValues[idx]),
             PackedParam.TypeDouble => indexSearcher.GetTermPostingListId(fieldMeta, plan.DoubleValues[idx]),
@@ -355,7 +355,7 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        int packed = clause.PackedParamValue;
+        var packed = clause.PackedParamValue;
 
         switch (clause.ClauseType)
         {
@@ -365,8 +365,8 @@ internal static partial class QueryPlanBuilder
 
             case ClauseType.GreaterThan:
             {
-                int idx = PackedParam.GetParam1(packed);
-                return PackedParam.GetValueType(packed) switch
+                int idx = packed.Param1;
+                return packed.ValueType switch
                 {
                     PackedParam.TypeLong => indexSearcher.GreaterThanQuery(fieldMeta, plan.LongValues[idx]),
                     PackedParam.TypeDouble => indexSearcher.GreaterThanQuery(fieldMeta, plan.DoubleValues[idx]),
@@ -376,8 +376,8 @@ internal static partial class QueryPlanBuilder
 
             case ClauseType.GreaterThanOrEqual:
             {
-                int idx = PackedParam.GetParam1(packed);
-                return PackedParam.GetValueType(packed) switch
+                int idx = packed.Param1;
+                return packed.ValueType switch
                 {
                     PackedParam.TypeLong => indexSearcher.GreatThanOrEqualsQuery(fieldMeta, plan.LongValues[idx]),
                     PackedParam.TypeDouble => indexSearcher.GreatThanOrEqualsQuery(fieldMeta, plan.DoubleValues[idx]),
@@ -387,8 +387,8 @@ internal static partial class QueryPlanBuilder
 
             case ClauseType.LessThan:
             {
-                int idx = PackedParam.GetParam1(packed);
-                return PackedParam.GetValueType(packed) switch
+                int idx = packed.Param1;
+                return packed.ValueType switch
                 {
                     PackedParam.TypeLong => indexSearcher.LessThanQuery(fieldMeta, plan.LongValues[idx]),
                     PackedParam.TypeDouble => indexSearcher.LessThanQuery(fieldMeta, plan.DoubleValues[idx]),
@@ -398,8 +398,8 @@ internal static partial class QueryPlanBuilder
 
             case ClauseType.LessThanOrEqual:
             {
-                int idx = PackedParam.GetParam1(packed);
-                return PackedParam.GetValueType(packed) switch
+                int idx = packed.Param1;
+                return packed.ValueType switch
                 {
                     PackedParam.TypeLong => indexSearcher.LessThanOrEqualsQuery(fieldMeta, plan.LongValues[idx]),
                     PackedParam.TypeDouble => indexSearcher.LessThanOrEqualsQuery(fieldMeta, plan.DoubleValues[idx]),
@@ -409,9 +409,9 @@ internal static partial class QueryPlanBuilder
 
             case ClauseType.Between:
             {
-                int idx1 = PackedParam.GetParam1(packed);
-                int idx2 = PackedParam.GetParam2(packed);
-                return PackedParam.GetValueType(packed) switch
+                int idx1 = packed.Param1;
+                int idx2 = packed.Param2;
+                return packed.ValueType switch
                 {
                     PackedParam.TypeLong => indexSearcher.BetweenQuery(fieldMeta, plan.LongValues[idx1], plan.LongValues[idx2]),
                     PackedParam.TypeDouble => indexSearcher.BetweenQuery(fieldMeta, plan.DoubleValues[idx1], plan.DoubleValues[idx2]),
@@ -429,10 +429,10 @@ internal static partial class QueryPlanBuilder
                 return indexSearcher.ExistsQuery(fieldMeta);
 
             case ClauseType.StartsWith:
-                return indexSearcher.StartWithQuery(fieldMeta, plan.StringValues[PackedParam.GetParam1(packed)]);
+                return indexSearcher.StartWithQuery(fieldMeta, plan.StringValues[packed.Param1]);
 
             case ClauseType.EndsWith:
-                return indexSearcher.EndsWithQuery(fieldMeta, plan.StringValues[PackedParam.GetParam1(packed)]);
+                return indexSearcher.EndsWithQuery(fieldMeta, plan.StringValues[packed.Param1]);
 
             case ClauseType.Search:
             {
@@ -475,7 +475,7 @@ internal static partial class QueryPlanBuilder
                 else
                     searchQueryOptions = IndexSearcher.SearchQueryOptions.Legacy;
 
-                var searchTerm = plan.StringValues[PackedParam.GetParam1(packed)];
+                var searchTerm = plan.StringValues[packed.Param1];
                 if (searchQueryOptions == IndexSearcher.SearchQueryOptions.PhraseQueryWithWildcardAdjustments
                     && searchTerm is { Length: >= 1 }
                     && (searchTerm[0] == '*' || (searchTerm.Length >= 2 && searchTerm[^1] == '*')))
@@ -493,7 +493,7 @@ internal static partial class QueryPlanBuilder
 
             case ClauseType.Regex:
                 return indexSearcher.RegexQuery(fieldMeta,
-                    new System.Text.RegularExpressions.Regex(plan.StringValues[PackedParam.GetParam1(packed)]));
+                    new System.Text.RegularExpressions.Regex(plan.StringValues[packed.Param1]));
 
             case ClauseType.Spatial:
             {
@@ -534,7 +534,7 @@ internal static partial class QueryPlanBuilder
             QueryBuilderHelper.GetFieldMetadata(in builderParams, clause.FieldName, hasBoost: builderParams.HasBoost) :
             indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);
 
-        int packed = clause.InPackedParams[termIndex];
+        var packed = clause.InPackedParams[termIndex];
         return TermQueryFromParam(packed, fieldMeta, indexSearcher, plan);
     }
 
@@ -663,7 +663,7 @@ internal static partial class QueryPlanBuilder
             QueryBuilderHelper.GetFieldMetadata(in builderParams, clause.FieldName, hasBoost: builderParams.HasBoost) :
             indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);
 
-        int packed = clause.InPackedParams[termIndex];
+        var packed = clause.InPackedParams[termIndex];
         long postingListId = GetTermPostingListIdFromParam(packed, fieldMeta, indexSearcher, plan);
         return DecodePostingListId(postingListId, indexSearcher);
     }
