@@ -64,7 +64,6 @@ internal static class QueryPlanBuilder
         public IndexFieldsMapping IndexFieldsMapping;
         public FieldsToFetch FieldsToFetch;
         public ByteStringContext Allocator;
-        public CancellationToken Token;
         public bool HasDynamics;
         public Lazy<List<string>> DynamicFields;
         public bool HasBoost;
@@ -268,22 +267,6 @@ internal static class QueryPlanBuilder
         }
 
         return result.ToArray();
-    }
-
-
-    public static QueryPlan BuildPlan(
-        IndexSearcher indexSearcher,
-        QueryMetadata metadata,
-        BlittableJsonReaderObject queryParameters,
-        CancellationToken token)
-    {
-        return BuildPlan(new PlanParameters
-        {
-            IndexSearcher = indexSearcher,
-            Metadata = metadata,
-            QueryParameters = queryParameters,
-            Token = token
-        });
     }
 
     /// <summary>

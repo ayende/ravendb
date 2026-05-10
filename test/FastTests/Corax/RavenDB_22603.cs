@@ -434,8 +434,7 @@ public class RavenDB_22603_Primitive : StorageTest
             IndexSearcher = searcher,
             Metadata = queryMetadata,
             QueryParameters = null,
-            Allocator = Allocator,
-            Token = default
+            Allocator = Allocator
         };
         var match = QueryPlanBuilder.BuildAndCompile(planParams, null, long.MaxValue, out _, out _, null, default);
 

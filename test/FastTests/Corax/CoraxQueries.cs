@@ -287,8 +287,7 @@ namespace FastTests.Corax
                 IndexSearcher = searcher,
                 Metadata = queryMetadata,
                 QueryParameters = null,
-                Allocator = Allocator,
-                Token = default
+                Allocator = Allocator
             };
             var match = QueryPlanBuilder.BuildAndCompile(planParams, null, long.MaxValue, out _, out _, null, default);
 

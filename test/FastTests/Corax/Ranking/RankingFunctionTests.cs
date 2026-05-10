@@ -170,8 +170,7 @@ public class RankingFunctionTests : StorageTest
             IndexSearcher = searcher,
             Metadata = queryMetadata,
             HasBoost = true,
-            Allocator = Allocator,
-            Token = default
+            Allocator = Allocator
         };
         var match = QueryPlanBuilder.BuildAndCompile(planParams, null, long.MaxValue, out _, out _, null, default);
         match = QueryPlanBuilder.ApplyScoreOrdering(planParams, match, long.MaxValue);
