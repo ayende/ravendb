@@ -525,7 +525,7 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>Resolve a single IN term to a typed TermQuery.
-    /// IN terms are stored contiguously: PackedParamValue.Param1 = start index, Param2 = count.
+    /// IN terms are stored contiguously: PackedParamValue.Param1 = start index, InTermCount = count.
     /// Null terms (InTerms[i] == null) use the string TermQuery path regardless of packed type.</summary>
     private static IQueryMatch ResolveInTerm(ClauseInfo clause, int termIndex,
         IndexSearcher indexSearcher, QueryPlan plan,
@@ -963,23 +963,23 @@ internal static partial class QueryPlanBuilder
         var fieldMetadata = QueryBuilderHelper.GetFieldMetadata(allocator, fieldName, index, builderParameters.IndexFieldsMapping,
             builderParameters.FieldsToFetch, builderParameters.HasDynamics, builderParameters.DynamicFields, hasBoost: builderParameters.HasBoost);
 
-        var distanceErrorPct = clause.SpatialDistanceErrorPct >= 0
-            ? clause.SpatialDistanceErrorPct
+        var sp = clause.Spatial;
+        var distanceErrorPct = sp.DistanceErrorPct >= 0
+            ? sp.DistanceErrorPct
             : RavenConstants.Documents.Indexing.Spatial.DefaultDistanceErrorPct;
 
         var spatialField = builderParameters.Factories.GetSpatialFieldFactory(fieldName);
-        var units = clause.SpatialUnits ?? spatialField.Units;
 
         // Build shape from pre-resolved parameters — no GetValue calls
         IShape shape;
-        if (clause.IsSpatialCircle)
+        if (sp.IsCircle)
         {
-            shape = spatialField.ReadCircle(clause.SpatialCircleRadius, clause.SpatialCircleLatitude,
-                clause.SpatialCircleLongitude, clause.SpatialUnits);
+            shape = spatialField.ReadCircle(sp.CircleRadius, sp.CircleLatitude,
+                sp.CircleLongitude, sp.Units);
         }
-        else if (clause.SpatialWkt != null)
+        else if (sp.Wkt != null)
         {
-            shape = spatialField.ReadShape(clause.SpatialWkt, clause.SpatialUnits);
+            shape = spatialField.ReadShape(sp.Wkt, sp.Units);
         }
         else
         {
@@ -1005,12 +1005,12 @@ internal static partial class QueryPlanBuilder
         IndexField indexField;
         string embeddingsGenerationTaskIdentifier;
 
-        var minimumMatch = clause.VectorMinimumMatch >= 0
-            ? clause.VectorMinimumMatch
+        var minimumMatch = clause.Vector.MinimumMatch >= 0
+            ? clause.Vector.MinimumMatch
             : builderParameters.Index.Configuration.CoraxVectorSearchDefaultMinimumSimilarity;
 
-        int numberOfCandidates = clause.VectorNumberOfCandidates >= 0
-            ? clause.VectorNumberOfCandidates
+        int numberOfCandidates = clause.Vector.NumberOfCandidates >= 0
+            ? clause.Vector.NumberOfCandidates
             : builderParameters.Index.Configuration.CoraxVectorDefaultNumberOfCandidatesForQuerying;
 
         var fieldName = metadata.IsDynamic == false
@@ -1020,17 +1020,17 @@ internal static partial class QueryPlanBuilder
         var fieldMetadata = QueryBuilderHelper.GetFieldMetadata(builderParameters, fieldName, hasBoost: builderParameters.HasBoost);
 
         // Use pre-resolved vector value and method kind from parsing
-        object methodParameter = clause.ResolvedVectorValue;
-        ValueTokenType valueTokenType = clause.ResolvedVectorValueType;
+        object methodParameter = clause.Vector.ResolvedValue;
+        ValueTokenType valueTokenType = clause.Vector.ResolvedValueType;
 
-        if (clause.VectorMethod != VectorMethodKind.None)
+        if (clause.Vector.Method != VectorMethodKind.None)
         {
-            var method = clause.VectorMethod switch
+            var method = clause.Vector.Method switch
             {
                 VectorMethodKind.ForDocument => VectorHelpers.MethodVectorValue.ForDocument,
                 VectorMethodKind.ForRaw => VectorHelpers.MethodVectorValue.ForRaw,
                 VectorMethodKind.EmbeddingText => VectorHelpers.MethodVectorValue.EmbeddingText,
-                _ => throw new InvalidDataException($"Unknown vector method kind: {clause.VectorMethod}")
+                _ => throw new InvalidDataException($"Unknown vector method kind: {clause.Vector.Method}")
             };
 
             if (method is not VectorHelpers.MethodVectorValue.EmbeddingText)
@@ -1043,11 +1043,11 @@ internal static partial class QueryPlanBuilder
                     (method: VectorHelpers.MethodVectorValue.ForRaw, StringSegment stringSegmentAsBase64) => CoraxVectorItem.BuildSingleVector(builderParameters, fieldMetadata, GenerateEmbeddings.FromBase64Array(VectorOptions.Default, builderParameters.Allocator, stringSegmentAsBase64.ToString()), numberOfCandidates, minimumMatch, exact),
                     (_, BlittableJsonReaderArray { Length: > 0 }) => throw new InvalidDataException("Cannot perform search on empty value."),
                     _ => throw new InvalidQueryException(
-                        $"Unknown method in value ({clause.VectorMethod}. Parameter type: {methodParameter?.GetType().FullName}, Value: {methodParameter}")
+                        $"Unknown method in value ({clause.Vector.Method}. Parameter type: {methodParameter?.GetType().FullName}, Value: {methodParameter}")
                 };
             }
 
-            embeddingsGenerationTaskIdentifier = clause.VectorAiTaskName;
+            embeddingsGenerationTaskIdentifier = clause.Vector.AiTaskName;
             var vectorOptions = VectorHelpers.GetExplicitVectorOptions(builderParameters, fieldName, out indexField);
             if (vectorOptions != null)
             {
