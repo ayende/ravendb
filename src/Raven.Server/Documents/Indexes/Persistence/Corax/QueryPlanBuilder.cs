@@ -75,8 +75,8 @@ internal static partial class QueryPlanBuilder
     ///
     /// For simple predicates (Equals, GT, LT, etc.): Param1 = value index, Param2 = NoParam.
     /// For BETWEEN: Param1 = low-bound index, Param2 = high-bound index (same-typed array).
-    /// For IN/AllIn: Param1 = start index, Param2 = term count. All terms must be the same
-    ///   type and are stored contiguously in the typed array.
+    /// For IN/AllIn: Param1 = start index into the typed array. Term count is stored separately
+    ///   in ClauseInfo.InTermCount (not packed) because IN can exceed 32K terms.
     /// For parameterless clauses (Exists): None sentinel.
     /// </summary>
     internal readonly struct PackedParam
@@ -252,41 +252,37 @@ internal static partial class QueryPlanBuilder
     internal class ClauseInfo
     {
         public string FieldName;
-        public string TermValue;          // string form — used for display, highlighting, cardinality estimation
+        public string TermValue;          // string form — used for display, highlighting, and scan parameter encoding
         public ValueTokenType TermValueType; // for type-aware scan predicate building
         public string TermValue2;         // for BETWEEN (string form)
         public List<string> InTerms;      // for IN (string forms, used for display/highlighting and InQuery fallback)
 
         /// <summary>Packed (type, index) into QueryPlan.LongValues/DoubleValues/StringValues.
         /// For BETWEEN: Param1 = low-bound index, Param2 = high-bound index.
-        /// For IN/AllIn: Param1 = start index, Param2 = term count.
+        /// For IN/AllIn: Param1 = start index into the typed array. Count is in <see cref="InTermCount"/>.
         /// See <see cref="PackedParam"/>.</summary>
         public PackedParam PackedParamValue = PackedParam.None;
 
+        /// <summary>Number of IN/AllIn terms stored contiguously starting at PackedParamValue.Param1.
+        /// Stored separately (not in PackedParam.Param2) because IN clauses can have more than
+        /// 32K terms (e.g. a large array parameter), exceeding the 15-bit Param2 limit.</summary>
+        public int InTermCount;
+
         public List<ClauseInfo> OrSubClauses;  // for OrGroup
-        public bool IsOrChainNotEquals; // Set for NotEquals in OR chains; ResolveMatches creates AllEntries ANDNOT TermQuery
+        /// <summary>Set for NotEquals clauses appearing in OR chains.
+        /// Example: WHERE Name != 'a' OR Name != 'b'
+        /// Each NOT(X) term cannot use the raw posting list (which contains entries WITH X,
+        /// not WITHOUT X). Instead, ResolveMatches pre-materializes AllEntries ANDNOT TermQuery(X)
+        /// into a BitmapMatch, so FillFromMatch correctly ORs in the complement set.</summary>
+        public bool IsOrChainNotEquals;
         public List<ClauseInfo> AndSubClauses; // for AndGroup (AND sub-expression inside OR)
-        public MethodExpression MethodExpression; // for Spatial, Vector — AST node for shape/embedding resolution
+        public MethodExpression MethodExpression; // for Spatial, Vector — AST node for field name resolution
 
-        // Pre-resolved spatial parameters (avoid re-resolving from AST each execution).
-        // Shape construction (ReadCircle/ReadShape) still happens at execution time
-        // because it needs the spatial field factory from builderParameters.
-        public double SpatialDistanceErrorPct = -1; // -1 = use default
-        public double SpatialCircleRadius;
-        public double SpatialCircleLatitude;
-        public double SpatialCircleLongitude;
-        public string SpatialWkt;
-        public SpatialUnits? SpatialUnits;
-        public bool IsSpatialCircle; // true = circle, false = WKT
+        /// <summary>Pre-resolved spatial parameters. Null for non-spatial clauses.</summary>
+        public SpatialParams Spatial;
 
-        // Pre-resolved vector parameters (avoid re-resolving from AST each execution).
-        // Embedding construction still happens at execution time.
-        public float VectorMinimumMatch = -1;       // -1 = use index default
-        public int VectorNumberOfCandidates = -1;   // -1 = use index default
-        public object ResolvedVectorValue;           // the raw vector parameter (string, BlittableJsonReaderArray, etc.)
-        public ValueTokenType ResolvedVectorValueType;
-        public VectorMethodKind VectorMethod;        // which embedding method, if any
-        public string VectorAiTaskName;              // AI task identifier for embedding.text
+        /// <summary>Pre-resolved vector parameters. Null for non-vector clauses.</summary>
+        public VectorParams Vector;
         public ClauseType ClauseType;
         public long Cardinality = -1;
         public int OriginalIndex;
@@ -295,6 +291,37 @@ internal static partial class QueryPlanBuilder
         public float BoostFactor;
 
         public Constants.Search.Operator SearchOperator; // for Search (AND/OR)
+    }
+
+    /// <summary>Pre-resolved spatial query parameters. All values are extracted from the AST
+    /// during parsing so execution never calls GetValue back on the blittable.
+    /// Shape construction (spatialField.ReadCircle / ReadShape) still runs at execution time
+    /// because it needs the spatial field factory from builderParameters.</summary>
+    internal sealed class SpatialParams
+    {
+        public double DistanceErrorPct = -1; // -1 = use default
+        public bool IsCircle;                // true = circle, false = WKT
+        // Circle parameters
+        public double CircleRadius;
+        public double CircleLatitude;
+        public double CircleLongitude;
+        // WKT parameter
+        public string Wkt;
+        // Shared
+        public SpatialUnits? Units;
+    }
+
+    /// <summary>Pre-resolved vector query parameters. All scalar values and the raw vector
+    /// payload are extracted from the AST during parsing. Embedding construction
+    /// (base64 decode, AI embedding generation) still runs at execution time.</summary>
+    internal sealed class VectorParams
+    {
+        public float MinimumMatch = -1;      // -1 = use index default
+        public int NumberOfCandidates = -1;  // -1 = use index default
+        public object ResolvedValue;         // the raw vector parameter (string, BlittableJsonReaderArray, etc.)
+        public ValueTokenType ResolvedValueType;
+        public VectorMethodKind Method;      // which embedding method, if any
+        public string AiTaskName;            // AI task identifier for embedding.text
     }
 
     internal enum VectorMethodKind : byte
@@ -742,13 +769,12 @@ internal static partial class QueryPlanBuilder
                 writer.Add(resolvedValues[i], dominantType);
             }
         }
-        var inPacked = new PackedParam(packedType, startIdx, resolvedValues.Count);
-
         clauses.Add(new ClauseInfo
         {
             FieldName = resolvedFieldName,
             InTerms = terms,
-            PackedParamValue = inPacked,
+            PackedParamValue = new PackedParam(packedType, startIdx),
+            InTermCount = resolvedValues.Count,
             ClauseType = inExpr.All ? ClauseType.AllIn : ClauseType.In,
             OriginalIndex = clauses.Count
         });
@@ -876,44 +902,44 @@ internal static partial class QueryPlanBuilder
                 var shapeExpr = method.Arguments[1] as MethodExpression;
                 var shapeType = shapeExpr != null ? QueryMethod.GetMethodType(shapeExpr.Name.Value) : MethodType.Unknown;
 
-                var clauseInfo = new ClauseInfo
-                {
-                    FieldName = spatialFieldName,
-                    ClauseType = ClauseType.Spatial,
-                    MethodExpression = method,
-                    SpatialDistanceErrorPct = distErrPct,
-                    OriginalIndex = clauses.Count
-                };
+                var spatial = new SpatialParams { DistanceErrorPct = distErrPct };
 
                 if (shapeType == MethodType.Spatial_Circle && shapeExpr.Arguments.Count >= 3)
                 {
                     var (rVal, _) = ResolveTermValue(shapeExpr.Arguments[0], queryParameters);
                     var (latVal, _) = ResolveTermValue(shapeExpr.Arguments[1], queryParameters);
                     var (lngVal, _) = ResolveTermValue(shapeExpr.Arguments[2], queryParameters);
-                    clauseInfo.IsSpatialCircle = true;
-                    clauseInfo.SpatialCircleRadius = Convert.ToDouble(rVal);
-                    clauseInfo.SpatialCircleLatitude = Convert.ToDouble(latVal);
-                    clauseInfo.SpatialCircleLongitude = Convert.ToDouble(lngVal);
+                    spatial.IsCircle = true;
+                    spatial.CircleRadius = Convert.ToDouble(rVal);
+                    spatial.CircleLatitude = Convert.ToDouble(latVal);
+                    spatial.CircleLongitude = Convert.ToDouble(lngVal);
                     if (shapeExpr.Arguments.Count == 4)
                     {
                         var (unitsVal, _) = ResolveTermValue(shapeExpr.Arguments[3], queryParameters);
                         if (unitsVal != null && Enum.TryParse(typeof(SpatialUnits), unitsVal.ToString(), true, out var su))
-                            clauseInfo.SpatialUnits = (SpatialUnits)su;
+                            spatial.Units = (SpatialUnits)su;
                     }
                 }
                 else if (shapeType == MethodType.Spatial_Wkt && shapeExpr.Arguments.Count >= 1)
                 {
                     var (wktVal, _) = ResolveTermValue(shapeExpr.Arguments[0], queryParameters);
-                    clauseInfo.SpatialWkt = wktVal?.ToString();
+                    spatial.Wkt = wktVal?.ToString();
                     if (shapeExpr.Arguments.Count == 2)
                     {
                         var (unitsVal, _) = ResolveTermValue(shapeExpr.Arguments[1], queryParameters);
                         if (unitsVal != null && Enum.TryParse(typeof(SpatialUnits), unitsVal.ToString(), true, out var su))
-                            clauseInfo.SpatialUnits = (SpatialUnits)su;
+                            spatial.Units = (SpatialUnits)su;
                     }
                 }
 
-                clauses.Add(clauseInfo);
+                clauses.Add(new ClauseInfo
+                {
+                    FieldName = spatialFieldName,
+                    ClauseType = ClauseType.Spatial,
+                    MethodExpression = method,
+                    Spatial = spatial,
+                    OriginalIndex = clauses.Count
+                });
                 break;
             }
 
@@ -992,12 +1018,15 @@ internal static partial class QueryPlanBuilder
                 {
                     ClauseType = ClauseType.Vector,
                     MethodExpression = method,
-                    VectorMinimumMatch = minMatch,
-                    VectorNumberOfCandidates = numCandidates,
-                    ResolvedVectorValue = resolvedVecValue,
-                    ResolvedVectorValueType = resolvedVecType,
-                    VectorMethod = vecMethod,
-                    VectorAiTaskName = aiTaskName,
+                    Vector = new VectorParams
+                    {
+                        MinimumMatch = minMatch,
+                        NumberOfCandidates = numCandidates,
+                        ResolvedValue = resolvedVecValue,
+                        ResolvedValueType = resolvedVecType,
+                        Method = vecMethod,
+                        AiTaskName = aiTaskName
+                    },
                     OriginalIndex = clauses.Count
                 });
                 break;
@@ -1281,7 +1310,7 @@ internal static partial class QueryPlanBuilder
                 if (!ip.IsNone)
                 {
                     int start = ip.Param1;
-                    int count = ip.Param2;
+                    int count = clause.InTermCount;
                     for (int t = 0; t < count; t++)
                     {
                         sum += ip.ValueType switch
