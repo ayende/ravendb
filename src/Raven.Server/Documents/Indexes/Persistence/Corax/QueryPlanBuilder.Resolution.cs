@@ -774,7 +774,7 @@ internal static partial class QueryPlanBuilder
         {
             // Advance to the next eligible clause for this predicate.
             ClauseInfo matchingClause =  clauses?[clauseIdx++];
-            ExtractParamsFromPredicate(pred, matchingClause, indexSearcher, longs, doubles, slices, roots);
+            ExtractParamsFromPredicate(pred, matchingClause, indexSearcher, plan, longs, doubles, slices, roots);
         }
 
         longParams = longs.Count > 0 ? longs.ToArray() : [];
@@ -784,7 +784,7 @@ internal static partial class QueryPlanBuilder
     }
 
     private static void ExtractParamsFromPredicate(ScanPredicateInfo pred, ClauseInfo clause,
-        IndexSearcher indexSearcher, List<long> longs, List<double> doubles,
+        IndexSearcher indexSearcher, QueryPlan plan, List<long> longs, List<double> doubles,
         List<Voron.Slice> slices, List<long> roots)
     {
         if (pred.OrBranches != null)
@@ -795,7 +795,7 @@ internal static partial class QueryPlanBuilder
             for (int b = 0; b < pred.OrBranches.Length; b++)
             {
                 ClauseInfo subClause = (subClauses != null && b < subClauses.Count) ? subClauses[b] : null;
-                ExtractParamsFromPredicate(pred.OrBranches[b], subClause, indexSearcher, longs, doubles, slices, roots);
+                ExtractParamsFromPredicate(pred.OrBranches[b], subClause, indexSearcher, plan, longs, doubles, slices, roots);
             }
             return;
         }
@@ -806,29 +806,31 @@ internal static partial class QueryPlanBuilder
         if (clause == null)
             return;
 
+        // Read pre-resolved typed values from the plan's arrays via packed param.
+        var packed = clause.PackedParamValue;
+        if (packed.IsNone)
+            return;
+        int idx1 = packed.Param1;
+        int idx2 = packed.Param2;
+        bool hasBetween = idx2 != PackedParam.NoParamValue;
+
         switch (pred.ValueType)
         {
             case ScanValueType.Long:
-                if (long.TryParse(clause.TermValue, out long lv))
-                    longs.Add(lv);
-                if (clause.TermValue2 != null && long.TryParse(clause.TermValue2, out long lv2))
-                    longs.Add(lv2);
+                longs.Add(plan.LongValues[idx1]);
+                if (hasBetween)
+                    longs.Add(plan.LongValues[idx2]);
                 break;
             case ScanValueType.Double:
-                if (double.TryParse(clause.TermValue,
-                    System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out double dv))
-                    doubles.Add(dv);
-                if (clause.TermValue2 != null && double.TryParse(clause.TermValue2,
-                    System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out double dv2))
-                    doubles.Add(dv2);
+                doubles.Add(plan.DoubleValues[idx1]);
+                if (hasBetween)
+                    doubles.Add(plan.DoubleValues[idx2]);
                 break;
             case ScanValueType.Slice:
                 var fieldMeta = indexSearcher.FieldMetadataBuilder(clause.FieldName);
-                slices.Add(indexSearcher.EncodeAndApplyAnalyzer(fieldMeta, clause.TermValue));
-                if (clause.TermValue2 != null)
-                    slices.Add(indexSearcher.EncodeAndApplyAnalyzer(fieldMeta, clause.TermValue2));
+                slices.Add(indexSearcher.EncodeAndApplyAnalyzer(fieldMeta, plan.StringValues[idx1]));
+                if (hasBetween)
+                    slices.Add(indexSearcher.EncodeAndApplyAnalyzer(fieldMeta, plan.StringValues[idx2]));
                 break;
         }
     }
@@ -850,28 +852,27 @@ internal static partial class QueryPlanBuilder
             if (clauseObj?.FieldName == null)
                 continue;
 
-            PopulateHighlightingForClause(clauseObj, highlightingTerms, metadata);
+            PopulateHighlightingForClause(clauseObj, highlightingTerms, metadata, plan);
 
             switch (clauseObj.ClauseType)
             {
-                // Also handle OrGroup and AndGroup subclauses
                 case ClauseType.OrGroup when clauseObj.OrSubClauses != null:
                 {
                     foreach (var sub in clauseObj.OrSubClauses)
-                        PopulateHighlightingForClause(sub, highlightingTerms, metadata);
+                        PopulateHighlightingForClause(sub, highlightingTerms, metadata, plan);
                     break;
                 }
                 case ClauseType.AndGroup when clauseObj.AndSubClauses != null:
                 {
                     foreach (var sub in clauseObj.AndSubClauses)
-                        PopulateHighlightingForClause(sub, highlightingTerms, metadata);
+                        PopulateHighlightingForClause(sub, highlightingTerms, metadata, plan);
                     break;
                 }
             }
         }
     }
 
-    private static void PopulateHighlightingForClause(ClauseInfo clause, Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms, QueryMetadata metadata)
+    private static void PopulateHighlightingForClause(ClauseInfo clause, Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms, QueryMetadata metadata, QueryPlan plan)
     {
         string fieldName = clause.FieldName;
         if (fieldName == null)
@@ -880,14 +881,14 @@ internal static partial class QueryPlanBuilder
         if (highlightingTerms.TryGetValue(fieldName, out var existingTerm))
         {
             // Already populated (e.g., multiple clauses on same field) — update values if needed
-            existingTerm.Values ??= GetHighlightingValues(clause);
+            existingTerm.Values ??= GetHighlightingValues(clause, plan);
             return;
         }
 
         var term = new CoraxHighlightingTermIndex
         {
             FieldName = fieldName,
-            Values = GetHighlightingValues(clause)
+            Values = GetHighlightingValues(clause, plan)
         };
 
         if (metadata.IsDynamic && clause.ClauseType == ClauseType.Search)
@@ -902,15 +903,15 @@ internal static partial class QueryPlanBuilder
             highlightingTerms[term.DynamicFieldName] = term;
     }
 
-    private static object GetHighlightingValues(ClauseInfo clause)
+    private static object GetHighlightingValues(ClauseInfo clause, QueryPlan plan)
     {
         return clause.ClauseType switch
         {
-            ClauseType.Between => clause.TermValue != null && clause.TermValue2 != null
-                ? new Tuple<string, string>(clause.TermValue, clause.TermValue2)
-                : clause.TermValue,
+            ClauseType.Between => new Tuple<string, string>(
+                FormatValueFromPlan(clause.PackedParamValue, plan),
+                FormatValue2FromPlan(clause.PackedParamValue, plan)),
             ClauseType.In when clause.InTerms != null => clause.InTerms,
-            _ => clause.TermValue
+            _ => FormatValueFromPlan(clause.PackedParamValue, plan)
         };
     }
 
