@@ -213,10 +213,10 @@ public static class QueryIlEmitter
             // Resolve dispatch once per op — used by both IL emission and EXPLAIN.
             var (src, fillMethod, andMethod, orMethod, andNotMethod) = op.Dispatch switch
             {
-                MatchDispatch.TermSource => (
+                MatchDispatch.PostingList => (
                     $"ctx.TermSources[{op.ParamIndex}]",
                     CtxFillFromTermSource, CtxAndFromTermSource, CtxOrFillFromTermSource, CtxAndNotFromTermSource),
-                MatchDispatch.TermsProvider => (
+                MatchDispatch.TreeScan => (
                     $"ctx.TermsProviders[{op.ParamIndex}]",
                     CtxFillFromTermsProvider, CtxAndFromTermsProvider, CtxOrFillFromTermsProvider, CtxAndNotFromTermsProvider),
                 _ => (
@@ -903,13 +903,13 @@ public static class QueryIlEmitter
             // Source arrays
             switch (op.Dispatch)
             {
-                case MatchDispatch.DirectSource:
+                case MatchDispatch.QueryMatch:
                     if (op.ParamIndex > maxMatchIndex) maxMatchIndex = op.ParamIndex;
                     break;
-                case MatchDispatch.TermSource:
+                case MatchDispatch.PostingList:
                     if (op.ParamIndex > maxTermSourceIndex) maxTermSourceIndex = op.ParamIndex;
                     break;
-                case MatchDispatch.TermsProvider:
+                case MatchDispatch.TreeScan:
                     if (op.ParamIndex > maxTermsProviderIndex) maxTermsProviderIndex = op.ParamIndex;
                     break;
             }
@@ -945,7 +945,7 @@ public static class QueryIlEmitter
             il.Emit(OpCodes.Ldarg_0);
             il.Emit(OpCodes.Ldfld, CtxTermSources);
             EmitLdcI4(il, maxTermSourceIndex);
-            il.Emit(OpCodes.Ldelema, typeof(TermSource));
+            il.Emit(OpCodes.Ldelema, typeof(PostingSource));
             il.Emit(OpCodes.Pop);
         }
 

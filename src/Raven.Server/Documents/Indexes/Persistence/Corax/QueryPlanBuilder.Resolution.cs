@@ -199,7 +199,7 @@ internal static partial class QueryPlanBuilder
             var ops = plan.Ops;
             if (ops != null)
                 for (int i = 0; i < ops.Length; i++)
-                    ops[i].Dispatch = MatchDispatch.DirectSource;
+                    ops[i].Dispatch = MatchDispatch.QueryMatch;
             plan.OperandOrdering |= (1 << 30);
         }
 
@@ -1036,21 +1036,21 @@ internal static partial class QueryPlanBuilder
     // ── Term-source resolution ───────────────────────────────────────────
 
     /// <summary>
-    /// Resolve clause infos to <see cref="TermSource"/> instances for the native
+    /// Resolve clause infos to <see cref="PostingSource"/> instances for the native
     /// posting-list dispatch path. Parallels <see cref="ResolveMatches"/> — the
     /// returned array uses the same indexing scheme. Slots whose underlying
     /// clause is multi-term / non-term-shaped (Spatial, Vector, Search, Range,
-    /// StartsWith, EndsWith, Regex, AllEntries) keep <c>Kind == TermSourceKind.Empty</c>;
+    /// StartsWith, EndsWith, Regex, AllEntries) keep <c>Kind == PostingSourceKind.Empty</c>;
     /// only Equals / NotEquals / In / AllIn / OrGroup-of-(Not)Equals slots populate.
     /// The IL emitter consults <see cref="PlanOp.Dispatch"/> to decide which
     /// array to read.
     /// </summary>
-    public static TermSource[] ResolveTermSources(QueryPlan plan, IndexSearcher indexSearcher,
+    public static PostingSource[] ResolveTermSources(QueryPlan plan, IndexSearcher indexSearcher,
         PlanParameters parameters = null, QueryBuilderParameters builderParams = null)
     {
         // IsAllEntries plans never emit term ops (FillFromPostings / AndWith / etc.) —
         // their match[0] is AllEntries, post-filter slots are spatial/vector. No
-        // TermSource population is needed.
+        // PostingSource population is needed.
         if (plan.IsAllEntries)
             return [];
 
@@ -1063,12 +1063,12 @@ internal static partial class QueryPlanBuilder
         // matches[1] = the negated term. Mirror that layout.
         if (clauses.Count == 1 && clauses[0].IsNegated && !plan.AllNegated)
         {
-            var sources = new TermSource[2];
+            var sources = new PostingSource[2];
             sources[1] = ResolveSingleTermSource(clauses[0], execs[0], indexSearcher, plan, parameters, builderParams);
             return sources;
         }
 
-        var termSources = new TermSource[CountMatchSlots(clauses, execs, plan.IsAllEntries, plan.AllNegated)];
+        var termSources = new PostingSource[CountMatchSlots(clauses, execs, plan.IsAllEntries, plan.AllNegated)];
         int matchIdx = 0;
         for (int ci = 0; ci < clauses.Count; ci++)
         {
@@ -1107,7 +1107,7 @@ internal static partial class QueryPlanBuilder
                 for (int t = 0; t < exec.InTermCount; t++)
                     termSources[matchIdx++] = ResolveInTermSource(clause, exec, t, indexSearcher, plan, parameters, builderParams);
                 if (exec.HasNullTerm)
-                    matchIdx++; // null-term slot — stays Empty in TermSources (uses DirectSource path)
+                    matchIdx++; // null-term slot — stays Empty in TermSources (uses QueryMatch path)
             }
             else
             {
@@ -1124,9 +1124,9 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>Resolve a single Equals / NotEquals clause to a posting-list ID and
-    /// decode it into a <see cref="TermSource"/>. Returns Empty when the clause
+    /// decode it into a <see cref="PostingSource"/>. Returns Empty when the clause
     /// is non-term-shaped or the term doesn't exist in the index.</summary>
-    private static TermSource ResolveSingleTermSource(ClauseInfo clause, ClauseExecution exec, IndexSearcher indexSearcher,
+    private static PostingSource ResolveSingleTermSource(ClauseInfo clause, ClauseExecution exec, IndexSearcher indexSearcher,
         QueryPlan plan, PlanParameters parameters, QueryBuilderParameters builderParams)
     {
         if (IsTermSourceEligibleClause(clause, exec) == false)
@@ -1142,7 +1142,7 @@ internal static partial class QueryPlanBuilder
     /// <see cref="ClauseInfo.InTermTypes"/> to pick the correct numeric vs. string
     /// overload — avoids the long.TryParse false-positive on zero-padded string
     /// values like "000001" (parses as 1L but is indexed as the string "000001").</summary>
-    private static TermSource ResolveInTermSource(ClauseInfo clause, ClauseExecution exec, int termIndex, IndexSearcher indexSearcher,
+    private static PostingSource ResolveInTermSource(ClauseInfo clause, ClauseExecution exec, int termIndex, IndexSearcher indexSearcher,
         QueryPlan plan, PlanParameters parameters, QueryBuilderParameters builderParams)
     {
         FieldMetadata fieldMeta = builderParams != null ?
@@ -1173,9 +1173,9 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>Decode a raw posting-list ID (with TermIdMask bits) into a
-    /// <see cref="TermSource"/>. Returns Empty when the term doesn't exist (-1).
+    /// <see cref="PostingSource"/>. Returns Empty when the term doesn't exist (-1).
     /// For PostingList kind, opens a fresh iterator on the underlying set.</summary>
-    private static TermSource DecodePostingListId(long postingListId, IndexSearcher indexSearcher)
+    private static PostingSource DecodePostingListId(long postingListId, IndexSearcher indexSearcher)
     {
         if (postingListId == -1)
         {
@@ -1186,25 +1186,25 @@ internal static partial class QueryPlanBuilder
         switch (termType)
         {
             case global::Corax.Indexing.TermIdMask.Single:
-                return new TermSource
+                return new PostingSource
                 {
-                    Kind = TermSourceKind.Single,
+                    Kind = PostingSourceKind.Single,
                     SingleEntryId = (long)EntryIdEncodings.GetContainerId(postingListId),
                 };
 
             case global::Corax.Indexing.TermIdMask.SmallPostingList:
-                return new TermSource
+                return new PostingSource
                 {
-                    Kind = TermSourceKind.SmallPostingList,
+                    Kind = PostingSourceKind.SmallPostingList,
                     SmallPostingListId = (long)EntryIdEncodings.GetContainerId(postingListId),
                 };
 
             case global::Corax.Indexing.TermIdMask.PostingList:
             {
                 var postingList = indexSearcher.GetPostingList(postingListId);
-                return new TermSource
+                return new PostingSource
                 {
-                    Kind = TermSourceKind.PostingList,
+                    Kind = PostingSourceKind.PostingList,
                     LargeIterator = postingList.Iterate(),
                 };
             }

@@ -6,7 +6,7 @@ namespace Corax.Querying.Planning;
 public enum PlanOpKind : byte
 {
     /// <summary>Fill bitmap[0] from a term source, term provider, or IQueryMatch.
-    /// Dispatches to QueryPrimitives.FillBitmapFromTermSource / FillBitmapFromTermsProvider / FillFromMatch
+    /// Dispatches to QueryPrimitives.FillBitmapFromPostingSource / FillBitmapFromTermsProvider / FillFromMatch
     /// depending on <see cref="PlanOp.Dispatch"/>.</summary>
     FillFromPostings,
 
@@ -66,24 +66,23 @@ public enum PlanOpKind : byte
     SwapBitmaps,
 }
 
-/// <summary>Selects the execution-time source array for term ops in a <see cref="PlanOp"/>.</summary>
+/// <summary>Selects the execution-time source for term ops in a <see cref="PlanOp"/>.</summary>
 public enum MatchDispatch : byte
 {
-    /// <summary>Use <c>ctx.DirectSources[ParamIndex]</c> — IQueryMatch interface dispatch.
-    /// Used for vector, spatial, search, boosted, and any clause the planner cannot
-    /// express as a TermSource or TermsProvider.</summary>
-    DirectSource,
+    /// <summary>IQueryMatch.Fill() dispatch — the general-purpose path for spatial,
+    /// vector, search, boosted, and any clause that can't be expressed as a posting
+    /// list or tree scan.</summary>
+    QueryMatch,
 
-    /// <summary>Use <c>ctx.TermSources[ParamIndex]</c> — native posting-list dispatch.
-    /// Single value / SmallPostingList / PostingList.Iterator resolved at plan-compile time.
+    /// <summary>Native posting-list dispatch — a single resolved posting list
+    /// (Single / SmallPostingList / PostingList.Iterator). The fastest path.
     /// Used for Equals and NotEquals clauses.</summary>
-    TermSource,
+    PostingList,
 
-    /// <summary>Use <c>ctx.TermsProviders[ParamIndex]</c> — multi-term bitmap fill.
-    /// The ITermsProvider iterates the CompactTree at execution time, decoding each
-    /// matching posting list directly into the bitmap without an intermediate flat buffer.
-    /// Used for StartsWith / EndsWith / Contains / Exists / Regex / range clauses.</summary>
-    TermsProvider,
+    /// <summary>CompactTree scan — iterates the tree at execution time, decoding each
+    /// matching posting list directly into the bitmap. Used for StartsWith, EndsWith,
+    /// Contains, Exists, Regex, and range clauses.</summary>
+    TreeScan,
 }
 
 public struct PlanOp
@@ -98,11 +97,11 @@ public struct PlanOp
     /// <summary>Controls how <see cref="ParamIndex"/> is resolved at execution time
     /// for term ops (Fill/And/Or/AndNot WithPostings):
     /// <list type="bullet">
-    /// <item><see cref="MatchDispatch.DirectSource"/> — <c>ctx.DirectSources[ParamIndex]</c>
+    /// <item><see cref="MatchDispatch.QueryMatch"/> — <c>ctx.ResolvedMatches[ParamIndex]</c>
     ///   (IQueryMatch interface dispatch; vector, spatial, search, boosted clauses).</item>
-    /// <item><see cref="MatchDispatch.TermSource"/> — <c>ctx.TermSources[ParamIndex]</c>
+    /// <item><see cref="MatchDispatch.PostingList"/> — <c>ctx.PostingSources[ParamIndex]</c>
     ///   (native posting-list dispatch; Equals / NotEquals / In / AllIn).</item>
-    /// <item><see cref="MatchDispatch.TermsProvider"/> — <c>ctx.TermsProviders[ParamIndex]</c>
+    /// <item><see cref="MatchDispatch.TreeScan"/> — <c>ctx.TermsProviders[ParamIndex]</c>
     ///   (multi-term bitmap fill; StartsWith / EndsWith / Contains / Exists / Regex / ranges).</item>
     /// </list></summary>
     public MatchDispatch Dispatch;
@@ -117,12 +116,12 @@ public struct PlanOp
 /// <summary>Three-way native posting-list source attached to term op.
 /// Mirrors the encoding used by <see cref="ITermsProvider.FillPostingListIds"/>:
 /// the low 2 bits of a CompactTree value distinguish Single / SmallPostingList /
-/// PostingList. Resolved up-front by <c>ResolveTermSources</c>; consumed by
-/// <c>FillBitmapFromTermSource</c> / <c>AndWithTermSource</c> /
-/// <c>AndNotWithTermSource</c> at execution time.</summary>
-public struct TermSource
+/// PostingList. Resolved up-front by <c>ResolvePostingSources</c>; consumed by
+/// <c>FillBitmapFromPostingSource</c> / <c>AndWithPostingSource</c> /
+/// <c>AndNotWithPostingSource</c> at execution time.</summary>
+public struct PostingSource
 {
-    public TermSourceKind Kind;
+    public PostingSourceKind Kind;
 
     /// <summary>Decoded entry id (Kind == Single) — already passed through
     /// EntryIdEncodings.GetContainerId.</summary>
@@ -137,7 +136,7 @@ public struct TermSource
     public PostingList.Iterator LargeIterator;
 }
 
-public enum TermSourceKind : byte
+public enum PostingSourceKind : byte
 {
     /// <summary>The term does not exist in the index (or the field has no compact tree).
     /// Dispatcher primitives no-op on Empty for Or-shaped ops, and clear the bitmap
@@ -180,8 +179,9 @@ public enum ScanCompareOp : byte
     Between,
 }
 
-/// <summary>Spatial post-filter — ANDed with the candidate bitmap after the filter phase.
-/// MatchIndex points into the resolved IQueryMatch[].</summary>
+/// <summary>Spatial predicate applied after the bitmap filter phase. ANDs the spatial
+/// match result with the candidate bitmap to remove non-matching entries.
+/// MatchIndex is the slot in the resolved IQueryMatch[] for this post-filter.</summary>
 public struct SpatialFilterOp
 {
     public int MatchIndex;
@@ -189,9 +189,11 @@ public struct SpatialFilterOp
     public ClauseExecution Exec;
 }
 
-/// <summary>Vector select — wraps the bitmap-producing match as its filterQuery.
-/// MatchIndex points into the resolved IQueryMatch[].</summary>
-public struct VectorSelectOp
+/// <summary>Vector nearest-neighbor search applied after the bitmap filter phase.
+/// The bitmap-producing match is passed as the filter source to VectorSearchMatch,
+/// restricting the search to the candidate set. MatchIndex is the slot in the
+/// resolved IQueryMatch[] for this vector search.</summary>
+public struct VectorSearchOp
 {
     public int MatchIndex;
     public ClauseInfo Clause;
@@ -226,7 +228,7 @@ public class QueryPlan
 
     /// <summary>Vector operations to apply after spatial filtering.
     /// The bitmap-producing CompiledQueryMatch is passed as the filterQuery to VectorSearchMatch.</summary>
-    public VectorSelectOp[] VectorSelects;
+    public VectorSearchOp[] VectorSelects;
 
     /// <summary>Packed parameter type signature from ScanPredicateInfos.
     /// 2 bits per predicate (0=long, 1=double, 2=string) for the FIRST 16 predicates.

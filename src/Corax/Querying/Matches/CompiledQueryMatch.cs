@@ -15,7 +15,7 @@ public class CompiledQueryMatch : IBitmapQueryMatch, IDisposable
 {
     private readonly QueryIlEmitter.CompiledExecuteDelegate _compiledDelegate;
     public readonly IQueryMatch[] ResolvedMatches;
-    public readonly TermSource[] TermSources;
+    public readonly PostingSource[] TermSources;
     public readonly ITermsProvider[] TermsProviders;
     public readonly long[] LongParams;
     public readonly double[] DoubleParams;
@@ -52,7 +52,7 @@ public class CompiledQueryMatch : IBitmapQueryMatch, IDisposable
     public int EntryScanTakenAtOp;
 
     public CompiledQueryMatch(CompiledPlan compiledPlan, int bitmapCount, int opCount,
-        IQueryMatch[] resolvedMatches, TermSource[] termSources, ITermsProvider[] termsProviders,
+        IQueryMatch[] resolvedMatches, PostingSource[] termSources, ITermsProvider[] termsProviders,
         long[] longParams, double[] doubleParams, Slice[] sliceParams, long[] fieldRootPages,
         IndexSearcher searcher, ByteStringContext allocator, CancellationToken token)
     {

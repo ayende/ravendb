@@ -65,22 +65,17 @@ public class PlanCache
     }
 
     /// <summary>Try to retrieve the cached clause template for a query text.
-    /// The template is shared across all ordering variants of the same query.</summary>
+    /// The template is shared across all ordering variants of the same query.
+    /// Stale reads are harmless — worst case is one redundant ParseTemplate call.
+    /// Write side uses Interlocked.CompareExchange (full fence) ensuring correctness.</summary>
     public ClauseTemplate TryGetTemplate(string queryText)
     {
-        var current = Volatile.Read(ref _current);
-        if (current.TryGetValue(queryText, out var per))
-        {
-            var t = Volatile.Read(ref per.Template);
-            if (t != null)
-                return t;
-        }
+        if (_current.TryGetValue(queryText, out var per) && per.Template != null)
+            return per.Template;
 
-        var prev = Volatile.Read(ref _previous);
+        var prev = _previous;
         if (prev != null && prev.TryGetValue(queryText, out per))
-        {
-            return Volatile.Read(ref per.Template);
-        }
+            return per.Template;
 
         return null;
     }

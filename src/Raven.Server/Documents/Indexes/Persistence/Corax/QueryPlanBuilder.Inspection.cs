@@ -211,7 +211,7 @@ internal static partial class QueryPlanBuilder
                     PlanOpKind.CheckAndMaybeEntryScan => "EntryScanCheck",
                     _ => op.Kind.ToString()
                 },
-                Dispatch = op.Dispatch switch { MatchDispatch.TermSource => "Term", MatchDispatch.TermsProvider => "MultiTerm", _ => "Match" },
+                Dispatch = op.Dispatch switch { MatchDispatch.PostingList => "Term", MatchDispatch.TreeScan => "MultiTerm", _ => "Match" },
                 EstimatedCardinality = op.EstimatedCardinality,
                 InsideAndGroup = insideAndGroup
             };
