@@ -201,11 +201,13 @@ public sealed class ClauseInfo
     public List<ClauseInfo> OrSubClauses;
     public List<ClauseInfo> AndSubClauses;
 
-    /// <summary>Parameter bindings indexed by <see cref="BindingIndex"/> constants.</summary>
+    /// <summary>Parameter bindings indexed by <see cref="BindingIndex"/> constants.
+    /// If <see cref="HasBoost"/> is true, the last entry is the boost factor binding.</summary>
     public ParameterBinding[] Bindings;
 
-    /// <summary>Binding for the boost factor (if wrapped in boost()). Null if not boosted.</summary>
-    public ParameterBinding BoostBinding;
+    /// <summary>True if this clause is wrapped in boost(). When set, Bindings[^1] is the
+    /// boost factor binding and exec.BoostFactor is resolved from it per-execution.</summary>
+    public bool HasBoost;
 }
 
 /// <summary>Per-execution state for a clause. Parallel to <see cref="ClauseInfo"/>[] —
