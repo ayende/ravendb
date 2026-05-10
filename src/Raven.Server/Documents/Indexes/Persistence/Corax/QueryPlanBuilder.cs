@@ -508,17 +508,8 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        if (inBindings.Count == 0)
-        {
-            clauses.Add(new ClauseInfo
-            {
-                FieldName = resolvedFieldName,
-                ClauseType = ClauseType.EmptyIn,
-                OriginalIndex = clauses.Count
-            });
-            return;
-        }
-
+        // Empty IN() with no bindings still creates an In clause —
+        // PopulateClauseValues sets InTermCount=0, EmitPlan handles empty IN.
         clauses.Add(new ClauseInfo
         {
             FieldName = resolvedFieldName,
@@ -1110,17 +1101,25 @@ internal static partial class QueryPlanBuilder
 
     private static QueryPlan EmitPlan(List<ClauseInfo> clauses, ClauseExecution[] executions, bool isOr)
     {
-        // Empty IN() in an AND chain means zero results — emit an empty plan.
-        // In an OR chain, just remove the EmptyIn clauses (they contribute nothing).
+        // Empty IN (InTermCount=0, no null terms) in an AND chain means zero results.
+        // In an OR chain, skip empty IN clauses (they contribute nothing).
         for (int i = clauses.Count - 1; i >= 0; i--)
         {
-            if (clauses[i].ClauseType != ClauseType.EmptyIn)
+            if (clauses[i].ClauseType is not (ClauseType.In or ClauseType.AllIn))
+                continue;
+            var exec = executions[i];
+            if (exec.InTermCount > 0 || exec.HasNullTerm)
                 continue;
 
             if (isOr == false)
-                return new QueryPlan { Ops = [], IsAllEntries = false };
+                return new QueryPlan { Ops = [], IsAllEntries = false, Executions = executions };
 
             clauses.RemoveAt(i);
+            // Rebuild executions array without the removed clause
+            var newExecs = new ClauseExecution[executions.Length - 1];
+            for (int j = 0, k = 0; j < executions.Length; j++)
+                if (j != i) newExecs[k++] = executions[j];
+            executions = newExecs;
         }
 
         var ops = new List<PlanOp>();
@@ -1144,7 +1143,7 @@ internal static partial class QueryPlanBuilder
                             Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex,
                             EstimatedCardinality = itExec.Cardinality / totalTerms,
-                            Dispatch = MatchDispatch.TermSource
+                            Dispatch = MatchDispatch.PostingList
                         });
                         matchIndex++;
                     }
@@ -1154,7 +1153,7 @@ internal static partial class QueryPlanBuilder
                         {
                             Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex,
-                            Dispatch = MatchDispatch.DirectSource // null-term via IQueryMatch
+                            Dispatch = MatchDispatch.QueryMatch // null-term via IQueryMatch
                         });
                         matchIndex++;
                     }
@@ -1266,7 +1265,7 @@ internal static partial class QueryPlanBuilder
                         Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                         ParamIndex = matchIndex,
                         EstimatedCardinality = itExec.Cardinality,
-                        Dispatch = isNotEqualsInOr ? MatchDispatch.DirectSource : GetDispatch(it, itExec)
+                        Dispatch = isNotEqualsInOr ? MatchDispatch.QueryMatch : GetDispatch(it, itExec)
                     });
                     matchIndex++;
                 }
@@ -1369,7 +1368,7 @@ internal static partial class QueryPlanBuilder
                             ParamIndex = matchIndex + t,
                             BitmapLocal = 0,
                             EstimatedCardinality = executions[0].Cardinality / Math.Max(terms, 1),
-                            Dispatch = MatchDispatch.TermSource
+                            Dispatch = MatchDispatch.PostingList
                         });
                     }
                     matchIndex += terms;
@@ -1380,7 +1379,7 @@ internal static partial class QueryPlanBuilder
                             Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex,
                             BitmapLocal = 0,
-                            Dispatch = MatchDispatch.DirectSource
+                            Dispatch = MatchDispatch.QueryMatch
                         });
                         matchIndex++;
                     }
@@ -1395,7 +1394,7 @@ internal static partial class QueryPlanBuilder
                         ParamIndex = matchIndex,
                         BitmapLocal = 0,
                         EstimatedCardinality = executions[0].Cardinality / terms,
-                        Dispatch = MatchDispatch.TermSource
+                        Dispatch = MatchDispatch.PostingList
                     });
                     for (int t = 1; t < terms; t++)
                     {
@@ -1405,7 +1404,7 @@ internal static partial class QueryPlanBuilder
                             ParamIndex = matchIndex + t,
                             BitmapLocal = 0,
                             EstimatedCardinality = executions[0].Cardinality / terms,
-                            Dispatch = MatchDispatch.TermSource
+                            Dispatch = MatchDispatch.PostingList
                         });
                         ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
                     }
@@ -1500,7 +1499,7 @@ internal static partial class QueryPlanBuilder
                             ParamIndex = matchIndex + t,
                             BitmapLocal = 1,
                             EstimatedCardinality = iExec.Cardinality / Math.Max(terms, 1),
-                            Dispatch = MatchDispatch.TermSource
+                            Dispatch = MatchDispatch.PostingList
                         });
                     }
                     if (iExec.HasNullTerm)
@@ -1510,7 +1509,7 @@ internal static partial class QueryPlanBuilder
                             Kind = PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex + terms,
                             BitmapLocal = 1,
-                            Dispatch = MatchDispatch.DirectSource
+                            Dispatch = MatchDispatch.QueryMatch
                         });
                     }
                     var bitmapCombineKind = clauses[i].IsNegated ? PlanOpKind.AndNotBitmaps : PlanOpKind.AndBitmaps;
@@ -1536,7 +1535,7 @@ internal static partial class QueryPlanBuilder
                             ParamIndex = matchIndex + t,
                             BitmapLocal = 0,
                             EstimatedCardinality = iExec.Cardinality / terms,
-                            Dispatch = MatchDispatch.TermSource
+                            Dispatch = MatchDispatch.PostingList
                         });
                         ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
                     }
@@ -1688,13 +1687,13 @@ internal static partial class QueryPlanBuilder
 
         if (vectorClauses != null)
         {
-            plan.VectorSelects = new VectorSelectOp[vectorClauses.Count];
+            plan.VectorSelects = new VectorSearchOp[vectorClauses.Count];
             for (int i = 0; i < vectorClauses.Count; i++)
             {
                 clauses.Add(vectorClauses[i]);
                 var exec = vectorExecs?[i] ?? new ClauseExecution();
                 newExecs[execIdx++] = exec;
-                plan.VectorSelects[i] = new VectorSelectOp { MatchIndex = matchIndex++, Clause = vectorClauses[i], Exec = exec };
+                plan.VectorSelects[i] = new VectorSearchOp { MatchIndex = matchIndex++, Clause = vectorClauses[i], Exec = exec };
             }
         }
 
@@ -1731,7 +1730,7 @@ internal static partial class QueryPlanBuilder
     // ── Dispatch classification ──────────────────────────────────────────
 
     /// <summary>Decide whether a clause type can be expressed as a single
-    /// <see cref="TermSource"/>. Boosted clauses go through the IQueryMatch path
+    /// <see cref="PostingSource"/>. Boosted clauses go through the IQueryMatch path
     /// even when they're term-shaped, so scoring still works.</summary>
     internal static bool IsTermSourceEligibleClause(ClauseInfo clause, ClauseExecution exec = null)
     {
@@ -1745,13 +1744,13 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>Resolve the <see cref="MatchDispatch"/> mode for a clause at plan-build time.
-    /// Equals / NotEquals (unboosted) → <c>TermSource</c> (native posting-list, no IQueryMatch wrapper).
-    /// All other clause types → <c>DirectSource</c> (IQueryMatch interface dispatch).</summary>
+    /// Equals / NotEquals (unboosted) → <c>PostingList</c> (native posting-list, no IQueryMatch wrapper).
+    /// All other clause types → <c>QueryMatch</c> (IQueryMatch interface dispatch).</summary>
     private static MatchDispatch GetDispatch(ClauseInfo clause, ClauseExecution exec = null)
     {
         if (IsTermSourceEligibleClause(clause, exec))
-            return MatchDispatch.TermSource;
-        return MatchDispatch.DirectSource;
+            return MatchDispatch.PostingList;
+        return MatchDispatch.QueryMatch;
     }
 
     // ── Entry scan predicate building ────────────────────────────────────

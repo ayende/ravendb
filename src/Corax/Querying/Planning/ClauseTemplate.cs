@@ -156,7 +156,6 @@ public enum ClauseType : byte
     Vector,
     OrGroup,  // A group of OR'd subclauses
     AndGroup, // A group of AND'd subclauses inside an OR chain
-    EmptyIn,  // IN() with empty list — matches nothing
 }
 
 /// <summary>

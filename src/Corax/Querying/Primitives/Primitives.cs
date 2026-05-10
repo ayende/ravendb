@@ -364,30 +364,30 @@ public static class QueryPrimitives
     /// PostingList → <see cref="FillFromPostings"/>; Empty → no-op.</summary>
     [SkipLocalsInit]
     public static void FillBitmapFromTermSource(
-        ref Planning.TermSource source,
+        ref Planning.PostingSource source,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
         long limit = long.MaxValue)
     {
         switch (source.Kind)
         {
-            case Planning.TermSourceKind.Empty:
+            case Planning.PostingSourceKind.Empty:
                 return;
 
-            case Planning.TermSourceKind.Single:
+            case Planning.PostingSourceKind.Single:
                 bitmap.Add(source.SingleEntryId);
                 return;
 
-            case Planning.TermSourceKind.SmallPostingList:
+            case Planning.PostingSourceKind.SmallPostingList:
                 AddSmallPostingListToBitmap(llt, source.SmallPostingListId, ref bitmap);
                 return;
 
-            case Planning.TermSourceKind.PostingList:
+            case Planning.PostingSourceKind.PostingList:
                 FillFromPostings(ref source.LargeIterator, ref bitmap, limit);
                 return;
 
             default:
-                throw new InvalidOperationException($"Unknown TermSourceKind: {source.Kind}");
+                throw new InvalidOperationException($"Unknown PostingSourceKind: {source.Kind}");
         }
     }
 
@@ -397,7 +397,7 @@ public static class QueryPrimitives
     /// nothing = nothing).</summary>
     [SkipLocalsInit]
     public static void AndWithTermSource(
-        ref Planning.TermSource source,
+        ref Planning.PostingSource source,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
         ref RoaringBitmap tempBitmap,
@@ -408,11 +408,11 @@ public static class QueryPrimitives
 
         switch (source.Kind)
         {
-            case Planning.TermSourceKind.Empty:
+            case Planning.PostingSourceKind.Empty:
                 bitmap.Clear();
                 return;
 
-            case Planning.TermSourceKind.Single:
+            case Planning.PostingSourceKind.Single:
                 {
                     long entryId = source.SingleEntryId;
                     bool keep = bitmap.Contains(entryId);
@@ -422,12 +422,12 @@ public static class QueryPrimitives
                     return;
                 }
 
-            case Planning.TermSourceKind.SmallPostingList:
+            case Planning.PostingSourceKind.SmallPostingList:
                 MaterializeTermSourceIntoBitmap(ref source, llt, ref tempBitmap);
                 bitmap.AndWith(ref tempBitmap);
                 return;
 
-            case Planning.TermSourceKind.PostingList:
+            case Planning.PostingSourceKind.PostingList:
                 if (limit < long.MaxValue)
                     AndWithPostingsLimited(ref source.LargeIterator, ref bitmap, ref tempBitmap, limit);
                 else
@@ -435,7 +435,7 @@ public static class QueryPrimitives
                 return;
 
             default:
-                throw new InvalidOperationException($"Unknown TermSourceKind: {source.Kind}");
+                throw new InvalidOperationException($"Unknown PostingSourceKind: {source.Kind}");
         }
     }
 
@@ -443,7 +443,7 @@ public static class QueryPrimitives
     /// a no-op (subtracting nothing).</summary>
     [SkipLocalsInit]
     public static void AndNotWithTermSource(
-        ref Planning.TermSource source,
+        ref Planning.PostingSource source,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
         ref RoaringBitmap tempBitmap)
@@ -453,21 +453,21 @@ public static class QueryPrimitives
 
         switch (source.Kind)
         {
-            case Planning.TermSourceKind.Empty:
+            case Planning.PostingSourceKind.Empty:
                 return;
 
-            case Planning.TermSourceKind.Single:
-            case Planning.TermSourceKind.SmallPostingList:
+            case Planning.PostingSourceKind.Single:
+            case Planning.PostingSourceKind.SmallPostingList:
                 MaterializeTermSourceIntoBitmap(ref source, llt, ref tempBitmap);
                 bitmap.AndNotWith(ref tempBitmap);
                 return;
 
-            case Planning.TermSourceKind.PostingList:
+            case Planning.PostingSourceKind.PostingList:
                 AndNotWithPostings(ref source.LargeIterator, ref bitmap, ref tempBitmap);
                 return;
 
             default:
-                throw new InvalidOperationException($"Unknown TermSourceKind: {source.Kind}");
+                throw new InvalidOperationException($"Unknown PostingSourceKind: {source.Kind}");
         }
     }
 
@@ -475,17 +475,17 @@ public static class QueryPrimitives
     /// (clears it first). Shared by AndWithTermSource and AndNotWithTermSource to avoid
     /// duplicating the clear-then-populate pattern for these small-source cases.</summary>
     private static void MaterializeTermSourceIntoBitmap(
-        ref Planning.TermSource source,
+        ref Planning.PostingSource source,
         LowLevelTransaction llt,
         ref RoaringBitmap tempBitmap)
     {
         tempBitmap.Clear();
         switch (source.Kind)
         {
-            case Planning.TermSourceKind.Single:
+            case Planning.PostingSourceKind.Single:
                 tempBitmap.Add(source.SingleEntryId);
                 return;
-            case Planning.TermSourceKind.SmallPostingList:
+            case Planning.PostingSourceKind.SmallPostingList:
                 AddSmallPostingListToBitmap(llt, source.SmallPostingListId, ref tempBitmap);
                 return;
             default:
