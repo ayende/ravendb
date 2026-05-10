@@ -148,9 +148,9 @@ public enum TermSourceKind : byte
     PostingList,
 }
 
-/// <summary>One entry-scan predicate. Numeric predicates emit a direct compare
-/// against ctx.LongParams[ParamIndex] / DoubleParams[...]; slice predicates fall
-/// back to MultiUnaryItem.CompareLiteral. Between uses both ParamIndex slots.
+/// <summary>One entry-scan predicate. Numeric predicates emit an IL-inlined compare
+/// against ctx.LongParams[ParamIndex] / DoubleParams[...]; slice predicates emit
+/// an inline byte-sequence comparison. Between uses both ParamIndex slots.
 /// OrBranches is non-null only for OR-group predicates.</summary>
 public struct ScanPredicateInfo
 {
@@ -166,7 +166,7 @@ public enum ScanValueType : byte
 {
     Long,    // reader.CurrentLong vs ctx.LongParams[i]
     Double,  // reader.CurrentDouble vs ctx.DoubleParams[i]
-    Slice,   // MultiUnaryItem.CompareLiteral fallback
+    Slice,   // IL-emitted byte-sequence comparison
 }
 
 public enum ScanCompareOp : byte
