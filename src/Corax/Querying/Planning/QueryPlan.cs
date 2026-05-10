@@ -207,7 +207,7 @@ public class QueryPlan
 {
     public PlanOp[] Ops;
     public int OperandOrdering;
-    
+
     /// <summary>
     /// Here we store the opaque state from QueryPlanBuilder, which is used for introspection later.
     /// We cannot store the real type because they are using  Raven.Server types.
@@ -215,6 +215,14 @@ public class QueryPlan
     public object QueryBuilderPlanState;
     public bool IsAllEntries;
     public bool AllNegated;
+
+    /// <summary>Typed parameter values for clause resolution. Populated during plan building
+    /// from resolved query parameters and literal values. Each clause's PackedParam field
+    /// encodes (type, index) pairs pointing into these arrays, so resolution never has to
+    /// re-parse strings back to their native types.</summary>
+    public long[] LongValues;
+    public double[] DoubleValues;
+    public string[] StringValues;
 
     /// <summary>Spatial operations to apply after the bitmap filter phase builds the candidate bitmap.
     /// Each spatial match is ANDed with the candidate set.</summary>

@@ -141,15 +141,24 @@ internal static partial class QueryPlanBuilder
     {
         var indexSearcher = builderParams.IndexSearcher;
         var clauses = new List<ClauseInfo>();
+        var writer = new ValueWriter();
         bool hasMixed = false;
         ParseExpression(expression, indexSearcher, clauses, builderParams.QueryParameters,
-            builderParams.Metadata, ref hasMixed);
+            builderParams.Metadata, ref hasMixed, writer);
 
         if (clauses.Count == 0)
             return indexSearcher.AllEntries();
 
+        // Create a mini plan to carry the typed arrays for resolution
+        var subPlan = new QueryPlan
+        {
+            LongValues = writer.GetLongs(),
+            DoubleValues = writer.GetDoubles(),
+            StringValues = writer.GetStrings()
+        };
+
         if (clauses.Count == 1)
-            return ResolveClause(clauses[0], indexSearcher, builderParams: builderParams);
+            return ResolveClause(clauses[0], indexSearcher, subPlan, builderParams: builderParams);
 
         // Multiple clauses (AND chain) — resolve each and AND them via bitmap
         var bitmap = new BitmapMatch(indexSearcher.Allocator);
@@ -157,7 +166,7 @@ internal static partial class QueryPlanBuilder
         bool first = true;
         foreach (var clause in clauses)
         {
-            var match = ResolveClause(clause, indexSearcher, builderParams: builderParams);
+            var match = ResolveClause(clause, indexSearcher, subPlan, builderParams: builderParams);
             if (first)
             {
                 QueryPrimitives.FillFromMatch(match, ref bitmap.BitmapState);
@@ -170,6 +179,34 @@ internal static partial class QueryPlanBuilder
         }
         temp.Dispose();
         return bitmap;
+    }
+
+    // ── Typed dispatch helpers ───────────────────────────────────────────
+
+    /// <summary>Create a TermQuery using the pre-resolved typed value from the plan's arrays.</summary>
+    private static IQueryMatch TermQueryFromParam(int packed, FieldMetadata fieldMeta,
+        IndexSearcher indexSearcher, QueryPlan plan)
+    {
+        int idx = PackedParam.GetParam1(packed);
+        return PackedParam.GetValueType(packed) switch
+        {
+            PackedParam.TypeLong => indexSearcher.TermQuery(fieldMeta, plan.LongValues[idx]),
+            PackedParam.TypeDouble => indexSearcher.TermQuery(fieldMeta, plan.DoubleValues[idx]),
+            _ => indexSearcher.TermQuery(fieldMeta, plan.StringValues[idx])
+        };
+    }
+
+    /// <summary>Get a posting-list ID using the pre-resolved typed value.</summary>
+    private static long GetTermPostingListIdFromParam(int packed, FieldMetadata fieldMeta,
+        IndexSearcher indexSearcher, QueryPlan plan)
+    {
+        int idx = PackedParam.GetParam1(packed);
+        return PackedParam.GetValueType(packed) switch
+        {
+            PackedParam.TypeLong => indexSearcher.GetTermPostingListId(fieldMeta, plan.LongValues[idx]),
+            PackedParam.TypeDouble => indexSearcher.GetTermPostingListId(fieldMeta, plan.DoubleValues[idx]),
+            _ => indexSearcher.GetTermPostingListId(fieldMeta, plan.StringValues[idx])
+        };
     }
 
     // ── Match resolution ─────────────────────────────────────────────────
@@ -187,9 +224,6 @@ internal static partial class QueryPlanBuilder
         // All-entries plan with possible post-filter phases
         if (plan.IsAllEntries)
         {
-            // If there are spatial/vector post-filters, we need to resolve those too.
-            // The AllEntries match is at index 0, post-filter matches follow at their
-            // MatchIndex positions (which account for the implicit AllEntries at 0).
             int spatialCount = plan.SpatialFilters?.Length ?? 0;
             int vectorCount = plan.VectorSelects?.Length ?? 0;
             int totalExtra = spatialCount + vectorCount;
@@ -198,12 +232,10 @@ internal static partial class QueryPlanBuilder
 
             var allEntriesMatches = new IQueryMatch[1 + totalExtra];
             allEntriesMatches[0] = indexSearcher.AllEntries();
-            // Resolve spatial and vector clauses from the plan's Clauses array.
-            // Each clause in plan.Clauses corresponds to a post-filter match at index 1+i.
             for (int i = 0; i < clauses.Count; i++)
             {
                 ClauseInfo clause = clauses[i];
-                allEntriesMatches[1 + i] = ResolveClause(clause, indexSearcher, parameters, builderParams);
+                allEntriesMatches[1 + i] = ResolveClause(clause, indexSearcher, plan, parameters, builderParams);
             }
             return allEntriesMatches;
         }
@@ -211,16 +243,14 @@ internal static partial class QueryPlanBuilder
         if (clauses.Count == 0)
             return [];
 
-        // Check for a standalone NotEquals pattern: the plan has Fill(AllEntries) + ANDNOT(term).
-        // !plan.AllNegated distinguishes this from the "true AND NOT expr" path (AllNegated=true),
-        // which needs normal clause resolution for non-term clauses (startsWith, In, etc.).
+        // Standalone NotEquals pattern: Fill(AllEntries) + ANDNOT(term).
         if (clauses.Count == 1 && clauses[0].IsNegated && !plan.AllNegated)
         {
             var clause = clauses[0];
             return
             [
                 indexSearcher.AllEntries(),
-                indexSearcher.TermQuery(indexSearcher.FieldMetadataBuilder(clause.FieldName), clause.TermValue)
+                TermQueryFromParam(clause.PackedParamValue, indexSearcher.FieldMetadataBuilder(clause.FieldName), indexSearcher, plan)
             ];
         }
 
@@ -232,7 +262,7 @@ internal static partial class QueryPlanBuilder
             {
                 foreach (var sub in clause.OrSubClauses)
                 {
-                    var match = ResolveClause(sub, indexSearcher, parameters, builderParams);
+                    var match = ResolveClause(sub, indexSearcher, plan, parameters, builderParams);
                     if (sub.BoostFactor > 0)
                         match = indexSearcher.Boost(match, sub.BoostFactor);
                     matches[matchIdx++] = match;
@@ -240,11 +270,9 @@ internal static partial class QueryPlanBuilder
             }
             else if (clause.ClauseType == ClauseType.AndGroup && clause.AndSubClauses != null)
             {
-                // Each AND subclause becomes a separate match slot (used by EmitPlan's
-                // FillFromPostings + AndWithPostings sequence inside the OR chain).
                 foreach (var sub in clause.AndSubClauses)
                 {
-                    var match = ResolveClause(sub, indexSearcher, parameters, builderParams);
+                    var match = ResolveClause(sub, indexSearcher, plan, parameters, builderParams);
                     if (sub.BoostFactor > 0)
                         match = indexSearcher.Boost(match, sub.BoostFactor);
                     matches[matchIdx++] = match;
@@ -252,18 +280,14 @@ internal static partial class QueryPlanBuilder
             }
             else if ((clause.ClauseType == ClauseType.AllIn || clause.ClauseType == ClauseType.In) && clause.InTerms != null)
             {
-                // Each IN/AllIn term becomes a separate match — resolved as typed TermQuery
                 for (int t = 0; t < clause.InTerms.Count; t++)
-                    matches[matchIdx++] = ResolveInTerm(clause.FieldName, clause.InTermTypes, t, clause.InTerms[t], indexSearcher, parameters, builderParams);
+                    matches[matchIdx++] = ResolveInTerm(clause, t, indexSearcher, plan, parameters, builderParams);
             }
             else
             {
                 IQueryMatch match = clause.IsOrChainNotEquals ?
-                    // OR-chain NotEquals: De Morgan — NOT(X) in OR = AllEntries ANDNOT X.
-                    // Cannot use the raw term posting list (FillBitmapFromTermSource adds entries
-                    // WITH X, not entries WITHOUT X). Pre-materialize AllEntries ANDNOT TermQuery.
-                    CreateNotEqualsOrMatch(clause, indexSearcher, parameters, builderParams) :
-                    ResolveClause(clause, indexSearcher, parameters, builderParams);
+                    CreateNotEqualsOrMatch(clause, indexSearcher, plan, parameters, builderParams) :
+                    ResolveClause(clause, indexSearcher, plan, parameters, builderParams);
                 if (clause.BoostFactor > 0)
                     match = indexSearcher.Boost(match, clause.BoostFactor);
                 matches[matchIdx++] = match;
@@ -275,19 +299,15 @@ internal static partial class QueryPlanBuilder
     }
 
     private static IQueryMatch ResolveClause(ClauseInfo clause, IndexSearcher indexSearcher,
-        PlanParameters parameters = null, QueryBuilderParameters builderParams = null)
+        QueryPlan plan, PlanParameters parameters = null, QueryBuilderParameters builderParams = null)
     {
-        // Nested OrGroup/AndGroup clauses should have been expanded by ResolveMatches.
-        // If one reaches here, it means a group clause appeared in a context that doesn't
-        // expand it (e.g. an OrGroup sub-clause inside an AndGroup). Build a BitmapMatch
-        // by resolving each sub-clause and merging via bitmap OR/AND.
         if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
         {
             var bm = new BitmapMatch(indexSearcher.Allocator);
             var temp = new RoaringBitmap(indexSearcher.Allocator);
             foreach (var sub in clause.OrSubClauses)
             {
-                var subMatch = ResolveClause(sub, indexSearcher, parameters, builderParams);
+                var subMatch = ResolveClause(sub, indexSearcher, plan, parameters, builderParams);
                 QueryPrimitives.FillFromMatch(subMatch, ref bm.BitmapState);
             }
             temp.Dispose();
@@ -300,7 +320,7 @@ internal static partial class QueryPlanBuilder
             bool first = true;
             foreach (var sub in clause.AndSubClauses)
             {
-                var subMatch = ResolveClause(sub, indexSearcher, parameters, builderParams);
+                var subMatch = ResolveClause(sub, indexSearcher, plan, parameters, builderParams);
                 if (first)
                 {
                     QueryPrimitives.FillFromMatch(subMatch, ref bm.BitmapState);
@@ -315,19 +335,16 @@ internal static partial class QueryPlanBuilder
             return bm;
         }
 
-        // Spatial/Vector/Search have their own field resolution paths and do not
-        // use fieldMeta — skip construction to avoid null FieldName assertions.
+        // Spatial/Vector/Search have their own field resolution paths.
         FieldMetadata fieldMeta = default;
         bool needsFieldMeta = clause.ClauseType != ClauseType.Spatial
             && clause.ClauseType != ClauseType.Vector
             && clause.ClauseType != ClauseType.Search;
         if (needsFieldMeta)
         {
-            bool useBuilderParams = builderParams != null;
-            if (useBuilderParams)
+            if (builderParams != null)
             {
                 string resolvedFieldName = clause.FieldName;
-                // For exact queries on auto-indexes, use the _exact field variant
                 if (clause.IsExact && builderParams.Metadata.IsDynamic)
                     resolvedFieldName = AutoIndexField.GetExactAutoIndexFieldName(resolvedFieldName);
                 fieldMeta = QueryBuilderHelper.GetFieldMetadata(in builderParams, resolvedFieldName, exact: clause.IsExact, hasBoost: builderParams.HasBoost);
@@ -338,86 +355,72 @@ internal static partial class QueryPlanBuilder
             }
         }
 
+        int packed = clause.PackedParamValue;
+
         switch (clause.ClauseType)
         {
             case ClauseType.Equals:
             case ClauseType.NotEquals:
-            {
-                // Use the value type to determine the right TermQuery overload
-                IQueryMatch eqMatch;
-                if (clause.TermValueType == ValueTokenType.Long
-                    && long.TryParse(clause.TermValue, out long eqLong))
-                    eqMatch = indexSearcher.TermQuery(fieldMeta, eqLong);
-                else if (clause.TermValueType == ValueTokenType.Double
-                    && double.TryParse(clause.TermValue,
-                        System.Globalization.NumberStyles.Float,
-                        System.Globalization.CultureInfo.InvariantCulture, out double eqDouble))
-                    eqMatch = indexSearcher.TermQuery(fieldMeta, eqDouble);
-                else
-                    eqMatch = indexSearcher.TermQuery(fieldMeta, clause.TermValue);
-                return eqMatch;
-            }
+                return TermQueryFromParam(packed, fieldMeta, indexSearcher, plan);
 
             case ClauseType.GreaterThan:
-                if (clause.TermValueType == ValueTokenType.Long
-                    && long.TryParse(clause.TermValue, out long gtLong))
-                    return indexSearcher.GreaterThanQuery(fieldMeta, gtLong);
-                if (clause.TermValueType == ValueTokenType.Double
-                    && double.TryParse(clause.TermValue, System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out double gtDouble))
-                    return indexSearcher.GreaterThanQuery(fieldMeta, gtDouble);
-                return indexSearcher.GreaterThanQuery(fieldMeta, clause.TermValue);
+            {
+                int idx = PackedParam.GetParam1(packed);
+                return PackedParam.GetValueType(packed) switch
+                {
+                    PackedParam.TypeLong => indexSearcher.GreaterThanQuery(fieldMeta, plan.LongValues[idx]),
+                    PackedParam.TypeDouble => indexSearcher.GreaterThanQuery(fieldMeta, plan.DoubleValues[idx]),
+                    _ => indexSearcher.GreaterThanQuery(fieldMeta, plan.StringValues[idx])
+                };
+            }
 
             case ClauseType.GreaterThanOrEqual:
-                if (clause.TermValueType == ValueTokenType.Long
-                    && long.TryParse(clause.TermValue, out long gteLong))
-                    return indexSearcher.GreatThanOrEqualsQuery(fieldMeta, gteLong);
-                if (clause.TermValueType == ValueTokenType.Double
-                    && double.TryParse(clause.TermValue, System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out double gteDouble))
-                    return indexSearcher.GreatThanOrEqualsQuery(fieldMeta, gteDouble);
-                return indexSearcher.GreatThanOrEqualsQuery(fieldMeta, clause.TermValue);
+            {
+                int idx = PackedParam.GetParam1(packed);
+                return PackedParam.GetValueType(packed) switch
+                {
+                    PackedParam.TypeLong => indexSearcher.GreatThanOrEqualsQuery(fieldMeta, plan.LongValues[idx]),
+                    PackedParam.TypeDouble => indexSearcher.GreatThanOrEqualsQuery(fieldMeta, plan.DoubleValues[idx]),
+                    _ => indexSearcher.GreatThanOrEqualsQuery(fieldMeta, plan.StringValues[idx])
+                };
+            }
 
             case ClauseType.LessThan:
-                if (clause.TermValueType == ValueTokenType.Long
-                    && long.TryParse(clause.TermValue, out long ltLong))
-                    return indexSearcher.LessThanQuery(fieldMeta, ltLong);
-                if (clause.TermValueType == ValueTokenType.Double
-                    && double.TryParse(clause.TermValue, System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out double ltDouble))
-                    return indexSearcher.LessThanQuery(fieldMeta, ltDouble);
-                return indexSearcher.LessThanQuery(fieldMeta, clause.TermValue);
+            {
+                int idx = PackedParam.GetParam1(packed);
+                return PackedParam.GetValueType(packed) switch
+                {
+                    PackedParam.TypeLong => indexSearcher.LessThanQuery(fieldMeta, plan.LongValues[idx]),
+                    PackedParam.TypeDouble => indexSearcher.LessThanQuery(fieldMeta, plan.DoubleValues[idx]),
+                    _ => indexSearcher.LessThanQuery(fieldMeta, plan.StringValues[idx])
+                };
+            }
 
             case ClauseType.LessThanOrEqual:
-                if (clause.TermValueType == ValueTokenType.Long
-                    && long.TryParse(clause.TermValue, out long lteLong))
-                    return indexSearcher.LessThanOrEqualsQuery(fieldMeta, lteLong);
-                if (clause.TermValueType == ValueTokenType.Double
-                    && double.TryParse(clause.TermValue, System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out double lteDouble))
-                    return indexSearcher.LessThanOrEqualsQuery(fieldMeta, lteDouble);
-                return indexSearcher.LessThanOrEqualsQuery(fieldMeta, clause.TermValue);
+            {
+                int idx = PackedParam.GetParam1(packed);
+                return PackedParam.GetValueType(packed) switch
+                {
+                    PackedParam.TypeLong => indexSearcher.LessThanOrEqualsQuery(fieldMeta, plan.LongValues[idx]),
+                    PackedParam.TypeDouble => indexSearcher.LessThanOrEqualsQuery(fieldMeta, plan.DoubleValues[idx]),
+                    _ => indexSearcher.LessThanOrEqualsQuery(fieldMeta, plan.StringValues[idx])
+                };
+            }
 
             case ClauseType.Between:
-                if (clause.TermValueType == ValueTokenType.Long
-                    && long.TryParse(clause.TermValue, out long btwLowLong)
-                    && long.TryParse(clause.TermValue2, out long btwHighLong))
-                    return indexSearcher.BetweenQuery(fieldMeta, btwLowLong, btwHighLong);
-                if (clause.TermValueType == ValueTokenType.Double
-                    && double.TryParse(clause.TermValue, System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out double btwLowDouble)
-                    && double.TryParse(clause.TermValue2, System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out double btwHighDouble))
-                    return indexSearcher.BetweenQuery(fieldMeta, btwLowDouble, btwHighDouble);
-                return indexSearcher.BetweenQuery(fieldMeta, clause.TermValue, clause.TermValue2);
+            {
+                int idx1 = PackedParam.GetParam1(packed);
+                int idx2 = PackedParam.GetParam2(packed);
+                return PackedParam.GetValueType(packed) switch
+                {
+                    PackedParam.TypeLong => indexSearcher.BetweenQuery(fieldMeta, plan.LongValues[idx1], plan.LongValues[idx2]),
+                    PackedParam.TypeDouble => indexSearcher.BetweenQuery(fieldMeta, plan.DoubleValues[idx1], plan.DoubleValues[idx2]),
+                    _ => indexSearcher.BetweenQuery(fieldMeta, plan.StringValues[idx1], plan.StringValues[idx2])
+                };
+            }
 
             case ClauseType.In:
             case ClauseType.AllIn:
-                // Normally In/AllIn terms are expanded into separate match slots by ResolveMatches
-                // (one slot per term, OR'd by the IL emitter). But when an In clause appears as a
-                // sub-clause inside an AndGroup (e.g. "WHERE (A AND field IN (x, y)) OR ..."),
-                // it reaches ResolveClause as a single unit and must become one IQueryMatch that
-                // covers all terms. Use InQuery which builds a TermsProviderMatch over InTermsProvider.
                 if (clause.InTerms is { Count: > 0 })
                     return indexSearcher.InQuery(fieldMeta, clause.InTerms);
                 return indexSearcher.EmptyMatch();
@@ -426,14 +429,13 @@ internal static partial class QueryPlanBuilder
                 return indexSearcher.ExistsQuery(fieldMeta);
 
             case ClauseType.StartsWith:
-                return indexSearcher.StartWithQuery(fieldMeta, clause.TermValue);
+                return indexSearcher.StartWithQuery(fieldMeta, plan.StringValues[PackedParam.GetParam1(packed)]);
 
             case ClauseType.EndsWith:
-                return indexSearcher.EndsWithQuery(fieldMeta, clause.TermValue);
+                return indexSearcher.EndsWithQuery(fieldMeta, plan.StringValues[PackedParam.GetParam1(packed)]);
 
             case ClauseType.Search:
             {
-                // Search needs proper field metadata with search analyzer
                 FieldMetadata searchMeta;
                 if (builderParams != null)
                 {
@@ -464,7 +466,6 @@ internal static partial class QueryPlanBuilder
                     searchMeta = fieldMeta;
                 }
 
-                // Determine SearchQueryOptions based on index version
                 var indexDef = builderParams?.Index?.Definition ?? parameters?.Index?.Definition;
                 IndexSearcher.SearchQueryOptions searchQueryOptions;
                 if (indexDef != null && IndexDefinitionBaseServerSide.IndexVersion.IsCoraxSearchWildcardAdjustmentSupported(indexDef.Version))
@@ -474,17 +475,15 @@ internal static partial class QueryPlanBuilder
                 else
                     searchQueryOptions = IndexSearcher.SearchQueryOptions.Legacy;
 
-                // For wildcard queries with WildcardAdjustments, replace the analyzer
-                // on the search metadata to handle wildcard prefix/suffix correctly.
+                var searchTerm = plan.StringValues[PackedParam.GetParam1(packed)];
                 if (searchQueryOptions == IndexSearcher.SearchQueryOptions.PhraseQueryWithWildcardAdjustments
-                    && clause.TermValue is { Length: >= 1 }
-                    && (clause.TermValue[0] == '*' || (clause.TermValue.Length >= 2 && clause.TermValue[^1] == '*')))
+                    && searchTerm is { Length: >= 1 }
+                    && (searchTerm[0] == '*' || (searchTerm.Length >= 2 && searchTerm[^1] == '*')))
                 {
                     searchMeta = ReplaceAnalyzerForWildcardQueries(searchMeta, builderParams, parameters);
                 }
 
-                // Split search value respecting quoted phrases (same as old CoraxQueryBuilder.GetValues)
-                var searchValues = SplitSearchTerms(clause.TermValue);
+                var searchValues = SplitSearchTerms(searchTerm);
 
                 return indexSearcher.SearchQuery(searchMeta,
                     searchValues,
@@ -494,7 +493,7 @@ internal static partial class QueryPlanBuilder
 
             case ClauseType.Regex:
                 return indexSearcher.RegexQuery(fieldMeta,
-                    new System.Text.RegularExpressions.Regex(clause.TermValue));
+                    new System.Text.RegularExpressions.Regex(plan.StringValues[PackedParam.GetParam1(packed)]));
 
             case ClauseType.Spatial:
             {
@@ -526,28 +525,17 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    /// <summary>Resolve a single IN term to a typed TermQuery (long, double, or string).
-    /// Uses <paramref name="termTypes"/> at <paramref name="termIndex"/> to pick the correct
-    /// numeric vs. string overload — avoids false long.TryParse matches for zero-padded
-    /// string values like "000001".</summary>
-    private static IQueryMatch ResolveInTerm(string fieldName, List<ValueTokenType> termTypes, int termIndex,
-        string term, IndexSearcher indexSearcher,
+    /// <summary>Resolve a single IN term to a typed TermQuery using the pre-resolved packed param.</summary>
+    private static IQueryMatch ResolveInTerm(ClauseInfo clause, int termIndex,
+        IndexSearcher indexSearcher, QueryPlan plan,
         PlanParameters parameters, QueryBuilderParameters builderParams)
     {
-        ValueTokenType termType = termTypes != null && termIndex < termTypes.Count
-            ? termTypes[termIndex]
-            : ValueTokenType.String;
-
         FieldMetadata fieldMeta = builderParams != null ?
-            QueryBuilderHelper.GetFieldMetadata(in builderParams, fieldName, hasBoost: builderParams.HasBoost) :
-            indexSearcher.FieldMetadataBuilder(fieldName, hasBoost: parameters?.HasBoost ?? false);
+            QueryBuilderHelper.GetFieldMetadata(in builderParams, clause.FieldName, hasBoost: builderParams.HasBoost) :
+            indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);
 
-        if (termType == ValueTokenType.Long && long.TryParse(term, out long lVal))
-            return indexSearcher.TermQuery(fieldMeta, lVal);
-        if (termType == ValueTokenType.Double && double.TryParse(term, System.Globalization.NumberStyles.Float,
-            System.Globalization.CultureInfo.InvariantCulture, out double dVal))
-            return indexSearcher.TermQuery(fieldMeta, dVal);
-        return indexSearcher.TermQuery(fieldMeta, term);
+        int packed = clause.InPackedParams[termIndex];
+        return TermQueryFromParam(packed, fieldMeta, indexSearcher, plan);
     }
 
     /// <summary>Create a pre-materialized <see cref="BitmapMatch"/> for a NotEquals clause
@@ -556,23 +544,11 @@ internal static partial class QueryPlanBuilder
     /// pre-compute AllEntries ANDNOT TermQuery(X) into a BitmapMatch so that FillFromMatch
     /// during execution correctly ORs in the set of entries NOT having X.</summary>
     private static IQueryMatch CreateNotEqualsOrMatch(ClauseInfo clause, IndexSearcher indexSearcher,
-        PlanParameters parameters, QueryBuilderParameters builderParams)
+        QueryPlan plan, PlanParameters parameters, QueryBuilderParameters builderParams)
     {
         FieldMetadata fieldMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
+        IQueryMatch termMatch = TermQueryFromParam(clause.PackedParamValue, fieldMeta, indexSearcher, plan);
 
-        IQueryMatch termMatch;
-        if (clause.TermValueType == ValueTokenType.Long
-            && long.TryParse(clause.TermValue, out long lVal))
-            termMatch = indexSearcher.TermQuery(fieldMeta, lVal);
-        else if (clause.TermValueType == ValueTokenType.Double
-            && double.TryParse(clause.TermValue, System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out double dVal))
-            termMatch = indexSearcher.TermQuery(fieldMeta, dVal);
-        else
-            termMatch = indexSearcher.TermQuery(fieldMeta, clause.TermValue);
-
-        // Materialize AllEntries ANDNOT excluded-term into a bitmap.
-        // FillFromMatch for the BitmapMatch result fast-paths via IBitmapQueryMatch.
         var bitmapMatch = new BitmapMatch(indexSearcher.Allocator);
         var tempData = new RoaringBitmap(indexSearcher.Allocator);
         QueryPrimitives.FillFromMatch(indexSearcher.AllEntries(), ref bitmapMatch.BitmapState);
@@ -607,12 +583,10 @@ internal static partial class QueryPlanBuilder
 
         // Standalone NotEquals: matches[0] = AllEntries (NOT a term source),
         // matches[1] = the negated term. Mirror that layout.
-        // !plan.AllNegated distinguishes this from the "true AND NOT expr" path (AllNegated=true).
         if (clauses.Count == 1 && clauses[0].IsNegated && !plan.AllNegated)
         {
             var sources = new TermSource[2];
-            // sources[0] stays Empty — AllEntries goes through DirectSources.
-            sources[1] = ResolveSingleTermSource(clauses[0], indexSearcher, parameters, builderParams);
+            sources[1] = ResolveSingleTermSource(clauses[0], indexSearcher, plan, parameters, builderParams);
             return sources;
         }
 
@@ -624,20 +598,16 @@ internal static partial class QueryPlanBuilder
             {
                 foreach (var sub in clause.OrSubClauses)
                 {
-                    // Boosting bypasses TermSource — Boost wraps the IQueryMatch and
-                    // expects to forward Score(). Keep boosted ops on the IQueryMatch
-                    // path so scores are computed correctly.
                     if (sub.BoostFactor > 0)
                     {
                         matchIdx++;
                         continue;
                     }
-                    termSources[matchIdx++] = ResolveSingleTermSource(sub, indexSearcher, parameters, builderParams);
+                    termSources[matchIdx++] = ResolveSingleTermSource(sub, indexSearcher, plan, parameters, builderParams);
                 }
             }
             else if (clause.ClauseType == ClauseType.AndGroup && clause.AndSubClauses != null)
             {
-                // Each AND subclause has its own TermSource slot, mirroring ResolveMatches.
                 foreach (var sub in clause.AndSubClauses)
                 {
                     if (sub.BoostFactor > 0)
@@ -645,13 +615,13 @@ internal static partial class QueryPlanBuilder
                         matchIdx++;
                         continue;
                     }
-                    termSources[matchIdx++] = ResolveSingleTermSource(sub, indexSearcher, parameters, builderParams);
+                    termSources[matchIdx++] = ResolveSingleTermSource(sub, indexSearcher, plan, parameters, builderParams);
                 }
             }
             else if ((clause.ClauseType == ClauseType.AllIn || clause.ClauseType == ClauseType.In) && clause.InTerms != null)
             {
                 for (int t = 0; t < clause.InTerms.Count; t++)
-                    termSources[matchIdx++] = ResolveInTermSource(clause, t, indexSearcher, parameters, builderParams);
+                    termSources[matchIdx++] = ResolveInTermSource(clause, t, indexSearcher, plan, parameters, builderParams);
             }
             else
             {
@@ -660,7 +630,7 @@ internal static partial class QueryPlanBuilder
                     matchIdx++;
                     continue;
                 }
-                termSources[matchIdx++] = ResolveSingleTermSource(clause, indexSearcher, parameters, builderParams);
+                termSources[matchIdx++] = ResolveSingleTermSource(clause, indexSearcher, plan, parameters, builderParams);
             }
         }
         // AllNegated extra slot is AllEntries — stays Empty in TermSources.
@@ -671,33 +641,13 @@ internal static partial class QueryPlanBuilder
     /// decode it into a <see cref="TermSource"/>. Returns Empty when the clause
     /// is non-term-shaped or the term doesn't exist in the index.</summary>
     private static TermSource ResolveSingleTermSource(ClauseInfo clause, IndexSearcher indexSearcher,
-        PlanParameters parameters, QueryBuilderParameters builderParams)
+        QueryPlan plan, PlanParameters parameters, QueryBuilderParameters builderParams)
     {
         if (IsTermSourceEligibleClause(clause) == false)
             return default; // Kind == Empty
 
         FieldMetadata fieldMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
-
-        long postingListId;
-        if (clause.TermValueType == ValueTokenType.Long
-            && long.TryParse(clause.TermValue, out long eqLong))
-        {
-            // GetTermPostingListId<long> internally calls GetNumericFieldMetadata<long>;
-            // pass the raw field metadata so we don't double-suffix the field name.
-            postingListId = indexSearcher.GetTermPostingListId(fieldMeta, eqLong);
-        }
-        else if (clause.TermValueType == ValueTokenType.Double
-            && double.TryParse(clause.TermValue,
-                System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out double eqDouble))
-        {
-            postingListId = indexSearcher.GetTermPostingListId(fieldMeta, eqDouble);
-        }
-        else
-        {
-            postingListId = indexSearcher.GetTermPostingListId(fieldMeta, clause.TermValue);
-        }
-
+        long postingListId = GetTermPostingListIdFromParam(clause.PackedParamValue, fieldMeta, indexSearcher, plan);
         return DecodePostingListId(postingListId, indexSearcher);
     }
 
@@ -707,33 +657,14 @@ internal static partial class QueryPlanBuilder
     /// overload — avoids the long.TryParse false-positive on zero-padded string
     /// values like "000001" (parses as 1L but is indexed as the string "000001").</summary>
     private static TermSource ResolveInTermSource(ClauseInfo clause, int termIndex, IndexSearcher indexSearcher,
-        PlanParameters parameters, QueryBuilderParameters builderParams)
+        QueryPlan plan, PlanParameters parameters, QueryBuilderParameters builderParams)
     {
-        string term = clause.InTerms[termIndex];
-        ValueTokenType termType = clause.InTermTypes != null && termIndex < clause.InTermTypes.Count
-            ? clause.InTermTypes[termIndex]
-            : ValueTokenType.String;
-
         FieldMetadata fieldMeta = builderParams != null ?
             QueryBuilderHelper.GetFieldMetadata(in builderParams, clause.FieldName, hasBoost: builderParams.HasBoost) :
             indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);
 
-        long postingListId;
-        if (termType == ValueTokenType.Long && long.TryParse(term, out long lVal))
-        {
-            postingListId = indexSearcher.GetTermPostingListId(fieldMeta, lVal);
-        }
-        else if (termType == ValueTokenType.Double && double.TryParse(term,
-            System.Globalization.NumberStyles.Float,
-            System.Globalization.CultureInfo.InvariantCulture, out double dVal))
-        {
-            postingListId = indexSearcher.GetTermPostingListId(fieldMeta, dVal);
-        }
-        else
-        {
-            postingListId = indexSearcher.GetTermPostingListId(fieldMeta, term);
-        }
-
+        int packed = clause.InPackedParams[termIndex];
+        long postingListId = GetTermPostingListIdFromParam(packed, fieldMeta, indexSearcher, plan);
         return DecodePostingListId(postingListId, indexSearcher);
     }
 
