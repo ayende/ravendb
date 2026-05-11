@@ -217,6 +217,7 @@ internal static partial class QueryPlanBuilder
         compiledPlanOut = compiledPlan;
         var resolvedMatches = ResolveMatches(plan, indexSearcher, planParams, builderParameters);
         var termSources = ResolveTermSources(plan, indexSearcher, planParams, builderParameters);
+        var termsProviders = ResolveTermsProviders(plan, indexSearcher, planParams, builderParameters);
         ExtractScanParameters(plan, indexSearcher,
             out var longParams, out var doubleParams, out var sliceParams, out var fieldRootPages);
 
@@ -224,7 +225,7 @@ internal static partial class QueryPlanBuilder
             PopulateHighlightingTerms(plan, highlightingTerms, planParams.Metadata);
 
         IQueryMatch result = new CompiledQueryMatch(
-            compiledPlan, plan.RequiredBitmaps, plan.Ops?.Length ?? 0, resolvedMatches, termSources, null,
+            compiledPlan, plan.RequiredBitmaps, plan.Ops?.Length ?? 0, resolvedMatches, termSources, termsProviders,
             longParams, doubleParams, sliceParams, fieldRootPages,
             indexSearcher, planParams.Allocator, wantTimings, token);
 
@@ -1172,6 +1173,134 @@ internal static partial class QueryPlanBuilder
         }
         // AllNegated extra slot is AllEntries — stays Empty in TermSources.
         return termSources;
+    }
+
+    /// <summary>Resolve TreeScan-eligible clauses to ITermsProvider instances for direct
+    /// tree-scan dispatch in the compiled pipeline. Slot indexing is parallel to
+    /// ResolveMatches/ResolveTermSources. Returns null if no TreeScan clauses exist.</summary>
+    private static ITermsProvider[] ResolveTermsProviders(QueryExecution plan, IndexSearcher indexSearcher,
+        PlanParameters parameters = null, QueryBuilderParameters builderParams = null)
+    {
+        if (plan.IsAllEntries || plan.Clauses is not { Count: > 0 } clauses)
+            return null;
+
+        var execs = plan.Executions;
+        bool hasAnyTreeScan = false;
+
+        // Quick check: do we have any TreeScan clauses at all?
+        for (int ci = 0; ci < clauses.Count; ci++)
+        {
+            var clause = clauses[ci];
+            var exec = execs != null && ci < execs.Length ? execs[ci] : null;
+
+            if (IsTreeScanEligibleClause(clause, exec))
+            {
+                hasAnyTreeScan = true;
+                break;
+            }
+
+            // Check subclauses
+            if (clause.OrSubClauses != null)
+            {
+                for (int si = 0; si < clause.OrSubClauses.Count; si++)
+                {
+                    var subExec = exec?.OrSubExecutions?[si];
+                    if (IsTreeScanEligibleClause(clause.OrSubClauses[si], subExec))
+                    {
+                        hasAnyTreeScan = true;
+                        break;
+                    }
+                }
+            }
+            if (hasAnyTreeScan) break;
+
+            if (clause.AndSubClauses != null)
+            {
+                for (int si = 0; si < clause.AndSubClauses.Count; si++)
+                {
+                    var subExec = exec?.AndSubExecutions?[si];
+                    if (IsTreeScanEligibleClause(clause.AndSubClauses[si], subExec))
+                    {
+                        hasAnyTreeScan = true;
+                        break;
+                    }
+                }
+            }
+            if (hasAnyTreeScan) break;
+        }
+
+        if (!hasAnyTreeScan)
+            return null;
+
+        int totalSlots = CountMatchSlots(clauses, execs, plan.IsAllEntries, plan.AllNegated);
+        var providers = new ITermsProvider[totalSlots];
+        int matchIdx = 0;
+
+        for (int ci = 0; ci < clauses.Count; ci++)
+        {
+            ClauseInfo clause = clauses[ci];
+            ClauseExecution exec = execs != null && ci < execs.Length ? execs[ci] : null;
+
+            switch (clause.ClauseType)
+            {
+                case ClauseType.OrGroup when clause.OrSubClauses is { Count: > 0 }:
+                    for (int si = 0; si < clause.OrSubClauses.Count; si++)
+                    {
+                        var sub = clause.OrSubClauses[si];
+                        var subExec = exec?.OrSubExecutions?[si];
+                        providers[matchIdx] = ResolveSingleTermsProvider(sub, subExec, indexSearcher, plan, parameters, builderParams);
+                        matchIdx++;
+                    }
+                    break;
+
+                case ClauseType.AndGroup when clause.AndSubClauses is { Count: > 0 }:
+                    for (int si = 0; si < clause.AndSubClauses.Count; si++)
+                    {
+                        var sub = clause.AndSubClauses[si];
+                        var subExec = exec?.AndSubExecutions?[si];
+                        providers[matchIdx] = ResolveSingleTermsProvider(sub, subExec, indexSearcher, plan, parameters, builderParams);
+                        matchIdx++;
+                    }
+                    break;
+
+                case ClauseType.AllIn or ClauseType.In:
+                    // IN terms use PostingList dispatch, not TreeScan
+                    matchIdx += (exec?.InTermCount ?? 0) + (exec is { HasNullTerm: true } ? 1 : 0);
+                    break;
+
+                default:
+                    providers[matchIdx] = ResolveSingleTermsProvider(clause, exec, indexSearcher, plan, parameters, builderParams);
+                    matchIdx++;
+                    break;
+            }
+        }
+
+        if (plan.AllNegated)
+            matchIdx++; // AllEntries slot — no provider needed
+
+        return providers;
+    }
+
+    /// <summary>Resolve a single TreeScan-eligible clause to its raw ITermsProvider.
+    /// Returns null for non-TreeScan clauses or when the field doesn't exist in the
+    /// index (factory method returned TermMatch.Empty instead of TermsProviderMatch).
+    /// Null slots cause the IL to fall through to the QueryMatch dispatch path.</summary>
+    private static ITermsProvider ResolveSingleTermsProvider(ClauseInfo clause, ClauseExecution exec,
+        IndexSearcher indexSearcher, QueryExecution plan, PlanParameters parameters, QueryBuilderParameters builderParams)
+    {
+        if (IsTreeScanEligibleClause(clause, exec) == false)
+            return null;
+
+        // Create the match via the existing factory methods, then extract the provider.
+        // The factory methods handle all complexity (analyzer, CompactKey, tree lookup).
+        var match = ResolveClause(clause, exec ?? new ClauseExecution(), indexSearcher, plan, parameters, builderParams);
+        if (match is TermsProviderMatch tpm)
+            return tpm.Provider;
+
+        // Factory returned something other than TermsProviderMatch (e.g. TermMatch.Empty
+        // when the field doesn't exist). Return an empty provider so the IL's TreeScan
+        // dispatch gets a valid (no-op) provider instead of null.
+        return EmptyTermsProviderInstance.Instance;
     }
 
     /// <summary>Resolve a single Equals / NotEquals clause to a posting-list ID and
@@ -2204,5 +2333,18 @@ internal static partial class QueryPlanBuilder
 
         if (value.Length - lastStart > 0)
             yield return value.Substring(lastStart, value.Length - lastStart);
+    }
+
+    /// <summary>Singleton no-op ITermsProvider for TreeScan slots where the field doesn't exist.
+    /// FillPostingListIds returns 0 immediately, so the bitmap op is a no-op.</summary>
+    private sealed class EmptyTermsProviderInstance : ITermsProvider
+    {
+        public static readonly EmptyTermsProviderInstance Instance = new();
+        public bool IsFillSupported => false;
+        public int Fill(Span<long> containers) => 0;
+        public int FillPostingListIds(Span<long> postingListIds) => 0;
+        public void Reset() { }
+        public bool Next(out TermMatch term) { term = default; return false; }
+        public QueryInspectionNode Inspect() => new("EmptyTermsProvider");
     }
 }

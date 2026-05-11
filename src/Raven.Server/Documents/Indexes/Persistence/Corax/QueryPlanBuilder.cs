@@ -1702,11 +1702,37 @@ internal static partial class QueryPlanBuilder
         return clause.ClauseType is ClauseType.Equals or ClauseType.NotEquals;
     }
 
+    /// <summary>TreeScan-eligible: multi-term clauses that have a direct ITermsProvider
+    /// (StartsWith, EndsWith, Exists, Regex, ranges). Boosted clauses go through QueryMatch
+    /// for scoring. Contains is excluded because its tree walk pattern doesn't benefit
+    /// from the direct dispatch (it walks the full tree regardless).</summary>
+    internal static bool IsTreeScanEligibleClause(ClauseInfo clause, ClauseExecution exec = null)
+    {
+        if (clause == null)
+            return false;
+        if (exec is { BoostFactor: > 0 })
+            return false;
+        if (clause.HasBoost)
+            return false;
+        return clause.ClauseType is ClauseType.StartsWith or ClauseType.EndsWith
+            or ClauseType.Exists or ClauseType.Regex
+            or ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
+            or ClauseType.LessThan or ClauseType.LessThanOrEqual
+            or ClauseType.Between;
+    }
+
     /// <summary>Resolve the <see cref="MatchDispatch"/> mode for a clause at plan-build time.
-    /// Equals / NotEquals (unboosted) → <c>PostingList</c> (native posting-list, no IQueryMatch wrapper).
+    /// Equals / NotEquals (unboosted) → <c>PostingList</c> (native posting-list).
+    /// Multi-term (unboosted) → <c>TreeScan</c> (direct ITermsProvider, no IQueryMatch wrapper).
     /// All other clause types → <c>QueryMatch</c> (IQueryMatch interface dispatch).</summary>
-    private static MatchDispatch GetDispatch(ClauseInfo clause, ClauseExecution exec = null) => 
-        IsTermSourceEligibleClause(clause, exec) ? MatchDispatch.PostingList : MatchDispatch.QueryMatch;
+    private static MatchDispatch GetDispatch(ClauseInfo clause, ClauseExecution exec = null)
+    {
+        if (IsTermSourceEligibleClause(clause, exec))
+            return MatchDispatch.PostingList;
+        if (IsTreeScanEligibleClause(clause, exec))
+            return MatchDispatch.TreeScan;
+        return MatchDispatch.QueryMatch;
+    }
 
     // ── Entry scan predicate building ────────────────────────────────────
 
