@@ -147,7 +147,6 @@ internal static partial class QueryPlanBuilder
         {
             plan = EmitPlan(clauses, executions, isOr);
         }
-        plan.IsOr = isOr;
         plan.LongValues = writer.GetLongs();
         plan.DoubleValues = writer.GetDoubles();
         plan.StringValues = writer.GetStrings();
