@@ -172,7 +172,7 @@ public class RankingFunctionTests : StorageTest
             HasBoost = true,
             Allocator = Allocator
         };
-        var match = QueryPlanBuilder.BuildAndCompile(planParams, null, long.MaxValue, out _, out _, null, default);
+        var match = QueryPlanBuilder.BuildAndCompile(planParams, null, long.MaxValue, out _, out _, null, false, default);
         match = QueryPlanBuilder.ApplyScoreOrdering(planParams, match, long.MaxValue);
         var list = new List<string>();
         Span<long> ids = stackalloc long[256];

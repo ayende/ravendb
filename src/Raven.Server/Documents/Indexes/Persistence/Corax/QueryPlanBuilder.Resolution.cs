@@ -59,6 +59,7 @@ internal static partial class QueryPlanBuilder
         out QueryExecution plan,
         out CompiledPlan compiledPlanOut,
         Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms,
+        bool wantTimings,
         CancellationToken token)
     {
         var indexSearcher = planParams.IndexSearcher;
@@ -228,7 +229,7 @@ internal static partial class QueryPlanBuilder
         IQueryMatch result = new CompiledQueryMatch(
             compiledPlan, plan.RequiredBitmaps, plan.Ops?.Length ?? 0, resolvedMatches, termSources, null,
             longParams, doubleParams, sliceParams, fieldRootPages,
-            indexSearcher, planParams.Allocator, token);
+            indexSearcher, planParams.Allocator, wantTimings, token);
 
         // Spatial post-filter phase: AND each spatial match with the candidate bitmap.
         if (plan.SpatialFilters is { Length: > 0 })
