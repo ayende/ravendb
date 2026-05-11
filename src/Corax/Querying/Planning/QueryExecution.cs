@@ -6,7 +6,7 @@ namespace Corax.Querying.Planning;
 public enum PlanOpKind : byte
 {
     /// <summary>Fill bitmap[0] from a term source, term provider, or IQueryMatch.
-    /// Dispatches to QueryPrimitives.FillBitmapFromPostingSource / FillBitmapFromTermsProvider / FillFromMatch
+    /// Dispatches to QueryPrimitives.FillBitmapFromPostingSource / FillBitmapFromTreeScan / FillFromMatch
     /// depending on <see cref="PlanOp.Dispatch"/>.</summary>
     FillFromPostings,
 

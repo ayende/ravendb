@@ -1290,7 +1290,7 @@ internal static partial class QueryPlanBuilder
                     if (isNotEqualsInOr)
                     {
                         // NotEquals in OR chain: OR of NOT(X) clauses cannot use the raw term posting list
-                        // (FillBitmapFromTermSource would add entries WITH X, not entries WITHOUT X).
+                        // (FillBitmapFromPostingSource would add entries WITH X, not entries WITHOUT X).
                         // Mark the clause so ResolveMatches creates AllEntries ANDNOT TermQuery instead.
                         it.IsOrChainNotEquals = true;
                     }
