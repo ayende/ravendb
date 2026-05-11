@@ -1629,7 +1629,7 @@ internal static partial class QueryPlanBuilder
         int execIdx = execs.Length;
         Array.Resize(ref execs, execs.Length + extraCount);
 
-        int matchIndex = CountMatchSlots(clauses, plan.Executions, plan.IsAllEntries, plan.AllNegated);
+        int matchIndex = CountMatchSlots(clauses, execs, plan.IsAllEntries, plan.AllNegated);
 
         if (spatialClauses != null)
         {
@@ -1655,6 +1655,8 @@ internal static partial class QueryPlanBuilder
                     Clause = vectorClauses[i], Exec = exec };
             }
         }
+
+        plan.Executions = execs;
     }
 
     /// <summary>Count how many IQueryMatch slots a clause list expands to.
