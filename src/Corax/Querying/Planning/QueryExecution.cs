@@ -64,6 +64,16 @@ public enum PlanOpKind : byte
 
     /// <summary>Swap contents of two bitmap slots. BitmapLocal = slot A, ParamIndex2 = slot B.</summary>
     SwapBitmaps,
+
+    /// <summary>OR a contiguous range of posting sources into bitmap[BitmapLocal].
+    /// ParamIndex = start index, ParamIndex2 = count. Emits a loop in IL.
+    /// Used for IN clauses to avoid one PlanOp per term.</summary>
+    OrRange,
+
+    /// <summary>AND a contiguous range of posting sources with bitmap[0].
+    /// ParamIndex = start index, ParamIndex2 = count. Emits a loop in IL with
+    /// empty-check after each (unless SkipEarlyExit). Used for AllIn clauses.</summary>
+    AndRange,
 }
 
 /// <summary>Selects the execution-time source for term ops in a <see cref="PlanOp"/>.</summary>

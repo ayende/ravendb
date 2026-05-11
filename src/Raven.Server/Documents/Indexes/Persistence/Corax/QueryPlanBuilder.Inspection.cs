@@ -209,6 +209,8 @@ internal static partial class QueryPlanBuilder
                     PlanOpKind.AndBitmaps => "AND-Bitmaps",
                     PlanOpKind.AndNotBitmaps => "ANDNOT-Bitmaps",
                     PlanOpKind.CheckAndMaybeEntryScan => "EntryScanCheck",
+                    PlanOpKind.OrRange => $"OR-Range({op.ParamIndex2} terms)",
+                    PlanOpKind.AndRange => $"AND-Range({op.ParamIndex2} terms)",
                     _ => op.Kind.ToString()
                 },
                 Dispatch = op.Dispatch switch { MatchDispatch.PostingList => "Term", MatchDispatch.TreeScan => "MultiTerm", _ => "Match" },
