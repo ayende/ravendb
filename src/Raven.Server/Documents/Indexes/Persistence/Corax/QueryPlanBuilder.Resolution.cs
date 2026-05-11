@@ -834,9 +834,9 @@ internal static partial class QueryPlanBuilder
                 int idx = packed.Param1;
                 return packed.ValueType switch
                 {
-                    PackedParam.TypeLong => indexSearcher.GreatThanOrEqualsQuery(fieldMeta, plan.LongValues[idx]),
-                    PackedParam.TypeDouble => indexSearcher.GreatThanOrEqualsQuery(fieldMeta, plan.DoubleValues[idx]),
-                    _ => indexSearcher.GreatThanOrEqualsQuery(fieldMeta, plan.StringValues[idx])
+                    PackedParam.TypeLong => indexSearcher.GreaterThanOrEqualsQuery(fieldMeta, plan.LongValues[idx]),
+                    PackedParam.TypeDouble => indexSearcher.GreaterThanOrEqualsQuery(fieldMeta, plan.DoubleValues[idx]),
+                    _ => indexSearcher.GreaterThanOrEqualsQuery(fieldMeta, plan.StringValues[idx])
                 };
             }
 

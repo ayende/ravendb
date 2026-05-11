@@ -144,7 +144,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         {
             // Bitmap-backed matches (CompiledQueryMatch) can avoid full materialization.
             // Walk the CompactTree index and intersect batches via AndWith, stopping early
-            // when the LIMIT is reached. This avoids MemoizationMatch's O(N) copy.
+            // when the LIMIT is reached — no full materialization needed.
             if (match._inner is IBitmapQueryMatch bitmapMatch)
             {
                 match.TotalResults = bitmapMatch.Count;
@@ -502,7 +502,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     /// <summary>
     /// Walk the CompactTree index in sorted order, intersecting each batch of entry IDs
     /// with the bitmap via AndWith. Stops early once _take results are collected.
-    /// Avoids the MemoizationMatch full materialization that SortUsingIndex requires.
+    /// Avoids full materialization by intersecting directly against the bitmap.
     /// </summary>
     private static void SortUsingIndexFromBitmap<TEntryComparer, TDirection>(
         SortingMatch<TInner> match, IBitmapQueryMatch bitmapMatch)
@@ -580,7 +580,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
 
     /// <summary>
     /// For sort types without an index to walk (score, spatial, alphanumeric, random),
-    /// materialize all bitmap entries directly (without MemoizationMatch overhead) and heap sort.
+    /// materialize all bitmap entries directly and heap sort.
     /// </summary>
     private static void SortResultsFromBitmap<TEntryComparer>(SortingMatch<TInner> match, IBitmapQueryMatch bitmapMatch)
         where TEntryComparer : struct, IEntryComparer, IComparer<UnmanagedSpan>

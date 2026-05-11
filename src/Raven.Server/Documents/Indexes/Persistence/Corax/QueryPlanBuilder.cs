@@ -22,7 +22,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 ///   QueryPlanBuilder.cs (this file) — structural
 ///     Data model (ClauseType, ClauseInfo, PlanParameters), RQL AST parsing,
 ///     cardinality estimation, plan emission (EmitPlan), dispatch classification.
-///     Output: a QueryExecution with PlanOp[] — cacheable, query-text-keyed.
+///     Output: a QueryExecution with PlanOp[] — per-execution, consumed by the IL delegate.
 ///
 ///   QueryPlanBuilder.Resolution.cs — per-execution
 ///     BuildAndCompile entry point, match/term-source resolution, scan parameter
@@ -183,8 +183,9 @@ internal static partial class QueryPlanBuilder
     private enum BooleanOp { And, Or, True, False, Leaf }
 
     /// <summary>Parse the RQL AST into a structural clause template.
-    /// No value resolution, no cardinality estimation, no sorting, no plan emission.
-    /// Those happen in BuildAndCompile after PopulateParameters.</summary>
+    /// Captures field names, clause types, parameter bindings, and literal values.
+    /// No cardinality estimation, no sorting, no plan emission.
+    /// Those happen in BuildAndCompile after PopulateClauseValues.</summary>
     public static ClauseTemplate ParseTemplate(PlanParameters p)
     {
         var query = p.Metadata.Query;
@@ -1019,6 +1020,20 @@ internal static partial class QueryPlanBuilder
 
     // ── Plan emission: clause list → PlanOp[] ────────────────────────────
 
+    /// <summary>Translate sorted clauses into a linear PlanOp[] sequence for IL emission.
+    ///
+    /// Bitmap slots:
+    ///   Slot 0 = main result bitmap (accumulates the final answer).
+    ///   Slot 1 = scratch bitmap (used for AND-chain non-seed IN terms and OR-group accumulation).
+    ///   Slot 2 = save slot (only allocated when an OR chain contains multiple AND-groups;
+    ///            used to save the prior OR accumulation while building a new AND sub-chain
+    ///            in slot 0 via SwapBitmaps(0,2), then ORed back).
+    ///
+    /// AND chain: first clause seeds slot 0 (FillFromPostings), subsequent clauses narrow it
+    /// (AndWithPostings/AndNotWithPostings). IN terms are ORed into slot 1, then ANDed with slot 0.
+    ///
+    /// OR chain: all terms are ORed into slot 0. AND-groups within an OR use the three-bitmap
+    /// swap pattern: save slot 0 → slot 2, build AND result in slot 0, OR slot 2 back.</summary>
     private static QueryExecution EmitPlan(List<ClauseInfo> clauses, ClauseExecution[] executions, bool isOr)
     {
         // Empty IN (InTermCount=0, no null terms) in an AND chain means zero results.

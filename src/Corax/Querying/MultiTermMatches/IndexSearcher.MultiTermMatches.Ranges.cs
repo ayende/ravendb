@@ -91,7 +91,7 @@ public partial class IndexSearcher
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public IQueryMatch GreatThanOrEqualsQuery<TValue>(in FieldMetadata field, TValue value, bool forward = true, bool streamingEnabled = false, long maxNumberOfTerms = long.MaxValue, CancellationToken token = default)
+    public IQueryMatch GreaterThanOrEqualsQuery<TValue>(in FieldMetadata field, TValue value, bool forward = true, bool streamingEnabled = false, long maxNumberOfTerms = long.MaxValue, CancellationToken token = default)
     {
         return GreatBuilder<Range.Inclusive, Range.Inclusive, TValue>(field, value, forward, streamingEnabled, maxNumberOfTerms, token: token);
     }

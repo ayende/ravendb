@@ -162,7 +162,7 @@ public static class QueryIlEmitter
             return EmptyExecute;
         }
 
-        // EXPLAIN pseudocode built in same pass as IL — cannot drift.
+        // EXPLAIN pseudocode built alongside IL emission.
         var explain = new StringBuilder();
         explain.AppendLine("// Compiled query — pseudocode mirroring the emitted IL.");
 
@@ -367,7 +367,6 @@ public static class QueryIlEmitter
                     il.Emit(OpCodes.Ldc_I4, op.BitmapLocal);
                     il.Emit(OpCodes.Call, orMethod);
 
-                    // j++
                     il.Emit(OpCodes.Ldloc, loopVar);
                     il.Emit(OpCodes.Ldc_I4_1);
                     il.Emit(OpCodes.Add);
@@ -464,7 +463,7 @@ public static class QueryIlEmitter
     /// collect matches into TempBitmap, swap bitmaps.
     /// The predicate checks are emitted as direct IL — no generic loop, no type switch.
     /// Each predicate's comparison kind (Numerical/Literal) is baked at emitting time.
-    /// The actual comparison values come from MultiUnaryItem structs in the context span.</summary>
+    /// The actual comparison values come from the typed parameter arrays (LongParams, DoubleParams, SliceParams).</summary>
     private static void EmitEntryScan(ILGenerator il, QueryExecution plan, LocalBuilder readLocal)
     {
         var predicates = plan.ScanPredicateInfos;
@@ -676,7 +675,9 @@ public static class QueryIlEmitter
     }
 
     /// <summary>Emit: reader.CurrentLong [op] ctx.LongParams[paramIndex] → bool on stack.
-    /// For Between: reader.CurrentLong >= LongParams[paramIndex] AND reader.CurrentLong &lt;= LongParams[paramIndex2].</summary>
+    /// For Between: reader.CurrentLong >= LongParams[paramIndex] AND reader.CurrentLong &lt;= LongParams[paramIndex2].
+    /// IL Cgt/Clt on longs use signed comparison, so long.MinValue &lt; long.MaxValue holds.
+    /// Between uses Blt/Bgt (signed branch) for the same reason — no overflow concern.</summary>
     private static void EmitLongComparison(ILGenerator il, in ScanPredicateInfo pred, LocalBuilder readerLocal)
     {
         if (pred.CompareOp == ScanCompareOp.Between)
@@ -749,7 +750,7 @@ public static class QueryIlEmitter
     }
 
     /// <summary>Emit: reader.Current.Decoded() [op] ctx.SliceParams[paramIndex].AsReadOnlySpan() → bool on stack.
-    /// Direct byte comparison — no MultiUnaryItem, no delegate indirection.
+    /// Direct byte comparison — inlined IL, no delegate indirection.
     /// For Equals: SequenceEqual. For ordered: SequenceCompareTo [op] 0.</summary>
     private static void EmitSliceComparison(ILGenerator il, in ScanPredicateInfo pred, LocalBuilder readerLocal)
     {
@@ -843,7 +844,6 @@ public static class QueryIlEmitter
         }
     }
 
-    /// <summary>Load ctx.LongParams[index] → long on stack.</summary>
     private static void EmitLoadLongParam(ILGenerator il, int index)
     {
         il.Emit(OpCodes.Ldarg_0);
@@ -852,7 +852,6 @@ public static class QueryIlEmitter
         il.Emit(OpCodes.Ldelem_I8);              // long
     }
 
-    /// <summary>Load ctx.DoubleParams[index] → double on stack.</summary>
     private static void EmitLoadDoubleParam(ILGenerator il, int index)
     {
         il.Emit(OpCodes.Ldarg_0);
@@ -893,8 +892,6 @@ public static class QueryIlEmitter
         }
     }
 
-    /// <summary>Load ref to bitmap data from ctx.Bitmaps[slot].
-    /// Array ldelema returns ref RoaringBitmap.</summary>
     private static void EmitLoadBitmapRef(ILGenerator il, int slot)
     {
         il.Emit(OpCodes.Ldarg_0);
@@ -903,8 +900,6 @@ public static class QueryIlEmitter
         il.Emit(OpCodes.Ldelema, typeof(RoaringBitmap)); // ref RoaringBitmap
     }
 
-    /// <summary>Load ctx._resolvedMatches[index] — pushes an IQueryMatch object reference on the stack.
-    /// Uses direct array element access (ldelem.ref).</summary>
     private static void EmitLoadMatch(ILGenerator il, int index)
     {
         il.Emit(OpCodes.Ldarg_0);
