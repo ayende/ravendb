@@ -98,12 +98,12 @@ public static class QueryPrimitives
     // Bitmap count threshold below which entry scan is considered cheaper than
     // bitmap AND with a posting list. Below this, individual entry blob reads
     // are cheaper than decoding the full posting list.
-    internal const long EntryScanCountThreshold = 32_000;
+    private const long EntryScanCountThreshold = 32 * 1024;
 
     // Cost multiplier: entry scan is chosen when bitmapCount * EntryScanCostMultiplier
     // is less than the posting list size. Approximates the relative cost of reading
     // entry blobs vs. decoding posting list pages.
-    internal const long EntryScanCostMultiplier = 64;
+    private const long EntryScanCostMultiplier = 64;
 
     /// <summary>
     /// Fill a bitmap from a posting list. Walks leaf pages, decodes PFor blocks,
@@ -363,7 +363,7 @@ public static class QueryPrimitives
     /// Single → Add; SmallPostingList → decode FastPFor buffer + AddRange;
     /// PostingList → <see cref="FillFromPostings"/>; Empty → no-op.</summary>
     [SkipLocalsInit]
-    public static void FillBitmapFromPostingSource(
+    private static void FillBitmapFromPostingSource(
         ref Planning.PostingSource source,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
@@ -396,7 +396,7 @@ public static class QueryPrimitives
     /// the smaller cases. Empty source clears the bitmap (intersection with
     /// nothing = nothing).</summary>
     [SkipLocalsInit]
-    public static void AndWithPostingSource(
+    private static void AndWithPostingSource(
         ref Planning.PostingSource source,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
@@ -442,7 +442,7 @@ public static class QueryPrimitives
     /// <summary>ANDNOT the bitmap with a TermSource (subtract). Empty source is
     /// a no-op (subtracting nothing).</summary>
     [SkipLocalsInit]
-    public static void AndNotWithPostingSource(
+    private static void AndNotWithPostingSource(
         ref Planning.PostingSource source,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
@@ -648,7 +648,7 @@ public static class QueryPrimitives
     /// <summary>AND the bitmap with the union of all posting lists produced by the term provider.
     /// Fills a scratch bitmap from the provider, then ANDs the result bitmap with it.
     /// If the provider produces no matches, the bitmap is cleared.</summary>
-    public static void AndBitmapWithTreeScan(
+    private static void AndBitmapWithTreeScan(
         ITermsProvider provider,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
@@ -668,7 +668,7 @@ public static class QueryPrimitives
 
     /// <summary>ANDNOT the bitmap with the union of all posting lists produced by the term provider
     /// (subtract matching entries). If the provider produces no matches, the bitmap is unchanged.</summary>
-    public static void AndNotBitmapWithTreeScan(
+    private static void AndNotBitmapWithTreeScan(
         ITermsProvider provider,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,

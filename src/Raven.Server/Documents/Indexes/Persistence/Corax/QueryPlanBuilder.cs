@@ -10,7 +10,6 @@ using Sparrow.Json;
 using Sparrow.Server;
 using Constants = Corax.Constants;
 using ClientConstants = Raven.Client.Constants;
-using SpatialUnits = Raven.Client.Documents.Indexes.Spatial.SpatialUnits;
 using IndexSearcher = Corax.Querying.IndexSearcher;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax;
@@ -77,19 +76,19 @@ internal static partial class QueryPlanBuilder
         private readonly List<double> _doubles = new();
         private readonly List<string> _strings = new();
 
-        public PackedParam AddLong(long value)
+        private PackedParam AddLong(long value)
         {
             _longs.Add(value);
             return new PackedParam(PackedParam.TypeLong, _longs.Count - 1);
         }
 
-        public PackedParam AddDouble(double value)
+        private PackedParam AddDouble(double value)
         {
             _doubles.Add(value);
             return new PackedParam(PackedParam.TypeDouble, _doubles.Count - 1);
         }
 
-        public PackedParam AddString(string value)
+        private PackedParam AddString(string value)
         {
             _strings.Add(value);
             return new PackedParam(PackedParam.TypeString, _strings.Count - 1);
@@ -156,8 +155,6 @@ internal static partial class QueryPlanBuilder
         public string[] GetStrings() => _strings.Count > 0 ? _strings.ToArray() : [];
     }
 
-    // ── Type mapping: Raven.Server ↔ Corax ─────────────────────────────
-
     private static ParamValueType ToParamValueType(ValueTokenType t) => t switch
     {
         ValueTokenType.Long => ParamValueType.Long,
@@ -184,8 +181,6 @@ internal static partial class QueryPlanBuilder
     };
 
     private enum BooleanOp { And, Or, True, False, Leaf }
-
-    // ── Entry point ──────────────────────────────────────────────────────
 
     /// <summary>Parse the RQL AST into a structural clause template.
     /// No value resolution, no cardinality estimation, no sorting, no plan emission.
@@ -218,17 +213,18 @@ internal static partial class QueryPlanBuilder
             List<ClauseInfo> spatialList = null, vectorList = null;
             for (int i = clauses.Count - 1; i >= 0; i--)
             {
-                if (clauses[i].ClauseType == ClauseType.Spatial)
+                switch (clauses[i].ClauseType)
                 {
-                    spatialList ??= [];
-                    spatialList.Add(clauses[i]);
-                    clauses.RemoveAt(i);
-                }
-                else if (clauses[i].ClauseType == ClauseType.Vector)
-                {
-                    vectorList ??= [];
-                    vectorList.Add(clauses[i]);
-                    clauses.RemoveAt(i);
+                    case ClauseType.Spatial:
+                        spatialList ??= [];
+                        spatialList.Add(clauses[i]);
+                        clauses.RemoveAt(i);
+                        break;
+                    case ClauseType.Vector:
+                        vectorList ??= [];
+                        vectorList.Add(clauses[i]);
+                        clauses.RemoveAt(i);
+                        break;
                 }
             }
             spatialClauses = spatialList?.ToArray();
@@ -256,8 +252,6 @@ internal static partial class QueryPlanBuilder
             VectorClauses = vectorClauses
         };
     }
-
-    // ── Parsing: RQL AST → flat clause list ──────────────────────────────
 
     private static BooleanOp ParseExpression(
         QueryExpression expr,
@@ -879,7 +873,7 @@ internal static partial class QueryPlanBuilder
         return (null, ValueTokenType.Null);
     }
 
-    /// <summary>Detect the native type of a resolved SCALAR parameter value.
+    /// <summary>Detect the native type of resolved SCALAR parameter value.
     /// Must not be called with arrays or blittable objects — callers must check
     /// and handle those before calling this method.</summary>
     private static (object Value, ValueTokenType Type) ResolveParameterValue(object value)
@@ -906,7 +900,7 @@ internal static partial class QueryPlanBuilder
                 return ((double)lnv, ValueTokenType.Double);
             default:
             {
-                var str = value.ToString();
+                var str = value?.ToString();
                 if (str is { Length: > 18 and < 35 } && str.Contains('T')
                     && DateTime.TryParse(str, System.Globalization.CultureInfo.InvariantCulture,
                         System.Globalization.DateTimeStyles.RoundtripKind, out var parsed))
@@ -928,55 +922,33 @@ internal static partial class QueryPlanBuilder
 
         if (ve.Value == ValueTokenType.Parameter)
             return new ParameterBinding { ParameterName = ve.Token.Value, LiteralType = ParamValueType.Parameter };
-
-        // Null literal — preserve as actual null, not the string "null"
-        if (ve.Value == ValueTokenType.Null)
-            return new ParameterBinding { LiteralValue = null, LiteralType = ParamValueType.String };
-
-        // Literal — resolve the constant value once
+        
         var value = ve.GetValue(queryParameters);
+        
+        if (ve.Value == ValueTokenType.Null || value is null)
+            return new ParameterBinding { LiteralValue = null, LiteralType = ParamValueType.String };
         if (value is bool b)
             return new ParameterBinding { LiteralValue = b ? "true" : "false", LiteralType = ParamValueType.String };
-        if (value == null)
-            return new ParameterBinding { LiteralValue = null, LiteralType = ParamValueType.String };
 
         var (resolved, resolvedType) = ResolveParameterValue(value);
         return new ParameterBinding { LiteralValue = resolved, LiteralType = ToParamValueType(resolvedType) };
     }
 
     /// <summary>Format a value from the plan's typed arrays as a string for display/highlighting.</summary>
-    internal static string FormatValueFromPlan(PackedParam packed, QueryExecution plan)
-    {
-        if (packed.IsNone) return null;
-        int idx = packed.Param1;
-        return packed.ValueType switch
-        {
-            PackedParam.TypeLong => plan.LongValues[idx].ToString(),
-            PackedParam.TypeDouble => plan.DoubleValues[idx].ToString(System.Globalization.CultureInfo.InvariantCulture),
-            _ => plan.StringValues[idx]
-        };
-    }
+    internal static string FormatValueFromPlan(PackedParam packed, QueryExecution plan) => FormatValueFromPlanInternal(packed, plan, packed.Param1);
 
     /// <summary>Format the second value (BETWEEN high bound) from the plan's typed arrays.</summary>
-    internal static string FormatValue2FromPlan(PackedParam packed, QueryExecution plan)
+    internal static string FormatValue2FromPlan(PackedParam packed, QueryExecution plan) => FormatValueFromPlanInternal(packed, plan, packed.Param2);
+    
+    private static string FormatValueFromPlanInternal(PackedParam packed, QueryExecution plan, int idx)
     {
-        if (packed.IsNone) return null;
-        int idx = packed.Param2;
-        if (idx == PackedParam.NoParamValue) return null;
+        if (idx is PackedParam.NoParamValue) return null;
         return packed.ValueType switch
         {
             PackedParam.TypeLong => plan.LongValues[idx].ToString(),
             PackedParam.TypeDouble => plan.DoubleValues[idx].ToString(System.Globalization.CultureInfo.InvariantCulture),
             _ => plan.StringValues[idx]
         };
-    }
-
-    /// <summary>Convenience: resolve and format as string in one call. Used by methods that
-    /// only need the string form (e.g. boost factor parsing).</summary>
-    private static string GetTermValue(QueryExpression expr, BlittableJsonReaderObject queryParameters)
-    {
-        var (value, _) = ResolveTermValue(expr, queryParameters);
-        return value?.ToString();
     }
 
     /// <summary>Resolve an IN value to its native type, handling booleans and dates.</summary>
