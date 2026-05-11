@@ -503,11 +503,11 @@ internal static partial class QueryPlanBuilder
             sp.DistanceErrorPct = depVal != null ? Convert.ToDouble(depVal) : -1;
         }
 
-        // SpatialParams.IsCircle is determined by the number of bindings:
+        // Shape type determined by the number of bindings:
         // circle has 5 (distErrPct, radius, lat, lng, units), WKT has 3 (distErrPct, wkt, units)
         if (bindings.Length >= BindingIndex.SpatialCircleBindingCount - 1) // circle: at least distErrPct + radius + lat + lng
         {
-            sp.IsCircle = true;
+            sp.ShapeType = SpatialShapeType.Circle;
             var (r, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialRadius], queryParameters);
             var (lat, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialLatitude], queryParameters);
             var (lng, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialLongitude], queryParameters);
@@ -1461,7 +1461,7 @@ internal static partial class QueryPlanBuilder
 
         // Build shape from pre-resolved parameters — no GetValue calls
         IShape shape;
-        if (sp.IsCircle)
+        if (sp.ShapeType == SpatialShapeType.Circle)
         {
             shape = spatialField.ReadCircle(sp.CircleRadius, sp.CircleLatitude,
                 sp.CircleLongitude, sp.Units.HasValue ? (sp.Units.Value == global::Corax.Utils.Spatial.SpatialUnits.Kilometers ? SpatialUnits.Kilometers : SpatialUnits.Miles) : (SpatialUnits?)null);
