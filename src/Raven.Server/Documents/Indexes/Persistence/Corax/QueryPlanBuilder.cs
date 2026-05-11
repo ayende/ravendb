@@ -72,9 +72,9 @@ internal static partial class QueryPlanBuilder
     /// </summary>
     private sealed class ValueWriter
     {
-        private readonly List<long> _longs = new();
-        private readonly List<double> _doubles = new();
-        private readonly List<string> _strings = new();
+        private readonly List<long> _longs = [];
+        private readonly List<double> _doubles = [];
+        private readonly List<string> _strings = [];
 
         private PackedParam AddLong(long value)
         {
@@ -829,7 +829,7 @@ internal static partial class QueryPlanBuilder
         return false;
     }
 
-    /// <summary>Detect the native type of a resolved SCALAR parameter value.
+    /// <summary>Detect the native type of resolved SCALAR parameter value.
     /// Must not be called with arrays or blittable objects — callers must check
     /// and handle those before calling this method.</summary>
     private static (object Value, ValueTokenType Type) ResolveParameterValue(object value)
@@ -1021,28 +1021,38 @@ internal static partial class QueryPlanBuilder
 
     private static QueryExecution EmitPlan(List<ClauseInfo> clauses, ClauseExecution[] executions, bool isOr)
     {
-        // Empty IN (InTermCount=0, no null terms) in an AND chain means zero results.
-        // In an OR chain, skip empty IN clauses (they contribute nothing).
-        for (int i = clauses.Count - 1; i >= 0; i--)
+        if (isOr is false)
         {
-            if (clauses[i].ClauseType is not (ClauseType.In or ClauseType.AllIn))
-                continue;
-            var exec = executions[i];
-            if (exec.InTermCount > 0 || exec.HasNullTerm)
-                continue;
-
-            if (isOr == false)
-                return new QueryExecution { Ops = [], IsAllEntries = false, Executions = executions };
-
-            clauses.RemoveAt(i);
-            // Rebuild executions array without the removed clause
-            var newExecs = new ClauseExecution[executions.Length - 1];
-            for (int j = 0, k = 0; j < executions.Length; j++)
-                if (j != i) newExecs[k++] = executions[j];
-            executions = newExecs;
+            // Empty IN clauses: zero results in AND, no-op in OR.
+            for (int i = 0; i < clauses.Count; i++)
+            {
+                if (clauses[i].ClauseType is ClauseType.In or ClauseType.AllIn &&
+                    executions[i] is { InTermCount: 0, HasNullTerm: false })
+                {
+                    return new QueryExecution { Ops = [], IsAllEntries = false, Executions = executions };
+                }
+            }
+        }
+        else
+        {
+            int write = 0;
+            for (int i = 0; i < clauses.Count; i++)
+            {
+                if (clauses[i].ClauseType is ClauseType.In or ClauseType.AllIn &&
+                    executions[i] is { InTermCount: 0, HasNullTerm: false })
+                    continue;
+                clauses[write] = clauses[i];
+                executions[write] = executions[i];
+                write++;
+            }
+            if (write < clauses.Count)
+            {
+                clauses.RemoveRange(write, clauses.Count - write);
+                executions = executions[..write];
+            }
         }
 
-        var ops = new List<PlanOp>();
+        List<PlanOp> ops = [];
         bool needsThreeBitmaps = false;
 
         if (isOr)
@@ -1053,344 +1063,344 @@ internal static partial class QueryPlanBuilder
             {
                 var it = clauses[ci];
                 var itExec = executions[ci];
-                if ((it.ClauseType == ClauseType.In || it.ClauseType == ClauseType.AllIn) && (itExec.InTermCount > 0 || itExec.HasNullTerm))
+                switch (it.ClauseType)
                 {
-                    EmitInOps(ops, itExec, bitmapLocal: 0, isSeed: matchIndex == 0, ref matchIndex);
-                }
-                else if (it.ClauseType == ClauseType.OrGroup && it.OrSubClauses != null)
-                {
-                    for (int si = 0; si < it.OrSubClauses.Count; si++)
+                    case ClauseType.In or ClauseType.AllIn when (itExec.InTermCount > 0 || itExec.HasNullTerm):
+                        EmitInOps(ops, itExec, bitmapLocal: 0, isSeed: matchIndex == 0, ref matchIndex);
+                        break;
+                    case ClauseType.OrGroup when it.OrSubClauses is {Count: > 0}:
                     {
-                        var sub = it.OrSubClauses[si];
-                        var subExec = itExec.OrSubExecutions[si];
+                        for (int si = 0; si < it.OrSubClauses.Count; si++)
+                        {
+                            var sub = it.OrSubClauses[si];
+                            var subExec = itExec.OrSubExecutions[si];
+                            ops.Add(new PlanOp
+                            {
+                                Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
+                                ParamIndex = matchIndex,
+                                EstimatedCardinality = itExec.Cardinality / it.OrSubClauses.Count,
+                                Dispatch = GetDispatch(sub, subExec)
+                            });
+                            matchIndex++;
+                        }
+
+                        break;
+                    }
+                    case ClauseType.AndGroup when it.AndSubClauses is { Count: > 0}:
+                    {
+                        // AND sub-expression inside an OR chain.
+                        // Only supported when the AND group is the first element (matchIndex == 0)
+                        // or can be merged into slot 0 via OrBitmaps after computing into slot 1.
+                        var subClauses = it.AndSubClauses;
+                        var subExecs = itExec.AndSubExecutions;
+                        if (matchIndex == 0)
+                        {
+                            // First element: build the AND chain directly in slot 0.
+                            // Slot 1 is free (unused), so AndWithPostings can use it as scratch.
+                            // Suppress early-exit on AND steps — the OR chain continues regardless.
+                            ops.Add(new PlanOp
+                            {
+                                Kind = PlanOpKind.FillFromPostings,
+                                ParamIndex = matchIndex,
+                                EstimatedCardinality = subExecs[0].Cardinality,
+                                Dispatch = GetDispatch(subClauses[0], subExecs[0])
+                            });
+                            for (int s = 1; s < subClauses.Count; s++)
+                            {
+                                ops.Add(new PlanOp
+                                {
+                                    Kind = subClauses[s].IsNegated ? PlanOpKind.AndNotWithPostings : PlanOpKind.AndWithPostings,
+                                    ParamIndex = matchIndex + s,
+                                    EstimatedCardinality = subExecs[s].Cardinality,
+                                    Dispatch = GetDispatch(subClauses[s], subExecs[s]),
+                                    SkipEarlyExit = true // don't abort on empty — remaining OR terms may still match
+                                });
+                            }
+                        }
+                        else
+                        {
+                            // Non-first AND group: save the accumulated OR result (slot 0) to slot 2,
+                            // build this AND sub-chain fresh in slot 0, then OR slot 2 back.
+                            needsThreeBitmaps = true;
+                            // Uses SwapBitmaps(0, 2): slot 0 ↔ slot 2.
+                            // Slot 2 must have been cleared before the swap (it's either the initial
+                            // empty state or was cleared at the end of the previous iteration).
+                            ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 1 });
+                            ops.Add(new PlanOp
+                            {
+                                Kind = PlanOpKind.SwapBitmaps,
+                                BitmapLocal = 0,
+                                ParamIndex2 = 2
+                            });
+                            // Slot 0 is now fresh (was slot 2 = cleared); slot 2 = prior OR accumulation.
+                            ops.Add(new PlanOp
+                            {
+                                Kind = PlanOpKind.FillFromPostings,
+                                ParamIndex = matchIndex,
+                                EstimatedCardinality = subExecs[0].Cardinality,
+                                Dispatch = GetDispatch(subClauses[0], subExecs[0])
+                            });
+                            for (int s = 1; s < subClauses.Count; s++)
+                            {
+                                ops.Add(new PlanOp
+                                {
+                                    Kind = subClauses[s].IsNegated ? PlanOpKind.AndNotWithPostings : PlanOpKind.AndWithPostings,
+                                    ParamIndex = matchIndex + s,
+                                    BitmapLocal = 0,
+                                    EstimatedCardinality = subExecs[s].Cardinality,
+                                    Dispatch = GetDispatch(subClauses[s], subExecs[s]),
+                                    SkipEarlyExit = true // don't abort — OR chain continues
+                                });
+                            }
+                            ops.Add(new PlanOp
+                            {
+                                Kind = PlanOpKind.OrBitmaps,
+                                BitmapLocal = 0,
+                                ParamIndex2 = 2
+                            });
+                            ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 2 });
+                        }
+                        matchIndex += subClauses.Count;
+                        break;
+                    }
+                    default:
+                    {
+                        bool isNotEqualsInOr = it.ClauseType == ClauseType.NotEquals;
+                        if (isNotEqualsInOr)
+                        {
+                            // NotEquals in OR chain: OR of NOT(X) clauses cannot use the raw term posting list
+                            // (FillBitmapFromPostingSource would add entries WITH X, not entries WITHOUT X).
+                            // Mark the clause so ResolveMatches creates AllEntries ANDNOT TermQuery instead.
+                            it.IsOrChainNotEquals = true;
+                        }
                         ops.Add(new PlanOp
                         {
                             Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex,
-                            EstimatedCardinality = itExec.Cardinality / it.OrSubClauses.Count,
-                            Dispatch = GetDispatch(sub, subExec)
+                            EstimatedCardinality = itExec.Cardinality,
+                            Dispatch = isNotEqualsInOr ? MatchDispatch.QueryMatch : GetDispatch(it, itExec)
                         });
                         matchIndex++;
-                    }
-                }
-                else if (it.ClauseType == ClauseType.AndGroup && it.AndSubClauses != null)
-                {
-                    // AND sub-expression inside an OR chain.
-                    // Only supported when the AND group is the first element (matchIndex == 0)
-                    // or can be merged into slot 0 via OrBitmaps after computing into slot 1.
-                    var subClauses = it.AndSubClauses;
-                    var subExecs = itExec.AndSubExecutions;
-                    if (matchIndex == 0)
-                    {
-                        // First element: build the AND chain directly in slot 0.
-                        // Slot 1 is free (unused) so AndWithPostings can use it as scratch.
-                        // Suppress early-exit on AND steps — the OR chain continues regardless.
-                        ops.Add(new PlanOp
-                        {
-                            Kind = PlanOpKind.FillFromPostings,
-                            ParamIndex = matchIndex,
-                            EstimatedCardinality = subExecs[0].Cardinality,
-                            Dispatch = GetDispatch(subClauses[0], subExecs[0])
-                        });
-                        for (int s = 1; s < subClauses.Count; s++)
-                        {
-                            ops.Add(new PlanOp
-                            {
-                                Kind = subClauses[s].IsNegated ? PlanOpKind.AndNotWithPostings : PlanOpKind.AndWithPostings,
-                                ParamIndex = matchIndex + s,
-                                EstimatedCardinality = subExecs[s].Cardinality,
-                                Dispatch = GetDispatch(subClauses[s], subExecs[s]),
-                                SkipEarlyExit = true // don't abort on empty — remaining OR terms may still match
-                            });
-                        }
-                    }
-                    else
-                    {
-                        // Non-first AND group: save the accumulated OR result (slot 0) to slot 2,
-                        // build this AND sub-chain fresh in slot 0, then OR slot 2 back.
-                        needsThreeBitmaps = true;
-                        // Uses SwapBitmaps(0, 2): slot 0 ↔ slot 2.
-                        // Slot 2 must have been cleared before the swap (it's either the initial
-                        // empty state, or was cleared at the end of the previous iteration).
-                        ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 1 });
-                        ops.Add(new PlanOp
-                        {
-                            Kind = PlanOpKind.SwapBitmaps,
-                            BitmapLocal = 0,
-                            ParamIndex2 = 2
-                        });
-                        // Slot 0 is now fresh (was slot 2 = cleared); slot 2 = prior OR accumulation.
-                        ops.Add(new PlanOp
-                        {
-                            Kind = PlanOpKind.FillFromPostings,
-                            ParamIndex = matchIndex,
-                            EstimatedCardinality = subExecs[0].Cardinality,
-                            Dispatch = GetDispatch(subClauses[0], subExecs[0])
-                        });
-                        for (int s = 1; s < subClauses.Count; s++)
-                        {
-                            ops.Add(new PlanOp
-                            {
-                                Kind = subClauses[s].IsNegated ? PlanOpKind.AndNotWithPostings : PlanOpKind.AndWithPostings,
-                                ParamIndex = matchIndex + s,
-                                BitmapLocal = 0,
-                                EstimatedCardinality = subExecs[s].Cardinality,
-                                Dispatch = GetDispatch(subClauses[s], subExecs[s]),
-                                SkipEarlyExit = true // don't abort — OR chain continues
-                            });
-                        }
-                        ops.Add(new PlanOp
-                        {
-                            Kind = PlanOpKind.OrBitmaps,
-                            BitmapLocal = 0,
-                            ParamIndex2 = 2
-                        });
-                        ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 2 });
-                    }
-                    matchIndex += subClauses.Count;
-                }
-                else
-                {
-                    bool isNotEqualsInOr = it.ClauseType == ClauseType.NotEquals;
-                    if (isNotEqualsInOr)
-                    {
-                        // NotEquals in OR chain: OR of NOT(X) clauses cannot use the raw term posting list
-                        // (FillBitmapFromPostingSource would add entries WITH X, not entries WITHOUT X).
-                        // Mark the clause so ResolveMatches creates AllEntries ANDNOT TermQuery instead.
-                        it.IsOrChainNotEquals = true;
-                    }
-                    ops.Add(new PlanOp
-                    {
-                        Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
-                        ParamIndex = matchIndex,
-                        EstimatedCardinality = itExec.Cardinality,
-                        Dispatch = isNotEqualsInOr ? MatchDispatch.QueryMatch : GetDispatch(it, itExec)
-                    });
-                    matchIndex++;
-                }
-            }
-            ops.Add(new PlanOp { Kind = PlanOpKind.IterateInto });
-        }
-        else if (clauses.Count == 1 && clauses[0].ClauseType == ClauseType.Equals && clauses[0].IsNegated == false)
-        {
-            ops.Add(new PlanOp
-            {
-                Kind = PlanOpKind.DirectIterate,
-                ParamIndex = 0,
-                EstimatedCardinality = executions[0].Cardinality,
-                Dispatch = GetDispatch(clauses[0], executions[0])
-            });
-        }
-        else if (clauses.Count == 1 && (clauses[0].ClauseType == ClauseType.NotEquals
-            || (clauses[0].ClauseType == ClauseType.Equals && clauses[0].IsNegated)))
-        {
-            ops.Add(new PlanOp
-            {
-                Kind = PlanOpKind.FillFromPostings,
-                ParamIndex = 0, // Will be resolved to AllEntries
-                EstimatedCardinality = long.MaxValue // AllEntries — exact count not needed for plan
-            });
-            ops.Add(new PlanOp
-            {
-                Kind = PlanOpKind.AndNotWithPostings,
-                ParamIndex = 1, // Will be resolved to the negated term
-                EstimatedCardinality = executions[0].Cardinality,
-                Dispatch = GetDispatch(clauses[0], executions[0])
-            });
-            ops.Add(new PlanOp { Kind = PlanOpKind.IterateInto });
-
-            // Mark clause so ResolveMatches produces [AllEntries, TermMatch]
-            clauses[0].IsNegated = true;
-
-            return new QueryExecution
-            {
-                Ops = ops.ToArray(),
-                OperandOrdering = 0,
-                Clauses = clauses,
-                Executions = executions
-            };
-        }
-        else
-        {
-            // AND chain: Fill the smallest non-negated, then AndWith/AndNotWith remaining.
-            // If the first clause is negated (all clauses are negated), we need to
-            // start from AllEntries and ANDNOT each one.
-            bool firstIsNegated = clauses[0].IsNegated || clauses[0].ClauseType == ClauseType.NotEquals;
-            int startIndex;
-
-            if (firstIsNegated)
-            {
-                // All clauses are negated — start from all entries.
-                // AllEntries match is appended AFTER all clause-expanded matches by ResolveMatches.
-                ops.Add(new PlanOp
-                {
-                    Kind = PlanOpKind.FillFromPostings,
-                    ParamIndex = CountMatchSlots(clauses, executions, isAllEntries: false, allNegated: false), // Index of AllEntries in resolved matches
-                    EstimatedCardinality = long.MaxValue
-                });
-                startIndex = 0; // Process all clauses as ANDNOT
-            }
-            else
-            {
-                startIndex = 1;
-            }
-
-            int matchIndex = 0;
-            if (!firstIsNegated)
-            {
-                if (clauses[0].ClauseType == ClauseType.OrGroup && clauses[0].OrSubClauses != null)
-                {
-                    var subClauses = clauses[0].OrSubClauses;
-                    var subExecs = executions[0].OrSubExecutions;
-                    for (int s = 0; s < subClauses.Count; s++)
-                    {
-                        ops.Add(new PlanOp
-                        {
-                            Kind = s == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
-                            ParamIndex = matchIndex + s,
-                            BitmapLocal = 0,
-                            EstimatedCardinality = subExecs[s].Cardinality,
-                            Dispatch = GetDispatch(subClauses[s], subExecs[s])
-                        });
-                    }
-                    matchIndex += subClauses.Count;
-                }
-                else if (clauses[0].ClauseType == ClauseType.In && (executions[0].InTermCount > 0 || executions[0].HasNullTerm))
-                {
-                    EmitInOps(ops, executions[0], bitmapLocal: 0, isSeed: true, ref matchIndex);
-                }
-                else if (clauses[0].ClauseType == ClauseType.AllIn && executions[0].InTermCount > 0)
-                {
-                    EmitAllInOps(ops, executions[0], ref matchIndex);
-                }
-                else
-                {
-                    ops.Add(new PlanOp
-                    {
-                        Kind = PlanOpKind.FillFromPostings,
-                        ParamIndex = 0,
-                        EstimatedCardinality = executions[0].Cardinality,
-                        Dispatch = GetDispatch(clauses[0], executions[0])
-                    });
-                    matchIndex = 1;
-                }
-            }
-            // Precheck: can all remaining clauses be converted to entry scan predicates?
-            // If any clause (In, AllIn, Spatial, Vector, Search, etc.) can't be scanned,
-            // we must not emit CheckAndMaybeEntryScan — entry scan would skip them entirely.
-            bool allScanEligible = true;
-            {
-                int dummyL = 0, dummyD = 0, dummyS = 0;
-                for (int j = startIndex; j < clauses.Count; j++)
-                {
-                    if (BuildScanPredicateInfo(clauses[j], executions[j], ref dummyL, ref dummyD, ref dummyS) == null)
-                    {
-                        allScanEligible = false;
                         break;
                     }
                 }
             }
+            ops.Add(new PlanOp { Kind = PlanOpKind.IterateInto });
+        }
+        else switch (clauses.Count)
+        {
+            case 1 when clauses[0].ClauseType == ClauseType.Equals && clauses[0].IsNegated is false:
+                ops.Add(new PlanOp
+                {
+                    Kind = PlanOpKind.DirectIterate,
+                    ParamIndex = 0,
+                    EstimatedCardinality = executions[0].Cardinality,
+                    Dispatch = GetDispatch(clauses[0], executions[0])
+                });
+                break;
+            case 1 when clauses[0].ClauseType == ClauseType.NotEquals
+                        || (clauses[0].ClauseType == ClauseType.Equals && clauses[0].IsNegated):
+                ops.Add(new PlanOp
+                {
+                    Kind = PlanOpKind.FillFromPostings,
+                    ParamIndex = 0, // Will be resolved to AllEntries
+                    EstimatedCardinality = long.MaxValue // AllEntries — exact count not needed for plan
+                });
+                ops.Add(new PlanOp
+                {
+                    Kind = PlanOpKind.AndNotWithPostings,
+                    ParamIndex = 1, // Will be resolved to the negated term
+                    EstimatedCardinality = executions[0].Cardinality,
+                    Dispatch = GetDispatch(clauses[0], executions[0])
+                });
+                ops.Add(new PlanOp { Kind = PlanOpKind.IterateInto });
 
-            for (int i = startIndex; i < clauses.Count; i++)
+                // Mark clause so ResolveMatches produces [AllEntries, TermMatch]
+                clauses[0].IsNegated = true;
+
+                return new QueryExecution
+                {
+                    Ops = ops.ToArray(),
+                    OperandOrdering = 0,
+                    Clauses = clauses,
+                    Executions = executions
+                };
+            default:
             {
-                var iExec = executions[i];
-                // Goto check before each AND step — only if all remaining clauses
-                // can be handled by entry scan predicates
-                if (allScanEligible)
+                // AND chain: Fill the smallest non-negated, then AndWith/AndNotWith remaining.
+                // If the first clause is negated (all clauses are negated), we need to
+                // start from AllEntries and ANDNOT each one.
+                bool firstIsNegated = clauses[0].IsNegated || clauses[0].ClauseType == ClauseType.NotEquals;
+                int startIndex;
+
+                if (firstIsNegated)
                 {
+                    // All clauses are negated — start from all entries.
+                    // AllEntries match is appended AFTER all clause-expanded matches by ResolveMatches.
                     ops.Add(new PlanOp
                     {
-                        Kind = PlanOpKind.CheckAndMaybeEntryScan,
-                        ParamIndex = matchIndex
+                        Kind = PlanOpKind.FillFromPostings,
+                        ParamIndex = CountMatchSlots(clauses, executions, isAllEntries: false, allNegated: false), // Index of AllEntries in resolved matches
+                        EstimatedCardinality = long.MaxValue
                     });
-                }
-
-                if (clauses[i].ClauseType == ClauseType.OrGroup && clauses[i].OrSubClauses != null)
-                {
-                    // OrGroup: OR sub-clauses into bitmap[1], then AND with bitmap[0]
-                    var subClauses = clauses[i].OrSubClauses;
-                    var subExecs = iExec.OrSubExecutions;
-
-                    // Clear bitmap[1] (OR accumulator)
-                    ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 1 });
-
-                    // Fill each sub-clause into bitmap[1]
-                    for (int s = 0; s < subClauses.Count; s++)
-                    {
-                        ops.Add(new PlanOp
-                        {
-                            Kind = PlanOpKind.OrWithPostings,
-                            ParamIndex = matchIndex + s,
-                            BitmapLocal = 1, // target bitmap[1]
-                            EstimatedCardinality = subExecs[s].Cardinality,
-                            Dispatch = GetDispatch(subClauses[s], subExecs[s])
-                        });
-                    }
-
-                    // AND bitmap[1] into bitmap[0]
-                    ops.Add(new PlanOp
-                    {
-                        Kind = PlanOpKind.AndBitmaps,
-                        BitmapLocal = 0,   // target
-                        ParamIndex2 = 1    // source (reuse ParamIndex2 for source bitmap)
-                    });
-
-                    // Early exit check
-                    ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
-
-                    matchIndex += subClauses.Count;
-                }
-                else if (clauses[i].ClauseType == ClauseType.In && (iExec.InTermCount > 0 || iExec.HasNullTerm))
-                {
-                    // OR all IN terms into bitmap[1], then AND (or ANDNOT) with bitmap[0].
-                    // isSeed: false — FillFromPostings always targets bitmap[0], so we use
-                    // OrRange which respects bitmapLocal. Bitmap[1] is freshly cleared.
-                    ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 1 });
-                    EmitInOps(ops, iExec, bitmapLocal: 1, isSeed: false, ref matchIndex);
-                    ops.Add(new PlanOp
-                    {
-                        Kind = clauses[i].IsNegated ? PlanOpKind.AndNotBitmaps : PlanOpKind.AndBitmaps,
-                        BitmapLocal = 0,
-                        ParamIndex2 = 1
-                    });
-                    if (!clauses[i].IsNegated)
-                        ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
-                }
-                else if (clauses[i].ClauseType == ClauseType.AllIn && iExec.InTermCount > 0)
-                {
-                    ops.Add(new PlanOp
-                    {
-                        Kind = PlanOpKind.AndRange,
-                        ParamIndex = matchIndex,
-                        ParamIndex2 = iExec.InTermCount,
-                        BitmapLocal = 0,
-                        EstimatedCardinality = iExec.Cardinality,
-                        Dispatch = MatchDispatch.PostingList
-                    });
-                    matchIndex += iExec.InTermCount;
+                    startIndex = 0; // Process all clauses as ANDNOT
                 }
                 else
                 {
-                    // Simple clause: AND or ANDNOT with bitmap[0]
-                    var isNegated = clauses[i].IsNegated || clauses[i].ClauseType == ClauseType.NotEquals;
-                    var andKind = isNegated ? PlanOpKind.AndNotWithPostings : PlanOpKind.AndWithPostings;
-                    ops.Add(new PlanOp
-                    {
-                        Kind = andKind,
-                        ParamIndex = matchIndex,
-                        BitmapLocal = 0,
-                        EstimatedCardinality = iExec.Cardinality,
-                        Dispatch = GetDispatch(clauses[i], iExec)
-                    });
-
-                    if (!isNegated)
-                        ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
-
-                    matchIndex++;
+                    startIndex = 1;
                 }
-            }
 
-            ops.Add(new PlanOp { Kind = PlanOpKind.IterateInto });
+                int matchIndex = 0;
+                if (!firstIsNegated)
+                {
+                    switch (clauses[0].ClauseType)
+                    {
+                        case ClauseType.OrGroup when clauses[0].OrSubClauses != null:
+                        {
+                            var subClauses = clauses[0].OrSubClauses;
+                            var subExecs = executions[0].OrSubExecutions;
+                            for (int s = 0; s < subClauses.Count; s++)
+                            {
+                                ops.Add(new PlanOp
+                                {
+                                    Kind = s == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
+                                    ParamIndex = matchIndex + s,
+                                    BitmapLocal = 0,
+                                    EstimatedCardinality = subExecs[s].Cardinality,
+                                    Dispatch = GetDispatch(subClauses[s], subExecs[s])
+                                });
+                            }
+                            matchIndex += subClauses.Count;
+                            break;
+                        }
+                        case ClauseType.In when executions[0].InTermCount > 0 || executions[0].HasNullTerm:
+                            EmitInOps(ops, executions[0], bitmapLocal: 0, isSeed: true, ref matchIndex);
+                            break;
+                        case ClauseType.AllIn when executions[0].InTermCount > 0:
+                            EmitAllInOps(ops, executions[0], ref matchIndex);
+                            break;
+                        default:
+                            ops.Add(new PlanOp
+                            {
+                                Kind = PlanOpKind.FillFromPostings,
+                                ParamIndex = 0,
+                                EstimatedCardinality = executions[0].Cardinality,
+                                Dispatch = GetDispatch(clauses[0], executions[0])
+                            });
+                            matchIndex = 1;
+                            break;
+                    }
+                }
+                // Precheck: can all remaining clauses be converted to entry scan predicates?
+                bool allScanEligible = AreAllScanEligible(clauses, executions, startIndex);
+
+                for (int i = startIndex; i < clauses.Count; i++)
+                {
+                    var iExec = executions[i];
+                    // Goto check before each AND step — only if all remaining clauses
+                    // can be handled by entry scan predicates
+                    if (allScanEligible)
+                    {
+                        ops.Add(new PlanOp
+                        {
+                            Kind = PlanOpKind.CheckAndMaybeEntryScan,
+                            ParamIndex = matchIndex
+                        });
+                    }
+
+                    switch (clauses[i].ClauseType)
+                    {
+                        case ClauseType.OrGroup when clauses[i].OrSubClauses != null:
+                        {
+                            // OrGroup: OR subclauses into bitmap[1], then AND with bitmap[0]
+                            var subClauses = clauses[i].OrSubClauses;
+                            var subExecs = iExec.OrSubExecutions;
+
+                            // Clear bitmap[1] (OR accumulator)
+                            ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 1 });
+
+                            // Fill each subclause into bitmap[1]
+                            for (int s = 0; s < subClauses.Count; s++)
+                            {
+                                ops.Add(new PlanOp
+                                {
+                                    Kind = PlanOpKind.OrWithPostings,
+                                    ParamIndex = matchIndex + s,
+                                    BitmapLocal = 1, // target bitmap[1]
+                                    EstimatedCardinality = subExecs[s].Cardinality,
+                                    Dispatch = GetDispatch(subClauses[s], subExecs[s])
+                                });
+                            }
+
+                            // AND bitmap[1] into bitmap[0]
+                            ops.Add(new PlanOp
+                            {
+                                Kind = PlanOpKind.AndBitmaps,
+                                BitmapLocal = 0,   // target
+                                ParamIndex2 = 1    // source (reuse ParamIndex2 for source bitmap)
+                            });
+
+                            // Early exit check
+                            ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
+
+                            matchIndex += subClauses.Count;
+                            break;
+                        }
+                        case ClauseType.In when (iExec.InTermCount > 0 || iExec.HasNullTerm):
+                        {
+                            // OR all IN terms into bitmap[1], then AND (or ANDNOT) with bitmap[0].
+                            // isSeed: false — FillFromPostings always targets bitmap[0], so we use
+                            // OrRange which respects bitmapLocal. Bitmap[1] is freshly cleared.
+                            ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 1 });
+                            EmitInOps(ops, iExec, bitmapLocal: 1, isSeed: false, ref matchIndex);
+                            ops.Add(new PlanOp
+                            {
+                                Kind = clauses[i].IsNegated ? PlanOpKind.AndNotBitmaps : PlanOpKind.AndBitmaps,
+                                BitmapLocal = 0,
+                                ParamIndex2 = 1
+                            });
+                            if (!clauses[i].IsNegated)
+                                ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
+                            break;
+                        }
+                        case ClauseType.AllIn when iExec.InTermCount > 0:
+                            ops.Add(new PlanOp
+                            {
+                                Kind = PlanOpKind.AndRange,
+                                ParamIndex = matchIndex,
+                                ParamIndex2 = iExec.InTermCount,
+                                BitmapLocal = 0,
+                                EstimatedCardinality = iExec.Cardinality,
+                                Dispatch = MatchDispatch.PostingList
+                            });
+                            matchIndex += iExec.InTermCount;
+                            break;
+                        default:
+                        {
+                            // Simple clause: AND or ANDNOT with bitmap[0]
+                            var isNegated = clauses[i].IsNegated || clauses[i].ClauseType == ClauseType.NotEquals;
+                            var andKind = isNegated ? PlanOpKind.AndNotWithPostings : PlanOpKind.AndWithPostings;
+                            ops.Add(new PlanOp
+                            {
+                                Kind = andKind,
+                                ParamIndex = matchIndex,
+                                BitmapLocal = 0,
+                                EstimatedCardinality = iExec.Cardinality,
+                                Dispatch = GetDispatch(clauses[i], iExec)
+                            });
+
+                            if (!isNegated)
+                                ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
+
+                            matchIndex++;
+                            break;
+                        }
+                    }
+                }
+
+                ops.Add(new PlanOp { Kind = PlanOpKind.IterateInto });
+                break;
+            }
         }
 
         // Pack operand ordering
@@ -1398,13 +1408,13 @@ internal static partial class QueryPlanBuilder
         for (int i = 0; i < Math.Min(clauses.Count, 10); i++)
             ordering |= (clauses[i].OriginalIndex & 0x7) << (i * 3);
 
-        // Check if all clauses are negated (first clause after sort is negated)
+        // Check if all clauses are negated (if first clause after sort is negated, all the rest are too)
         bool allNegated = clauses.Count > 0
             && (clauses[0].IsNegated || clauses[0].ClauseType == ClauseType.NotEquals);
 
         // Build scan predicate infos for entry scan — only for AND chains with simple clauses
         ScanPredicateInfo[] scanPredicateInfos = null;
-        if (!isOr && clauses.Count > 1)
+        if (isOr is false && clauses.Count > 1)
         {
             var scanPreds = new List<ScanPredicateInfo>();
             int longIndex = 0, doubleIndex = 0, sliceIndex = 0;
@@ -1426,24 +1436,10 @@ internal static partial class QueryPlanBuilder
 
         // Compute type signature from scan predicates. The int packs the first 16 kinds
         // (2 bits each). For ≤ 16 predicates this is the exact cache identity. For more,
-        // it's a lossy hash and we attach FullKinds for disambiguation in PlanCache.
-        int typeSignature = 0;
-        byte[] fullKinds = null;
-        if (scanPredicateInfos != null)
-        {
-            int n = scanPredicateInfos.Length;
-            int packCount = Math.Min(n, 16);
-            for (int i = 0; i < packCount; i++)
-                typeSignature |= ((int)scanPredicateInfos[i].ValueType & 0x3) << (i * 2);
-            if (n > 16)
-            {
-                fullKinds = new byte[n];
-                for (int i = 0; i < n; i++)
-                    fullKinds[i] = (byte)scanPredicateInfos[i].ValueType;
-            }
-        }
+        // it's a lossy hash, and we attach FullKinds for disambiguation in PlanCache.
+        (int typeSignature, byte[] fullKinds) = GetTypeSignature(scanPredicateInfos);
 
-        var plan = new QueryExecution
+        return new QueryExecution
         {
             Ops = ops.ToArray(),
             OperandOrdering = ordering,
@@ -1455,12 +1451,49 @@ internal static partial class QueryPlanBuilder
             FullKinds = fullKinds,
             RequiredBitmaps = needsThreeBitmaps ? 3 : 2
         };
-        return plan;
+    }
+
+    private static (int TypeSignature, byte[] FullKinds) GetTypeSignature(ScanPredicateInfo[] scanPredicateInfos)
+    {
+        if (scanPredicateInfos == null) 
+            return (0, null);
+        
+        int typeSignature = 0;
+        
+        int n = scanPredicateInfos.Length;
+        int packCount = Math.Min(n, 16);
+        for (int i = 0; i < packCount; i++)
+        {
+            typeSignature |= ((int)scanPredicateInfos[i].ValueType & 0x3) << (i * 2);
+        }
+
+        if (n <= 16) return (typeSignature, null);
+        
+        var fullKinds = new byte[n];
+        for (int i = 0; i < n; i++)
+        {
+            fullKinds[i] = (byte)scanPredicateInfos[i].ValueType;
+        }
+
+        return (typeSignature, fullKinds);
+    }
+
+    private static bool AreAllScanEligible(List<ClauseInfo> clauses, ClauseExecution[] executions, int startIndex)
+    {
+        // If any clause (In, AllIn, Spatial, Vector, Search, etc.) can't be scanned, we must not emit CheckAndMaybeEntryScan — entry scan would skip them entirely.
+        int dummyL = 0, dummyD = 0, dummyS = 0;
+        for (int j = startIndex; j < clauses.Count; j++)
+        {
+            if (BuildScanPredicateInfo(clauses[j], executions[j], ref dummyL, ref dummyD, ref dummyS) != null) 
+                continue;
+            return false;
+        }
+        return true;
     }
 
     // ── Plan helpers ─────────────────────────────────────────────────────
 
-    /// <summary>Emit ops for an IN clause: Fill first term + OrRange for the rest, plus null-term if needed.</summary>
+    /// <summary>Emit ops for an IN clause: Fill the first term + OrRange for the rest, plus null-term if needed.</summary>
     private static void EmitInOps(List<PlanOp> ops, ClauseExecution exec, int bitmapLocal, bool isSeed, ref int matchIndex)
     {
         int terms = exec.InTermCount;
@@ -1503,21 +1536,22 @@ internal static partial class QueryPlanBuilder
             }
             matchIndex += terms;
         }
-        if (exec.HasNullTerm)
+
+        if (exec.HasNullTerm is false) 
+            return;
+        
+        bool isFirstOp = isSeed && exec.InTermCount == 0;
+        ops.Add(new PlanOp
         {
-            bool isFirstOp = isSeed && exec.InTermCount == 0;
-            ops.Add(new PlanOp
-            {
-                Kind = isFirstOp ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
-                ParamIndex = matchIndex,
-                BitmapLocal = bitmapLocal,
-                Dispatch = MatchDispatch.QueryMatch
-            });
-            matchIndex++;
-        }
+            Kind = isFirstOp ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
+            ParamIndex = matchIndex,
+            BitmapLocal = bitmapLocal,
+            Dispatch = MatchDispatch.QueryMatch
+        });
+        matchIndex++;
     }
 
-    /// <summary>Emit ops for an AllIn clause: Fill first term + AndRange for the rest.</summary>
+    /// <summary>Emit ops for an AllIn clause: Fill the first term + AndRange for the rest.</summary>
     private static void EmitAllInOps(List<PlanOp> ops, ClauseExecution exec, ref int matchIndex)
     {
         int terms = exec.InTermCount;
@@ -1564,15 +1598,13 @@ internal static partial class QueryPlanBuilder
         if (spatialClauses == null && vectorClauses == null)
             return;
 
-        var clauses = plan.Clauses ?? [];
-        plan.Clauses = clauses;
+        var clauses = plan.Clauses ??= [];
 
         // Extend Executions array to match the clauses that will be added
         int extraCount = (spatialClauses?.Count ?? 0) + (vectorClauses?.Count ?? 0);
-        var oldExecs = plan.Executions ?? [];
-        var newExecs = new ClauseExecution[oldExecs.Length + extraCount];
-        Array.Copy(oldExecs, newExecs, oldExecs.Length);
-        int execIdx = oldExecs.Length;
+        var execs = plan.Executions ??= [];
+        int execIdx = execs.Length;
+        Array.Resize(ref execs, execs.Length + extraCount);
 
         int matchIndex = CountMatchSlots(clauses, plan.Executions, plan.IsAllEntries, plan.AllNegated);
 
@@ -1583,7 +1615,7 @@ internal static partial class QueryPlanBuilder
             {
                 clauses.Add(spatialClauses[i]);
                 var exec = spatialExecs?[i] ?? new ClauseExecution();
-                newExecs[execIdx++] = exec;
+                execs[execIdx++] = exec;
                 plan.SpatialFilters[i] = new SpatialFilterOp { MatchIndex = matchIndex++, Clause = spatialClauses[i], Exec = exec };
             }
         }
@@ -1595,13 +1627,11 @@ internal static partial class QueryPlanBuilder
             {
                 clauses.Add(vectorClauses[i]);
                 var exec = vectorExecs?[i] ?? new ClauseExecution();
-                newExecs[execIdx++] = exec;
+                execs[execIdx++] = exec;
                 plan.VectorSelects[i] = new VectorSearchOp {
                     Clause = vectorClauses[i], Exec = exec };
             }
         }
-
-        plan.Executions = newExecs;
     }
 
     /// <summary>Count how many IQueryMatch slots a clause list expands to.
@@ -1650,12 +1680,8 @@ internal static partial class QueryPlanBuilder
     /// <summary>Resolve the <see cref="MatchDispatch"/> mode for a clause at plan-build time.
     /// Equals / NotEquals (unboosted) → <c>PostingList</c> (native posting-list, no IQueryMatch wrapper).
     /// All other clause types → <c>QueryMatch</c> (IQueryMatch interface dispatch).</summary>
-    private static MatchDispatch GetDispatch(ClauseInfo clause, ClauseExecution exec = null)
-    {
-        if (IsTermSourceEligibleClause(clause, exec))
-            return MatchDispatch.PostingList;
-        return MatchDispatch.QueryMatch;
-    }
+    private static MatchDispatch GetDispatch(ClauseInfo clause, ClauseExecution exec = null) => 
+        IsTermSourceEligibleClause(clause, exec) ? MatchDispatch.PostingList : MatchDispatch.QueryMatch;
 
     // ── Entry scan predicate building ────────────────────────────────────
 
@@ -1692,7 +1718,7 @@ internal static partial class QueryPlanBuilder
                     var subExec = subExecs != null && si2 < subExecs.Length ? subExecs[si2] : null;
                     var subPred = BuildScanPredicateInfo(sub, subExec, ref li, ref di, ref si);
                     if (subPred == null)
-                        return null; // Any complex sub-clause → can't entry-scan the whole group
+                        return null; // Any complex subclause → can't entry-scan the whole group
                     branches.Add(subPred.Value);
                 }
                 longIndex = li; doubleIndex = di; sliceIndex = si;

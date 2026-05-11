@@ -1,11 +1,5 @@
 namespace Corax.Querying.Planning;
 
-public enum SpatialShapeType : byte
-{
-    Circle,
-    Wkt
-}
-
 /// <summary>Per-execution spatial query parameters. Resolved from ParameterBinding during
 /// PopulateClauseValues — scalar params looked up by name in the blittable.
 /// Shape construction (spatialField.ReadCircle / ReadShape) also runs at execution time

@@ -1445,7 +1445,6 @@ namespace FastTests.Corax
             var compiledMatch = QueryPlanBuilder.BuildAndCompile(
                 planParams,
                 null,
-                long.MaxValue,
                 out var debugPlan,
                 out _,
                 highlightingTerms: null,
