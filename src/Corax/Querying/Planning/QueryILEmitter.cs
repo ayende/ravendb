@@ -347,6 +347,83 @@ public static class QueryIlEmitter
                     break;
                 }
 
+                case PlanOpKind.OrRange:
+                {
+                    // for (int j = start; j < start+count; j++) Or(ctx, j, bitmapLocal);
+                    // Or on an empty bitmap acts as Fill — no separate Fill needed.
+                    int start = op.ParamIndex;
+                    int count = op.ParamIndex2;
+                    var loopVar = il.DeclareLocal(typeof(int));
+                    var loopCheck = il.DefineLabel();
+                    var loopBody = il.DefineLabel();
+
+                    il.Emit(OpCodes.Ldc_I4, start);
+                    il.Emit(OpCodes.Stloc, loopVar);
+                    il.Emit(OpCodes.Br, loopCheck);
+
+                    il.MarkLabel(loopBody);
+                    EmitCancellationCheck(il);
+                    il.Emit(OpCodes.Ldarg_0);
+                    il.Emit(OpCodes.Ldloc, loopVar);
+                    il.Emit(OpCodes.Ldc_I4, op.BitmapLocal);
+                    il.Emit(OpCodes.Call, orMethod);
+
+                    // j++
+                    il.Emit(OpCodes.Ldloc, loopVar);
+                    il.Emit(OpCodes.Ldc_I4_1);
+                    il.Emit(OpCodes.Add);
+                    il.Emit(OpCodes.Stloc, loopVar);
+
+                    il.MarkLabel(loopCheck);
+                    il.Emit(OpCodes.Ldloc, loopVar);
+                    il.Emit(OpCodes.Ldc_I4, start + count);
+                    il.Emit(OpCodes.Blt, loopBody);
+
+                    explain.AppendLine($"for (i = {start}..{start + count}) Or(bitmap[{op.BitmapLocal}], {src}[i]);");
+                    break;
+                }
+
+                case PlanOpKind.AndRange:
+                {
+                    // Emit a loop: for (int j = start; j < start + count; j++) { And(ctx, j); if empty → done; }
+                    int start = op.ParamIndex;
+                    int count = op.ParamIndex2;
+                    var loopVar = il.DeclareLocal(typeof(int));
+                    var loopCheck = il.DefineLabel();
+                    var loopBody = il.DefineLabel();
+
+                    il.Emit(OpCodes.Ldc_I4, start);
+                    il.Emit(OpCodes.Stloc, loopVar);
+                    il.Emit(OpCodes.Br, loopCheck);
+
+                    il.MarkLabel(loopBody);
+                    EmitCancellationCheck(il);
+                    il.Emit(OpCodes.Ldarg_0);
+                    il.Emit(OpCodes.Ldloc, loopVar);
+                    il.Emit(OpCodes.Call, andMethod);
+
+                    // Early exit if bitmap is empty
+                    if (!op.SkipEarlyExit)
+                    {
+                        EmitLoadBitmapRef(il, 0);
+                        il.Emit(OpCodes.Call, IsEmptyGetter);
+                        il.Emit(OpCodes.Brtrue, doneLabel);
+                    }
+
+                    il.Emit(OpCodes.Ldloc, loopVar);
+                    il.Emit(OpCodes.Ldc_I4_1);
+                    il.Emit(OpCodes.Add);
+                    il.Emit(OpCodes.Stloc, loopVar);
+
+                    il.MarkLabel(loopCheck);
+                    il.Emit(OpCodes.Ldloc, loopVar);
+                    il.Emit(OpCodes.Ldc_I4, start + count);
+                    il.Emit(OpCodes.Blt, loopBody);
+
+                    explain.AppendLine($"AndRange(bitmap[0], {src}[{start}..{start + count}]);");
+                    break;
+                }
+
                 case PlanOpKind.IterateInto:
                     il.Emit(OpCodes.Br, doneLabel);
                     explain.AppendLine("return; // result in bitmap[0]");
