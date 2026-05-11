@@ -436,7 +436,7 @@ public class RavenDB_22603_Primitive : StorageTest
             QueryParameters = null,
             Allocator = Allocator
         };
-        var match = QueryPlanBuilder.BuildAndCompile(planParams, null, long.MaxValue, out _, out _, null, default);
+        var match = QueryPlanBuilder.BuildAndCompile(planParams, null, long.MaxValue, out _, out _, null, false, default);
 
         var list = new List<string>();
         Span<long> ids = stackalloc long[256];

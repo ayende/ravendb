@@ -1449,6 +1449,7 @@ namespace FastTests.Corax
                 out var debugPlan,
                 out _,
                 highlightingTerms: null,
+                wantTimings: false,
                 CancellationToken.None);
 
 

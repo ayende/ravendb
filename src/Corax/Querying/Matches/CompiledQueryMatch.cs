@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Threading;
 using Corax.Querying.Matches.Meta;
@@ -23,6 +24,7 @@ public class CompiledQueryMatch(
     long[] fieldRootPages,
     IndexSearcher searcher,
     ByteStringContext allocator,
+    bool wantTimings,
     CancellationToken token)
     : IBitmapQueryMatch, IDisposable
 {
@@ -198,41 +200,34 @@ public class CompiledQueryMatch(
     {
         if (_executed) return;
 
-        // Allocate bitmap pool: [0] = main, [1 ... N] = scratch
-        if (Bitmaps == null || Bitmaps.Length < bitmapCount)
-            Bitmaps = new RoaringBitmap[bitmapCount];
+        // Rent bitmap pool from ArrayPool — returned in finally block
+        Bitmaps = ArrayPool<RoaringBitmap>.Shared.Rent(bitmapCount);
+        for (int i = 0; i < bitmapCount; i++) Bitmaps[i] = new RoaringBitmap(allocator);
+        Bitmaps[0] = _bitmapData; // main bitmap (owned by this instance)
 
-        Bitmaps[0] = _bitmapData; // main bitmap (owned by this struct)
-        for (int i = 1; i < Bitmaps.Length; i++)
-        {
-            Bitmaps[i] = new RoaringBitmap(allocator);
-        }
-
-        // Cache LLT for the delegate
         Llt = Searcher.Transaction.LowLevelTransaction;
 
-        // Only allocate timing arrays when telemetry is requested (opCount > 0).
-        // Caller passes opCount = 0 to skip allocation.
-        Timings = opCount > 0 ? new long[opCount] : null;
-        ResultCounts = opCount > 0 ? new long[opCount] : null;
+        // Only allocate timing arrays when explicitly requested (include timings())
+        Timings = wantTimings ? new long[opCount] : null;
+        ResultCounts = wantTimings ? new long[opCount] : null;
         EntryScanTakenAtOp = -1;
 
         try
         {
             _compiledDelegate(this);
 
-            // Take ownership of bitmaps[0] (may have been swapped during entry scan)
             _bitmapData = Bitmaps[0];
             _bitmapData.PrepareForReading();
             _count = _bitmapData.Count;
             _iterator = _bitmapData.GetIterator();
-            _executed = true; // Mark only after successful execution
+            _executed = true;
         }
         finally
         {
-            // Dispose scratch bitmaps only (not [0], which is _bitmapData)
-            for (int i = 1; i < Bitmaps.Length; i++)
+            for (int i = 1; i < bitmapCount; i++)
                 Bitmaps[i].Dispose();
+            ArrayPool<RoaringBitmap>.Shared.Return(Bitmaps);
+            Bitmaps = null;
         }
     }
 

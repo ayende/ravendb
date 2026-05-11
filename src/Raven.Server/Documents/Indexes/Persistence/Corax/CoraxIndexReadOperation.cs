@@ -635,7 +635,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                                 HasBoost = builderParameters.HasBoost
                             };
                             queryMatch = QueryPlanBuilder.BuildAndCompile(
-                                planParams, builderParameters, take, out queryPlan, out compiledPlan, highlightings.Terms, token);
+                                planParams, builderParameters, take, out queryPlan, out compiledPlan, highlightings.Terms, wantTimings: queryTimings != null, token);
 
                             innerDisposableMatch = queryMatch as IDisposable;
 
@@ -1343,7 +1343,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     HasDynamics = builderParameters.HasDynamics,
                     DynamicFields = builderParameters.DynamicFields,
                     HasBoost = builderParameters.HasBoost
-                }, builderParameters, take, out _, out _, highlightingTerms: null, token);
+                }, builderParameters, take, out _, out _, highlightingTerms: null, wantTimings: false, token);
 
             var ids = QueryPool.Rent(CoraxBufferSize(IndexSearcher, take, query));
             int docsToLoad = CoraxBufferSize(IndexSearcher, pageSize, query);
@@ -1542,7 +1542,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 HasBoost = builderParameters.HasBoost
             };
             return QueryPlanBuilder.BuildAndCompile(
-                planParams, builderParameters, long.MaxValue, out _, out _, highlightingTerms: null, builderParameters.Token);
+                planParams, builderParameters, long.MaxValue, out _, out _, highlightingTerms: null, wantTimings: false, builderParameters.Token);
         }
     }
 }
