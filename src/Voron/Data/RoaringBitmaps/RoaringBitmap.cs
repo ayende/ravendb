@@ -66,7 +66,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
 #endif
 
     [Conditional("DEBUG")]
-    private void AssertNotConsumed()
+    private readonly void AssertNotConsumed()
     {
 #if DEBUG
         Debug.Assert(!_consumed, "Bitmap was consumed by a prior set operation. Call Clear() to reuse.");
@@ -146,9 +146,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
 
     public readonly bool Contains(long value)
     {
-#if DEBUG
-        Debug.Assert(!_consumed, "Bitmap was consumed by a prior set operation. Call Clear() to reuse.");
-#endif
+        AssertNotConsumed();
         long key = value >> ContainerKeyShift;
         ushort low = (ushort)(value & ContainerValueMask);
 
