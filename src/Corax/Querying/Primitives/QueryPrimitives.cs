@@ -21,7 +21,6 @@ namespace Corax.Querying.Primitives;
 /// <summary>
 /// Static methods called by compiled query functions (DynamicMethod IL).
 /// Each primitive operates on a RoaringBitmap accumulator.
-/// Pre-compiled, SIMD-tuned, individually benchmarkable.
 /// </summary>
 public static class QueryPrimitives
 {
@@ -95,19 +94,23 @@ public static class QueryPrimitives
     // Batch size for entry scan: how many bitmap entries to read per iteration.
     internal const int EntryScanBatchSize = 256;
 
-    // Bitmap count threshold below which entry scan is considered cheaper than
-    // bitmap AND with a posting list. Below this, individual entry blob reads
-    // are cheaper than decoding the full posting list.
+    // Entry scan vs. bitmap AND heuristic (tuned on typical NVMe workloads):
+    // When the candidate bitmap is small enough, it's cheaper to read each entry's
+    // stored fields and check predicates than to decode a full posting list and AND.
+    // The threshold is the bitmap count below which we consider entry scan.
     private const long EntryScanCountThreshold = 32 * 1024;
 
-    // Cost multiplier: entry scan is chosen when bitmapCount * EntryScanCostMultiplier
-    // is less than the posting list size. Approximates the relative cost of reading
-    // entry blobs vs. decoding posting list pages.
+    // The multiplier approximates the cost ratio: one entry blob read costs roughly
+    // 64x a single posting list decode. Entry scan wins when
+    // bitmapCount * 64 < postingListSize, i.e. the posting list is much larger
+    // than the candidate set.
     private const long EntryScanCostMultiplier = 64;
 
     /// <summary>
     /// Fill a bitmap from a posting list. Walks leaf pages, decodes PFor blocks,
     /// adds entries to the bitmap via batch AddRange.
+    /// Each batch is decoded via DecodeAndDiscardFrequency, which strips the
+    /// frequency bits packed into the high bits of each entry ID by the indexer.
     /// Stops once <paramref name="limit"/> entries have been added; the final batch
     /// is truncated so the bitmap never overshoots the requested limit.
     /// </summary>
@@ -285,6 +288,9 @@ public static class QueryPrimitives
     {
         if (match is IBitmapQueryMatch bm)
         {
+            // Limit is intentionally ignored here: the source bitmap is already fully
+            // materialized, so there's no I/O to save. Truncating would break Count
+            // (used for TotalResults) and Contains (used by sorting).
             ref RoaringBitmap srcData = ref bm.BitmapState;
             if (srcData.IsEmpty)
                 return;

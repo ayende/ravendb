@@ -909,4 +909,315 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     }
 
     #endregion
+
+    #region AndWith Edge Cases (replacement for RavenDB-21052 SortHelper.FindMatches)
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void AndWithGapBetweenContainers()
+    {
+        // Two bitmaps with no overlapping containers — gap between key ranges.
+        // Equivalent to the old FindMatches gap detection test.
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+        RoaringBitmap a = new(ctx);
+        RoaringBitmap b = new(ctx);
+
+        // a: container 0 (values 8, 9)
+        a.Add(8);
+        a.Add(9);
+        // b: container 1 (values 65546, 65547)
+        b.Add(65546);
+        b.Add(65547);
+
+        a.PrepareForReading();
+        b.PrepareForReading();
+        RoaringBitmap result = And(ctx, a, b);
+        Assert.Equal(0, result.Count);
+        Assert.True(result.IsEmpty);
+        result.Dispose();
+
+        // Reverse order: a entirely after b
+        RoaringBitmap result2 = And(ctx, b, a);
+        Assert.Equal(0, result2.Count);
+        Assert.True(result2.IsEmpty);
+        result2.Dispose();
+
+        a.Dispose();
+        b.Dispose();
+    }
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void AndWithMatchAtFirstElement()
+    {
+        // Match is the first element of the right array.
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+        RoaringBitmap a = new(ctx);
+        RoaringBitmap b = new(ctx);
+
+        a.Add(10);
+        a.Add(20);
+        // b starts at 10
+        b.Add(10);
+        b.Add(11);
+        b.Add(13);
+        b.Add(15);
+
+        a.PrepareForReading();
+        b.PrepareForReading();
+        RoaringBitmap result = And(ctx, a, b);
+        Assert.Equal(1, result.Count);
+        Assert.True(result.Contains(10));
+        Assert.False(result.Contains(20));
+        result.Dispose();
+        a.Dispose();
+        b.Dispose();
+    }
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void AndWithMatchAtLastElement()
+    {
+        // Match is the last element of the right array.
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+        RoaringBitmap a = new(ctx);
+        RoaringBitmap b = new(ctx);
+
+        a.Add(15);
+        a.Add(20);
+        // b ends at 15
+        b.Add(10);
+        b.Add(11);
+        b.Add(13);
+        b.Add(15);
+
+        a.PrepareForReading();
+        b.PrepareForReading();
+        RoaringBitmap result = And(ctx, a, b);
+        Assert.Equal(1, result.Count);
+        Assert.True(result.Contains(15));
+        Assert.False(result.Contains(20));
+        result.Dispose();
+        a.Dispose();
+        b.Dispose();
+    }
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void AndWithSubset()
+    {
+        // One bitmap is a subset of the other — AND should return the subset.
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+        RoaringBitmap small = new(ctx);
+        RoaringBitmap large = new(ctx);
+
+        small.Add(5);
+        small.Add(10);
+        small.Add(15);
+        for (int i = 0; i < 20; i++)
+            large.Add(i);
+
+        small.PrepareForReading();
+        large.PrepareForReading();
+        RoaringBitmap result = And(ctx, large, small);
+        Assert.Equal(3, result.Count);
+        Assert.True(result.Contains(5));
+        Assert.True(result.Contains(10));
+        Assert.True(result.Contains(15));
+        result.Dispose();
+        small.Dispose();
+        large.Dispose();
+    }
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void AndWithEmptyBitmap()
+    {
+        // AND with empty bitmap should produce empty result.
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+        RoaringBitmap a = new(ctx);
+        RoaringBitmap empty = new(ctx);
+
+        for (int i = 0; i < 100; i++)
+            a.Add(i);
+
+        a.PrepareForReading();
+        RoaringBitmap result = And(ctx, a, empty);
+        Assert.Equal(0, result.Count);
+        Assert.True(result.IsEmpty);
+        result.Dispose();
+        a.Dispose();
+        empty.Dispose();
+    }
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void AndWithContainerBoundaryValues()
+    {
+        // Test values at container boundaries: first (0) and last (65535) within a container.
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+        RoaringBitmap a = new(ctx);
+        RoaringBitmap b = new(ctx);
+
+        a.Add(0);       // first value in container 0
+        a.Add(65535);   // last value in container 0
+        a.Add(65536);   // first value in container 1
+
+        b.Add(0);
+        b.Add(65535);
+        b.Add(131072);  // first value in container 2 (no match with a)
+
+        a.PrepareForReading();
+        b.PrepareForReading();
+        RoaringBitmap result = And(ctx, a, b);
+        Assert.Equal(2, result.Count);
+        Assert.True(result.Contains(0));
+        Assert.True(result.Contains(65535));
+        Assert.False(result.Contains(65536));
+        Assert.False(result.Contains(131072));
+        result.Dispose();
+        a.Dispose();
+        b.Dispose();
+    }
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void AndWithCrossContainerTypes()
+    {
+        // Force different container types: sparse (Array) vs dense (Bitmap) vs Range.
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+
+        // Sparse array container: 3 values
+        RoaringBitmap sparse = new(ctx);
+        sparse.Add(100);
+        sparse.Add(200);
+        sparse.Add(300);
+
+        // Dense bitmap container: 5000 values (triggers Bitmap type)
+        RoaringBitmap dense = new(ctx);
+        for (int i = 0; i < 5000; i++)
+            dense.Add(i);
+
+        // Range container: sequential 0..999
+        RoaringBitmap range = new(ctx);
+        for (int i = 0; i < 1000; i++)
+            range.Add(i);
+
+        sparse.PrepareForReading();
+        dense.PrepareForReading();
+        range.PrepareForReading();
+
+        // Array AND Bitmap
+        RoaringBitmap r1 = And(ctx, sparse, dense);
+        Assert.Equal(3, r1.Count);
+        Assert.True(r1.Contains(100));
+        Assert.True(r1.Contains(200));
+        Assert.True(r1.Contains(300));
+        r1.Dispose();
+
+        // Array AND Range
+        RoaringBitmap r2 = And(ctx, sparse, range);
+        Assert.Equal(3, r2.Count);
+        r2.Dispose();
+
+        // Bitmap AND Range
+        RoaringBitmap r3 = And(ctx, dense, range);
+        Assert.Equal(1000, r3.Count);
+        r3.Dispose();
+
+        sparse.Dispose();
+        dense.Dispose();
+        range.Dispose();
+    }
+
+    #endregion
+
+    #region SIMD Boundary Tests (replacement for RavenDB-21471 vectorized AND out-of-bounds)
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void SimdAndWithSmallArraysDoesNotProduceFalsePositives()
+    {
+        // Small arrays (1-2 elements) where SIMD Vector256 reads past live data.
+        // The padding in the over-allocated buffer may contain stale values.
+        // Verify no false positives from phantom matches in padding.
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+        RoaringBitmap a = new(ctx);
+        RoaringBitmap b = new(ctx);
+
+        // a: 2 values high in the container range
+        a.Add(5708);
+        a.Add(5709);
+
+        // b: 6 values low in the container range — no overlap with a
+        b.Add(763);
+        b.Add(764);
+        b.Add(941);
+        b.Add(942);
+        b.Add(946);
+        b.Add(966);
+
+        a.PrepareForReading();
+        b.PrepareForReading();
+        RoaringBitmap result = And(ctx, a, b);
+        Assert.Equal(0, result.Count);
+        Assert.True(result.IsEmpty);
+        result.Dispose();
+        a.Dispose();
+        b.Dispose();
+    }
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void SimdAndWithSingleElementArrays()
+    {
+        // Minimal arrays: 1 element each. SIMD reads a full vector (16 ushorts)
+        // from a buffer that has only 1 live value.
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+
+        // No match
+        RoaringBitmap a = new(ctx);
+        RoaringBitmap b = new(ctx);
+        a.Add(42);
+        b.Add(99);
+        a.PrepareForReading();
+        b.PrepareForReading();
+        RoaringBitmap r1 = And(ctx, a, b);
+        Assert.Equal(0, r1.Count);
+        r1.Dispose();
+
+        // Match
+        RoaringBitmap c = new(ctx);
+        c.Add(42);
+        c.PrepareForReading();
+        RoaringBitmap r2 = And(ctx, a, c);
+        Assert.Equal(1, r2.Count);
+        Assert.True(r2.Contains(42));
+        r2.Dispose();
+
+        a.Dispose();
+        b.Dispose();
+        c.Dispose();
+    }
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void SimdAndNotWithSmallArraysDoesNotProduceFalseExclusions()
+    {
+        // ANDNOT with small arrays — verify no false exclusions from padding.
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+        RoaringBitmap a = new(ctx);
+        RoaringBitmap b = new(ctx);
+
+        // a has values; b has non-overlapping values
+        a.Add(100);
+        a.Add(200);
+        a.Add(300);
+        b.Add(50);
+        b.Add(150);
+
+        a.PrepareForReading();
+        b.PrepareForReading();
+        RoaringBitmap result = AndNot(ctx, a, b);
+        // All of a's values should survive — none match b
+        Assert.Equal(3, result.Count);
+        Assert.True(result.Contains(100));
+        Assert.True(result.Contains(200));
+        Assert.True(result.Contains(300));
+        result.Dispose();
+        a.Dispose();
+        b.Dispose();
+    }
+
+    #endregion
 }

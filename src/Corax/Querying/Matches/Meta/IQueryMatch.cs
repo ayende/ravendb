@@ -75,9 +75,8 @@ public interface IQueryMatch
 
 /// <summary>
 /// Implemented by query matches backed by a RoaringBitmap, enabling SortingMatch
-/// to avoid full materialization via MemoizationMatch. Instead, SortingMatch can
-/// walk the CompactTree index and intersect batches via AndWith, stopping early
-/// when the LIMIT is reached.
+/// to walk the CompactTree index and intersect batches via AndWith, stopping early
+/// when the LIMIT is reached — no full materialization needed.
 /// </summary>
 public interface IBitmapQueryMatch : IQueryMatch
 {

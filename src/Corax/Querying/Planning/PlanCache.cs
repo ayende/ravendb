@@ -88,9 +88,17 @@ public class PlanCache
     }
 
     /// <summary>
-    /// Fixed-slot per-query plan cache. Lookup is SIMD scan over parallel int arrays;
-    /// matched candidates are revalidated against the plan's own embedded keys to
-    /// guard against torn-write races.
+    /// Fixed-slot per-query plan cache. Three parallel arrays (_orderings, _typeSignatures,
+    /// _plans) of maxSlots entries (default 32, must be a multiple of 8).
+    ///
+    /// Lookup: broadcast the target ordering/typeSignature into a Vector256&lt;int&gt; (8 lanes)
+    /// and compare 8 slots per iteration. ExtractMostSignificantBits yields a bitmask of hits;
+    /// TrailingZeroCount walks set bits. Vec128 fallback does 4 lanes per iteration.
+    /// Matched candidates are revalidated against the plan's own embedded keys to
+    /// guard against torn-write races (parallel arrays are written non-atomically).
+    ///
+    /// maxSlots alignment: must be a multiple of 8 so the Vec256 loop never reads past the
+    /// array end. The constructor rounds up if needed.
     /// </summary>
     private sealed class PerQueryPlans(int maxSlots, ClauseTemplate template)
     {

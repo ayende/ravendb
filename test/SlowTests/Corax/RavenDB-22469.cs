@@ -15,10 +15,8 @@ public class RavenDB_22469(ITestOutputHelper output) : StorageTest(output)
 {
     private const int e = 65_537;
 
-    [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void CanDeduplicateInPrimitive(bool useHashset)
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public void CanDeduplicateInPrimitive()
     {
         List<long> entriesIds = new();
         using var mapping = IndexFieldsMappingBuilder.CreateForWriter(false)

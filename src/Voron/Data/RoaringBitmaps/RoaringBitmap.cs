@@ -58,6 +58,29 @@ public unsafe partial struct RoaringBitmap : IDisposable
 
     private readonly ByteStringContext _ctx;
 
+#if DEBUG
+    /// <summary>Set after this bitmap is passed as the right-hand side of a destructive
+    /// set operation (OrWith, AndWith, AndNotWith). Any subsequent access asserts.
+    /// Reset by <see cref="Clear"/>.</summary>
+    private bool _consumed;
+#endif
+
+    [Conditional("DEBUG")]
+    private void AssertNotConsumed()
+    {
+#if DEBUG
+        Debug.Assert(!_consumed, "Bitmap was consumed by a prior set operation. Call Clear() to reuse.");
+#endif
+    }
+
+    [Conditional("DEBUG")]
+    private static void MarkConsumed(ref RoaringBitmap bitmap)
+    {
+#if DEBUG
+        bitmap._consumed = true;
+#endif
+    }
+
     /// <summary>
     /// Construct a RoaringBitmap backed by the given allocator.
     /// All operations on this bitmap MUST use the same ByteStringContext instance that was
@@ -89,6 +112,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
     {
         get
         {
+            AssertNotConsumed();
             long total = 0;
             ContainerEntry* entries = _entries.RawItems;
             ContainerType* types = _types.RawItems;
@@ -122,6 +146,9 @@ public unsafe partial struct RoaringBitmap : IDisposable
 
     public readonly bool Contains(long value)
     {
+#if DEBUG
+        Debug.Assert(!_consumed, "Bitmap was consumed by a prior set operation. Call Clear() to reuse.");
+#endif
         long key = value >> ContainerKeyShift;
         ushort low = (ushort)(value & ContainerValueMask);
 
@@ -185,6 +212,9 @@ public unsafe partial struct RoaringBitmap : IDisposable
     /// </summary>
     public void Clear()
     {
+#if DEBUG
+        _consumed = false;
+#endif
         int count = _entries.Count;
         if (count == 0 && _index.Count == 0)
             return;
@@ -279,6 +309,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
     /// calls <see cref="RepairAfterLazy"/> as part of its normal pre-read fixup.</summary>
     public void AddRange(ReadOnlySpan<long> sortedValues)
     {
+        AssertNotConsumed();
         if (sortedValues.IsEmpty)
             return;
 
@@ -547,8 +578,10 @@ public unsafe partial struct RoaringBitmap : IDisposable
     /// </summary>
     public void OrWith(ref RoaringBitmap other)
     {
+        AssertNotConsumed();
         LazyOrWith(ref other);
         RepairAfterLazy();
+        MarkConsumed(ref other);
     }
 
     /// <summary>Lazy OR for a single container pair. Skips popcount — marks bitmap
@@ -661,6 +694,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Add(long value)
     {
+        AssertNotConsumed();
         Debug.Assert(value >= 0, "RoaringBitmap only supports non-negative values.");
         long key = value >> ContainerKeyShift;
         ushort low = (ushort)(value & ContainerValueMask);
@@ -688,11 +722,13 @@ public unsafe partial struct RoaringBitmap : IDisposable
     /// </summary>
     public int Fill(Span<long> buffer, ref RoaringBitmapIterator iterator)
     {
+        AssertNotConsumed();
         return iterator.Fill(ref this, buffer);
     }
 
     public RoaringBitmapIterator GetIterator()
     {
+        AssertNotConsumed();
         return new RoaringBitmapIterator(ref this, _ctx);
     }
 
@@ -1006,6 +1042,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
     [SkipLocalsInit]
     public void PrepareForReading()
     {
+        AssertNotConsumed();
         // 8KB scratch bitmap for radix sort: explode unsorted values into bits,
         // extract back as sorted array. O(n) bit-sets + O(1024) word scan vs O(n log n).
         // Dedup is free. Scratch reused across all containers (one clear per chunk touched).
@@ -1112,6 +1149,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
     /// </summary>
     public void AndWith(scoped ref RoaringBitmap other)
     {
+        AssertNotConsumed();
         int* myIdx = _index.RawItems;
         int myLen = _index.Count;
 
@@ -1138,6 +1176,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
                     DonateStorageThenFreeContainer(key, mySlot, ref other);
             }
         }
+        MarkConsumed(ref other);
     }
 
     /// <summary>
@@ -1148,6 +1187,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
     /// </summary>
     public void AndWithLimited(scoped ref RoaringBitmap other, long limit)
     {
+        AssertNotConsumed();
         int* myIdx = _index.RawItems;
         int myLen = _index.Count;
         long accumulated = 0;
@@ -1200,6 +1240,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
                 DonateStorageThenFreeContainer(key, mySlot, ref other);
             }
         }
+        MarkConsumed(ref other);
     }
 
     /// <summary>Donate this slot's storage to <paramref name="recipient"/>'s free pool
@@ -1222,6 +1263,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
     /// </summary>
     public void AndNotWith(scoped ref RoaringBitmap other)
     {
+        AssertNotConsumed();
         int myLen = _index.Count;
         int* myIdx = _index.RawItems;
 
@@ -1240,6 +1282,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
             if (_entries[mySlot].Cardinality == 0)
                 DonateStorageThenFreeContainer(key, mySlot, ref other);
         }
+        MarkConsumed(ref other);
     }
 
     [SkipLocalsInit]
