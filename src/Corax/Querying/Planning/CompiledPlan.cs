@@ -5,12 +5,40 @@ public sealed class CompiledPlan
     /// <summary>IL-emitted delegate that executes the posting-list scan plan.</summary>
     public QueryIlEmitter.CompiledExecuteDelegate CompiledDelegate { get; init; }
 
+    /* A single query may be represented by different compiled plans, because the shape
+     * of the data is different. Consider `WHERE Tag = $tag and Published = $published`.
+     * If $tag is a popular term, and $published is true, that usually means that we
+     * need to generate a plan that would:
+     * - Read the posting list for $tag
+     * - AND that posting list with the Published=true posting list.
+     *
+     * On the other hand, if we want all the _unpublished_ items in a popular tag, we can check
+     * that Published=false is a small amount, then start from that, then we find that we have
+     * low enough results that we are going to just scan through them, instead of going through
+     * the posting list.
+     *
+     * In other words, the parameters we use for the query impact the query plan.
+     * The `Ordering` field is the order of steps in the query plan, and we use that as a cache key for disambiguation.
+     */
+    
     /// <summary>Packed operand ordering used as part of the cache key.</summary>
     public int Ordering { get; init; }
 
+    /* The same query may be called with parameters of different types:
+     *      Age = "25" vs. Age = 25 vs. Age = 25.0
+     * Each one of them has a different posting list that they use, and that matters, so we
+     * need a different compiled plan for each set of ordering.
+     */
+    
     /// <summary>Packed parameter type signature (2 bits per param for first 16).</summary>
     public int TypeSignature { get; init; }
 
+    /* The `TypeSignature` here is able to hold up to 16 parameter types, with 2 bits per parameter.
+     * Users may want to use queries with > 16 parameters, and we need to respect the same problem that
+     * `TypeSignature` is solving. In those cases, we use `FullKinds` to store the full kind vector for
+     * the full check.
+     */
+    
     /// <summary>Full per-predicate kind vector for >16 typed scan predicates.</summary>
     public byte[] FullKinds { get; init; }
 
@@ -21,32 +49,11 @@ public sealed class CompiledPlan
     /// to limit chain growth — when depth exceeds MaxChainDepth, the chain is replaced.</summary>
     public int ChainDepth;
 
-    /// <summary>EXPLAIN pseudocode. Generated in same pass as IL emission.</summary>
+    /// <summary>EXPLAIN pseudocode. Generated in the same pass as IL emission.</summary>
     public string ExplainSource { get; init; }
 
     /// <summary>Template inspection nodes built during IL emission.
     /// At query time, cloned and populated with per-execution telemetry
     /// (timings, result counts, scanned entries) from CompiledQueryMatch.</summary>
     public InspectionOp[] InspectionTemplate { get; init; }
-}
-
-/// <summary>Pre-built metadata for one query plan inspection node.
-/// Created during IL emission, immutable, shared across cached executions.
-/// At inspection time, each entry becomes a QueryInspectionNode with
-/// runtime telemetry attached.</summary>
-public sealed class InspectionOp
-{
-    public string Name;
-    public string Dispatch;
-    public string FieldName;
-    public string Term;
-    public string Term2;
-    public string ClauseType;
-    public string Terms;
-    public bool IsNegated;
-    public long EstimatedCardinality;
-
-    /// <summary>True when this op is part of an AND-group inside an OR chain.
-    /// Used to nest these ops under an "AND-Group" node in the inspection tree.</summary>
-    public bool InsideAndGroup;
 }

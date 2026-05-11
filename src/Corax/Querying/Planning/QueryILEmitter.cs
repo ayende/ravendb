@@ -3,7 +3,6 @@ using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
-using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
 using Corax.Querying.Matches;
@@ -33,9 +32,9 @@ public static class QueryIlEmitter
     private static readonly MethodInfo GetTimestamp =
         typeof(Stopwatch).GetMethod(nameof(Stopwatch.GetTimestamp))!;
     private static readonly MethodInfo RecordTiming =
-        typeof(EntryScanHelper).GetMethod(nameof(EntryScanHelper.RecordTiming))!;
+        typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.RecordTiming))!;
     private static readonly MethodInfo RecordResultCount =
-        typeof(EntryScanHelper).GetMethod(nameof(EntryScanHelper.RecordResultCount))!;
+        typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.RecordResultCount))!;
 
     // IQueryMatch
     private static readonly MethodInfo MatchCountGetter = typeof(IQueryMatch).GetProperty(nameof(IQueryMatch.Count))!.GetGetMethod()!;
@@ -1061,28 +1060,4 @@ public static class QueryIlEmitter
 
     private static void EmptyExecute(CompiledQueryMatch ctx) { }
 
-}
-
-/// <summary>
-/// Helper methods called by emitted IL for timing and result tracking.
-/// </summary>
-public static class EntryScanHelper
-{
-    /// <summary>Record timing for a plan op. Called by emitted IL.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void RecordTiming(CompiledQueryMatch ctx, int opIndex, long startTick)
-    {
-        var timings = ctx.Timings;
-        if (timings != null && opIndex < timings.Length)
-            timings[opIndex] = Stopwatch.GetTimestamp() - startTick;
-    }
-
-    /// <summary>Record bitmap result count after a plan op. Called by emitted IL.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void RecordResultCount(CompiledQueryMatch ctx, int opIndex)
-    {
-        var resultCounts = ctx.ResultCounts;
-        if (resultCounts != null && opIndex < resultCounts.Length)
-            resultCounts[opIndex] = ctx.Bitmaps[0].Count;
-    }
 }
