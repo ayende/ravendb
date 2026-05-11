@@ -33,31 +33,31 @@ public static class QueryPrimitives
     // emitter just pushes ldarg.0 + int constants — no per-field ldfld chains.
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void CtxFillFromTermSource(Matches.CompiledQueryMatch ctx, int paramIndex)
-        => FillBitmapFromTermSource(ref ctx.TermSources[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ctx.Limit);
+    public static void CtxFillFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex)
+        => FillBitmapFromPostingSource(ref ctx.TermSources[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ctx.Limit);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void CtxFillFromTermsProvider(Matches.CompiledQueryMatch ctx, int paramIndex)
-        => FillBitmapFromTermsProvider(ctx.TermsProviders[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ctx.Limit);
+    public static void CtxFillFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex)
+        => FillBitmapFromTreeScan(ctx.TermsProviders[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ctx.Limit);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxFillFromMatch(Matches.CompiledQueryMatch ctx, int paramIndex)
         => FillFromMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[0], ctx.Limit);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void CtxOrFillFromTermSource(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
+    public static void CtxOrFillFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
         long remaining = bitmapSlot == 0 ? ctx.Limit - ctx.Bitmaps[0].Count : ctx.Limit;
         if (remaining <= 0) return;
-        FillBitmapFromTermSource(ref ctx.TermSources[paramIndex], ctx.Llt, ref ctx.Bitmaps[bitmapSlot], remaining);
+        FillBitmapFromPostingSource(ref ctx.TermSources[paramIndex], ctx.Llt, ref ctx.Bitmaps[bitmapSlot], remaining);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void CtxOrFillFromTermsProvider(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
+    public static void CtxOrFillFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
         long remaining = bitmapSlot == 0 ? ctx.Limit - ctx.Bitmaps[0].Count : ctx.Limit;
         if (remaining <= 0) return;
-        FillBitmapFromTermsProvider(ctx.TermsProviders[paramIndex], ctx.Llt, ref ctx.Bitmaps[bitmapSlot], remaining);
+        FillBitmapFromTreeScan(ctx.TermsProviders[paramIndex], ctx.Llt, ref ctx.Bitmaps[bitmapSlot], remaining);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -69,24 +69,24 @@ public static class QueryPrimitives
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void CtxAndFromTermSource(Matches.CompiledQueryMatch ctx, int paramIndex)
-        => AndWithTermSource(ref ctx.TermSources[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1], ctx.Limit);
+    public static void CtxAndFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex)
+        => AndWithPostingSource(ref ctx.TermSources[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1], ctx.Limit);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void CtxAndFromTermsProvider(Matches.CompiledQueryMatch ctx, int paramIndex)
-        => AndBitmapWithTermsProvider(ctx.TermsProviders[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
+    public static void CtxAndFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex)
+        => AndBitmapWithTreeScan(ctx.TermsProviders[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndFromMatch(Matches.CompiledQueryMatch ctx, int paramIndex)
         => AndWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void CtxAndNotFromTermSource(Matches.CompiledQueryMatch ctx, int paramIndex)
-        => AndNotWithTermSource(ref ctx.TermSources[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
+    public static void CtxAndNotFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex)
+        => AndNotWithPostingSource(ref ctx.TermSources[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void CtxAndNotFromTermsProvider(Matches.CompiledQueryMatch ctx, int paramIndex)
-        => AndNotBitmapWithTermsProvider(ctx.TermsProviders[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
+    public static void CtxAndNotFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex)
+        => AndNotBitmapWithTreeScan(ctx.TermsProviders[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndNotFromMatch(Matches.CompiledQueryMatch ctx, int paramIndex)
@@ -363,7 +363,7 @@ public static class QueryPrimitives
     /// Single → Add; SmallPostingList → decode FastPFor buffer + AddRange;
     /// PostingList → <see cref="FillFromPostings"/>; Empty → no-op.</summary>
     [SkipLocalsInit]
-    public static void FillBitmapFromTermSource(
+    public static void FillBitmapFromPostingSource(
         ref Planning.PostingSource source,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
@@ -396,7 +396,7 @@ public static class QueryPrimitives
     /// the smaller cases. Empty source clears the bitmap (intersection with
     /// nothing = nothing).</summary>
     [SkipLocalsInit]
-    public static void AndWithTermSource(
+    public static void AndWithPostingSource(
         ref Planning.PostingSource source,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
@@ -442,7 +442,7 @@ public static class QueryPrimitives
     /// <summary>ANDNOT the bitmap with a TermSource (subtract). Empty source is
     /// a no-op (subtracting nothing).</summary>
     [SkipLocalsInit]
-    public static void AndNotWithTermSource(
+    public static void AndNotWithPostingSource(
         ref Planning.PostingSource source,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
@@ -472,7 +472,7 @@ public static class QueryPrimitives
     }
 
     /// <summary>Materialize a Single or SmallPostingList TermSource into the temp bitmap
-    /// (clears it first). Shared by AndWithTermSource and AndNotWithTermSource to avoid
+    /// (clears it first). Shared by AndWithPostingSource and AndNotWithPostingSource to avoid
     /// duplicating the clear-then-populate pattern for these small-source cases.</summary>
     private static void MaterializeTermSourceIntoBitmap(
         ref Planning.PostingSource source,
@@ -530,7 +530,7 @@ public static class QueryPrimitives
     /// Partitioning is branchless: (id &amp; EnsureIsSingleMask) yields the bucket index.
     /// </summary>
     [SkipLocalsInit]
-    public static unsafe void FillBitmapFromTermsProvider(
+    public static unsafe void FillBitmapFromTreeScan(
         ITermsProvider provider,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
@@ -648,7 +648,7 @@ public static class QueryPrimitives
     /// <summary>AND the bitmap with the union of all posting lists produced by the term provider.
     /// Fills a scratch bitmap from the provider, then ANDs the result bitmap with it.
     /// If the provider produces no matches, the bitmap is cleared.</summary>
-    public static void AndBitmapWithTermsProvider(
+    public static void AndBitmapWithTreeScan(
         ITermsProvider provider,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
@@ -657,7 +657,7 @@ public static class QueryPrimitives
         if (bitmap.IsEmpty)
             return;
         tempBitmap.Clear();
-        FillBitmapFromTermsProvider(provider, llt, ref tempBitmap);
+        FillBitmapFromTreeScan(provider, llt, ref tempBitmap);
         if (tempBitmap.IsEmpty)
         {
             bitmap.Clear();
@@ -668,7 +668,7 @@ public static class QueryPrimitives
 
     /// <summary>ANDNOT the bitmap with the union of all posting lists produced by the term provider
     /// (subtract matching entries). If the provider produces no matches, the bitmap is unchanged.</summary>
-    public static void AndNotBitmapWithTermsProvider(
+    public static void AndNotBitmapWithTreeScan(
         ITermsProvider provider,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
@@ -677,7 +677,7 @@ public static class QueryPrimitives
         if (bitmap.IsEmpty)
             return;
         tempBitmap.Clear();
-        FillBitmapFromTermsProvider(provider, llt, ref tempBitmap);
+        FillBitmapFromTreeScan(provider, llt, ref tempBitmap);
         if (tempBitmap.IsEmpty)
             return; // subtracting nothing is a no-op
         bitmap.AndNotWith(ref tempBitmap);

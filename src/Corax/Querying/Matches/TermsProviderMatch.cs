@@ -129,7 +129,7 @@ public sealed class TermsProviderMatch : IBitmapQueryMatch
         if (_initialized)
             return;
         _bitmap.Clear();
-        QueryPrimitives.FillBitmapFromTermsProvider(_provider, _llt, ref _bitmap);
+        QueryPrimitives.FillBitmapFromTreeScan(_provider, _llt, ref _bitmap);
         _bitmap.PrepareForReading();
         _iterator = _bitmap.GetIterator();
         _initialized = true;

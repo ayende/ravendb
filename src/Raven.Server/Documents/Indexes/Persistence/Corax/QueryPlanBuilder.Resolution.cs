@@ -1013,7 +1013,7 @@ internal static partial class QueryPlanBuilder
 
     /// <summary>Create a pre-materialized <see cref="BitmapMatch"/> for a NotEquals clause
     /// appearing in an OR chain. OR(NOT X, NOT Y, ...) cannot use the raw term posting list
-    /// (FillBitmapFromTermSource would add entries WITH X, not WITHOUT X). Instead, we
+    /// (FillBitmapFromPostingSource would add entries WITH X, not WITHOUT X). Instead, we
     /// pre-compute AllEntries ANDNOT TermQuery(X) into a BitmapMatch so that FillFromMatch
     /// during execution correctly ORs in the set of entries NOT having X.</summary>
     private static IQueryMatch CreateNotEqualsOrMatch(ClauseInfo clause, ClauseExecution exec, IndexSearcher indexSearcher,

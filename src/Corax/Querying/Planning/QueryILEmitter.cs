@@ -118,17 +118,17 @@ public static class QueryIlEmitter
         typeof(Slice).GetMethod(nameof(Slice.AsReadOnlySpan))!;
 
     // Ctx-based entry points — take ref CompiledQueryMatch, IL just pushes ldarg.0 + int constants
-    private static readonly MethodInfo CtxFillFromTermSource = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxFillFromTermSource))!;
-    private static readonly MethodInfo CtxFillFromTermsProvider = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxFillFromTermsProvider))!;
+    private static readonly MethodInfo CtxFillFromPostingSource = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxFillFromPostingSource))!;
+    private static readonly MethodInfo CtxFillFromTreeScan = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxFillFromTreeScan))!;
     private static readonly MethodInfo CtxFillFromMatch = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxFillFromMatch))!;
-    private static readonly MethodInfo CtxOrFillFromTermSource = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxOrFillFromTermSource))!;
-    private static readonly MethodInfo CtxOrFillFromTermsProvider = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxOrFillFromTermsProvider))!;
+    private static readonly MethodInfo CtxOrFillFromPostingSource = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxOrFillFromPostingSource))!;
+    private static readonly MethodInfo CtxOrFillFromTreeScan = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxOrFillFromTreeScan))!;
     private static readonly MethodInfo CtxOrFillFromMatch = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxOrFillFromMatch))!;
-    private static readonly MethodInfo CtxAndFromTermSource = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndFromTermSource))!;
-    private static readonly MethodInfo CtxAndFromTermsProvider = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndFromTermsProvider))!;
+    private static readonly MethodInfo CtxAndFromPostingSource = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndFromPostingSource))!;
+    private static readonly MethodInfo CtxAndFromTreeScan = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndFromTreeScan))!;
     private static readonly MethodInfo CtxAndFromMatch = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndFromMatch))!;
-    private static readonly MethodInfo CtxAndNotFromTermSource = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndNotFromTermSource))!;
-    private static readonly MethodInfo CtxAndNotFromTermsProvider = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndNotFromTermsProvider))!;
+    private static readonly MethodInfo CtxAndNotFromPostingSource = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndNotFromPostingSource))!;
+    private static readonly MethodInfo CtxAndNotFromTreeScan = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndNotFromTreeScan))!;
     private static readonly MethodInfo CtxAndNotFromMatch = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndNotFromMatch))!;
 
     // Slice.AsReadOnlySpan() is used by EmitSliceComparison to load parameter values.
@@ -215,10 +215,10 @@ public static class QueryIlEmitter
             {
                 MatchDispatch.PostingList => (
                     $"ctx.TermSources[{op.ParamIndex}]",
-                    CtxFillFromTermSource, CtxAndFromTermSource, CtxOrFillFromTermSource, CtxAndNotFromTermSource),
+                    CtxFillFromPostingSource, CtxAndFromPostingSource, CtxOrFillFromPostingSource, CtxAndNotFromPostingSource),
                 MatchDispatch.TreeScan => (
                     $"ctx.TermsProviders[{op.ParamIndex}]",
-                    CtxFillFromTermsProvider, CtxAndFromTermsProvider, CtxOrFillFromTermsProvider, CtxAndNotFromTermsProvider),
+                    CtxFillFromTreeScan, CtxAndFromTreeScan, CtxOrFillFromTreeScan, CtxAndNotFromTreeScan),
                 _ => (
                     $"ctx.ResolvedMatches[{op.ParamIndex}]",
                     CtxFillFromMatch, CtxAndFromMatch, (MethodInfo)CtxOrFillFromMatch, CtxAndNotFromMatch)
