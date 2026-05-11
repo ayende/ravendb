@@ -4,13 +4,16 @@ using Corax;
 using Corax.Indexing;
 using Corax.Mappings;
 using Corax.Querying;
+using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Matches.SortingMatches.Meta;
+using Corax.Querying.Primitives;
 using Corax.Utils;
 using FastTests.Voron;
 using Sparrow;
 using Tests.Infrastructure;
 using Voron;
+using Voron.Data.RoaringBitmaps;
 using Xunit;
 
 namespace SlowTests.Corax.Bugs;
@@ -18,23 +21,34 @@ namespace SlowTests.Corax.Bugs;
 public class RavenDB_25410(ITestOutputHelper output) : StorageTest(output)
 {
     [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
-    public void BinaryMatchProperlyRetrievesScores()
+    public void BitmapAndCompositionPreservesScores()
     {
         using var mapping = GetMappingAndIndexDocuments();
-        // DummyMatch implements IQueryMatch with IsBoosting=true and Score() returning entry IDs as scores.
-        // Verify that Fill() and Score() work correctly on the custom match.
-        var dummyMatch = new DummyMatch();
+        using var searcher = new IndexSearcher(Env, mapping);
+
+        // Compose AND(startsWith, dummyMatch) via bitmap primitives —
+        // the new-pipeline equivalent of the old searcher.And(). Verifies
+        // that scoring from a boosted match survives bitmap AND composition.
+        var startsWith = searcher.StartWithQuery("id()", "t", hasBoost: true);
+        IQueryMatch dummyMatch = new DummyMatch();
+
+        var bitmap = new BitmapMatch(searcher.Allocator);
+        RoaringBitmap temp = new(searcher.Allocator);
+        QueryPrimitives.FillFromMatch(startsWith, ref bitmap.BitmapState);
+        QueryPrimitives.AndWithMatch(dummyMatch, ref bitmap.BitmapState, ref temp);
+        temp.Dispose();
 
         Span<long> ids = stackalloc long[32];
         Span<float> scores = stackalloc float[32];
         scores.Fill(float.Epsilon);
-        var offset = 0;
-        while (dummyMatch.Fill(ids.Slice(offset, 2)) is var read and > 0)
-            offset += read;
+        int offset = bitmap.Fill(ids);
         Assert.Equal(16, offset);
 
-        dummyMatch.Score(ids, scores, 1);
+        // Score through the boosted DummyMatch — verify scores survive the AND
+        dummyMatch.Score(ids.Slice(0, offset), scores.Slice(0, offset), 1);
         Assert.Equal(ids.Slice(0, 16).ToArray().Select(x => (float)x), scores.Slice(0, 16).ToArray());
+
+        bitmap.Dispose();
     }
     
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]

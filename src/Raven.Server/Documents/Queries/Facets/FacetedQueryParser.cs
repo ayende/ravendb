@@ -496,7 +496,7 @@ namespace Raven.Server.Documents.Queries.Facets
 
                     return lowValueRange == UnaryMatchOperation.GreaterThan
                         ? searcher.GreaterThanQuery(metadata, LowValue, forward)
-                        : searcher.GreatThanOrEqualsQuery(metadata, LowValue, forward);
+                        : searcher.GreaterThanOrEqualsQuery(metadata, LowValue, forward);
                 }
 
                 if (type is RangeType.Double or RangeType.Long)

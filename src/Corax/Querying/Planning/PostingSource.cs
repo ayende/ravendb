@@ -5,7 +5,7 @@ namespace Corax.Querying.Planning;
 /// <summary>Three-way native posting-list source attached to term op.
 /// Mirrors the encoding used by <see cref="ITermsProvider.FillPostingListIds"/>:
 /// the low 2 bits of a CompactTree value distinguish Single / SmallPostingList /
-/// PostingList. Resolved up-front by <c>ResolvePostingSources</c>; consumed by
+/// PostingList. Resolved up-front by <c>ResolveTermSources</c>; consumed by
 /// <c>FillBitmapFromPostingSource</c> / <c>AndWithPostingSource</c> /
 /// <c>AndNotWithPostingSource</c> at execution time.</summary>
 public struct PostingSource
