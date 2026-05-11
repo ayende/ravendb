@@ -55,7 +55,6 @@ public static class QueryIlEmitter
     private static readonly MethodInfo CountGetter = typeof(RoaringBitmap).GetProperty(nameof(RoaringBitmap.Count))!.GetGetMethod()!;
     private static readonly MethodInfo RepairAfterLazy =
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.RepairAfterLazy), Type.EmptyTypes)!;
-    private static readonly MethodInfo BitmapCountGetter = typeof(RoaringBitmap).GetProperty(nameof(RoaringBitmap.Count))!.GetGetMethod()!;
     private static readonly MethodInfo SwapContents =
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.SwapContents),
             [typeof(RoaringBitmap).MakeByRefType()])!;
@@ -336,7 +335,7 @@ public static class QueryIlEmitter
                     entryScanOpIndex = i;
 
                     EmitLoadBitmapRef(il, 0);
-                    il.Emit(OpCodes.Call, BitmapCountGetter);
+                    il.Emit(OpCodes.Call, CountGetter);
                     il.Emit(OpCodes.Conv_I8);
                     EmitLoadMatch(il, op.ParamIndex);
                     il.Emit(OpCodes.Callvirt, MatchCountGetter);
