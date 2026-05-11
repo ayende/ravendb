@@ -491,8 +491,7 @@ internal static partial class QueryPlanBuilder
                 {
                     // Literal value
                     var rawValue = ve.GetValue(queryParameters);
-                    bool hasTime = false;
-                    var (resolved, resolvedType) = ResolveInValue(rawValue, ve.Value, ref hasTime);
+                    var (resolved, resolvedType) = ResolveInValue(rawValue, ve.Value);
                     inBindings.Add(new ParameterBinding { LiteralValue = resolved, LiteralType = ToParamValueType(resolvedType) });
                 }
             }
@@ -621,8 +620,9 @@ internal static partial class QueryPlanBuilder
                 else
                     spatialFieldName = QueryBuilderHelper.ExtractIndexFieldName(metadata.Query, queryParameters, method.Arguments[0], metadata);
 
-                var shapeExpr = method.Arguments[1] as MethodExpression;
-                var shapeType = shapeExpr != null ? QueryMethod.GetMethodType(shapeExpr.Name.Value) : MethodType.Unknown;
+                var shapeExpr = method.Arguments[1] as MethodExpression
+                    ?? throw new InvalidQueryException($"Spatial shape argument must be a method expression (spatial.circle or spatial.wkt), but got: {method.Arguments[1].Type}");
+                var shapeType = QueryMethod.GetMethodType(shapeExpr.Name.Value);
 
                 // Build spatial bindings: [0]=distErrPct, then shape-specific args
                 List<ParameterBinding> spatialBindings =
@@ -908,29 +908,19 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>Resolve an IN value to its native type, handling booleans and dates.</summary>
-    private static (object Value, ValueTokenType Type) ResolveInValue(object value, ValueTokenType literalType, ref bool hasTime)
+    private static (object Value, ValueTokenType Type) ResolveInValue(object value, ValueTokenType literalType)
     {
         if (value == null)
             return (null, ValueTokenType.String);
         if (value is bool b)
-            return (b ? "true" : "false", ValueTokenType.String); // booleans → lowercase strings
+            return (b ? "true" : "false", ValueTokenType.String);
         if (value is DateTime dt)
-        {
-            hasTime = true;
             return (dt.Ticks, ValueTokenType.Long);
-        }
         if (value is DateTimeOffset dto)
-        {
-            hasTime = true;
             return (dto.UtcDateTime.Ticks, ValueTokenType.Long);
-        }
         if (literalType != ValueTokenType.Parameter)
             return (value.ToString(), literalType);
-        // Parameter: detect native type
-        var (resolved, resolvedType) = ResolveParameterValue(value);
-        if (resolvedType == ValueTokenType.Long)
-            hasTime = true;
-        return (resolved, resolvedType);
+        return ResolveParameterValue(value);
     }
 
     // ── Cardinality estimation ───────────────────────────────────────────
@@ -1065,56 +1055,7 @@ internal static partial class QueryPlanBuilder
                 var itExec = executions[ci];
                 if ((it.ClauseType == ClauseType.In || it.ClauseType == ClauseType.AllIn) && (itExec.InTermCount > 0 || itExec.HasNullTerm))
                 {
-                    if (itExec.InTermCount > 0)
-                    {
-                        if (matchIndex == 0)
-                        {
-                            // First clause — Fill the first term, then OR the rest
-                            ops.Add(new PlanOp
-                            {
-                                Kind = PlanOpKind.FillFromPostings,
-                                ParamIndex = matchIndex,
-                                EstimatedCardinality = itExec.Cardinality / itExec.InTermCount,
-                                Dispatch = MatchDispatch.PostingList
-                            });
-                            if (itExec.InTermCount > 1)
-                            {
-                                ops.Add(new PlanOp
-                                {
-                                    Kind = PlanOpKind.OrRange,
-                                    ParamIndex = matchIndex + 1,
-                                    ParamIndex2 = itExec.InTermCount - 1,
-                                    BitmapLocal = 0,
-                                    EstimatedCardinality = itExec.Cardinality,
-                                    Dispatch = MatchDispatch.PostingList
-                                });
-                            }
-                        }
-                        else
-                        {
-                            // Non-first clause — OR all terms (bitmap already has data)
-                            ops.Add(new PlanOp
-                            {
-                                Kind = PlanOpKind.OrRange,
-                                ParamIndex = matchIndex,
-                                ParamIndex2 = itExec.InTermCount,
-                                BitmapLocal = 0,
-                                EstimatedCardinality = itExec.Cardinality,
-                                Dispatch = MatchDispatch.PostingList
-                            });
-                        }
-                        matchIndex += itExec.InTermCount;
-                    }
-                    if (itExec.HasNullTerm)
-                    {
-                        ops.Add(new PlanOp
-                        {
-                            Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
-                            ParamIndex = matchIndex,
-                            Dispatch = MatchDispatch.QueryMatch
-                        });
-                        matchIndex++;
-                    }
+                    EmitInOps(ops, itExec, bitmapLocal: 0, isSeed: matchIndex == 0, ref matchIndex);
                 }
                 else if (it.ClauseType == ClauseType.OrGroup && it.OrSubClauses != null)
                 {
@@ -1316,69 +1257,11 @@ internal static partial class QueryPlanBuilder
                 }
                 else if (clauses[0].ClauseType == ClauseType.In && (executions[0].InTermCount > 0 || executions[0].HasNullTerm))
                 {
-                    var terms = executions[0].InTermCount;
-                    if (terms > 0)
-                    {
-                        // Seed: Fill first term, OR the rest
-                        ops.Add(new PlanOp
-                        {
-                            Kind = PlanOpKind.FillFromPostings,
-                            ParamIndex = matchIndex,
-                            BitmapLocal = 0,
-                            EstimatedCardinality = executions[0].Cardinality / terms,
-                            Dispatch = MatchDispatch.PostingList
-                        });
-                        if (terms > 1)
-                        {
-                            ops.Add(new PlanOp
-                            {
-                                Kind = PlanOpKind.OrRange,
-                                ParamIndex = matchIndex + 1,
-                                ParamIndex2 = terms - 1,
-                                BitmapLocal = 0,
-                                EstimatedCardinality = executions[0].Cardinality,
-                                Dispatch = MatchDispatch.PostingList
-                            });
-                        }
-                        matchIndex += terms;
-                    }
-                    if (executions[0].HasNullTerm)
-                    {
-                        ops.Add(new PlanOp
-                        {
-                            Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
-                            ParamIndex = matchIndex,
-                            BitmapLocal = 0,
-                            Dispatch = MatchDispatch.QueryMatch
-                        });
-                        matchIndex++;
-                    }
+                    EmitInOps(ops, executions[0], bitmapLocal: 0, isSeed: true, ref matchIndex);
                 }
                 else if (clauses[0].ClauseType == ClauseType.AllIn && executions[0].InTermCount > 0)
                 {
-                    var terms = executions[0].InTermCount;
-                    // Fill first, then AND remaining via range op
-                    ops.Add(new PlanOp
-                    {
-                        Kind = PlanOpKind.FillFromPostings,
-                        ParamIndex = matchIndex,
-                        BitmapLocal = 0,
-                        EstimatedCardinality = executions[0].Cardinality / terms,
-                        Dispatch = MatchDispatch.PostingList
-                    });
-                    if (terms > 1)
-                    {
-                        ops.Add(new PlanOp
-                        {
-                            Kind = PlanOpKind.AndRange,
-                            ParamIndex = matchIndex + 1,
-                            ParamIndex2 = terms - 1,
-                            BitmapLocal = 0,
-                            EstimatedCardinality = executions[0].Cardinality,
-                            Dispatch = MatchDispatch.PostingList
-                        });
-                    }
-                    matchIndex += terms;
+                    EmitAllInOps(ops, executions[0], ref matchIndex);
                 }
                 else
                 {
@@ -1459,54 +1342,32 @@ internal static partial class QueryPlanBuilder
                 }
                 else if (clauses[i].ClauseType == ClauseType.In && (iExec.InTermCount > 0 || iExec.HasNullTerm))
                 {
-                    var terms = iExec.InTermCount;
+                    // OR all IN terms into bitmap[1], then AND (or ANDNOT) with bitmap[0].
+                    // isSeed: false — FillFromPostings always targets bitmap[0], so we use
+                    // OrRange which respects bitmapLocal. Bitmap[1] is freshly cleared.
                     ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 1 });
-                    if (terms > 0)
-                    {
-                        ops.Add(new PlanOp
-                        {
-                            Kind = PlanOpKind.OrRange,
-                            ParamIndex = matchIndex,
-                            ParamIndex2 = terms,
-                            BitmapLocal = 1,
-                            EstimatedCardinality = iExec.Cardinality,
-                            Dispatch = MatchDispatch.PostingList
-                        });
-                    }
-                    if (iExec.HasNullTerm)
-                    {
-                        ops.Add(new PlanOp
-                        {
-                            Kind = PlanOpKind.OrWithPostings,
-                            ParamIndex = matchIndex + terms,
-                            BitmapLocal = 1,
-                            Dispatch = MatchDispatch.QueryMatch
-                        });
-                    }
-                    var bitmapCombineKind = clauses[i].IsNegated ? PlanOpKind.AndNotBitmaps : PlanOpKind.AndBitmaps;
+                    EmitInOps(ops, iExec, bitmapLocal: 1, isSeed: false, ref matchIndex);
                     ops.Add(new PlanOp
                     {
-                        Kind = bitmapCombineKind,
+                        Kind = clauses[i].IsNegated ? PlanOpKind.AndNotBitmaps : PlanOpKind.AndBitmaps,
                         BitmapLocal = 0,
                         ParamIndex2 = 1
                     });
                     if (!clauses[i].IsNegated)
                         ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
-                    matchIndex += terms + (iExec.HasNullTerm ? 1 : 0);
                 }
                 else if (clauses[i].ClauseType == ClauseType.AllIn && iExec.InTermCount > 0)
                 {
-                    var terms = iExec.InTermCount;
                     ops.Add(new PlanOp
                     {
                         Kind = PlanOpKind.AndRange,
                         ParamIndex = matchIndex,
-                        ParamIndex2 = terms,
+                        ParamIndex2 = iExec.InTermCount,
                         BitmapLocal = 0,
                         EstimatedCardinality = iExec.Cardinality,
                         Dispatch = MatchDispatch.PostingList
                     });
-                    matchIndex += terms;
+                    matchIndex += iExec.InTermCount;
                 }
                 else
                 {
@@ -1598,6 +1459,90 @@ internal static partial class QueryPlanBuilder
     }
 
     // ── Plan helpers ─────────────────────────────────────────────────────
+
+    /// <summary>Emit ops for an IN clause: Fill first term + OrRange for the rest, plus null-term if needed.</summary>
+    private static void EmitInOps(List<PlanOp> ops, ClauseExecution exec, int bitmapLocal, bool isSeed, ref int matchIndex)
+    {
+        int terms = exec.InTermCount;
+        if (terms > 0)
+        {
+            if (isSeed)
+            {
+                ops.Add(new PlanOp
+                {
+                    Kind = PlanOpKind.FillFromPostings,
+                    ParamIndex = matchIndex,
+                    BitmapLocal = bitmapLocal,
+                    EstimatedCardinality = exec.Cardinality / terms,
+                    Dispatch = MatchDispatch.PostingList
+                });
+                if (terms > 1)
+                {
+                    ops.Add(new PlanOp
+                    {
+                        Kind = PlanOpKind.OrRange,
+                        ParamIndex = matchIndex + 1,
+                        ParamIndex2 = terms - 1,
+                        BitmapLocal = bitmapLocal,
+                        EstimatedCardinality = exec.Cardinality,
+                        Dispatch = MatchDispatch.PostingList
+                    });
+                }
+            }
+            else
+            {
+                ops.Add(new PlanOp
+                {
+                    Kind = PlanOpKind.OrRange,
+                    ParamIndex = matchIndex,
+                    ParamIndex2 = terms,
+                    BitmapLocal = bitmapLocal,
+                    EstimatedCardinality = exec.Cardinality,
+                    Dispatch = MatchDispatch.PostingList
+                });
+            }
+            matchIndex += terms;
+        }
+        if (exec.HasNullTerm)
+        {
+            bool isFirstOp = isSeed && exec.InTermCount == 0;
+            ops.Add(new PlanOp
+            {
+                Kind = isFirstOp ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
+                ParamIndex = matchIndex,
+                BitmapLocal = bitmapLocal,
+                Dispatch = MatchDispatch.QueryMatch
+            });
+            matchIndex++;
+        }
+    }
+
+    /// <summary>Emit ops for an AllIn clause: Fill first term + AndRange for the rest.</summary>
+    private static void EmitAllInOps(List<PlanOp> ops, ClauseExecution exec, ref int matchIndex)
+    {
+        int terms = exec.InTermCount;
+        ops.Add(new PlanOp
+        {
+            Kind = PlanOpKind.FillFromPostings,
+            ParamIndex = matchIndex,
+            BitmapLocal = 0,
+            EstimatedCardinality = exec.Cardinality / terms,
+            Dispatch = MatchDispatch.PostingList
+        });
+        if (terms > 1)
+        {
+            ops.Add(new PlanOp
+            {
+                Kind = PlanOpKind.AndRange,
+                ParamIndex = matchIndex + 1,
+                ParamIndex2 = terms - 1,
+                BitmapLocal = 0,
+                EstimatedCardinality = exec.Cardinality,
+                Dispatch = MatchDispatch.PostingList
+            });
+        }
+        matchIndex += terms;
+    }
 
     private static QueryExecution BuildAllEntriesPlan()
     {

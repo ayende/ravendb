@@ -421,10 +421,9 @@ internal static partial class QueryPlanBuilder
                     if (inRaw is BlittableJsonReaderArray arr)
                     {
                         // Array parameter — expand each element
-                        bool hasTime = false;
                         foreach (var elem in arr)
                         {
-                            var (elemVal, elemType) = ResolveInValue(elem, ValueTokenType.Parameter, ref hasTime);
+                            var (elemVal, elemType) = ResolveInValue(elem, ValueTokenType.Parameter);
                             resolvedValues.Add(elemVal);
                             termTypes.Add(ToParamValueType(elemType));
                             if (elemVal == null)
@@ -434,8 +433,7 @@ internal static partial class QueryPlanBuilder
                     else if (inRaw != null)
                     {
                         // Scalar parameter — single term
-                        bool hasTime = false;
-                        var (singleVal, singleType) = ResolveInValue(inRaw, ValueTokenType.Parameter, ref hasTime);
+                        var (singleVal, singleType) = ResolveInValue(inRaw, ValueTokenType.Parameter);
                         resolvedValues.Add(singleVal);
                         termTypes.Add(ToParamValueType(singleType));
                     }
@@ -525,6 +523,7 @@ internal static partial class QueryPlanBuilder
         }
         else // WKT: distErrPct, wkt, [units]
         {
+            sp.ShapeType = SpatialShapeType.Wkt;
             if (bindings.Length > BindingIndex.SpatialWkt && bindings[BindingIndex.SpatialWkt] != null)
             {
                 var (wkt, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialWkt], queryParameters);
