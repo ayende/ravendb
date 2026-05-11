@@ -34,7 +34,7 @@ public static class QueryPrimitives
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxFillFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex)
-        => FillBitmapFromPostingSource(ref ctx.TermSources[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ctx.Limit);
+        => FillBitmapFromPostingSource(ref ctx.PostingSources[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ctx.Limit);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxFillFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex)
@@ -49,7 +49,7 @@ public static class QueryPrimitives
     {
         long remaining = bitmapSlot == 0 ? ctx.Limit - ctx.Bitmaps[0].Count : ctx.Limit;
         if (remaining <= 0) return;
-        FillBitmapFromPostingSource(ref ctx.TermSources[paramIndex], ctx.Llt, ref ctx.Bitmaps[bitmapSlot], remaining);
+        FillBitmapFromPostingSource(ref ctx.PostingSources[paramIndex], ctx.Llt, ref ctx.Bitmaps[bitmapSlot], remaining);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -70,7 +70,7 @@ public static class QueryPrimitives
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex)
-        => AndWithPostingSource(ref ctx.TermSources[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1], ctx.Limit);
+        => AndWithPostingSource(ref ctx.PostingSources[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1], ctx.Limit);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex)
@@ -82,7 +82,7 @@ public static class QueryPrimitives
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndNotFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex)
-        => AndNotWithPostingSource(ref ctx.TermSources[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
+        => AndNotWithPostingSource(ref ctx.PostingSources[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndNotFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex)

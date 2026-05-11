@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Planning;
@@ -11,29 +10,40 @@ using Voron.Impl;
 
 namespace Corax.Querying.Matches;
 
-public class CompiledQueryMatch : IBitmapQueryMatch, IDisposable
+public class CompiledQueryMatch(
+    CompiledPlan compiledPlan,
+    int bitmapCount,
+    int opCount,
+    IQueryMatch[] resolvedMatches,
+    PostingSource[] postingSources,
+    ITermsProvider[] termsProviders,
+    long[] longParams,
+    double[] doubleParams,
+    Slice[] sliceParams,
+    long[] fieldRootPages,
+    IndexSearcher searcher,
+    ByteStringContext allocator,
+    CancellationToken token)
+    : IBitmapQueryMatch, IDisposable
 {
-    private readonly QueryIlEmitter.CompiledExecuteDelegate _compiledDelegate;
-    public readonly IQueryMatch[] ResolvedMatches;
-    public readonly PostingSource[] TermSources;
-    public readonly ITermsProvider[] TermsProviders;
-    public readonly long[] LongParams;
-    public readonly double[] DoubleParams;
-    public readonly Slice[] SliceParams;
-    public readonly long[] FieldRootPages;
-    private readonly string _explainSource;
-    private readonly ByteStringContext _allocator;
-    public readonly IndexSearcher Searcher;
-    private readonly int _bitmapCount;
-    private readonly int _opCount;
-    public readonly CancellationToken Token;
+    private readonly QueryIlEmitter.CompiledExecuteDelegate _compiledDelegate = compiledPlan.CompiledDelegate;
+    public readonly IQueryMatch[] ResolvedMatches = resolvedMatches;
+    public readonly PostingSource[] PostingSources = postingSources;
+    public readonly ITermsProvider[] TermsProviders = termsProviders;
+    public readonly long[] LongParams = longParams;
+    public readonly double[] DoubleParams = doubleParams;
+    public readonly Slice[] SliceParams = sliceParams;
+    public readonly long[] FieldRootPages = fieldRootPages;
+    private readonly string _explainSource = compiledPlan.ExplainSource;
+    public readonly IndexSearcher Searcher = searcher;
+    public readonly CancellationToken Token = token;
 
-    private RoaringBitmap _bitmapData;
+    private RoaringBitmap _bitmapData = new(allocator);
     private RoaringBitmapIterator _iterator;
     private bool _executed;
-    private long _count;
+    private long _count = -1;
 
-    // Bitmap pool: [0] = main result, [1..N] = scratch.
+    // Bitmap pool: [0] = main result, [1 ... N] = scratch.
     // Allocated once in Execute(), then accessed by the compiled delegate via IL.
     public RoaringBitmap[] Bitmaps;
 
@@ -44,40 +54,12 @@ public class CompiledQueryMatch : IBitmapQueryMatch, IDisposable
     /// When set, FillFromPostings stops after limit entries and OR branches are
     /// skipped once the bitmap has enough. Set to long.MaxValue when an ORDER BY
     /// is present (sorting needs the full bitmap for Contains checks).</summary>
-    public long Limit;
+    public long Limit = long.MaxValue;
 
     // Telemetry — populated during Execute if timings are requested
     public long[] Timings;
     public long[] ResultCounts;
     public int EntryScanTakenAtOp;
-
-    public CompiledQueryMatch(CompiledPlan compiledPlan, int bitmapCount, int opCount,
-        IQueryMatch[] resolvedMatches, PostingSource[] termSources, ITermsProvider[] termsProviders,
-        long[] longParams, double[] doubleParams, Slice[] sliceParams, long[] fieldRootPages,
-        IndexSearcher searcher, ByteStringContext allocator, CancellationToken token)
-    {
-        _compiledDelegate = compiledPlan.CompiledDelegate;
-        _bitmapCount = bitmapCount;
-        _opCount = opCount;
-        ResolvedMatches = resolvedMatches;
-        TermSources = termSources;
-        TermsProviders = termsProviders;
-        LongParams = longParams;
-        DoubleParams = doubleParams;
-        SliceParams = sliceParams;
-        FieldRootPages = fieldRootPages;
-        _explainSource = compiledPlan.ExplainSource;
-        _allocator = allocator;
-        Searcher = searcher;
-        Token = token;
-        Limit = long.MaxValue;
-        _bitmapData = new RoaringBitmap(allocator);
-        Bitmaps = null;
-        Llt = null;
-        _iterator = default;
-        _executed = false;
-        _count = -1;
-    }
 
     public long Count
     {
@@ -94,11 +76,9 @@ public class CompiledQueryMatch : IBitmapQueryMatch, IDisposable
     {
         get
         {
-            if (ResolvedMatches == null)
-                return false;
-            for (int i = 0; i < ResolvedMatches.Length; i++)
+            foreach (var it in ResolvedMatches ?? [])
             {
-                if (ResolvedMatches[i].IsBoosting)
+                if (it.IsBoosting)
                     return true;
             }
             return false;
@@ -154,22 +134,19 @@ public class CompiledQueryMatch : IBitmapQueryMatch, IDisposable
         // Cannot use AndWithSorted: callers (SortUsingIndexFromBitmap) pass entry IDs
         // in sort-field order (e.g. alphabetical by Name), not in entry-ID order.
         int kept = 0;
-        for (int i = 0; i < matches; i++)
+        foreach(var cur in buffer[..matches])
         {
-            if (_bitmapData.Contains(buffer[i]))
-                buffer[kept++] = buffer[i];
+            if (_bitmapData.Contains(cur))
+                buffer[kept++] = cur;
         }
         return kept;
     }
 
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)
     {
-        if (ResolvedMatches == null)
-            return;
-
-        for (int i = 0; i < ResolvedMatches.Length; i++)
+        foreach (var it in ResolvedMatches ?? [])
         {
-            ResolvedMatches[i].Score(matches, scores, boostFactor);
+            it.Score(matches, scores, boostFactor);
         }
     }
 
@@ -191,7 +168,7 @@ public class CompiledQueryMatch : IBitmapQueryMatch, IDisposable
         if (EntryScanTakenAtOp >= 0)
             parameters["EntryScanAt"] = EntryScanTakenAtOp.ToString();
 
-        if (Timings != null && Timings.Length > 0)
+        if (Timings is { Length: > 0 })
         {
             double tickFreq = System.Diagnostics.Stopwatch.Frequency / 1000.0; // ticks per ms
             for (int i = 0; i < Timings.Length; i++)
@@ -206,8 +183,10 @@ public class CompiledQueryMatch : IBitmapQueryMatch, IDisposable
         var children = new List<QueryInspectionNode>();
         if (ResolvedMatches != null)
         {
-            for (int i = 0; i < ResolvedMatches.Length; i++)
-                children.Add(ResolvedMatches[i].Inspect());
+            foreach (var it in ResolvedMatches)
+            {
+                children.Add(it.Inspect());
+            }
         }
 
         return new QueryInspectionNode("CompiledQuery", parameters: parameters, children: children);
@@ -219,20 +198,23 @@ public class CompiledQueryMatch : IBitmapQueryMatch, IDisposable
     {
         if (_executed) return;
 
-        // Allocate bitmap pool: [0] = main, [1..N] = scratch
-        if (Bitmaps == null || Bitmaps.Length < _bitmapCount)
-            Bitmaps = new RoaringBitmap[_bitmapCount];
+        // Allocate bitmap pool: [0] = main, [1 ... N] = scratch
+        if (Bitmaps == null || Bitmaps.Length < bitmapCount)
+            Bitmaps = new RoaringBitmap[bitmapCount];
 
-        for (int i = 0; i < Bitmaps.Length; i++) Bitmaps[i] = new RoaringBitmap(_allocator);
         Bitmaps[0] = _bitmapData; // main bitmap (owned by this struct)
+        for (int i = 1; i < Bitmaps.Length; i++)
+        {
+            Bitmaps[i] = new RoaringBitmap(allocator);
+        }
 
         // Cache LLT for the delegate
         Llt = Searcher.Transaction.LowLevelTransaction;
 
         // Only allocate timing arrays when telemetry is requested (opCount > 0).
         // Caller passes opCount = 0 to skip allocation.
-        Timings = _opCount > 0 ? new long[_opCount] : null;
-        ResultCounts = _opCount > 0 ? new long[_opCount] : null;
+        Timings = opCount > 0 ? new long[opCount] : null;
+        ResultCounts = opCount > 0 ? new long[opCount] : null;
         EntryScanTakenAtOp = -1;
 
         try

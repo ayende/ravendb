@@ -22,7 +22,7 @@ public static class QueryIlEmitter
 
     // CompiledQueryMatch fields (accessed by emitted IL)
     private static readonly FieldInfo CtxBitmaps = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Bitmaps));
-    private static readonly FieldInfo CtxTermSources = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.TermSources));
+    private static readonly FieldInfo CtxTermSources = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.PostingSources));
     private static readonly FieldInfo CtxLlt = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Llt));
     private static readonly FieldInfo CtxSearcher = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Searcher));
     private static readonly FieldInfo CtxToken = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Token));
