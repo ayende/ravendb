@@ -625,11 +625,12 @@ internal static partial class QueryPlanBuilder
                 var shapeType = shapeExpr != null ? QueryMethod.GetMethodType(shapeExpr.Name.Value) : MethodType.Unknown;
 
                 // Build spatial bindings: [0]=distErrPct, then shape-specific args
-                var spatialBindings = new List<ParameterBinding>();
-                // distanceErrorPct (3rd argument, optional)
-                spatialBindings.Add(method.Arguments.Count == 3
-                    ? CreateBinding(method.Arguments[2], queryParameters)
-                    : null);
+                List<ParameterBinding> spatialBindings =
+                [
+                    method.Arguments.Count == 3
+                        ? CreateBinding(method.Arguments[2], queryParameters)
+                        : null
+                ];
 
                 bool isCircle = shapeType == MethodType.Spatial_Circle;
                 if (isCircle && shapeExpr.Arguments.Count >= 3)
@@ -828,52 +829,7 @@ internal static partial class QueryPlanBuilder
         return false;
     }
 
-    /// <summary>Resolve a query expression to its native typed value + type tag.
-    /// Parameters are resolved from the blittable; literals are returned directly.
-    /// No ToString — callers that need a string form call <see cref="FormatValue"/>.</summary>
-    private static (object Value, ValueTokenType Type) ResolveTermValue(QueryExpression expr, BlittableJsonReaderObject queryParameters)
-    {
-        return ResolveTermValue(expr, queryParameters, out _);
-    }
-
-    /// <summary>Resolve a query expression to its native typed value + type tag,
-    /// also returning the parameter name (if the expression is a parameter reference).
-    /// <paramref name="parameterName"/> is null for literals, non-null for $parameters.</summary>
-    private static (object Value, ValueTokenType Type) ResolveTermValue(QueryExpression expr, BlittableJsonReaderObject queryParameters, out string parameterName)
-    {
-        parameterName = null;
-        if (expr is ValueExpression ve)
-        {
-            var valueType = ve.Value;
-            var value = ve.GetValue(queryParameters);
-            if (value is bool b)
-                return (b ? "true" : "false", ValueTokenType.String); // Corax stores booleans as lowercase strings
-            if (valueType == ValueTokenType.Parameter)
-            {
-                parameterName = ve.Token.Value;
-                if (value != null)
-                    return ResolveParameterValue(value);
-                return (null, ValueTokenType.String);
-            }
-            // For non-parameter literals, coerce to native type when the token says so
-            if (valueType == ValueTokenType.Long && value != null)
-            {
-                if (value is long l) return (l, ValueTokenType.Long);
-                if (long.TryParse(value.ToString(), out long parsed)) return (parsed, ValueTokenType.Long);
-            }
-            if (valueType == ValueTokenType.Double && value != null)
-            {
-                if (value is double d) return (d, ValueTokenType.Double);
-                if (double.TryParse(value.ToString(), System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out double parsed))
-                    return (parsed, ValueTokenType.Double);
-            }
-            return (value?.ToString(), valueType);
-        }
-        return (null, ValueTokenType.Null);
-    }
-
-    /// <summary>Detect the native type of resolved SCALAR parameter value.
+    /// <summary>Detect the native type of a resolved SCALAR parameter value.
     /// Must not be called with arrays or blittable objects — callers must check
     /// and handle those before calling this method.</summary>
     private static (object Value, ValueTokenType Type) ResolveParameterValue(object value)
@@ -972,7 +928,7 @@ internal static partial class QueryPlanBuilder
             return (value.ToString(), literalType);
         // Parameter: detect native type
         var (resolved, resolvedType) = ResolveParameterValue(value);
-        if (resolvedType == ValueTokenType.Long && value is DateTime or DateTimeOffset)
+        if (resolvedType == ValueTokenType.Long)
             hasTime = true;
         return (resolved, resolvedType);
     }
@@ -1654,15 +1610,6 @@ internal static partial class QueryPlanBuilder
         };
     }
 
-    private static QueryExecution BuildEmptyPlan()
-    {
-        // Query that always returns 0 results (e.g. false AND X)
-        return new QueryExecution
-        {
-            Ops = [],
-        };
-    }
-
     /// <summary>Attach spatial and vector post-filter phases to a query plan.
     /// Spatial/vector clauses are stored in the plan's Clauses array at known indices,
     /// and SpatialFilters/VectorSelects reference those indices for resolution at execution time.</summary>
@@ -1748,7 +1695,7 @@ internal static partial class QueryPlanBuilder
     {
         if (clause == null)
             return false;
-        if (exec != null && exec.BoostFactor > 0)
+        if (exec is { BoostFactor: > 0 })
             return false;
         if (clause.HasBoost)
             return false;
