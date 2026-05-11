@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Planning;
@@ -16,7 +15,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 /// </summary>
 internal static partial class QueryPlanBuilder
 {
-    /// <summary>Build the inspection graph from the cached template + runtime telemetry.</summary>
+    /// <summary>Build the inspection graph from the cached template and runtime telemetry.</summary>
     public static QueryInspectionNode BuildInspectionGraph(CompiledPlan compiledPlan, IQueryMatch executedMatch, IQueryMatch sortingWrapper = null)
     {
         long[] timings = null;

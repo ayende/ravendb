@@ -1029,7 +1029,7 @@ internal static partial class QueryPlanBuilder
     ///            used to save the prior OR accumulation while building a new AND sub-chain
     ///            in slot 0 via SwapBitmaps(0,2), then ORed back).
     ///
-    /// AND chain: first clause seeds slot 0 (FillFromPostings), subsequent clauses narrow it
+    /// AND chain: the first clause seeds slot 0 (FillFromPostings), subsequent clauses narrow it
     /// (AndWithPostings/AndNotWithPostings). IN terms are ORed into slot 1, then ANDed with slot 0.
     ///
     /// OR chain: all terms are ORed into slot 0. AND-groups within an OR use the three-bitmap

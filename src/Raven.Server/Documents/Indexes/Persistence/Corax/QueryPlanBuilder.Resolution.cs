@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -27,10 +26,9 @@ using Sparrow;
 using Sparrow.Json;
 using Constants = Corax.Constants;
 using RavenConstants = Raven.Client.Constants;
-using ClientConstants = Raven.Client.Constants;
-using Sparrow.Server;
 using SpatialUnits = Raven.Client.Documents.Indexes.Spatial.SpatialUnits;
 using IndexSearcher = Corax.Querying.IndexSearcher;
+using SpatialRelation = Corax.Utils.Spatial.SpatialRelation;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 
@@ -48,7 +46,7 @@ internal static partial class QueryPlanBuilder
     /// <summary>
     /// Plan → compile → resolve pipeline. On cache hit (template exists for this query text),
     /// skips AST parsing — re-resolves parameter values from the blittable, re-estimates
-    /// cardinality, re-sorts, and looks up the compiled delegate by ordering.
+    /// cardinality, re-sorts, and it looks up the compiled delegate by ordering.
     /// On cache miss, parses the AST into a template and caches it.
     /// Both paths then: populate → sort → emit → compile (if needed) → resolve.
     /// </summary>
@@ -66,9 +64,7 @@ internal static partial class QueryPlanBuilder
         var planCache = indexSearcher.PlanCache;
 
         // Step 1: Get or build the clause template (structural, no values)
-        var template = planCache.TryGetTemplate(queryText);
-        if (template == null)
-            template = ParseTemplate(planParams);
+        var template = planCache.TryGetTemplate(queryText) ?? ParseTemplate(planParams);
 
         // Step 2: Create per-execution state for each clause (template is immutable, not cloned)
         var clauses = new List<ClauseInfo>(template.Clauses.Length);
@@ -242,7 +238,7 @@ internal static partial class QueryPlanBuilder
         // Vector select phase: each vector wraps the bitmap so far as its filter source.
         if (plan.VectorSelects is { Length: > 0 } && builderParameters != null)
         {
-            var vectorItems = ResolveVectorItems(plan, indexSearcher, planParams, builderParameters);
+            var vectorItems = ResolveVectorItems(plan, builderParameters);
             bool hasActualFilter = !plan.IsAllEntries || plan.SpatialFilters is { Length: > 0 };
             IQueryMatch vectorFilter = hasActualFilter ? result : null;
             foreach (var item in vectorItems)
@@ -335,7 +331,7 @@ internal static partial class QueryPlanBuilder
     /// Called for each clause during parameter population (both first execution and cache hit).</summary>
     private static void PopulateClauseValues(ClauseInfo clause, ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer)
     {
-        // Always recurse into sub-clauses first (OrGroup/AndGroup have no binding of their own)
+        // Always recurse into subclauses first (OrGroup/AndGroup have no binding of their own)
         if (clause.OrSubClauses != null && exec.OrSubExecutions != null)
             for (int si = 0; si < clause.OrSubClauses.Count; si++)
                 PopulateClauseValues(clause.OrSubClauses[si], exec.OrSubExecutions[si], queryParameters, writer);
@@ -346,145 +342,151 @@ internal static partial class QueryPlanBuilder
         // Resolve boost factor if this clause is boosted
         if (clause.HasBoost && clause.Bindings is { Length: > 0 })
         {
-            var (boostVal, boostType) = ResolveBindingScalar(clause.Bindings[^1], queryParameters);
-            if (boostVal != null)
-            {
-                exec.BoostFactor = boostType == ParamValueType.Double
-                    ? (float)(double)boostVal
-                    : boostType == ParamValueType.Long
-                        ? (long)boostVal
-                        : float.TryParse(boostVal.ToString(), System.Globalization.NumberStyles.Float,
-                            System.Globalization.CultureInfo.InvariantCulture, out float parsed) ? parsed : 1f;
-            }
+            ResolveBoostFactor(clause, exec, queryParameters);
         }
 
-        // Spatial and vector resolve via their bindings array.
-        if (clause.ClauseType == ClauseType.Spatial && clause.Bindings is { Length: > 0 })
+        switch (clause.ClauseType)
         {
-            ResolveSpatialFromBindings(clause, exec, queryParameters);
-            return;
-        }
-        if (clause.ClauseType == ClauseType.Vector && clause.Bindings is { Length: > 0 })
-        {
-            ResolveVectorFromBindings(clause, exec, queryParameters);
-            return;
+            // Spatial and vector resolve via their binding array.
+            case ClauseType.Spatial when clause.Bindings is { Length: > 0 }:
+                ResolveSpatialFromBindings(clause, exec, queryParameters);
+                return;
+            case ClauseType.Vector when clause.Bindings is { Length: > 0 }:
+                ResolveVectorFromBindings(clause, exec, queryParameters);
+                return;
         }
 
         var bindings = clause.Bindings;
         if (bindings == null || bindings.Length == 0)
             return;
 
-        // Simple clause (Equals, Range, Search, Regex, etc.): single value at Bindings[0]
-        if (clause.ClauseType is not (ClauseType.In or ClauseType.AllIn or ClauseType.Between))
+        switch (clause.ClauseType)
         {
-            var (value, valueType) = ResolveBindingScalar(bindings[BindingIndex.Value], queryParameters);
-            exec.TermValueType = valueType;
-            exec.PackedParamValue = writer.Add(value, ToValueTokenType(valueType));
-            return;
+            // BETWEEN: two values at Bindings[0] (low) and Bindings[1] (high)
+            case ClauseType.Between:
+                var (low, lowType) = ResolveBindingScalar(bindings[BindingIndex.BetweenLow], queryParameters);
+                var (high, _) = ResolveBindingScalar(bindings[BindingIndex.BetweenHigh], queryParameters);
+                exec.TermValueType = lowType;
+                exec.PackedParamValue = writer.AddPair(low, high, ToValueTokenType(lowType));
+                return;
+            case ClauseType.In or ClauseType.AllIn:
+                // IN/AllIn: each binding is a term (literal or parameter, possibly array-expanding)
+                ResolveInFromBindings(exec, queryParameters, writer, bindings);
+                break;
+            default:
+                // Simple clause (Equals, Range, Search, Regex, etc.): single value at Bindings[0]
+                var (value, valueType) = ResolveBindingScalar(bindings[BindingIndex.Value], queryParameters);
+                exec.TermValueType = valueType;
+                exec.PackedParamValue = writer.Add(value, ToValueTokenType(valueType));
+                break;
         }
+    }
 
-        // BETWEEN: two values at Bindings[0] (low) and Bindings[1] (high)
-        if (clause.ClauseType == ClauseType.Between)
+    private static void ResolveBoostFactor(ClauseInfo clause, ClauseExecution exec, BlittableJsonReaderObject queryParameters)
+    {
+        var (boostVal, boostType) = ResolveBindingScalar(clause.Bindings[^1], queryParameters);
+        if (boostVal == null) return;
+
+        exec.BoostFactor = boostType switch
         {
-            var (low, lowType) = ResolveBindingScalar(bindings[BindingIndex.BetweenLow], queryParameters);
-            var (high, _) = ResolveBindingScalar(bindings[BindingIndex.BetweenHigh], queryParameters);
-            exec.TermValueType = lowType;
-            exec.PackedParamValue = writer.AddPair(low, high, ToValueTokenType(lowType));
-            return;
-        }
-
-        // IN/AllIn: each binding is a term (literal or parameter, possibly array-expanding)
-        if (clause.ClauseType is ClauseType.In or ClauseType.AllIn)
-        {
-            var termTypes = new List<ParamValueType>();
-            var resolvedValues = new List<object>();
-            bool hasNullTerm = false;
-
-            for (int i = 0; i < bindings.Length; i++)
+            ParamValueType.Double => (float)(double)boostVal,
+            _ => boostType switch
             {
-                var inB = bindings[i];
-                if (inB.LiteralType != ParamValueType.Parameter)
+                ParamValueType.Long => (long)boostVal,
+                _ when float.TryParse(boostVal.ToString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float parsed) => parsed,
+                _ => 1f
+            }
+        };
+    }
+
+    private static void ResolveInFromBindings(ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, ParameterBinding[] bindings)
+    {
+        var termTypes = new List<ParamValueType>();
+        var resolvedValues = new List<object>();
+        bool hasNullTerm = false;
+
+        foreach (var it in bindings)
+        {
+            if (it.LiteralType != ParamValueType.Parameter)
+            {
+                resolvedValues.Add(it.LiteralValue);
+                termTypes.Add(it.LiteralType);
+                if (it.LiteralValue == null)
                 {
-                    resolvedValues.Add(inB.LiteralValue);
-                    termTypes.Add(inB.LiteralType);
-                    if (inB.LiteralValue == null)
+                    hasNullTerm = true;
+                }
+            }
+            else
+            {
+                // Parameter — resolve from blittable. It may be scalar or array.
+                object inRaw = null;
+                queryParameters?.TryGet(it.ParameterName, out inRaw);
+                if (inRaw is BlittableJsonReaderArray arr)
+                {
+                    // Array parameter — expand each element
+                    foreach (var elem in arr)
                     {
-                        hasNullTerm = true;
+                        var (elemVal, elemType) = ResolveInValue(elem, ValueTokenType.Parameter);
+                        resolvedValues.Add(elemVal);
+                        termTypes.Add(ToParamValueType(elemType));
+                        if (elemVal == null)
+                            hasNullTerm = true;
                     }
+                }
+                else if (inRaw != null)
+                {
+                    // Scalar parameter — single term
+                    var (singleVal, singleType) = ResolveInValue(inRaw, ValueTokenType.Parameter);
+                    resolvedValues.Add(singleVal);
+                    termTypes.Add(ToParamValueType(singleType));
                 }
                 else
                 {
-                    // Parameter — resolve from blittable. May be scalar or array.
-                    object inRaw = null;
-                    queryParameters?.TryGet(inB.ParameterName, out inRaw);
-                    if (inRaw is BlittableJsonReaderArray arr)
-                    {
-                        // Array parameter — expand each element
-                        foreach (var elem in arr)
-                        {
-                            var (elemVal, elemType) = ResolveInValue(elem, ValueTokenType.Parameter);
-                            resolvedValues.Add(elemVal);
-                            termTypes.Add(ToParamValueType(elemType));
-                            if (elemVal == null)
-                                hasNullTerm = true;
-                        }
-                    }
-                    else if (inRaw != null)
-                    {
-                        // Scalar parameter — single term
-                        var (singleVal, singleType) = ResolveInValue(inRaw, ValueTokenType.Parameter);
-                        resolvedValues.Add(singleVal);
-                        termTypes.Add(ToParamValueType(singleType));
-                    }
-                    else
-                    {
-                        resolvedValues.Add(null);
-                        termTypes.Add(ParamValueType.Null);
-                        hasNullTerm = true;
-                    }
+                    resolvedValues.Add(null);
+                    termTypes.Add(ParamValueType.Null);
+                    hasNullTerm = true;
                 }
             }
-
-            // Determine dominant type
-            ParamValueType dominantType = ParamValueType.Null;
-            for (int i = 0; i < termTypes.Count; i++)
-            {
-                if (resolvedValues[i] == null) continue;
-                if (dominantType == ParamValueType.Null) { dominantType = termTypes[i]; continue; }
-            }
-            if (dominantType == ParamValueType.Null) dominantType = ParamValueType.String;
-
-            int packedType = dominantType switch
-            {
-                ParamValueType.Long => PackedParam.TypeLong,
-                ParamValueType.Double => PackedParam.TypeDouble,
-                _ => PackedParam.TypeString
-            };
-            int startIdx = packedType switch
-            {
-                PackedParam.TypeLong => writer.LongCount,
-                PackedParam.TypeDouble => writer.DoubleCount,
-                _ => writer.StringCount
-            };
-            // Only store non-null values in the typed array. Null terms are handled
-            // separately via HasNullTerm — one null-term lookup covers all nulls.
-            int nonNullCount = 0;
-            for (int i = 0; i < resolvedValues.Count; i++)
-            {
-                if (resolvedValues[i] != null)
-                {
-                    writer.Add(resolvedValues[i], ToValueTokenType(dominantType));
-                    nonNullCount++;
-                }
-            }
-
-            exec.PackedParamValue = new PackedParam(packedType, startIdx);
-            exec.InTermCount = nonNullCount;
-            exec.HasNullTerm = hasNullTerm;
         }
 
-        // Spatial/vector params were resolved above (before binding null-check).
+        // Determine dominant type
+        ParamValueType dominantType = ParamValueType.Null;
+        for (int i = 0; i < termTypes.Count; i++)
+        {
+            if (resolvedValues[i] == null) continue;
+            if (dominantType == ParamValueType.Null)  
+                dominantType = termTypes[i];
+        }
+        if (dominantType == ParamValueType.Null) 
+            dominantType = ParamValueType.String;
 
+        int packedType = dominantType switch
+        {
+            ParamValueType.Long => PackedParam.TypeLong,
+            ParamValueType.Double => PackedParam.TypeDouble,
+            _ => PackedParam.TypeString
+        };
+        int startIdx = packedType switch
+        {
+            PackedParam.TypeLong => writer.LongCount,
+            PackedParam.TypeDouble => writer.DoubleCount,
+            _ => writer.StringCount
+        };
+        // Only store non-null values in the typed array. Null terms are handled
+        // separately via HasNullTerm — one null-term lookup covers all nulls.
+        int nonNullCount = 0;
+        for (int i = 0; i < resolvedValues.Count; i++)
+        {
+            if (resolvedValues[i] != null)
+            {
+                writer.Add(resolvedValues[i], ToValueTokenType(dominantType));
+                nonNullCount++;
+            }
+        }
+
+        exec.PackedParamValue = new PackedParam(packedType, startIdx);
+        exec.InTermCount = nonNullCount;
+        exec.HasNullTerm = hasNullTerm;
     }
 
     /// <summary>Resolve spatial parameters from cached bindings (no MethodExpression dependency).</summary>
@@ -646,7 +648,7 @@ internal static partial class QueryPlanBuilder
     /// all the complexity of analyzer application, CompactKey encoding,
     /// posting list resolution, etc.
     /// </summary>
-    public static IQueryMatch[] ResolveMatches(QueryExecution plan, IndexSearcher indexSearcher,
+    private static IQueryMatch[] ResolveMatches(QueryExecution plan, IndexSearcher indexSearcher,
         PlanParameters parameters = null, QueryBuilderParameters builderParams = null)
     {
         var clauses = plan.Clauses ?? [];
@@ -698,52 +700,65 @@ internal static partial class QueryPlanBuilder
         {
             ClauseInfo clause = clauses[ci];
             ClauseExecution exec = execs[ci];
-            if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
+            switch (clause.ClauseType)
             {
-                for (int si = 0; si < clause.OrSubClauses.Count; si++)
+                case ClauseType.OrGroup when clause.OrSubClauses is { Count: > 0 }:
                 {
-                    var sub = clause.OrSubClauses[si];
-                    var subExec = exec.OrSubExecutions[si];
-                    var match = ResolveClause(sub, subExec, indexSearcher, plan, parameters, builderParams);
-                    if (subExec.BoostFactor > 0)
-                        match = indexSearcher.Boost(match, subExec.BoostFactor);
+                    for (int si = 0; si < clause.OrSubClauses.Count; si++)
+                    {
+                        var sub = clause.OrSubClauses[si];
+                        var subExec = exec.OrSubExecutions[si];
+                        var match = ResolveClause(sub, subExec, indexSearcher, plan, parameters, builderParams);
+                        if (subExec.BoostFactor > 0)
+                            match = indexSearcher.Boost(match, subExec.BoostFactor);
+                        matches[matchIdx++] = match;
+                    }
+
+                    break;
+                }
+                case ClauseType.AndGroup when clause.AndSubClauses is { Count : > 0 }:
+                {
+                    for (int si = 0; si < clause.AndSubClauses.Count; si++)
+                    {
+                        var sub = clause.AndSubClauses[si];
+                        var subExec = exec.AndSubExecutions[si];
+                        var match = ResolveClause(sub, subExec, indexSearcher, plan, parameters, builderParams);
+                        if (subExec.BoostFactor > 0)
+                            match = indexSearcher.Boost(match, subExec.BoostFactor);
+                        matches[matchIdx++] = match;
+                    }
+
+                    break;
+                }
+                case ClauseType.AllIn or ClauseType.In when (exec.InTermCount > 0 || exec.HasNullTerm):
+                {
+                    for (int t = 0; t < exec.InTermCount; t++)
+                        matches[matchIdx++] = ResolveInTerm(clause, exec, t, indexSearcher, plan, parameters, builderParams);
+                    if (exec.HasNullTerm)
+                    {
+                        FieldMetadata nullMeta = builderParams != null
+                            ? QueryBuilderHelper.GetFieldMetadata(in builderParams, clause.FieldName, hasBoost: builderParams.HasBoost)
+                            : indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);
+                        matches[matchIdx++] = indexSearcher.TermQuery(nullMeta, null);
+                    }
+
+                    break;
+                }
+                default:
+                {
+                    IQueryMatch match = clause.IsOrChainNotEquals switch
+                    {
+                        true => CreateNotEqualsOrMatch(clause, exec, indexSearcher, plan, parameters, builderParams),
+                        false => ResolveClause(clause, exec, indexSearcher, plan, parameters, builderParams)
+                    };
+                    if (exec.BoostFactor > 0)
+                        match = indexSearcher.Boost(match, exec.BoostFactor);
                     matches[matchIdx++] = match;
+                    break;
                 }
-            }
-            else if (clause.ClauseType == ClauseType.AndGroup && clause.AndSubClauses != null)
-            {
-                for (int si = 0; si < clause.AndSubClauses.Count; si++)
-                {
-                    var sub = clause.AndSubClauses[si];
-                    var subExec = exec.AndSubExecutions[si];
-                    var match = ResolveClause(sub, subExec, indexSearcher, plan, parameters, builderParams);
-                    if (subExec.BoostFactor > 0)
-                        match = indexSearcher.Boost(match, subExec.BoostFactor);
-                    matches[matchIdx++] = match;
-                }
-            }
-            else if ((clause.ClauseType == ClauseType.AllIn || clause.ClauseType == ClauseType.In) && (exec.InTermCount > 0 || exec.HasNullTerm))
-            {
-                for (int t = 0; t < exec.InTermCount; t++)
-                    matches[matchIdx++] = ResolveInTerm(clause, exec, t, indexSearcher, plan, parameters, builderParams);
-                if (exec.HasNullTerm)
-                {
-                    FieldMetadata nullMeta = builderParams != null ?
-                        QueryBuilderHelper.GetFieldMetadata(in builderParams, clause.FieldName, hasBoost: builderParams.HasBoost) :
-                        indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);
-                    matches[matchIdx++] = indexSearcher.TermQuery(nullMeta, (string)null);
-                }
-            }
-            else
-            {
-                IQueryMatch match = clause.IsOrChainNotEquals ?
-                    CreateNotEqualsOrMatch(clause, exec, indexSearcher, plan, parameters, builderParams) :
-                    ResolveClause(clause, exec, indexSearcher, plan, parameters, builderParams);
-                if (exec.BoostFactor > 0)
-                    match = indexSearcher.Boost(match, exec.BoostFactor);
-                matches[matchIdx++] = match;
             }
         }
+
         if (plan.AllNegated)
             matches[matchIdx] = indexSearcher.AllEntries();
         return matches;
@@ -1041,7 +1056,7 @@ internal static partial class QueryPlanBuilder
     /// The IL emitter consults <see cref="PlanOp.Dispatch"/> to decide which
     /// array to read.
     /// </summary>
-    public static PostingSource[] ResolveTermSources(QueryExecution plan, IndexSearcher indexSearcher,
+    private static PostingSource[] ResolveTermSources(QueryExecution plan, IndexSearcher indexSearcher,
         PlanParameters parameters = null, QueryBuilderParameters builderParams = null)
     {
         // IsAllEntries plans never emit term ops (FillFromPostings / AndWith / etc.) —
@@ -1070,49 +1085,58 @@ internal static partial class QueryPlanBuilder
         {
             ClauseInfo clause = clauses[ci];
             ClauseExecution exec = execs[ci];
-            if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
+            switch (clause.ClauseType)
             {
-                for (int si = 0; si < clause.OrSubClauses.Count; si++)
+                case ClauseType.OrGroup when clause.OrSubClauses is { Count: > 0 }:
                 {
-                    var sub = clause.OrSubClauses[si];
-                    var subExec = exec.OrSubExecutions[si];
-                    if (subExec.BoostFactor > 0)
+                    for (int si = 0; si < clause.OrSubClauses.Count; si++)
+                    {
+                        var sub = clause.OrSubClauses[si];
+                        var subExec = exec.OrSubExecutions[si];
+                        if (subExec.BoostFactor > 0)
+                        {
+                            matchIdx++;
+                            continue;
+                        }
+                        termSources[matchIdx++] = ResolveSingleTermSource(sub, subExec, indexSearcher, plan, parameters, builderParams);
+                    }
+
+                    break;
+                }
+                case ClauseType.AndGroup when clause.AndSubClauses is { Count: > 0 }:
+                {
+                    for (int si = 0; si < clause.AndSubClauses.Count; si++)
+                    {
+                        var sub = clause.AndSubClauses[si];
+                        var subExec = exec.AndSubExecutions[si];
+                        if (subExec.BoostFactor > 0)
+                        {
+                            matchIdx++;
+                            continue;
+                        }
+                        termSources[matchIdx++] = ResolveSingleTermSource(sub, subExec, indexSearcher, plan, parameters, builderParams);
+                    }
+
+                    break;
+                }
+                case ClauseType.AllIn or ClauseType.In when (exec.InTermCount > 0 || exec.HasNullTerm):
+                {
+                    for (int t = 0; t < exec.InTermCount; t++)
+                        termSources[matchIdx++] = ResolveInTermSource(clause, exec, t, indexSearcher, plan, parameters, builderParams);
+                    if (exec.HasNullTerm)
+                        matchIdx++; // null-term slot — stays Empty in TermSources (uses QueryMatch path)
+                    break;
+                }
+                default:
+                {
+                    if (exec.BoostFactor > 0)
                     {
                         matchIdx++;
                         continue;
                     }
-                    termSources[matchIdx++] = ResolveSingleTermSource(sub, subExec, indexSearcher, plan, parameters, builderParams);
+                    termSources[matchIdx++] = ResolveSingleTermSource(clause, exec, indexSearcher, plan, parameters, builderParams);
+                    break;
                 }
-            }
-            else if (clause.ClauseType == ClauseType.AndGroup && clause.AndSubClauses != null)
-            {
-                for (int si = 0; si < clause.AndSubClauses.Count; si++)
-                {
-                    var sub = clause.AndSubClauses[si];
-                    var subExec = exec.AndSubExecutions[si];
-                    if (subExec.BoostFactor > 0)
-                    {
-                        matchIdx++;
-                        continue;
-                    }
-                    termSources[matchIdx++] = ResolveSingleTermSource(sub, subExec, indexSearcher, plan, parameters, builderParams);
-                }
-            }
-            else if ((clause.ClauseType == ClauseType.AllIn || clause.ClauseType == ClauseType.In) && (exec.InTermCount > 0 || exec.HasNullTerm))
-            {
-                for (int t = 0; t < exec.InTermCount; t++)
-                    termSources[matchIdx++] = ResolveInTermSource(clause, exec, t, indexSearcher, plan, parameters, builderParams);
-                if (exec.HasNullTerm)
-                    matchIdx++; // null-term slot — stays Empty in TermSources (uses QueryMatch path)
-            }
-            else
-            {
-                if (exec.BoostFactor > 0)
-                {
-                    matchIdx++;
-                    continue;
-                }
-                termSources[matchIdx++] = ResolveSingleTermSource(clause, exec, indexSearcher, plan, parameters, builderParams);
             }
         }
         // AllNegated extra slot is AllEntries — stays Empty in TermSources.
@@ -1214,7 +1238,7 @@ internal static partial class QueryPlanBuilder
 
     /// <summary>Extract typed parameter values from clauses for entry scan.
     /// Called per-query at execution time. The values populate the CompiledQueryMatch arrays.</summary>
-    public static void ExtractScanParameters(QueryExecution plan, IndexSearcher indexSearcher,
+    private static void ExtractScanParameters(QueryExecution plan, IndexSearcher indexSearcher,
         out long[] longParams, out double[] doubleParams, out Voron.Slice[] sliceParams, out long[] fieldRootPages)
     {
         var predicates = plan.ScanPredicateInfos;
@@ -1232,7 +1256,7 @@ internal static partial class QueryPlanBuilder
         var slices = new List<Voron.Slice>();
         var roots = new List<long>();
 
-        // Walk predicates and clauses in lock-step (same order as BuildScanPredicateInfo visited them).
+        // Walk predicates and clauses in a lock-step (same order as BuildScanPredicateInfo visited them).
         // Using field-name search instead would incorrectly return the first matching clause for
         // every predicate when multiple clauses share the same field (e.g. Name != 'a' AND Name != 'b').
         int scanStart = plan.AllNegated ? 0 : 1;
@@ -1315,7 +1339,7 @@ internal static partial class QueryPlanBuilder
     /// The old CoraxQueryBuilder did this as a side effect during query building.
     /// The bitmap pipeline must do it explicitly after plan building.
     /// </summary>
-    public static void PopulateHighlightingTerms(QueryExecution plan, Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms, QueryMetadata metadata)
+    private static void PopulateHighlightingTerms(QueryExecution plan, Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms, QueryMetadata metadata)
     {
         if (highlightingTerms == null || plan.Clauses is not { Count: > 0 } clauses)
             return;
@@ -1332,7 +1356,7 @@ internal static partial class QueryPlanBuilder
 
             switch (clauseObj.ClauseType)
             {
-                case ClauseType.OrGroup when clauseObj.OrSubClauses != null:
+                case ClauseType.OrGroup when clauseObj.OrSubClauses is { Count: > 0 }:
                 {
                     for (int si = 0; si < clauseObj.OrSubClauses.Count; si++)
                     {
@@ -1341,7 +1365,7 @@ internal static partial class QueryPlanBuilder
                     }
                     break;
                 }
-                case ClauseType.AndGroup when clauseObj.AndSubClauses != null:
+                case ClauseType.AndGroup when clauseObj.AndSubClauses is { Count: > 0 }:
                 {
                     for (int si = 0; si < clauseObj.AndSubClauses.Count; si++)
                     {
@@ -1416,10 +1440,9 @@ internal static partial class QueryPlanBuilder
     /// <summary>
     /// Resolve vector select operations from the plan into CoraxVectorItem instances.
     /// These are NOT materialized yet — the caller materializes them with the bitmap-producing
-    /// match as the filterQuery. Returns null if the plan has no vector selects.
+    /// match as the filterQuery. Returns null if the plan has no vectors.
     /// </summary>
-    public static CoraxVectorItem[] ResolveVectorItems(QueryExecution plan, IndexSearcher indexSearcher,
-        PlanParameters parameters = null, QueryBuilderParameters builderParams = null)
+    private static CoraxVectorItem[] ResolveVectorItems(QueryExecution plan, QueryBuilderParameters builderParams = null)
     {
         if (plan.VectorSelects == null || plan.VectorSelects.Length == 0)
             return null;
@@ -1439,7 +1462,6 @@ internal static partial class QueryPlanBuilder
 
     private static IQueryMatch HandleSpatial(QueryBuilderParameters builderParameters, ClauseInfo clause, ClauseExecution exec, SpatialOperationType spatialMethod)
     {
-        var metadata = builderParameters.Metadata;
         var index = builderParameters.Index;
         var allocator = builderParameters.Allocator;
 
@@ -1459,35 +1481,25 @@ internal static partial class QueryPlanBuilder
 
         // Build shape from pre-resolved parameters — no GetValue calls
         IShape shape;
+        SpatialUnits? units = sp.Units.HasValue ? (SpatialUnits)sp.Units.Value : null;
         if (sp.ShapeType == SpatialShapeType.Circle)
         {
-            shape = spatialField.ReadCircle(sp.CircleRadius, sp.CircleLatitude,
-                sp.CircleLongitude, sp.Units.HasValue ? (sp.Units.Value == global::Corax.Utils.Spatial.SpatialUnits.Kilometers ? SpatialUnits.Kilometers : SpatialUnits.Miles) : (SpatialUnits?)null);
+            shape = spatialField.ReadCircle(sp.CircleRadius, sp.CircleLatitude, sp.CircleLongitude, units);
         }
         else if (sp.Wkt != null)
         {
-            shape = spatialField.ReadShape(sp.Wkt, sp.Units.HasValue ? (sp.Units.Value == global::Corax.Utils.Spatial.SpatialUnits.Kilometers ? SpatialUnits.Kilometers : SpatialUnits.Miles) : (SpatialUnits?)null);
+            shape = spatialField.ReadShape(sp.Wkt, units);
         }
         else
         {
             throw new InvalidOperationException("Spatial clause has no pre-resolved shape parameters.");
         }
 
-        var operation = spatialMethod switch
-        {
-            SpatialOperationType.Within => global::Corax.Utils.Spatial.SpatialRelation.Within,
-            SpatialOperationType.Disjoint => global::Corax.Utils.Spatial.SpatialRelation.Disjoint,
-            SpatialOperationType.Intersects => global::Corax.Utils.Spatial.SpatialRelation.Intersects,
-            SpatialOperationType.Contains => global::Corax.Utils.Spatial.SpatialRelation.Contains,
-            _ => throw new InvalidOperationException($"Unexpected spatial operation type: {spatialMethod}")
-        };
-
-        return builderParameters.IndexSearcher.SpatialQuery(fieldMetadata, distanceErrorPct, shape, spatialField.GetContext(), operation, token: builderParameters.Token);
+        return builderParameters.IndexSearcher.SpatialQuery(fieldMetadata, distanceErrorPct, shape, spatialField.GetContext(), (SpatialRelation)spatialMethod, token: builderParameters.Token);
     }
 
     private static CoraxVectorItem HandleVector(QueryBuilderParameters builderParameters, ClauseInfo clause, ClauseExecution exec, bool exact)
     {
-        var metadata = builderParameters.Metadata;
         IndexField indexField;
         string embeddingsGenerationTaskIdentifier;
 
@@ -1813,10 +1825,9 @@ internal static partial class QueryPlanBuilder
             VectorEmbeddingType destinationEmbeddingType;
             if (builderParameters.Metadata.IsDynamic)
             {
-                if (sourceEmbeddingType is not VectorEmbeddingType.Single)
-                    destinationEmbeddingType = sourceEmbeddingType;
-                else
-                    destinationEmbeddingType = vectorOptions!.DestinationEmbeddingType;
+                destinationEmbeddingType = sourceEmbeddingType is not VectorEmbeddingType.Single ? 
+                    sourceEmbeddingType : 
+                    vectorOptions!.DestinationEmbeddingType;
             }
             else
             {
