@@ -202,8 +202,8 @@ public class CompiledQueryMatch(
 
         // Rent bitmap pool from ArrayPool — returned in finally block
         Bitmaps = ArrayPool<RoaringBitmap>.Shared.Rent(bitmapCount);
-        for (int i = 0; i < bitmapCount; i++) Bitmaps[i] = new RoaringBitmap(allocator);
         Bitmaps[0] = _bitmapData; // main bitmap (owned by this instance)
+        for (int i = 1; i < bitmapCount; i++) Bitmaps[i] = new RoaringBitmap(allocator);
 
         Llt = Searcher.Transaction.LowLevelTransaction;
 
