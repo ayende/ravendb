@@ -14,7 +14,6 @@ public class QueryExecution
     public ClauseExecution[] Executions;
     public bool IsAllEntries;
     public bool AllNegated;
-    public bool IsOr;
 
     /// <summary>Typed parameter values for clause resolution. Populated during plan building
     /// from resolved query parameters and literal values. Each clause's PackedParam field
