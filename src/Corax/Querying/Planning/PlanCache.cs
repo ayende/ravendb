@@ -127,7 +127,12 @@ public class PlanCache
                 if (p.Ordering != ordering || p.TypeSignature != typeSignature)
                     continue;
                 if (kinds.IsEmpty)
+                {
+                    if (p.FullKinds is not null)
+                        continue;
+
                     return p;
+                }
                 if (kinds.SequenceEqual(p.FullKinds))
                     return p;
             }
