@@ -55,7 +55,6 @@ internal static partial class QueryPlanBuilder
     public static IQueryMatch BuildAndCompile(
         PlanParameters planParams,
         QueryBuilderParameters builderParameters,
-        long take,
         out QueryExecution plan,
         out CompiledPlan compiledPlanOut,
         Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms,
