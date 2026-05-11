@@ -242,9 +242,7 @@ internal static partial class QueryPlanBuilder
                     Clauses = [],
                     IsOr = false,
                     SpatialClauses = spatialClauses,
-                    VectorClauses = vectorClauses,
-                    HasSpatialFilters = spatialClauses != null,
-                    HasVectorSelects = vectorClauses != null
+                    VectorClauses = vectorClauses
                 };
             }
         }
@@ -255,9 +253,7 @@ internal static partial class QueryPlanBuilder
             IsAllEntries = false,
             IsOr = isOr,
             SpatialClauses = spatialClauses,
-            VectorClauses = vectorClauses,
-            HasSpatialFilters = spatialClauses != null,
-            HasVectorSelects = vectorClauses != null
+            VectorClauses = vectorClauses
         };
     }
 
@@ -1736,7 +1732,8 @@ internal static partial class QueryPlanBuilder
                 clauses.Add(vectorClauses[i]);
                 var exec = vectorExecs?[i] ?? new ClauseExecution();
                 newExecs[execIdx++] = exec;
-                plan.VectorSelects[i] = new VectorSearchOp { MatchIndex = matchIndex++, Clause = vectorClauses[i], Exec = exec };
+                plan.VectorSelects[i] = new VectorSearchOp {
+                    Clause = vectorClauses[i], Exec = exec };
             }
         }
 

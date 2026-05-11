@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics;
@@ -22,11 +23,9 @@ namespace Corax.Querying.Planning;
 /// </summary>
 public class PlanCache
 {
-    public int MaxPlansPerQuery { get; }
-    public int MaxDistinctQueries { get; }
+    private int MaxPlansPerQuery { get; }
+    private int MaxDistinctQueries { get; }
 
-    /// <summary>Holds both current and previous generation dictionaries as a single
-    /// atomic reference. Rotation replaces the entire record — no torn state.</summary>
     private sealed record CacheGeneration(
         ConcurrentDictionary<string, PerQueryPlans> Current,
         ConcurrentDictionary<string, PerQueryPlans> Previous);
@@ -40,7 +39,7 @@ public class PlanCache
             maxPlansPerQuery = ((maxPlansPerQuery / 8) + 1) * 8;
         MaxPlansPerQuery = maxPlansPerQuery;
         MaxDistinctQueries = maxDistinctQueries;
-        _generation = new CacheGeneration(new ConcurrentDictionary<string, PerQueryPlans>(), null);
+        _generation = new CacheGeneration([], []);
     }
 
     public CompiledPlan Get(string queryText, int ordering, int typeSignature = 0)
@@ -49,59 +48,43 @@ public class PlanCache
     public CompiledPlan Get(string queryText, int ordering, int typeSignature, ReadOnlySpan<byte> kinds)
     {
         var gen = _generation;
+        if (gen.Current.TryGetValue(queryText, out var per) is false)
+            gen.Previous.TryGetValue(queryText, out per);
 
-        if (gen.Current.TryGetValue(queryText, out var per))
-        {
-            var result = per.TryLookup(ordering, typeSignature, kinds, MaxPlansPerQuery);
-            if (result != null)
-                return result;
-        }
-
-        if (gen.Previous != null && gen.Previous.TryGetValue(queryText, out per))
-        {
-            return per.TryLookup(ordering, typeSignature, kinds, MaxPlansPerQuery);
-        }
-
-        return null;
+        return per?.TryLookup(ordering, typeSignature, kinds);
     }
 
     /// <summary>Try to retrieve the cached clause template for a query text.
-    /// Stale reads are harmless — worst case is one redundant ParseTemplate call.
+    /// Stale reads are harmless — the worst case is one redundant ParseTemplate call.
     /// Write side uses ConcurrentDictionary.GetOrAdd ensuring correctness.</summary>
     public ClauseTemplate TryGetTemplate(string queryText)
     {
         var gen = _generation;
+        if (gen.Current.TryGetValue(queryText, out var per) is false)
+            gen.Previous.TryGetValue(queryText, out per);
 
-        if (gen.Current.TryGetValue(queryText, out var per) && per.Template != null)
-            return per.Template;
-
-        if (gen.Previous != null && gen.Previous.TryGetValue(queryText, out per))
-            return per.Template;
-
-        return null;
+        return per?.Template;
     }
 
     public void Add(string queryText, CompiledPlan plan, ClauseTemplate template = null)
     {
         var gen = _generation;
-        var current = gen.Current;
 
         // When the current generation exceeds half the max, rotate.
-        // Atomic swap of the entire CacheGeneration — no intermediate state.
-        if (current.Count > MaxDistinctQueries / 2)
+        if (gen.Current.Count > MaxDistinctQueries / 2)
         {
-            var fresh = new ConcurrentDictionary<string, PerQueryPlans>();
-            var newGen = new CacheGeneration(fresh, current);
-            // CAS: only one thread wins the rotation. Losers get the winner's generation.
-            var actual = Interlocked.CompareExchange(ref _generation, newGen, gen);
-            current = actual == gen ? fresh : actual.Current;
+            var newGen = new CacheGeneration([], gen.Current);
+            gen = Interlocked.CompareExchange(ref _generation, newGen, gen);
+            Debug.Assert(gen is not null);
         }
 
-        // Lambda allocates here — this is the cache-miss path (rare), so we don't care.
-        var tmpl = template;
-        var maxSlots = MaxPlansPerQuery;
-        var per = current.GetOrAdd(queryText, _ => new PerQueryPlans(maxSlots, tmpl));
-        per.Publish(plan, MaxPlansPerQuery);
+        var current = gen.Current;
+
+        var per = current.GetOrAdd(queryText,
+            static (_, arg) => new PerQueryPlans(arg.MaxPlansPerQuery, arg.template),
+            (MaxPlansPerQuery, template));
+
+        per.Publish(plan);
     }
 
     /// <summary>
@@ -109,57 +92,50 @@ public class PlanCache
     /// matched candidates are revalidated against the plan's own embedded keys to
     /// guard against torn-write races.
     /// </summary>
-    internal sealed class PerQueryPlans
+    private sealed class PerQueryPlans(int maxSlots, ClauseTemplate template)
     {
-        private readonly int[] _orderings;
-        private readonly int[] _typesigs;
-        private readonly CompiledPlan[] _plans;
+        private readonly int[] _orderings = new int[maxSlots];
+        private readonly int[] _typeSignatures = new int[maxSlots];
+        private readonly CompiledPlan[] _plans = new CompiledPlan[maxSlots];
         private int _filled;
 
         /// <summary>Cached clause template. Set in constructor, immutable thereafter.</summary>
-        public readonly ClauseTemplate Template;
+        public readonly ClauseTemplate Template = template;
 
-        public PerQueryPlans(int maxSlots, ClauseTemplate template = null)
-        {
-            _orderings = new int[maxSlots];
-            _typesigs = new int[maxSlots];
-            _plans = new CompiledPlan[maxSlots];
-            Template = template;
-        }
-
-        public CompiledPlan TryLookup(int ordering, int typesig, ReadOnlySpan<byte> kinds, int maxSlots)
+        public CompiledPlan TryLookup(int ordering, int typeSignature, ReadOnlySpan<byte> kinds)
         {
             if (Vector256.IsHardwareAccelerated)
-                return Vec256Lookup(ordering, typesig, kinds, maxSlots);
+                return Vec256Lookup(ordering, typeSignature, kinds);
             if (Vector128.IsHardwareAccelerated)
-                return Vec128Lookup(ordering, typesig, kinds, maxSlots);
-            return ScalarLookup(ordering, typesig, kinds, maxSlots);
+                return Vec128Lookup(ordering, typeSignature, kinds);
+            return ScalarLookup(ordering, typeSignature, kinds);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static CompiledPlan ResolveCandidate(CompiledPlan head, int ordering, int typesig, ReadOnlySpan<byte> kinds)
+        private static CompiledPlan ResolveCandidate(CompiledPlan head, int ordering, int typeSignature, ReadOnlySpan<byte> kinds)
         {
             for (var p = head; p != null; p = p.Next)
             {
-                if (p.Ordering != ordering || p.TypeSignature != typesig)
+                if (p.Ordering != ordering || p.TypeSignature != typeSignature)
                     continue;
-                if (p.FullKinds == null)
+                if (kinds.IsEmpty)
                     return p;
                 if (kinds.SequenceEqual(p.FullKinds))
                     return p;
             }
+
             return null;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private CompiledPlan Vec256Lookup(int ordering, int typesig, ReadOnlySpan<byte> kinds, int maxSlots)
+        private CompiledPlan Vec256Lookup(int ordering, int typeSignature, ReadOnlySpan<byte> kinds)
         {
             var ordVec = Vector256.Create(ordering);
-            var typVec = Vector256.Create(typesig);
-            for (int i = 0; i < maxSlots; i += 8)
+            var typVec = Vector256.Create(typeSignature);
+            for (int i = 0; i < _orderings.Length && i < _typeSignatures.Length; i += 8)
             {
                 var ords = Vector256.LoadUnsafe(ref _orderings[i]);
-                var typs = Vector256.LoadUnsafe(ref _typesigs[i]);
+                var typs = Vector256.LoadUnsafe(ref _typeSignatures[i]);
                 var match = Vector256.Equals(ords, ordVec) & Vector256.Equals(typs, typVec);
                 uint mask = match.ExtractMostSignificantBits();
                 while (mask != 0)
@@ -167,23 +143,24 @@ public class PlanCache
                     int lane = BitOperations.TrailingZeroCount(mask);
                     mask &= mask - 1;
                     var head = Volatile.Read(ref _plans[i + lane]);
-                    var resolved = ResolveCandidate(head, ordering, typesig, kinds);
+                    var resolved = ResolveCandidate(head, ordering, typeSignature, kinds);
                     if (resolved != null)
                         return resolved;
                 }
             }
+
             return null;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private CompiledPlan Vec128Lookup(int ordering, int typesig, ReadOnlySpan<byte> kinds, int maxSlots)
+        private CompiledPlan Vec128Lookup(int ordering, int typeSignature, ReadOnlySpan<byte> kinds)
         {
             var ordVec = Vector128.Create(ordering);
-            var typVec = Vector128.Create(typesig);
-            for (int i = 0; i < maxSlots; i += 4)
+            var typVec = Vector128.Create(typeSignature);
+            for (int i = 0; i < _orderings.Length && i < _typeSignatures.Length; i += 4)
             {
                 var ords = Vector128.LoadUnsafe(ref _orderings[i]);
-                var typs = Vector128.LoadUnsafe(ref _typesigs[i]);
+                var typs = Vector128.LoadUnsafe(ref _typeSignatures[i]);
                 var match = Vector128.Equals(ords, ordVec) & Vector128.Equals(typs, typVec);
                 uint mask = match.ExtractMostSignificantBits();
                 while (mask != 0)
@@ -191,34 +168,36 @@ public class PlanCache
                     int lane = BitOperations.TrailingZeroCount(mask);
                     mask &= mask - 1;
                     var head = Volatile.Read(ref _plans[i + lane]);
-                    var resolved = ResolveCandidate(head, ordering, typesig, kinds);
+                    var resolved = ResolveCandidate(head, ordering, typeSignature, kinds);
                     if (resolved != null)
                         return resolved;
                 }
             }
+
             return null;
         }
 
-        private CompiledPlan ScalarLookup(int ordering, int typesig, ReadOnlySpan<byte> kinds, int maxSlots)
+        private CompiledPlan ScalarLookup(int ordering, int typeSignature, ReadOnlySpan<byte> kinds)
         {
-            for (int i = 0; i < maxSlots; i++)
+            for (int i = 0; i < _orderings.Length && i < _typeSignatures.Length; i++)
             {
-                if (_orderings[i] != ordering || _typesigs[i] != typesig)
+                if (_orderings[i] != ordering || _typeSignatures[i] != typeSignature)
                     continue;
                 var head = Volatile.Read(ref _plans[i]);
-                var resolved = ResolveCandidate(head, ordering, typesig, kinds);
+                var resolved = ResolveCandidate(head, ordering, typeSignature, kinds);
                 if (resolved != null)
                     return resolved;
             }
+
             return null;
         }
 
-        private const int MaxChainDepth = 4;
+        private const int MaxChainDepth = 8;
 
-        public void Publish(CompiledPlan plan, int maxSlots)
+        public void Publish(CompiledPlan plan)
         {
-            // Try chain prepend for >16-kind plans that share (ordering, typesig) hash
-            if (plan.FullKinds != null && TryChainPrepend(plan, maxSlots))
+            // Try chain prepend for >16-kind plans that share (ordering, type signature) hash
+            if (plan.FullKinds != null && TryChainPrepend(plan))
                 return;
 
             int slot;
@@ -231,6 +210,7 @@ public class PlanCache
                     slot = Random.Shared.Next(0, maxSlots);
                     break;
                 }
+
                 if (Interlocked.CompareExchange(ref _filled, filled + 1, filled) == filled)
                 {
                     slot = filled;
@@ -240,15 +220,16 @@ public class PlanCache
 
             Volatile.Write(ref _plans[slot], plan);
             Volatile.Write(ref _orderings[slot], plan.Ordering);
-            Volatile.Write(ref _typesigs[slot], plan.TypeSignature);
+            Volatile.Write(ref _typeSignatures[slot], plan.TypeSignature);
         }
 
-        private bool TryChainPrepend(CompiledPlan plan, int maxSlots)
+        private bool TryChainPrepend(CompiledPlan plan)
         {
-            for (int i = 0; i < maxSlots; i++)
+            Debug.Assert(plan.FullKinds is not null);
+            for (int i = 0; i < _orderings.Length && i < _typeSignatures.Length && i < _plans.Length; i++)
             {
-                if (_orderings[i] != plan.Ordering || _typesigs[i] != plan.TypeSignature)
-                    continue;
+                if (_orderings[i] != plan.Ordering || _typeSignatures[i] != plan.TypeSignature)
+                    continue; // quick check
                 while (true)
                 {
                     var head = Volatile.Read(ref _plans[i]);
@@ -258,7 +239,8 @@ public class PlanCache
                     // Validate the head plan itself, not just the parallel arrays.
                     // The SIMD scan is a fast filter; the head's own fields are the source of truth.
                     // A concurrent eviction could have overwritten the parallel arrays.
-                    if (head.Ordering != plan.Ordering || head.TypeSignature != plan.TypeSignature)
+                    if (head.Ordering != plan.Ordering || 
+                        head.TypeSignature != plan.TypeSignature)
                         break; // Slot was reused for a different plan — skip
 
                     // Limit chain depth to prevent unbounded growth.
@@ -278,6 +260,7 @@ public class PlanCache
                         return true;
                 }
             }
+
             return false;
         }
     }
