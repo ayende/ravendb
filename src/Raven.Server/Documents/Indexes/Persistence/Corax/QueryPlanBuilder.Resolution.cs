@@ -2056,6 +2056,77 @@ internal static partial class QueryPlanBuilder
         }
     }
 
+    // ── Compound field optimization ────────────────────────────────────────
+
+    /// <summary>Check if WHERE + ORDER BY can be served by a single compound tree scan.
+    /// Condition: single Equals clause on field1, single ORDER BY on field2,
+    /// and compound(field1, field2) exists in the index.
+    /// Returns a TermsProviderMatch on the compound tree with StartsWith(field1_value, validatePostfixLen: true).</summary>
+    public static bool TryCreateCompoundFieldMatch(
+        QueryExecution plan, OrderMetadata[] orderByFields,
+        PlanParameters planParams, QueryBuilderParameters builderParams,
+        out IQueryMatch compoundMatch)
+    {
+        compoundMatch = null;
+
+        // Only single ORDER BY field, only non-OR plan, only simple clauses
+        if (orderByFields == null || orderByFields.Length != 1)
+            return false;
+        if (plan.Clauses == null || plan.AllNegated)
+            return false;
+
+        // Find a single Equals clause (the candidate for field1)
+        // We need exactly one non-negated Equals clause + possibly other clauses that would need
+        // separate filtering. For now, only handle the pure case: one Equals clause, no other clauses.
+        var clauses = plan.Clauses;
+        var execs = plan.Executions;
+        if (clauses.Count != 1)
+            return false;
+
+        var clause = clauses[0];
+        if (clause.ClauseType != ClauseType.Equals || clause.IsNegated)
+            return false;
+
+        var exec = execs[0];
+        var packed = exec.PackedParamValue;
+        if (packed.IsNone || packed.ValueType != PackedParam.TypeString)
+            return false; // Only string field1 for now
+
+        string field1Name = clause.FieldName;
+        string field1Value = plan.StringValues[packed.Param1];
+        string sortFieldName = orderByFields[0].Field.FieldName.ToString();
+
+        // Check if compound(field1, sortField) exists
+        var index = planParams.Index;
+        var indexSearcher = planParams.IndexSearcher;
+        var allocator = planParams.Allocator;
+
+        using (Voron.Slice.From(allocator, field1Name, out var field1Slice))
+        using (Voron.Slice.From(allocator, sortFieldName, out var sortSlice))
+        {
+            if (index.HasCompoundField(field1Slice, sortSlice, out int bindingId) == false)
+                return false;
+
+            // Build the compound field metadata
+            var compoundFieldName = $"compound({field1Name},{sortFieldName})";
+            var compoundFieldMeta = indexSearcher.FieldMetadataBuilder(compoundFieldName, hasBoost: false);
+
+            // Encode field1's value through field1's analyzer to get the prefix bytes
+            var field1Meta = builderParams != null
+                ? QueryBuilderHelper.GetFieldMetadata(in builderParams, field1Name, hasBoost: false)
+                : indexSearcher.FieldMetadataBuilder(field1Name, hasBoost: false);
+            var analyzedPrefix = indexSearcher.EncodeAndApplyAnalyzer(field1Meta, field1Value);
+
+            // StartsWith on the compound tree with validatePostfixLen=true
+            // This finds all compound keys where the first N bytes match AND the trailing
+            // length byte equals N — exact match on field1, any value on field2.
+            compoundMatch = indexSearcher.StartWithQuery(compoundFieldMeta, analyzedPrefix,
+                isNegated: false, forward: orderByFields[0].Ascending,
+                validatePostfixLen: true);
+            return true;
+        }
+    }
+
     // ── Sort seek hint ────────────────────────────────────────────────────
 
     /// <summary>If the first clause is a range predicate on the same field as the first
