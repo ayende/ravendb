@@ -12,55 +12,59 @@ using Voron.Impl;
 namespace Corax.Querying.Matches;
 
 /// <summary>
-/// Wraps a SortedIndexReader to produce entry IDs in field-value order (not entry-ID order).
-/// Used as the driving match for DirectScanMatch when the ORDER BY field has a range clause.
-/// Unlike TermsProviderMatch (which materializes to bitmap and loses sort order), this
-/// preserves the tree's term ordering.
+/// Two-phase driving match for DirectScanMatch:
+/// Phase 1: Build a bitmap from the range query (via TermsProviderMatch — correct range filtering).
+/// Phase 2: Walk the tree in field-value sort order via SortedIndexReader, filtering against the
+///           bitmap via Contains. This preserves field-value order while respecting range bounds.
+///
+/// This is the same approach as SortUsingIndexFromBitmap but packaged as an IQueryMatch
+/// so DirectScanMatch can use it as its driving match.
 /// </summary>
 public sealed class SortedDrivingMatch : IQueryMatch, IDisposable
 {
     private readonly IndexSearcher _searcher;
     private readonly LowLevelTransaction _llt;
+    private readonly IQueryMatch _rangeMatch;  // TermsProviderMatch for building the bitmap
     private readonly string _fieldName;
     private readonly bool _ascending;
-    private readonly long _min;
-    private readonly long _max;
     private readonly bool _nullFirst;
     private readonly object _seekValue;
 
-    // The actual reader — created lazily on first Fill because we need the generic TDirection
+    // Bitmap from the range query (built on first Fill)
+    private RoaringBitmap _bitmap;
+    private bool _bitmapBuilt;
+
+    // Sorted tree walker
     private IDisposable _readerDisposable;
     private Func<Span<long>, int> _readFunc;
-    private bool _initialized;
 
     // Dedup for multi-value fields
     private RoaringBitmap _emittedBitmap;
 
-    public SortedDrivingMatch(IndexSearcher searcher, string fieldName, bool ascending,
-        long min = long.MinValue, long max = long.MaxValue, bool nullFirst = false, object seekValue = null)
+    public SortedDrivingMatch(IndexSearcher searcher, IQueryMatch rangeMatch, string fieldName,
+        bool ascending, bool nullFirst = false, object seekValue = null)
     {
         _searcher = searcher;
         _llt = searcher.Transaction.LowLevelTransaction;
+        _rangeMatch = rangeMatch;
         _fieldName = fieldName;
         _ascending = ascending;
-        _min = min;
-        _max = max;
         _nullFirst = nullFirst;
         _seekValue = seekValue;
         _emittedBitmap = new RoaringBitmap(searcher.Allocator);
     }
 
-    public long Count => -1;
-    public QueryCountConfidence Confidence => QueryCountConfidence.Low;
+    public long Count => _bitmapBuilt ? _bitmap.Count : -1;
+    public QueryCountConfidence Confidence => _bitmapBuilt ? QueryCountConfidence.High : QueryCountConfidence.Low;
     public bool IsBoosting => false;
     public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.Possible;
 
     public unsafe int Fill(Span<long> matches)
     {
-        if (_initialized == false)
+        if (_bitmapBuilt == false)
         {
-            Initialize();
-            _initialized = true;
+            BuildBitmapAndInitReader();
+            _bitmapBuilt = true;
         }
 
         if (_readFunc == null)
@@ -78,7 +82,8 @@ public sealed class SortedDrivingMatch : IQueryMatch, IDisposable
             for (int i = 0; i < read && count < matches.Length; i++)
             {
                 long id = buffer[i];
-                if (_emittedBitmap.Contains(id) == false)
+                // Filter against bitmap (range bounds) and dedup
+                if (_bitmap.Contains(id) && _emittedBitmap.Contains(id) == false)
                 {
                     _emittedBitmap.Add(id);
                     matches[count++] = id;
@@ -89,53 +94,62 @@ public sealed class SortedDrivingMatch : IQueryMatch, IDisposable
         return count;
     }
 
-    private void Initialize()
+    private void BuildBitmapAndInitReader()
     {
-        // Determine field type and create the appropriate SortedIndexReader
+        // Phase 1: Build bitmap from range match (applies correct range bounds)
+        _bitmap = new RoaringBitmap(_searcher.Allocator);
+        Span<long> buf = stackalloc long[4096];
+        int read;
+        while ((read = _rangeMatch.Fill(buf)) > 0)
+            _bitmap.AddRange(buf.Slice(0, read));
+        _bitmap.PrepareForReading();
+
+        // Phase 2: Create SortedIndexReader for the sort tree walk
         var fieldMeta = _searcher.FieldMetadataBuilder(_fieldName);
         Slice.From(_llt.Allocator, _fieldName, out var fieldSlice);
+        long min = _bitmap.IsEmpty ? 0 : _bitmap.MinContainerKey * RoaringBitmap.ContainerSize;
+        long max = _bitmap.IsEmpty ? 0 : (_bitmap.MaxContainerKey + 1) * RoaringBitmap.ContainerSize - 1;
 
-        // Try numeric long tree first
-        var longFieldMeta = fieldMeta.GetNumericFieldMetadata<long>(_llt.Allocator);
-        var longTree = _searcher.GetLongTermsFor(longFieldMeta.FieldName);
+        // Try numeric long
+        var longMeta = fieldMeta.GetNumericFieldMetadata<long>(_llt.Allocator);
+        var longTree = _searcher.GetLongTermsFor(longMeta.FieldName);
         if (longTree != null)
         {
             if (_ascending)
-                CreateReader<Lookup<Int64LookupKey>.ForwardIterator>(longTree.Iterate<Lookup<Int64LookupKey>.ForwardIterator>(), longFieldMeta);
+                CreateReader(longTree.Iterate<Lookup<Int64LookupKey>.ForwardIterator>(), longMeta, min, max);
             else
-                CreateReader<Lookup<Int64LookupKey>.BackwardIterator>(longTree.Iterate<Lookup<Int64LookupKey>.BackwardIterator>(), longFieldMeta);
+                CreateReader(longTree.Iterate<Lookup<Int64LookupKey>.BackwardIterator>(), longMeta, min, max);
             return;
         }
 
-        // Try numeric double tree
-        var doubleFieldMeta = fieldMeta.GetNumericFieldMetadata<double>(_llt.Allocator);
-        var doubleTree = _searcher.GetDoubleTermsFor(doubleFieldMeta.FieldName);
+        // Try numeric double
+        var doubleMeta = fieldMeta.GetNumericFieldMetadata<double>(_llt.Allocator);
+        var doubleTree = _searcher.GetDoubleTermsFor(doubleMeta.FieldName);
         if (doubleTree != null)
         {
             if (_ascending)
-                CreateReader<Lookup<DoubleLookupKey>.ForwardIterator>(doubleTree.Iterate<Lookup<DoubleLookupKey>.ForwardIterator>(), doubleFieldMeta);
+                CreateReader(doubleTree.Iterate<Lookup<DoubleLookupKey>.ForwardIterator>(), doubleMeta, min, max);
             else
-                CreateReader<Lookup<DoubleLookupKey>.BackwardIterator>(doubleTree.Iterate<Lookup<DoubleLookupKey>.BackwardIterator>(), doubleFieldMeta);
+                CreateReader(doubleTree.Iterate<Lookup<DoubleLookupKey>.BackwardIterator>(), doubleMeta, min, max);
             return;
         }
 
-        // String tree (CompactTree)
+        // String tree
         var termsTree = _searcher.GetTermsFor(fieldSlice);
         if (termsTree != null)
         {
             if (_ascending)
-                CreateReader<Lookup<CompactTree.CompactKeyLookup>.ForwardIterator>(termsTree.IterateValues<Lookup<CompactTree.CompactKeyLookup>.ForwardIterator>(), fieldMeta, fieldSlice);
+                CreateReader(termsTree.IterateValues<Lookup<CompactTree.CompactKeyLookup>.ForwardIterator>(), fieldMeta, min, max, fieldSlice);
             else
-                CreateReader<Lookup<CompactTree.CompactKeyLookup>.BackwardIterator>(termsTree.IterateValues<Lookup<CompactTree.CompactKeyLookup>.BackwardIterator>(), fieldMeta, fieldSlice);
+                CreateReader(termsTree.IterateValues<Lookup<CompactTree.CompactKeyLookup>.BackwardIterator>(), fieldMeta, min, max, fieldSlice);
         }
     }
 
-    private void CreateReader<TDirection>(TDirection iterator, FieldMetadata fieldMeta, Slice fieldSlice = default)
+    private void CreateReader<TDirection>(TDirection iterator, FieldMetadata fieldMeta, long min, long max, Slice fieldSlice = default)
         where TDirection : struct, ILookupIterator
     {
         SortingMatch<AllEntriesMatch>.SortedIndexReader<TDirection>.SeekAction seekAction = null;
 
-        // Build seek action from the seek value
         if (_seekValue is long longVal &&
             (typeof(TDirection) == typeof(Lookup<Int64LookupKey>.ForwardIterator) ||
              typeof(TDirection) == typeof(Lookup<Int64LookupKey>.BackwardIterator)))
@@ -152,18 +166,18 @@ public sealed class SortedDrivingMatch : IQueryMatch, IDisposable
             (typeof(TDirection) == typeof(Lookup<CompactTree.CompactKeyLookup>.ForwardIterator) ||
              typeof(TDirection) == typeof(Lookup<CompactTree.CompactKeyLookup>.BackwardIterator)))
         {
-            var termsTree = _searcher.GetTermsFor(fieldSlice);
-            if (termsTree != null)
+            var tree = _searcher.GetTermsFor(fieldSlice);
+            if (tree != null)
             {
-                var compactKey = _llt.AcquireCompactKey();
-                compactKey.Set(System.Text.Encoding.UTF8.GetBytes(strVal));
-                compactKey.ChangeDictionary(termsTree.DictionaryId);
-                seekAction = (ref TDirection it) => it.Seek(new CompactTree.CompactKeyLookup(compactKey));
+                var ck = _llt.AcquireCompactKey();
+                ck.Set(System.Text.Encoding.UTF8.GetBytes(strVal));
+                ck.ChangeDictionary(tree.DictionaryId);
+                seekAction = (ref TDirection it) => it.Seek(new CompactTree.CompactKeyLookup(ck));
             }
         }
 
         var reader = new SortingMatch<AllEntriesMatch>.SortedIndexReader<TDirection>(
-            _llt, _searcher, iterator, fieldMeta, _min, _max, _nullFirst, _ascending, seekAction);
+            _llt, _searcher, iterator, fieldMeta, min, max, _nullFirst, _ascending, seekAction);
 
         _readFunc = (Span<long> buf) => reader.Read(buf);
         _readerDisposable = reader;
@@ -179,13 +193,16 @@ public sealed class SortedDrivingMatch : IQueryMatch, IDisposable
             parameters: new Dictionary<string, string>
             {
                 ["Field"] = _fieldName,
-                ["Direction"] = _ascending ? "Forward" : "Backward"
+                ["Direction"] = _ascending ? "Forward" : "Backward",
+                ["BitmapCount"] = _bitmapBuilt ? _bitmap.Count.ToString() : "not built"
             });
     }
 
     public void Dispose()
     {
         _readerDisposable?.Dispose();
+        if (_bitmapBuilt) _bitmap.Dispose();
         _emittedBitmap.Dispose();
+        (_rangeMatch as IDisposable)?.Dispose();
     }
 }

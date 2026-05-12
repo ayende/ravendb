@@ -2506,13 +2506,6 @@ internal static partial class QueryPlanBuilder
             return false;
         if (plan.Clauses == null || plan.Clauses.Count == 0 || plan.AllNegated)
             return false;
-        // SortedDrivingMatch walks the tree in field-value order, but SortedIndexReader
-        // only applies entry-ID bounds, not field-value bounds. The range stop condition
-        // (e.g., Foo < 200) isn't enforced during the tree walk — all entries past the
-        // seek point are yielded. This needs TermsRangeProvider logic integrated into
-        // SortedIndexReader to stop at the field-value bound.
-        // TODO: integrate range bounds into SortedDrivingMatch/SortedIndexReader.
-        return false;
 
         var clauses = plan.Clauses;
         var execs = plan.Executions;
@@ -2535,6 +2528,12 @@ internal static partial class QueryPlanBuilder
         }
 
         if (drivingIdx == -1)
+            return false;
+
+        // For now, only numeric driving clauses — string range queries need additional
+        // testing with analyzers. Numeric ranges are the common case (dates, counters).
+        var drivingPacked = execs[drivingIdx].PackedParamValue;
+        if (drivingPacked.IsNone || drivingPacked.ValueType == PackedParam.TypeString)
             return false;
 
         // Check residual eligibility
@@ -2578,18 +2577,21 @@ internal static partial class QueryPlanBuilder
         if (directCost >= bitmapCost && entriesToScan > QueryPrimitives.EntryScanCountThreshold)
             return false;
 
-        // Create the driving match using SortedDrivingMatch — walks the tree in field-value
-        // order (not entry-ID order like TermsProviderMatch). Supports ascending and descending.
+        // Create the driving match: two-phase SortedDrivingMatch.
+        // Phase 1: TermsProviderMatch builds bitmap (correct range bounds).
+        // Phase 2: SortedIndexReader walks tree in sort order, Contains-filters against bitmap.
         var drivingClause = clauses[drivingIdx];
         var drivingExec = execs[drivingIdx];
         bool forward = orderByFields[0].Ascending;
 
-        // Extract seek value for the range bound
+        // Build the range match via ResolveClause (produces TermsProviderMatch with correct bounds)
+        var rangeMatch = ResolveRangeClauseWithDirection(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams, forward);
+
+        // Extract seek value for the tree walk start position
         var packed2 = drivingExec.PackedParamValue;
         object seekValue = null;
         if (packed2.IsNone == false)
         {
-            // For ascending GT/GTE: seek to the lower bound. For descending LT/LTE: seek to upper bound.
             if (forward && drivingClause.ClauseType is ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual)
             {
                 seekValue = packed2.ValueType switch
@@ -2624,7 +2626,7 @@ internal static partial class QueryPlanBuilder
         }
 
         var drivingMatch = new global::Corax.Querying.Matches.SortedDrivingMatch(
-            indexSearcher, sortFieldName, forward, seekValue: seekValue);
+            indexSearcher, rangeMatch, sortFieldName, forward, seekValue: seekValue);
 
         // Extract residual scan parameters
         ScanPredicateInfo[] residualArray = residualPreds.Count > 0 ? residualPreds.ToArray() : null;
