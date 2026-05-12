@@ -35,6 +35,8 @@ public static class QueryIlEmitter
         typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.RecordTiming))!;
     private static readonly MethodInfo RecordResultCount =
         typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.RecordResultCount))!;
+    private static readonly MethodInfo RunEntryScanMethod =
+        typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.RunEntryScan))!;
 
     // IQueryMatch
     private static readonly MethodInfo MatchCountGetter = typeof(IQueryMatch).GetProperty(nameof(IQueryMatch.Count))!.GetGetMethod()!;
@@ -482,7 +484,30 @@ public static class QueryIlEmitter
             il.Emit(OpCodes.Ldarg_0);
             il.Emit(OpCodes.Ldc_I4, entryScanOpIndex);
             il.Emit(OpCodes.Stfld, CtxEntryScanTakenAtOp);
-            EmitEntryScan(il, plan, readLocal);
+
+            // Call CompiledQueryHelper.RunEntryScan(ctx, ref bitmap[0], ref bitmap[1],
+            //   ctx.ScanPredicateInfos, ctx.ScanLongParams, ctx.ScanDoubleParams, ctx.ScanSliceParams, ctx.ScanFieldRootPages)
+            il.Emit(OpCodes.Ldarg_0);                  // ctx
+            EmitLoadBitmapRef(il, 0);                   // ref bitmap[0]
+            EmitLoadBitmapRef(il, 1);                   // ref bitmap[1]
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Ldfld, typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.ScanPredicateInfos))!);
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Ldfld, typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.ScanLongParams))!);
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Ldfld, typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.ScanDoubleParams))!);
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Ldfld, typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.ScanSliceParams))!);
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Ldfld, typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.ScanFieldRootPages))!);
+            il.Emit(OpCodes.Call, RunEntryScanMethod);
+
+            // Swap bitmap[0] and bitmap[1], clear bitmap[1]
+            EmitLoadBitmapRef(il, 0);
+            EmitLoadBitmapRef(il, 1);
+            il.Emit(OpCodes.Call, SwapContents);
+            EmitLoadBitmapRef(il, 1);
+            il.Emit(OpCodes.Call, Clear);
             il.Emit(OpCodes.Ret);
         }
         else
