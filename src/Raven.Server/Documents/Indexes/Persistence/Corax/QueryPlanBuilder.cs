@@ -1426,10 +1426,14 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        // Pack operand ordering
+        // Pack operand ordering — includes clause order + total match slots.
+        // Total match slots captures InTermCount/HasNullTerm per clause, so
+        // the same query with IN($p0) where $p0 has 3 vs 4 terms gets different keys.
         int ordering = 0;
         for (int i = 0; i < Math.Min(clauses.Count, 10); i++)
             ordering |= (clauses[i].OriginalIndex & 0x7) << (i * 3);
+        int totalMatchSlots = CountMatchSlots(clauses, executions, isAllEntries: false, allNegated: false);
+        ordering = HashCode.Combine(ordering, totalMatchSlots);
 
         // Check if all clauses are negated (if first clause after sort is negated, all the rest are too)
         bool allNegated = clauses.Count > 0
