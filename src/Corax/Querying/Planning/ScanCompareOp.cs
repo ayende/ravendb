@@ -9,4 +9,6 @@ public enum ScanCompareOp : byte
     LessThan,
     LessThanOrEqual,
     Between,
+    /// <summary>Field exists — reader.FindNext succeeds. No value comparison.</summary>
+    Exists,
 }

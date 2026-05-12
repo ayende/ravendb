@@ -1778,11 +1778,19 @@ internal static partial class QueryPlanBuilder
             case ClauseType.Vector:
             case ClauseType.In:
             case ClauseType.AllIn:
-            case ClauseType.Exists:
             case ClauseType.StartsWith:
             case ClauseType.EndsWith:
             case ClauseType.AndGroup: // AND-groups inside OR chains are handled at the bitmap level
                 return null;
+
+            case ClauseType.Exists:
+                return new ScanPredicateInfo
+                {
+                    FieldName = clause.FieldName,
+                    ValueType = ScanValueType.Long, // unused for Exists but must be set
+                    CompareOp = ScanCompareOp.Exists,
+                    ParamIndex = 0 // unused
+                };
 
             case ClauseType.OrGroup:
             {

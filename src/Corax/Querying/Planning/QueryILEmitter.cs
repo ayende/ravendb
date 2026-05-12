@@ -637,7 +637,13 @@ public static class QueryIlEmitter
                 il.Emit(OpCodes.Ldelem_I8);                  // long
                 il.Emit(OpCodes.Call, ReaderFindNext);
 
-                if (pred.CompareOp == ScanCompareOp.NotEqual)
+                if (pred.CompareOp == ScanCompareOp.Exists)
+                {
+                    // Exists: FindNext succeeding IS the check. No comparison needed.
+                    il.Emit(OpCodes.Brfalse, nextEntry); // field not found → predicate fails
+                    // FindNext returned true → field exists → predicate passes, fall through
+                }
+                else if (pred.CompareOp == ScanCompareOp.NotEqual)
                 {
                     // NotEquals: field not found → predicate passes (entry doesn't have the value)
                     var fieldFound = il.DefineLabel();
