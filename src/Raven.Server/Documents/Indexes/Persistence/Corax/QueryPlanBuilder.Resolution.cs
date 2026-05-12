@@ -2183,12 +2183,26 @@ internal static partial class QueryPlanBuilder
         if (packed.IsNone)
             return false;
 
+        // Look for an optional range clause on field2 (the sort field) — narrows the compound scan
+        int field2RangeIdx = -1;
+        for (int i = 0; i < clauses.Count; i++)
+        {
+            if (i == drivingClauseIdx) continue;
+            if (clauses[i].FieldName != sortFieldName) continue;
+            if (clauses[i].ClauseType is ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
+                or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between)
+            {
+                field2RangeIdx = i;
+                break;
+            }
+        }
+
         // Check residual clauses are entry-scan eligible
         var residualPreds = new List<ScanPredicateInfo>();
         int longIdx = 0, doubleIdx = 0, sliceIdx = 0;
         for (int i = 0; i < clauses.Count; i++)
         {
-            if (i == drivingClauseIdx)
+            if (i == drivingClauseIdx || i == field2RangeIdx)
                 continue;
             if (clauses[i].HasBoost || (execs[i] is { BoostFactor: > 0 }))
                 return false; // boosted clauses need scoring — can't entry scan
@@ -2271,9 +2285,87 @@ internal static partial class QueryPlanBuilder
                 return false;
         }
 
-        var drivingMatch = indexSearcher.StartWithQuery(compoundFieldMeta, analyzedPrefix,
-            isNegated: false, forward: orderByFields[0].Ascending,
-            validatePostfixLen: true);
+        IQueryMatch drivingMatch;
+        if (field2RangeIdx >= 0)
+        {
+            // Compound range: build composite low/high keys incorporating the field2 bound
+            var field2Exec = execs[field2RangeIdx];
+            var field2Clause = clauses[field2RangeIdx];
+            var field2Packed = field2Exec.PackedParamValue;
+
+            // For now, only support numeric field2 (long) — the common case for dates/counters.
+            // The compound key format: [field1_prefix][SwapBytes(field2_long)][field1_len]
+            if (field2Packed.IsNone == false && field2Packed.ValueType == PackedParam.TypeLong)
+            {
+                long field2Val = plan.LongValues[field2Packed.Param1];
+                byte[] field2Bytes = new byte[sizeof(long)];
+                System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(
+                    field2Bytes, Sparrow.Binary.Bits.SwapBytes(field2Val));
+
+                // Build low and high composite keys
+                int prefixLen = analyzedPrefix.Size;
+                int keyLen = prefixLen + sizeof(long) + 1; // +1 for field1 length byte
+
+                byte[] lowKeyBytes = new byte[keyLen];
+                byte[] highKeyBytes = new byte[keyLen];
+
+                analyzedPrefix.CopyTo(lowKeyBytes);
+                analyzedPrefix.CopyTo(highKeyBytes);
+
+                // Low key: either the field2 bound or min value (0x00s)
+                // High key: either the field2 bound or max value (0xFFs)
+                bool isGt = field2Clause.ClauseType is ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual;
+                if (isGt || field2Clause.ClauseType == ClauseType.Between)
+                {
+                    field2Bytes.CopyTo(lowKeyBytes.AsSpan(prefixLen));
+                }
+                // else: low = field1 prefix + 0x00s (already zeroed)
+
+                if (field2Clause.ClauseType is ClauseType.LessThan or ClauseType.LessThanOrEqual || field2Clause.ClauseType == ClauseType.Between)
+                {
+                    if (field2Clause.ClauseType == ClauseType.Between)
+                    {
+                        long highVal = plan.LongValues[field2Packed.Param2];
+                        System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(
+                            highKeyBytes.AsSpan(prefixLen), Sparrow.Binary.Bits.SwapBytes(highVal));
+                    }
+                    else
+                    {
+                        field2Bytes.CopyTo(highKeyBytes.AsSpan(prefixLen));
+                    }
+                }
+                else
+                {
+                    // GT/GTE: high = field1 prefix + 0xFF...FF
+                    highKeyBytes.AsSpan(prefixLen, sizeof(long)).Fill(0xFF);
+                }
+
+                // Trailing field1 length byte
+                lowKeyBytes[^1] = (byte)prefixLen;
+                highKeyBytes[^1] = (byte)prefixLen;
+
+                Voron.Slice.From(allocator, lowKeyBytes, out var lowSlice);
+                Voron.Slice.From(allocator, highKeyBytes, out var highSlice);
+
+                drivingMatch = indexSearcher.RangeBuilder<global::Corax.Querying.Matches.Meta.Range.Inclusive, global::Corax.Querying.Matches.Meta.Range.Inclusive>(
+                    compoundFieldMeta, lowSlice, highSlice,
+                    forward: orderByFields[0].Ascending, default);
+            }
+            else
+            {
+                // Non-numeric field2 or unsupported — fall back to prefix scan
+                drivingMatch = indexSearcher.StartWithQuery(compoundFieldMeta, analyzedPrefix,
+                    isNegated: false, forward: orderByFields[0].Ascending,
+                    validatePostfixLen: true);
+            }
+        }
+        else
+        {
+            // Pure prefix scan (no field2 constraint)
+            drivingMatch = indexSearcher.StartWithQuery(compoundFieldMeta, analyzedPrefix,
+                isNegated: false, forward: orderByFields[0].Ascending,
+                validatePostfixLen: true);
+        }
 
         // Extract scan parameters for residual predicates
         ScanPredicateInfo[] residualArray = residualPreds.Count > 0 ? residualPreds.ToArray() : null;
@@ -2292,7 +2384,7 @@ internal static partial class QueryPlanBuilder
             int residualIdx = 0;
             for (int i = 0; i < clauses.Count; i++)
             {
-                if (i == drivingClauseIdx) continue;
+                if (i == drivingClauseIdx || i == field2RangeIdx) continue;
                 var matchingExec = execs[i];
 
                 // Add field root page

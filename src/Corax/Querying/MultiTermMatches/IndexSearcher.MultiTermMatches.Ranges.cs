@@ -146,7 +146,7 @@ public partial class IndexSearcher
         throw new ArgumentException("Range queries are supporting strings, longs or doubles only");
     }
 
-    private IQueryMatch RangeBuilder<TLow, THigh>(in FieldMetadata field, Slice low, Slice high, bool forward, CancellationToken token)
+    public IQueryMatch RangeBuilder<TLow, THigh>(in FieldMetadata field, Slice low, Slice high, bool forward, CancellationToken token)
         where TLow : struct, Range.Marker
         where THigh : struct, Range.Marker
     {
