@@ -593,6 +593,14 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
                 typeof(TDirection) == typeof(Lookup<CompactTree.CompactKeyLookup>.BackwardIterator))
             {
                 var termsTree = match._searcher.GetTermsFor(entryCmp.GetSortFieldName(match));
+                // Build string seek action here where we have the tree's dictionary ID
+                if (seek == null && bitmapMatch is ISortSeekHint { SeekValue: string strVal })
+                {
+                    var compactKey = llt.AcquireCompactKey();
+                    compactKey.Set(System.Text.Encoding.UTF8.GetBytes(strVal));
+                    compactKey.ChangeDictionary(termsTree.DictionaryId);
+                    seek = (ref TDirection it) => it.Seek(new CompactTree.CompactKeyLookup(compactKey));
+                }
                 return new SortedIndexReader<TDirection>(llt, match._searcher, termsTree.IterateValues<TDirection>(), match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending, seek);
             }
 
