@@ -101,6 +101,45 @@ internal static partial class QueryPlanBuilder
         for (int ci = 0; ci < clauses.Count; ci++)
             PopulateClauseValues(clauses[ci], execList[ci], planParams.QueryParameters, writer, builderParameters);
 
+        // Step 3b: Constant propagation — simplify trivially-false/simple clauses
+        bool isOr = template.IsOr;
+        for (int ci = clauses.Count - 1; ci >= 0; ci--)
+        {
+            var c = clauses[ci];
+            var e = execList[ci];
+
+            // Contradictory BETWEEN: low > high → clause matches nothing
+            if (c.ClauseType == ClauseType.Between && e.PackedParamValue.IsNone == false)
+            {
+                var p = e.PackedParamValue;
+                if (p.Param2 != PackedParam.NoParamValue)
+                {
+                    bool contradictory = p.ValueType switch
+                    {
+                        PackedParam.TypeLong => writer.GetLongs()[p.Param1] > writer.GetLongs()[p.Param2],
+                        PackedParam.TypeDouble => writer.GetDoubles()[p.Param1] > writer.GetDoubles()[p.Param2],
+                        _ => false
+                    };
+                    if (contradictory)
+                    {
+                        // Mark with zero cardinality. EmitPlan handles:
+                        // AND chain: zero-cardinality → empty result.
+                        // OR chain: remove the clause (contributes nothing).
+                        e.Cardinality = 0;
+                        e.InTermCount = 0;
+                        e.HasNullTerm = false;
+                        c.ClauseType = ClauseType.In; // Reuse empty-IN elimination in EmitPlan
+                    }
+                }
+            }
+
+            // Single-value IN → convert to Equals (simpler plan, single PostingList lookup)
+            if (c.ClauseType == ClauseType.In && e.InTermCount == 1 && e.HasNullTerm == false)
+            {
+                c.ClauseType = ClauseType.Equals;
+            }
+        }
+
         // Step 4: Estimate cardinality (needs populated values)
         for (int ci = 0; ci < clauses.Count; ci++)
         {
@@ -111,7 +150,6 @@ internal static partial class QueryPlanBuilder
         var executions = execList.ToArray();
 
         // Step 5: Sort operands by cardinality (sort clauses and executions in lockstep)
-        bool isOr = template.IsOr;
         if (!isOr)
         {
             // Build index array, sort by cardinality, then reorder both arrays
