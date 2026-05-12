@@ -73,6 +73,19 @@ public interface IQueryMatch
     DuplicatesOccurrence DuplicatesOccurrenceStatus { get; }
 }
 
+/// <summary>Optional hint for SortingMatch: when the WHERE field matches the ORDER BY field,
+/// the sort tree iterator can seek directly to the boundary value instead of walking from
+/// the beginning. Stores the seek value and field name for SortedIndexReader.</summary>
+public interface ISortSeekHint
+{
+    /// <summary>Field name that the seek applies to. Only used when it matches the ORDER BY field.</summary>
+    string SeekFieldName { get; }
+    /// <summary>Seek value: long for numeric, double for double, or string for text fields.</summary>
+    object SeekValue { get; }
+    /// <summary>True if the boundary is inclusive (>= / <=), false if exclusive (> / <).</summary>
+    bool SeekInclusive { get; }
+}
+
 /// <summary>
 /// Implemented by query matches backed by a RoaringBitmap, enabling SortingMatch
 /// to walk the CompactTree index and intersect batches via AndWith, stopping early
