@@ -290,7 +290,12 @@ internal static partial class QueryPlanBuilder
             longParams, doubleParams, sliceParams, fieldRootPages,
             indexSearcher, planParams.Allocator, wantTimings, token)
         {
-            InRangeCounts = plan.InRangeCounts
+            InRangeCounts = plan.InRangeCounts,
+            ScanPredicateInfos = plan.ScanPredicateInfos,
+            ScanLongParams = longParams,
+            ScanDoubleParams = doubleParams,
+            ScanSliceParams = sliceParams,
+            ScanFieldRootPages = fieldRootPages
         };
         IQueryMatch result = compiledMatch;
 
