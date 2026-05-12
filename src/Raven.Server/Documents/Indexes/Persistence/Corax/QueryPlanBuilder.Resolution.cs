@@ -2454,7 +2454,7 @@ internal static partial class QueryPlanBuilder
         }
 
         long directCost = entriesToScan > long.MaxValue / QueryPrimitives.EntryScanCostMultiplier ? long.MaxValue : entriesToScan * QueryPrimitives.EntryScanCostMultiplier;
-        if (directCost >= bitmapCost && entriesToScan > QueryPrimitives.EntryScanCountThreshold)
+        if (directCost >= bitmapCost || entriesToScan > QueryPrimitives.EntryScanCountThreshold)
             return false; // bitmap is cheaper
 
         // Build the compound tree match
@@ -2818,7 +2818,7 @@ internal static partial class QueryPlanBuilder
         }
 
         long directCost = entriesToScan > long.MaxValue / QueryPrimitives.EntryScanCostMultiplier ? long.MaxValue : entriesToScan * QueryPrimitives.EntryScanCostMultiplier;
-        if (directCost >= bitmapCost && entriesToScan > QueryPrimitives.EntryScanCountThreshold)
+        if (directCost >= bitmapCost || entriesToScan > QueryPrimitives.EntryScanCountThreshold)
             return false;
 
         // Create the driving match: SortedDrivingMatch walks the ITermsProvider directly.
