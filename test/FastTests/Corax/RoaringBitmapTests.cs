@@ -1334,5 +1334,79 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         return ok;
     }
 
+    [RavenTheory(RavenTestCategory.Corax)]
+    [InlineDataWithRandomSeed]
+    public void ExhaustiveSetOpCompatibility_RandomSeed(int seed)
+    {
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+        var rng = new Random(seed);
+
+        var configs = new (string Name, long[] Values)[]
+        {
+            ("Empty", []),
+            ("SingleValue", [rng.NextInt64(0, 100000)]),
+            ("SparseArray", GenerateValues(rng, 10, 0, 65535)),
+            ("MediumArray", GenerateValues(rng, 500, 0, 65535)),
+            ("DenseBitmap", GenerateValues(rng, 5000, 0, 65535)),
+            ("FullRange", Enumerable.Range(rng.Next(0, 1000), 1000).Select(x => (long)x).ToArray()),
+            ("TwoContainers", GenerateValues(rng, 200, 0, 131071)),
+            ("HighValues", GenerateValues(rng, 200, 100000, 200000)),
+        };
+
+        int failures = 0;
+        foreach (var left in configs)
+        foreach (var right in configs)
+        {
+            if (VerifySetOp("AND", left, right, ctx, (a, b) => And(ctx, a, b), (a, b) => new HashSet<long>(a.Intersect(b))) == false) failures++;
+            if (VerifySetOp("OR", left, right, ctx, (a, b) => Or(ctx, a, b), (a, b) => new HashSet<long>(a.Union(b))) == false) failures++;
+            if (VerifySetOp("ANDNOT", left, right, ctx, (a, b) => AndNot(ctx, a, b), (a, b) => new HashSet<long>(a.Except(b))) == false) failures++;
+        }
+
+        Assert.Equal(0, failures);
+    }
+
+    /// <summary>Targeted regression test for the (ArrayUnsorted, Range) dangling stack pointer bug.
+    /// LazyOrContainerInPlace materialized Range into a stack buffer, then (Array, Bitmap) stole
+    /// the pointer — dangling after stack unwind. Fixed by converting Array to heap Bitmap first.</summary>
+    [RavenFact(RavenTestCategory.Corax)]
+    public void OrWithArrayAndRange_NoDanglingPointer()
+    {
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+
+        // Sparse array with values OUTSIDE the range (different container positions)
+        RoaringBitmap sparse = new(ctx);
+        sparse.Add(5000);
+        sparse.Add(10000);
+        sparse.Add(17209); // the value that was lost in the original bug
+        sparse.Add(33614);
+        sparse.Add(50000);
+
+        // Range container: sequential 0..999
+        RoaringBitmap range = new(ctx);
+        for (int i = 0; i < 1000; i++) range.Add(i);
+
+        sparse.PrepareForReading();
+        range.PrepareForReading();
+
+        // OR: must include all values from both
+        RoaringBitmap result = Or(ctx, sparse, range);
+        Assert.Equal(1005, result.Count); // 1000 from range + 5 from sparse
+        Assert.True(result.Contains(5000));
+        Assert.True(result.Contains(17209));
+        Assert.True(result.Contains(50000));
+        Assert.True(result.Contains(0));
+        Assert.True(result.Contains(999));
+        result.Dispose();
+
+        // Reverse order: range OR sparse
+        RoaringBitmap result2 = Or(ctx, range, sparse);
+        Assert.Equal(1005, result2.Count);
+        Assert.True(result2.Contains(17209));
+        result2.Dispose();
+
+        sparse.Dispose();
+        range.Dispose();
+    }
+
     #endregion
 }
