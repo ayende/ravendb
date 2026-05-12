@@ -89,4 +89,38 @@ public static class CompiledQueryHelper
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool CompareSliceBetween(ReadOnlySpan<byte> actual, ReadOnlySpan<byte> low, ReadOnlySpan<byte> high)
         => actual.SequenceCompareTo(low) >= 0 && actual.SequenceCompareTo(high) <= 0;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool SliceStartsWith(ReadOnlySpan<byte> actual, ReadOnlySpan<byte> prefix)
+        => actual.Length >= prefix.Length && actual.Slice(0, prefix.Length).SequenceEqual(prefix);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool SliceEndsWith(ReadOnlySpan<byte> actual, ReadOnlySpan<byte> suffix)
+        => actual.Length >= suffix.Length && actual.Slice(actual.Length - suffix.Length).SequenceEqual(suffix);
+
+    /// <summary>Check StartsWith/EndsWith against ALL terms for a field (multi-value support).
+    /// Returns true if ANY term matches.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool CheckFieldTermStartsWith(ref EntryTermsReader reader, long fieldRootPage, ReadOnlySpan<byte> prefix)
+    {
+        reader.Reset();
+        while (reader.FindNext(fieldRootPage))
+        {
+            if (SliceStartsWith(reader.Current.Decoded(), prefix))
+                return true;
+        }
+        return false;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool CheckFieldTermEndsWith(ref EntryTermsReader reader, long fieldRootPage, ReadOnlySpan<byte> suffix)
+    {
+        reader.Reset();
+        while (reader.FindNext(fieldRootPage))
+        {
+            if (SliceEndsWith(reader.Current.Decoded(), suffix))
+                return true;
+        }
+        return false;
+    }
 }
