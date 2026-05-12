@@ -1416,17 +1416,25 @@ internal static partial class QueryPlanBuilder
         var slices = new List<Voron.Slice>();
         var roots = new List<long>();
 
-        // Walk predicates and clauses in a lock-step (same order as BuildScanPredicateInfo visited them).
-        // Using field-name search instead would incorrectly return the first matching clause for
-        // every predicate when multiple clauses share the same field (e.g. Name != 'a' AND Name != 'b').
+        // Walk predicates and clauses in lock-step. BuildScanPredicateInfo skips non-eligible
+        // clauses (Search, In, AllIn, Exists, StartsWith, EndsWith, Regex, Spatial, Vector,
+        // AndGroup), so we must skip them here too to keep the 1:1 positional mapping.
         int scanStart = plan.AllNegated ? 0 : 1;
         int clauseIdx = scanStart;
         var clauses = plan.Clauses;
         var execs = plan.Executions;
+        int dummyL = 0, dummyD = 0, dummyS = 0;
         foreach (ScanPredicateInfo pred in predicates)
         {
-            // Advance to the next eligible clause for this predicate.
-            ClauseInfo matchingClause = clauses?[clauseIdx];
+            // Advance past clauses that BuildScanPredicateInfo would have skipped (returned null).
+            while (clauseIdx < clauses.Count &&
+                   BuildScanPredicateInfo(clauses[clauseIdx], execs != null && clauseIdx < execs.Length ? execs[clauseIdx] : null,
+                       ref dummyL, ref dummyD, ref dummyS) == null)
+            {
+                clauseIdx++;
+            }
+
+            ClauseInfo matchingClause = clauses != null && clauseIdx < clauses.Count ? clauses[clauseIdx] : null;
             ClauseExecution matchingExec = execs != null && clauseIdx < execs.Length ? execs[clauseIdx] : null;
             clauseIdx++;
             ExtractParamsFromPredicate(pred, matchingClause, matchingExec, indexSearcher, plan, longs, doubles, slices, roots);
