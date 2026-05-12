@@ -29,9 +29,7 @@ public class CompiledQueryMatch(
     : IBitmapQueryMatch, IDisposable
 {
     private readonly QueryIlEmitter.CompiledExecuteDelegate _compiledDelegate =
-        wantTimings && compiledPlan.CompiledTimedDelegate != null
-            ? compiledPlan.CompiledTimedDelegate
-            : compiledPlan.CompiledDelegate;
+        wantTimings ? compiledPlan.CompiledTimedDelegate : compiledPlan.CompiledDelegate;
 
     // Sort seek hint — set by the plan builder when WHERE field matches ORDER BY field
     private string _seekFieldName;
