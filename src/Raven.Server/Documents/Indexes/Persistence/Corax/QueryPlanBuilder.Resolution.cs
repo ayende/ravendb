@@ -1565,17 +1565,17 @@ internal static partial class QueryPlanBuilder
         IndexSearcher indexSearcher, QueryExecution plan, List<long> longs, List<double> doubles,
         List<Voron.Slice> slices, List<long> roots)
     {
-        if (pred.OrBranches != null)
+        if (pred.SubPredicates != null)
         {
             // Each OrBranch corresponds to a subclause of the OrGroup.
             // Pass subclauses positionally to avoid the same field-name ambiguity.
             List<ClauseInfo> subClauses = clause?.OrSubClauses;
             ClauseExecution[] subExecs = exec?.OrSubExecutions;
-            for (int b = 0; b < pred.OrBranches.Length; b++)
+            for (int b = 0; b < pred.SubPredicates.Length; b++)
             {
                 ClauseInfo subClause = (subClauses != null && b < subClauses.Count) ? subClauses[b] : null;
                 ClauseExecution subExec = (subExecs != null && b < subExecs.Length) ? subExecs[b] : null;
-                ExtractParamsFromPredicate(pred.OrBranches[b], subClause, subExec, indexSearcher, plan, longs, doubles, slices, roots);
+                ExtractParamsFromPredicate(pred.SubPredicates[b], subClause, subExec, indexSearcher, plan, longs, doubles, slices, roots);
             }
             return;
         }
@@ -2382,7 +2382,7 @@ internal static partial class QueryPlanBuilder
         if (analyzedPrefix.Size > byte.MaxValue)
             return false;
 
-        IQueryMatch drivingMatch;
+        IQueryMatch drivingMatch = null;
         if (field2RangeIdx >= 0)
         {
             // Compound range: build composite low/high keys incorporating the field2 bound
@@ -2390,22 +2390,98 @@ internal static partial class QueryPlanBuilder
             var field2Clause = clauses[field2RangeIdx];
             var field2Packed = field2Exec.PackedParamValue;
 
-            // Numeric field2 (long): always 8 bytes, fits in compound key.
-            // String field2 range: would need total key length check against Constants.Terms.MaxLength
-            // and per-field check against byte.MaxValue. Not yet implemented.
-            if (field2Packed.IsNone == false && field2Packed.ValueType == PackedParam.TypeLong)
+            if (field2Packed.IsNone == false)
             {
-                long field2Val = plan.LongValues[field2Packed.Param1];
-                byte[] field2Bytes = new byte[sizeof(long)];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(
-                    field2Bytes, Sparrow.Binary.Bits.SwapBytes(field2Val));
+                // Encode field2 bound value into bytes (same encoding as indexing).
+                // Long/Double: Bits.SwapBytes big-endian. String: analyze with field2's analyzer.
+                byte[] field2Bytes = null;
+                byte[] field2HighBytes = null;
+                bool usePrefix = false;
+
+                if (field2Packed.ValueType == PackedParam.TypeLong)
+                {
+                    field2Bytes = new byte[sizeof(long)];
+                    System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(
+                        field2Bytes, Sparrow.Binary.Bits.SwapBytes(plan.LongValues[field2Packed.Param1]));
+                    if (field2Clause.ClauseType == ClauseType.Between)
+                    {
+                        field2HighBytes = new byte[sizeof(long)];
+                        System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(
+                            field2HighBytes, Sparrow.Binary.Bits.SwapBytes(plan.LongValues[field2Packed.Param2]));
+                    }
+                }
+                else if (field2Packed.ValueType == PackedParam.TypeDouble)
+                {
+                    field2Bytes = new byte[sizeof(long)];
+                    long sortable = Sparrow.Binary.Bits.DoubleToSortableLong(plan.DoubleValues[field2Packed.Param1]);
+                    System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(
+                        field2Bytes, Sparrow.Binary.Bits.SwapBytes(sortable));
+                    if (field2Clause.ClauseType == ClauseType.Between)
+                    {
+                        field2HighBytes = new byte[sizeof(long)];
+                        long highSortable = Sparrow.Binary.Bits.DoubleToSortableLong(plan.DoubleValues[field2Packed.Param2]);
+                        System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(
+                            field2HighBytes, Sparrow.Binary.Bits.SwapBytes(highSortable));
+                    }
+                }
+                else if (field2Packed.ValueType == PackedParam.TypeString)
+                {
+                    // Analyze field2's value with the sort field's analyzer (same as indexing)
+                    var field2Meta = builderParams != null
+                        ? QueryBuilderHelper.GetFieldMetadata(in builderParams, sortFieldName, hasBoost: false)
+                        : indexSearcher.FieldMetadataBuilder(sortFieldName, hasBoost: false);
+                    var analyzed = indexSearcher.EncodeAndApplyAnalyzer(field2Meta, plan.StringValues[field2Packed.Param1]);
+                    if (analyzed.Size > byte.MaxValue)
+                        usePrefix = true;
+                    else
+                    {
+                        field2Bytes = new byte[analyzed.Size];
+                        analyzed.CopyTo(field2Bytes);
+                        if (field2Clause.ClauseType == ClauseType.Between)
+                        {
+                            var analyzedHigh = indexSearcher.EncodeAndApplyAnalyzer(field2Meta, plan.StringValues[field2Packed.Param2]);
+                            if (analyzedHigh.Size > byte.MaxValue)
+                                usePrefix = true;
+                            else
+                            {
+                                field2HighBytes = new byte[analyzedHigh.Size];
+                                analyzedHigh.CopyTo(field2HighBytes);
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    usePrefix = true;
+                }
+
+                if (usePrefix || field2Bytes == null)
+                {
+                    // Field2 value too long or unsupported type — fall back to prefix-only
+                    drivingMatch = indexSearcher.StartWithQuery(compoundFieldMeta, analyzedPrefix,
+                        isNegated: false, forward: orderByFields[0].Ascending,
+                        validatePostfixLen: true);
+                }
+                else
+                {
 
                 // Build low and high composite keys
                 int prefixLen = analyzedPrefix.Size;
-                int keyLen = prefixLen + sizeof(long) + 1; // +1 for field1 length byte
+                int field2Len = field2Bytes.Length;
+                int keyLen = prefixLen + field2Len + 1; // +1 for field1 length byte
+                int highField2Len = field2HighBytes?.Length ?? field2Len;
+                int highKeyLen = prefixLen + highField2Len + 1;
+
+                // Check total key length against max
+                if (keyLen > global::Corax.Constants.Terms.MaxLength || highKeyLen > global::Corax.Constants.Terms.MaxLength)
+                {
+                    drivingMatch = indexSearcher.StartWithQuery(compoundFieldMeta, analyzedPrefix,
+                        isNegated: false, forward: orderByFields[0].Ascending, validatePostfixLen: true);
+                    goto DrivingMatchReady;
+                }
 
                 byte[] lowKeyBytes = new byte[keyLen];
-                byte[] highKeyBytes = new byte[keyLen];
+                byte[] highKeyBytes = new byte[highKeyLen];
 
                 analyzedPrefix.CopyTo(lowKeyBytes);
                 analyzedPrefix.CopyTo(highKeyBytes);
@@ -2421,21 +2497,13 @@ internal static partial class QueryPlanBuilder
 
                 if (field2Clause.ClauseType is ClauseType.LessThan or ClauseType.LessThanOrEqual || field2Clause.ClauseType == ClauseType.Between)
                 {
-                    if (field2Clause.ClauseType == ClauseType.Between)
-                    {
-                        long highVal = plan.LongValues[field2Packed.Param2];
-                        System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(
-                            highKeyBytes.AsSpan(prefixLen), Sparrow.Binary.Bits.SwapBytes(highVal));
-                    }
-                    else
-                    {
-                        field2Bytes.CopyTo(highKeyBytes.AsSpan(prefixLen));
-                    }
+                    var highBytes = field2HighBytes ?? field2Bytes;
+                    highBytes.CopyTo(highKeyBytes.AsSpan(prefixLen));
                 }
                 else
                 {
                     // GT/GTE: high = field1 prefix + 0xFF...FF
-                    highKeyBytes.AsSpan(prefixLen, sizeof(long)).Fill(0xFF);
+                    highKeyBytes.AsSpan(prefixLen, highField2Len).Fill(0xFF);
                 }
 
                 // Trailing field1 length byte
@@ -2448,13 +2516,7 @@ internal static partial class QueryPlanBuilder
                 drivingMatch = indexSearcher.RangeBuilder<global::Corax.Querying.Matches.Meta.Range.Inclusive, global::Corax.Querying.Matches.Meta.Range.Inclusive>(
                     compoundFieldMeta, lowSlice, highSlice,
                     forward: orderByFields[0].Ascending, default);
-            }
-            else
-            {
-                // Non-numeric field2 or unsupported — fall back to prefix scan
-                drivingMatch = indexSearcher.StartWithQuery(compoundFieldMeta, analyzedPrefix,
-                    isNegated: false, forward: orderByFields[0].Ascending,
-                    validatePostfixLen: true);
+                }
             }
         }
         else
@@ -2464,6 +2526,7 @@ internal static partial class QueryPlanBuilder
                 isNegated: false, forward: orderByFields[0].Ascending,
                 validatePostfixLen: true);
         }
+        DrivingMatchReady:
 
         // Extract scan parameters for residual predicates
         ScanPredicateInfo[] residualArray = residualPreds.Count > 0 ? residualPreds.ToArray() : null;

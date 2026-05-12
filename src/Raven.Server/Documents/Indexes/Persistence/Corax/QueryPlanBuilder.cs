@@ -1819,14 +1819,13 @@ internal static partial class QueryPlanBuilder
                     if (subPred == null) return null;
                     branches.Add(subPred.Value);
                 }
-                // Reuse OrBranches field for AND sub-predicates (RunEntryScan treats
-                // all branches as AND within a group)
+                // SubPredicates for AND group — RunEntryScan checks ALL must pass
                 return new ScanPredicateInfo
                 {
                     FieldName = clause.FieldName ?? clause.AndSubClauses[0].FieldName,
                     ValueType = ScanValueType.Long,
                     CompareOp = ScanCompareOp.Equal,
-                    OrBranches = branches.ToArray()
+                    SubPredicates = branches.ToArray()
                 };
             }
 
@@ -1859,7 +1858,7 @@ internal static partial class QueryPlanBuilder
                 return new ScanPredicateInfo
                 {
                     FieldName = clause.OrSubClauses[0].FieldName,
-                    OrBranches = branches.ToArray()
+                    SubPredicates = branches.ToArray()
                 };
             }
         }
