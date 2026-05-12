@@ -28,7 +28,10 @@ public class CompiledQueryMatch(
     CancellationToken token)
     : IBitmapQueryMatch, ISortSeekHint, IDisposable
 {
-    private readonly QueryIlEmitter.CompiledExecuteDelegate _compiledDelegate = compiledPlan.CompiledDelegate;
+    private readonly QueryIlEmitter.CompiledExecuteDelegate _compiledDelegate =
+        wantTimings && compiledPlan.CompiledTimedDelegate != null
+            ? compiledPlan.CompiledTimedDelegate
+            : compiledPlan.CompiledDelegate;
 
     // ISortSeekHint — set by the plan builder when WHERE field matches ORDER BY field
     public string SeekFieldName { get; set; }

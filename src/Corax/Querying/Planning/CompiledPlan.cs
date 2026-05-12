@@ -2,8 +2,12 @@ namespace Corax.Querying.Planning;
 
 public sealed class CompiledPlan
 {
-    /// <summary>IL-emitted delegate that executes the posting-list scan plan.</summary>
+    /// <summary>IL-emitted delegate that executes the posting-list scan plan (no timing instrumentation).</summary>
     public QueryIlEmitter.CompiledExecuteDelegate CompiledDelegate { get; init; }
+
+    /// <summary>IL-emitted delegate with per-op timing instrumentation. Compiled lazily on
+    /// first `include timings()` request. Null until then.</summary>
+    public QueryIlEmitter.CompiledExecuteDelegate CompiledTimedDelegate { get; set; }
 
     /* A single query may be represented by different compiled plans, because the shape
      * of the data is different. Consider `WHERE Tag = $tag and Published = $published`.
