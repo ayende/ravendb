@@ -160,6 +160,23 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         FieldCache = new FieldsCache(_transaction, _fieldsTree);
     }
     
+    /// <summary>Special term markers and dictionary ID exposed for batch EntryTermsReader construction
+    /// in DirectScanMatch (avoids per-entry GetEntryTermsReader overhead).</summary>
+    public HashSet<long> NullTermsMarkers { get { InitializeSpecialTermsMarkers(); return _nullTermsMarkers; } }
+    public HashSet<long> NonExistingTermsMarkers { get { InitializeSpecialTermsMarkers(); return _nonExistingTermsMarkers; } }
+    public long[] VectorFieldsMarkers { get { InitializeSpecialTermsMarkers(); return _vectorFieldsMarkers; } }
+    public long DictionaryId => _dictionaryId;
+
+    /// <summary>Batch-resolve entry IDs to container locations. Entry IDs should be sorted
+    /// for best B-tree page locality. Unresolvable entries get -1.</summary>
+    public void ResolveEntryLocations(ReadOnlySpan<long> entryIds, Span<long> containerLocations)
+    {
+        for (int i = 0; i < entryIds.Length; i++)
+        {
+            containerLocations[i] = _entryIdToLocation.TryGetValue(entryIds[i], out var loc) ? loc : -1;
+        }
+    }
+
     public EntryTermsReader GetEntryTermsReader(long id, ref Page p, CompactKey key = null)
     {
         if (_entryIdToLocation.TryGetValue(id, out var locLong) == false)
@@ -584,7 +601,7 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     }
 
 
-    private void InitializeSpecialTermsMarkers()
+    public void InitializeSpecialTermsMarkers()
     {
         if (_nullTermsMarkersLoaded == false)
         {
