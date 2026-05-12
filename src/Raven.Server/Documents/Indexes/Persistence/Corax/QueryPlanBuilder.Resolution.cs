@@ -287,10 +287,14 @@ internal static partial class QueryPlanBuilder
         if (highlightingTerms != null)
             PopulateHighlightingTerms(plan, highlightingTerms, planParams.Metadata);
 
-        IQueryMatch result = new CompiledQueryMatch(
+        var compiledMatch = new CompiledQueryMatch(
             compiledPlan, plan.RequiredBitmaps, plan.Ops?.Length ?? 0, resolvedMatches, termSources, termsProviders,
             longParams, doubleParams, sliceParams, fieldRootPages,
-            indexSearcher, planParams.Allocator, wantTimings, token);
+            indexSearcher, planParams.Allocator, wantTimings, token)
+        {
+            InRangeCounts = plan.InRangeCounts
+        };
+        IQueryMatch result = compiledMatch;
 
         // Spatial post-filter phase: AND each spatial match with the candidate bitmap.
         if (plan.SpatialFilters is { Length: > 0 })
@@ -825,18 +829,21 @@ internal static partial class QueryPlanBuilder
 
                     break;
                 }
-                case ClauseType.AllIn or ClauseType.In when (exec.InTermCount > 0 || exec.HasNullTerm):
+                case ClauseType.AllIn or ClauseType.In:
                 {
                     for (int t = 0; t < exec.InTermCount; t++)
                         matches[matchIdx++] = ResolveInTerm(clause, exec, t, indexSearcher, plan, parameters, builderParams);
-                    if (exec.HasNullTerm)
+                    // Always allocate the null-term slot (plan structure is parameter-independent).
+                    // When HasNullTerm is false, fill with a TermQuery(null) that resolves to an
+                    // empty posting list — the OR with an empty match is a no-op.
                     {
                         FieldMetadata nullMeta = builderParams != null
                             ? QueryBuilderHelper.GetFieldMetadata(in builderParams, clause.FieldName, hasBoost: builderParams.HasBoost)
                             : indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);
-                        matches[matchIdx++] = indexSearcher.TermQuery(nullMeta, null);
+                        matches[matchIdx++] = exec.HasNullTerm
+                            ? indexSearcher.TermQuery(nullMeta, null)
+                            : TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
                     }
-
                     break;
                 }
                 default:
@@ -1214,12 +1221,11 @@ internal static partial class QueryPlanBuilder
 
                     break;
                 }
-                case ClauseType.AllIn or ClauseType.In when (exec.InTermCount > 0 || exec.HasNullTerm):
+                case ClauseType.AllIn or ClauseType.In:
                 {
                     for (int t = 0; t < exec.InTermCount; t++)
                         termSources[matchIdx++] = ResolveInTermSource(clause, exec, t, indexSearcher, plan, parameters, builderParams);
-                    if (exec.HasNullTerm)
-                        matchIdx++; // null-term slot — stays Empty in TermSources (uses QueryMatch path)
+                    matchIdx++; // null-term slot — always allocated, stays Empty in TermSources (uses QueryMatch path)
                     break;
                 }
                 default:
@@ -1327,8 +1333,8 @@ internal static partial class QueryPlanBuilder
                     break;
 
                 case ClauseType.AllIn or ClauseType.In:
-                    // IN terms use PostingList dispatch, not TreeScan
-                    matchIdx += (exec?.InTermCount ?? 0) + (exec is { HasNullTerm: true } ? 1 : 0);
+                    // IN terms use PostingList dispatch, not TreeScan. +1 for null-term slot (always allocated).
+                    matchIdx += (exec?.InTermCount ?? 0) + 1;
                     break;
 
                 default:

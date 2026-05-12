@@ -1087,6 +1087,7 @@ internal static partial class QueryPlanBuilder
         }
 
         List<PlanOp> ops = [];
+        List<int> rangeCounts = [];
         bool needsThreeBitmaps = false;
 
         if (isOr)
@@ -1100,7 +1101,7 @@ internal static partial class QueryPlanBuilder
                 switch (it.ClauseType)
                 {
                     case ClauseType.In or ClauseType.AllIn when (itExec.InTermCount > 0 || itExec.HasNullTerm):
-                        EmitInOps(ops, itExec, bitmapLocal: 0, isSeed: matchIndex == 0, ref matchIndex);
+                        EmitInOps(ops, itExec, bitmapLocal: 0, isSeed: matchIndex == 0, ref matchIndex, rangeCounts);
                         break;
                     case ClauseType.OrGroup when it.OrSubClauses is {Count: > 0}:
                     {
@@ -1308,10 +1309,10 @@ internal static partial class QueryPlanBuilder
                             break;
                         }
                         case ClauseType.In when executions[0].InTermCount > 0 || executions[0].HasNullTerm:
-                            EmitInOps(ops, executions[0], bitmapLocal: 0, isSeed: true, ref matchIndex);
+                            EmitInOps(ops, executions[0], bitmapLocal: 0, isSeed: true, ref matchIndex, rangeCounts);
                             break;
                         case ClauseType.AllIn when executions[0].InTermCount > 0:
-                            EmitAllInOps(ops, executions[0], ref matchIndex);
+                            EmitAllInOps(ops, executions[0], ref matchIndex, rangeCounts);
                             break;
                         default:
                             ops.Add(new PlanOp
@@ -1386,7 +1387,7 @@ internal static partial class QueryPlanBuilder
                             // isSeed: false — FillFromPostings always targets bitmap[0], so we use
                             // OrRange which respects bitmapLocal. Bitmap[1] is freshly cleared.
                             ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 1 });
-                            EmitInOps(ops, iExec, bitmapLocal: 1, isSeed: false, ref matchIndex);
+                            EmitInOps(ops, iExec, bitmapLocal: 1, isSeed: false, ref matchIndex, rangeCounts);
                             ops.Add(new PlanOp
                             {
                                 Kind = clauses[i].IsNegated ? PlanOpKind.AndNotBitmaps : PlanOpKind.AndBitmaps,
@@ -1398,17 +1399,21 @@ internal static partial class QueryPlanBuilder
                             break;
                         }
                         case ClauseType.AllIn when iExec.InTermCount > 0:
+                        {
+                            int rangeIdx = rangeCounts.Count;
+                            rangeCounts.Add(iExec.InTermCount);
                             ops.Add(new PlanOp
                             {
                                 Kind = PlanOpKind.AndRange,
                                 ParamIndex = matchIndex,
-                                ParamIndex2 = iExec.InTermCount,
+                                ParamIndex2 = rangeIdx,
                                 BitmapLocal = 0,
                                 EstimatedCardinality = iExec.Cardinality,
                                 Dispatch = MatchDispatch.PostingList
                             });
                             matchIndex += iExec.InTermCount;
                             break;
+                        }
                         default:
                         {
                             // Simple clause: AND or ANDNOT with bitmap[0]
@@ -1437,14 +1442,13 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        // Pack operand ordering — includes clause order + total match slots.
-        // Total match slots captures InTermCount/HasNullTerm per clause, so
-        // the same query with IN($p0) where $p0 has 3 vs 4 terms gets different keys.
+        // Pack operand ordering — encodes clause sort order after cardinality reordering.
+        // The plan structure must be the same for all parameter values of the same query text.
+        // Variable-count IN terms use InRangeCounts (read at runtime by the IL).
+        // Null-term slots are always allocated — the match is a no-op when null isn't present.
         int ordering = 0;
         for (int i = 0; i < Math.Min(clauses.Count, 10); i++)
             ordering |= (clauses[i].OriginalIndex & 0x7) << (i * 3);
-        int totalMatchSlots = CountMatchSlots(clauses, executions, isAllEntries: false, allNegated: false);
-        ordering = HashCode.Combine(ordering, totalMatchSlots);
 
         // Check if all clauses are negated (if first clause after sort is negated, all the rest are too)
         bool allNegated = clauses.Count > 0
@@ -1487,7 +1491,8 @@ internal static partial class QueryPlanBuilder
             ScanPredicateInfos = scanPredicateInfos,
             TypeSignature = typeSignature,
             FullKinds = fullKinds,
-            RequiredBitmaps = needsThreeBitmaps ? 3 : 2
+            RequiredBitmaps = needsThreeBitmaps ? 3 : 2,
+            InRangeCounts = rangeCounts.Count > 0 ? rangeCounts.ToArray() : null
         };
     }
 
@@ -1532,7 +1537,7 @@ internal static partial class QueryPlanBuilder
     // ── Plan helpers ─────────────────────────────────────────────────────
 
     /// <summary>Emit ops for an IN clause: Fill the first term + OrRange for the rest, plus null-term if needed.</summary>
-    private static void EmitInOps(List<PlanOp> ops, ClauseExecution exec, int bitmapLocal, bool isSeed, ref int matchIndex)
+    private static void EmitInOps(List<PlanOp> ops, ClauseExecution exec, int bitmapLocal, bool isSeed, ref int matchIndex, List<int> rangeCounts)
     {
         int terms = exec.InTermCount;
         if (terms > 0)
@@ -1549,11 +1554,13 @@ internal static partial class QueryPlanBuilder
                 });
                 if (terms > 1)
                 {
+                    int rangeIdx = rangeCounts.Count;
+                    rangeCounts.Add(terms - 1);
                     ops.Add(new PlanOp
                     {
                         Kind = PlanOpKind.OrRange,
                         ParamIndex = matchIndex + 1,
-                        ParamIndex2 = terms - 1,
+                        ParamIndex2 = rangeIdx,
                         BitmapLocal = bitmapLocal,
                         EstimatedCardinality = exec.Cardinality,
                         Dispatch = MatchDispatch.PostingList
@@ -1562,11 +1569,13 @@ internal static partial class QueryPlanBuilder
             }
             else
             {
+                int rangeIdx = rangeCounts.Count;
+                rangeCounts.Add(terms);
                 ops.Add(new PlanOp
                 {
                     Kind = PlanOpKind.OrRange,
                     ParamIndex = matchIndex,
-                    ParamIndex2 = terms,
+                    ParamIndex2 = rangeIdx,
                     BitmapLocal = bitmapLocal,
                     EstimatedCardinality = exec.Cardinality,
                     Dispatch = MatchDispatch.PostingList
@@ -1575,9 +1584,9 @@ internal static partial class QueryPlanBuilder
             matchIndex += terms;
         }
 
-        if (exec.HasNullTerm is false) 
-            return;
-        
+        // Always emit the null-term slot so the plan structure is the same regardless
+        // of whether the parameter array contains null. When null isn't present,
+        // ResolveMatches fills the slot with an empty match (Fill returns 0 → no-op OR).
         bool isFirstOp = isSeed && exec.InTermCount == 0;
         ops.Add(new PlanOp
         {
@@ -1590,7 +1599,7 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>Emit ops for an AllIn clause: Fill the first term + AndRange for the rest.</summary>
-    private static void EmitAllInOps(List<PlanOp> ops, ClauseExecution exec, ref int matchIndex)
+    private static void EmitAllInOps(List<PlanOp> ops, ClauseExecution exec, ref int matchIndex, List<int> rangeCounts)
     {
         int terms = exec.InTermCount;
         ops.Add(new PlanOp
@@ -1603,11 +1612,13 @@ internal static partial class QueryPlanBuilder
         });
         if (terms > 1)
         {
+            int rangeIdx = rangeCounts.Count;
+            rangeCounts.Add(terms - 1);
             ops.Add(new PlanOp
             {
                 Kind = PlanOpKind.AndRange,
                 ParamIndex = matchIndex + 1,
-                ParamIndex2 = terms - 1,
+                ParamIndex2 = rangeIdx,
                 BitmapLocal = 0,
                 EstimatedCardinality = exec.Cardinality,
                 Dispatch = MatchDispatch.PostingList
@@ -1692,7 +1703,9 @@ internal static partial class QueryPlanBuilder
             {
                 ClauseType.OrGroup when clause.OrSubClauses != null => clause.OrSubClauses.Count,
                 ClauseType.AndGroup when clause.AndSubClauses != null => clause.AndSubClauses.Count,
-                ClauseType.In or ClauseType.AllIn when inTermCount > 0 || hasNullTerm => inTermCount + (hasNullTerm ? 1 : 0),
+                // Always +1 for the null-term slot so the plan structure is parameter-independent.
+                // The slot is filled with an empty match when null isn't in the parameter.
+                ClauseType.In or ClauseType.AllIn => inTermCount + 1,
                 _ => 1
             };
         }
