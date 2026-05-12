@@ -64,7 +64,14 @@ public class CompiledQueryMatch(
     /// different IN term counts without needing different compiled delegates.</summary>
     public int[] InRangeCounts;
 
-    // Entry scan telemetry (populated by IL entry scan when it triggers)
+    // Entry scan: predicates + parameters for CompiledQueryHelper.RunEntryScan
+    public ScanPredicateInfo[] ScanPredicateInfos;
+    public long[] ScanLongParams;
+    public double[] ScanDoubleParams;
+    public Slice[] ScanSliceParams;
+    public long[] ScanFieldRootPages;
+
+    // Entry scan telemetry (populated by IL/C# entry scan when it triggers)
     public long EntryScanEntriesScanned;
     public long EntryScanEntriesPassed;
 
