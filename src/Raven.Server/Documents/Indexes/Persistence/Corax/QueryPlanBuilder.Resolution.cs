@@ -2129,8 +2129,8 @@ internal static partial class QueryPlanBuilder
         var drivingClause = clauses[drivingClauseIdx];
         var drivingExec = execs[drivingClauseIdx];
         var packed = drivingExec.PackedParamValue;
-        if (packed.IsNone || packed.ValueType != PackedParam.TypeString)
-            return false; // Only string field1 for now
+        if (packed.IsNone)
+            return false;
 
         // Check residual clauses are entry-scan eligible
         var residualPreds = new List<ScanPredicateInfo>();
@@ -2179,14 +2179,46 @@ internal static partial class QueryPlanBuilder
 
         // Build the compound tree match
         string field1Name = drivingClause.FieldName;
-        string field1Value = plan.StringValues[packed.Param1];
         var compoundFieldName = $"compound({field1Name},{sortFieldName})";
         var compoundFieldMeta = indexSearcher.FieldMetadataBuilder(compoundFieldName, hasBoost: false);
 
-        var field1Meta = builderParams != null
-            ? QueryBuilderHelper.GetFieldMetadata(in builderParams, field1Name, hasBoost: false)
-            : indexSearcher.FieldMetadataBuilder(field1Name, hasBoost: false);
-        var analyzedPrefix = indexSearcher.EncodeAndApplyAnalyzer(field1Meta, field1Value);
+        // Build the prefix bytes for field1's value.
+        // String: analyzed via field1's analyzer. Numeric: Bits.SwapBytes big-endian encoding.
+        Voron.Slice analyzedPrefix;
+        string field1ValueStr = null;
+        switch (packed.ValueType)
+        {
+            case PackedParam.TypeString:
+            {
+                field1ValueStr = plan.StringValues[packed.Param1];
+                var field1Meta = builderParams != null
+                    ? QueryBuilderHelper.GetFieldMetadata(in builderParams, field1Name, hasBoost: false)
+                    : indexSearcher.FieldMetadataBuilder(field1Name, hasBoost: false);
+                analyzedPrefix = indexSearcher.EncodeAndApplyAnalyzer(field1Meta, field1ValueStr);
+                break;
+            }
+            case PackedParam.TypeLong:
+            {
+                long longVal = plan.LongValues[packed.Param1];
+                field1ValueStr = longVal.ToString();
+                var bytes = new byte[sizeof(long)];
+                System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(bytes, Sparrow.Binary.Bits.SwapBytes(longVal));
+                Voron.Slice.From(allocator, bytes, out analyzedPrefix);
+                break;
+            }
+            case PackedParam.TypeDouble:
+            {
+                double dblVal = plan.DoubleValues[packed.Param1];
+                field1ValueStr = dblVal.ToString();
+                long sortable = Sparrow.Binary.Bits.DoubleToSortableLong(dblVal);
+                var bytes = new byte[sizeof(long)];
+                System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(bytes, Sparrow.Binary.Bits.SwapBytes(sortable));
+                Voron.Slice.From(allocator, bytes, out analyzedPrefix);
+                break;
+            }
+            default:
+                return false;
+        }
 
         var drivingMatch = indexSearcher.StartWithQuery(compoundFieldMeta, analyzedPrefix,
             isNegated: false, forward: orderByFields[0].Ascending,
@@ -2259,8 +2291,8 @@ internal static partial class QueryPlanBuilder
             take: -1)  // take is set by SortingMatch or the caller
         {
             DrivingTreeName = compoundFieldName,
-            DrivingClause = $"{field1Name} = '{field1Value}'",
-            SeekBound = $"'{field1Value}' (prefix, validatePostfixLen)",
+            DrivingClause = $"{field1Name} = '{field1ValueStr}'",
+            SeekBound = $"'{field1ValueStr}' (prefix, validatePostfixLen)",
             Direction = orderByFields[0].Ascending ? "Forward" : "Backward",
             ResidualDescription = residualArray != null
                 ? string.Join(", ", residualPreds.ConvertAll(p => $"{p.FieldName} {p.CompareOp}"))
