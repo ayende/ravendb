@@ -260,7 +260,7 @@ internal static partial class QueryPlanBuilder
         {
             compiledPlan = new CompiledPlan
             {
-                CompiledDelegate = QueryIlEmitter.EmitDelegate(plan, out var explainText),
+                CompiledDelegate = QueryIlEmitter.EmitDelegate(plan, out var explainText, emitTimings: false),
                 ExplainSource = explainText,
                 Ordering = plan.OperandOrdering,
                 TypeSignature = plan.TypeSignature,
@@ -268,6 +268,13 @@ internal static partial class QueryPlanBuilder
                 InspectionTemplate = BuildInspectionTemplate(plan)
             };
             planCache.Add(queryText, compiledPlan, template);
+        }
+
+        // Lazily compile the timed delegate on first `include timings()` request.
+        // Avoids emitting timing IL for the common untimed path.
+        if (wantTimings && compiledPlan.CompiledTimedDelegate == null)
+        {
+            compiledPlan.CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(plan, out _, emitTimings: true);
         }
 
         compiledPlanOut = compiledPlan;

@@ -156,7 +156,7 @@ public static class QueryIlEmitter
             nameof(QueryPrimitives.ShouldSwitchToEntryScan),
             [typeof(long), typeof(long)])!;
 
-    public static CompiledExecuteDelegate EmitDelegate(QueryExecution plan, out string explainSource)
+    public static CompiledExecuteDelegate EmitDelegate(QueryExecution plan, out string explainSource, bool emitTimings = true)
     {
         var ops = plan.Ops;
         if (ops == null || ops.Length == 0)
@@ -210,8 +210,9 @@ public static class QueryIlEmitter
         {
             ref PlanOp op = ref ops[i];
 
-            // Timing: record start tick before each op
-            EmitTimingStart(il, startTickLocal);
+            // Timing: record start tick before each op (skipped for untimed delegate)
+            if (emitTimings)
+                EmitTimingStart(il, startTickLocal);
 
             // Resolve dispatch once per op — used by both IL emission and EXPLAIN.
             var (src, fillMethod, andMethod, orMethod, andNotMethod) = op.Dispatch switch
@@ -431,8 +432,9 @@ public static class QueryIlEmitter
                     break;
             }
 
-            // Timing: record elapsed time and result count after each op
-            EmitTimingEnd(il, i, startTickLocal);
+            // Timing: record elapsed time and result count after each op (skipped for untimed delegate)
+            if (emitTimings)
+                EmitTimingEnd(il, i, startTickLocal);
         }
 
         il.MarkLabel(doneLabel);
