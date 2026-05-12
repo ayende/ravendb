@@ -65,6 +65,11 @@ public class CompiledQueryMatch(
     /// Set during resolution — different executions of the same query can have
     /// different IN term counts without needing different compiled delegates.</summary>
     public int[] InRangeCounts;
+
+    // Entry scan telemetry (populated by IL entry scan when it triggers)
+    public long EntryScanEntriesScanned;
+    public long EntryScanEntriesPassed;
+
     private readonly string _explainSource = compiledPlan.ExplainSource;
     public readonly IndexSearcher Searcher = searcher;
     public readonly CancellationToken Token = token;
