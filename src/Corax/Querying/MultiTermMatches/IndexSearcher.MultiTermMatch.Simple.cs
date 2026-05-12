@@ -20,49 +20,49 @@ public partial class IndexSearcher
     public IQueryMatch StartWithQuery(string field, string startWith, bool isNegated = false, bool hasBoost = false, bool forward = true) => StartWithQuery(FieldMetadataBuilder(field, hasBoost: hasBoost), EncodeAndApplyAnalyzer(default, startWith), isNegated, forward);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public IQueryMatch StartWithQuery(in FieldMetadata field, string startWith, bool isNegated = false, bool forward = true, bool streamingEnabled = false, in CancellationToken token = default)
+    public IQueryMatch StartWithQuery(in FieldMetadata field, string startWith, bool isNegated = false, bool forward = true, in CancellationToken token = default)
     {
         return (forward, isNegated) switch
         {
-            (true, false) => TermsProviderMatchBuilder<StartsWithTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, startWith, streamingEnabled, token),
-            (false, false) => TermsProviderMatchBuilder<StartsWithTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, startWith, streamingEnabled, token),
-            (true, true) => TermsProviderMatchBuilder<NotStartsWithTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, startWith, streamingEnabled, token),
-            (false, true) => TermsProviderMatchBuilder<NotStartsWithTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, startWith, streamingEnabled, token)
+            (true, false) => TermsProviderMatchBuilder<StartsWithTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, startWith, token),
+            (false, false) => TermsProviderMatchBuilder<StartsWithTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, startWith, token),
+            (true, true) => TermsProviderMatchBuilder<NotStartsWithTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, startWith, token),
+            (false, true) => TermsProviderMatchBuilder<NotStartsWithTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, startWith, token)
         };
     }
 
-    public IQueryMatch StartWithQuery(in FieldMetadata field, Slice startWith, bool isNegated = false, bool forward = true, bool streamingEnabled = false, bool validatePostfixLen = false, in CancellationToken token = default)
+    public IQueryMatch StartWithQuery(in FieldMetadata field, Slice startWith, bool isNegated = false, bool forward = true, bool validatePostfixLen = false, in CancellationToken token = default)
     {
         return (forward, isNegated) switch
         {
-            (true, false) => TermsProviderMatchBuilder<StartsWithTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, startWith, streamingEnabled, validatePostfixLen, token),
-            (false, false) => TermsProviderMatchBuilder<StartsWithTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, startWith, streamingEnabled, validatePostfixLen, token),
-            (true, true) => TermsProviderMatchBuilder<NotStartsWithTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, startWith, streamingEnabled, validatePostfixLen, token),
-            (false, true) => TermsProviderMatchBuilder<NotStartsWithTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, startWith, streamingEnabled, validatePostfixLen, token)
-        };
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public IQueryMatch EndsWithQuery(in FieldMetadata field, string endsWith, bool isNegated = false, bool forward = true, bool streamingEnabled = false, in CancellationToken token = default)
-    {
-        return (forward, isNegated) switch
-        {
-            (true, false) => TermsProviderMatchBuilder<EndsWithTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, endsWith, streamingEnabled, token),
-            (false, false) => TermsProviderMatchBuilder<EndsWithTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, endsWith, streamingEnabled, token),
-            (true, true) => TermsProviderMatchBuilder<NotEndsWithTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, endsWith, streamingEnabled, token),
-            (false, true) => TermsProviderMatchBuilder<NotEndsWithTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, endsWith, streamingEnabled, token)
+            (true, false) => TermsProviderMatchBuilder<StartsWithTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, startWith, validatePostfixLen, token),
+            (false, false) => TermsProviderMatchBuilder<StartsWithTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, startWith, validatePostfixLen, token),
+            (true, true) => TermsProviderMatchBuilder<NotStartsWithTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, startWith, validatePostfixLen, token),
+            (false, true) => TermsProviderMatchBuilder<NotStartsWithTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, startWith, validatePostfixLen, token)
         };
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public IQueryMatch EndsWithQuery(in FieldMetadata field, Slice endsWith, bool isNegated = false, bool forward = true, bool streamingEnabled = false, in CancellationToken token = default)
+    public IQueryMatch EndsWithQuery(in FieldMetadata field, string endsWith, bool isNegated = false, bool forward = true, in CancellationToken token = default)
     {
         return (forward, isNegated) switch
         {
-            (true, false) => TermsProviderMatchBuilder<EndsWithTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, endsWith, streamingEnabled, validatePostfixLen: false, token: token),
-            (false, false) => TermsProviderMatchBuilder<EndsWithTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, endsWith, streamingEnabled, validatePostfixLen: false, token: token),
-            (true, true) => TermsProviderMatchBuilder<NotEndsWithTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, endsWith, streamingEnabled, validatePostfixLen: false, token: token),
-            (false, true) => TermsProviderMatchBuilder<NotEndsWithTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, endsWith, streamingEnabled, validatePostfixLen: false, token: token)
+            (true, false) => TermsProviderMatchBuilder<EndsWithTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, endsWith, token),
+            (false, false) => TermsProviderMatchBuilder<EndsWithTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, endsWith, token),
+            (true, true) => TermsProviderMatchBuilder<NotEndsWithTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, endsWith, token),
+            (false, true) => TermsProviderMatchBuilder<NotEndsWithTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, endsWith, token)
+        };
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public IQueryMatch EndsWithQuery(in FieldMetadata field, Slice endsWith, bool isNegated = false, bool forward = true, in CancellationToken token = default)
+    {
+        return (forward, isNegated) switch
+        {
+            (true, false) => TermsProviderMatchBuilder<EndsWithTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, endsWith, token: token),
+            (false, false) => TermsProviderMatchBuilder<EndsWithTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, endsWith, token: token),
+            (true, true) => TermsProviderMatchBuilder<NotEndsWithTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, endsWith, token: token),
+            (false, true) => TermsProviderMatchBuilder<NotEndsWithTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, endsWith, token: token)
         };
     }
 
@@ -81,14 +81,14 @@ public partial class IndexSearcher
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public IQueryMatch ExistsQuery(in FieldMetadata field, bool forward = true, bool streamingEnabled = false, in CancellationToken token = default)
+    public IQueryMatch ExistsQuery(in FieldMetadata field, bool forward = true, in CancellationToken token = default)
     {
         return forward
-            ? TermsProviderMatchBuilder<ExistsTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, default(Slice), streamingEnabled: streamingEnabled, token: token)
-            : TermsProviderMatchBuilder<ExistsTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, default(Slice), streamingEnabled: streamingEnabled, token: token);
+            ? TermsProviderMatchBuilder<ExistsTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>>(field, default(Slice), token: token)
+            : TermsProviderMatchBuilder<ExistsTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, default(Slice), token: token);
     }
 
-    public IQueryMatch RegexQuery(in FieldMetadata field, Regex regex, bool forward = true, bool streamingEnabled = false, in CancellationToken token = default)
+    public IQueryMatch RegexQuery(in FieldMetadata field, Regex regex, bool forward = true, in CancellationToken token = default)
     {
         var terms = _fieldsTree?.CompactTreeFor(field.FieldName);
         if (terms == null)

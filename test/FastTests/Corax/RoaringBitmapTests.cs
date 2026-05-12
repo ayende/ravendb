@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Voron.Data.RoaringBitmaps;
 using Sparrow.Server;
 using Sparrow.Threading;
@@ -1217,6 +1218,120 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         result.Dispose();
         a.Dispose();
         b.Dispose();
+    }
+
+    #endregion
+
+    #region Exhaustive Primitive Compatibility (replacement for deleted Primitives.cs 256^3 test)
+
+    /// <summary>Verify AND/OR/ANDNOT produce correct results for every combination of
+    /// container types (empty, sparse array, dense bitmap, range, cross-container).
+    /// Uses a reference HashSet to compare against RoaringBitmap set operations.</summary>
+    [RavenFact(RavenTestCategory.Corax)]
+    public void ExhaustiveSetOpCompatibility()
+    {
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+        var rng = new Random(42);
+
+        // Build bitmaps with different container configurations
+        var configs = new (string Name, long[] Values)[]
+        {
+            ("Empty", []),
+            ("SingleValue", [42]),
+            ("SparseArray_Small", GenerateValues(rng, 10, 0, 65535)),
+            ("SparseArray_Medium", GenerateValues(rng, 500, 0, 65535)),
+            ("DenseBitmap", GenerateValues(rng, 5000, 0, 65535)),
+            ("FullRange", Enumerable.Range(0, 1000).Select(x => (long)x).ToArray()),
+            ("TwoContainers_Sparse", GenerateValues(rng, 100, 0, 131071)),
+            ("TwoContainers_Dense", GenerateValues(rng, 8000, 0, 131071)),
+            ("HighValues", GenerateValues(rng, 200, 100000, 200000)),
+            ("Scattered", [0L, 100, 65535, 65536, 131071, 200000]),
+        };
+
+        int failures = 0;
+        foreach (var left in configs)
+        {
+            foreach (var right in configs)
+            {
+                // AND
+                if (VerifySetOp("AND", left, right, ctx,
+                    (a, b) => { var r = And(ctx, a, b); return r; },
+                    (a, b) => new HashSet<long>(a.Intersect(b))) == false)
+                    failures++;
+
+                // OR
+                if (VerifySetOp("OR", left, right, ctx,
+                    (a, b) => Or(ctx, a, b),
+                    (a, b) => new HashSet<long>(a.Union(b))) == false)
+                    failures++;
+
+                // ANDNOT
+                if (VerifySetOp("ANDNOT", left, right, ctx,
+                    (a, b) => AndNot(ctx, a, b),
+                    (a, b) => new HashSet<long>(a.Except(b))) == false)
+                    failures++;
+            }
+        }
+
+        Assert.Equal(0, failures);
+    }
+
+    private static long[] GenerateValues(Random rng, int count, long min, long max)
+    {
+        var set = new HashSet<long>();
+        while (set.Count < count)
+            set.Add(min + (long)(rng.NextDouble() * (max - min)));
+        var arr = set.ToArray();
+        Array.Sort(arr);
+        return arr;
+    }
+
+    private static bool VerifySetOp(string opName, (string Name, long[] Values) left, (string Name, long[] Values) right,
+        ByteStringContext ctx,
+        Func<RoaringBitmap, RoaringBitmap, RoaringBitmap> bitmapOp,
+        Func<long[], long[], HashSet<long>> referenceOp)
+    {
+        RoaringBitmap a = new(ctx);
+        RoaringBitmap b = new(ctx);
+        foreach (long v in left.Values) a.Add(v);
+        foreach (long v in right.Values) b.Add(v);
+        a.PrepareForReading();
+        b.PrepareForReading();
+
+        RoaringBitmap result;
+        try
+        {
+            result = bitmapOp(a, b);
+        }
+        catch (Exception ex)
+        {
+            Assert.Fail($"{opName}({left.Name}, {right.Name}) threw: {ex.Message}");
+            return false;
+        }
+
+        var expected = referenceOp(left.Values, right.Values);
+        bool ok = true;
+
+        if (result.Count != expected.Count)
+        {
+            Assert.Fail($"{opName}({left.Name}, {right.Name}): count {result.Count} != expected {expected.Count}");
+            ok = false;
+        }
+
+        foreach (long v in expected)
+        {
+            if (result.Contains(v) == false)
+            {
+                Assert.Fail($"{opName}({left.Name}, {right.Name}): missing value {v}");
+                ok = false;
+                break;
+            }
+        }
+
+        result.Dispose();
+        a.Dispose();
+        b.Dispose();
+        return ok;
     }
 
     #endregion
