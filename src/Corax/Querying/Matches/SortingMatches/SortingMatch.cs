@@ -290,7 +290,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         }
     }
     
-    private ref struct SortedIndexReader<TDirection>
+    internal unsafe struct SortedIndexReader<TDirection> : IDisposable
         where TDirection : struct, ILookupIterator
     {
         private PostingList.Iterator _postListIt;

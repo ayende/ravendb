@@ -2506,12 +2506,12 @@ internal static partial class QueryPlanBuilder
             return false;
         if (plan.Clauses == null || plan.Clauses.Count == 0 || plan.AllNegated)
             return false;
-        // Simple field range + ORDER BY on same field: the bitmap pipeline + seek hint
-        // (TrySetSortSeekHint) already provides the equivalent optimization. The seek
-        // hint makes SortUsingIndexFromBitmap skip irrelevant tree terms. A DirectScanMatch
-        // with a SortedIndexReader would do the same work but requires extracting
-        // SortedIndexReader from SortingMatch (it's a private ref struct with stackalloc).
-        // For now, fall through to the bitmap path with seek hint.
+        // SortedDrivingMatch walks the tree in field-value order, but SortedIndexReader
+        // only applies entry-ID bounds, not field-value bounds. The range stop condition
+        // (e.g., Foo < 200) isn't enforced during the tree walk — all entries past the
+        // seek point are yielded. This needs TermsRangeProvider logic integrated into
+        // SortedIndexReader to stop at the field-value bound.
+        // TODO: integrate range bounds into SortedDrivingMatch/SortedIndexReader.
         return false;
 
         var clauses = plan.Clauses;
@@ -2578,12 +2578,53 @@ internal static partial class QueryPlanBuilder
         if (directCost >= bitmapCost && entriesToScan > QueryPrimitives.EntryScanCountThreshold)
             return false;
 
-        // Create the driving match — the range query on the sort field, with correct direction.
-        // ResolveClause uses forward:true by default; for direct scan we need the sort direction.
+        // Create the driving match using SortedDrivingMatch — walks the tree in field-value
+        // order (not entry-ID order like TermsProviderMatch). Supports ascending and descending.
         var drivingClause = clauses[drivingIdx];
         var drivingExec = execs[drivingIdx];
         bool forward = orderByFields[0].Ascending;
-        var drivingMatch = ResolveRangeClauseWithDirection(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams, forward);
+
+        // Extract seek value for the range bound
+        var packed2 = drivingExec.PackedParamValue;
+        object seekValue = null;
+        if (packed2.IsNone == false)
+        {
+            // For ascending GT/GTE: seek to the lower bound. For descending LT/LTE: seek to upper bound.
+            if (forward && drivingClause.ClauseType is ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual)
+            {
+                seekValue = packed2.ValueType switch
+                {
+                    PackedParam.TypeLong => (object)plan.LongValues[packed2.Param1],
+                    PackedParam.TypeDouble => plan.DoubleValues[packed2.Param1],
+                    PackedParam.TypeString => plan.StringValues[packed2.Param1],
+                    _ => null
+                };
+            }
+            else if (forward == false && drivingClause.ClauseType is ClauseType.LessThan or ClauseType.LessThanOrEqual)
+            {
+                seekValue = packed2.ValueType switch
+                {
+                    PackedParam.TypeLong => (object)plan.LongValues[packed2.Param1],
+                    PackedParam.TypeDouble => plan.DoubleValues[packed2.Param1],
+                    PackedParam.TypeString => plan.StringValues[packed2.Param1],
+                    _ => null
+                };
+            }
+            else if (drivingClause.ClauseType == ClauseType.Between)
+            {
+                int idx = forward ? packed2.Param1 : packed2.Param2;
+                seekValue = packed2.ValueType switch
+                {
+                    PackedParam.TypeLong => (object)plan.LongValues[idx],
+                    PackedParam.TypeDouble => plan.DoubleValues[idx],
+                    PackedParam.TypeString => plan.StringValues[idx],
+                    _ => null
+                };
+            }
+        }
+
+        var drivingMatch = new global::Corax.Querying.Matches.SortedDrivingMatch(
+            indexSearcher, sortFieldName, forward, seekValue: seekValue);
 
         // Extract residual scan parameters
         ScanPredicateInfo[] residualArray = residualPreds.Count > 0 ? residualPreds.ToArray() : null;
