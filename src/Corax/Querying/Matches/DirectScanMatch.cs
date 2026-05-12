@@ -235,71 +235,22 @@ public sealed class DirectScanMatch : IQueryMatch, IDisposable
 
     private bool EvaluatePredicate(ref EntryTermsReader reader, in ScanPredicateInfo pred)
     {
-        switch (pred.ValueType)
+        return pred.ValueType switch
         {
-            case ScanValueType.Long:
-            {
-                long actual = reader.CurrentLong;
-                long param = _longParams[pred.ParamIndex];
-                if (pred.CompareOp == ScanCompareOp.Between)
-                {
-                    long param2 = _longParams[pred.ParamIndex2];
-                    return actual >= param && actual <= param2;
-                }
-                return pred.CompareOp switch
-                {
-                    ScanCompareOp.Equal => actual == param,
-                    ScanCompareOp.NotEqual => actual != param,
-                    ScanCompareOp.GreaterThan => actual > param,
-                    ScanCompareOp.GreaterThanOrEqual => actual >= param,
-                    ScanCompareOp.LessThan => actual < param,
-                    ScanCompareOp.LessThanOrEqual => actual <= param,
-                    _ => false
-                };
-            }
-            case ScanValueType.Double:
-            {
-                double actual = reader.CurrentDouble;
-                double param = _doubleParams[pred.ParamIndex];
-                if (pred.CompareOp == ScanCompareOp.Between)
-                {
-                    double param2 = _doubleParams[pred.ParamIndex2];
-                    return actual >= param && actual <= param2;
-                }
-                return pred.CompareOp switch
-                {
-                    ScanCompareOp.Equal => actual == param,
-                    ScanCompareOp.NotEqual => actual != param,
-                    ScanCompareOp.GreaterThan => actual > param,
-                    ScanCompareOp.GreaterThanOrEqual => actual >= param,
-                    ScanCompareOp.LessThan => actual < param,
-                    ScanCompareOp.LessThanOrEqual => actual <= param,
-                    _ => false
-                };
-            }
-            case ScanValueType.Slice:
-            {
-                var actual = reader.Current.Decoded();
-                var param = _sliceParams[pred.ParamIndex].AsReadOnlySpan();
-                if (pred.CompareOp == ScanCompareOp.Between)
-                {
-                    var param2 = _sliceParams[pred.ParamIndex2].AsReadOnlySpan();
-                    return actual.SequenceCompareTo(param) >= 0 && actual.SequenceCompareTo(param2) <= 0;
-                }
-                return pred.CompareOp switch
-                {
-                    ScanCompareOp.Equal => actual.SequenceEqual(param),
-                    ScanCompareOp.NotEqual => actual.SequenceEqual(param) == false,
-                    ScanCompareOp.GreaterThan => actual.SequenceCompareTo(param) > 0,
-                    ScanCompareOp.GreaterThanOrEqual => actual.SequenceCompareTo(param) >= 0,
-                    ScanCompareOp.LessThan => actual.SequenceCompareTo(param) < 0,
-                    ScanCompareOp.LessThanOrEqual => actual.SequenceCompareTo(param) <= 0,
-                    _ => false
-                };
-            }
-            default:
-                return false;
-        }
+            ScanValueType.Long when pred.CompareOp == ScanCompareOp.Between =>
+                CompiledQueryHelper.CompareLongBetween(reader.CurrentLong, _longParams[pred.ParamIndex], _longParams[pred.ParamIndex2]),
+            ScanValueType.Long =>
+                CompiledQueryHelper.CompareLong(reader.CurrentLong, _longParams[pred.ParamIndex], pred.CompareOp),
+            ScanValueType.Double when pred.CompareOp == ScanCompareOp.Between =>
+                CompiledQueryHelper.CompareDoubleBetween(reader.CurrentDouble, _doubleParams[pred.ParamIndex], _doubleParams[pred.ParamIndex2]),
+            ScanValueType.Double =>
+                CompiledQueryHelper.CompareDouble(reader.CurrentDouble, _doubleParams[pred.ParamIndex], pred.CompareOp),
+            ScanValueType.Slice when pred.CompareOp == ScanCompareOp.Between =>
+                CompiledQueryHelper.CompareSliceBetween(reader.Current.Decoded(), _sliceParams[pred.ParamIndex].AsReadOnlySpan(), _sliceParams[pred.ParamIndex2].AsReadOnlySpan()),
+            ScanValueType.Slice =>
+                CompiledQueryHelper.CompareSlice(reader.Current.Decoded(), _sliceParams[pred.ParamIndex].AsReadOnlySpan(), pred.CompareOp),
+            _ => false
+        };
     }
 
     public int AndWith(Span<long> buffer, int matches) => throw new NotSupportedException("DirectScanMatch produces final sorted results");
