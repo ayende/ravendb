@@ -647,8 +647,10 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                                 // can be served by a single StartsWith scan on the compound tree.
                                 // Results come back pre-sorted by field2, eliminating the SortingMatch.
                                 if (queryPlan != null &&
-                                    QueryPlanBuilder.TryCreateCompoundFieldMatch(
-                                        queryPlan, orderByFields, planParams, builderParameters, out var compoundMatch))
+                                    (QueryPlanBuilder.TryCreateCompoundFieldMatch(
+                                        queryPlan, orderByFields, planParams, builderParameters, out var compoundMatch) ||
+                                     QueryPlanBuilder.TryCreateSimpleFieldDirectScan(
+                                        queryPlan, orderByFields, planParams, builderParameters, out compoundMatch)))
                                 {
                                     innerDisposableMatch?.Dispose();
                                     innerDisposableMatch = compoundMatch as IDisposable;

@@ -2355,6 +2355,159 @@ internal static partial class QueryPlanBuilder
         return true;
     }
 
+    // ── Simple field direct scan ──────────────────────────────────────────
+
+    /// <summary>Check if a range clause on the ORDER BY field can be served by a direct
+    /// tree scan instead of the bitmap pipeline. The range query already walks the tree
+    /// in sort order, so no SortingMatch wrapper is needed.</summary>
+    public static bool TryCreateSimpleFieldDirectScan(
+        QueryExecution plan, OrderMetadata[] orderByFields,
+        PlanParameters planParams, QueryBuilderParameters builderParams,
+        out IQueryMatch directMatch)
+    {
+        directMatch = null;
+
+        if (orderByFields == null || orderByFields.Length != 1)
+            return false;
+        if (plan.Clauses == null || plan.Clauses.Count == 0 || plan.AllNegated)
+            return false;
+        // Only ascending for now — descending requires backward iteration in the driving match
+        if (orderByFields[0].Ascending == false)
+            return false;
+
+        var clauses = plan.Clauses;
+        var execs = plan.Executions;
+        var indexSearcher = planParams.IndexSearcher;
+        string sortFieldName = orderByFields[0].Field.FieldName.ToString();
+
+        // Find a range clause on the sort field
+        int drivingIdx = -1;
+        for (int i = 0; i < clauses.Count; i++)
+        {
+            if (clauses[i].FieldName != sortFieldName)
+                continue;
+            if (clauses[i].ClauseType is not (ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
+                or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between))
+                continue;
+            if (clauses[i].HasBoost || (execs[i] is { BoostFactor: > 0 }))
+                continue;
+            drivingIdx = i;
+            break;
+        }
+
+        if (drivingIdx == -1)
+            return false;
+
+        // Check residual eligibility
+        int longIdx = 0, doubleIdx = 0, sliceIdx = 0;
+        var residualPreds = new List<ScanPredicateInfo>();
+        for (int i = 0; i < clauses.Count; i++)
+        {
+            if (i == drivingIdx) continue;
+            if (clauses[i].HasBoost || (execs[i] is { BoostFactor: > 0 }))
+                return false;
+            var pred = BuildScanPredicateInfo(clauses[i], execs[i], ref longIdx, ref doubleIdx, ref sliceIdx);
+            if (pred == null)
+                return false;
+            residualPreds.Add(pred.Value);
+        }
+
+        // Cost check
+        long drivingCardinality = execs[drivingIdx].Cardinality > 0 ? execs[drivingIdx].Cardinality : indexSearcher.NumberOfEntries;
+        long bitmapCost = 0;
+        for (int i = 0; i < clauses.Count; i++)
+            bitmapCost += execs[i].Cardinality > 0 ? execs[i].Cardinality : indexSearcher.NumberOfEntries;
+
+        long entriesToScan = drivingCardinality;
+        if (residualPreds.Count > 0)
+        {
+            long minResidual = long.MaxValue;
+            for (int i = 0; i < clauses.Count; i++)
+            {
+                if (i == drivingIdx) continue;
+                long c = execs[i].Cardinality > 0 ? execs[i].Cardinality : indexSearcher.NumberOfEntries;
+                if (c < minResidual) minResidual = c;
+            }
+            if (minResidual > 0 && minResidual < indexSearcher.NumberOfEntries)
+            {
+                double passRate = (double)minResidual / indexSearcher.NumberOfEntries;
+                if (passRate > 0) entriesToScan = (long)(drivingCardinality / passRate);
+            }
+        }
+
+        long directCost = entriesToScan * QueryPrimitives.EntryScanCostMultiplier;
+        if (directCost >= bitmapCost && entriesToScan > QueryPrimitives.EntryScanCountThreshold)
+            return false;
+
+        // Create the driving match — the range query on the sort field
+        var drivingClause = clauses[drivingIdx];
+        var drivingExec = execs[drivingIdx];
+        var drivingMatch = ResolveClause(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams);
+
+        // Extract residual scan parameters
+        ScanPredicateInfo[] residualArray = residualPreds.Count > 0 ? residualPreds.ToArray() : null;
+        long[] longParams = null;
+        double[] doubleParams = null;
+        Voron.Slice[] sliceParams = null;
+        long[] fieldRootPages = null;
+
+        if (residualArray != null)
+        {
+            var longs = new List<long>();
+            var doubles = new List<double>();
+            var slices = new List<Voron.Slice>();
+            var roots = new List<long>();
+
+            int residualIdx = 0;
+            for (int i = 0; i < clauses.Count; i++)
+            {
+                if (i == drivingIdx) continue;
+                roots.Add(indexSearcher.FieldCache.GetLookupRootPage(clauses[i].FieldName));
+                var predPacked = execs[i].PackedParamValue;
+                if (predPacked.IsNone) { residualIdx++; continue; }
+                int idx1 = predPacked.Param1;
+                int idx2 = predPacked.Param2;
+                bool hasBetween = idx2 != PackedParam.NoParamValue;
+                switch (residualArray[residualIdx].ValueType)
+                {
+                    case ScanValueType.Long:
+                        longs.Add(plan.LongValues[idx1]);
+                        if (hasBetween) longs.Add(plan.LongValues[idx2]);
+                        break;
+                    case ScanValueType.Double:
+                        doubles.Add(plan.DoubleValues[idx1]);
+                        if (hasBetween) doubles.Add(plan.DoubleValues[idx2]);
+                        break;
+                    case ScanValueType.Slice:
+                        Voron.Slice.From(planParams.Allocator, plan.StringValues[idx1], out var s1);
+                        slices.Add(s1);
+                        if (hasBetween) { Voron.Slice.From(planParams.Allocator, plan.StringValues[idx2], out var s2); slices.Add(s2); }
+                        break;
+                }
+                residualIdx++;
+            }
+            longParams = longs.Count > 0 ? longs.ToArray() : null;
+            doubleParams = doubles.Count > 0 ? doubles.ToArray() : null;
+            sliceParams = slices.Count > 0 ? slices.ToArray() : null;
+            fieldRootPages = roots.Count > 0 ? roots.ToArray() : null;
+        }
+
+        directMatch = new global::Corax.Querying.Matches.DirectScanMatch(
+            indexSearcher, drivingMatch, residualArray,
+            longParams, doubleParams, sliceParams, fieldRootPages,
+            take: -1)
+        {
+            DrivingTreeName = sortFieldName,
+            DrivingClause = $"{drivingClause.FieldName} {drivingClause.ClauseType}",
+            Direction = orderByFields[0].Ascending ? "Forward" : "Backward",
+            ResidualDescription = residualArray != null
+                ? string.Join(", ", residualPreds.ConvertAll(p => $"{p.FieldName} {p.CompareOp}"))
+                : null,
+            Reason = $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})"
+        };
+        return true;
+    }
+
     // ── Sort seek hint ────────────────────────────────────────────────────
 
     /// <summary>If the first clause is a range predicate on the same field as the first
