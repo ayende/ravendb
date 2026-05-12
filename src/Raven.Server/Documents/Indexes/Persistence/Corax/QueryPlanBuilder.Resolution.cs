@@ -2733,7 +2733,7 @@ internal static partial class QueryPlanBuilder
             if (clause.FieldName != sortField.ToString())
                 continue;
 
-            // Only numeric range clauses for now (long/double)
+            // Range clauses on the sort field — supports long, double, and string
             if (clause.ClauseType is not (ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
                 or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between))
                 continue;
