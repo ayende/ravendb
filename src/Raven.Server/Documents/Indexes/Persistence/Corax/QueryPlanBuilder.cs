@@ -46,6 +46,9 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 /// </summary>
 internal static partial class QueryPlanBuilder
 {
+    /// <summary>Thread-local WHEN condition accumulator used during ParseTemplate.
+    /// Avoids threading a List through all ParseExpression call sites.</summary>
+    [ThreadStatic] private static List<object> _whenConditions;
     /// <summary>
     /// Parameters needed by the planner for field metadata resolution,
     /// analyzer setup, and cardinality estimation.
@@ -197,7 +200,10 @@ internal static partial class QueryPlanBuilder
 
         bool hasMixedAndOr = false;
         var clauses = new List<ClauseInfo>();
+        _whenConditions = [];
         var rootOp = ParseExpression(query.Where, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+        var whenConditions = _whenConditions.Count > 0 ? _whenConditions.ToArray() : null;
+        _whenConditions = null;
 
         if (rootOp == BooleanOp.True || clauses.Count == 0)
             return new ClauseTemplate { IsAllEntries = true, Clauses = [] };
@@ -250,7 +256,8 @@ internal static partial class QueryPlanBuilder
             IsAllEntries = false,
             IsOr = isOr,
             SpatialClauses = spatialClauses,
-            VectorClauses = vectorClauses
+            VectorClauses = vectorClauses,
+            WhenConditions = whenConditions
         };
     }
 
@@ -719,16 +726,20 @@ internal static partial class QueryPlanBuilder
 
             case MethodType.When:
             {
-                // when(condition, expr) — evaluate the constant condition at plan time.
-                // If false, produce no clause (empty result for this branch).
-                // If true, recurse into the inner expression.
+                // when(condition, expr) — always parse the inner expression into the template.
+                // The condition is evaluated per-execution in PopulateClauseValues.
+                // If false, the clause is marked WhenEliminated and stripped in EmitPlan.
                 if (method.Arguments.Count != 2)
                     break;
-                var conditionResult = QueryBuilderHelper.EvaluateConstantExpressionForWhenQuery(
-                    (BinaryExpression)method.Arguments[0], queryParameters);
-                if (conditionResult)
-                    ParseExpression(method.Arguments[1], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
-                // If false, we simply don't add any clause — the branch is eliminated.
+                int beforeCount = clauses.Count;
+                ParseExpression(method.Arguments[1], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+                // Tag all newly-added clauses with the WHEN condition index.
+                // The condition expression is stored on ClauseTemplate.WhenConditions
+                // (set below after ParseTemplate returns).
+                var conditionExpr = method.Arguments[0];
+                for (int wi = beforeCount; wi < clauses.Count; wi++)
+                    clauses[wi].WhenConditionIndex = _whenConditions.Count;
+                _whenConditions.Add(conditionExpr);
                 break;
             }
 

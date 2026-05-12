@@ -78,6 +78,24 @@ internal static partial class QueryPlanBuilder
             execList.Add(CreateExecution(cached));
         }
 
+        // Step 2b: Evaluate WHEN conditions and eliminate inactive clauses
+        if (template.WhenConditions != null)
+        {
+            for (int ci = clauses.Count - 1; ci >= 0; ci--)
+            {
+                int whenIdx = clauses[ci].WhenConditionIndex;
+                if (whenIdx < 0)
+                    continue;
+                var conditionExpr = (Raven.Server.Documents.Queries.AST.BinaryExpression)template.WhenConditions[whenIdx];
+                bool conditionResult = QueryBuilderHelper.EvaluateConstantExpressionForWhenQuery(conditionExpr, planParams.QueryParameters);
+                if (conditionResult == false)
+                {
+                    clauses.RemoveAt(ci);
+                    execList.RemoveAt(ci);
+                }
+            }
+        }
+
         // Step 3: Populate parameter values into typed arrays
         var writer = new ValueWriter();
         for (int ci = 0; ci < clauses.Count; ci++)
