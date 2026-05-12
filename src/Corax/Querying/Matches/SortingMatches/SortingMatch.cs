@@ -530,10 +530,11 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         // Seek optimization: when the WHERE field matches the ORDER BY field, skip
         // walking tree terms that can't match by seeking to the boundary value.
         SortedIndexReader<TDirection>.SeekAction seekAction = null;
-        if (bitmapMatch is ISortSeekHint { SeekFieldName: not null } hint &&
-            hint.SeekFieldName == entryCmp.GetSortFieldName(match).ToString())
+        if (bitmapMatch is CompiledQueryMatch cm &&
+            cm.TryGetSortHint(out var hintField, out var hintValue, out _) &&
+            hintField == entryCmp.GetSortFieldName(match).ToString())
         {
-            seekAction = BuildSeekAction(hint);
+            seekAction = BuildSeekAction(hintValue);
         }
 
         var reader = GetReader(bitmapMatch.MinEntryId, bitmapMatch.MaxEntryId, seekAction);
@@ -564,9 +565,8 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         reader.Dispose();
         sortedIdsScope.Dispose();
 
-        static SortedIndexReader<TDirection>.SeekAction BuildSeekAction(ISortSeekHint hint)
+        static SortedIndexReader<TDirection>.SeekAction BuildSeekAction(object value)
         {
-            var value = hint.SeekValue;
             if (value is long longVal)
             {
                 if (typeof(TDirection) == typeof(Lookup<Int64LookupKey>.ForwardIterator) ||
@@ -595,7 +595,8 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
             {
                 var termsTree = match._searcher.GetTermsFor(entryCmp.GetSortFieldName(match));
                 // Build string seek action here where we have the tree's dictionary ID
-                if (seek == null && bitmapMatch is ISortSeekHint { SeekValue: string strVal })
+                if (seek == null && bitmapMatch is CompiledQueryMatch cm2 &&
+                    cm2.TryGetSortHint(out _, out var seekVal, out _) && seekVal is string strVal)
                 {
                     var compactKey = llt.AcquireCompactKey();
                     compactKey.Set(System.Text.Encoding.UTF8.GetBytes(strVal));

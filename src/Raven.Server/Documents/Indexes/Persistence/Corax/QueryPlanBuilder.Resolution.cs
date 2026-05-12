@@ -2506,11 +2506,12 @@ internal static partial class QueryPlanBuilder
             return false;
         if (plan.Clauses == null || plan.Clauses.Count == 0 || plan.AllNegated)
             return false;
-        // Simple field direct scan is currently disabled — TermsProviderMatch materializes
-        // entries into a RoaringBitmap which iterates in entry-ID order, not field-value order.
-        // DirectScanMatch requires the driving match to produce entries in sort order.
-        // This needs a SortedIndexReader-style tree walker as the driving match.
-        // The compound field path works differently (it uses StartsWith + SortingMatch).
+        // Simple field range + ORDER BY on same field: the bitmap pipeline + seek hint
+        // (TrySetSortSeekHint) already provides the equivalent optimization. The seek
+        // hint makes SortUsingIndexFromBitmap skip irrelevant tree terms. A DirectScanMatch
+        // with a SortedIndexReader would do the same work but requires extracting
+        // SortedIndexReader from SortingMatch (it's a private ref struct with stackalloc).
+        // For now, fall through to the bitmap path with seek hint.
         return false;
 
         var clauses = plan.Clauses;
@@ -2730,9 +2731,7 @@ internal static partial class QueryPlanBuilder
 
             if (seekValue != null)
             {
-                match.SeekFieldName = clause.FieldName;
-                match.SeekValue = seekValue;
-                match.SeekInclusive = inclusive;
+                match.SetSortHint(clause.FieldName, seekValue, inclusive);
                 return;
             }
         }
