@@ -139,6 +139,9 @@ internal static partial class QueryPlanBuilder
             {
                 c.ClauseType = ClauseType.Equals;
             }
+            // Null-only IN (InTermCount=0, HasNullTerm=true): already optimized —
+            // EmitInOps skips OrRange (no non-null terms) and emits only the null-term
+            // OrWithPostings op. No conversion needed.
         }
 
         // Step 4: Estimate cardinality (needs populated values)
