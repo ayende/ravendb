@@ -432,6 +432,249 @@ static Slice BuildCompoundKey(
 - Plan-time estimation drives the choice
 - Execution-time `CheckAndMaybeEntryScan` remains as fallback
 
+## Timings & Telemetry
+
+The bitmap pipeline has rich telemetry: per-op timing via `Stopwatch.GetTimestamp()`,
+result counts per op, entry scan taken-at-op marker, and EXPLAIN pseudocode. The
+`DirectScanMatch` must provide equivalent observability.
+
+### What the bitmap pipeline reports today
+
+When `include timings()` is active, `CompiledQueryMatch` reports:
+
+```json
+{
+  "Operation": "CompiledQuery",
+  "Parameters": {
+    "Explain": "Fill(bitmap[0], ctx.TermSources[0]);\nAnd(bitmap[0], ctx.TermSources[1]);\n...",
+    "Op0_ms": "0.042",
+    "Op0_count": "1500",
+    "Op1_ms": "0.018",
+    "Op1_count": "23",
+    "EntryScanAt": "2"
+  }
+}
+```
+
+Each PlanOp gets a timing and result count. The EXPLAIN pseudocode shows the
+exact sequence of bitmap operations. When entry scan kicks in, `EntryScanAt`
+records which op triggered it.
+
+### What DirectScanMatch should report
+
+```json
+{
+  "Operation": "DirectScan",
+  "Parameters": {
+    "DrivingTree": "compound(Name, Birthday)",
+    "DrivingClause": "Name = 'Corax'",
+    "SeekBound": "'Corax' (prefix, validatePostfixLen)",
+    "TreeDirection": "Forward",
+    "ResidualPredicates": "Status = 'active', Age >= 21",
+    "Reason": "EstimatedTreeEntries(150) × 64 < BitmapCost(45000)",
+    "TreeScan_ms": "0.85",
+    "TreeEntriesScanned": "312",
+    "EntryScans_ms": "0.42",
+    "EntriesPassedFilter": "23",
+    "EntriesRejected": "289",
+    "TotalResults": "23",
+    "StoppedAt": "_take(25)"
+  }
+}
+```
+
+### Telemetry fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `DrivingTree` | string | The tree being walked — field name or `compound(f1, f2)` |
+| `DrivingClause` | string | The clause that bounds the tree walk |
+| `SeekBound` | string | Where the tree iterator seeks to (value + inclusive/exclusive) |
+| `TreeDirection` | string | `Forward` or `Backward` |
+| `ResidualPredicates` | string | Comma-separated list of entry-scan predicates |
+| `Reason` | string | Why direct scan was chosen over bitmap — the cost comparison |
+| `TreeScan_ms` | double | Time spent walking the tree (reading posting lists) |
+| `EntryScans_ms` | double | Time spent reading entries and checking predicates |
+| `TreeEntriesScanned` | long | Total entry IDs produced by the tree walk |
+| `EntriesPassedFilter` | long | Entries that passed all residual predicates |
+| `EntriesRejected` | long | Entries that failed at least one residual predicate |
+| `StoppedAt` | string | Why iteration stopped: `_take(N)`, `TreeExhausted`, `RangeBound` |
+
+### Implementation in DirectScanMatch
+
+```csharp
+public class DirectScanMatch : IQueryMatch
+{
+    // Telemetry counters (always maintained — cheap)
+    private long _treeEntriesScanned;
+    private long _entriesPassedFilter;
+    private long _entriesRejected;
+    private long _treeScanTicks;
+    private long _entryScanTicks;
+    private string _stoppedReason;
+
+    // Metadata for Inspect()
+    private string _drivingTreeName;
+    private string _drivingClause;
+    private string _seekBound;
+    private string _direction;
+    private string _residualDescription;
+    private string _reason;
+
+    public int Fill(Span<long> matches)
+    {
+        int count = 0;
+        Span<long> batch = stackalloc long[256];
+
+        while (count < matches.Length)
+        {
+            long t0 = Stopwatch.GetTimestamp();
+            int read = _reader.Read(batch);
+            _treeScanTicks += Stopwatch.GetTimestamp() - t0;
+
+            if (read == 0) { _stoppedReason = "TreeExhausted"; break; }
+            _treeEntriesScanned += read;
+
+            for (int i = 0; i < read && count < matches.Length; i++)
+            {
+                long entryId = batch[i];
+
+                if (_residualPredicates != null)
+                {
+                    long t1 = Stopwatch.GetTimestamp();
+                    var reader = _searcher.GetEntryTermsReader(entryId);
+                    bool passed = CheckAllPredicates(ref reader);
+                    _entryScanTicks += Stopwatch.GetTimestamp() - t1;
+
+                    if (!passed) { _entriesRejected++; continue; }
+                }
+
+                _entriesPassedFilter++;
+                matches[count++] = entryId;
+            }
+
+            if (_take > 0 && _totalMatched + count >= _take)
+            {
+                _stoppedReason = $"_take({_take})";
+                break;
+            }
+        }
+        _totalMatched += count;
+        return count;
+    }
+
+    public QueryInspectionNode Inspect()
+    {
+        double tickFreq = Stopwatch.Frequency / 1000.0;
+        var parameters = new Dictionary<string, string>
+        {
+            ["DrivingTree"] = _drivingTreeName,
+            ["DrivingClause"] = _drivingClause,
+            ["SeekBound"] = _seekBound,
+            ["TreeDirection"] = _direction,
+        };
+
+        if (_residualDescription != null)
+            parameters["ResidualPredicates"] = _residualDescription;
+        if (_reason != null)
+            parameters["Reason"] = _reason;
+        if (_treeScanTicks > 0)
+            parameters["TreeScan_ms"] = (_treeScanTicks / tickFreq).ToString("F3");
+        if (_entryScanTicks > 0)
+            parameters["EntryScans_ms"] = (_entryScanTicks / tickFreq).ToString("F3");
+
+        parameters["TreeEntriesScanned"] = _treeEntriesScanned.ToString();
+        parameters["EntriesPassedFilter"] = _entriesPassedFilter.ToString();
+        parameters["EntriesRejected"] = _entriesRejected.ToString();
+
+        if (_stoppedReason != null)
+            parameters["StoppedAt"] = _stoppedReason;
+
+        return new QueryInspectionNode("DirectScan", parameters: parameters);
+    }
+}
+```
+
+### Telemetry is always collected (no wantTimings flag)
+
+Unlike `CompiledQueryMatch` where `Stopwatch.GetTimestamp()` is emitted for every op
+and timing arrays are conditionally allocated, `DirectScanMatch` always collects
+telemetry. The cost is two `Stopwatch.GetTimestamp()` calls per tree batch (not per
+entry) plus simple counter increments. This is negligible compared to the I/O cost
+of reading entries.
+
+The `Inspect()` method is only called when `include timings()` is active, but the
+counters are always maintained so the data is available if requested.
+
+### How it appears in the Studio query plan
+
+```
+SortingMatch (or absent if sort eliminated)
+  └── DirectScan
+        DrivingTree: compound(Name, Birthday)
+        DrivingClause: Name = 'Corax'
+        SeekBound: 'Corax' (prefix)
+        ResidualPredicates: Status = 'active'
+        Reason: EstimatedTreeEntries(150) × 64 < BitmapCost(45000)
+        TreeScan_ms: 0.85
+        TreeEntriesScanned: 312
+        EntryScans_ms: 0.42
+        EntriesPassedFilter: 23
+        EntriesRejected: 289
+        StoppedAt: _take(25)
+```
+
+When sort is eliminated (tree order matches ORDER BY):
+
+```
+DirectScan
+  DrivingTree: Age (Lookup<Int64LookupKey>)
+  DrivingClause: Age > 21
+  SeekBound: 21 (exclusive, forward)
+  ResidualPredicates: (none)
+  TreeScan_ms: 0.12
+  TreeEntriesScanned: 25
+  EntriesPassedFilter: 25
+  StoppedAt: _take(25)
+```
+
+### Comparison with bitmap pipeline telemetry
+
+When the bitmap pipeline is used instead:
+
+```
+SortingMatch
+  └── CompiledQuery
+        Explain: Fill(bitmap[0], ctx.TermSources[0]); ...
+        Op0_ms: 0.042
+        Op0_count: 1500
+        Op1_ms: 0.018
+        Op1_count: 23
+```
+
+The user can see at a glance which execution path was taken and why.
+`DirectScan` shows the tree walk cost breakdown. `CompiledQuery` shows
+the bitmap pipeline cost breakdown. Both are visible in Studio's query
+plan inspector.
+
+### Inspection for the detection decision
+
+Even when DirectScan is NOT chosen (bitmap pipeline is used instead), the
+detection decision should be logged for diagnostic purposes. Add a parameter
+to `CompiledQueryMatch.Inspect()`:
+
+```json
+{
+  "Operation": "CompiledQuery",
+  "Parameters": {
+    "DirectScanSkipped": "EstimatedTreeEntries(45000) > threshold(32768)",
+    ...
+  }
+}
+```
+
+This helps diagnose why a particular query isn't using the direct scan path.
+
 ## Open Questions
 
 1. **Multi-value fields**: If field1 has multiple values per document, the compound tree
