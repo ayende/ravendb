@@ -158,23 +158,23 @@ public static class CompiledQueryHelper
                 {
                     ref readonly var pred = ref predicates[p];
 
-                    if (pred.OrBranches != null)
+                    if (pred.SubPredicates != null)
                     {
                         // OR group: pass if any branch passes
                         bool anyPassed = false;
-                        for (int b = 0; b < pred.OrBranches.Length; b++)
+                        for (int b = 0; b < pred.SubPredicates.Length; b++)
                         {
                             reader.Reset();
                             if (reader.FindNext(fieldRootPages[rootIdx + b]))
                             {
-                                if (EvaluateSinglePredicate(ref reader, pred.OrBranches[b], longParams, doubleParams, sliceParams))
+                                if (EvaluateSinglePredicate(ref reader, pred.SubPredicates[b], longParams, doubleParams, sliceParams))
                                 {
                                     anyPassed = true;
                                     break;
                                 }
                             }
                         }
-                        rootIdx += pred.OrBranches.Length;
+                        rootIdx += pred.SubPredicates.Length;
                         passed = anyPassed;
                         continue;
                     }

@@ -209,7 +209,13 @@ public class CompiledQueryMatch(
         };
 
         if (EntryScanTakenAtOp >= 0)
+        {
             parameters["EntryScanAt"] = EntryScanTakenAtOp.ToString();
+            if (EntryScanEntriesScanned > 0)
+                parameters["EntryScanScanned"] = EntryScanEntriesScanned.ToString();
+            if (EntryScanEntriesPassed > 0)
+                parameters["EntryScanPassed"] = EntryScanEntriesPassed.ToString();
+        }
 
         if (Timings is { Length: > 0 })
         {
