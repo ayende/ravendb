@@ -82,6 +82,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             IndexSearcher = new IndexSearcher(readTransaction, _fieldMappings)
             {
                 MaxFacetQueryFilterSizeInBytes = index.Configuration.MaxFacetQueryFilterSize.GetValue(SizeUnit.Bytes),
+                PlanCache = (index.IndexPersistence as CoraxIndexPersistence)?.SharedPlanCache ?? new global::Corax.Querying.Planning.PlanCache(),
             };
             
             if (index is {_forTestingPurposes: {CoraxConfiguration: not null}})
