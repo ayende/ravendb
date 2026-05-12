@@ -26,17 +26,32 @@ public class CompiledQueryMatch(
     ByteStringContext allocator,
     bool wantTimings,
     CancellationToken token)
-    : IBitmapQueryMatch, ISortSeekHint, IDisposable
+    : IBitmapQueryMatch, IDisposable
 {
     private readonly QueryIlEmitter.CompiledExecuteDelegate _compiledDelegate =
         wantTimings && compiledPlan.CompiledTimedDelegate != null
             ? compiledPlan.CompiledTimedDelegate
             : compiledPlan.CompiledDelegate;
 
-    // ISortSeekHint — set by the plan builder when WHERE field matches ORDER BY field
-    public string SeekFieldName { get; set; }
-    public object SeekValue { get; set; }
-    public bool SeekInclusive { get; set; }
+    // Sort seek hint — set by the plan builder when WHERE field matches ORDER BY field
+    private string _seekFieldName;
+    private object _seekValue;
+    private bool _seekInclusive;
+
+    public void SetSortHint(string fieldName, object value, bool inclusive)
+    {
+        _seekFieldName = fieldName;
+        _seekValue = value;
+        _seekInclusive = inclusive;
+    }
+
+    public bool TryGetSortHint(out string fieldName, out object value, out bool inclusive)
+    {
+        fieldName = _seekFieldName;
+        value = _seekValue;
+        inclusive = _seekInclusive;
+        return _seekFieldName != null;
+    }
     public readonly IQueryMatch[] ResolvedMatches = resolvedMatches;
     public readonly PostingSource[] PostingSources = postingSources;
     public readonly ITermsProvider[] TermsProviders = termsProviders;
