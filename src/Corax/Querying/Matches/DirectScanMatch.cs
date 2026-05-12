@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Planning;
+using Sparrow;
 using Sparrow.Server;
 using Voron;
 using Voron.Data.Containers;
@@ -86,7 +87,7 @@ public sealed class DirectScanMatch : IQueryMatch, IDisposable
     public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
 
     [SkipLocalsInit]
-    public int Fill(Span<long> matches)
+    public unsafe int Fill(Span<long> matches)
     {
         if (_take > 0 && _totalMatched >= _take)
             return 0;
@@ -144,12 +145,28 @@ public sealed class DirectScanMatch : IQueryMatch, IDisposable
                     indices[j + 1] = key;
                 }
 
-                // Check predicates in entry-ID order (page locality)
-                // Mark which original positions passed
+                // Batch-resolve entry IDs to container locations for sequential page access.
+                // Sort by entry ID first (already done via indices), resolve, then Container.GetAll.
                 passed.Slice(0, read).Clear();
 
-                Page lastPage = default;
                 long t1 = Stopwatch.GetTimestamp();
+
+                // Build sorted entry ID array for batch resolution
+                Span<long> sortedIds = stackalloc long[read];
+                for (int s = 0; s < read; s++)
+                    sortedIds[s] = batch[indices[s]];
+
+                // Batch resolve to container locations
+                Span<long> containerLocs = stackalloc long[read];
+                _searcher.ResolveEntryLocations(sortedIds, containerLocs);
+
+                // Batch fetch entry data via Container.GetAll (sequential page access)
+                Span<UnmanagedSpan> spans = stackalloc UnmanagedSpan[read];
+                Container.GetAll(_llt, containerLocs, spans, -1, _llt.PageLocator);
+
+                // Initialize special term markers (needed for EntryTermsReader)
+                _searcher.InitializeSpecialTermsMarkers();
+
                 for (int s = 0; s < read; s++)
                 {
                     int origIdx = indices[s];
@@ -158,7 +175,15 @@ public sealed class DirectScanMatch : IQueryMatch, IDisposable
                     if (_emittedBitmap.Contains(entryId))
                         continue; // dedup
 
-                    var reader = _searcher.GetEntryTermsReader(entryId, ref lastPage);
+                    if (containerLocs[s] == -1 || spans[s].Address == null)
+                    {
+                        _entriesRejected++;
+                        continue;
+                    }
+
+                    var reader = new EntryTermsReader(_llt,
+                        _searcher.NullTermsMarkers, _searcher.NonExistingTermsMarkers,
+                        spans[s].Address, spans[s].Length, _searcher.DictionaryId, _searcher.VectorFieldsMarkers, null);
                     if (CheckAllPredicates(ref reader))
                         passed[origIdx] = true;
                     else
