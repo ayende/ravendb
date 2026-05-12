@@ -2171,7 +2171,131 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    // ── Compound field optimization ────────────────────────────────────────
+    // ── Compound field merging (WHERE only, no ORDER BY) ──────────────────
+
+    // ── Compound field exact match (no ORDER BY) ─────────────────────────
+
+    /// <summary>Check if two Equals clauses on (field1, field2) match a compound field.
+    /// If so, build a single TermQuery on the compound tree with the composite key.
+    /// One tree lookup instead of two posting list intersections.</summary>
+    public static bool TryCreateCompoundExactMatch(
+        QueryExecution plan, PlanParameters planParams, QueryBuilderParameters builderParams,
+        out IQueryMatch compoundMatch)
+    {
+        compoundMatch = null;
+        if (plan.Clauses == null || plan.Clauses.Count < 2 || plan.AllNegated)
+            return false;
+        if (planParams.Index == null)
+            return false;
+
+        var clauses = plan.Clauses;
+        var execs = plan.Executions;
+        var index = planParams.Index;
+        var indexSearcher = planParams.IndexSearcher;
+        var allocator = planParams.Allocator;
+
+        // Find two unboosted Equals clauses that match a compound field
+        for (int i = 0; i < clauses.Count; i++)
+        {
+            var c1 = clauses[i];
+            if (c1.ClauseType != ClauseType.Equals || c1.IsNegated || c1.HasBoost)
+                continue;
+            var e1 = execs[i];
+            if (e1.BoostFactor > 0 || e1.PackedParamValue.IsNone)
+                continue;
+
+            for (int j = i + 1; j < clauses.Count; j++)
+            {
+                var c2 = clauses[j];
+                if (c2.ClauseType != ClauseType.Equals || c2.IsNegated || c2.HasBoost)
+                    continue;
+                var e2 = execs[j];
+                if (e2.BoostFactor > 0 || e2.PackedParamValue.IsNone)
+                    continue;
+
+                // Check both orderings
+                string firstField = null, secondField = null;
+                ClauseExecution firstExec = null, secondExec = null;
+
+                using (Voron.Slice.From(allocator, c1.FieldName, out var s1))
+                using (Voron.Slice.From(allocator, c2.FieldName, out var s2))
+                {
+                    if (index.HasCompoundField(s1, s2, out _))
+                    {
+                        firstField = c1.FieldName; secondField = c2.FieldName;
+                        firstExec = e1; secondExec = e2;
+                    }
+                    else if (index.HasCompoundField(s2, s1, out _))
+                    {
+                        firstField = c2.FieldName; secondField = c1.FieldName;
+                        firstExec = e2; secondExec = e1;
+                    }
+                }
+
+                if (firstField == null) continue;
+
+                // Build field1 bytes
+                byte[] field1Bytes = BuildCompoundFieldBytes(firstField, firstExec, indexSearcher, plan);
+                if (field1Bytes == null || field1Bytes.Length > byte.MaxValue) continue;
+
+                // Build field2 bytes
+                byte[] field2Bytes = BuildCompoundFieldBytes(secondField, secondExec, indexSearcher, plan);
+                if (field2Bytes == null) continue;
+
+                // Build composite key
+                int totalLen = field1Bytes.Length + field2Bytes.Length + 1;
+                if (totalLen > global::Corax.Constants.Terms.MaxLength) continue;
+
+                var compositeKey = new byte[totalLen];
+                field1Bytes.CopyTo(compositeKey, 0);
+                field2Bytes.CopyTo(compositeKey.AsSpan(field1Bytes.Length));
+                compositeKey[^1] = (byte)field1Bytes.Length;
+
+                var compoundFieldName = $"compound({firstField},{secondField})";
+                var compoundFieldMeta = indexSearcher.FieldMetadataBuilder(compoundFieldName, hasBoost: false);
+                Voron.Slice.From(allocator, compositeKey, out var keySlice);
+
+                // Single exact-term lookup on the compound tree
+                compoundMatch = indexSearcher.TermQuery(compoundFieldMeta, keySlice);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static byte[] BuildCompoundFieldBytes(string fieldName, ClauseExecution exec,
+        IndexSearcher indexSearcher, QueryExecution plan)
+    {
+        var p = exec.PackedParamValue;
+        if (p.ValueType == PackedParam.TypeString)
+        {
+            var meta = indexSearcher.FieldMetadataBuilder(fieldName, hasBoost: false);
+            var analyzed = indexSearcher.EncodeAndApplyAnalyzer(meta, plan.StringValues[p.Param1]);
+            if (analyzed.Size > byte.MaxValue) return null;
+            var bytes = new byte[analyzed.Size];
+            analyzed.CopyTo(bytes);
+            return bytes;
+        }
+        if (p.ValueType == PackedParam.TypeLong)
+        {
+            var bytes = new byte[sizeof(long)];
+            System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(
+                bytes, Sparrow.Binary.Bits.SwapBytes(plan.LongValues[p.Param1]));
+            return bytes;
+        }
+        if (p.ValueType == PackedParam.TypeDouble)
+        {
+            var bytes = new byte[sizeof(long)];
+            long sortable = Sparrow.Binary.Bits.DoubleToSortableLong(plan.DoubleValues[p.Param1]);
+            System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(
+                bytes, Sparrow.Binary.Bits.SwapBytes(sortable));
+            return bytes;
+        }
+        return null;
+    }
+
+    // ── Compound field optimization (with ORDER BY) ─────────────────────
 
     /// <summary>Check if WHERE + ORDER BY can be served by a compound tree scan.
     /// Condition: an Equals clause on field1, ORDER BY on field2 (or field1, or both),

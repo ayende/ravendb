@@ -640,6 +640,16 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
                             innerDisposableMatch = queryMatch as IDisposable;
 
+                            // Compound exact match: WHERE f1 = val AND f2 = val → single compound tree lookup.
+                            // Check before ORDER BY — the compound match is faster regardless of sort.
+                            if (queryPlan != null &&
+                                QueryPlanBuilder.TryCreateCompoundExactMatch(queryPlan, planParams, builderParameters, out var compoundExact))
+                            {
+                                innerDisposableMatch?.Dispose();
+                                innerDisposableMatch = compoundExact as IDisposable;
+                                queryMatch = compoundExact;
+                            }
+
                             orderByFields = QueryPlanBuilder.GetSortMetadata(builderParameters, out bool hasEmptySorts);
                             if (orderByFields != null)
                             {
