@@ -118,6 +118,7 @@ internal static partial class QueryPlanBuilder
                     {
                         PackedParam.TypeLong => writer.GetLongs()[p.Param1] > writer.GetLongs()[p.Param2],
                         PackedParam.TypeDouble => writer.GetDoubles()[p.Param1] > writer.GetDoubles()[p.Param2],
+                        PackedParam.TypeString => string.Compare(writer.GetStrings()[p.Param1], writer.GetStrings()[p.Param2], StringComparison.Ordinal) > 0,
                         _ => false
                     };
                     if (contradictory)

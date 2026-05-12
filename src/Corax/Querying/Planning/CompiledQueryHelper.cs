@@ -44,7 +44,7 @@ public static class CompiledQueryHelper
             ScanCompareOp.GreaterThanOrEqual => actual >= param,
             ScanCompareOp.LessThan => actual < param,
             ScanCompareOp.LessThanOrEqual => actual <= param,
-            _ => false
+            _ => throw new ArgumentOutOfRangeException(nameof(op), op, "Unsupported compare op for long")
         };
     }
 
@@ -63,7 +63,7 @@ public static class CompiledQueryHelper
             ScanCompareOp.GreaterThanOrEqual => actual >= param,
             ScanCompareOp.LessThan => actual < param,
             ScanCompareOp.LessThanOrEqual => actual <= param,
-            _ => false
+            _ => throw new ArgumentOutOfRangeException(nameof(op), op, "Unsupported compare op for double")
         };
     }
 
