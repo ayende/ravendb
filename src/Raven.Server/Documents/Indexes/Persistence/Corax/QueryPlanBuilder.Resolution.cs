@@ -2058,10 +2058,12 @@ internal static partial class QueryPlanBuilder
 
     // ── Compound field optimization ────────────────────────────────────────
 
-    /// <summary>Check if WHERE + ORDER BY can be served by a single compound tree scan.
-    /// Condition: single Equals clause on field1, single ORDER BY on field2,
-    /// and compound(field1, field2) exists in the index.
-    /// Returns a TermsProviderMatch on the compound tree with StartsWith(field1_value, validatePostfixLen: true).</summary>
+    /// <summary>Check if WHERE + ORDER BY can be served by a compound tree scan.
+    /// Condition: an Equals clause on field1, ORDER BY on field2 (or field1, or both),
+    /// compound(field1, field2) exists in the index, and any residual clauses are
+    /// entry-scan eligible.
+    /// Returns a DirectScanMatch wrapping a compound tree StartsWith with optional
+    /// residual predicate checking.</summary>
     public static bool TryCreateCompoundFieldMatch(
         QueryExecution plan, OrderMetadata[] orderByFields,
         PlanParameters planParams, QueryBuilderParameters builderParams,
@@ -2069,62 +2071,187 @@ internal static partial class QueryPlanBuilder
     {
         compoundMatch = null;
 
-        // Only single ORDER BY field, only non-OR plan, only simple clauses
-        if (orderByFields == null || orderByFields.Length != 1)
+        if (orderByFields == null || orderByFields.Length == 0)
             return false;
-        if (plan.Clauses == null || plan.AllNegated)
+        if (plan.Clauses == null || plan.Clauses.Count == 0 || plan.AllNegated)
             return false;
 
-        // Find a single Equals clause (the candidate for field1)
-        // We need exactly one non-negated Equals clause + possibly other clauses that would need
-        // separate filtering. For now, only handle the pure case: one Equals clause, no other clauses.
         var clauses = plan.Clauses;
         var execs = plan.Executions;
-        if (clauses.Count != 1)
-            return false;
-
-        var clause = clauses[0];
-        if (clause.ClauseType != ClauseType.Equals || clause.IsNegated)
-            return false;
-
-        var exec = execs[0];
-        var packed = exec.PackedParamValue;
-        if (packed.IsNone || packed.ValueType != PackedParam.TypeString)
-            return false; // Only string field1 for now
-
-        string field1Name = clause.FieldName;
-        string field1Value = plan.StringValues[packed.Param1];
-        string sortFieldName = orderByFields[0].Field.FieldName.ToString();
-
-        // Check if compound(field1, sortField) exists
         var index = planParams.Index;
         var indexSearcher = planParams.IndexSearcher;
         var allocator = planParams.Allocator;
+        string sortFieldName = orderByFields[0].Field.FieldName.ToString();
 
-        using (Voron.Slice.From(allocator, field1Name, out var field1Slice))
-        using (Voron.Slice.From(allocator, sortFieldName, out var sortSlice))
+        // Find an Equals clause that, paired with the ORDER BY field, matches a compound field
+        int drivingClauseIdx = -1;
+        for (int i = 0; i < clauses.Count; i++)
         {
-            if (index.HasCompoundField(field1Slice, sortSlice, out int bindingId) == false)
-                return false;
+            var c = clauses[i];
+            if (c.ClauseType != ClauseType.Equals || c.IsNegated || c.HasBoost)
+                continue;
+            var e = execs[i];
+            if (e.BoostFactor > 0)
+                continue;
 
-            // Build the compound field metadata
-            var compoundFieldName = $"compound({field1Name},{sortFieldName})";
-            var compoundFieldMeta = indexSearcher.FieldMetadataBuilder(compoundFieldName, hasBoost: false);
-
-            // Encode field1's value through field1's analyzer to get the prefix bytes
-            var field1Meta = builderParams != null
-                ? QueryBuilderHelper.GetFieldMetadata(in builderParams, field1Name, hasBoost: false)
-                : indexSearcher.FieldMetadataBuilder(field1Name, hasBoost: false);
-            var analyzedPrefix = indexSearcher.EncodeAndApplyAnalyzer(field1Meta, field1Value);
-
-            // StartsWith on the compound tree with validatePostfixLen=true
-            // This finds all compound keys where the first N bytes match AND the trailing
-            // length byte equals N — exact match on field1, any value on field2.
-            compoundMatch = indexSearcher.StartWithQuery(compoundFieldMeta, analyzedPrefix,
-                isNegated: false, forward: orderByFields[0].Ascending,
-                validatePostfixLen: true);
-            return true;
+            using (Voron.Slice.From(allocator, c.FieldName, out var f1Slice))
+            using (Voron.Slice.From(allocator, sortFieldName, out var sortSlice))
+            {
+                if (index.HasCompoundField(f1Slice, sortSlice, out _))
+                {
+                    drivingClauseIdx = i;
+                    break;
+                }
+            }
         }
+
+        if (drivingClauseIdx == -1)
+            return false;
+
+        var drivingClause = clauses[drivingClauseIdx];
+        var drivingExec = execs[drivingClauseIdx];
+        var packed = drivingExec.PackedParamValue;
+        if (packed.IsNone || packed.ValueType != PackedParam.TypeString)
+            return false; // Only string field1 for now
+
+        // Check residual clauses are entry-scan eligible
+        var residualPreds = new List<ScanPredicateInfo>();
+        int longIdx = 0, doubleIdx = 0, sliceIdx = 0;
+        for (int i = 0; i < clauses.Count; i++)
+        {
+            if (i == drivingClauseIdx)
+                continue;
+            if (clauses[i].HasBoost || (execs[i] is { BoostFactor: > 0 }))
+                return false; // boosted clauses need scoring — can't entry scan
+            var pred = BuildScanPredicateInfo(clauses[i], execs[i], ref longIdx, ref doubleIdx, ref sliceIdx);
+            if (pred == null)
+                return false; // non-scannable residual → fall back to bitmap
+            residualPreds.Add(pred.Value);
+        }
+
+        // Cost check: estimate scan count vs bitmap cost
+        long drivingCardinality = drivingExec.Cardinality > 0 ? drivingExec.Cardinality : indexSearcher.NumberOfEntries;
+        long bitmapCost = 0;
+        for (int i = 0; i < clauses.Count; i++)
+            bitmapCost += execs[i].Cardinality > 0 ? execs[i].Cardinality : indexSearcher.NumberOfEntries;
+
+        // Estimate entries to scan (accounting for residual selectivity)
+        long entriesToScan = drivingCardinality;
+        if (residualPreds.Count > 0)
+        {
+            long minResidualCardinality = long.MaxValue;
+            for (int i = 0; i < clauses.Count; i++)
+            {
+                if (i == drivingClauseIdx) continue;
+                long card = execs[i].Cardinality > 0 ? execs[i].Cardinality : indexSearcher.NumberOfEntries;
+                if (card < minResidualCardinality)
+                    minResidualCardinality = card;
+            }
+            if (minResidualCardinality > 0 && minResidualCardinality < indexSearcher.NumberOfEntries)
+            {
+                double passRate = (double)minResidualCardinality / indexSearcher.NumberOfEntries;
+                if (passRate > 0)
+                    entriesToScan = (long)(drivingCardinality / passRate);
+            }
+        }
+
+        long directCost = entriesToScan * QueryPrimitives.EntryScanCostMultiplier;
+        if (directCost >= bitmapCost && entriesToScan > QueryPrimitives.EntryScanCountThreshold)
+            return false; // bitmap is cheaper
+
+        // Build the compound tree match
+        string field1Name = drivingClause.FieldName;
+        string field1Value = plan.StringValues[packed.Param1];
+        var compoundFieldName = $"compound({field1Name},{sortFieldName})";
+        var compoundFieldMeta = indexSearcher.FieldMetadataBuilder(compoundFieldName, hasBoost: false);
+
+        var field1Meta = builderParams != null
+            ? QueryBuilderHelper.GetFieldMetadata(in builderParams, field1Name, hasBoost: false)
+            : indexSearcher.FieldMetadataBuilder(field1Name, hasBoost: false);
+        var analyzedPrefix = indexSearcher.EncodeAndApplyAnalyzer(field1Meta, field1Value);
+
+        var drivingMatch = indexSearcher.StartWithQuery(compoundFieldMeta, analyzedPrefix,
+            isNegated: false, forward: orderByFields[0].Ascending,
+            validatePostfixLen: true);
+
+        // Extract scan parameters for residual predicates
+        ScanPredicateInfo[] residualArray = residualPreds.Count > 0 ? residualPreds.ToArray() : null;
+        long[] longParams = null;
+        double[] doubleParams = null;
+        Voron.Slice[] sliceParams = null;
+        long[] fieldRootPages = null;
+
+        if (residualArray != null)
+        {
+            var longs = new List<long>();
+            var doubles = new List<double>();
+            var slices = new List<Voron.Slice>();
+            var roots = new List<long>();
+
+            int residualIdx = 0;
+            for (int i = 0; i < clauses.Count; i++)
+            {
+                if (i == drivingClauseIdx) continue;
+                var matchingExec = execs[i];
+
+                // Add field root page
+                roots.Add(indexSearcher.FieldCache.GetLookupRootPage(clauses[i].FieldName));
+
+                var predPacked = matchingExec.PackedParamValue;
+                if (predPacked.IsNone) { residualIdx++; continue; }
+
+                int idx1 = predPacked.Param1;
+                int idx2 = predPacked.Param2;
+                bool hasBetween = idx2 != PackedParam.NoParamValue;
+
+                switch (residualArray[residualIdx].ValueType)
+                {
+                    case ScanValueType.Long:
+                        longs.Add(plan.LongValues[idx1]);
+                        if (hasBetween) longs.Add(plan.LongValues[idx2]);
+                        break;
+                    case ScanValueType.Double:
+                        doubles.Add(plan.DoubleValues[idx1]);
+                        if (hasBetween) doubles.Add(plan.DoubleValues[idx2]);
+                        break;
+                    case ScanValueType.Slice:
+                    {
+                        Voron.Slice.From(allocator, plan.StringValues[idx1], out var s1);
+                        slices.Add(s1);
+                        if (hasBetween)
+                        {
+                            Voron.Slice.From(allocator, plan.StringValues[idx2], out var s2);
+                            slices.Add(s2);
+                        }
+                        break;
+                    }
+                }
+                residualIdx++;
+            }
+
+            longParams = longs.Count > 0 ? longs.ToArray() : null;
+            doubleParams = doubles.Count > 0 ? doubles.ToArray() : null;
+            sliceParams = slices.Count > 0 ? slices.ToArray() : null;
+            fieldRootPages = roots.Count > 0 ? roots.ToArray() : null;
+        }
+
+        var directScan = new global::Corax.Querying.Matches.DirectScanMatch(
+            indexSearcher, drivingMatch, residualArray,
+            longParams, doubleParams, sliceParams, fieldRootPages,
+            take: -1)  // take is set by SortingMatch or the caller
+        {
+            DrivingTreeName = compoundFieldName,
+            DrivingClause = $"{field1Name} = '{field1Value}'",
+            SeekBound = $"'{field1Value}' (prefix, validatePostfixLen)",
+            Direction = orderByFields[0].Ascending ? "Forward" : "Backward",
+            ResidualDescription = residualArray != null
+                ? string.Join(", ", residualPreds.ConvertAll(p => $"{p.FieldName} {p.CompareOp}"))
+                : null,
+            Reason = $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})"
+        };
+
+        compoundMatch = directScan;
+        return true;
     }
 
     // ── Sort seek hint ────────────────────────────────────────────────────

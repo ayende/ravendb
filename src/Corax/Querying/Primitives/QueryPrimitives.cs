@@ -98,13 +98,13 @@ public static class QueryPrimitives
     // When the candidate bitmap is small enough, it's cheaper to read each entry's
     // stored fields and check predicates than to decode a full posting list and AND.
     // The threshold is the bitmap count below which we consider entry scan.
-    private const long EntryScanCountThreshold = 32 * 1024;
+    public const long EntryScanCountThreshold = 32 * 1024;
 
     // The multiplier approximates the cost ratio: one entry blob read costs roughly
     // 64x a single posting list decode. Entry scan wins when
     // bitmapCount * 64 < postingListSize, i.e. the posting list is much larger
     // than the candidate set.
-    private const long EntryScanCostMultiplier = 64;
+    public const long EntryScanCostMultiplier = 64;
 
     /// <summary>
     /// Fill a bitmap from a posting list. Walks leaf pages, decodes PFor blocks,
