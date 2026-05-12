@@ -1780,12 +1780,55 @@ internal static partial class QueryPlanBuilder
             case ClauseType.In:
             case ClauseType.AllIn:
             case ClauseType.StartsWith:
+            {
+                var packed2 = exec?.PackedParamValue ?? PackedParam.None;
+                if (packed2.IsNone || packed2.ValueType != PackedParam.TypeString) return null;
+                sliceIndex++;
+                return new ScanPredicateInfo
+                {
+                    FieldName = clause.FieldName,
+                    ValueType = ScanValueType.Slice,
+                    CompareOp = ScanCompareOp.StartsWith,
+                    ParamIndex = sliceIndex - 1
+                };
+            }
             case ClauseType.EndsWith:
+            {
+                var packed2 = exec?.PackedParamValue ?? PackedParam.None;
+                if (packed2.IsNone || packed2.ValueType != PackedParam.TypeString) return null;
+                sliceIndex++;
+                return new ScanPredicateInfo
+                {
+                    FieldName = clause.FieldName,
+                    ValueType = ScanValueType.Slice,
+                    CompareOp = ScanCompareOp.EndsWith,
+                    ParamIndex = sliceIndex - 1
+                };
+            }
             case ClauseType.AndGroup:
-                // These are handled by DirectScanMatch's interpreted predicate path
-                // but not by the IL entry scan emitter. Return null here so the IL
-                // path falls through to the bitmap pipeline.
-                return null;
+            {
+                if (clause.AndSubClauses == null || clause.AndSubClauses.Count == 0)
+                    return null;
+                var branches = new List<ScanPredicateInfo>();
+                var subExecs = exec?.AndSubExecutions;
+                for (int si = 0; si < clause.AndSubClauses.Count; si++)
+                {
+                    var sub = clause.AndSubClauses[si];
+                    var subExec = subExecs != null && si < subExecs.Length ? subExecs[si] : null;
+                    var subPred = BuildScanPredicateInfo(sub, subExec, ref longIndex, ref doubleIndex, ref sliceIndex);
+                    if (subPred == null) return null;
+                    branches.Add(subPred.Value);
+                }
+                // Reuse OrBranches field for AND sub-predicates (RunEntryScan treats
+                // all branches as AND within a group)
+                return new ScanPredicateInfo
+                {
+                    FieldName = clause.FieldName ?? clause.AndSubClauses[0].FieldName,
+                    ValueType = ScanValueType.Long,
+                    CompareOp = ScanCompareOp.Equal,
+                    OrBranches = branches.ToArray()
+                };
+            }
 
             case ClauseType.Exists:
                 return new ScanPredicateInfo
