@@ -2390,8 +2390,9 @@ internal static partial class QueryPlanBuilder
             var field2Clause = clauses[field2RangeIdx];
             var field2Packed = field2Exec.PackedParamValue;
 
-            // For now, only support numeric field2 (long) — the common case for dates/counters.
-            // The compound key format: [field1_prefix][SwapBytes(field2_long)][field1_len]
+            // Numeric field2 (long): always 8 bytes, fits in compound key.
+            // String field2 range: would need total key length check against Constants.Terms.MaxLength
+            // and per-field check against byte.MaxValue. Not yet implemented.
             if (field2Packed.IsNone == false && field2Packed.ValueType == PackedParam.TypeLong)
             {
                 long field2Val = plan.LongValues[field2Packed.Param1];
