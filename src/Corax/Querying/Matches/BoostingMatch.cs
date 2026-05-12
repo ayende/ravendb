@@ -38,6 +38,10 @@ namespace Corax.Querying.Matches
         public float BoostFactor;
         public BoostingMatch(Querying.IndexSearcher searcher, in IQueryMatch inner, float boostFactor)
         {
+            // Vector search has its own similarity-based ranking that doesn't compose with boost factors.
+            // Multiplying similarity scores by a boost factor would distort the ranking semantics.
+            // If boosted vector search is needed, the boost should be applied at the query result
+            // level (post-scoring), not at the match level.
             PortableExceptions.ThrowIf<NotSupportedException>(inner is VectorSearchMatch, $"Boosting the {nameof(VectorSearchMatch)} is not supported yet.");
             
             _inner = inner;
