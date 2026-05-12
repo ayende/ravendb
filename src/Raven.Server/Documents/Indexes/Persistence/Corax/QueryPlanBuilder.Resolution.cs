@@ -2322,6 +2322,7 @@ internal static partial class QueryPlanBuilder
                 {
                     PackedParam.TypeLong => (object)plan.LongValues[packed.Param1],
                     PackedParam.TypeDouble => plan.DoubleValues[packed.Param1],
+                    PackedParam.TypeString => plan.StringValues[packed.Param1],
                     _ => null
                 };
                 inclusive = clause.ClauseType == ClauseType.GreaterThanOrEqual;
@@ -2332,6 +2333,7 @@ internal static partial class QueryPlanBuilder
                 {
                     PackedParam.TypeLong => (object)plan.LongValues[packed.Param1],
                     PackedParam.TypeDouble => plan.DoubleValues[packed.Param1],
+                    PackedParam.TypeString => plan.StringValues[packed.Param1],
                     _ => null
                 };
                 inclusive = clause.ClauseType == ClauseType.LessThanOrEqual;
@@ -2344,6 +2346,7 @@ internal static partial class QueryPlanBuilder
                 {
                     PackedParam.TypeLong => (object)plan.LongValues[idx],
                     PackedParam.TypeDouble => plan.DoubleValues[idx],
+                    PackedParam.TypeString => plan.StringValues[idx],
                     _ => null
                 };
                 inclusive = true; // Between is always inclusive on both sides
