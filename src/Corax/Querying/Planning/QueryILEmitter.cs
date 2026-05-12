@@ -46,6 +46,10 @@ public static class QueryIlEmitter
     private static readonly MethodInfo OrWith =
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.OrWith),
             [typeof(RoaringBitmap).MakeByRefType()])!;
+    private static readonly MethodInfo LazyOrWith =
+        typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.LazyOrWith),
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public,
+            [typeof(RoaringBitmap).MakeByRefType()])!;
     private static readonly MethodInfo AndNotWith =
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.AndNotWith),
             [typeof(RoaringBitmap).MakeByRefType()])!;
@@ -185,6 +189,7 @@ public static class QueryIlEmitter
         var doneLabel = il.DefineLabel();
         var entryScanLabel = il.DefineLabel();
         bool hasEntryScan = false;
+        bool needsLazyRepair = false;
         int entryScanOpIndex = -1;
 
         // stackalloc long[FillBufferSize]
@@ -288,17 +293,16 @@ public static class QueryIlEmitter
                     break;
 
                 case PlanOpKind.OrBitmaps:
+                    // Use LazyOrWith to defer popcount repair. Containers are stolen/merged
+                    // immediately but cardinality is left as -1. A single RepairAfterLazy
+                    // before the done label fixes all lazy cardinalities in one pass.
                     EmitLoadBitmapRef(il, op.BitmapLocal);
                     EmitLoadBitmapRef(il, op.ParamIndex2);
-                    il.Emit(OpCodes.Call, OrWith);
-                    explain.AppendLine($"bitmap[{op.BitmapLocal}].OrWith(bitmap[{op.ParamIndex2}]);");
-
-                    EmitLoadBitmapRef(il, op.BitmapLocal);
-                    il.Emit(OpCodes.Call, CountGetter);
-                    il.Emit(OpCodes.Conv_I8);
-                    EmitLoadLimit(il);
-                    il.Emit(OpCodes.Bge, doneLabel);
-                    explain.AppendLine($"if (bitmap[{op.BitmapLocal}].Count >= limit) return;");
+                    il.Emit(OpCodes.Call, LazyOrWith);
+                    needsLazyRepair = true;
+                    explain.AppendLine($"bitmap[{op.BitmapLocal}].LazyOrWith(bitmap[{op.ParamIndex2}]);");
+                    // Skip Count-based limit check — Count is unreliable with lazy cardinality.
+                    // The limit will be checked after RepairAfterLazy.
                     break;
 
                 case PlanOpKind.SwapBitmaps:
@@ -432,6 +436,13 @@ public static class QueryIlEmitter
         }
 
         il.MarkLabel(doneLabel);
+        if (needsLazyRepair)
+        {
+            // Fix lazy cardinalities from LazyOrWith before the bitmap is read.
+            EmitLoadBitmapRef(il, 0);
+            il.Emit(OpCodes.Call, RepairAfterLazy);
+            explain.AppendLine("bitmap[0].RepairAfterLazy();");
+        }
         il.Emit(OpCodes.Ret);
 
         // Entry scan label — if any CheckAndMaybeEntryScan was emitted
