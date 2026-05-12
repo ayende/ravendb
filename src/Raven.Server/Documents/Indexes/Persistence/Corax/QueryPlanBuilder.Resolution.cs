@@ -2282,7 +2282,7 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        long directCost = entriesToScan * QueryPrimitives.EntryScanCostMultiplier;
+        long directCost = entriesToScan > long.MaxValue / QueryPrimitives.EntryScanCostMultiplier ? long.MaxValue : entriesToScan * QueryPrimitives.EntryScanCostMultiplier;
         if (directCost >= bitmapCost && entriesToScan > QueryPrimitives.EntryScanCountThreshold)
             return false; // bitmap is cheaper
 
@@ -2574,7 +2574,7 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        long directCost = entriesToScan * QueryPrimitives.EntryScanCostMultiplier;
+        long directCost = entriesToScan > long.MaxValue / QueryPrimitives.EntryScanCostMultiplier ? long.MaxValue : entriesToScan * QueryPrimitives.EntryScanCostMultiplier;
         if (directCost >= bitmapCost && entriesToScan > QueryPrimitives.EntryScanCountThreshold)
             return false;
 
