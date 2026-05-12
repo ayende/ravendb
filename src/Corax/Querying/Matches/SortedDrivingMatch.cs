@@ -1,92 +1,160 @@
 using System;
 using System.Collections.Generic;
-using Corax.Mappings;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using Corax.Indexing;
 using Corax.Querying.Matches.Meta;
-using Corax.Querying.Matches.SortingMatches;
+using Corax.Utils;
+using Sparrow;
+using Sparrow.Compression;
+using Sparrow.Server;
 using Voron;
-using Voron.Data.CompactTrees;
-using Voron.Data.Lookups;
+using Voron.Data.Containers;
+using Voron.Data.PostingLists;
 using Voron.Data.RoaringBitmaps;
 using Voron.Impl;
+using Voron.Util;
+using Voron.Util.PFor;
 
 namespace Corax.Querying.Matches;
 
 /// <summary>
-/// Two-phase driving match for DirectScanMatch:
-/// Phase 1: Build a bitmap from the range query (via TermsProviderMatch — correct range filtering).
-/// Phase 2: Walk the tree in field-value sort order via SortedIndexReader, filtering against the
-///           bitmap via Contains. This preserves field-value order while respecting range bounds.
+/// Walks an ITermsProvider in term order, decoding each posting list and yielding
+/// entry IDs directly. Unlike TermsProviderMatch (which materializes into a RoaringBitmap,
+/// losing sort order), this yields entries grouped by term — preserving field-value order.
 ///
-/// This is the same approach as SortUsingIndexFromBitmap but packaged as an IQueryMatch
-/// so DirectScanMatch can use it as its driving match.
+/// The ITermsProvider enforces range bounds (TermsRangeProvider only yields terms in range).
+/// No separate bitmap phase needed.
 /// </summary>
-public sealed class SortedDrivingMatch : IQueryMatch, IDisposable
+public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
 {
-    private readonly IndexSearcher _searcher;
+    private readonly ITermsProvider _provider;
     private readonly LowLevelTransaction _llt;
-    private readonly IQueryMatch _rangeMatch;  // TermsProviderMatch for building the bitmap
-    private readonly string _fieldName;
-    private readonly bool _ascending;
-    private readonly bool _nullFirst;
-    private readonly object _seekValue;
-
-    // Bitmap from the range query (built on first Fill)
-    private RoaringBitmap _bitmap;
-    private bool _bitmapBuilt;
-
-    // Sorted tree walker
-    private IDisposable _readerDisposable;
-    private Func<Span<long>, int> _readFunc;
+    private readonly ByteStringContext _allocator;
 
     // Dedup for multi-value fields
     private RoaringBitmap _emittedBitmap;
 
-    public SortedDrivingMatch(IndexSearcher searcher, IQueryMatch rangeMatch, string fieldName,
-        bool ascending, bool nullFirst = false, object seekValue = null)
+    // State for resuming across Fill calls
+    private bool _providerExhausted;
+
+    // Pending entries from a partially-consumed posting list
+    private PostingList.Iterator _pendingLargeIterator;
+    private bool _hasPendingLargeIterator;
+    private FastPForBufferedReader _smallListReader;
+    private bool _hasSmallListReader;
+
+    public SortedDrivingMatch(ITermsProvider provider, LowLevelTransaction llt, ByteStringContext allocator)
     {
-        _searcher = searcher;
-        _llt = searcher.Transaction.LowLevelTransaction;
-        _rangeMatch = rangeMatch;
-        _fieldName = fieldName;
-        _ascending = ascending;
-        _nullFirst = nullFirst;
-        _seekValue = seekValue;
-        _emittedBitmap = new RoaringBitmap(searcher.Allocator);
+        _provider = provider;
+        _llt = llt;
+        _allocator = allocator;
+        _emittedBitmap = new RoaringBitmap(allocator);
     }
 
-    public long Count => _bitmapBuilt ? _bitmap.Count : -1;
-    public QueryCountConfidence Confidence => _bitmapBuilt ? QueryCountConfidence.High : QueryCountConfidence.Low;
+    public long Count => -1;
+    public QueryCountConfidence Confidence => QueryCountConfidence.Low;
     public bool IsBoosting => false;
     public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.Possible;
 
-    public unsafe int Fill(Span<long> matches)
+    [SkipLocalsInit]
+    public int Fill(Span<long> matches)
     {
-        if (_bitmapBuilt == false)
-        {
-            BuildBitmapAndInitReader();
-            _bitmapBuilt = true;
-        }
-
-        if (_readFunc == null)
+        if (_providerExhausted && _hasPendingLargeIterator == false && _hasSmallListReader == false)
             return 0;
 
         int count = 0;
-        Span<long> buffer = stackalloc long[Math.Min(1024, matches.Length * 2)];
+        Span<long> entryBuffer = stackalloc long[256];
 
-        while (count < matches.Length)
+        // Resume any pending large posting list iterator
+        if (_hasPendingLargeIterator)
         {
-            int read = _readFunc(buffer);
-            if (read == 0)
-                break;
+            count += DrainLargePostingList(matches, entryBuffer);
+            if (count >= matches.Length)
+                return count;
+        }
 
+        // Resume any pending small posting list reader
+        if (_hasSmallListReader)
+        {
+            count += DrainSmallPostingList(matches.Slice(count), entryBuffer);
+            if (count >= matches.Length)
+                return count;
+        }
+
+        // Walk the provider's posting list IDs
+        Span<long> plIds = stackalloc long[256];
+        var pageLocator = _llt.PageLocator;
+
+        int read;
+        while (count < matches.Length && !_providerExhausted)
+        {
+            read = _provider.FillPostingListIds(plIds);
+            if (read == 0)
+            {
+                _providerExhausted = true;
+                break;
+            }
+
+            // Batch-resolve SmallPostingList container items
+            Span<long> smallPlIds = stackalloc long[read];
+            Span<UnmanagedSpan> containerItems = stackalloc UnmanagedSpan[read];
+            int smallCount = 0;
+
+            for (int i = 0; i < read; i++)
+            {
+                long plId = plIds[i];
+                var termType = (TermIdMask)plId & TermIdMask.EnsureIsSingleMask;
+
+                if (termType == TermIdMask.SmallPostingList)
+                {
+                    smallPlIds[smallCount++] = (long)EntryIdEncodings.GetContainerId(plId);
+                }
+            }
+            if (smallCount > 0)
+            {
+                Container.GetAll(_llt, smallPlIds.Slice(0, smallCount), containerItems.Slice(0, smallCount), long.MinValue, pageLocator);
+            }
+
+            int smallIdx = 0;
             for (int i = 0; i < read && count < matches.Length; i++)
             {
-                long id = buffer[i];
-                // Filter against bitmap (range bounds) and dedup
-                if (_bitmap.Contains(id) && _emittedBitmap.Contains(id) == false)
+                long plId = plIds[i];
+                var termType = (TermIdMask)plId & TermIdMask.EnsureIsSingleMask;
+
+                switch (termType)
                 {
-                    _emittedBitmap.Add(id);
-                    matches[count++] = id;
+                    case TermIdMask.Single:
+                    {
+                        long entryId = (long)EntryIdEncodings.GetContainerId(plId);
+                        if (_emittedBitmap.Contains(entryId) == false)
+                        {
+                            _emittedBitmap.Add(entryId);
+                            matches[count++] = entryId;
+                        }
+                        break;
+                    }
+                    case TermIdMask.SmallPostingList:
+                    {
+                        var item = containerItems[smallIdx++];
+                        _ = VariableSizeEncoding.Read<int>(item.Address, out var offset);
+                        if (_smallListReader.WasInitialized == false)
+                            _smallListReader = new FastPForBufferedReader(_llt.Allocator);
+                        _smallListReader.Init(item.Address + offset, item.Length - offset);
+                        _hasSmallListReader = true;
+                        count += DrainSmallPostingList(matches.Slice(count), entryBuffer);
+                        break;
+                    }
+                    case TermIdMask.PostingList:
+                    {
+                        var setStateSpan = Container.GetReadOnly(_llt, EntryIdEncodings.GetContainerId(plId));
+                        ref readonly var setState = ref MemoryMarshal.AsRef<PostingListState>(setStateSpan);
+                        var postingList = new PostingList(_llt, Slices.Empty, in setState);
+                        _pendingLargeIterator = postingList.Iterate();
+                        _hasPendingLargeIterator = true;
+                        count += DrainLargePostingList(matches.Slice(count), entryBuffer);
+                        break;
+                    }
                 }
             }
         }
@@ -94,93 +162,50 @@ public sealed class SortedDrivingMatch : IQueryMatch, IDisposable
         return count;
     }
 
-    private void BuildBitmapAndInitReader()
+    private int DrainSmallPostingList(Span<long> matches, Span<long> entryBuffer)
     {
-        // Phase 1: Build bitmap from range match (applies correct range bounds)
-        _bitmap = new RoaringBitmap(_searcher.Allocator);
-        Span<long> buf = stackalloc long[4096];
-        int read;
-        while ((read = _rangeMatch.Fill(buf)) > 0)
-            _bitmap.AddRange(buf.Slice(0, read));
-        _bitmap.PrepareForReading();
-
-        // Phase 2: Create SortedIndexReader for the sort tree walk
-        var fieldMeta = _searcher.FieldMetadataBuilder(_fieldName);
-        Slice.From(_llt.Allocator, _fieldName, out var fieldSlice);
-        long min = _bitmap.IsEmpty ? 0 : _bitmap.MinContainerKey * RoaringBitmap.ContainerSize;
-        long max = _bitmap.IsEmpty ? 0 : (_bitmap.MaxContainerKey + 1) * RoaringBitmap.ContainerSize - 1;
-
-        // Try numeric long
-        var longMeta = fieldMeta.GetNumericFieldMetadata<long>(_llt.Allocator);
-        var longTree = _searcher.GetLongTermsFor(longMeta.FieldName);
-        if (longTree != null)
+        int count = 0;
+        fixed (long* pBuffer = entryBuffer)
         {
-            if (_ascending)
-                CreateReader(longTree.Iterate<Lookup<Int64LookupKey>.ForwardIterator>(), longMeta, min, max);
-            else
-                CreateReader(longTree.Iterate<Lookup<Int64LookupKey>.BackwardIterator>(), longMeta, min, max);
-            return;
-        }
-
-        // Try numeric double
-        var doubleMeta = fieldMeta.GetNumericFieldMetadata<double>(_llt.Allocator);
-        var doubleTree = _searcher.GetDoubleTermsFor(doubleMeta.FieldName);
-        if (doubleTree != null)
-        {
-            if (_ascending)
-                CreateReader(doubleTree.Iterate<Lookup<DoubleLookupKey>.ForwardIterator>(), doubleMeta, min, max);
-            else
-                CreateReader(doubleTree.Iterate<Lookup<DoubleLookupKey>.BackwardIterator>(), doubleMeta, min, max);
-            return;
-        }
-
-        // String tree
-        var termsTree = _searcher.GetTermsFor(fieldSlice);
-        if (termsTree != null)
-        {
-            if (_ascending)
-                CreateReader(termsTree.IterateValues<Lookup<CompactTree.CompactKeyLookup>.ForwardIterator>(), fieldMeta, min, max, fieldSlice);
-            else
-                CreateReader(termsTree.IterateValues<Lookup<CompactTree.CompactKeyLookup>.BackwardIterator>(), fieldMeta, min, max, fieldSlice);
-        }
-    }
-
-    private void CreateReader<TDirection>(TDirection iterator, FieldMetadata fieldMeta, long min, long max, Slice fieldSlice = default)
-        where TDirection : struct, ILookupIterator
-    {
-        SortingMatch<AllEntriesMatch>.SortedIndexReader<TDirection>.SeekAction seekAction = null;
-
-        if (_seekValue is long longVal &&
-            (typeof(TDirection) == typeof(Lookup<Int64LookupKey>.ForwardIterator) ||
-             typeof(TDirection) == typeof(Lookup<Int64LookupKey>.BackwardIterator)))
-        {
-            seekAction = (ref TDirection it) => it.Seek(new Int64LookupKey(longVal));
-        }
-        else if (_seekValue is double doubleVal &&
-            (typeof(TDirection) == typeof(Lookup<DoubleLookupKey>.ForwardIterator) ||
-             typeof(TDirection) == typeof(Lookup<DoubleLookupKey>.BackwardIterator)))
-        {
-            seekAction = (ref TDirection it) => it.Seek(new DoubleLookupKey(doubleVal));
-        }
-        else if (_seekValue is string strVal &&
-            (typeof(TDirection) == typeof(Lookup<CompactTree.CompactKeyLookup>.ForwardIterator) ||
-             typeof(TDirection) == typeof(Lookup<CompactTree.CompactKeyLookup>.BackwardIterator)))
-        {
-            var tree = _searcher.GetTermsFor(fieldSlice);
-            if (tree != null)
+            int read;
+            while (count < matches.Length && (read = _smallListReader.Fill(pBuffer, entryBuffer.Length)) > 0)
             {
-                var ck = _llt.AcquireCompactKey();
-                ck.Set(System.Text.Encoding.UTF8.GetBytes(strVal));
-                ck.ChangeDictionary(tree.DictionaryId);
-                seekAction = (ref TDirection it) => it.Seek(new CompactTree.CompactKeyLookup(ck));
+                EntryIdEncodings.DecodeAndDiscardFrequency(entryBuffer, read);
+                for (int j = 0; j < read && count < matches.Length; j++)
+                {
+                    long entryId = entryBuffer[j];
+                    if (_emittedBitmap.Contains(entryId) == false)
+                    {
+                        _emittedBitmap.Add(entryId);
+                        matches[count++] = entryId;
+                    }
+                }
             }
         }
+        if (count < matches.Length)
+            _hasSmallListReader = false; // exhausted
+        return count;
+    }
 
-        var reader = new SortingMatch<AllEntriesMatch>.SortedIndexReader<TDirection>(
-            _llt, _searcher, iterator, fieldMeta, min, max, _nullFirst, _ascending, seekAction);
-
-        _readFunc = (Span<long> buf) => reader.Read(buf);
-        _readerDisposable = reader;
+    private int DrainLargePostingList(Span<long> matches, Span<long> entryBuffer)
+    {
+        int count = 0;
+        while (count < matches.Length && _pendingLargeIterator.Fill(entryBuffer, out int read) && read > 0)
+        {
+            EntryIdEncodings.DecodeAndDiscardFrequency(entryBuffer, read);
+            for (int j = 0; j < read && count < matches.Length; j++)
+            {
+                long entryId = entryBuffer[j];
+                if (_emittedBitmap.Contains(entryId) == false)
+                {
+                    _emittedBitmap.Add(entryId);
+                    matches[count++] = entryId;
+                }
+            }
+        }
+        if (count < matches.Length)
+            _hasPendingLargeIterator = false; // exhausted
+        return count;
     }
 
     public int AndWith(Span<long> buffer, int matches) => throw new NotSupportedException();
@@ -192,17 +217,14 @@ public sealed class SortedDrivingMatch : IQueryMatch, IDisposable
         return new QueryInspectionNode("SortedDrivingMatch",
             parameters: new Dictionary<string, string>
             {
-                ["Field"] = _fieldName,
-                ["Direction"] = _ascending ? "Forward" : "Backward",
-                ["BitmapCount"] = _bitmapBuilt ? _bitmap.Count.ToString() : "not built"
+                ["Provider"] = _provider.Inspect().Operation
             });
     }
 
     public void Dispose()
     {
-        _readerDisposable?.Dispose();
-        if (_bitmapBuilt) _bitmap.Dispose();
+        if (_hasSmallListReader)
+            _smallListReader.Dispose();
         _emittedBitmap.Dispose();
-        (_rangeMatch as IDisposable)?.Dispose();
     }
 }

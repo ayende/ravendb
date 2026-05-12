@@ -2533,10 +2533,12 @@ internal static partial class QueryPlanBuilder
         if (drivingIdx == -1)
             return false;
 
-        // For now, only numeric driving clauses — string range queries need additional
-        // testing with analyzers. Numeric ranges are the common case (dates, counters).
+        // SortedDrivingMatch walks the ITermsProvider directly — the provider enforces
+        // range bounds and the entries come out in term order (field-value sort order).
+        // No bitmap phase needed.
+
         var drivingPacked = execs[drivingIdx].PackedParamValue;
-        if (drivingPacked.IsNone || drivingPacked.ValueType == PackedParam.TypeString)
+        if (drivingPacked.IsNone)
             return false;
 
         // Check residual eligibility
@@ -2580,14 +2582,13 @@ internal static partial class QueryPlanBuilder
         if (directCost >= bitmapCost && entriesToScan > QueryPrimitives.EntryScanCountThreshold)
             return false;
 
-        // Create the driving match: two-phase SortedDrivingMatch.
-        // Phase 1: TermsProviderMatch builds bitmap (correct range bounds).
-        // Phase 2: SortedIndexReader walks tree in sort order, Contains-filters against bitmap.
+        // Create the driving match: SortedDrivingMatch walks the ITermsProvider directly.
+        // The provider enforces range bounds; entries come out in term order (sort order).
         var drivingClause = clauses[drivingIdx];
         var drivingExec = execs[drivingIdx];
         bool forward = orderByFields[0].Ascending;
 
-        // Build the range match via ResolveClause (produces TermsProviderMatch with correct bounds)
+        // Build the range match to extract the ITermsProvider (TermsProviderMatch wraps it)
         var rangeMatch = ResolveRangeClauseWithDirection(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams, forward);
 
         // Extract seek value for the tree walk start position
@@ -2628,8 +2629,16 @@ internal static partial class QueryPlanBuilder
             }
         }
 
+        // Extract the ITermsProvider from the range match (TermsProviderMatch wraps it).
+        // SortedDrivingMatch walks the provider directly in term order.
+        ITermsProvider provider = null;
+        if (rangeMatch is TermsProviderMatch tpm)
+            provider = tpm.Provider;
+        if (provider == null)
+            return false; // range match didn't produce a TermsProviderMatch (e.g., empty field)
+
         var drivingMatch = new global::Corax.Querying.Matches.SortedDrivingMatch(
-            indexSearcher, rangeMatch, sortFieldName, forward, seekValue: seekValue);
+            provider, ((TermsProviderMatch)rangeMatch).Llt, planParams.Allocator);
 
         // Extract residual scan parameters
         ScanPredicateInfo[] residualArray = residualPreds.Count > 0 ? residualPreds.ToArray() : null;

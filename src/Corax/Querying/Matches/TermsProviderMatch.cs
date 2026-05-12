@@ -22,6 +22,9 @@ public sealed class TermsProviderMatch : IBitmapQueryMatch
     /// The compiled pipeline calls QueryPrimitives.CtxFillFromTreeScan directly on the provider,
     /// bypassing the TermsProviderMatch wrapper.</summary>
     public ITermsProvider Provider => _provider;
+
+    /// <summary>LowLevelTransaction for SortedDrivingMatch construction.</summary>
+    public LowLevelTransaction Llt => _llt;
     private RoaringBitmap _bitmap;
     private RoaringBitmapIterator _iterator;
     private bool _initialized;
