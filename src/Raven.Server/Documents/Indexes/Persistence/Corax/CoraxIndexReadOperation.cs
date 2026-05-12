@@ -642,13 +642,28 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                             orderByFields = QueryPlanBuilder.GetSortMetadata(builderParameters, out bool hasEmptySorts);
                             if (orderByFields != null)
                             {
-                                // Set seek hint if WHERE field matches ORDER BY field (optimization for
-                                // SortUsingIndexFromBitmap to skip walking irrelevant tree terms).
-                                if (queryMatch is global::Corax.Querying.Matches.CompiledQueryMatch seekMatch && queryPlan != null)
-                                    QueryPlanBuilder.TrySetSortSeekHint(seekMatch, queryPlan, orderByFields);
+                                // Compound field optimization: WHERE field1 = 'val' ORDER BY field2
+                                // can be served by a single StartsWith scan on the compound tree.
+                                // Results come back pre-sorted by field2, eliminating the SortingMatch.
+                                if (queryPlan != null &&
+                                    QueryPlanBuilder.TryCreateCompoundFieldMatch(
+                                        queryPlan, orderByFields, planParams, builderParameters, out var compoundMatch))
+                                {
+                                    innerDisposableMatch?.Dispose();
+                                    innerDisposableMatch = compoundMatch as IDisposable;
+                                    queryMatch = QueryPlanBuilder.OrderBy(
+                                        builderParameters, compoundMatch, orderByFields, hasEmptySorts);
+                                }
+                                else
+                                {
+                                    // Set seek hint if WHERE field matches ORDER BY field (optimization for
+                                    // SortUsingIndexFromBitmap to skip walking irrelevant tree terms).
+                                    if (queryMatch is global::Corax.Querying.Matches.CompiledQueryMatch seekMatch)
+                                        QueryPlanBuilder.TrySetSortSeekHint(seekMatch, queryPlan, orderByFields);
 
-                                queryMatch = QueryPlanBuilder.OrderBy(
-                                    builderParameters, queryMatch, orderByFields, hasEmptySorts);
+                                    queryMatch = QueryPlanBuilder.OrderBy(
+                                        builderParameters, queryMatch, orderByFields, hasEmptySorts);
+                                }
                             }
                             else if (take > 0 && query.Metadata.IsDistinct == false
                                 && query.SkipStatistics
