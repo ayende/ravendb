@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Corax.Querying.Matches;
 using Corax.Utils;
+using Voron.Data.RoaringBitmaps;
 
 namespace Corax.Querying.Planning;
 
@@ -122,5 +123,113 @@ public static class CompiledQueryHelper
                 return true;
         }
         return false;
+    }
+
+    // ── Entry scan batch method ─────────────────────────────────────────
+
+    /// <summary>Run entry scan on a batch of entry IDs. Reads each entry's stored fields,
+    /// evaluates all predicates, adds passing entries to the target bitmap.
+    /// Called by both the IL entry scan path and DirectScanMatch.</summary>
+    public static unsafe void RunEntryScan(
+        Matches.CompiledQueryMatch ctx,
+        ref RoaringBitmap sourceBitmap,
+        ref RoaringBitmap targetBitmap,
+        ScanPredicateInfo[] predicates,
+        long[] longParams, double[] doubleParams, Voron.Slice[] sliceParams, long[] fieldRootPages)
+    {
+        Span<long> buffer = stackalloc long[256]; // EntryScanBatchSize
+        var iterator = sourceBitmap.GetIterator();
+        Voron.Page lastPage = default;
+        var searcher = ctx.Searcher;
+
+        int read;
+        while ((read = iterator.Fill(ref sourceBitmap, buffer)) > 0)
+        {
+            for (int i = 0; i < read; i++)
+            {
+                long entryId = buffer[i];
+                ctx.EntryScanEntriesScanned++;
+
+                var reader = searcher.GetEntryTermsReader(entryId, ref lastPage);
+                bool passed = true;
+                int rootIdx = 0;
+
+                for (int p = 0; p < predicates.Length && passed; p++)
+                {
+                    ref readonly var pred = ref predicates[p];
+
+                    if (pred.OrBranches != null)
+                    {
+                        // OR group: pass if any branch passes
+                        bool anyPassed = false;
+                        for (int b = 0; b < pred.OrBranches.Length; b++)
+                        {
+                            reader.Reset();
+                            if (reader.FindNext(fieldRootPages[rootIdx + b]))
+                            {
+                                if (EvaluateSinglePredicate(ref reader, pred.OrBranches[b], longParams, doubleParams, sliceParams))
+                                {
+                                    anyPassed = true;
+                                    break;
+                                }
+                            }
+                        }
+                        rootIdx += pred.OrBranches.Length;
+                        passed = anyPassed;
+                        continue;
+                    }
+
+                    reader.Reset();
+                    bool found = reader.FindNext(fieldRootPages[rootIdx]);
+                    rootIdx++;
+
+                    if (pred.CompareOp == ScanCompareOp.Exists)
+                    {
+                        passed = found;
+                    }
+                    else if (pred.CompareOp == ScanCompareOp.NotEqual)
+                    {
+                        passed = found == false || EvaluateSinglePredicate(ref reader, pred, longParams, doubleParams, sliceParams);
+                    }
+                    else
+                    {
+                        passed = found && EvaluateSinglePredicate(ref reader, pred, longParams, doubleParams, sliceParams);
+                    }
+                }
+
+                if (passed)
+                {
+                    ctx.EntryScanEntriesPassed++;
+                    targetBitmap.Add(entryId);
+                }
+            }
+        }
+        iterator.Dispose();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool EvaluateSinglePredicate(ref EntryTermsReader reader, in ScanPredicateInfo pred,
+        long[] longParams, double[] doubleParams, Voron.Slice[] sliceParams)
+    {
+        return pred.ValueType switch
+        {
+            ScanValueType.Long when pred.CompareOp == ScanCompareOp.Between =>
+                CompareLongBetween(reader.CurrentLong, longParams[pred.ParamIndex], longParams[pred.ParamIndex2]),
+            ScanValueType.Long =>
+                CompareLong(reader.CurrentLong, longParams[pred.ParamIndex], pred.CompareOp),
+            ScanValueType.Double when pred.CompareOp == ScanCompareOp.Between =>
+                CompareDoubleBetween(reader.CurrentDouble, doubleParams[pred.ParamIndex], doubleParams[pred.ParamIndex2]),
+            ScanValueType.Double =>
+                CompareDouble(reader.CurrentDouble, doubleParams[pred.ParamIndex], pred.CompareOp),
+            ScanValueType.Slice when pred.CompareOp == ScanCompareOp.Between =>
+                CompareSliceBetween(reader.Current.Decoded(), sliceParams[pred.ParamIndex].AsReadOnlySpan(), sliceParams[pred.ParamIndex2].AsReadOnlySpan()),
+            ScanValueType.Slice when pred.CompareOp == ScanCompareOp.StartsWith =>
+                SliceStartsWith(reader.Current.Decoded(), sliceParams[pred.ParamIndex].AsReadOnlySpan()),
+            ScanValueType.Slice when pred.CompareOp == ScanCompareOp.EndsWith =>
+                SliceEndsWith(reader.Current.Decoded(), sliceParams[pred.ParamIndex].AsReadOnlySpan()),
+            ScanValueType.Slice =>
+                CompareSlice(reader.Current.Decoded(), sliceParams[pred.ParamIndex].AsReadOnlySpan(), pred.CompareOp),
+            _ => false
+        };
     }
 }
