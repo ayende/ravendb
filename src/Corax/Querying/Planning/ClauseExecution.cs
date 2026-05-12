@@ -14,6 +14,10 @@ public sealed class ClauseExecution
     public SpatialParams Spatial;
     public VectorParams Vector;
 
+    /// <summary>True when a WHEN condition evaluated to false for this execution.
+    /// The clause is stripped from the plan (like empty IN).</summary>
+    public bool WhenEliminated;
+
     /// <summary>Per-execution state for OrGroup subclauses. Parallel to <see cref="ClauseInfo.OrSubClauses"/>.</summary>
     public ClauseExecution[] OrSubExecutions;
 

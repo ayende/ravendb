@@ -53,4 +53,8 @@ public sealed class ClauseInfo
     /// <summary>True if this clause is wrapped in boost(). When set, Bindings[^1] is the
     /// boost factor binding and exec.BoostFactor is resolved from it per-execution.</summary>
     public bool HasBoost;
+
+    /// <summary>Index into ClauseTemplate.WhenConditions, or -1 if no WHEN wraps this clause.
+    /// The condition is evaluated per-execution in PopulateClauseValues.</summary>
+    public int WhenConditionIndex = -1;
 }
