@@ -118,11 +118,10 @@ via entry scan for each candidate entry.
 - OrGroup, AndGroup (of eligible sub-clauses — just flatten and check each)
 - IN, AllIn (set membership check against resolved term list)
 - Exists (reader.FindNext succeeds for the field)
-- StartsWith, EndsWith, Contains (check against stored term — iterate all terms
-  for multi-term fields. **Only valid on exact fields or when the query value is
-  analyzed with the same analyzer.** For analyzed fields, the stored value is
-  the analyzed form; the entry scan must analyze the query value identically.)
-- Regex (regex match against stored term value — same analyzer caveat)
+- StartsWith, EndsWith, Contains (analyze the query value with the field's
+  analyzer, then compare against stored terms. For multi-term fields, iterate
+  all stored terms via `reader.FindNext` in a loop — pass if ANY term matches.)
+- Regex (analyze query pattern if applicable, regex match against stored terms)
 
 **NOT entry-scan eligible:**
 - Search (needs full-text scoring with TF/IDF, term frequency tracking)
@@ -130,9 +129,10 @@ via entry scan for each candidate entry.
   the spatial math adds complexity for marginal benefit. Not worth it initially.)
 - Vector (needs vector similarity computation against the vector index)
 
-For analyzed fields (StartsWith, EndsWith, Contains, Regex): the query value must
-be run through the field's analyzer before comparison. For multi-term fields
-(tokenized), iterate all stored terms and check if ANY term matches the predicate.
+For all fields: the query value is analyzed with the field's analyzer before
+comparison — the stored terms are already in analyzed form. For multi-term fields
+(tokenized), the entry scan iterates all stored terms via `reader.FindNext` and
+checks if ANY term matches the predicate.
 
 If any residual clause is not eligible, the optimization cannot be used —
 fall back to the bitmap pipeline.
