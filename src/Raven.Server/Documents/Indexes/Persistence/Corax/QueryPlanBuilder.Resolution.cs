@@ -866,6 +866,49 @@ internal static partial class QueryPlanBuilder
         return matches;
     }
 
+    /// <summary>Resolve a range clause with explicit forward/backward direction for DirectScanMatch.</summary>
+    private static IQueryMatch ResolveRangeClauseWithDirection(ClauseInfo clause, ClauseExecution exec,
+        IndexSearcher indexSearcher, QueryExecution plan, PlanParameters parameters, QueryBuilderParameters builderParams, bool forward)
+    {
+        FieldMetadata fieldMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
+        var packed = exec.PackedParamValue;
+
+        return clause.ClauseType switch
+        {
+            ClauseType.GreaterThan => packed.ValueType switch
+            {
+                PackedParam.TypeLong => indexSearcher.GreaterThanQuery(fieldMeta, plan.LongValues[packed.Param1], forward),
+                PackedParam.TypeDouble => indexSearcher.GreaterThanQuery(fieldMeta, plan.DoubleValues[packed.Param1], forward),
+                _ => indexSearcher.GreaterThanQuery(fieldMeta, plan.StringValues[packed.Param1], forward)
+            },
+            ClauseType.GreaterThanOrEqual => packed.ValueType switch
+            {
+                PackedParam.TypeLong => indexSearcher.GreaterThanOrEqualsQuery(fieldMeta, plan.LongValues[packed.Param1], forward),
+                PackedParam.TypeDouble => indexSearcher.GreaterThanOrEqualsQuery(fieldMeta, plan.DoubleValues[packed.Param1], forward),
+                _ => indexSearcher.GreaterThanOrEqualsQuery(fieldMeta, plan.StringValues[packed.Param1], forward)
+            },
+            ClauseType.LessThan => packed.ValueType switch
+            {
+                PackedParam.TypeLong => indexSearcher.LessThanQuery(fieldMeta, plan.LongValues[packed.Param1], forward),
+                PackedParam.TypeDouble => indexSearcher.LessThanQuery(fieldMeta, plan.DoubleValues[packed.Param1], forward),
+                _ => indexSearcher.LessThanQuery(fieldMeta, plan.StringValues[packed.Param1], forward)
+            },
+            ClauseType.LessThanOrEqual => packed.ValueType switch
+            {
+                PackedParam.TypeLong => indexSearcher.LessThanOrEqualsQuery(fieldMeta, plan.LongValues[packed.Param1], forward),
+                PackedParam.TypeDouble => indexSearcher.LessThanOrEqualsQuery(fieldMeta, plan.DoubleValues[packed.Param1], forward),
+                _ => indexSearcher.LessThanOrEqualsQuery(fieldMeta, plan.StringValues[packed.Param1], forward)
+            },
+            ClauseType.Between => packed.ValueType switch
+            {
+                PackedParam.TypeLong => indexSearcher.BetweenQuery(fieldMeta, plan.LongValues[packed.Param1], plan.LongValues[packed.Param2], forward: forward),
+                PackedParam.TypeDouble => indexSearcher.BetweenQuery(fieldMeta, plan.DoubleValues[packed.Param1], plan.DoubleValues[packed.Param2], forward: forward),
+                _ => indexSearcher.BetweenQuery(fieldMeta, plan.StringValues[packed.Param1], plan.StringValues[packed.Param2], forward: forward)
+            },
+            _ => ResolveClause(clause, exec, indexSearcher, plan, parameters, builderParams) // fallback
+        };
+    }
+
     private static IQueryMatch ResolveClause(ClauseInfo clause, ClauseExecution exec, IndexSearcher indexSearcher,
         QueryExecution plan, PlanParameters parameters = null, QueryBuilderParameters builderParams = null)
     {
@@ -2463,9 +2506,12 @@ internal static partial class QueryPlanBuilder
             return false;
         if (plan.Clauses == null || plan.Clauses.Count == 0 || plan.AllNegated)
             return false;
-        // Only ascending for now — descending requires backward iteration in the driving match
-        if (orderByFields[0].Ascending == false)
-            return false;
+        // Simple field direct scan is currently disabled — TermsProviderMatch materializes
+        // entries into a RoaringBitmap which iterates in entry-ID order, not field-value order.
+        // DirectScanMatch requires the driving match to produce entries in sort order.
+        // This needs a SortedIndexReader-style tree walker as the driving match.
+        // The compound field path works differently (it uses StartsWith + SortingMatch).
+        return false;
 
         var clauses = plan.Clauses;
         var execs = plan.Executions;
@@ -2531,10 +2577,12 @@ internal static partial class QueryPlanBuilder
         if (directCost >= bitmapCost && entriesToScan > QueryPrimitives.EntryScanCountThreshold)
             return false;
 
-        // Create the driving match — the range query on the sort field
+        // Create the driving match — the range query on the sort field, with correct direction.
+        // ResolveClause uses forward:true by default; for direct scan we need the sort direction.
         var drivingClause = clauses[drivingIdx];
         var drivingExec = execs[drivingIdx];
-        var drivingMatch = ResolveClause(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams);
+        bool forward = orderByFields[0].Ascending;
+        var drivingMatch = ResolveRangeClauseWithDirection(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams, forward);
 
         // Extract residual scan parameters
         ScanPredicateInfo[] residualArray = residualPreds.Count > 0 ? residualPreds.ToArray() : null;

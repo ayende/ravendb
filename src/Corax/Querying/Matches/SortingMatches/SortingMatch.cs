@@ -583,7 +583,8 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
                     return (ref TDirection it) => it.Seek(new DoubleLookupKey(doubleVal));
                 }
             }
-            // String seeks require CompactKey construction — not supported yet.
+            // String seeks are handled in GetReader() below where the CompactTree
+            // and its DictionaryId are available for CompactKey construction.
             return null;
         }
 
