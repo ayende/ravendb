@@ -535,7 +535,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
     /// The 8KB bitmap is already allocated; converting to Array allocates another buffer
     /// and scans 1024 words, costing more than it saves for short-lived data.
     /// </summary>
-    private void LazyOrWith(scoped ref RoaringBitmap other)
+    internal void LazyOrWith(scoped ref RoaringBitmap other)
     {
         if (other.IsEmpty)
             return;
