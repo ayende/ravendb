@@ -2376,6 +2376,12 @@ internal static partial class QueryPlanBuilder
                 return false;
         }
 
+        // Compound key trailing byte stores field1 length as a single byte.
+        // If the analyzed prefix exceeds 255 bytes, the compound key format can't represent it.
+        // Fall back to the bitmap pipeline which queries individual fields normally.
+        if (analyzedPrefix.Size > byte.MaxValue)
+            return false;
+
         IQueryMatch drivingMatch;
         if (field2RangeIdx >= 0)
         {
