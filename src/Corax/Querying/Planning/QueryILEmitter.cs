@@ -108,6 +108,10 @@ public static class QueryIlEmitter
         typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.ResolvedMatches));
     private static readonly FieldInfo CtxInRangeCounts =
         typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.InRangeCounts));
+    private static readonly FieldInfo CtxEntryScanScanned =
+        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.EntryScanEntriesScanned));
+    private static readonly FieldInfo CtxEntryScanPassed =
+        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.EntryScanEntriesPassed));
     private static readonly FieldInfo CtxTermsProviders =
         typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.TermsProviders));
 
@@ -571,6 +575,14 @@ public static class QueryIlEmitter
         il.Emit(OpCodes.Ldind_I8);
         il.Emit(OpCodes.Stloc, entryIdLocal);
 
+        // ctx.EntryScanEntriesScanned++
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Ldfld, CtxEntryScanScanned);
+        il.Emit(OpCodes.Ldc_I8, 1L);
+        il.Emit(OpCodes.Add);
+        il.Emit(OpCodes.Stfld, CtxEntryScanScanned);
+
         // reader = searcher.GetEntryTermsReader(entryId, ref lastPage, null)
         il.Emit(OpCodes.Ldarg_0);
         il.Emit(OpCodes.Ldfld, CtxSearcher);
@@ -666,7 +678,14 @@ public static class QueryIlEmitter
             }
         }
 
-        // All predicates passed — add to TempBitmap
+        // All predicates passed — increment counter and add to TempBitmap
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Ldfld, CtxEntryScanPassed);
+        il.Emit(OpCodes.Ldc_I8, 1L);
+        il.Emit(OpCodes.Add);
+        il.Emit(OpCodes.Stfld, CtxEntryScanPassed);
+
         EmitLoadBitmapRef(il, 1);
         il.Emit(OpCodes.Ldloc, entryIdLocal);
         il.Emit(OpCodes.Call, BitmapAdd);
