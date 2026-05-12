@@ -1780,7 +1780,10 @@ internal static partial class QueryPlanBuilder
             case ClauseType.AllIn:
             case ClauseType.StartsWith:
             case ClauseType.EndsWith:
-            case ClauseType.AndGroup: // AND-groups inside OR chains are handled at the bitmap level
+            case ClauseType.AndGroup:
+                // These are handled by DirectScanMatch's interpreted predicate path
+                // but not by the IL entry scan emitter. Return null here so the IL
+                // path falls through to the bitmap pipeline.
                 return null;
 
             case ClauseType.Exists:

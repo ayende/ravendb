@@ -235,6 +235,12 @@ public sealed class DirectScanMatch : IQueryMatch, IDisposable
 
     private bool EvaluatePredicate(ref EntryTermsReader reader, in ScanPredicateInfo pred)
     {
+        // StartsWith/EndsWith need to iterate all terms for the field (multi-value support)
+        if (pred.CompareOp == ScanCompareOp.StartsWith)
+            return CompiledQueryHelper.CheckFieldTermStartsWith(ref reader, _fieldRootPages[pred.ParamIndex], _sliceParams[pred.ParamIndex].AsReadOnlySpan());
+        if (pred.CompareOp == ScanCompareOp.EndsWith)
+            return CompiledQueryHelper.CheckFieldTermEndsWith(ref reader, _fieldRootPages[pred.ParamIndex], _sliceParams[pred.ParamIndex].AsReadOnlySpan());
+
         return pred.ValueType switch
         {
             ScanValueType.Long when pred.CompareOp == ScanCompareOp.Between =>
