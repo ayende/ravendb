@@ -712,6 +712,11 @@ public static class QueryIlEmitter
             case ScanValueType.Slice:
                 EmitSliceComparison(il, pred, readerLocal);
                 break;
+            default:
+                // Safety: Exists is handled before EmitSingleComparison is called.
+                // If we reach here with an unknown op, push false to fail the predicate.
+                il.Emit(OpCodes.Ldc_I4_0);
+                break;
         }
     }
 
