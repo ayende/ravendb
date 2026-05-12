@@ -26,9 +26,14 @@ public class CompiledQueryMatch(
     ByteStringContext allocator,
     bool wantTimings,
     CancellationToken token)
-    : IBitmapQueryMatch, IDisposable
+    : IBitmapQueryMatch, ISortSeekHint, IDisposable
 {
     private readonly QueryIlEmitter.CompiledExecuteDelegate _compiledDelegate = compiledPlan.CompiledDelegate;
+
+    // ISortSeekHint — set by the plan builder when WHERE field matches ORDER BY field
+    public string SeekFieldName { get; set; }
+    public object SeekValue { get; set; }
+    public bool SeekInclusive { get; set; }
     public readonly IQueryMatch[] ResolvedMatches = resolvedMatches;
     public readonly PostingSource[] PostingSources = postingSources;
     public readonly ITermsProvider[] TermsProviders = termsProviders;

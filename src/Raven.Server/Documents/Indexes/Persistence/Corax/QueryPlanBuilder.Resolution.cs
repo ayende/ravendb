@@ -2056,6 +2056,93 @@ internal static partial class QueryPlanBuilder
         }
     }
 
+    // ── Sort seek hint ────────────────────────────────────────────────────
+
+    /// <summary>If the first clause is a range predicate on the same field as the first
+    /// ORDER BY field, set a seek hint on the CompiledQueryMatch so SortedIndexReader
+    /// can skip walking irrelevant tree terms.</summary>
+    public static void TrySetSortSeekHint(global::Corax.Querying.Matches.CompiledQueryMatch match,
+        QueryExecution plan, OrderMetadata[] orderByFields)
+    {
+        if (orderByFields == null || orderByFields.Length == 0)
+            return;
+
+        var clauses = plan.Clauses;
+        var execs = plan.Executions;
+        if (clauses == null || clauses.Count == 0 || execs == null || execs.Length == 0)
+            return;
+
+        // Only consider the first ORDER BY field
+        var sortField = orderByFields[0].Field.FieldName;
+
+        // Find a range clause on the same field (scan all clauses, not just first — the sort-eligible
+        // clause may not be the cheapest and thus not clause[0]).
+        for (int i = 0; i < clauses.Count; i++)
+        {
+            var clause = clauses[i];
+            var exec = execs[i];
+
+            if (clause.FieldName != sortField.ToString())
+                continue;
+
+            // Only numeric range clauses for now (long/double)
+            if (clause.ClauseType is not (ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
+                or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between))
+                continue;
+
+            var packed = exec.PackedParamValue;
+            if (packed.IsNone)
+                continue;
+
+            // For ascending order: seek to the lower bound (GT/GTE value)
+            // For descending order: seek to the upper bound (LT/LTE value)
+            bool ascending = orderByFields[0].Ascending;
+            object seekValue = null;
+            bool inclusive = false;
+
+            if (ascending && clause.ClauseType is ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual)
+            {
+                seekValue = packed.ValueType switch
+                {
+                    PackedParam.TypeLong => (object)plan.LongValues[packed.Param1],
+                    PackedParam.TypeDouble => plan.DoubleValues[packed.Param1],
+                    _ => null
+                };
+                inclusive = clause.ClauseType == ClauseType.GreaterThanOrEqual;
+            }
+            else if (ascending == false && clause.ClauseType is ClauseType.LessThan or ClauseType.LessThanOrEqual)
+            {
+                seekValue = packed.ValueType switch
+                {
+                    PackedParam.TypeLong => (object)plan.LongValues[packed.Param1],
+                    PackedParam.TypeDouble => plan.DoubleValues[packed.Param1],
+                    _ => null
+                };
+                inclusive = clause.ClauseType == ClauseType.LessThanOrEqual;
+            }
+            else if (clause.ClauseType == ClauseType.Between)
+            {
+                // Between: seek to the lower bound for ASC, upper bound for DESC
+                int idx = ascending ? packed.Param1 : packed.Param2;
+                seekValue = packed.ValueType switch
+                {
+                    PackedParam.TypeLong => (object)plan.LongValues[idx],
+                    PackedParam.TypeDouble => plan.DoubleValues[idx],
+                    _ => null
+                };
+                inclusive = true; // Between is always inclusive on both sides
+            }
+
+            if (seekValue != null)
+            {
+                match.SeekFieldName = clause.FieldName;
+                match.SeekValue = seekValue;
+                match.SeekInclusive = inclusive;
+                return;
+            }
+        }
+    }
+
     // ── Sorting / Ordering ───────────────────────────────────────────────
 
     public static OrderMetadata[] GetSortMetadata(QueryBuilderParameters builderParameters, out bool hasEmpty)
