@@ -106,6 +106,8 @@ public static class QueryIlEmitter
         typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.SliceParams));
     private static readonly FieldInfo CtxResolvedMatches =
         typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.ResolvedMatches));
+    private static readonly FieldInfo CtxInRangeCounts =
+        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.InRangeCounts));
     private static readonly FieldInfo CtxTermsProviders =
         typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.TermsProviders));
 
@@ -352,13 +354,24 @@ public static class QueryIlEmitter
 
                 case PlanOpKind.OrRange:
                 {
-                    // for (int j = start; j < start+count; j++) Or(ctx, j, bitmapLocal);
-                    // Or on an empty bitmap acts as Fill — no separate Fill needed.
+                    // for (int j = start; j < start + ctx.InRangeCounts[rangeIdx]; j++) Or(ctx, j, bitmapLocal);
+                    // Count is read at runtime from ctx.InRangeCounts so the same compiled
+                    // delegate handles different IN parameter array sizes.
                     int start = op.ParamIndex;
-                    int count = op.ParamIndex2;
+                    int rangeIdx = op.ParamIndex2; // index into InRangeCounts
                     var loopVar = il.DeclareLocal(typeof(int));
+                    var endVar = il.DeclareLocal(typeof(int));
                     var loopCheck = il.DefineLabel();
                     var loopBody = il.DefineLabel();
+
+                    // endVar = start + ctx.InRangeCounts[rangeIdx]
+                    il.Emit(OpCodes.Ldc_I4, start);
+                    il.Emit(OpCodes.Ldarg_0);
+                    il.Emit(OpCodes.Ldfld, CtxInRangeCounts);
+                    EmitLdcI4(il, rangeIdx);
+                    il.Emit(OpCodes.Ldelem_I4);
+                    il.Emit(OpCodes.Add);
+                    il.Emit(OpCodes.Stloc, endVar);
 
                     il.Emit(OpCodes.Ldc_I4, start);
                     il.Emit(OpCodes.Stloc, loopVar);
@@ -378,21 +391,31 @@ public static class QueryIlEmitter
 
                     il.MarkLabel(loopCheck);
                     il.Emit(OpCodes.Ldloc, loopVar);
-                    il.Emit(OpCodes.Ldc_I4, start + count);
+                    il.Emit(OpCodes.Ldloc, endVar);
                     il.Emit(OpCodes.Blt, loopBody);
 
-                    explain.AppendLine($"for (i = {start}..{start + count}) Or(bitmap[{op.BitmapLocal}], {src}[i]);");
+                    explain.AppendLine($"for (i = {start}..{start}+InRangeCounts[{rangeIdx}]) Or(bitmap[{op.BitmapLocal}], {src}[i]);");
                     break;
                 }
 
                 case PlanOpKind.AndRange:
                 {
-                    // Emit a loop: for (int j = start; j < start + count; j++) { And(ctx, j); if empty → done; }
+                    // for (int j = start; j < start + ctx.InRangeCounts[rangeIdx]; j++) { And(ctx, j); if empty → done; }
                     int start = op.ParamIndex;
-                    int count = op.ParamIndex2;
+                    int rangeIdx = op.ParamIndex2; // index into InRangeCounts
                     var loopVar = il.DeclareLocal(typeof(int));
+                    var endVar = il.DeclareLocal(typeof(int));
                     var loopCheck = il.DefineLabel();
                     var loopBody = il.DefineLabel();
+
+                    // endVar = start + ctx.InRangeCounts[rangeIdx]
+                    il.Emit(OpCodes.Ldc_I4, start);
+                    il.Emit(OpCodes.Ldarg_0);
+                    il.Emit(OpCodes.Ldfld, CtxInRangeCounts);
+                    EmitLdcI4(il, rangeIdx);
+                    il.Emit(OpCodes.Ldelem_I4);
+                    il.Emit(OpCodes.Add);
+                    il.Emit(OpCodes.Stloc, endVar);
 
                     il.Emit(OpCodes.Ldc_I4, start);
                     il.Emit(OpCodes.Stloc, loopVar);
@@ -419,10 +442,10 @@ public static class QueryIlEmitter
 
                     il.MarkLabel(loopCheck);
                     il.Emit(OpCodes.Ldloc, loopVar);
-                    il.Emit(OpCodes.Ldc_I4, start + count);
+                    il.Emit(OpCodes.Ldloc, endVar);
                     il.Emit(OpCodes.Blt, loopBody);
 
-                    explain.AppendLine($"AndRange(bitmap[0], {src}[{start}..{start + count}]);");
+                    explain.AppendLine($"AndRange(bitmap[0], {src}[{start}..{start}+InRangeCounts[{rangeIdx}]]);");
                     break;
                 }
 

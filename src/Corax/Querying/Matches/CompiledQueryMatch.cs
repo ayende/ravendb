@@ -44,6 +44,12 @@ public class CompiledQueryMatch(
     public readonly double[] DoubleParams = doubleParams;
     public readonly Slice[] SliceParams = sliceParams;
     public readonly long[] FieldRootPages = fieldRootPages;
+
+    /// <summary>Per-execution term counts for OrRange/AndRange ops. Each range op
+    /// stores its index into this array instead of a hardcoded count in the IL.
+    /// Set during resolution — different executions of the same query can have
+    /// different IN term counts without needing different compiled delegates.</summary>
+    public int[] InRangeCounts;
     private readonly string _explainSource = compiledPlan.ExplainSource;
     public readonly IndexSearcher Searcher = searcher;
     public readonly CancellationToken Token = token;
