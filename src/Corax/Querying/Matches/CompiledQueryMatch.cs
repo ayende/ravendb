@@ -11,10 +11,13 @@ using Voron.Impl;
 
 namespace Corax.Querying.Matches;
 
+public sealed record SortHint(string FieldName, object Value, bool Inclusive);
+
 public class CompiledQueryMatch : IBitmapQueryMatch, IDisposable
 {
     private readonly QueryIlEmitter.CompiledExecuteDelegate _compiledDelegate;
     public readonly IQueryMatch[] ResolvedMatches;
+    public SortHint SortHint;
     public readonly TermSource[] TermSources;
     public readonly ITermsProvider[] TermsProviders;
     public readonly long[] LongParams;
