@@ -36,12 +36,12 @@ public static class ResidualScanIlEmitter
     /// <paramref name="explainSource"/> receives a human-readable pseudocode description
     /// of the predicates, matching the format used by <see cref="QueryILEmitter.EmitDelegate"/>.</summary>
     /// <summary>Emit without generating explain text (convenience overload).</summary>
-    public static ResidualScanPredicate EmitDelegate(ScanPredicateInfo[] predicates, bool multiValueStartsWith = false)
+    public static ResidualScanPredicate EmitDelegate(ScanPredicateInfo[] predicates)
     {
-        return EmitDelegate(predicates, out _, multiValueStartsWith);
+        return EmitDelegate(predicates, out _);
     }
 
-    public static ResidualScanPredicate EmitDelegate(ScanPredicateInfo[] predicates, out string explainSource, bool multiValueStartsWith = false)
+    public static ResidualScanPredicate EmitDelegate(ScanPredicateInfo[] predicates, out string explainSource)
     {
         if (predicates == null || predicates.Length == 0)
         {
@@ -118,7 +118,7 @@ public static class ResidualScanIlEmitter
             IlEmitterShared.EmitLdcI4(il, p);
             il.Emit(OpCodes.Ble, skip);
 
-            EmitPredicate(il, in predicates[p], failLabel, ref rootIdx, readerRefLocal, multiValueStartsWith);
+            EmitPredicate(il, in predicates[p], failLabel, ref rootIdx, readerRefLocal);
 
             il.MarkLabel(skip);
         }
@@ -183,8 +183,7 @@ public static class ResidualScanIlEmitter
         in ScanPredicateInfo pred,
         Label failLabel,
         ref int rootIdx,
-        LocalBuilder readerRefLocal,
-        bool multiValueStartsWith = false)
+        LocalBuilder readerRefLocal)
     {
         if (pred.SubPredicates != null)
         {
@@ -194,7 +193,7 @@ public static class ResidualScanIlEmitter
                 for (int b = 0; b < pred.SubPredicates.Length; b++)
                 {
                     var nextSub = il.DefineLabel();
-                    EmitLeafPredicate(il, in pred.SubPredicates[b], nextSub, rootIdx, readerRefLocal, multiValueStartsWith);
+                    EmitLeafPredicate(il, in pred.SubPredicates[b], nextSub, rootIdx, readerRefLocal);
                     il.Emit(OpCodes.Br, groupPassed);
                     il.MarkLabel(nextSub);
                     rootIdx++;
@@ -206,14 +205,14 @@ public static class ResidualScanIlEmitter
             {
                 for (int b = 0; b < pred.SubPredicates.Length; b++)
                 {
-                    EmitLeafPredicate(il, in pred.SubPredicates[b], failLabel, rootIdx, readerRefLocal, multiValueStartsWith);
+                    EmitLeafPredicate(il, in pred.SubPredicates[b], failLabel, rootIdx, readerRefLocal);
                     rootIdx++;
                 }
             }
             return;
         }
 
-        EmitLeafPredicate(il, in pred, failLabel, rootIdx, readerRefLocal, multiValueStartsWith);
+        EmitLeafPredicate(il, in pred, failLabel, rootIdx, readerRefLocal);
         rootIdx++;
     }
 
@@ -222,8 +221,7 @@ public static class ResidualScanIlEmitter
         in ScanPredicateInfo pred,
         Label failLabel,
         int rootIdx,
-        LocalBuilder readerRefLocal,
-        bool multiValueStartsWith = false)
+        LocalBuilder readerRefLocal)
     {
         var nextPredicate = il.DefineLabel();
         var foundLabel = il.DefineLabel();
@@ -250,13 +248,13 @@ public static class ResidualScanIlEmitter
                 il.Emit(OpCodes.Brtrue, foundLabel);
                 il.Emit(OpCodes.Br, nextPredicate);
                 il.MarkLabel(foundLabel);
-                EmitTypedComparison(il, in pred, rootIdx, readerRefLocal, multiValueStartsWith);
+                EmitTypedComparison(il, in pred, rootIdx, readerRefLocal);
                 il.Emit(OpCodes.Brtrue, failLabel);
                 break;
 
             default:
                 il.Emit(OpCodes.Brfalse, failLabel);
-                EmitTypedComparison(il, in pred, rootIdx, readerRefLocal, multiValueStartsWith);
+                EmitTypedComparison(il, in pred, rootIdx, readerRefLocal);
                 il.Emit(OpCodes.Brfalse, failLabel);
                 break;
         }
@@ -268,52 +266,32 @@ public static class ResidualScanIlEmitter
         ILGenerator il,
         in ScanPredicateInfo pred,
         int rootIdx,
-        LocalBuilder readerRefLocal,
-        bool multiValueStartsWith = false)
+        LocalBuilder readerRefLocal)
     {
         _ = rootIdx;
 
         if (pred.CompareOp == ScanCompareOp.StartsWith)
         {
-            if (multiValueStartsWith)
-            {
-                // Multi-value: iterate ALL terms for the field (DirectScanMatch semantics)
-                il.Emit(OpCodes.Ldloc, readerRefLocal);
-                il.Emit(OpCodes.Ldarg_0);
-                il.Emit(OpCodes.Callvirt, IlEmitterShared.CtxFieldRootPages);
-                IlEmitterShared.EmitLdcI4(il, rootIdx);
-                il.Emit(OpCodes.Ldelem_I8);
-                EmitLoadSliceSpan(il, pred.ParamIndex);
-                il.Emit(OpCodes.Call, IlEmitterShared.CheckFieldTermStartsWith);
-            }
-            else
-            {
-                // Single-term: compare against current decoded term (CompiledQueryMatch semantics)
-                EmitLoadReaderDecodedSlice(il, readerRefLocal);
-                EmitLoadSliceSpan(il, pred.ParamIndex);
-                il.Emit(OpCodes.Call, IlEmitterShared.SliceStartsWithHelper);
-            }
+            // Multi-term: iterate ALL field terms — correct for both entry-scan and direct-scan
+            il.Emit(OpCodes.Ldloc, readerRefLocal);
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Callvirt, IlEmitterShared.CtxFieldRootPages);
+            IlEmitterShared.EmitLdcI4(il, rootIdx);
+            il.Emit(OpCodes.Ldelem_I8);
+            EmitLoadSliceSpan(il, pred.ParamIndex);
+            il.Emit(OpCodes.Call, IlEmitterShared.CheckFieldTermStartsWith);
             return;
         }
 
         if (pred.CompareOp == ScanCompareOp.EndsWith)
         {
-            if (multiValueStartsWith)
-            {
-                il.Emit(OpCodes.Ldloc, readerRefLocal);
-                il.Emit(OpCodes.Ldarg_0);
-                il.Emit(OpCodes.Callvirt, IlEmitterShared.CtxFieldRootPages);
-                IlEmitterShared.EmitLdcI4(il, rootIdx);
-                il.Emit(OpCodes.Ldelem_I8);
-                EmitLoadSliceSpan(il, pred.ParamIndex);
-                il.Emit(OpCodes.Call, IlEmitterShared.CheckFieldTermEndsWith);
-            }
-            else
-            {
-                EmitLoadReaderDecodedSlice(il, readerRefLocal);
-                EmitLoadSliceSpan(il, pred.ParamIndex);
-                il.Emit(OpCodes.Call, IlEmitterShared.SliceEndsWithHelper);
-            }
+            il.Emit(OpCodes.Ldloc, readerRefLocal);
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Callvirt, IlEmitterShared.CtxFieldRootPages);
+            IlEmitterShared.EmitLdcI4(il, rootIdx);
+            il.Emit(OpCodes.Ldelem_I8);
+            EmitLoadSliceSpan(il, pred.ParamIndex);
+            il.Emit(OpCodes.Call, IlEmitterShared.CheckFieldTermEndsWith);
             return;
         }
 
