@@ -27,7 +27,7 @@ public enum PlanOpKind : byte
     LazyOrWithPostings,
 
     /// <summary>Finalize a bitmap that was built with <see cref="LazyOrWithPostings"/>.
-    /// Calls RoaringBitmap.RepairAfterBulkAdd to merge deferred containers.</summary>
+    /// Calls RoaringBitmap.RepairAfterLazy to reconcile deferred containers.</summary>
     RepairAfterLazy,
 
     /// <summary>Heuristic check: if bitmap[0].Count is small enough relative to the
@@ -63,12 +63,12 @@ public enum PlanOpKind : byte
     SwapBitmaps,
 
     /// <summary>OR a contiguous range of posting sources into bitmap[BitmapLocal].
-    /// ParamIndex = start index, ParamIndex2 = count. Emits a loop in IL.
+    /// ParamIndex = start index, ParamIndex2 = index into ctx.InRangeCounts for runtime count. Emits a loop in IL.
     /// Used for IN clauses to avoid one PlanOp per term.</summary>
     OrRange,
 
     /// <summary>AND a contiguous range of posting sources with bitmap[0].
-    /// ParamIndex = start index, ParamIndex2 = count. Emits a loop in IL with
+    /// ParamIndex = start index, ParamIndex2 = index into ctx.InRangeCounts for runtime count. Emits a loop in IL with
     /// empty-check after each (unless SkipEarlyExit). Used for AllIn clauses.</summary>
     AndRange,
 }

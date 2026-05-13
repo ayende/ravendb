@@ -22,10 +22,6 @@ public static class QueryIlEmitter
     // CompiledQueryMatch fields (accessed by emitted IL)
     private static readonly FieldInfo CtxBitmaps = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Bitmaps));
     private static readonly FieldInfo CtxTermSources = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.PostingSources));
-    private static readonly FieldInfo CtxLlt = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Llt));
-    private static readonly FieldInfo CtxSearcher = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Searcher));
-    private static readonly FieldInfo CtxToken = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Token));
-    private static readonly FieldInfo CtxEntryScanTakenAtOp = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.EntryScanTakenAtOp));
     private static readonly FieldInfo CtxLimit = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Limit));
 
     // Timing helpers
@@ -68,64 +64,29 @@ public static class QueryIlEmitter
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.PrepareForReading), Type.EmptyTypes)!;
     private static readonly MethodInfo GetIterator =
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.GetIterator), Type.EmptyTypes)!;
-    private static readonly MethodInfo BitmapAdd =
-        typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.Add), [typeof(long)])!;
 
-    // RoaringBitmapIterator
-    private static readonly MethodInfo IterFill =
-        typeof(RoaringBitmapIterator).GetMethod(nameof(RoaringBitmapIterator.Fill),
-            [typeof(RoaringBitmap).MakeByRefType(), typeof(Span<long>)])!;
-    private static readonly MethodInfo IterDispose = typeof(RoaringBitmapIterator).GetMethod(nameof(RoaringBitmapIterator.Dispose))!;
 
     // CancellationToken
     private static readonly MethodInfo ThrowIfCancelled = typeof(CancellationToken).GetMethod(nameof(CancellationToken.ThrowIfCancellationRequested))!;
 
     // Span<long>
     private static readonly ConstructorInfo SpanCtor = typeof(Span<long>).GetConstructor([typeof(void*), typeof(int)])!;
-    private static readonly MethodInfo SpanLongIndexer = typeof(Span<long>).GetProperty("Item")!.GetGetMethod()!;
-
     // IndexSearcher — for entry scan
     private static readonly MethodInfo GetEntryTermsReader =
         typeof(IndexSearcher).GetMethod(nameof(IndexSearcher.GetEntryTermsReader),
             [typeof(long), typeof(Page).MakeByRefType(), typeof(CompactKey)])!;
 
-    // EntryTermsReader
-    private static readonly MethodInfo ReaderReset = typeof(EntryTermsReader).GetMethod(nameof(EntryTermsReader.Reset))!;
-    private static readonly MethodInfo ReaderFindNext = typeof(EntryTermsReader).GetMethod(nameof(EntryTermsReader.FindNext))!;
-
-    // EntryTermsReader numeric fields — for direct comparison
-    private static readonly FieldInfo ReaderCurrentLong = typeof(EntryTermsReader).GetField(nameof(EntryTermsReader.CurrentLong))!;
-    private static readonly FieldInfo ReaderCurrentDouble = typeof(EntryTermsReader).GetField(nameof(EntryTermsReader.CurrentDouble))!;
-
     // CompiledQueryMatch typed parameter arrays
-    private static readonly FieldInfo CtxFieldRootPages =
-        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.FieldRootPages));
-    private static readonly FieldInfo CtxLongParams =
-        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.LongParams));
-    private static readonly FieldInfo CtxDoubleParams =
-        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.DoubleParams));
-    private static readonly FieldInfo CtxSliceParams =
-        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.SliceParams));
     private static readonly FieldInfo CtxResolvedMatches =
         typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.ResolvedMatches));
     private static readonly FieldInfo CtxInRangeCounts =
         typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.InRangeCounts));
-    private static readonly FieldInfo CtxEntryScanScanned =
-        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.EntryScanEntriesScanned));
-    private static readonly FieldInfo CtxEntryScanPassed =
-        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.EntryScanEntriesPassed));
     private static readonly FieldInfo CtxTermsProviders =
         typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.TermsProviders));
 
     // CompactKey.Decoded() → ReadOnlySpan<byte>
-    private static readonly FieldInfo ReaderCurrent =
-        typeof(EntryTermsReader).GetField(nameof(EntryTermsReader.Current))!;
     private static readonly MethodInfo CompactKeyDecoded =
         typeof(CompactKey).GetMethod(nameof(CompactKey.Decoded), Type.EmptyTypes)!;
-
-    // Slice.AsReadOnlySpan() → ReadOnlySpan<byte>
-    private static readonly MethodInfo SliceAsReadOnlySpan =
-        typeof(Slice).GetMethod(nameof(Slice.AsReadOnlySpan))!;
 
     // Ctx-based entry points — take ref CompiledQueryMatch, IL just pushes ldarg.0 + int constants
     private static readonly MethodInfo CtxFillFromPostingSource = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxFillFromPostingSource))!;
