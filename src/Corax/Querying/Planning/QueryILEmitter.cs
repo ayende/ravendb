@@ -78,6 +78,10 @@ public static class QueryIlEmitter
         typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.InRangeCounts));
     private static readonly FieldInfo CtxTermsProviders =
         typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.TermsProviders));
+    private static readonly FieldInfo CtxEntryScanTakenAtOp =
+        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.EntryScanTakenAtOp));
+    private static readonly FieldInfo CtxToken =
+        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Token));
 
     // CompactKey.Decoded() → ReadOnlySpan<byte>
     private static readonly MethodInfo CompactKeyDecoded =

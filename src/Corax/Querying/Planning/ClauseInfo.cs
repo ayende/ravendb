@@ -1,4 +1,7 @@
+using System;
 using System.Collections.Generic;
+using Sparrow;
+using Sparrow.Json;
 
 namespace Corax.Querying.Planning;
 
@@ -49,7 +52,9 @@ public sealed class ClauseInfo
     /// boost factor binding and exec.BoostFactor is resolved from it per-execution.</summary>
     public bool HasBoost;
 
-    /// <summary>Index into ClauseTemplate.WhenConditions, or -1 if no WHEN wraps this clause.
-    /// The condition is evaluated per-execution in PopulateClauseValues.</summary>
-    public int WhenConditionIndex = -1;
+    /// <summary>Optional WHEN condition delegate. Null when no WHEN wraps this clause.
+    /// Created at ParseTemplate time as a closure over the parsed condition expression.
+    /// Evaluated per-execution in BuildAndCompile: called with the query's BlittableJsonReaderObject
+    /// parameters; returns true to keep the clause, false to eliminate it.</summary>
+    public Func<BlittableJsonReaderObject, bool> WhenCondition;
 }

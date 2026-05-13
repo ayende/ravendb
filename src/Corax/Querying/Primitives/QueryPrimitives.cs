@@ -484,7 +484,8 @@ public static class QueryPrimitives
     private static void MaterializeTermSourceIntoBitmap(
         ref Planning.PostingSource source,
         LowLevelTransaction llt,
-        ref RoaringBitmap tempBitmap)
+        ref RoaringBitmap tempBitmap,
+        long limit = long.MaxValue)
     {
         tempBitmap.Clear();
         switch (source.Kind)

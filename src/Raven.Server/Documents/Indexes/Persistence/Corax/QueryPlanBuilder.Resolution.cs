@@ -79,20 +79,15 @@ internal static partial class QueryPlanBuilder
         }
 
         // Step 2b: Evaluate WHEN conditions and eliminate inactive clauses
-        if (template.WhenConditions != null)
+        for (int ci = clauses.Count - 1; ci >= 0; ci--)
         {
-            for (int ci = clauses.Count - 1; ci >= 0; ci--)
+            var whenCondition = clauses[ci].WhenCondition;
+            if (whenCondition == null)
+                continue;
+            if (whenCondition(planParams.QueryParameters) == false)
             {
-                int whenIdx = clauses[ci].WhenConditionIndex;
-                if (whenIdx < 0)
-                    continue;
-                var conditionExpr = (Raven.Server.Documents.Queries.AST.BinaryExpression)template.WhenConditions[whenIdx];
-                bool conditionResult = QueryBuilderHelper.EvaluateConstantExpressionForWhenQuery(conditionExpr, planParams.QueryParameters);
-                if (conditionResult == false)
-                {
-                    clauses.RemoveAt(ci);
-                    execList.RemoveAt(ci);
-                }
+                clauses.RemoveAt(ci);
+                execList.RemoveAt(ci);
             }
         }
 
