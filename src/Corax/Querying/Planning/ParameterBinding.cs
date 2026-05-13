@@ -14,4 +14,9 @@ public sealed class ParameterBinding
 
     /// <summary>For parameters: name to look up in blittable ("p0"). Null for literals.</summary>
     public string ParameterName;
+
+    /// <summary>For deferred method expressions (e.g. cmpxchg(), now(), today()) that must
+    /// be resolved at execution time rather than template creation time. Stored as object
+    /// to avoid a dependency on the Raven.Server AST types from the Corax layer.</summary>
+    public object DeferredExpression;
 }

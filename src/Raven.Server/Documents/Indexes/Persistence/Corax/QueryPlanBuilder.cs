@@ -871,17 +871,25 @@ internal static partial class QueryPlanBuilder
 
     /// <summary>Build a ParameterBinding from a query expression. For parameters, captures only the
     /// name (value resolved later by PopulateParameters). For literals, resolves and caches the
-    /// constant value since it never changes.</summary>
+    /// constant value since it never changes. For method expressions (cmpxchg, now, today),
+    /// stores the expression for deferred resolution at execution time.</summary>
     private static ParameterBinding CreateBinding(QueryExpression expr, BlittableJsonReaderObject queryParameters)
     {
+        if (expr is MethodExpression me)
+        {
+            // Method expressions like cmpxchg(), now(), today() must be resolved at execution
+            // time (not template creation time) because their values can change between executions.
+            return new ParameterBinding { DeferredExpression = me, LiteralType = ParamValueType.String };
+        }
+
         if (expr is not ValueExpression ve)
             return null;
 
         if (ve.Value == ValueTokenType.Parameter)
             return new ParameterBinding { ParameterName = ve.Token.Value, LiteralType = ParamValueType.Parameter };
-        
+
         var value = ve.GetValue(queryParameters);
-        
+
         if (ve.Value == ValueTokenType.Null || value is null)
             return new ParameterBinding { LiteralValue = null, LiteralType = ParamValueType.String };
         if (value is bool b)

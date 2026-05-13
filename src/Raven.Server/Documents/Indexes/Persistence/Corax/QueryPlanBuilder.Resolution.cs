@@ -64,7 +64,10 @@ internal static partial class QueryPlanBuilder
         var planCache = indexSearcher.PlanCache;
 
         // Step 1: Get or build the clause template (structural, no values)
-        var template = planCache.TryGetTemplate(queryText) ?? ParseTemplate(planParams);
+        // Skip template cache when the query uses cmpxchg() — the resolved CmpXchg value
+        // is stored in the template's ParameterBinding and can change between executions.
+        var template = (planParams.Metadata.HasCmpXchg ? null : planCache.TryGetTemplate(queryText))
+                       ?? ParseTemplate(planParams);
 
         // Step 2: Create per-execution state for each clause (template is immutable, not cloned)
         var clauses = new List<ClauseInfo>(template.Clauses.Length);
@@ -78,7 +81,7 @@ internal static partial class QueryPlanBuilder
         // Step 3: Populate parameter values into typed arrays
         var writer = new ValueWriter();
         for (int ci = 0; ci < clauses.Count; ci++)
-            PopulateClauseValues(clauses[ci], execList[ci], planParams.QueryParameters, writer);
+            PopulateClauseValues(clauses[ci], execList[ci], planParams.QueryParameters, writer, builderParameters);
 
         // Step 4: Estimate cardinality (needs populated values)
         for (int ci = 0; ci < clauses.Count; ci++)
@@ -162,7 +165,7 @@ internal static partial class QueryPlanBuilder
                 {
                     var sc = template.SpatialClauses[si];
                     var scExec = new ClauseExecution();
-                    PopulateClauseValues(sc, scExec, planParams.QueryParameters, writer);
+                    PopulateClauseValues(sc, scExec, planParams.QueryParameters, writer, builderParameters);
                     spatialList.Add(sc);
                     spatialExecs[si] = scExec;
                 }
@@ -174,7 +177,7 @@ internal static partial class QueryPlanBuilder
                 {
                     var vc = template.VectorClauses[vi];
                     var vcExec = new ClauseExecution();
-                    PopulateClauseValues(vc, vcExec, planParams.QueryParameters, writer);
+                    PopulateClauseValues(vc, vcExec, planParams.QueryParameters, writer, builderParameters);
                     vectorList.Add(vc);
                     vectorExecs[vi] = vcExec;
                 }
@@ -270,7 +273,7 @@ internal static partial class QueryPlanBuilder
         for (int ci = 0; ci < clauses.Count; ci++)
         {
             subExecs[ci] = CreateExecution(clauses[ci]);
-            PopulateClauseValues(clauses[ci], subExecs[ci], builderParams.QueryParameters, writer);
+            PopulateClauseValues(clauses[ci], subExecs[ci], builderParams.QueryParameters, writer, builderParams);
         }
 
         var subPlan = new QueryExecution
@@ -328,16 +331,17 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>Resolve a single clause's parameter value using its cached binding.
-    /// Called for each clause during parameter population (both first execution and cache hit).</summary>
-    private static void PopulateClauseValues(ClauseInfo clause, ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer)
+    /// Called for each clause during parameter population (both first execution and cache hit).
+    /// The optional builderParameters is needed to resolve deferred method expressions (cmpxchg, now, today).</summary>
+    private static void PopulateClauseValues(ClauseInfo clause, ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, QueryBuilderParameters builderParameters = null)
     {
         // Always recurse into subclauses first (OrGroup/AndGroup have no binding of their own)
         if (clause.OrSubClauses != null && exec.OrSubExecutions != null)
             for (int si = 0; si < clause.OrSubClauses.Count; si++)
-                PopulateClauseValues(clause.OrSubClauses[si], exec.OrSubExecutions[si], queryParameters, writer);
+                PopulateClauseValues(clause.OrSubClauses[si], exec.OrSubExecutions[si], queryParameters, writer, builderParameters);
         if (clause.AndSubClauses != null && exec.AndSubExecutions != null)
             for (int si = 0; si < clause.AndSubClauses.Count; si++)
-                PopulateClauseValues(clause.AndSubClauses[si], exec.AndSubExecutions[si], queryParameters, writer);
+                PopulateClauseValues(clause.AndSubClauses[si], exec.AndSubExecutions[si], queryParameters, writer, builderParameters);
 
         // Resolve boost factor if this clause is boosted
         if (clause.HasBoost && clause.Bindings is { Length: > 0 })
@@ -364,8 +368,8 @@ internal static partial class QueryPlanBuilder
         {
             // BETWEEN: two values at Bindings[0] (low) and Bindings[1] (high)
             case ClauseType.Between:
-                var (low, lowType) = ResolveBindingScalar(bindings[BindingIndex.BetweenLow], queryParameters);
-                var (high, _) = ResolveBindingScalar(bindings[BindingIndex.BetweenHigh], queryParameters);
+                var (low, lowType) = ResolveBindingScalar(bindings[BindingIndex.BetweenLow], queryParameters, builderParameters);
+                var (high, _) = ResolveBindingScalar(bindings[BindingIndex.BetweenHigh], queryParameters, builderParameters);
                 exec.TermValueType = lowType;
                 exec.PackedParamValue = writer.AddPair(low, high, ToValueTokenType(lowType));
                 return;
@@ -375,7 +379,7 @@ internal static partial class QueryPlanBuilder
                 break;
             default:
                 // Simple clause (Equals, Range, Search, Regex, etc.): single value at Bindings[0]
-                var (value, valueType) = ResolveBindingScalar(bindings[BindingIndex.Value], queryParameters);
+                var (value, valueType) = ResolveBindingScalar(bindings[BindingIndex.Value], queryParameters, builderParameters);
                 exec.TermValueType = valueType;
                 exec.PackedParamValue = writer.Add(value, ToValueTokenType(valueType));
                 break;
@@ -599,9 +603,37 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>Resolve a binding to a scalar value. Asserts the result is not an array/object.
-    /// For parameters that might be arrays, use ResolveBindingRaw and handle arrays first.</summary>
-    private static (object Value, ParamValueType Type) ResolveBindingScalar(ParameterBinding binding, BlittableJsonReaderObject queryParameters)
+    /// For parameters that might be arrays, use ResolveBindingRaw and handle arrays first.
+    /// The optional builderParameters is needed to resolve deferred method expressions (cmpxchg, now, today).</summary>
+    private static (object Value, ParamValueType Type) ResolveBindingScalar(ParameterBinding binding, BlittableJsonReaderObject queryParameters, QueryBuilderParameters builderParameters = null)
     {
+        // Handle deferred method expressions (cmpxchg, now, today) — resolve at execution time
+        if (binding.DeferredExpression is MethodExpression methodExpr)
+        {
+            var resolved = QueryBuilderHelper.EvaluateMethod(
+                builderParameters.Query.Metadata.Query,
+                builderParameters.Metadata,
+                builderParameters.ServerContext,
+                builderParameters.DocumentsContext.DocumentDatabase.CompareExchangeStorage,
+                methodExpr,
+                queryParameters,
+                builderParameters.QueryTime);
+
+            // EvaluateMethod returns a ValueExpression — extract its value
+            if (resolved is ValueExpression ve)
+            {
+                if (ve.Value == ValueTokenType.Null)
+                    return (null, ParamValueType.Null);
+                var value = ve.GetValue(queryParameters);
+                if (value == null)
+                    return (null, ParamValueType.Null);
+                var (val, valType) = ResolveParameterValue(value);
+                return (val, ToParamValueType(valType));
+            }
+
+            return (null, ParamValueType.Null);
+        }
+
         if (binding.LiteralType != ParamValueType.Parameter)
             return (binding.LiteralValue, binding.LiteralType);
         if (queryParameters != null && queryParameters.TryGet(binding.ParameterName, out object raw) && raw != null)
