@@ -311,7 +311,8 @@ public static class QueryIlEmitter
                     needsLazyRepair = true;
                     explain.AppendLine($"bitmap[{op.BitmapLocal}].LazyOrWith(bitmap[{op.ParamIndex2}]);");
                     // Skip Count-based limit check — Count is unreliable with lazy cardinality.
-                    // The limit will be checked after RepairAfterLazy.
+                    // RepairAfterLazy recomputes counts; the limit is enforced after plan execution
+                    // when Fill checks the result count against ctx.Limit.
                     break;
 
                 case PlanOpKind.SwapBitmaps:

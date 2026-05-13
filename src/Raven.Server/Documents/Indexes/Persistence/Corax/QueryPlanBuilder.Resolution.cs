@@ -1567,10 +1567,9 @@ internal static partial class QueryPlanBuilder
     {
         if (pred.SubPredicates != null)
         {
-            // Each OrBranch corresponds to a subclause of the OrGroup.
-            // Pass subclauses positionally to avoid the same field-name ambiguity.
-            List<ClauseInfo> subClauses = clause?.OrSubClauses;
-            ClauseExecution[] subExecs = exec?.OrSubExecutions;
+            // Handle both AndGroup and OrGroup based on the Group discriminator.
+            List<ClauseInfo> subClauses = pred.Group == GroupKind.Or ? clause?.OrSubClauses : clause?.AndSubClauses;
+            ClauseExecution[] subExecs = pred.Group == GroupKind.Or ? exec?.OrSubExecutions : exec?.AndSubExecutions;
             for (int b = 0; b < pred.SubPredicates.Length; b++)
             {
                 ClauseInfo subClause = (subClauses != null && b < subClauses.Count) ? subClauses[b] : null;

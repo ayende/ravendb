@@ -5,8 +5,9 @@ public sealed class CompiledPlan
     /// <summary>IL-emitted delegate that executes the posting-list scan plan (no timing instrumentation).</summary>
     public QueryIlEmitter.CompiledExecuteDelegate CompiledDelegate { get; init; }
 
-    /// <summary>IL-emitted delegate with per-op timing instrumentation. Compiled lazily on
-    /// first `include timings()` request. Null until then.</summary>
+    /// <summary>IL-emitted delegate with per-op timing instrumentation.
+    /// Always emitted (alongside <see cref="CompiledDelegate"/>) when a plan is built.
+    /// Not lazily compiled — see <see cref="CompiledQueryMatch"/> for the wantTimings toggle.</summary>
     public QueryIlEmitter.CompiledExecuteDelegate CompiledTimedDelegate { get; set; }
 
     /// <summary>IL-emitted per-entry predicate evaluator used by the entry-scan path.

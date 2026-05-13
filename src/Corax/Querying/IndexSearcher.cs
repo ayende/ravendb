@@ -106,7 +106,7 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     private long _dictionaryId;
     private Lookup<Int64LookupKey> _entryIdToLocation;
     public FieldsCache FieldCache;
-    /// <summary>Query plan cache. When null (default), a fresh instance is created.
+    /// <summary>Query plan cache. Initialized to a fresh instance per IndexSearcher.
     /// Set externally to share compiled plans across IndexSearcher instances
     /// (e.g., per-index-instance lifetime via CoraxIndexPersistence).</summary>
     public Planning.PlanCache PlanCache { get; set; } = new();

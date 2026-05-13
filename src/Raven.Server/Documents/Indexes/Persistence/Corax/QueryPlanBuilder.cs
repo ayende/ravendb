@@ -1773,12 +1773,6 @@ internal static partial class QueryPlanBuilder
         // Complex clauses can't be entry-scanned
         switch (clause.ClauseType)
         {
-            case ClauseType.Search:
-            case ClauseType.Regex:
-            case ClauseType.Spatial:
-            case ClauseType.Vector:
-            case ClauseType.In:
-            case ClauseType.AllIn:
             case ClauseType.StartsWith:
             {
                 var packed2 = exec?.PackedParamValue ?? PackedParam.None;
