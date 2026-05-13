@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Voron.Data.RoaringBitmaps;
 using Sparrow.Server;
 using Sparrow.Threading;
@@ -1217,6 +1218,194 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         result.Dispose();
         a.Dispose();
         b.Dispose();
+    }
+
+    #endregion
+
+    #region Exhaustive Primitive Compatibility (replacement for deleted Primitives.cs 256^3 test)
+
+    /// <summary>Verify AND/OR/ANDNOT produce correct results for every combination of
+    /// container types (empty, sparse array, dense bitmap, range, cross-container).
+    /// Uses a reference HashSet to compare against RoaringBitmap set operations.</summary>
+    [RavenFact(RavenTestCategory.Corax)]
+    public void ExhaustiveSetOpCompatibility()
+    {
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+        var rng = new Random(42);
+
+        // Build bitmaps with different container configurations
+        var configs = new (string Name, long[] Values)[]
+        {
+            ("Empty", []),
+            ("SingleValue", [42]),
+            ("SparseArray_Small", GenerateValues(rng, 10, 0, 65535)),
+            ("SparseArray_Medium", GenerateValues(rng, 500, 0, 65535)),
+            ("DenseBitmap", GenerateValues(rng, 5000, 0, 65535)),
+            ("FullRange", Enumerable.Range(0, 1000).Select(x => (long)x).ToArray()),
+            ("TwoContainers_Sparse", GenerateValues(rng, 100, 0, 131071)),
+            ("TwoContainers_Dense", GenerateValues(rng, 8000, 0, 131071)),
+            ("HighValues", GenerateValues(rng, 200, 100000, 200000)),
+            ("Scattered", [0L, 100, 65535, 65536, 131071, 200000]),
+        };
+
+        int failures = 0;
+        foreach (var left in configs)
+        {
+            foreach (var right in configs)
+            {
+                // AND
+                if (VerifySetOp("AND", left, right, ctx,
+                    (a, b) => { var r = And(ctx, a, b); return r; },
+                    (a, b) => new HashSet<long>(a.Intersect(b))) == false)
+                    failures++;
+
+                // OR
+                if (VerifySetOp("OR", left, right, ctx,
+                    (a, b) => Or(ctx, a, b),
+                    (a, b) => new HashSet<long>(a.Union(b))) == false)
+                    failures++;
+
+                // ANDNOT
+                if (VerifySetOp("ANDNOT", left, right, ctx,
+                    (a, b) => AndNot(ctx, a, b),
+                    (a, b) => new HashSet<long>(a.Except(b))) == false)
+                    failures++;
+            }
+        }
+
+        Assert.Equal(0, failures);
+    }
+
+    private static long[] GenerateValues(Random rng, int count, long min, long max)
+    {
+        var set = new HashSet<long>();
+        while (set.Count < count)
+            set.Add(min + (long)(rng.NextDouble() * (max - min)));
+        var arr = set.ToArray();
+        Array.Sort(arr);
+        return arr;
+    }
+
+    private static bool VerifySetOp(string opName, (string Name, long[] Values) left, (string Name, long[] Values) right,
+        ByteStringContext ctx,
+        Func<RoaringBitmap, RoaringBitmap, RoaringBitmap> bitmapOp,
+        Func<long[], long[], HashSet<long>> referenceOp)
+    {
+        RoaringBitmap a = new(ctx);
+        RoaringBitmap b = new(ctx);
+        foreach (long v in left.Values) a.Add(v);
+        foreach (long v in right.Values) b.Add(v);
+        a.PrepareForReading();
+        b.PrepareForReading();
+
+        RoaringBitmap result;
+        try
+        {
+            result = bitmapOp(a, b);
+        }
+        catch (Exception ex)
+        {
+            Assert.Fail($"{opName}({left.Name}, {right.Name}) threw: {ex.Message}");
+            return false;
+        }
+
+        var expected = referenceOp(left.Values, right.Values);
+        bool ok = true;
+
+        if (result.Count != expected.Count)
+        {
+            Assert.Fail($"{opName}({left.Name}, {right.Name}): count {result.Count} != expected {expected.Count}");
+            ok = false;
+        }
+
+        foreach (long v in expected)
+        {
+            if (result.Contains(v) == false)
+            {
+                Assert.Fail($"{opName}({left.Name}, {right.Name}): missing value {v}");
+                ok = false;
+                break;
+            }
+        }
+
+        result.Dispose();
+        a.Dispose();
+        b.Dispose();
+        return ok;
+    }
+
+    [RavenTheory(RavenTestCategory.Corax)]
+    [InlineDataWithRandomSeed]
+    public void ExhaustiveSetOpCompatibility_RandomSeed(int seed)
+    {
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+        var rng = new Random(seed);
+
+        var configs = new (string Name, long[] Values)[]
+        {
+            ("Empty", []),
+            ("SingleValue", [rng.NextInt64(0, 100000)]),
+            ("SparseArray", GenerateValues(rng, 10, 0, 65535)),
+            ("MediumArray", GenerateValues(rng, 500, 0, 65535)),
+            ("DenseBitmap", GenerateValues(rng, 5000, 0, 65535)),
+            ("FullRange", Enumerable.Range(rng.Next(0, 1000), 1000).Select(x => (long)x).ToArray()),
+            ("TwoContainers", GenerateValues(rng, 200, 0, 131071)),
+            ("HighValues", GenerateValues(rng, 200, 100000, 200000)),
+        };
+
+        int failures = 0;
+        foreach (var left in configs)
+        foreach (var right in configs)
+        {
+            if (VerifySetOp("AND", left, right, ctx, (a, b) => And(ctx, a, b), (a, b) => new HashSet<long>(a.Intersect(b))) == false) failures++;
+            if (VerifySetOp("OR", left, right, ctx, (a, b) => Or(ctx, a, b), (a, b) => new HashSet<long>(a.Union(b))) == false) failures++;
+            if (VerifySetOp("ANDNOT", left, right, ctx, (a, b) => AndNot(ctx, a, b), (a, b) => new HashSet<long>(a.Except(b))) == false) failures++;
+        }
+
+        Assert.Equal(0, failures);
+    }
+
+    /// <summary>Targeted regression test for the (ArrayUnsorted, Range) dangling stack pointer bug.
+    /// LazyOrContainerInPlace materialized Range into a stack buffer, then (Array, Bitmap) stole
+    /// the pointer — dangling after stack unwind. Fixed by converting Array to heap Bitmap first.</summary>
+    [RavenFact(RavenTestCategory.Corax)]
+    public void OrWithArrayAndRange_NoDanglingPointer()
+    {
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+
+        // Sparse array with values OUTSIDE the range (different container positions)
+        RoaringBitmap sparse = new(ctx);
+        sparse.Add(5000);
+        sparse.Add(10000);
+        sparse.Add(17209); // the value that was lost in the original bug
+        sparse.Add(33614);
+        sparse.Add(50000);
+
+        // Range container: sequential 0..999
+        RoaringBitmap range = new(ctx);
+        for (int i = 0; i < 1000; i++) range.Add(i);
+
+        sparse.PrepareForReading();
+        range.PrepareForReading();
+
+        // OR: must include all values from both
+        RoaringBitmap result = Or(ctx, sparse, range);
+        Assert.Equal(1005, result.Count); // 1000 from range + 5 from sparse
+        Assert.True(result.Contains(5000));
+        Assert.True(result.Contains(17209));
+        Assert.True(result.Contains(50000));
+        Assert.True(result.Contains(0));
+        Assert.True(result.Contains(999));
+        result.Dispose();
+
+        // Reverse order: range OR sparse
+        RoaringBitmap result2 = Or(ctx, range, sparse);
+        Assert.Equal(1005, result2.Count);
+        Assert.True(result2.Contains(17209));
+        result2.Dispose();
+
+        sparse.Dispose();
+        range.Dispose();
     }
 
     #endregion

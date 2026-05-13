@@ -535,7 +535,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
     /// The 8KB bitmap is already allocated; converting to Array allocates another buffer
     /// and scans 1024 words, costing more than it saves for short-lived data.
     /// </summary>
-    private void LazyOrWith(scoped ref RoaringBitmap other)
+    internal void LazyOrWith(scoped ref RoaringBitmap other)
     {
         if (other.IsEmpty)
             return;
@@ -610,9 +610,22 @@ public unsafe partial struct RoaringBitmap : IDisposable
                 LazyOrContainerInPlace(ref left, ref leftType, ref right, rightType);
                 break;
             }
+            case (ContainerType.Array or ContainerType.ArrayUnsorted, ContainerType.Range):
+            {
+                // Convert the array to a heap-allocated bitmap first. We cannot materialize
+                // the range into a stack buffer and recurse because the (Array, Bitmap) case
+                // steals the right-hand bitmap buffer — a stack pointer that becomes dangling
+                // once this frame returns.
+                ConvertArrayToBitmap(ref left, ref leftType);
+                LazyOrContainerInPlace(ref left, ref leftType, ref right, rightType);
+                break;
+            }
             case (_, ContainerType.Range):
             {
-                // Materialize the other range and keep lazy OR semantics.
+                // At this point left is Bitmap (Array/ArrayUnsorted handled above, Range handled earlier).
+                // Materialize the range into a stack buffer and bitwise-OR in place — safe because
+                // (Bitmap, Bitmap) does not steal the right-hand buffer.
+                Debug.Assert(leftType is ContainerType.Bitmap, "Only Bitmap should reach the (_, Range) wildcard; Array/ArrayUnsorted cases handled above.");
                 ulong* stackBitmap = stackalloc ulong[BitmapContainerSizeInUInt64];
                 ContainerEntry temp2 = MaterializeRangeIntoBuffer(ref right, stackBitmap);
                 LazyOrContainerInPlace(ref left, ref leftType, ref temp2, ContainerType.Bitmap);
