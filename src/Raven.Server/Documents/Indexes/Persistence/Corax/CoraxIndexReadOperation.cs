@@ -625,6 +625,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             while (runQuery)
             {
                 IQueryMatch queryMatch;
+                IDisposable compiledBitmapMatch = null;
                 OrderMetadata[] orderByFields;
 
                 CoraxQueryBuilder.Parameters builderParameters;
@@ -690,9 +691,11 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                                         HasBoost = builderParameters.HasBoost
                                     };
                                     var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, IndexSearcher, planParams);
-                                    queryMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
+                                    var compiledMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
                                         plan, resolvedMatches, IndexSearcher, _allocator,
                                         (int)take, token);
+                                    compiledBitmapMatch = compiledMatch;
+                                    queryMatch = compiledMatch;
 
                                     // Apply sorting via the existing OrderBy infrastructure
                                     orderByFields = CoraxQueryBuilder.GetSortMetadata(builderParameters, out bool hasEmptySorts);
@@ -881,8 +884,12 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 // Since some primitives are lazily initialized, we must call Inspect after at least one Fill call.
                 queryTimings?.SetQueryPlan(queryMatch.Inspect());
 
-                // Dispose CompiledQueryMatch if it holds bitmap allocations
-                if (queryMatch is IDisposable disposableMatch)
+                // Dispose CompiledQueryMatch if it holds bitmap allocations.
+                // When the match is wrapped in SortingMatch/SortingMultiMatch (which are not IDisposable),
+                // queryMatch itself won't be IDisposable but compiledBitmapMatch still points to the
+                // inner CompiledQueryMatch and must be disposed separately.
+                compiledBitmapMatch?.Dispose();
+                if (queryMatch is IDisposable disposableMatch && disposableMatch != compiledBitmapMatch)
                     disposableMatch.Dispose();
 
                 QueryPool.Return(ids);

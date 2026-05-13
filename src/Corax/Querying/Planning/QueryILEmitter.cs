@@ -220,6 +220,7 @@ public static class QueryILEmitter
                     case PlanOpKind.IterateInto:
                     {
                         bitmap.PrepareForReading();
+                        iterator.Dispose();
                         iterator = bitmap.GetIterator(); // re-init after bitmap is populated
                         return iterator.Fill(ref bitmap, output);
                         // finally handles disposal
@@ -269,6 +270,7 @@ public static class QueryILEmitter
         }
         finally
         {
+            iterator.Dispose();
             bitmap.Dispose();
             tempBitmap.Dispose();
         }

@@ -149,7 +149,9 @@ public static class QueryPrimitives
             // No predicates — just iterate
             bitmap.PrepareForReading();
             var iter = bitmap.GetIterator();
-            return iter.Fill(ref bitmap, output);
+            int result = iter.Fill(ref bitmap, output);
+            iter.Dispose();
+            return result;
         }
 
         bitmap.PrepareForReading();
@@ -169,67 +171,74 @@ public static class QueryPrimitives
         }
 
         int read;
-        while ((read = iterator.Fill(ref bitmap, batch)) > 0)
+        try
         {
-            for (int i = 0; i < read; i++)
+            while ((read = iterator.Fill(ref bitmap, batch)) > 0)
             {
-                if (skip > 0)
+                for (int i = 0; i < read; i++)
                 {
-                    skip--;
-                    continue;
-                }
-
-                long entryId = batch[i];
-                var reader = searcher.GetEntryTermsReader(entryId, ref lastPage);
-                bool documentMatched = true;
-
-                for (int p = 0; p < predicates.Length; p++)
-                {
-                    ref var predicate = ref predicates[p];
-                    long fieldRootPage = fieldRootPages[p];
-
-                    bool isAccepted = predicate.Mode == MultiUnaryItem.UnaryMode.All;
-                    reader.Reset();
-
-                    while (reader.FindNext(fieldRootPage))
+                    if (skip > 0)
                     {
-                        bool cmpResult = predicate.Type switch
-                        {
-                            MultiUnaryItem.DataType.Slice => predicate.CompareLiteral(reader),
-                            MultiUnaryItem.DataType.Long => predicate.CompareNumerical(reader),
-                            MultiUnaryItem.DataType.Double => predicate.CompareNumerical(reader),
-                            _ => throw new ArgumentOutOfRangeException()
-                        };
+                        skip--;
+                        continue;
+                    }
 
-                        if (predicate.Mode == MultiUnaryItem.UnaryMode.All && !cmpResult)
+                    long entryId = batch[i];
+                    var reader = searcher.GetEntryTermsReader(entryId, ref lastPage);
+                    bool documentMatched = true;
+
+                    for (int p = 0; p < predicates.Length; p++)
+                    {
+                        ref var predicate = ref predicates[p];
+                        long fieldRootPage = fieldRootPages[p];
+
+                        bool isAccepted = predicate.Mode == MultiUnaryItem.UnaryMode.All;
+                        reader.Reset();
+
+                        while (reader.FindNext(fieldRootPage))
                         {
-                            isAccepted = false;
-                            break;
+                            bool cmpResult = predicate.Type switch
+                            {
+                                MultiUnaryItem.DataType.Slice => predicate.CompareLiteral(reader),
+                                MultiUnaryItem.DataType.Long => predicate.CompareNumerical(reader),
+                                MultiUnaryItem.DataType.Double => predicate.CompareNumerical(reader),
+                                _ => throw new ArgumentOutOfRangeException()
+                            };
+
+                            if (predicate.Mode == MultiUnaryItem.UnaryMode.All && !cmpResult)
+                            {
+                                isAccepted = false;
+                                break;
+                            }
+
+                            if (predicate.Mode == MultiUnaryItem.UnaryMode.Any && cmpResult)
+                            {
+                                isAccepted = true;
+                                break;
+                            }
                         }
 
-                        if (predicate.Mode == MultiUnaryItem.UnaryMode.Any && cmpResult)
+                        if (!isAccepted)
                         {
-                            isAccepted = true;
+                            documentMatched = false;
                             break;
                         }
                     }
 
-                    if (!isAccepted)
+                    if (documentMatched)
                     {
-                        documentMatched = false;
-                        break;
+                        output[matched++] = entryId;
+                        if (matched >= limit || matched >= output.Length)
+                            return matched;
                     }
-                }
-
-                if (documentMatched)
-                {
-                    output[matched++] = entryId;
-                    if (matched >= limit || matched >= output.Length)
-                        return matched;
                 }
             }
-        }
 
-        return matched;
+            return matched;
+        }
+        finally
+        {
+            iterator.Dispose();
+        }
     }
 }

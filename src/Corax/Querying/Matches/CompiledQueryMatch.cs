@@ -199,6 +199,7 @@ public unsafe struct CompiledQueryMatch : IQueryMatch, IDisposable
 
     public void Dispose()
     {
+        _iterator.Dispose();
         _bitmap.Dispose();
     }
 }
