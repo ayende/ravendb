@@ -108,15 +108,18 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
         RoaringBitmap bitmap = new(ctx);
-        // Add more than 4096 values to trigger array->bitmap conversion
-        for (int i = 0; i < 5000; i++)
-            bitmap.Add(i);
+        // Add more than 4096 values within a single container using a non-sequential
+        // pattern (evens) to force ArrayUnsorted→Bitmap conversion (sequential 0..N
+        // creates a Range container, which never hits the ArrayUnsorted→Bitmap path).
+        for (int i = 0; i < 10000; i++)
+            bitmap.Add(i * 2);
 
         bitmap.PrepareForReading();
-        Assert.Equal(5000, bitmap.Count);
+        Assert.Equal(10000, bitmap.Count);
 
-        for (int i = 0; i < 5000; i++)
-            Assert.True(bitmap.Contains(i));
+        for (int i = 0; i < 10000; i++)
+            Assert.True(bitmap.Contains(i * 2));
+        Assert.False(bitmap.Contains(1));
         bitmap.Dispose();
     }
 
@@ -290,14 +293,15 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         for (int i = 0; i < 10000; i++)
             b.Add(i * 2 + 1); // odds 1..19999
 
+        a.PrepareForReading();
+        b.PrepareForReading();
+
         // AND should be empty (no overlap)
         RoaringBitmap andResult = And(ctx, a, b);
         Assert.Equal(0, andResult.Count);
         andResult.Dispose();
 
         // OR should have all 20000
-        a.PrepareForReading();
-        b.PrepareForReading();
         RoaringBitmap orResult = Or(ctx, a, b);
         Assert.Equal(20000, orResult.Count);
         orResult.Dispose();
@@ -444,9 +448,10 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
         RoaringBitmap bitmap = new(ctx);
-        // Dense enough for bitmap container
-        for (int i = 0; i < 5000; i++)
-            bitmap.Add(i);
+        // Dense enough for bitmap container — use a non-sequential pattern (evens)
+        // within a single 64K range to produce Bitmap containers rather than Range.
+        for (int i = 0; i < 10000; i++)
+            bitmap.Add(i * 2);
 
         var iterator = bitmap.GetIterator();
         List<long> allValues = new();
@@ -460,9 +465,9 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
                 allValues.Add(buffer[i]);
         }
 
-        Assert.Equal(5000, allValues.Count);
-        for (int i = 0; i < 5000; i++)
-            Assert.Equal(i, allValues[i]);
+        Assert.Equal(10000, allValues.Count);
+        for (int i = 0; i < 10000; i++)
+            Assert.Equal(i * 2, allValues[i]);
         iterator.Dispose();
         bitmap.Dispose();
     }

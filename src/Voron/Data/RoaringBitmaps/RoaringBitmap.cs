@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -106,6 +107,12 @@ public unsafe partial struct RoaringBitmap : IDisposable
 
     private const int IndexAbsent = -1;        // key is not present in index
 
+    [DoesNotReturn]
+    private static void ThrowNegativeNotSupported(long value)
+    {
+        throw new ArgumentOutOfRangeException(nameof(value), value, "RoaringBitmap only supports non-negative values.");
+    }
+
     public readonly int ContainerCount => _containerCount;
 
     public long Count
@@ -162,8 +169,15 @@ public unsafe partial struct RoaringBitmap : IDisposable
             ContainerType.ArrayUnsorted => SimdLinearContains(entry.ArrayData, entry.Cardinality, low),
             ContainerType.Bitmap => BitmapContains((ulong*)entry.Data, low),
             ContainerType.Range => low >= entry.RangeStart && low < entry.RangeStart + entry.Cardinality,
-            _ => false
+            ContainerType.Free => ThrowUnexpectedContainerType(type),
+            _ => ThrowUnexpectedContainerType(type)
         };
+
+    [DoesNotReturn]
+    static bool ThrowUnexpectedContainerType(ContainerType type)
+    {
+        throw new ArgumentOutOfRangeException(nameof(type), type, "Unexpected container type");
+    }
     }
 
     public readonly long MinContainerKey
@@ -317,7 +331,8 @@ public unsafe partial struct RoaringBitmap : IDisposable
         while (index < sortedValues.Length)
         {
             long value = sortedValues[index];
-            Debug.Assert(value >= 0, "RoaringBitmap only supports non-negative values.");
+                if (value < 0)
+                ThrowNegativeNotSupported(value);
             long key = value >> ContainerKeyShift;
 
             int start = index;
@@ -520,6 +535,8 @@ public unsafe partial struct RoaringBitmap : IDisposable
                 _types.RawItems[slot] = stillSorted ? ContainerType.Array : ContainerType.ArrayUnsorted;
                 break;
             }
+            default:
+                throw new ArgumentOutOfRangeException(nameof(type), type, "Unexpected container type in AddRange");
         }
     }
 
@@ -704,7 +721,8 @@ public unsafe partial struct RoaringBitmap : IDisposable
     public void Add(long value)
     {
         AssertNotConsumed();
-        Debug.Assert(value >= 0, "RoaringBitmap only supports non-negative values.");
+        if (value < 0)
+            ThrowNegativeNotSupported(value);
         long key = value >> ContainerKeyShift;
         ushort low = (ushort)(value & ContainerValueMask);
 
@@ -845,11 +863,13 @@ public unsafe partial struct RoaringBitmap : IDisposable
                     break;
                 }
 
-                default:
-                    // Free or unknown — skip.
+                case ContainerType.Free:
+                    // Free entries are tombstones — skip to next container.
                     while (i < count && buffer[i] < containerEnd)
                         i++;
                     break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(type), type, "Unexpected container type in AndWith");
             }
         }
         return kept;
@@ -1009,8 +1029,10 @@ public unsafe partial struct RoaringBitmap : IDisposable
                 return -1; // shouldn't reach here if rank was valid
             }
 
+            case ContainerType.ArrayUnsorted:
+            case ContainerType.Free:
             default:
-                return -1;
+                throw new ArgumentOutOfRangeException(nameof(type), type, "Unexpected container type in SelectInContainer");
         }
     }
 
@@ -1085,6 +1107,13 @@ public unsafe partial struct RoaringBitmap : IDisposable
                         FreeContainer(entry.Key, i);
                     break;
                 }
+                case ContainerType.Array:
+                case ContainerType.Range:
+                case ContainerType.Bitmap:
+                case ContainerType.Free:
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(ContainerType), types[i], "Unexpected container type in PrepareForReading");
             }
         }
     }
