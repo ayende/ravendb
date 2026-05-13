@@ -262,6 +262,7 @@ internal static partial class QueryPlanBuilder
                 CompiledDelegate = QueryIlEmitter.EmitDelegate(plan, out var explainText, emitTimings: false),
                 CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(plan, out _, emitTimings: true),
                 CompiledEntryPredicate = ResidualScanIlEmitter.EmitDelegate(plan.ScanPredicateInfos, out var scanExplain),
+                CompiledDirectScanPredicate = ResidualScanIlEmitter.EmitDelegate(plan.ScanPredicateInfos, multiValueStartsWith: true),
                 ExplainSource = explainText + scanExplain,
                 Ordering = plan.OperandOrdering,
                 TypeSignature = plan.TypeSignature,
@@ -2692,15 +2693,12 @@ internal static partial class QueryPlanBuilder
             fieldRootPages = roots.Count > 0 ? roots.ToArray() : null;
         }
 
-        if (compiledPlan.CompiledDirectScanPredicate == null && residualArray != null)
-            compiledPlan.CompiledDirectScanPredicate =
-                ResidualScanIlEmitter.EmitDelegate(residualArray, multiValueStartsWith: true);
-
         var directScan = new global::Corax.Querying.Matches.DirectScanMatch(
             indexSearcher, drivingMatch, residualArray,
             longParams, doubleParams, sliceParams, fieldRootPages,
             take: -1,
-            precompiledDelegate: compiledPlan.CompiledDirectScanPredicate)
+            precompiledDelegate: compiledPlan.CompiledDirectScanPredicate,
+            predicateCount: residualArray?.Length ?? 0)
         {
             DrivingTreeName = compoundFieldName,
             DrivingClause = $"{field1Name} = '{field1ValueStr}'",
@@ -2911,15 +2909,12 @@ internal static partial class QueryPlanBuilder
             fieldRootPages = roots.Count > 0 ? roots.ToArray() : null;
         }
 
-        if (compiledPlan.CompiledDirectScanPredicate == null && residualArray != null)
-            compiledPlan.CompiledDirectScanPredicate =
-                ResidualScanIlEmitter.EmitDelegate(residualArray, multiValueStartsWith: true);
-
         directMatch = new global::Corax.Querying.Matches.DirectScanMatch(
             indexSearcher, drivingMatch, residualArray,
             longParams, doubleParams, sliceParams, fieldRootPages,
             take: -1,
-            precompiledDelegate: compiledPlan.CompiledDirectScanPredicate)
+            precompiledDelegate: compiledPlan.CompiledDirectScanPredicate,
+            predicateCount: residualArray?.Length ?? 0)
         {
             DrivingTreeName = sortFieldName,
             DrivingClause = $"{drivingClause.FieldName} {drivingClause.ClauseType}",
