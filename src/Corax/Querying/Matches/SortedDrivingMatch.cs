@@ -40,6 +40,7 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
     private bool _providerExhausted;
 
     // Pending entries from a partially-consumed posting list
+    private PostingList _pendingPostingList;
     private PostingList.Iterator _pendingLargeIterator;
     private bool _hasPendingLargeIterator;
     private FastPForBufferedReader _smallListReader;
@@ -150,8 +151,8 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
                     {
                         var setStateSpan = Container.GetReadOnly(_llt, EntryIdEncodings.GetContainerId(plId));
                         ref readonly var setState = ref MemoryMarshal.AsRef<PostingListState>(setStateSpan);
-                        var postingList = new PostingList(_llt, Slices.Empty, in setState);
-                        _pendingLargeIterator = postingList.Iterate();
+                        _pendingPostingList = new PostingList(_llt, Slices.Empty, in setState);
+                        _pendingLargeIterator = _pendingPostingList.Iterate();
                         _hasPendingLargeIterator = true;
                         count += DrainLargePostingList(matches.Slice(count), entryBuffer);
                         break;
@@ -224,8 +225,9 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
 
     public void Dispose()
     {
-        if (_hasSmallListReader)
+        if (_smallListReader.WasInitialized)
             _smallListReader.Dispose();
+        _pendingPostingList.Dispose();
         _emittedBitmap.Dispose();
     }
 }

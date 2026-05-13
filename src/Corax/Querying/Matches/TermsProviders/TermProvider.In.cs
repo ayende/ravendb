@@ -114,7 +114,7 @@ namespace Corax.Querying.Matches.TermsProviders
         [DoesNotReturn]
         private static TermMatch ThrowInvalidTermType()
         {
-            throw new InvalidDataException($"In {nameof(InTermsProvider<TTermsType>)} type {nameof(TTermsType)} has to be `string` or `Slice`.");
+            throw new InvalidDataException($"In {nameof(InTermsProvider<TTermsType>)} type {nameof(TTermsType)} has to be `string`, `Slice`, or `(string Term, bool Exact)`.");
         }
         
         string DebugView => Inspect().ToString();

@@ -250,6 +250,7 @@ public struct VectorSearchMatch : IQueryMatch
 
         } while (currentRead != 0);
         
+        if (_singleVectorSearchDoNotSort == false)
         {
             var matchesCount = Sorting.SortAndMinOnDuplicates(matches.Results, distances.Results);
             distances.Truncate(matchesCount);

@@ -13,7 +13,7 @@ namespace Corax.Querying.Matches;
 /// Created by IndexSearcher factory methods (StartsWithQuery, EndsWithQuery, InQuery,
 /// ExistsQuery, RegexQuery, range queries, etc.) for use outside the CompiledQueryMatch pipeline.
 /// </summary>
-public sealed class TermsProviderMatch : IBitmapQueryMatch
+public sealed class TermsProviderMatch : IBitmapQueryMatch, IDisposable
 {
     private readonly ITermsProvider _provider;
     private readonly LowLevelTransaction _llt;
@@ -137,5 +137,12 @@ public sealed class TermsProviderMatch : IBitmapQueryMatch
         _bitmap.PrepareForReading();
         _iterator = _bitmap.GetIterator();
         _initialized = true;
+    }
+
+    public void Dispose()
+    {
+        if (_initialized)
+            _iterator.Dispose();
+        _bitmap.Dispose();
     }
 }
