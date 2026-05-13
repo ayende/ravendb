@@ -207,11 +207,20 @@ public partial class IndexSearcher
         if (term is null || ReferenceEquals(term, Constants.ProjectionNullValue))
             return TryGetPostingListForNull(field, out var plId) ? plId : -1;
 
-        var termSlice = term switch
+        Slice termSlice;
+        try
         {
-            Constants.EmptyString => Constants.EmptyStringSlice,
-            _ => EncodeAndApplyAnalyzer(field, term)
-        };
+            termSlice = term switch
+            {
+                Constants.EmptyString => Constants.EmptyStringSlice,
+                _ => EncodeAndApplyAnalyzer(field, term)
+            };
+        }
+        catch (NotSupportedException)
+        {
+            // Analyzer produced multiple tokens; no single posting list ID
+            return -1;
+        }
 
         if (termSlice.Size == 0)
             return -1;

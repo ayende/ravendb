@@ -115,11 +115,11 @@ public partial class IndexSearcher
                     _ => throw new ArgumentOutOfRangeException(nameof(termType), termType.ToString())
                 };
 
-                searchBitmapHasValue = true;
-                if (@operator == Constants.Search.Operator.Or)
+                if (@operator == Constants.Search.Operator.Or || searchBitmapHasValue == false)
                     Primitives.QueryPrimitives.FillFromMatch(query, ref searchBitmap.BitmapState);
                 else
                     Primitives.QueryPrimitives.AndWithMatch(query, ref searchBitmap.BitmapState, ref tempBitmapData);
+                searchBitmapHasValue = true;
             }
         }
 
@@ -164,6 +164,7 @@ public partial class IndexSearcher
             searchBitmapHasValue = true;
 
             tempTermBitmapData.Dispose();
+            termBitmap.Dispose();
         }
 
         if (searchBitmapHasValue)
@@ -330,6 +331,7 @@ public partial class IndexSearcher
             }
 
             var phraseMatch = PhraseQuery(phraseBitmap, field, terms.ToSpan());
+            phraseBitmap.Dispose();
             tempPhraseBitmapData.Dispose();
 
             if (@operator == Constants.Search.Operator.Or || searchBitmapHasValue == false)
@@ -380,6 +382,7 @@ public partial class IndexSearcher
             searchBitmapHasValue = true;
 
             tempTermBitmapData.Dispose();
+            termBitmap.Dispose();
         }
 
         if (searchBitmapHasValue)
@@ -525,6 +528,7 @@ public partial class IndexSearcher
             }
 
             var phraseMatch = PhraseQuery(phraseBitmap, field, terms.ToSpan());
+            phraseBitmap.Dispose();
             tempPhraseBitmapData.Dispose();
 
             if (@operator == Constants.Search.Operator.Or || searchBitmapHasValue == false)

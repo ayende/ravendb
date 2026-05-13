@@ -106,7 +106,7 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     private long _dictionaryId;
     private Lookup<Int64LookupKey> _entryIdToLocation;
     public FieldsCache FieldCache;
-    /// <summary>Query plan cache. When null (default), a fresh instance is created.
+    /// <summary>Query plan cache. Initialized to a new instance by default.
     /// Set externally to share compiled plans across IndexSearcher instances
     /// (e.g., per-index-instance lifetime via CoraxIndexPersistence).</summary>
     public Planning.PlanCache PlanCache { get; set; } = new();
@@ -114,6 +114,12 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     private bool _nonExistingPostingListsTreeLoaded;
 
     public long MaxFacetQueryFilterSizeInBytes = 128 * 1024 * 1024;
+    [Obsolete("Use MaxFacetQueryFilterSizeInBytes instead")]
+    public long MaxMemoizationSizeInBytes
+    {
+        get => MaxFacetQueryFilterSizeInBytes;
+        set => MaxFacetQueryFilterSizeInBytes = value;
+    }
 
     public bool DocumentsAreBoosted => GetDocumentBoostTree().NumberOfEntries > 0;
 

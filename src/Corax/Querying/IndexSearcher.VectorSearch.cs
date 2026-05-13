@@ -104,13 +104,17 @@ public partial class IndexSearcher
                     return;
                 }
 
-                // Materialize all entry IDs from the bitmap, then shuffle for random access
-                _entryIds = new long[filterCount];
+                // Materialize all entry IDs from the bitmap, then shuffle for random access.
+                // HNSW only probes up to 512 nodes, so cap the materialization to avoid
+                // allocating a huge array for very large filters.
+                const int MaxFilterSampleSize = 8192;
+                var sampleSize = Math.Min(filterCount, MaxFilterSampleSize);
+                _entryIds = new long[sampleSize];
                 var iterator = filterResults.GetIterator();
                 Span<long> batch = stackalloc long[QueryPrimitives.EntryScanBatchSize];
                 int totalRead = 0;
                 int read;
-                while ((read = iterator.Fill(ref filterResults, batch)) > 0)
+                while ((read = iterator.Fill(ref filterResults, batch)) > 0 && totalRead < _entryIds.Length)
                 {
                     for (int i = 0; i < read && totalRead < _entryIds.Length; i++)
                         _entryIds[totalRead++] = batch[i];
