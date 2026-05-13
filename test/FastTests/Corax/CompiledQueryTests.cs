@@ -971,24 +971,32 @@ public class CompiledQueryTests : RavenTestBase
             Assert.Equal(10, page1.Count);
         }
 
-        // Page 2: skip 10, take 10
+        // Page 2: skip 10, take 10 — verify no overlap with page 1
         using (var session = store.OpenAsyncSession())
         {
-            var page2 = await session.Query<TestDoc>()
+            var allResults = await session.Query<TestDoc>()
                 .Where(x => x.Category == "cat-0")
-                .Skip(10).Take(10)
                 .ToListAsync();
+
+            var page1 = allResults.Take(10).ToList();
+            var page2 = allResults.Skip(10).Take(10).ToList();
+            Assert.Equal(10, page1.Count);
             Assert.Equal(10, page2.Count);
+            Assert.NotEqual(page1[0].Id, page2[0].Id);
+            Assert.All(page2, r => Assert.DoesNotContain(r.Name, page1.Select(p => p.Name)));
         }
 
         // Page 10: skip 90, take 10
         using (var session = store.OpenAsyncSession())
         {
-            var page10 = await session.Query<TestDoc>()
+            var allResults = await session.Query<TestDoc>()
                 .Where(x => x.Category == "cat-0")
-                .Skip(90).Take(10)
+                .OrderBy(r => r.Name)
                 .ToListAsync();
+
+            var page10 = allResults.Skip(90).Take(10).ToList();
             Assert.Equal(10, page10.Count);
+            Assert.NotEqual(page10[0].Name, allResults[0].Name);
         }
     }
 
@@ -1197,10 +1205,12 @@ public class CompiledQueryTests : RavenTestBase
     }
 
     [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
-    public async Task EntryScanTriggers_SmallBitmapVsLargePostingList()
+    public async Task EntryScanWithSmallBitmapVsLargePostingList_Correctness()
     {
-        // Entry scan fires when: bitmap.Count < 32K && bitmap.Count * 64 < nextMatch.Count
-        // Create data where first operand produces ~10 entries and second has ~5000
+        // Verifies correctness of results when the entry-scan heuristic triggers.
+        // Entry scan fires when: bitmap.Count < 32K && bitmap.Count * 64 < nextMatch.Count.
+        // This test validates the result is correct under heuristic-triggering conditions
+        // (10 rare entries AND'd with ~2500 active entries).
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
         using var store = GetDocumentStore(options);
 
@@ -1240,7 +1250,7 @@ public class CompiledQueryTests : RavenTestBase
     }
 
     [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
-    public async Task EntryScanWithNotEquals()
+    public async Task EntryScanWithNotEquals_Correctness()
     {
         var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
         using var store = GetDocumentStore(options);
