@@ -68,7 +68,8 @@ public sealed class DirectScanMatch : IQueryMatch, IPredicateEvaluationContext, 
         double[] doubleParams,
         Slice[] sliceParams,
         long[] fieldRootPages,
-        int take)
+        int take,
+        ResidualScanIlEmitter.ResidualScanPredicate precompiledDelegate = null)
     {
         _searcher = searcher;
         _llt = searcher.Transaction.LowLevelTransaction;
@@ -81,9 +82,10 @@ public sealed class DirectScanMatch : IQueryMatch, IPredicateEvaluationContext, 
         _take = take;
         _allocator = searcher.Allocator;
         _emittedBitmap = new RoaringBitmap(_allocator);
-        _compiledResidualScan = residualPredicates is { Length: > 0 }
-            ? ResidualScanIlEmitter.EmitDelegate(residualPredicates, multiValueStartsWith: true)
-            : null;
+        _compiledResidualScan = precompiledDelegate ??
+            (residualPredicates is { Length: > 0 }
+                ? ResidualScanIlEmitter.EmitDelegate(residualPredicates, multiValueStartsWith: true)
+                : null);
     }
 
     public long Count => _totalMatched;

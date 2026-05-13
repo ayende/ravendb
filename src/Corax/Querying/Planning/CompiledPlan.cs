@@ -9,11 +9,17 @@ public sealed class CompiledPlan
     /// first `include timings()` request. Null until then.</summary>
     public QueryIlEmitter.CompiledExecuteDelegate CompiledTimedDelegate { get; set; }
 
-    /// <summary>IL-emitted per-entry predicate evaluator used by the entry-scan and
-    /// direct-scan paths. Bakes in the ScanPredicateInfo[] structure (value types,
-    /// compare ops, AND/OR sub-groups, fieldRootPages indexing) so the hot path
-    /// has no runtime switches. Null when the plan has no scan predicates.</summary>
+    /// <summary>IL-emitted per-entry predicate evaluator for the entry-scan path.
+    /// Bakes in the plan's full ScanPredicateInfo[] structure. Null when the plan
+    /// has no entry-scan predicates.</summary>
     public ResidualScanIlEmitter.ResidualScanPredicate CompiledEntryPredicate { get; init; }
+
+    /// <summary>Cached direct-scan residual predicate delegate, lazily created by
+    /// <see cref="Matches.DirectScanMatch"/> on first construction. The delegate
+    /// is cached here so it survives multiple page iterations within the same plan.
+    /// Thread-safe: the delegate is immutable once set, and concurrent writes are
+    /// benign (all produce the same IL).</summary>
+    public ResidualScanIlEmitter.ResidualScanPredicate CompiledDirectScanPredicate;
 
     /* A single query may be represented by different compiled plans, because the shape
      * of the data is different. Consider `WHERE Tag = $tag and Published = $published`.

@@ -658,7 +658,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                                 // Results come back pre-sorted by field2, eliminating the SortingMatch.
                                 if (queryPlan != null &&
                                     QueryPlanBuilder.TryCreateCompoundFieldMatch(
-                                        queryPlan, orderByFields, planParams, builderParameters, out var compoundMatch))
+                                        queryPlan, orderByFields, planParams, builderParameters, compiledPlan, out var compoundMatch))
                                 {
                                     innerDisposableMatch?.Dispose();
                                     innerDisposableMatch = compoundMatch as IDisposable;
@@ -667,7 +667,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                                 }
                                 else if (queryPlan != null &&
                                     QueryPlanBuilder.TryCreateSimpleFieldDirectScan(
-                                        queryPlan, orderByFields, planParams, builderParameters, out var directMatch))
+                                        queryPlan, orderByFields, planParams, builderParameters, compiledPlan, out var directMatch))
                                 {
                                     // Simple field DirectScan: SortedDrivingMatch walks the ITermsProvider
                                     // in term order (field-value sort order). No SortingMatch needed.
