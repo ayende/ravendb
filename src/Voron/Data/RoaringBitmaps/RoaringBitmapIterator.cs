@@ -2,7 +2,6 @@ using System;
 using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using Sparrow;
 using Sparrow.Server;
@@ -89,14 +88,16 @@ public unsafe struct RoaringBitmapIterator : IDisposable
             ContainerType type = data._types.RawItems[slot];
             long baseValue = (long)key << RoaringBitmap.ContainerKeyShift;
 
-            // Iteration contract: callers MUST run RoaringBitmap.PrepareForReading() before
-            // constructing the iterator, which converts every ArrayUnsorted container into
-            // a sorted Array. If we still see ArrayUnsorted here, the caller skipped that
-            // step and Fill() will emit unsorted entry IDs within that container, breaking
-            // the ascending-output contract that streaming and paging consumers depend on.
+            // Iteration contract: callers MUST call RoaringBitmap.PrepareForReading()
+            // before the first Fill() call, which converts every ArrayUnsorted container
+            // into a sorted Array. If we still see ArrayUnsorted here, the caller skipped
+            // that step and Fill() will emit unsorted entry IDs within that container,
+            // breaking the ascending-output contract that streaming and paging consumers
+            // depend on. PrepareForReading() is NOT required before GetIterator() —
+            // the constructor only snapshots container keys/slots, not per-container data.
             Debug.Assert(type != ContainerType.ArrayUnsorted,
                 "RoaringBitmapIterator: ArrayUnsorted container at iteration time. " +
-                "PrepareForReading() must be called before GetIterator() / Fill().");
+                "PrepareForReading() must be called before Fill().");
 
             switch (type)
             {

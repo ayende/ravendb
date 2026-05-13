@@ -457,7 +457,7 @@ public unsafe partial struct RoaringBitmap
                 break;
             }
 
-            // Keep the element if not found within [0, bLen).
+            // Keep the element if found within [0, bLen) -- AND semantics.
             // found == int.MaxValue means no match anywhere;
             // found >= bLen means the match was in the over-allocated padding past the live count.
             if (found >= bLen)
@@ -496,7 +496,7 @@ public unsafe partial struct RoaringBitmap
                 break;
             }
 
-            // Keep the element if not found within [0, bLen).
+            // Keep the element if found within [0, bLen) -- AND semantics.
             // found == int.MaxValue means no match anywhere;
             // found >= bLen means the match was in the over-allocated padding past the live count.
             if (found >= bLen)
