@@ -319,17 +319,16 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         private bool _nonExistingPostingListRead;
         private bool _nullPostingListRead;
 
-        public delegate void SeekAction(ref TDirection it);
-
-        public SortedIndexReader(LowLevelTransaction llt, IndexSearcher searcher, TDirection it, FieldMetadata metadata, long min, long max, bool nullFirst, bool isForward, SeekAction seekAction = null)
+        /// <summary>The iterator <paramref name="it"/> is assumed to be already positioned by the caller
+        /// (caller is responsible for Reset + optional Seek). This avoids the SeekAction delegate
+        /// indirection and the closure allocations it required.</summary>
+        public SortedIndexReader(LowLevelTransaction llt, IndexSearcher searcher, TDirection it, FieldMetadata metadata, long min, long max, bool nullFirst, bool isForward)
         {
             _termsIt = it;
             _min = min;
             _max = max;
             _nullFirst = nullFirst;
             _isForward = isForward;
-            _termsIt.Reset();
-            seekAction?.Invoke(ref _termsIt);
             _llt = llt;
             _searcher = searcher;
             _postListIt = default;
@@ -527,17 +526,18 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         // (one per value). Track emitted IDs to skip duplicates.
         using var emittedBitmap = new RoaringBitmap(allocator);
 
-        // Seek optimization: when the WHERE field matches the ORDER BY field, skip
-        // walking tree terms that can't match by seeking to the boundary value.
-        SortedIndexReader<TDirection>.SeekAction seekAction = null;
-        if (bitmapMatch is CompiledQueryMatch cm &&
-            cm.TryGetSortHint(out var hintField, out var hintValue, out _) &&
-            hintField == entryCmp.GetSortFieldName(match).ToString())
+        // Seek optimization: when the WHERE field matches the ORDER BY field, skip walking
+        // tree terms that can't match by seeking the underlying iterator to the boundary value.
+        // The hint value is matched against the sort field at the per-direction branch in GetReader,
+        // where the concrete key type is known.
+        object hintValue = null;
+        if (bitmapMatch is CompiledQueryMatch cm && cm.SortHint is { } hint &&
+            SliceEqualsUtf8(entryCmp.GetSortFieldName(match), hint.FieldName))
         {
-            seekAction = BuildSeekAction(hintValue);
+            hintValue = hint.Value;
         }
 
-        var reader = GetReader(bitmapMatch.MinEntryId, bitmapMatch.MaxEntryId, seekAction);
+        var reader = GetReader(bitmapMatch.MinEntryId, bitmapMatch.MaxEntryId, hintValue);
 
         while (match._results.Count < maxResults)
         {
@@ -565,63 +565,65 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         reader.Dispose();
         sortedIdsScope.Dispose();
 
-        static SortedIndexReader<TDirection>.SeekAction BuildSeekAction(object value)
-        {
-            if (value is long longVal)
-            {
-                if (typeof(TDirection) == typeof(Lookup<Int64LookupKey>.ForwardIterator) ||
-                    typeof(TDirection) == typeof(Lookup<Int64LookupKey>.BackwardIterator))
-                {
-                    return (ref TDirection it) => it.Seek(new Int64LookupKey(longVal));
-                }
-            }
-            else if (value is double doubleVal)
-            {
-                if (typeof(TDirection) == typeof(Lookup<DoubleLookupKey>.ForwardIterator) ||
-                    typeof(TDirection) == typeof(Lookup<DoubleLookupKey>.BackwardIterator))
-                {
-                    return (ref TDirection it) => it.Seek(new DoubleLookupKey(doubleVal));
-                }
-            }
-            // String seeks are handled in GetReader() below where the CompactTree
-            // and its DictionaryId are available for CompactKey construction.
-            return null;
-        }
-
-        SortedIndexReader<TDirection> GetReader(long min, long max, SortedIndexReader<TDirection>.SeekAction seek = null)
+        SortedIndexReader<TDirection> GetReader(long min, long max, object hint)
         {
             if (typeof(TDirection) == typeof(Lookup<CompactTree.CompactKeyLookup>.ForwardIterator) ||
                 typeof(TDirection) == typeof(Lookup<CompactTree.CompactKeyLookup>.BackwardIterator))
             {
                 var termsTree = match._searcher.GetTermsFor(entryCmp.GetSortFieldName(match));
-                // Build string seek action here where we have the tree's dictionary ID
-                if (seek == null && bitmapMatch is CompiledQueryMatch cm2 &&
-                    cm2.TryGetSortHint(out _, out var seekVal, out _) && seekVal is string strVal)
+                var it = termsTree.IterateValues<TDirection>();
+                it.Reset();
+                if (hint is string strVal)
                 {
                     var compactKey = llt.AcquireCompactKey();
-                    compactKey.Set(System.Text.Encoding.UTF8.GetBytes(strVal));
+                    int byteCount = System.Text.Encoding.UTF8.GetByteCount(strVal);
+                    Span<byte> buffer = byteCount <= 256 ? stackalloc byte[256] : new byte[byteCount];
+                    int written = System.Text.Encoding.UTF8.GetBytes(strVal, buffer);
+                    compactKey.Set(buffer[..written]);
                     compactKey.ChangeDictionary(termsTree.DictionaryId);
-                    seek = (ref TDirection it) => it.Seek(new CompactTree.CompactKeyLookup(compactKey));
+                    it.Seek(new CompactTree.CompactKeyLookup(compactKey));
                 }
-                return new SortedIndexReader<TDirection>(llt, match._searcher, termsTree.IterateValues<TDirection>(), match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending, seek);
+                return new SortedIndexReader<TDirection>(llt, match._searcher, it, match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending);
             }
 
             if (typeof(TDirection) == typeof(Lookup<Int64LookupKey>.ForwardIterator) ||
                 typeof(TDirection) == typeof(Lookup<Int64LookupKey>.BackwardIterator))
             {
                 var termsTree = match._searcher.GetLongTermsFor(entryCmp.GetSortFieldName(match));
-                return new SortedIndexReader<TDirection>(llt, match._searcher, termsTree.Iterate<TDirection>(), match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending, seek);
+                var it = termsTree.Iterate<TDirection>();
+                it.Reset();
+                if (hint is long longVal)
+                    it.Seek(new Int64LookupKey(longVal));
+                return new SortedIndexReader<TDirection>(llt, match._searcher, it, match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending);
             }
 
             if (typeof(TDirection) == typeof(Lookup<DoubleLookupKey>.ForwardIterator) ||
                 typeof(TDirection) == typeof(Lookup<DoubleLookupKey>.BackwardIterator))
             {
                 var termsTree = match._searcher.GetDoubleTermsFor(entryCmp.GetSortFieldName(match));
-                return new SortedIndexReader<TDirection>(llt, match._searcher, termsTree.Iterate<TDirection>(), match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending, seek);
+                var it = termsTree.Iterate<TDirection>();
+                it.Reset();
+                if (hint is double doubleVal)
+                    it.Seek(new DoubleLookupKey(doubleVal));
+                return new SortedIndexReader<TDirection>(llt, match._searcher, it, match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending);
             }
 
             throw new NotSupportedException(typeof(TDirection).FullName);
         }
+    }
+
+    /// <summary>Compare a Slice's bytes to a string's UTF-8 encoding without allocating.
+    /// Used for sort-hint field-name matching where the slice comes from the index
+    /// and the hint field name comes from the query AST.</summary>
+    private static bool SliceEqualsUtf8(Slice slice, string s)
+    {
+        var sliceSpan = slice.AsReadOnlySpan();
+        int byteCount = System.Text.Encoding.UTF8.GetByteCount(s);
+        if (byteCount != sliceSpan.Length)
+            return false;
+        Span<byte> buffer = byteCount <= 256 ? stackalloc byte[256] : new byte[byteCount];
+        int written = System.Text.Encoding.UTF8.GetBytes(s, buffer);
+        return sliceSpan.SequenceEqual(buffer[..written]);
     }
 
     /// <summary>

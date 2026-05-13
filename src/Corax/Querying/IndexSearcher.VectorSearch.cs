@@ -6,6 +6,7 @@ using Corax.Indexing;
 using Corax.Mappings;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
+using Corax.Querying.Primitives;
 using Corax.Utils;
 using Voron.Data.RoaringBitmaps;
 using Sparrow;
@@ -106,7 +107,7 @@ public partial class IndexSearcher
                 // Materialize all entry IDs from the bitmap, then shuffle for random access
                 _entryIds = new long[filterCount];
                 var iterator = filterResults.GetIterator();
-                Span<long> batch = stackalloc long[256];
+                Span<long> batch = stackalloc long[QueryPrimitives.EntryScanBatchSize];
                 int totalRead = 0;
                 int read;
                 while ((read = iterator.Fill(ref filterResults, batch)) > 0)
@@ -215,7 +216,7 @@ public partial class IndexSearcher
             // Ideally, each node represents only a single document.
             Page p = default;
             var iterator = filterResults.GetIterator();
-            Span<long> batch = stackalloc long[256];
+            Span<long> batch = stackalloc long[QueryPrimitives.EntryScanBatchSize];
             int read;
             while ((read = iterator.Fill(ref filterResults, batch)) > 0)
             {

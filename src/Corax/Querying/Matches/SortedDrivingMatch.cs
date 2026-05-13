@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Corax.Indexing;
 using Corax.Querying.Matches.Meta;
+using Corax.Querying.Primitives;
 using Corax.Utils;
 using Sparrow;
 using Sparrow.Compression;
@@ -64,7 +65,7 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
             return 0;
 
         int count = 0;
-        Span<long> entryBuffer = stackalloc long[256];
+        Span<long> entryBuffer = stackalloc long[QueryPrimitives.EntryScanBatchSize];
 
         // Resume any pending large posting list iterator
         if (_hasPendingLargeIterator)
@@ -83,7 +84,7 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
         }
 
         // Walk the provider's posting list IDs
-        Span<long> plIds = stackalloc long[256];
+        Span<long> plIds = stackalloc long[QueryPrimitives.EntryScanBatchSize];
         var pageLocator = _llt.PageLocator;
 
         int read;
