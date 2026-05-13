@@ -138,10 +138,12 @@ public struct CombinedMatch : IQueryMatch
     private int FillAnd(Span<long> output)
     {
         // AND of two ascending-sorted streams. Each Fill on an inner match returns
-        // the next batch of ascending entries; we must intersect them while preserving
-        // the side whose tail has not yet been consumed (its higher entries may match
-        // future entries on the other side). Loops until we either produce results or
-        // one side is permanently exhausted.
+        // the next batch of ascending entries, and each subsequent Fill continues from
+        // where the previous left off (the stream overall is globally ascending).
+        // This invariant holds for all Corax IQueryMatch implementations — we depend
+        // on it here by trimming the "higher" side's tail to the lower side's max.
+        // If a future match type violates global ascending order across Fill calls,
+        // this AND will produce wrong results.
         while (true)
         {
             if (EnsureBuffered(_left, ref _leftBuffer, ref _leftRemaining, ref _leftRemainingCount, ref _leftDone) == false)

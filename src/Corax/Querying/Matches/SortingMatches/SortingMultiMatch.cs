@@ -124,7 +124,9 @@ public unsafe partial struct SortingMultiMatch<TInner>
             if (match.TotalResults == 0)
                 return 0;
 
-            int total = (int)Math.Min(match.TotalResults, 1024 * 1024);
+            if (match.TotalResults > int.MaxValue)
+                throw new InvalidOperationException($"TotalResults ({match.TotalResults}) exceeds int.MaxValue — cannot materialize all entries for sorting.");
+            int total = (int)match.TotalResults;
             var scope = match._searcher.Allocator.Allocate(total * sizeof(long), out var bs);
             var allMatches = new Span<long>(bs.Ptr, total);
             int filled = 0;
