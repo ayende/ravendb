@@ -830,7 +830,7 @@ public class CompiledQueryTests : RavenTestBase
             // Price > 500: i*3 > 500 → i > 166
             // startsWith doc-0: i < 100000 (all match with 5-digit padding)
             // Combined: i%10==0 AND i>166 → 170,180,190,...,490 → 33 items
-            Assert.True(results.Count > 0);
+            Assert.Equal(33, results.Count);
             Assert.All(results, r =>
             {
                 Assert.Equal("cat-0", r.Category);

@@ -24,12 +24,12 @@ public class CompiledQueryBenchmark : RavenTestBase
         const int warmup = 3;
         const int iterations = 50;
 
-        // Setup store WITHOUT bitmap
+        // Setup store
         var optionsOld = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
         using var storeOld = GetDocumentStore(optionsOld);
         await SeedData(storeOld, docCount);
 
-        // Setup store WITH bitmap
+        // Setup store (same configuration; both use the bitmap pipeline)
         var optionsNew = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
 
         using var storeNew = GetDocumentStore(optionsNew);
