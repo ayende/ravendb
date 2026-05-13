@@ -82,6 +82,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             IndexSearcher = new IndexSearcher(readTransaction, _fieldMappings)
             {
                 MaxFacetQueryFilterSizeInBytes = index.Configuration.MaxFacetQueryFilterSize.GetValue(SizeUnit.Bytes),
+                PlanCache = (index.IndexPersistence as CoraxIndexPersistence)?.SharedPlanCache ?? new global::Corax.Querying.Planning.PlanCache(),
             };
             
             if (index is {_forTestingPurposes: {CoraxConfiguration: not null}})
@@ -639,17 +640,59 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
                             innerDisposableMatch = queryMatch as IDisposable;
 
+                            // Compound exact match: WHERE f1 = val AND f2 = val → single compound tree lookup.
+                            // Check before ORDER BY — the compound match is faster regardless of sort.
+                            if (queryPlan != null &&
+                                QueryPlanBuilder.TryCreateCompoundExactMatch(queryPlan, planParams, builderParameters, out var compoundExact))
+                            {
+                                innerDisposableMatch?.Dispose();
+                                innerDisposableMatch = compoundExact as IDisposable;
+                                queryMatch = compoundExact;
+                            }
+
                             orderByFields = QueryPlanBuilder.GetSortMetadata(builderParameters, out bool hasEmptySorts);
                             if (orderByFields != null)
                             {
-                                queryMatch = QueryPlanBuilder.OrderBy(
-                                    builderParameters, queryMatch, orderByFields, hasEmptySorts);
+                                // Compound field optimization: WHERE field1 = 'val' ORDER BY field2
+                                // can be served by a single StartsWith scan on the compound tree.
+                                // Results come back pre-sorted by field2, eliminating the SortingMatch.
+                                if (queryPlan != null &&
+                                    QueryPlanBuilder.TryCreateCompoundFieldMatch(
+                                        queryPlan, orderByFields, planParams, builderParameters, out var compoundMatch))
+                                {
+                                    innerDisposableMatch?.Dispose();
+                                    innerDisposableMatch = compoundMatch as IDisposable;
+                                    queryMatch = QueryPlanBuilder.OrderBy(
+                                        builderParameters, compoundMatch, orderByFields, hasEmptySorts);
+                                }
+                                else if (queryPlan != null &&
+                                    QueryPlanBuilder.TryCreateSimpleFieldDirectScan(
+                                        queryPlan, orderByFields, planParams, builderParameters, out var directMatch))
+                                {
+                                    // Simple field DirectScan: SortedDrivingMatch walks the ITermsProvider
+                                    // in term order (field-value sort order). No SortingMatch needed.
+                                    innerDisposableMatch?.Dispose();
+                                    innerDisposableMatch = directMatch as IDisposable;
+                                    queryMatch = directMatch;
+                                }
+                                else
+                                {
+                                    // Set seek hint if WHERE field matches ORDER BY field (optimization for
+                                    // SortUsingIndexFromBitmap to skip walking irrelevant tree terms).
+                                    if (queryMatch is global::Corax.Querying.Matches.CompiledQueryMatch seekMatch)
+                                        QueryPlanBuilder.TrySetSortSeekHint(seekMatch, queryPlan, orderByFields);
+
+                                    queryMatch = QueryPlanBuilder.OrderBy(
+                                        builderParameters, queryMatch, orderByFields, hasEmptySorts);
+                                }
                             }
                             else if (take > 0 && query.Metadata.IsDistinct == false
+                                && query.SkipStatistics
                                 && queryMatch is global::Corax.Querying.Matches.CompiledQueryMatch compiledMatch)
                             {
-                                // No ORDER BY and no DISTINCT — enable limit-aware bitmap
-                                // accumulation. Distinct queries need the full bitmap for dedup.
+                                // No ORDER BY, no DISTINCT, and client doesn't need exact total —
+                                // enable limit-aware bitmap accumulation. The bitmap may be truncated,
+                                // so Count is a lower bound (Confidence = Low).
                                 compiledMatch.Limit = take;
                             }
                         }

@@ -46,6 +46,8 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 /// </summary>
 internal static partial class QueryPlanBuilder
 {
+    /// <summary>Thread-local WHEN condition accumulator used during ParseTemplate.
+    /// Avoids threading a List through all ParseExpression call sites.</summary>
     /// <summary>
     /// Parameters needed by the planner for field metadata resolution,
     /// analyzer setup, and cardinality estimation.
@@ -197,7 +199,9 @@ internal static partial class QueryPlanBuilder
 
         bool hasMixedAndOr = false;
         var clauses = new List<ClauseInfo>();
-        var rootOp = ParseExpression(query.Where, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+        var whenConditionsList = new List<object>();
+        var rootOp = ParseExpression(query.Where, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, whenConditionsList);
+        var whenConditions = whenConditionsList.Count > 0 ? whenConditionsList.ToArray() : null;
 
         if (rootOp == BooleanOp.True || clauses.Count == 0)
             return new ClauseTemplate { IsAllEntries = true, Clauses = [] };
@@ -250,7 +254,8 @@ internal static partial class QueryPlanBuilder
             IsAllEntries = false,
             IsOr = isOr,
             SpatialClauses = spatialClauses,
-            VectorClauses = vectorClauses
+            VectorClauses = vectorClauses,
+            WhenConditions = whenConditions
         };
     }
 
@@ -260,12 +265,13 @@ internal static partial class QueryPlanBuilder
         List<ClauseInfo> clauses,
         BlittableJsonReaderObject queryParameters,
         QueryMetadata metadata,
-        ref bool hasMixedAndOr)
+        ref bool hasMixedAndOr,
+        List<object> whenConditions = null)
     {
         switch (expr)
         {
             case BinaryExpression be:
-                return ParseBinaryExpression(be, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+                return ParseBinaryExpression(be, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, whenConditions);
 
             case BetweenExpression between:
                 ParseBetween(between, clauses, queryParameters, metadata);
@@ -276,14 +282,14 @@ internal static partial class QueryPlanBuilder
                 return BooleanOp.Leaf;
 
             case NegatedExpression negated:
-                ParseNegated(negated, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+                ParseNegated(negated, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, whenConditions);
                 return BooleanOp.Leaf;
 
             case TrueExpression:
                 return BooleanOp.True;
 
             case MethodExpression method:
-                ParseMethod(method, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+                ParseMethod(method, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, whenConditions);
                 return BooleanOp.Leaf;
 
             default:
@@ -298,7 +304,8 @@ internal static partial class QueryPlanBuilder
         List<ClauseInfo> clauses,
         BlittableJsonReaderObject queryParameters,
         QueryMetadata metadata,
-        ref bool hasMixedAndOr)
+        ref bool hasMixedAndOr,
+        List<object> whenConditions = null)
     {
         switch (be.Operator)
         {
@@ -310,7 +317,7 @@ internal static partial class QueryPlanBuilder
                 if (be.Left is BinaryExpression { Operator: OperatorType.Or })
                 {
                     var orClauses = new List<ClauseInfo>();
-                    left = ParseExpression(be.Left, indexSearcher, orClauses, queryParameters, metadata, ref hasMixedAndOr);
+                    left = ParseExpression(be.Left, indexSearcher, orClauses, queryParameters, metadata, ref hasMixedAndOr, whenConditions);
                     clauses.Add(new ClauseInfo
                     {
                         ClauseType = ClauseType.OrGroup,
@@ -320,13 +327,13 @@ internal static partial class QueryPlanBuilder
                 }
                 else
                 {
-                    left = ParseExpression(be.Left, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+                    left = ParseExpression(be.Left, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, whenConditions);
                 }
 
                 if (be.Right is BinaryExpression { Operator: OperatorType.Or })
                 {
                     var orClauses = new List<ClauseInfo>();
-                    right = ParseExpression(be.Right, indexSearcher, orClauses, queryParameters, metadata, ref hasMixedAndOr);
+                    right = ParseExpression(be.Right, indexSearcher, orClauses, queryParameters, metadata, ref hasMixedAndOr, whenConditions);
                     clauses.Add(new ClauseInfo
                     {
                         ClauseType = ClauseType.OrGroup,
@@ -336,7 +343,7 @@ internal static partial class QueryPlanBuilder
                 }
                 else
                 {
-                    right = ParseExpression(be.Right, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+                    right = ParseExpression(be.Right, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, whenConditions);
                 }
                 if (left == BooleanOp.True) return right;
                 if (right == BooleanOp.True) return left;
@@ -351,7 +358,7 @@ internal static partial class QueryPlanBuilder
                 if (be.Left is BinaryExpression { Operator: OperatorType.And })
                 {
                     var andClauses = new List<ClauseInfo>();
-                    left = ParseExpression(be.Left, indexSearcher, andClauses, queryParameters, metadata, ref hasMixedAndOr);
+                    left = ParseExpression(be.Left, indexSearcher, andClauses, queryParameters, metadata, ref hasMixedAndOr, whenConditions);
                     clauses.Add(new ClauseInfo
                     {
                         ClauseType = ClauseType.AndGroup,
@@ -361,13 +368,13 @@ internal static partial class QueryPlanBuilder
                 }
                 else
                 {
-                    left = ParseExpression(be.Left, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+                    left = ParseExpression(be.Left, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, whenConditions);
                 }
 
                 if (be.Right is BinaryExpression { Operator: OperatorType.And })
                 {
                     var andClauses = new List<ClauseInfo>();
-                    right = ParseExpression(be.Right, indexSearcher, andClauses, queryParameters, metadata, ref hasMixedAndOr);
+                    right = ParseExpression(be.Right, indexSearcher, andClauses, queryParameters, metadata, ref hasMixedAndOr, whenConditions);
                     clauses.Add(new ClauseInfo
                     {
                         ClauseType = ClauseType.AndGroup,
@@ -377,7 +384,7 @@ internal static partial class QueryPlanBuilder
                 }
                 else
                 {
-                    right = ParseExpression(be.Right, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+                    right = ParseExpression(be.Right, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, whenConditions);
                 }
 
                 if (left == BooleanOp.True || right == BooleanOp.True) return BooleanOp.True;
@@ -510,10 +517,10 @@ internal static partial class QueryPlanBuilder
     }
 
     private static void ParseNegated(NegatedExpression negated, IndexSearcher indexSearcher,
-        List<ClauseInfo> clauses, BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ref bool hasMixedAndOr)
+        List<ClauseInfo> clauses, BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ref bool hasMixedAndOr, List<object> whenConditions = null)
     {
         var innerClauses = new List<ClauseInfo>();
-        ParseExpression(negated.Expression, indexSearcher, innerClauses, queryParameters, metadata, ref hasMixedAndOr);
+        ParseExpression(negated.Expression, indexSearcher, innerClauses, queryParameters, metadata, ref hasMixedAndOr, whenConditions);
 
         foreach (var inner in innerClauses)
         {
@@ -523,7 +530,8 @@ internal static partial class QueryPlanBuilder
     }
 
     private static void ParseMethod(MethodExpression method, IndexSearcher indexSearcher,
-        List<ClauseInfo> clauses, BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ref bool hasMixedAndOr)
+        List<ClauseInfo> clauses, BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ref bool hasMixedAndOr,
+        List<object> whenConditions = null)
     {
         var methodType = QueryMethod.GetMethodType(method.Name.Value);
         switch (methodType)
@@ -560,7 +568,7 @@ internal static partial class QueryPlanBuilder
                 // exact(expr) → recurse, then mark all new clauses as exact
                 int beforeCount = clauses.Count;
                 if (method.Arguments.Count > 0)
-                    ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+                    ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, whenConditions);
                 for (int c = beforeCount; c < clauses.Count; c++)
                     clauses[c].IsExact = true;
                 break;
@@ -571,7 +579,7 @@ internal static partial class QueryPlanBuilder
                 // boost(expr, factor) → recurse, then set boost factor on new clauses
                 int beforeCount = clauses.Count;
                 if (method.Arguments.Count > 0)
-                    ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+                    ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr, whenConditions);
                 // Append boost factor binding to each inner clause's Bindings array.
                 ParameterBinding boostBinding = method.Arguments.Count > 1
                     ? CreateBinding(method.Arguments[1], queryParameters) : null;
@@ -719,16 +727,20 @@ internal static partial class QueryPlanBuilder
 
             case MethodType.When:
             {
-                // when(condition, expr) — evaluate the constant condition at plan time.
-                // If false, produce no clause (empty result for this branch).
-                // If true, recurse into the inner expression.
+                // when(condition, expr) — always parse the inner expression into the template.
+                // The condition is evaluated per-execution in PopulateClauseValues.
+                // If false, the clause is marked WhenEliminated and stripped in EmitPlan.
                 if (method.Arguments.Count != 2)
                     break;
-                var conditionResult = QueryBuilderHelper.EvaluateConstantExpressionForWhenQuery(
-                    (BinaryExpression)method.Arguments[0], queryParameters);
-                if (conditionResult)
-                    ParseExpression(method.Arguments[1], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
-                // If false, we simply don't add any clause — the branch is eliminated.
+                int beforeCount = clauses.Count;
+                ParseExpression(method.Arguments[1], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
+                // Tag all newly-added clauses with the WHEN condition index.
+                // The condition expression is stored on ClauseTemplate.WhenConditions
+                // (set below after ParseTemplate returns).
+                var conditionExpr = method.Arguments[0];
+                for (int wi = beforeCount; wi < clauses.Count; wi++)
+                    clauses[wi].WhenConditionIndex = whenConditions?.Count ?? 0;
+                whenConditions?.Add(conditionExpr);
                 break;
             }
 
@@ -1068,6 +1080,7 @@ internal static partial class QueryPlanBuilder
         }
 
         List<PlanOp> ops = [];
+        List<int> rangeCounts = [];
         bool needsThreeBitmaps = false;
 
         if (isOr)
@@ -1081,7 +1094,7 @@ internal static partial class QueryPlanBuilder
                 switch (it.ClauseType)
                 {
                     case ClauseType.In or ClauseType.AllIn when (itExec.InTermCount > 0 || itExec.HasNullTerm):
-                        EmitInOps(ops, itExec, bitmapLocal: 0, isSeed: matchIndex == 0, ref matchIndex);
+                        EmitInOps(ops, itExec, bitmapLocal: 0, isSeed: matchIndex == 0, ref matchIndex, rangeCounts);
                         break;
                     case ClauseType.OrGroup when it.OrSubClauses is {Count: > 0}:
                     {
@@ -1289,10 +1302,10 @@ internal static partial class QueryPlanBuilder
                             break;
                         }
                         case ClauseType.In when executions[0].InTermCount > 0 || executions[0].HasNullTerm:
-                            EmitInOps(ops, executions[0], bitmapLocal: 0, isSeed: true, ref matchIndex);
+                            EmitInOps(ops, executions[0], bitmapLocal: 0, isSeed: true, ref matchIndex, rangeCounts);
                             break;
                         case ClauseType.AllIn when executions[0].InTermCount > 0:
-                            EmitAllInOps(ops, executions[0], ref matchIndex);
+                            EmitAllInOps(ops, executions[0], ref matchIndex, rangeCounts);
                             break;
                         default:
                             ops.Add(new PlanOp
@@ -1367,7 +1380,7 @@ internal static partial class QueryPlanBuilder
                             // isSeed: false — FillFromPostings always targets bitmap[0], so we use
                             // OrRange which respects bitmapLocal. Bitmap[1] is freshly cleared.
                             ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 1 });
-                            EmitInOps(ops, iExec, bitmapLocal: 1, isSeed: false, ref matchIndex);
+                            EmitInOps(ops, iExec, bitmapLocal: 1, isSeed: false, ref matchIndex, rangeCounts);
                             ops.Add(new PlanOp
                             {
                                 Kind = clauses[i].IsNegated ? PlanOpKind.AndNotBitmaps : PlanOpKind.AndBitmaps,
@@ -1379,17 +1392,21 @@ internal static partial class QueryPlanBuilder
                             break;
                         }
                         case ClauseType.AllIn when iExec.InTermCount > 0:
+                        {
+                            int rangeIdx = rangeCounts.Count;
+                            rangeCounts.Add(iExec.InTermCount);
                             ops.Add(new PlanOp
                             {
                                 Kind = PlanOpKind.AndRange,
                                 ParamIndex = matchIndex,
-                                ParamIndex2 = iExec.InTermCount,
+                                ParamIndex2 = rangeIdx,
                                 BitmapLocal = 0,
                                 EstimatedCardinality = iExec.Cardinality,
                                 Dispatch = MatchDispatch.PostingList
                             });
                             matchIndex += iExec.InTermCount;
                             break;
+                        }
                         default:
                         {
                             // Simple clause: AND or ANDNOT with bitmap[0]
@@ -1418,7 +1435,10 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        // Pack operand ordering
+        // Pack operand ordering — encodes clause sort order after cardinality reordering.
+        // The plan structure must be the same for all parameter values of the same query text.
+        // Variable-count IN terms use InRangeCounts (read at runtime by the IL).
+        // Null-term slots are always allocated — the match is a no-op when null isn't present.
         int ordering = 0;
         for (int i = 0; i < Math.Min(clauses.Count, 10); i++)
             ordering |= (clauses[i].OriginalIndex & 0x7) << (i * 3);
@@ -1464,7 +1484,8 @@ internal static partial class QueryPlanBuilder
             ScanPredicateInfos = scanPredicateInfos,
             TypeSignature = typeSignature,
             FullKinds = fullKinds,
-            RequiredBitmaps = needsThreeBitmaps ? 3 : 2
+            RequiredBitmaps = needsThreeBitmaps ? 3 : 2,
+            InRangeCounts = rangeCounts.Count > 0 ? rangeCounts.ToArray() : null
         };
     }
 
@@ -1509,7 +1530,7 @@ internal static partial class QueryPlanBuilder
     // ── Plan helpers ─────────────────────────────────────────────────────
 
     /// <summary>Emit ops for an IN clause: Fill the first term + OrRange for the rest, plus null-term if needed.</summary>
-    private static void EmitInOps(List<PlanOp> ops, ClauseExecution exec, int bitmapLocal, bool isSeed, ref int matchIndex)
+    private static void EmitInOps(List<PlanOp> ops, ClauseExecution exec, int bitmapLocal, bool isSeed, ref int matchIndex, List<int> rangeCounts)
     {
         int terms = exec.InTermCount;
         if (terms > 0)
@@ -1526,11 +1547,13 @@ internal static partial class QueryPlanBuilder
                 });
                 if (terms > 1)
                 {
+                    int rangeIdx = rangeCounts.Count;
+                    rangeCounts.Add(terms - 1);
                     ops.Add(new PlanOp
                     {
                         Kind = PlanOpKind.OrRange,
                         ParamIndex = matchIndex + 1,
-                        ParamIndex2 = terms - 1,
+                        ParamIndex2 = rangeIdx,
                         BitmapLocal = bitmapLocal,
                         EstimatedCardinality = exec.Cardinality,
                         Dispatch = MatchDispatch.PostingList
@@ -1539,11 +1562,13 @@ internal static partial class QueryPlanBuilder
             }
             else
             {
+                int rangeIdx = rangeCounts.Count;
+                rangeCounts.Add(terms);
                 ops.Add(new PlanOp
                 {
                     Kind = PlanOpKind.OrRange,
                     ParamIndex = matchIndex,
-                    ParamIndex2 = terms,
+                    ParamIndex2 = rangeIdx,
                     BitmapLocal = bitmapLocal,
                     EstimatedCardinality = exec.Cardinality,
                     Dispatch = MatchDispatch.PostingList
@@ -1552,9 +1577,9 @@ internal static partial class QueryPlanBuilder
             matchIndex += terms;
         }
 
-        if (exec.HasNullTerm is false) 
-            return;
-        
+        // Always emit the null-term slot so the plan structure is the same regardless
+        // of whether the parameter array contains null. When null isn't present,
+        // ResolveMatches fills the slot with an empty match (Fill returns 0 → no-op OR).
         bool isFirstOp = isSeed && exec.InTermCount == 0;
         ops.Add(new PlanOp
         {
@@ -1567,7 +1592,7 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>Emit ops for an AllIn clause: Fill the first term + AndRange for the rest.</summary>
-    private static void EmitAllInOps(List<PlanOp> ops, ClauseExecution exec, ref int matchIndex)
+    private static void EmitAllInOps(List<PlanOp> ops, ClauseExecution exec, ref int matchIndex, List<int> rangeCounts)
     {
         int terms = exec.InTermCount;
         ops.Add(new PlanOp
@@ -1580,11 +1605,13 @@ internal static partial class QueryPlanBuilder
         });
         if (terms > 1)
         {
+            int rangeIdx = rangeCounts.Count;
+            rangeCounts.Add(terms - 1);
             ops.Add(new PlanOp
             {
                 Kind = PlanOpKind.AndRange,
                 ParamIndex = matchIndex + 1,
-                ParamIndex2 = terms - 1,
+                ParamIndex2 = rangeIdx,
                 BitmapLocal = 0,
                 EstimatedCardinality = exec.Cardinality,
                 Dispatch = MatchDispatch.PostingList
@@ -1669,7 +1696,9 @@ internal static partial class QueryPlanBuilder
             {
                 ClauseType.OrGroup when clause.OrSubClauses != null => clause.OrSubClauses.Count,
                 ClauseType.AndGroup when clause.AndSubClauses != null => clause.AndSubClauses.Count,
-                ClauseType.In or ClauseType.AllIn when inTermCount > 0 || hasNullTerm => inTermCount + (hasNullTerm ? 1 : 0),
+                // Always +1 for the null-term slot so the plan structure is parameter-independent.
+                // The slot is filled with an empty match when null isn't in the parameter.
+                ClauseType.In or ClauseType.AllIn => inTermCount + 1,
                 _ => 1
             };
         }
@@ -1694,11 +1723,37 @@ internal static partial class QueryPlanBuilder
         return clause.ClauseType is ClauseType.Equals or ClauseType.NotEquals;
     }
 
+    /// <summary>TreeScan-eligible: multi-term clauses that have a direct ITermsProvider
+    /// (StartsWith, EndsWith, Exists, Regex, ranges). Boosted clauses go through QueryMatch
+    /// for scoring. Contains is excluded because its tree walk pattern doesn't benefit
+    /// from the direct dispatch (it walks the full tree regardless).</summary>
+    internal static bool IsTreeScanEligibleClause(ClauseInfo clause, ClauseExecution exec = null)
+    {
+        if (clause == null)
+            return false;
+        if (exec is { BoostFactor: > 0 })
+            return false;
+        if (clause.HasBoost)
+            return false;
+        return clause.ClauseType is ClauseType.StartsWith or ClauseType.EndsWith
+            or ClauseType.Exists or ClauseType.Regex
+            or ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
+            or ClauseType.LessThan or ClauseType.LessThanOrEqual
+            or ClauseType.Between;
+    }
+
     /// <summary>Resolve the <see cref="MatchDispatch"/> mode for a clause at plan-build time.
-    /// Equals / NotEquals (unboosted) → <c>PostingList</c> (native posting-list, no IQueryMatch wrapper).
+    /// Equals / NotEquals (unboosted) → <c>PostingList</c> (native posting-list).
+    /// Multi-term (unboosted) → <c>TreeScan</c> (direct ITermsProvider, no IQueryMatch wrapper).
     /// All other clause types → <c>QueryMatch</c> (IQueryMatch interface dispatch).</summary>
-    private static MatchDispatch GetDispatch(ClauseInfo clause, ClauseExecution exec = null) => 
-        IsTermSourceEligibleClause(clause, exec) ? MatchDispatch.PostingList : MatchDispatch.QueryMatch;
+    private static MatchDispatch GetDispatch(ClauseInfo clause, ClauseExecution exec = null)
+    {
+        if (IsTermSourceEligibleClause(clause, exec))
+            return MatchDispatch.PostingList;
+        if (IsTreeScanEligibleClause(clause, exec))
+            return MatchDispatch.TreeScan;
+        return MatchDispatch.QueryMatch;
+    }
 
     // ── Entry scan predicate building ────────────────────────────────────
 
@@ -1716,11 +1771,64 @@ internal static partial class QueryPlanBuilder
             case ClauseType.Vector:
             case ClauseType.In:
             case ClauseType.AllIn:
-            case ClauseType.Exists:
             case ClauseType.StartsWith:
+            {
+                var packed2 = exec?.PackedParamValue ?? PackedParam.None;
+                if (packed2.IsNone || packed2.ValueType != PackedParam.TypeString) return null;
+                sliceIndex++;
+                return new ScanPredicateInfo
+                {
+                    FieldName = clause.FieldName,
+                    ValueType = ScanValueType.Slice,
+                    CompareOp = ScanCompareOp.StartsWith,
+                    ParamIndex = sliceIndex - 1
+                };
+            }
             case ClauseType.EndsWith:
-            case ClauseType.AndGroup: // AND-groups inside OR chains are handled at the bitmap level
-                return null;
+            {
+                var packed2 = exec?.PackedParamValue ?? PackedParam.None;
+                if (packed2.IsNone || packed2.ValueType != PackedParam.TypeString) return null;
+                sliceIndex++;
+                return new ScanPredicateInfo
+                {
+                    FieldName = clause.FieldName,
+                    ValueType = ScanValueType.Slice,
+                    CompareOp = ScanCompareOp.EndsWith,
+                    ParamIndex = sliceIndex - 1
+                };
+            }
+            case ClauseType.AndGroup:
+            {
+                if (clause.AndSubClauses == null || clause.AndSubClauses.Count == 0)
+                    return null;
+                var branches = new List<ScanPredicateInfo>();
+                var subExecs = exec?.AndSubExecutions;
+                for (int si = 0; si < clause.AndSubClauses.Count; si++)
+                {
+                    var sub = clause.AndSubClauses[si];
+                    var subExec = subExecs != null && si < subExecs.Length ? subExecs[si] : null;
+                    var subPred = BuildScanPredicateInfo(sub, subExec, ref longIndex, ref doubleIndex, ref sliceIndex);
+                    if (subPred == null) return null;
+                    branches.Add(subPred.Value);
+                }
+                // SubPredicates for AND group — RunEntryScan checks ALL must pass
+                return new ScanPredicateInfo
+                {
+                    FieldName = clause.FieldName ?? clause.AndSubClauses[0].FieldName,
+                    ValueType = ScanValueType.Long,
+                    CompareOp = ScanCompareOp.Equal,
+                    SubPredicates = branches.ToArray()
+                };
+            }
+
+            case ClauseType.Exists:
+                return new ScanPredicateInfo
+                {
+                    FieldName = clause.FieldName,
+                    ValueType = ScanValueType.Long, // unused for Exists but must be set
+                    CompareOp = ScanCompareOp.Exists,
+                    ParamIndex = 0 // unused
+                };
 
             case ClauseType.OrGroup:
             {
@@ -1742,7 +1850,7 @@ internal static partial class QueryPlanBuilder
                 return new ScanPredicateInfo
                 {
                     FieldName = clause.OrSubClauses[0].FieldName,
-                    OrBranches = branches.ToArray()
+                    SubPredicates = branches.ToArray()
                 };
             }
         }

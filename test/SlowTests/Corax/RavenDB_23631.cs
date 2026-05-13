@@ -85,6 +85,50 @@ public class RavenDB_23631(ITestOutputHelper output) : StorageTest(output)
         Assert.Equal(results.Distinct().Count(), results.Count);
     }
 
+    [RavenFact(RavenTestCategory.Querying | RavenTestCategory.Corax)]
+    public void InQueryAndExistsOnListFieldDoesNotProduceDuplicates()
+    {
+        // This is the exact scenario from the original RavenDB-23631 bug:
+        // AND of InQuery with ExistsQuery on a list-valued field (multiple values per doc).
+        // The list field produces multiple postings per document in the CompactTree,
+        // which could cause duplicate entry IDs in the intersection result.
+        using var mapping = IndexFieldsMappingBuilder.CreateForWriter(false)
+            .AddBinding(0, "docId")
+            .AddBinding(1, "name")
+            .Build();
+
+        using (var writer = new IndexWriter(Env, mapping, SupportedFeatures.All))
+        {
+            for (int i = 0; i < 1000; i++)
+            {
+                using (var builder = writer.Index($"id/{i}"))
+                {
+                    builder.Write(0, Encodings.Utf8.GetBytes($"id/{i}"));
+                    builder.IncrementList();
+                    builder.Write(1, Encodings.Utf8.GetBytes("name/0"));
+                    builder.Write(1, Encodings.Utf8.GetBytes("name/1"));
+                    builder.DecrementList();
+                    builder.EndWriting();
+                }
+            }
+
+            writer.Commit();
+        }
+
+        // IN(docId, ['id/0', 'id/10']) AND exists(name)
+        // The exists on a list field with 2 values per doc must not produce duplicates.
+        var results = ExecuteRQLQuery(mapping, "FROM TestIndex WHERE docId IN ('id/0', 'id/10') AND exists(name)");
+        Assert.Equal(2, results.Count);
+        Assert.Equal(results.Distinct().Count(), results.Count);
+
+        // Larger IN set + exists
+        var inTerms = Enumerable.Range(0, 10).Select(i => $"id/{i}").ToList();
+        var inClause = string.Join(", ", inTerms.Select(t => $"'{t}'"));
+        results = ExecuteRQLQuery(mapping, $"FROM TestIndex WHERE docId IN ({inClause}) AND exists(name)");
+        Assert.Equal(10, results.Count);
+        Assert.Equal(results.Distinct().Count(), results.Count);
+    }
+
     private List<string> ExecuteRQLQuery(IndexFieldsMapping mapping, string rqlQuery)
     {
         using var searcher = new IndexSearcher(Env, mapping);
