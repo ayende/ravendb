@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
@@ -8,194 +9,183 @@ using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Primitives;
 using Corax.Utils;
-using Voron.Data.RoaringBitmaps;
 using Voron;
+using Voron.Data.CompactTrees;
+using Voron.Data.RoaringBitmaps;
 
 namespace Corax.Querying.Planning;
 
-public static class QueryILEmitter
+public static class QueryIlEmitter
 {
-    public delegate void CompiledExecuteDelegate(ref QueryScanContext ctx);
+    public delegate void CompiledExecuteDelegate(CompiledQueryMatch ctx);
 
-    // FillBufferSize and EntryScanBatchSize from QueryPrimitives are shared
-    // so all stackalloc sizes stay in sync. See Primitives.cs for documentation.
-
-    // QueryScanContext fields
-    private static readonly FieldInfo s_ctxBitmaps = typeof(QueryScanContext).GetField(nameof(QueryScanContext.Bitmaps))!;
-    private static readonly FieldInfo s_ctxTermSources = typeof(QueryScanContext).GetField(nameof(QueryScanContext.TermSources))!;
-    private static readonly FieldInfo s_ctxLlt = typeof(QueryScanContext).GetField(nameof(QueryScanContext.Llt))!;
-    private static readonly FieldInfo s_ctxSearcher = typeof(QueryScanContext).GetField(nameof(QueryScanContext.Searcher))!;
-    private static readonly FieldInfo s_ctxToken = typeof(QueryScanContext).GetField(nameof(QueryScanContext.Token))!;
-    private static readonly FieldInfo s_ctxEntryScanTakenAtOp = typeof(QueryScanContext).GetField(nameof(QueryScanContext.EntryScanTakenAtOp))!;
+    // CompiledQueryMatch fields (accessed by emitted IL)
+    private static readonly FieldInfo CtxBitmaps = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Bitmaps));
+    private static readonly FieldInfo CtxTermSources = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.PostingSources));
+    private static readonly FieldInfo CtxLlt = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Llt));
+    private static readonly FieldInfo CtxSearcher = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Searcher));
+    private static readonly FieldInfo CtxToken = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Token));
+    private static readonly FieldInfo CtxEntryScanTakenAtOp = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.EntryScanTakenAtOp));
+    private static readonly FieldInfo CtxLimit = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Limit));
 
     // Timing helpers
-    private static readonly MethodInfo s_getTimestamp =
-        typeof(System.Diagnostics.Stopwatch).GetMethod(nameof(System.Diagnostics.Stopwatch.GetTimestamp))!;
-    private static readonly MethodInfo s_recordTiming =
-        typeof(EntryScanHelper).GetMethod(nameof(EntryScanHelper.RecordTiming))!;
-    private static readonly MethodInfo s_recordResultCount =
-        typeof(EntryScanHelper).GetMethod(nameof(EntryScanHelper.RecordResultCount))!;
-
-    // Context accessor helpers — bypasses Span<interface>.get_Item + Ldind_Ref in DynamicMethod IL
-    // (reference-type generic Span indexer with Ldind_Ref can misverify under JIT in DynamicMethods).
-    private static readonly MethodInfo s_getDirectSource =
-        typeof(EntryScanHelper).GetMethod(nameof(EntryScanHelper.GetDirectSource))!;
-    private static readonly MethodInfo s_getTermProvider =
-        typeof(EntryScanHelper).GetMethod(nameof(EntryScanHelper.GetTermProvider))!;
-
-    // Span<RoaringBitmap> indexer — returns ref RoaringBitmap
-    private static readonly MethodInfo s_bitmapSpanIndexer =
-        typeof(Span<RoaringBitmap>).GetProperty("Item")!.GetGetMethod()!;
+    private static readonly MethodInfo GetTimestamp =
+        typeof(Stopwatch).GetMethod(nameof(Stopwatch.GetTimestamp))!;
+    private static readonly MethodInfo RecordTiming =
+        typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.RecordTiming))!;
+    private static readonly MethodInfo RecordResultCount =
+        typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.RecordResultCount))!;
+    private static readonly MethodInfo RunEntryScanMethod =
+        typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.RunEntryScan))!;
 
     // IQueryMatch
-    private static readonly MethodInfo s_matchCountGetter = typeof(IQueryMatch).GetProperty(nameof(IQueryMatch.Count))!.GetGetMethod()!;
+    private static readonly MethodInfo MatchCountGetter = typeof(IQueryMatch).GetProperty(nameof(IQueryMatch.Count))!.GetGetMethod()!;
 
     // RoaringBitmap — methods called directly by emitted IL
-    private static readonly MethodInfo s_andWith =
+    private static readonly MethodInfo AndWith =
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.AndWith),
-            new[] { typeof(RoaringBitmap).MakeByRefType() })!;
-    private static readonly MethodInfo s_orWith =
+            [typeof(RoaringBitmap).MakeByRefType()])!;
+    private static readonly MethodInfo OrWith =
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.OrWith),
-            new[] { typeof(RoaringBitmap).MakeByRefType() })!;
-    private static readonly MethodInfo s_andNotWith =
+            [typeof(RoaringBitmap).MakeByRefType()])!;
+    private static readonly MethodInfo LazyOrWith =
+        typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.LazyOrWith),
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public,
+            [typeof(RoaringBitmap).MakeByRefType()])!;
+    private static readonly MethodInfo AndNotWith =
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.AndNotWith),
-            new[] { typeof(RoaringBitmap).MakeByRefType() })!;
-    private static readonly MethodInfo s_clear =
+            [typeof(RoaringBitmap).MakeByRefType()])!;
+    private static readonly MethodInfo Clear =
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.Clear), Type.EmptyTypes)!;
-    private static readonly MethodInfo s_isEmptyGetter = typeof(RoaringBitmap).GetProperty(nameof(RoaringBitmap.IsEmpty))!.GetGetMethod()!;
-    private static readonly MethodInfo s_repairAfterLazy =
+    private static readonly MethodInfo IsEmptyGetter = typeof(RoaringBitmap).GetProperty(nameof(RoaringBitmap.IsEmpty))!.GetGetMethod()!;
+    private static readonly MethodInfo CountGetter = typeof(RoaringBitmap).GetProperty(nameof(RoaringBitmap.Count))!.GetGetMethod()!;
+    private static readonly MethodInfo RepairAfterLazy =
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.RepairAfterLazy), Type.EmptyTypes)!;
-    private static readonly MethodInfo s_bitmapCountGetter = typeof(RoaringBitmap).GetProperty(nameof(RoaringBitmap.Count))!.GetGetMethod()!;
-    private static readonly MethodInfo s_swapContents =
+    private static readonly MethodInfo SwapContents =
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.SwapContents),
-            new[] { typeof(RoaringBitmap).MakeByRefType() })!;
-    private static readonly MethodInfo s_prepareForReading =
+            [typeof(RoaringBitmap).MakeByRefType()])!;
+    private static readonly MethodInfo PrepareForReading =
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.PrepareForReading), Type.EmptyTypes)!;
-    private static readonly MethodInfo s_getIterator =
+    private static readonly MethodInfo GetIterator =
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.GetIterator), Type.EmptyTypes)!;
-    private static readonly MethodInfo s_bitmapAdd =
-        typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.Add), new[] { typeof(long) })!;
-
-    // IndexSearcher.Allocator — used by QueryPrimitives methods that still take an allocator
-    private static readonly MethodInfo s_searcherAllocatorGetter =
-        typeof(IndexSearcher).GetProperty(nameof(IndexSearcher.Allocator))!.GetGetMethod()!;
+    private static readonly MethodInfo BitmapAdd =
+        typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.Add), [typeof(long)])!;
 
     // RoaringBitmapIterator
-    private static readonly MethodInfo s_iterFill =
+    private static readonly MethodInfo IterFill =
         typeof(RoaringBitmapIterator).GetMethod(nameof(RoaringBitmapIterator.Fill),
-            new[] { typeof(RoaringBitmap).MakeByRefType(), typeof(System.Span<long>) })!;
-    private static readonly MethodInfo s_iterDispose = typeof(RoaringBitmapIterator).GetMethod(nameof(RoaringBitmapIterator.Dispose))!;
+            [typeof(RoaringBitmap).MakeByRefType(), typeof(Span<long>)])!;
+    private static readonly MethodInfo IterDispose = typeof(RoaringBitmapIterator).GetMethod(nameof(RoaringBitmapIterator.Dispose))!;
 
     // CancellationToken
-    private static readonly MethodInfo s_throwIfCancelled = typeof(CancellationToken).GetMethod(nameof(CancellationToken.ThrowIfCancellationRequested))!;
+    private static readonly MethodInfo ThrowIfCancelled = typeof(CancellationToken).GetMethod(nameof(CancellationToken.ThrowIfCancellationRequested))!;
 
     // Span<long>
-    private static readonly ConstructorInfo s_spanCtor = typeof(Span<long>).GetConstructor(new[] { typeof(void*), typeof(int) })!;
-    private static readonly MethodInfo s_spanLongIndexer = typeof(Span<long>).GetProperty("Item")!.GetGetMethod()!;
+    private static readonly ConstructorInfo SpanCtor = typeof(Span<long>).GetConstructor([typeof(void*), typeof(int)])!;
+    private static readonly MethodInfo SpanLongIndexer = typeof(Span<long>).GetProperty("Item")!.GetGetMethod()!;
 
     // IndexSearcher — for entry scan
-    private static readonly MethodInfo s_getEntryTermsReader =
+    private static readonly MethodInfo GetEntryTermsReader =
         typeof(IndexSearcher).GetMethod(nameof(IndexSearcher.GetEntryTermsReader),
-            new[] { typeof(long), typeof(Page).MakeByRefType(), typeof(Voron.Data.CompactTrees.CompactKey) })!;
+            [typeof(long), typeof(Page).MakeByRefType(), typeof(CompactKey)])!;
 
     // EntryTermsReader
-    private static readonly MethodInfo s_readerReset = typeof(EntryTermsReader).GetMethod(nameof(EntryTermsReader.Reset))!;
-    private static readonly MethodInfo s_readerFindNext = typeof(EntryTermsReader).GetMethod(nameof(EntryTermsReader.FindNext))!;
+    private static readonly MethodInfo ReaderReset = typeof(EntryTermsReader).GetMethod(nameof(EntryTermsReader.Reset))!;
+    private static readonly MethodInfo ReaderFindNext = typeof(EntryTermsReader).GetMethod(nameof(EntryTermsReader.FindNext))!;
 
     // EntryTermsReader numeric fields — for direct comparison
-    private static readonly FieldInfo s_readerCurrentLong = typeof(EntryTermsReader).GetField(nameof(EntryTermsReader.CurrentLong))!;
-    private static readonly FieldInfo s_readerCurrentDouble = typeof(EntryTermsReader).GetField(nameof(EntryTermsReader.CurrentDouble))!;
+    private static readonly FieldInfo ReaderCurrentLong = typeof(EntryTermsReader).GetField(nameof(EntryTermsReader.CurrentLong))!;
+    private static readonly FieldInfo ReaderCurrentDouble = typeof(EntryTermsReader).GetField(nameof(EntryTermsReader.CurrentDouble))!;
 
-    // QueryScanContext typed parameter spans
-    private static readonly FieldInfo s_ctxFieldRootPages =
-        typeof(QueryScanContext).GetField(nameof(QueryScanContext.FieldRootPages))!;
-    private static readonly FieldInfo s_ctxLongParams =
-        typeof(QueryScanContext).GetField(nameof(QueryScanContext.LongParams))!;
-    private static readonly FieldInfo s_ctxDoubleParams =
-        typeof(QueryScanContext).GetField(nameof(QueryScanContext.DoubleParams))!;
-    private static readonly FieldInfo s_ctxSliceParams =
-        typeof(QueryScanContext).GetField(nameof(QueryScanContext.SliceParams))!;
+    // CompiledQueryMatch typed parameter arrays
+    private static readonly FieldInfo CtxFieldRootPages =
+        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.FieldRootPages));
+    private static readonly FieldInfo CtxLongParams =
+        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.LongParams));
+    private static readonly FieldInfo CtxDoubleParams =
+        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.DoubleParams));
+    private static readonly FieldInfo CtxSliceParams =
+        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.SliceParams));
+    private static readonly FieldInfo CtxResolvedMatches =
+        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.ResolvedMatches));
+    private static readonly FieldInfo CtxInRangeCounts =
+        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.InRangeCounts));
+    private static readonly FieldInfo CtxEntryScanScanned =
+        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.EntryScanEntriesScanned));
+    private static readonly FieldInfo CtxEntryScanPassed =
+        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.EntryScanEntriesPassed));
+    private static readonly FieldInfo CtxTermsProviders =
+        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.TermsProviders));
 
     // CompactKey.Decoded() → ReadOnlySpan<byte>
-    private static readonly FieldInfo s_readerCurrent =
+    private static readonly FieldInfo ReaderCurrent =
         typeof(EntryTermsReader).GetField(nameof(EntryTermsReader.Current))!;
-    private static readonly MethodInfo s_compactKeyDecoded =
-        typeof(Voron.Data.CompactTrees.CompactKey).GetMethod("Decoded", Type.EmptyTypes)!;
+    private static readonly MethodInfo CompactKeyDecoded =
+        typeof(CompactKey).GetMethod(nameof(CompactKey.Decoded), Type.EmptyTypes)!;
 
     // Slice.AsReadOnlySpan() → ReadOnlySpan<byte>
-    private static readonly MethodInfo s_sliceAsReadOnlySpan =
-        typeof(Voron.Slice).GetMethod(nameof(Voron.Slice.AsReadOnlySpan))!;
+    private static readonly MethodInfo SliceAsReadOnlySpan =
+        typeof(Slice).GetMethod(nameof(Slice.AsReadOnlySpan))!;
 
-    // QueryPrimitives — called instead of inline IL Fill loops
-    private static readonly MethodInfo s_fillFromMatch =
-        typeof(Corax.Querying.Primitives.QueryPrimitives).GetMethod(nameof(Primitives.QueryPrimitives.FillFromMatch))!;
-    private static readonly MethodInfo s_andWithMatch =
-        typeof(Corax.Querying.Primitives.QueryPrimitives).GetMethod(nameof(Primitives.QueryPrimitives.AndWithMatch))!;
-    private static readonly MethodInfo s_andNotWithMatch =
-        typeof(Corax.Querying.Primitives.QueryPrimitives).GetMethod(nameof(Primitives.QueryPrimitives.AndNotWithMatch))!;
+    // Ctx-based entry points — take ref CompiledQueryMatch, IL just pushes ldarg.0 + int constants
+    private static readonly MethodInfo CtxFillFromPostingSource = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxFillFromPostingSource))!;
+    private static readonly MethodInfo CtxFillFromTreeScan = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxFillFromTreeScan))!;
+    private static readonly MethodInfo CtxFillFromMatch = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxFillFromMatch))!;
+    private static readonly MethodInfo CtxOrFillFromPostingSource = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxOrFillFromPostingSource))!;
+    private static readonly MethodInfo CtxOrFillFromTreeScan = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxOrFillFromTreeScan))!;
+    private static readonly MethodInfo CtxOrFillFromMatch = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxOrFillFromMatch))!;
+    private static readonly MethodInfo CtxAndFromPostingSource = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndFromPostingSource))!;
+    private static readonly MethodInfo CtxAndFromTreeScan = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndFromTreeScan))!;
+    private static readonly MethodInfo CtxAndFromMatch = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndFromMatch))!;
+    private static readonly MethodInfo CtxAndNotFromPostingSource = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndNotFromPostingSource))!;
+    private static readonly MethodInfo CtxAndNotFromTreeScan = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndNotFromTreeScan))!;
+    private static readonly MethodInfo CtxAndNotFromMatch = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndNotFromMatch))!;
 
-    // Native posting-list dispatch — bypasses IQueryMatch wrapper
-    private static readonly MethodInfo s_fillBitmapFromTermSource =
-        typeof(Corax.Querying.Primitives.QueryPrimitives).GetMethod(nameof(Primitives.QueryPrimitives.FillBitmapFromTermSource))!;
-    private static readonly MethodInfo s_andWithTermSource =
-        typeof(Corax.Querying.Primitives.QueryPrimitives).GetMethod(nameof(Primitives.QueryPrimitives.AndWithTermSource))!;
-    private static readonly MethodInfo s_andNotWithTermSource =
-        typeof(Corax.Querying.Primitives.QueryPrimitives).GetMethod(nameof(Primitives.QueryPrimitives.AndNotWithTermSource))!;
-
-    // Multi-term provider dispatch — FillBitmapFromTermProvider / And / AndNot
-    private static readonly MethodInfo s_fillBitmapFromTermProvider =
-        typeof(Corax.Querying.Primitives.QueryPrimitives).GetMethod(nameof(Primitives.QueryPrimitives.FillBitmapFromTermProvider))!;
-    private static readonly MethodInfo s_andBitmapWithTermProvider =
-        typeof(Corax.Querying.Primitives.QueryPrimitives).GetMethod(nameof(Primitives.QueryPrimitives.AndBitmapWithTermProvider))!;
-    private static readonly MethodInfo s_andNotBitmapWithTermProvider =
-        typeof(Corax.Querying.Primitives.QueryPrimitives).GetMethod(nameof(Primitives.QueryPrimitives.AndNotBitmapWithTermProvider))!;
-
-    // Span<TermSource> indexer
-    private static readonly MethodInfo s_termSourceSpanIndexer =
-        typeof(Span<TermSource>).GetProperty("Item")!.GetGetMethod()!;
-
-    // Span<Slice> indexer
-    private static readonly MethodInfo s_spanSliceIndexer =
-        typeof(Span<Voron.Slice>).GetProperty("Item")!.GetGetMethod()!;
+    // Slice.AsReadOnlySpan() is used by EmitSliceComparison to load parameter values.
+    // With arrays, we use ldelema to get ref Slice, then call AsReadOnlySpan.
 
     // MemoryExtensions.SequenceCompareTo<byte>(ReadOnlySpan<byte>, ReadOnlySpan<byte>)
-    private static readonly MethodInfo s_sequenceCompareTo =
+    private static readonly MethodInfo SequenceCompareTo =
         typeof(MemoryExtensions).GetMethods()
             .First(m => m.Name == nameof(MemoryExtensions.SequenceCompareTo) && m.IsGenericMethod
                 && m.GetParameters().Length == 2)
             .MakeGenericMethod(typeof(byte));
 
     // MemoryExtensions.SequenceEqual<byte>(ReadOnlySpan<byte>, ReadOnlySpan<byte>)
-    private static readonly MethodInfo s_sequenceEqual =
+    private static readonly MethodInfo SequenceEqual =
         typeof(MemoryExtensions).GetMethods()
             .First(m => m.Name == nameof(MemoryExtensions.SequenceEqual) && m.IsGenericMethod
                 && m.GetParameters().Length == 2)
             .MakeGenericMethod(typeof(byte));
 
-    // Span<double> indexer
-    private static readonly MethodInfo s_spanDoubleIndexer =
-        typeof(Span<double>).GetProperty("Item")!.GetGetMethod()!;
-
     // Entry-scan cost heuristics — called from emitted IL so thresholds stay in one place
-    private static readonly MethodInfo s_shouldSwitchToEntryScan =
-        typeof(Corax.Querying.Primitives.QueryPrimitives).GetMethod(
-            nameof(Primitives.QueryPrimitives.ShouldSwitchToEntryScan),
-            new[] { typeof(long), typeof(long) })!;
+    private static readonly MethodInfo ShouldSwitchToEntryScan =
+        typeof(QueryPrimitives).GetMethod(
+            nameof(QueryPrimitives.ShouldSwitchToEntryScan),
+            [typeof(long), typeof(long)])!;
 
-    public static CompiledExecuteDelegate EmitDelegate(QueryPlan plan)
+    public static CompiledExecuteDelegate EmitDelegate(QueryExecution plan, out string explainSource, bool emitTimings = true)
     {
         var ops = plan.Ops;
         if (ops == null || ops.Length == 0)
+        {
+            explainSource = "// Empty plan";
             return EmptyExecute;
+        }
+
+        // EXPLAIN pseudocode built alongside IL emission.
+        var explain = new StringBuilder();
+        explain.AppendLine("// Compiled query — pseudocode mirroring the emitted IL.");
 
         var dm = new DynamicMethod(
             "CompiledQuery",
             typeof(void),
-            new[] { typeof(QueryScanContext).MakeByRefType() },
-            typeof(QueryILEmitter).Module,
-            skipVisibility: true);
-
-        dm.InitLocals = false;
+            [typeof(CompiledQueryMatch)],
+            typeof(CompiledQueryMatch).Module,
+            skipVisibility: true)
+            {
+                InitLocals = false
+            };
 
         var il = dm.GetILGenerator();
 
@@ -207,193 +197,149 @@ public static class QueryILEmitter
         var doneLabel = il.DefineLabel();
         var entryScanLabel = il.DefineLabel();
         bool hasEntryScan = false;
+        bool needsLazyRepair = false;
         int entryScanOpIndex = -1;
 
         // stackalloc long[FillBufferSize]
-        EmitLdcI4(il, Primitives.QueryPrimitives.FillBufferSize);
+        EmitLdcI4(il, QueryPrimitives.FillBufferSize);
         il.Emit(OpCodes.Conv_U);
         il.Emit(OpCodes.Sizeof, typeof(long));
         il.Emit(OpCodes.Mul_Ovf_Un);
         il.Emit(OpCodes.Localloc);
-        EmitLdcI4(il, Primitives.QueryPrimitives.FillBufferSize);
-        il.Emit(OpCodes.Newobj, s_spanCtor);
+        EmitLdcI4(il, QueryPrimitives.FillBufferSize);
+        il.Emit(OpCodes.Newobj, SpanCtor);
         il.Emit(OpCodes.Stloc, bufferLocal);
+
+        // Bounds-check elimination preamble: touch the max index of each array
+        // so the JIT can hoist the length checks out of loops.
+        EmitBoundsCheckPreamble(il, ops);
 
         for (int i = 0; i < ops.Length; i++)
         {
             ref PlanOp op = ref ops[i];
 
-            // Timing: record start tick before each op
-            EmitTimingStart(il, startTickLocal);
+            // Timing: record start tick before each op (skipped for untimed delegate)
+            if (emitTimings)
+                EmitTimingStart(il, startTickLocal);
+
+            // Resolve dispatch once per op — used by both IL emission and EXPLAIN.
+            var (src, fillMethod, andMethod, orMethod, andNotMethod) = op.Dispatch switch
+            {
+                MatchDispatch.PostingList => (
+                    $"ctx.TermSources[{op.ParamIndex}]",
+                    CtxFillFromPostingSource, CtxAndFromPostingSource, CtxOrFillFromPostingSource, CtxAndNotFromPostingSource),
+                MatchDispatch.TreeScan => (
+                    $"ctx.TermsProviders[{op.ParamIndex}]",
+                    CtxFillFromTreeScan, CtxAndFromTreeScan, CtxOrFillFromTreeScan, CtxAndNotFromTreeScan),
+                _ => (
+                    $"ctx.ResolvedMatches[{op.ParamIndex}]",
+                    CtxFillFromMatch, CtxAndFromMatch, (MethodInfo)CtxOrFillFromMatch, CtxAndNotFromMatch)
+            };
 
             switch (op.Kind)
             {
                 case PlanOpKind.FillFromPostings:
                 case PlanOpKind.DirectIterate:
                     EmitCancellationCheck(il);
-                    if (op.Dispatch == MatchDispatch.TermSource)
-                    {
-                        // QueryPrimitives.FillBitmapFromTermSource(ref TermSources[i], llt, ref bitmap[0], allocator)
-                        EmitLoadTermSourceRef(il, op.ParamIndex);
-                        EmitLoadLlt(il);
-                        EmitLoadBitmapRef(il, 0);
-                        EmitLoadAllocator(il);
-                        il.Emit(OpCodes.Call, s_fillBitmapFromTermSource);
-                    }
-                    else if (op.Dispatch == MatchDispatch.TermProvider)
-                    {
-                        // QueryPrimitives.FillBitmapFromTermProvider(TermProviders[i], llt, ref bitmap[0])
-                        EmitLoadTermProvider(il, op.ParamIndex);
-                        EmitLoadLlt(il);
-                        EmitLoadBitmapRef(il, 0);
-                        il.Emit(OpCodes.Call, s_fillBitmapFromTermProvider);
-                    }
-                    else
-                    {
-                        // QueryPrimitives.FillFromMatch(match, ref bitmap[0])
-                        EmitLoadMatch(il, op.ParamIndex);
-                        EmitLoadBitmapRef(il, 0);
-                        il.Emit(OpCodes.Call, s_fillFromMatch);
-                    }
+                    il.Emit(OpCodes.Ldarg_0);
+                    il.Emit(OpCodes.Ldc_I4, op.ParamIndex);
+                    il.Emit(OpCodes.Call, fillMethod);
+                    explain.AppendLine($"Fill(bitmap[0], {src});");
                     break;
 
                 case PlanOpKind.AndWithPostings:
                     EmitCancellationCheck(il);
-                    if (op.Dispatch == MatchDispatch.TermSource)
-                    {
-                        // QueryPrimitives.AndWithTermSource(ref TermSources[i], llt, ref bitmap[0], ref bitmap[1], allocator)
-                        EmitLoadTermSourceRef(il, op.ParamIndex);
-                        EmitLoadLlt(il);
-                        EmitLoadBitmapRef(il, 0);
-                        EmitLoadBitmapRef(il, 1);
-                        EmitLoadAllocator(il);
-                        il.Emit(OpCodes.Call, s_andWithTermSource);
-                    }
-                    else if (op.Dispatch == MatchDispatch.TermProvider)
-                    {
-                        // QueryPrimitives.AndBitmapWithTermProvider(TermProviders[i], llt, ref bitmap[0], ref bitmap[1])
-                        EmitLoadTermProvider(il, op.ParamIndex);
-                        EmitLoadLlt(il);
-                        EmitLoadBitmapRef(il, 0);
-                        EmitLoadBitmapRef(il, 1);
-                        il.Emit(OpCodes.Call, s_andBitmapWithTermProvider);
-                    }
-                    else
-                    {
-                        // QueryPrimitives.AndWithMatch(match, ref bitmap[0], ref bitmap[1])
-                        EmitLoadMatch(il, op.ParamIndex);
-                        EmitLoadBitmapRef(il, 0);
-                        EmitLoadBitmapRef(il, 1);
-                        il.Emit(OpCodes.Call, s_andWithMatch);
-                    }
-                    // Skip early exit when inside an OR chain (AND sub-expression result
-                    // being empty is not a reason to abort the whole OR accumulation).
+                    il.Emit(OpCodes.Ldarg_0);
+                    il.Emit(OpCodes.Ldc_I4, op.ParamIndex);
+                    il.Emit(OpCodes.Call, andMethod);
+                    explain.AppendLine($"And(bitmap[0], {src});");
                     if (!op.SkipEarlyExit)
                     {
                         EmitLoadBitmapRef(il, 0);
-                        il.Emit(OpCodes.Call, s_isEmptyGetter);
+                        il.Emit(OpCodes.Call, IsEmptyGetter);
                         il.Emit(OpCodes.Brtrue, doneLabel);
+                        explain.AppendLine("if (bitmap[0].IsEmpty) return;");
                     }
                     break;
 
                 case PlanOpKind.OrWithPostings:
                 case PlanOpKind.LazyOrWithPostings:
                     EmitCancellationCheck(il);
-                    if (op.Dispatch == MatchDispatch.TermSource)
+                    il.Emit(OpCodes.Ldarg_0);
+                    il.Emit(OpCodes.Ldc_I4, op.ParamIndex);
+                    il.Emit(OpCodes.Ldc_I4, op.BitmapLocal);
+                    il.Emit(OpCodes.Call, orMethod);
+                    explain.AppendLine($"Or(bitmap[{op.BitmapLocal}], {src});");
+                    if (op.BitmapLocal == 0)
                     {
-                        // QueryPrimitives.FillBitmapFromTermSource(ref TermSources[i], llt, ref bitmap[slot], allocator)
-                        EmitLoadTermSourceRef(il, op.ParamIndex);
-                        EmitLoadLlt(il);
-                        EmitLoadBitmapRef(il, op.BitmapLocal);
-                        EmitLoadAllocator(il);
-                        il.Emit(OpCodes.Call, s_fillBitmapFromTermSource);
-                    }
-                    else if (op.Dispatch == MatchDispatch.TermProvider)
-                    {
-                        // QueryPrimitives.FillBitmapFromTermProvider(TermProviders[i], llt, ref bitmap[slot])
-                        EmitLoadTermProvider(il, op.ParamIndex);
-                        EmitLoadLlt(il);
-                        EmitLoadBitmapRef(il, op.BitmapLocal);
-                        il.Emit(OpCodes.Call, s_fillBitmapFromTermProvider);
-                    }
-                    else
-                    {
-                        // QueryPrimitives.FillFromMatch(match, ref bitmap[slot])
-                        EmitLoadMatch(il, op.ParamIndex);
-                        EmitLoadBitmapRef(il, op.BitmapLocal);
-                        il.Emit(OpCodes.Call, s_fillFromMatch);
+                        EmitLoadBitmapRef(il, 0);
+                        il.Emit(OpCodes.Call, CountGetter);
+                        il.Emit(OpCodes.Conv_I8);
+                        EmitLoadLimit(il);
+                        il.Emit(OpCodes.Bge, doneLabel);
+                        explain.AppendLine("if (bitmap[0].Count >= limit) return;");
                     }
                     break;
 
                 case PlanOpKind.ClearBitmap:
                     EmitLoadBitmapRef(il, op.BitmapLocal);
-                    il.Emit(OpCodes.Call, s_clear);
+                    il.Emit(OpCodes.Call, Clear);
+                    explain.AppendLine($"bitmap[{op.BitmapLocal}].Clear();");
                     break;
 
                 case PlanOpKind.AndBitmaps:
-                    EmitLoadBitmapRef(il, op.BitmapLocal);   // target
-                    EmitLoadBitmapRef(il, op.ParamIndex2);    // source
-                    il.Emit(OpCodes.Call, s_andWith);
+                    EmitLoadBitmapRef(il, op.BitmapLocal);
+                    EmitLoadBitmapRef(il, op.ParamIndex2);
+                    il.Emit(OpCodes.Call, AndWith);
+                    explain.AppendLine($"bitmap[{op.BitmapLocal}].AndWith(bitmap[{op.ParamIndex2}]);");
                     break;
 
                 case PlanOpKind.AndNotBitmaps:
-                    EmitLoadBitmapRef(il, op.BitmapLocal);   // target
-                    EmitLoadBitmapRef(il, op.ParamIndex2);    // source
-                    il.Emit(OpCodes.Call, s_andNotWith);
+                    EmitLoadBitmapRef(il, op.BitmapLocal);
+                    EmitLoadBitmapRef(il, op.ParamIndex2);
+                    il.Emit(OpCodes.Call, AndNotWith);
+                    explain.AppendLine($"bitmap[{op.BitmapLocal}].AndNotWith(bitmap[{op.ParamIndex2}]);");
                     break;
 
                 case PlanOpKind.OrBitmaps:
-                    EmitLoadBitmapRef(il, op.BitmapLocal);   // target
-                    EmitLoadBitmapRef(il, op.ParamIndex2);    // source
-                    il.Emit(OpCodes.Call, s_orWith);
+                    // Use LazyOrWith to defer popcount repair. Containers are stolen/merged
+                    // immediately but cardinality is left as -1. A single RepairAfterLazy
+                    // before the done label fixes all lazy cardinalities in one pass.
+                    EmitLoadBitmapRef(il, op.BitmapLocal);
+                    EmitLoadBitmapRef(il, op.ParamIndex2);
+                    il.Emit(OpCodes.Call, LazyOrWith);
+                    needsLazyRepair = true;
+                    explain.AppendLine($"bitmap[{op.BitmapLocal}].LazyOrWith(bitmap[{op.ParamIndex2}]);");
+                    // Skip Count-based limit check — Count is unreliable with lazy cardinality.
+                    // The limit will be checked after RepairAfterLazy.
                     break;
 
                 case PlanOpKind.SwapBitmaps:
-                    EmitLoadBitmapRef(il, op.BitmapLocal);   // slot A
-                    EmitLoadBitmapRef(il, op.ParamIndex2);    // slot B
-                    il.Emit(OpCodes.Call, s_swapContents);
+                    EmitLoadBitmapRef(il, op.BitmapLocal);
+                    EmitLoadBitmapRef(il, op.ParamIndex2);
+                    il.Emit(OpCodes.Call, SwapContents);
+                    explain.AppendLine($"Swap(bitmap[{op.BitmapLocal}], bitmap[{op.ParamIndex2}]);");
                     break;
 
                 case PlanOpKind.CheckEmpty:
                     EmitLoadBitmapRef(il, op.BitmapLocal);
-                    il.Emit(OpCodes.Call, s_isEmptyGetter);
+                    il.Emit(OpCodes.Call, IsEmptyGetter);
                     il.Emit(OpCodes.Brtrue, doneLabel);
+                    explain.AppendLine($"if (bitmap[{op.BitmapLocal}].IsEmpty) return;");
                     break;
 
                 case PlanOpKind.AndNotWithPostings:
                     EmitCancellationCheck(il);
-                    if (op.Dispatch == MatchDispatch.TermSource)
-                    {
-                        // QueryPrimitives.AndNotWithTermSource(ref TermSources[i], llt, ref bitmap[0], ref bitmap[1], allocator)
-                        EmitLoadTermSourceRef(il, op.ParamIndex);
-                        EmitLoadLlt(il);
-                        EmitLoadBitmapRef(il, 0);
-                        EmitLoadBitmapRef(il, 1);
-                        EmitLoadAllocator(il);
-                        il.Emit(OpCodes.Call, s_andNotWithTermSource);
-                    }
-                    else if (op.Dispatch == MatchDispatch.TermProvider)
-                    {
-                        // QueryPrimitives.AndNotBitmapWithTermProvider(TermProviders[i], llt, ref bitmap[0], ref bitmap[1])
-                        EmitLoadTermProvider(il, op.ParamIndex);
-                        EmitLoadLlt(il);
-                        EmitLoadBitmapRef(il, 0);
-                        EmitLoadBitmapRef(il, 1);
-                        il.Emit(OpCodes.Call, s_andNotBitmapWithTermProvider);
-                    }
-                    else
-                    {
-                        // QueryPrimitives.AndNotWithMatch(match, ref bitmap[0], ref bitmap[1])
-                        EmitLoadMatch(il, op.ParamIndex);
-                        EmitLoadBitmapRef(il, 0);
-                        EmitLoadBitmapRef(il, 1);
-                        il.Emit(OpCodes.Call, s_andNotWithMatch);
-                    }
+                    il.Emit(OpCodes.Ldarg_0);
+                    il.Emit(OpCodes.Ldc_I4, op.ParamIndex);
+                    il.Emit(OpCodes.Call, andNotMethod);
+                    explain.AppendLine($"AndNot(bitmap[0], {src});");
                     break;
 
                 case PlanOpKind.RepairAfterLazy:
                     EmitLoadBitmapRef(il, 0);
-                    il.Emit(OpCodes.Call, s_repairAfterLazy);
+                    il.Emit(OpCodes.Call, RepairAfterLazy);
+                    explain.AppendLine("bitmap[0].RepairAfterLazy();");
                     break;
 
                 case PlanOpKind.CheckAndMaybeEntryScan:
@@ -401,28 +347,133 @@ public static class QueryILEmitter
                     hasEntryScan = true;
                     entryScanOpIndex = i;
 
-                    // if (QueryPrimitives.ShouldSwitchToEntryScan(bitmap.Count, match.Count)) goto entryScan
                     EmitLoadBitmapRef(il, 0);
-                    il.Emit(OpCodes.Call, s_bitmapCountGetter);
+                    il.Emit(OpCodes.Call, CountGetter);
                     il.Emit(OpCodes.Conv_I8);
                     EmitLoadMatch(il, op.ParamIndex);
-                    il.Emit(OpCodes.Callvirt, s_matchCountGetter);
-                    il.Emit(OpCodes.Call, s_shouldSwitchToEntryScan);
+                    il.Emit(OpCodes.Callvirt, MatchCountGetter);
+                    il.Emit(OpCodes.Call, ShouldSwitchToEntryScan);
                     il.Emit(OpCodes.Brtrue, entryScanLabel);
+                    explain.AppendLine($"if (ShouldSwitchToEntryScan(bitmap[0].Count, {src}.Count)) goto EntryScan;");
+                    break;
+                }
 
+                case PlanOpKind.OrRange:
+                {
+                    // for (int j = start; j < start + ctx.InRangeCounts[rangeIdx]; j++) Or(ctx, j, bitmapLocal);
+                    // Count is read at runtime from ctx.InRangeCounts so the same compiled
+                    // delegate handles different IN parameter array sizes.
+                    int start = op.ParamIndex;
+                    int rangeIdx = op.ParamIndex2; // index into InRangeCounts
+                    var loopVar = il.DeclareLocal(typeof(int));
+                    var endVar = il.DeclareLocal(typeof(int));
+                    var loopCheck = il.DefineLabel();
+                    var loopBody = il.DefineLabel();
+
+                    // endVar = start + ctx.InRangeCounts[rangeIdx]
+                    il.Emit(OpCodes.Ldc_I4, start);
+                    il.Emit(OpCodes.Ldarg_0);
+                    il.Emit(OpCodes.Ldfld, CtxInRangeCounts);
+                    EmitLdcI4(il, rangeIdx);
+                    il.Emit(OpCodes.Ldelem_I4);
+                    il.Emit(OpCodes.Add);
+                    il.Emit(OpCodes.Stloc, endVar);
+
+                    il.Emit(OpCodes.Ldc_I4, start);
+                    il.Emit(OpCodes.Stloc, loopVar);
+                    il.Emit(OpCodes.Br, loopCheck);
+
+                    il.MarkLabel(loopBody);
+                    EmitCancellationCheck(il);
+                    il.Emit(OpCodes.Ldarg_0);
+                    il.Emit(OpCodes.Ldloc, loopVar);
+                    il.Emit(OpCodes.Ldc_I4, op.BitmapLocal);
+                    il.Emit(OpCodes.Call, orMethod);
+
+                    il.Emit(OpCodes.Ldloc, loopVar);
+                    il.Emit(OpCodes.Ldc_I4_1);
+                    il.Emit(OpCodes.Add);
+                    il.Emit(OpCodes.Stloc, loopVar);
+
+                    il.MarkLabel(loopCheck);
+                    il.Emit(OpCodes.Ldloc, loopVar);
+                    il.Emit(OpCodes.Ldloc, endVar);
+                    il.Emit(OpCodes.Blt, loopBody);
+
+                    explain.AppendLine($"for (i = {start}..{start}+InRangeCounts[{rangeIdx}]) Or(bitmap[{op.BitmapLocal}], {src}[i]);");
+                    break;
+                }
+
+                case PlanOpKind.AndRange:
+                {
+                    // for (int j = start; j < start + ctx.InRangeCounts[rangeIdx]; j++) { And(ctx, j); if empty → done; }
+                    int start = op.ParamIndex;
+                    int rangeIdx = op.ParamIndex2; // index into InRangeCounts
+                    var loopVar = il.DeclareLocal(typeof(int));
+                    var endVar = il.DeclareLocal(typeof(int));
+                    var loopCheck = il.DefineLabel();
+                    var loopBody = il.DefineLabel();
+
+                    // endVar = start + ctx.InRangeCounts[rangeIdx]
+                    il.Emit(OpCodes.Ldc_I4, start);
+                    il.Emit(OpCodes.Ldarg_0);
+                    il.Emit(OpCodes.Ldfld, CtxInRangeCounts);
+                    EmitLdcI4(il, rangeIdx);
+                    il.Emit(OpCodes.Ldelem_I4);
+                    il.Emit(OpCodes.Add);
+                    il.Emit(OpCodes.Stloc, endVar);
+
+                    il.Emit(OpCodes.Ldc_I4, start);
+                    il.Emit(OpCodes.Stloc, loopVar);
+                    il.Emit(OpCodes.Br, loopCheck);
+
+                    il.MarkLabel(loopBody);
+                    EmitCancellationCheck(il);
+                    il.Emit(OpCodes.Ldarg_0);
+                    il.Emit(OpCodes.Ldloc, loopVar);
+                    il.Emit(OpCodes.Call, andMethod);
+
+                    // Early exit if bitmap is empty
+                    if (!op.SkipEarlyExit)
+                    {
+                        EmitLoadBitmapRef(il, 0);
+                        il.Emit(OpCodes.Call, IsEmptyGetter);
+                        il.Emit(OpCodes.Brtrue, doneLabel);
+                    }
+
+                    il.Emit(OpCodes.Ldloc, loopVar);
+                    il.Emit(OpCodes.Ldc_I4_1);
+                    il.Emit(OpCodes.Add);
+                    il.Emit(OpCodes.Stloc, loopVar);
+
+                    il.MarkLabel(loopCheck);
+                    il.Emit(OpCodes.Ldloc, loopVar);
+                    il.Emit(OpCodes.Ldloc, endVar);
+                    il.Emit(OpCodes.Blt, loopBody);
+
+                    explain.AppendLine($"AndRange(bitmap[0], {src}[{start}..{start}+InRangeCounts[{rangeIdx}]]);");
                     break;
                 }
 
                 case PlanOpKind.IterateInto:
                     il.Emit(OpCodes.Br, doneLabel);
+                    explain.AppendLine("return; // result in bitmap[0]");
                     break;
             }
 
-            // Timing: record elapsed time and result count after each op
-            EmitTimingEnd(il, i, startTickLocal);
+            // Timing: record elapsed time and result count after each op (skipped for untimed delegate)
+            if (emitTimings)
+                EmitTimingEnd(il, i, startTickLocal);
         }
 
         il.MarkLabel(doneLabel);
+        if (needsLazyRepair)
+        {
+            // Fix lazy cardinalities from LazyOrWith before the bitmap is read.
+            EmitLoadBitmapRef(il, 0);
+            il.Emit(OpCodes.Call, RepairAfterLazy);
+            explain.AppendLine("bitmap[0].RepairAfterLazy();");
+        }
         il.Emit(OpCodes.Ret);
 
         // Entry scan label — if any CheckAndMaybeEntryScan was emitted
@@ -432,8 +483,21 @@ public static class QueryILEmitter
             // Record which op triggered the entry scan
             il.Emit(OpCodes.Ldarg_0);
             il.Emit(OpCodes.Ldc_I4, entryScanOpIndex);
-            il.Emit(OpCodes.Stfld, s_ctxEntryScanTakenAtOp);
-            EmitEntryScan(il, plan, bufferLocal, readLocal);
+            il.Emit(OpCodes.Stfld, CtxEntryScanTakenAtOp);
+
+            // Call CompiledQueryHelper.RunEntryScan(ctx, ref bitmap[0], ref bitmap[1]).
+            // Predicate dispatch lives in ctx.CompiledEntryPredicate (IL-emitted per plan).
+            il.Emit(OpCodes.Ldarg_0);                  // ctx
+            EmitLoadBitmapRef(il, 0);                   // ref bitmap[0]
+            EmitLoadBitmapRef(il, 1);                   // ref bitmap[1]
+            il.Emit(OpCodes.Call, RunEntryScanMethod);
+
+            // Swap bitmap[0] and bitmap[1], clear bitmap[1]
+            EmitLoadBitmapRef(il, 0);
+            EmitLoadBitmapRef(il, 1);
+            il.Emit(OpCodes.Call, SwapContents);
+            EmitLoadBitmapRef(il, 1);
+            il.Emit(OpCodes.Call, Clear);
             il.Emit(OpCodes.Ret);
         }
         else
@@ -442,508 +506,39 @@ public static class QueryILEmitter
             il.Emit(OpCodes.Ret);
         }
 
+        if (hasEntryScan)
+            explain.AppendLine("EntryScan: // walks bitmap[0] re-checking per-entry predicates");
+
+        explainSource = explain.ToString();
         return (CompiledExecuteDelegate)dm.CreateDelegate(typeof(CompiledExecuteDelegate));
     }
 
-    /// <summary>Emit the entry scan: iterate bitmap entries, check predicates per entry,
-    /// collect matches into TempBitmap, swap bitmaps.
-    /// The predicate checks are emitted as direct IL — no generic loop, no type switch.
-    /// Each predicate's comparison kind (Numerical/Literal) is baked at emit time.
-    /// The actual comparison values come from MultiUnaryItem structs in the context span.</summary>
-    private static void EmitEntryScan(ILGenerator il, QueryPlan plan, LocalBuilder bufferLocal, LocalBuilder readLocal)
-    {
-        var predicates = plan.ScanPredicateInfos;
-        if (predicates == null || predicates.Length == 0)
-        {
-            // No predicates — nothing to scan, bitmap is the result
-            return;
-        }
-
-        // Locals for the entry scan loop
-        var batchLocal = il.DeclareLocal(typeof(Span<long>));        // scan batch buffer
-        var iterLocal = il.DeclareLocal(typeof(RoaringBitmapIterator));
-        var pageLocal = il.DeclareLocal(typeof(Page));               // lastPage
-        var readerLocal = il.DeclareLocal(typeof(EntryTermsReader));
-        var iLocal = il.DeclareLocal(typeof(int));                   // loop index i
-        var entryIdLocal = il.DeclareLocal(typeof(long));
-
-        // PrepareForReading + GetIterator
-        EmitLoadBitmapRef(il, 0);
-        il.Emit(OpCodes.Call, s_prepareForReading);
-        EmitLoadBitmapRef(il, 0);
-        il.Emit(OpCodes.Call, s_getIterator);
-        il.Emit(OpCodes.Stloc, iterLocal);
-
-        // TempBitmap.Clear()
-        EmitLoadBitmapRef(il, 1);
-        il.Emit(OpCodes.Call, s_clear);
-
-        // Allocate scan batch: stackalloc long[EntryScanBatchSize]
-        EmitLdcI4(il, Primitives.QueryPrimitives.EntryScanBatchSize);
-        il.Emit(OpCodes.Conv_U);
-        il.Emit(OpCodes.Sizeof, typeof(long));
-        il.Emit(OpCodes.Mul_Ovf_Un);
-        il.Emit(OpCodes.Localloc);
-        EmitLdcI4(il, Primitives.QueryPrimitives.EntryScanBatchSize);
-        il.Emit(OpCodes.Newobj, s_spanCtor);
-        il.Emit(OpCodes.Stloc, batchLocal);
-
-        // Outer loop: while ((read = iter.Fill(ref bitmap, batch)) > 0)
-        var outerLoopStart = il.DefineLabel();
-        var outerLoopEnd = il.DefineLabel();
-
-        il.MarkLabel(outerLoopStart);
-        il.Emit(OpCodes.Ldloca, iterLocal);
-        EmitLoadBitmapRef(il, 0);
-        il.Emit(OpCodes.Ldloc, batchLocal);
-        il.Emit(OpCodes.Call, s_iterFill);
-        il.Emit(OpCodes.Stloc, readLocal);
-        il.Emit(OpCodes.Ldloc, readLocal);
-        il.Emit(OpCodes.Ldc_I4_0);
-        il.Emit(OpCodes.Ble, outerLoopEnd);
-
-        // Inner loop: for (i = 0; i < read; i++)
-        var innerLoopStart = il.DefineLabel();
-        var innerLoopEnd = il.DefineLabel();
-        var nextEntry = il.DefineLabel();
-
-        il.Emit(OpCodes.Ldc_I4_0);
-        il.Emit(OpCodes.Stloc, iLocal);
-
-        il.MarkLabel(innerLoopStart);
-        il.Emit(OpCodes.Ldloc, iLocal);
-        il.Emit(OpCodes.Ldloc, readLocal);
-        il.Emit(OpCodes.Bge, innerLoopEnd);
-
-        // entryId = batch[i]
-        il.Emit(OpCodes.Ldloca, batchLocal);
-        il.Emit(OpCodes.Ldloc, iLocal);
-        il.Emit(OpCodes.Call, s_spanLongIndexer);
-        il.Emit(OpCodes.Ldind_I8);
-        il.Emit(OpCodes.Stloc, entryIdLocal);
-
-        // reader = searcher.GetEntryTermsReader(entryId, ref lastPage, null)
-        il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Ldfld, s_ctxSearcher);
-        il.Emit(OpCodes.Ldloc, entryIdLocal);
-        il.Emit(OpCodes.Ldloca, pageLocal);
-        il.Emit(OpCodes.Ldnull);                  // CompactKey key = null
-        il.Emit(OpCodes.Call, s_getEntryTermsReader);
-        il.Emit(OpCodes.Stloc, readerLocal);
-
-        // Emit each predicate check — comparison kind baked at emit time.
-        // Numeric: direct field access + comparison instruction (no delegate).
-        // Slice: SequenceCompareTo / SequenceEqual — direct byte comparison.
-        // OR groups: branch on first matching sub-predicate.
-        int fieldRootIndex = 0;
-        for (int p = 0; p < predicates.Length; p++)
-        {
-            ref var pred = ref predicates[p];
-
-            if (pred.OrBranches != null && pred.OrBranches.Length > 0)
-            {
-                // OR group: succeed on first matching branch
-                var orPassed = il.DefineLabel();
-
-                for (int b = 0; b < pred.OrBranches.Length; b++)
-                {
-                    ref var branch = ref pred.OrBranches[b];
-                    var tryNextBranch = (b < pred.OrBranches.Length - 1)
-                        ? il.DefineLabel()
-                        : nextEntry; // last branch fails → entry fails
-
-                    il.Emit(OpCodes.Ldloca, readerLocal);
-                    il.Emit(OpCodes.Call, s_readerReset);
-
-                    // FindNext(fieldRootPages[fieldRootIndex])
-                    il.Emit(OpCodes.Ldloca, readerLocal);
-                    il.Emit(OpCodes.Ldarg_0);
-                    il.Emit(OpCodes.Ldflda, s_ctxFieldRootPages);
-                    EmitLdcI4(il, fieldRootIndex);
-                    il.Emit(OpCodes.Call, s_spanLongIndexer);
-                    il.Emit(OpCodes.Ldind_I8);
-                    il.Emit(OpCodes.Call, s_readerFindNext);
-                    il.Emit(OpCodes.Brfalse, tryNextBranch);
-
-                    EmitSingleComparison(il, branch, readerLocal);
-                    il.Emit(OpCodes.Brtrue, orPassed); // match → OR succeeds
-
-                    if (b < pred.OrBranches.Length - 1)
-                        il.MarkLabel(tryNextBranch);
-
-                    fieldRootIndex++;
-                }
-
-                il.MarkLabel(orPassed);
-            }
-            else
-            {
-                // Simple AND predicate
-                il.Emit(OpCodes.Ldloca, readerLocal);
-                il.Emit(OpCodes.Call, s_readerReset);
-
-                il.Emit(OpCodes.Ldloca, readerLocal);
-                il.Emit(OpCodes.Ldarg_0);
-                il.Emit(OpCodes.Ldflda, s_ctxFieldRootPages);
-                EmitLdcI4(il, fieldRootIndex);
-                il.Emit(OpCodes.Call, s_spanLongIndexer);
-                il.Emit(OpCodes.Ldind_I8);
-                il.Emit(OpCodes.Call, s_readerFindNext);
-
-                if (pred.CompareOp == ScanCompareOp.NotEqual)
-                {
-                    // NotEquals: field not found → predicate passes (entry doesn't have the value)
-                    var fieldFound = il.DefineLabel();
-                    var predPassed = il.DefineLabel();
-                    il.Emit(OpCodes.Brtrue, fieldFound);
-                    il.Emit(OpCodes.Br, predPassed); // skip comparison, predicate passes
-                    il.MarkLabel(fieldFound);
-                    EmitSingleComparison(il, pred, readerLocal);
-                    il.Emit(OpCodes.Brfalse, nextEntry);
-                    il.MarkLabel(predPassed);
-                }
-                else
-                {
-                    il.Emit(OpCodes.Brfalse, nextEntry); // field not found → predicate fails
-                    EmitSingleComparison(il, pred, readerLocal);
-                    il.Emit(OpCodes.Brfalse, nextEntry);
-                }
-
-                fieldRootIndex++;
-            }
-        }
-
-        // All predicates passed — add to TempBitmap
-        EmitLoadBitmapRef(il, 1);
-        il.Emit(OpCodes.Ldloc, entryIdLocal);
-        il.Emit(OpCodes.Call, s_bitmapAdd);
-
-        // nextEntry: i++, continue
-        il.MarkLabel(nextEntry);
-        il.Emit(OpCodes.Ldloc, iLocal);
-        il.Emit(OpCodes.Ldc_I4_1);
-        il.Emit(OpCodes.Add);
-        il.Emit(OpCodes.Stloc, iLocal);
-        il.Emit(OpCodes.Br, innerLoopStart);
-
-        il.MarkLabel(innerLoopEnd);
-        il.Emit(OpCodes.Br, outerLoopStart);
-
-        il.MarkLabel(outerLoopEnd);
-
-        // Dispose iterator
-        il.Emit(OpCodes.Ldloca, iterLocal);
-        il.Emit(OpCodes.Call, s_iterDispose);
-
-        // Swap bitmaps: Bitmap.SwapContents(ref TempBitmap)
-        EmitLoadBitmapRef(il, 0);
-        EmitLoadBitmapRef(il, 1);
-        il.Emit(OpCodes.Call, s_swapContents);
-
-        // Clear the now-unused TempBitmap
-        EmitLoadBitmapRef(il, 1);
-        il.Emit(OpCodes.Call, s_clear);
-    }
-
-    /// <summary>Emit a single predicate comparison — dispatches to Long/Double/Slice.</summary>
-    private static void EmitSingleComparison(ILGenerator il, in ScanPredicateInfo pred, LocalBuilder readerLocal)
-    {
-        switch (pred.ValueType)
-        {
-            case ScanValueType.Long:
-                EmitLongComparison(il, pred, readerLocal);
-                break;
-            case ScanValueType.Double:
-                EmitDoubleComparison(il, pred, readerLocal);
-                break;
-            case ScanValueType.Slice:
-                EmitSliceComparison(il, pred, readerLocal);
-                break;
-        }
-    }
-
-    /// <summary>Emit: reader.CurrentLong [op] ctx.LongParams[paramIndex] → bool on stack.
-    /// For Between: reader.CurrentLong >= LongParams[paramIndex] AND reader.CurrentLong <= LongParams[paramIndex2].</summary>
-    private static void EmitLongComparison(ILGenerator il, in ScanPredicateInfo pred, LocalBuilder readerLocal)
-    {
-        if (pred.CompareOp == ScanCompareOp.Between)
-        {
-            // reader.CurrentLong >= LongParams[p1] AND reader.CurrentLong <= LongParams[p2]
-            var betweenFail = il.DefineLabel();
-            var betweenDone = il.DefineLabel();
-
-            // reader.CurrentLong >= LongParams[p1]
-            il.Emit(OpCodes.Ldloca, readerLocal);
-            il.Emit(OpCodes.Ldfld, s_readerCurrentLong);
-            EmitLoadLongParam(il, pred.ParamIndex);
-            il.Emit(OpCodes.Blt, betweenFail);
-
-            // reader.CurrentLong <= LongParams[p2]
-            il.Emit(OpCodes.Ldloca, readerLocal);
-            il.Emit(OpCodes.Ldfld, s_readerCurrentLong);
-            EmitLoadLongParam(il, pred.ParamIndex2);
-            il.Emit(OpCodes.Bgt, betweenFail);
-
-            il.Emit(OpCodes.Ldc_I4_1);
-            il.Emit(OpCodes.Br, betweenDone);
-            il.MarkLabel(betweenFail);
-            il.Emit(OpCodes.Ldc_I4_0);
-            il.MarkLabel(betweenDone);
-            return;
-        }
-
-        // Load reader.CurrentLong
-        il.Emit(OpCodes.Ldloca, readerLocal);
-        il.Emit(OpCodes.Ldfld, s_readerCurrentLong);
-
-        // Load ctx.LongParams[paramIndex]
-        EmitLoadLongParam(il, pred.ParamIndex);
-
-        // Emit comparison → push 1 or 0
-        EmitCompareOp(il, pred.CompareOp);
-    }
-
-    /// <summary>Emit: reader.CurrentDouble [op] ctx.DoubleParams[paramIndex] → bool on stack.</summary>
-    private static void EmitDoubleComparison(ILGenerator il, in ScanPredicateInfo pred, LocalBuilder readerLocal)
-    {
-        if (pred.CompareOp == ScanCompareOp.Between)
-        {
-            var betweenFail = il.DefineLabel();
-            var betweenDone = il.DefineLabel();
-
-            il.Emit(OpCodes.Ldloca, readerLocal);
-            il.Emit(OpCodes.Ldfld, s_readerCurrentDouble);
-            EmitLoadDoubleParam(il, pred.ParamIndex);
-            il.Emit(OpCodes.Blt_Un, betweenFail);
-
-            il.Emit(OpCodes.Ldloca, readerLocal);
-            il.Emit(OpCodes.Ldfld, s_readerCurrentDouble);
-            EmitLoadDoubleParam(il, pred.ParamIndex2);
-            il.Emit(OpCodes.Bgt_Un, betweenFail);
-
-            il.Emit(OpCodes.Ldc_I4_1);
-            il.Emit(OpCodes.Br, betweenDone);
-            il.MarkLabel(betweenFail);
-            il.Emit(OpCodes.Ldc_I4_0);
-            il.MarkLabel(betweenDone);
-            return;
-        }
-
-        il.Emit(OpCodes.Ldloca, readerLocal);
-        il.Emit(OpCodes.Ldfld, s_readerCurrentDouble);
-        EmitLoadDoubleParam(il, pred.ParamIndex);
-        EmitCompareOp(il, pred.CompareOp);
-    }
-
-    /// <summary>Emit: reader.Current.Decoded() [op] ctx.SliceParams[paramIndex].AsReadOnlySpan() → bool on stack.
-    /// Direct byte comparison — no MultiUnaryItem, no delegate indirection.
-    /// For Equals: SequenceEqual. For ordered: SequenceCompareTo [op] 0.</summary>
-    private static void EmitSliceComparison(ILGenerator il, in ScanPredicateInfo pred, LocalBuilder readerLocal)
-    {
-        // decoded = reader.Current.Decoded()
-        il.Emit(OpCodes.Ldloca, readerLocal);
-        il.Emit(OpCodes.Ldfld, s_readerCurrent);    // CompactKey
-        il.Emit(OpCodes.Callvirt, s_compactKeyDecoded); // ReadOnlySpan<byte>
-
-        // expected = ctx.SliceParams[paramIndex].AsReadOnlySpan()
-        il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Ldflda, s_ctxSliceParams);
-        EmitLdcI4(il, pred.ParamIndex);
-        il.Emit(OpCodes.Call, s_spanSliceIndexer);    // ref Slice
-        il.Emit(OpCodes.Call, s_sliceAsReadOnlySpan); // ReadOnlySpan<byte>
-
-        if (pred.CompareOp == ScanCompareOp.Between)
-        {
-            // Between: decoded >= low AND decoded <= high
-            // Stack has: decoded, low (from the default load above)
-            // Need to do two comparisons
-            var betweenFail = il.DefineLabel();
-            var betweenDone = il.DefineLabel();
-
-            // First: decoded.SequenceCompareTo(low) >= 0
-            il.Emit(OpCodes.Call, s_sequenceCompareTo);
-            il.Emit(OpCodes.Ldc_I4_0);
-            il.Emit(OpCodes.Blt, betweenFail);
-
-            // Second: decoded.SequenceCompareTo(high) <= 0
-            // Re-load decoded
-            il.Emit(OpCodes.Ldloca, readerLocal);
-            il.Emit(OpCodes.Ldfld, s_readerCurrent);
-            il.Emit(OpCodes.Callvirt, s_compactKeyDecoded);
-            // Load high
-            il.Emit(OpCodes.Ldarg_0);
-            il.Emit(OpCodes.Ldflda, s_ctxSliceParams);
-            EmitLdcI4(il, pred.ParamIndex2);
-            il.Emit(OpCodes.Call, s_spanSliceIndexer);
-            il.Emit(OpCodes.Call, s_sliceAsReadOnlySpan);
-            il.Emit(OpCodes.Call, s_sequenceCompareTo);
-            il.Emit(OpCodes.Ldc_I4_0);
-            il.Emit(OpCodes.Bgt, betweenFail);
-
-            il.Emit(OpCodes.Ldc_I4_1);
-            il.Emit(OpCodes.Br, betweenDone);
-            il.MarkLabel(betweenFail);
-            il.Emit(OpCodes.Ldc_I4_0);
-            il.MarkLabel(betweenDone);
-        }
-        else if (pred.CompareOp == ScanCompareOp.Equal)
-        {
-            // SequenceEqual — returns bool directly
-            il.Emit(OpCodes.Call, s_sequenceEqual);
-        }
-        else if (pred.CompareOp == ScanCompareOp.NotEqual)
-        {
-            il.Emit(OpCodes.Call, s_sequenceEqual);
-            il.Emit(OpCodes.Ldc_I4_0);
-            il.Emit(OpCodes.Ceq); // negate
-        }
-        else
-        {
-            // SequenceCompareTo → int, then compare to 0
-            il.Emit(OpCodes.Call, s_sequenceCompareTo);
-            il.Emit(OpCodes.Ldc_I4_0);
-            EmitIntCompareOp(il, pred.CompareOp);
-        }
-    }
-
-    /// <summary>Emit int comparison for SequenceCompareTo result vs 0.</summary>
-    private static void EmitIntCompareOp(ILGenerator il, ScanCompareOp op)
-    {
-        switch (op)
-        {
-            case ScanCompareOp.GreaterThan:
-                il.Emit(OpCodes.Cgt);
-                break;
-            case ScanCompareOp.GreaterThanOrEqual:
-                il.Emit(OpCodes.Clt);
-                il.Emit(OpCodes.Ldc_I4_0);
-                il.Emit(OpCodes.Ceq); // !(result < 0) = result >= 0
-                break;
-            case ScanCompareOp.LessThan:
-                il.Emit(OpCodes.Clt);
-                break;
-            case ScanCompareOp.LessThanOrEqual:
-                il.Emit(OpCodes.Cgt);
-                il.Emit(OpCodes.Ldc_I4_0);
-                il.Emit(OpCodes.Ceq); // !(result > 0) = result <= 0
-                break;
-        }
-    }
-
-    /// <summary>Load ctx.LongParams[index] → long on stack.</summary>
-    private static void EmitLoadLongParam(ILGenerator il, int index)
-    {
-        il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Ldflda, s_ctxLongParams);
-        EmitLdcI4(il, index);
-        il.Emit(OpCodes.Call, s_spanLongIndexer);
-        il.Emit(OpCodes.Ldind_I8);
-    }
-
-    /// <summary>Load ctx.DoubleParams[index] → double on stack.</summary>
-    private static void EmitLoadDoubleParam(ILGenerator il, int index)
-    {
-        il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Ldflda, s_ctxDoubleParams);
-        EmitLdcI4(il, index);
-        il.Emit(OpCodes.Call, s_spanDoubleIndexer);
-        il.Emit(OpCodes.Ldind_R8);
-    }
-
-    /// <summary>Emit comparison op. Stack has [value, comparand]. Pushes 1 or 0.</summary>
-    private static void EmitCompareOp(ILGenerator il, ScanCompareOp op)
-    {
-        switch (op)
-        {
-            case ScanCompareOp.Equal:
-                il.Emit(OpCodes.Ceq);
-                break;
-            case ScanCompareOp.NotEqual:
-                il.Emit(OpCodes.Ceq);
-                il.Emit(OpCodes.Ldc_I4_0);
-                il.Emit(OpCodes.Ceq); // negate
-                break;
-            case ScanCompareOp.GreaterThan:
-                il.Emit(OpCodes.Cgt);
-                break;
-            case ScanCompareOp.GreaterThanOrEqual:
-                il.Emit(OpCodes.Clt);
-                il.Emit(OpCodes.Ldc_I4_0);
-                il.Emit(OpCodes.Ceq); // !(a < b) = a >= b
-                break;
-            case ScanCompareOp.LessThan:
-                il.Emit(OpCodes.Clt);
-                break;
-            case ScanCompareOp.LessThanOrEqual:
-                il.Emit(OpCodes.Cgt);
-                il.Emit(OpCodes.Ldc_I4_0);
-                il.Emit(OpCodes.Ceq); // !(a > b) = a <= b
-                break;
-        }
-    }
-
-    /// <summary>Load ref to bitmap data from ctx.Bitmaps[slot].
-    /// Span indexer returns ref RoaringBitmap.</summary>
     private static void EmitLoadBitmapRef(ILGenerator il, int slot)
     {
         il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Ldflda, s_ctxBitmaps);
+        il.Emit(OpCodes.Ldfld, CtxBitmaps);  // RoaringBitmap[]
         EmitLdcI4(il, slot);
-        il.Emit(OpCodes.Call, s_bitmapSpanIndexer); // ref RoaringBitmap
+        il.Emit(OpCodes.Ldelema, typeof(RoaringBitmap)); // ref RoaringBitmap
     }
 
-    /// <summary>Load ctx.Searcher.Allocator — ByteStringContext for methods needing allocation.</summary>
-    private static void EmitLoadAllocator(ILGenerator il)
-    {
-        il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Ldfld, s_ctxSearcher);
-        il.Emit(OpCodes.Callvirt, s_searcherAllocatorGetter);
-    }
-
-    /// <summary>Load ctx.DirectSources[index] — pushes an IQueryMatch object reference on the stack.
-    /// Uses EntryScanHelper.GetDirectSource(ref ctx, index) instead of the Span&lt;IQueryMatch&gt;
-    /// indexer + Ldind_Ref pattern, which can misverify in DynamicMethod IL for reference-type
-    /// generic Spans (the JIT may not track the specific interface type through Ldind_Ref).</summary>
     private static void EmitLoadMatch(ILGenerator il, int index)
     {
-        il.Emit(OpCodes.Ldarg_0);              // ref QueryScanContext
-        EmitLdcI4(il, index);                  // int index
-        il.Emit(OpCodes.Call, s_getDirectSource); // IQueryMatch
-    }
-
-    /// <summary>Load &amp;ctx.TermSources[index] — pushes a managed pointer (ref TermSource)
-    /// suitable for the FillBitmapFromTermSource / AndWithTermSource / AndNotWithTermSource
-    /// primitives. Span indexer returns ref T directly.</summary>
-    private static void EmitLoadTermSourceRef(ILGenerator il, int index)
-    {
         il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Ldflda, s_ctxTermSources);
+        il.Emit(OpCodes.Ldfld, CtxResolvedMatches); // IQueryMatch[]
         EmitLdcI4(il, index);
-        il.Emit(OpCodes.Call, s_termSourceSpanIndexer);
+        il.Emit(OpCodes.Ldelem_Ref);                  // IQueryMatch
     }
 
-    /// <summary>Load ctx.TermProviders[index] — pushes an ITermProvider object reference on the stack.
-    /// Used for FillBitmapFromTermProvider / AndBitmapWithTermProvider / AndNotBitmapWithTermProvider.
-    /// Uses EntryScanHelper.GetTermProvider(ref ctx, index) instead of the Span&lt;ITermProvider&gt;
-    /// indexer + Ldind_Ref pattern (same reasoning as EmitLoadMatch).</summary>
-    private static void EmitLoadTermProvider(ILGenerator il, int index)
-    {
-        il.Emit(OpCodes.Ldarg_0);               // ref QueryScanContext
-        EmitLdcI4(il, index);                   // int index
-        il.Emit(OpCodes.Call, s_getTermProvider); // ITermProvider
-    }
-
-    /// <summary>Load ctx.Llt — pushes a LowLevelTransaction reference on the stack.</summary>
-    private static void EmitLoadLlt(ILGenerator il)
+    private static void EmitLoadLimit(ILGenerator il)
     {
         il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Ldfld, s_ctxLlt);
+        il.Emit(OpCodes.Ldfld, CtxLimit);
     }
 
     /// <summary>Emit: startTick = Stopwatch.GetTimestamp()</summary>
     private static void EmitTimingStart(ILGenerator il, LocalBuilder startTickLocal)
     {
-        il.Emit(OpCodes.Call, s_getTimestamp);
+        il.Emit(OpCodes.Call, GetTimestamp);
         il.Emit(OpCodes.Stloc, startTickLocal);
     }
 
@@ -953,18 +548,108 @@ public static class QueryILEmitter
         il.Emit(OpCodes.Ldarg_0);         // ref ctx
         EmitLdcI4(il, opIndex);           // opIndex
         il.Emit(OpCodes.Ldloc, startTickLocal); // startTick
-        il.Emit(OpCodes.Call, s_recordTiming);
+        il.Emit(OpCodes.Call, RecordTiming);
 
         il.Emit(OpCodes.Ldarg_0);
         EmitLdcI4(il, opIndex);
-        il.Emit(OpCodes.Call, s_recordResultCount);
+        il.Emit(OpCodes.Call, RecordResultCount);
     }
 
     private static void EmitCancellationCheck(ILGenerator il)
     {
         il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Ldflda, s_ctxToken);
-        il.Emit(OpCodes.Call, s_throwIfCancelled);
+        il.Emit(OpCodes.Ldflda, CtxToken);
+        il.Emit(OpCodes.Call, ThrowIfCancelled);
+    }
+
+    /// <summary>Emit array-length validation hints at the start of the delegate.
+    /// Touch the maximum index of each array that will be accessed, so the JIT
+    /// can hoist bounds checks out of loops.</summary>
+    private static void EmitBoundsCheckPreamble(ILGenerator il, PlanOp[] ops)
+    {
+        int maxBitmapSlot = -1;
+        int maxMatchIndex = -1;
+        int maxTermSourceIndex = -1;
+        int maxTermsProviderIndex = -1;
+
+        for (int i = 0; i < ops.Length; i++)
+        {
+            ref PlanOp op = ref ops[i];
+
+            // Bitmap slots
+            if (op.BitmapLocal > maxBitmapSlot) maxBitmapSlot = op.BitmapLocal;
+            if (op.Kind is PlanOpKind.AndBitmaps or PlanOpKind.AndNotBitmaps or PlanOpKind.OrBitmaps or PlanOpKind.SwapBitmaps)
+            {
+                if (op.ParamIndex2 > maxBitmapSlot) maxBitmapSlot = op.ParamIndex2;
+            }
+            // FillFromPostings always uses bitmap[0]; And/AndNot use [0] and [1]
+            if (op.Kind is PlanOpKind.FillFromPostings or PlanOpKind.DirectIterate)
+            {
+                if (0 > maxBitmapSlot) maxBitmapSlot = 0;
+            }
+            if (op.Kind is PlanOpKind.AndWithPostings or PlanOpKind.AndNotWithPostings)
+            {
+                if (1 > maxBitmapSlot) maxBitmapSlot = 1;
+            }
+
+            // Source arrays
+            switch (op.Dispatch)
+            {
+                case MatchDispatch.QueryMatch:
+                    if (op.ParamIndex > maxMatchIndex) maxMatchIndex = op.ParamIndex;
+                    break;
+                case MatchDispatch.PostingList:
+                    if (op.ParamIndex > maxTermSourceIndex) maxTermSourceIndex = op.ParamIndex;
+                    break;
+                case MatchDispatch.TreeScan:
+                    if (op.ParamIndex > maxTermsProviderIndex) maxTermsProviderIndex = op.ParamIndex;
+                    break;
+            }
+
+            // CheckAndMaybeEntryScan uses DirectSources for the match count check
+            if (op.Kind == PlanOpKind.CheckAndMaybeEntryScan && op.ParamIndex > maxMatchIndex)
+                maxMatchIndex = op.ParamIndex;
+        }
+
+        // Touch _bitmaps[maxBitmapSlot] (RoaringBitmap is a value type, use ldelema)
+        if (maxBitmapSlot >= 0)
+        {
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Ldfld, CtxBitmaps);
+            EmitLdcI4(il, maxBitmapSlot);
+            il.Emit(OpCodes.Ldelema, typeof(RoaringBitmap));
+            il.Emit(OpCodes.Pop);
+        }
+
+        // Touch _resolvedMatches[maxMatchIndex]
+        if (maxMatchIndex >= 0)
+        {
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Ldfld, CtxResolvedMatches);
+            EmitLdcI4(il, maxMatchIndex);
+            il.Emit(OpCodes.Ldelem_Ref);
+            il.Emit(OpCodes.Pop);
+        }
+
+        // Touch _termSources[maxTermSourceIndex]
+        if (maxTermSourceIndex >= 0)
+        {
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Ldfld, CtxTermSources);
+            EmitLdcI4(il, maxTermSourceIndex);
+            il.Emit(OpCodes.Ldelema, typeof(PostingSource));
+            il.Emit(OpCodes.Pop);
+        }
+
+        // Touch _termProviders[maxTermsProviderIndex]
+        if (maxTermsProviderIndex >= 0)
+        {
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Ldfld, CtxTermsProviders);
+            EmitLdcI4(il, maxTermsProviderIndex);
+            il.Emit(OpCodes.Ldelem_Ref);
+            il.Emit(OpCodes.Pop);
+        }
     }
 
     private static void EmitLdcI4(ILGenerator il, int value)
@@ -981,7 +666,7 @@ public static class QueryILEmitter
             case 7: il.Emit(OpCodes.Ldc_I4_7); break;
             case 8: il.Emit(OpCodes.Ldc_I4_8); break;
             default:
-                if (value >= -128 && value <= 127)
+                if (value is >= -128 and <= 127)
                     il.Emit(OpCodes.Ldc_I4_S, (sbyte)value);
                 else
                     il.Emit(OpCodes.Ldc_I4, value);
@@ -989,143 +674,6 @@ public static class QueryILEmitter
         }
     }
 
-    private static void EmptyExecute(ref QueryScanContext ctx) { }
+    private static void EmptyExecute(CompiledQueryMatch ctx) { }
 
-    public static string GenerateExplainSource(QueryPlan plan)
-    {
-        if (plan.Ops == null || plan.Ops.Length == 0)
-            return "// Empty plan";
-
-        var sb = new StringBuilder();
-        sb.AppendLine("// Compiled query (DynamicMethod) — pseudocode mirroring the emitted IL.");
-        sb.AppendLine("// Mutating ops dispatch through Corax.Querying.Primitives.QueryPrimitives,");
-        sb.AppendLine("// which picks bitmap-borrow / posting-list / generic-Fill paths at runtime.");
-
-        for (int i = 0; i < plan.Ops.Length; i++)
-        {
-            ref PlanOp op = ref plan.Ops[i];
-            string src = op.Dispatch switch
-            {
-                MatchDispatch.TermSource   => $"ctx.TermSources[{op.ParamIndex}]",
-                MatchDispatch.TermProvider => $"ctx.TermProviders[{op.ParamIndex}]",
-                _                          => $"ctx.DirectSources[{op.ParamIndex}]"
-            };
-            switch (op.Kind)
-            {
-                case PlanOpKind.FillFromPostings:
-                case PlanOpKind.DirectIterate:
-                    sb.AppendLine(op.Dispatch switch
-                    {
-                        MatchDispatch.TermSource   => $"QueryPrimitives.FillBitmapFromTermSource(ref {src}, ctx.Llt, ref ctx.Bitmaps[0]);",
-                        MatchDispatch.TermProvider => $"QueryPrimitives.FillBitmapFromTermProvider({src}, ctx.Llt, ref ctx.Bitmaps[0]);",
-                        _                          => $"QueryPrimitives.FillFromMatch({src}, ref ctx.Bitmaps[0]);"
-                    });
-                    break;
-                case PlanOpKind.AndWithPostings:
-                    sb.AppendLine(op.Dispatch switch
-                    {
-                        MatchDispatch.TermSource   => $"QueryPrimitives.AndWithTermSource(ref {src}, ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);",
-                        MatchDispatch.TermProvider => $"QueryPrimitives.AndBitmapWithTermProvider({src}, ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);",
-                        _                          => $"QueryPrimitives.AndWithMatch({src}, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);"
-                    });
-                    sb.AppendLine("if (ctx.Bitmaps[0].IsEmpty) return;");
-                    break;
-                case PlanOpKind.OrWithPostings:
-                case PlanOpKind.LazyOrWithPostings:
-                    sb.AppendLine(op.Dispatch switch
-                    {
-                        MatchDispatch.TermSource   => $"QueryPrimitives.FillBitmapFromTermSource(ref {src}, ctx.Llt, ref ctx.Bitmaps[{op.BitmapLocal}]);",
-                        MatchDispatch.TermProvider => $"QueryPrimitives.FillBitmapFromTermProvider({src}, ctx.Llt, ref ctx.Bitmaps[{op.BitmapLocal}]);",
-                        _                          => $"QueryPrimitives.FillFromMatch({src}, ref ctx.Bitmaps[{op.BitmapLocal}]);"
-                    });
-                    break;
-                case PlanOpKind.ClearBitmap:
-                    sb.AppendLine($"ctx.Bitmaps[{op.BitmapLocal}].Clear();");
-                    break;
-                case PlanOpKind.AndBitmaps:
-                    sb.AppendLine($"ctx.Bitmaps[{op.BitmapLocal}].AndWith(ref ctx.Bitmaps[{op.ParamIndex2}]);");
-                    break;
-                case PlanOpKind.AndNotBitmaps:
-                    sb.AppendLine($"ctx.Bitmaps[{op.BitmapLocal}].AndNotWith(ref ctx.Bitmaps[{op.ParamIndex2}]);");
-                    break;
-                case PlanOpKind.OrBitmaps:
-                    sb.AppendLine($"ctx.Bitmaps[{op.BitmapLocal}].OrWith(ref ctx.Bitmaps[{op.ParamIndex2}]);");
-                    break;
-                case PlanOpKind.SwapBitmaps:
-                    sb.AppendLine($"ctx.Bitmaps[{op.BitmapLocal}].SwapContents(ref ctx.Bitmaps[{op.ParamIndex2}]);");
-                    break;
-                case PlanOpKind.CheckEmpty:
-                    sb.AppendLine($"if (ctx.Bitmaps[{op.BitmapLocal}].IsEmpty) return;");
-                    break;
-                case PlanOpKind.AndNotWithPostings:
-                    sb.AppendLine(op.Dispatch switch
-                    {
-                        MatchDispatch.TermSource   => $"QueryPrimitives.AndNotWithTermSource(ref {src}, ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);",
-                        MatchDispatch.TermProvider => $"QueryPrimitives.AndNotBitmapWithTermProvider({src}, ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);",
-                        _                          => $"QueryPrimitives.AndNotWithMatch({src}, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);"
-                    });
-                    break;
-                case PlanOpKind.RepairAfterLazy:
-                    sb.AppendLine("ctx.Bitmaps[0].RepairAfterLazy();");
-                    break;
-                case PlanOpKind.CheckAndMaybeEntryScan:
-                    sb.AppendLine($"if (ctx.Bitmaps[0].Count < 32000 && ctx.Bitmaps[0].Count * 64 < ctx.DirectSources[{op.ParamIndex}].Count) goto EntryScan;");
-                    break;
-                case PlanOpKind.IterateInto:
-                    sb.AppendLine("return; // result is in ctx.Bitmaps[0]; caller iterates via QueryPrimitives.IterateInto");
-                    break;
-                default:
-                    sb.AppendLine($"// {op.Kind}");
-                    break;
-            }
-        }
-        sb.AppendLine("EntryScan: // emitted IL walks ctx.Bitmaps[0] and re-checks per-entry predicates");
-        return sb.ToString();
-    }
-}
-
-/// <summary>
-/// Helper for entry scan execution. Called by the emitted IL when the dynamic
-/// unary promotion check fires. Iterates bitmap entries, evaluates MultiUnaryItem
-/// predicates per entry, collects matches into TempBitmap, swaps.
-/// Then ANDs remaining complex matchers (regex/vector/spatial) against the reduced bitmap.
-/// </summary>
-public static class EntryScanHelper
-{
-    [System.Runtime.CompilerServices.SkipLocalsInit]
-    public static void Execute(ref QueryScanContext ctx)
-    {
-        // Entry scan is now emitted directly as IL in EmitEntryScan.
-        // This helper exists only as a fallback when ScanPredicateInfos are not populated.
-    }
-
-    /// <summary>Record timing for a plan op. Called by emitted IL.</summary>
-    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    public static void RecordTiming(ref QueryScanContext ctx, int opIndex, long startTick)
-    {
-        if (opIndex < ctx.Timings.Length)
-            ctx.Timings[opIndex] = System.Diagnostics.Stopwatch.GetTimestamp() - startTick;
-    }
-
-    /// <summary>Record bitmap result count after a plan op. Called by emitted IL.</summary>
-    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    public static void RecordResultCount(ref QueryScanContext ctx, int opIndex)
-    {
-        if (opIndex < ctx.ResultCounts.Length)
-            ctx.ResultCounts[opIndex] = ctx.Bitmaps[0].Count;
-    }
-
-    /// <summary>Load DirectSources[index] from context.
-    /// Used by emitted IL instead of Span&lt;IQueryMatch&gt;.get_Item + Ldind_Ref,
-    /// which can misverify in DynamicMethods for reference-type generic Spans.</summary>
-    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    public static IQueryMatch GetDirectSource(ref QueryScanContext ctx, int index)
-        => ctx.DirectSources[index];
-
-    /// <summary>Load TermProviders[index] from context.
-    /// Used by emitted IL instead of Span&lt;ITermProvider&gt;.get_Item + Ldind_Ref,
-    /// which can misverify in DynamicMethods for reference-type generic Spans.</summary>
-    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    public static ITermProvider GetTermProvider(ref QueryScanContext ctx, int index)
-        => ctx.TermProviders[index];
 }

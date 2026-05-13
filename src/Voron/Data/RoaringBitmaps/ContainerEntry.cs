@@ -25,7 +25,7 @@ public unsafe struct ContainerEntry
 
     /// <summary>
     /// Container key (value >> 16). Allows walking entries without index direction.
-    /// The key allows us to have ~140 T containers in the bitmap (2^47), bit enough
+    /// The key allows us to have ~140 T containers in the bitmap (2^47), big enough
     /// </summary>
     public uint Key;
 
