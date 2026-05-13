@@ -17,9 +17,10 @@ namespace Corax.Querying.Planning;
 /// entire generation atomically — no intermediate state where current and previous
 /// point to the same dict.
 ///
-/// Per-query: fixed 32-slot SoA (struct-of-arrays) — parallel int[] for orderings
-/// and type signatures plus a CompiledPlan[] for the payloads. SIMD compares scan all
-/// 32 slots in 4 Vector256 iterations (or 8 Vector128 iterations on smaller hardware).
+/// Per-query: fixed-capacity SoA (struct-of-arrays, default 32 slots) — parallel int[]
+/// for orderings and type signatures plus a CompiledPlan[] for the payloads. SIMD compares
+/// scan all slots in Vector256/Vector128 iterations. Capacity is configurable via the
+/// <see cref="PlanCache(int, int)"/> constructor; must be a multiple of 8 for alignment.
 /// </summary>
 public class PlanCache
 {

@@ -19,11 +19,6 @@ namespace Corax.Querying.Planning;
 /// - Planning annotations (Cardinality, IsExact, BoostFactor, IsNegated) are attached per
 ///   clause for operand reordering, dispatch classification, and entry-scan eligibility.
 /// </summary>
-/// <summary>
-/// Structural template for a single WHERE predicate. Immutable after the first parse,
-/// cached on ClauseTemplate, shared across all executions of the same query text.
-/// Per-execution data lives in the parallel <see cref="ClauseExecution"/> array.
-/// </summary>
 public sealed class ClauseInfo
 {
     public string FieldName;

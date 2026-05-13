@@ -60,11 +60,6 @@ public static class QueryIlEmitter
     private static readonly MethodInfo SwapContents =
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.SwapContents),
             [typeof(RoaringBitmap).MakeByRefType()])!;
-    private static readonly MethodInfo PrepareForReading =
-        typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.PrepareForReading), Type.EmptyTypes)!;
-    private static readonly MethodInfo GetIterator =
-        typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.GetIterator), Type.EmptyTypes)!;
-
 
     // CancellationToken
     private static readonly MethodInfo ThrowIfCancelled = typeof(CancellationToken).GetMethod(nameof(CancellationToken.ThrowIfCancellationRequested))!;

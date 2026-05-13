@@ -88,21 +88,29 @@ public static class CompiledQueryHelper
         var predicate = ctx.CompiledEntryPredicate;
 
         int read;
-        while ((read = iterator.Fill(ref sourceBitmap, buffer)) > 0)
+        try
         {
-            for (int i = 0; i < read; i++)
+            while ((read = iterator.Fill(ref sourceBitmap, buffer)) > 0)
             {
-                long entryId = buffer[i];
-                ctx.EntryScanEntriesScanned++;
+                ctx.Token.ThrowIfCancellationRequested();
 
-                var reader = searcher.GetEntryTermsReader(entryId, ref lastPage);
-                if (predicate(ctx, ref reader))
+                for (int i = 0; i < read; i++)
                 {
-                    ctx.EntryScanEntriesPassed++;
-                    targetBitmap.Add(entryId);
+                    long entryId = buffer[i];
+                    ctx.EntryScanEntriesScanned++;
+
+                    var reader = searcher.GetEntryTermsReader(entryId, ref lastPage);
+                    if (predicate(ctx, ref reader))
+                    {
+                        ctx.EntryScanEntriesPassed++;
+                        targetBitmap.Add(entryId);
+                    }
                 }
             }
         }
-        iterator.Dispose();
+        finally
+        {
+            iterator.Dispose();
+        }
     }
 }
