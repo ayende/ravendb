@@ -135,9 +135,12 @@ public static class DirectScanIlEmitter
         il.Emit(OpCodes.Stloc, readerRefLocal);
 
         // Evaluate all predicates. Any failure → jump to loopIncrement (skip compaction).
+        // rootIdx tracks the sequential index into ctx.ScanFieldRootPages, one per leaf
+        // predicate (not the same as pred.ParamIndex, which indexes the long/double/slice arrays).
+        int rootIdx = 0;
         for (int p = 0; p < predicates.Length; p++)
         {
-            EmitPredicate(il, in predicates[p], readerRefLocal, loopIncrement);
+            EmitPredicate(il, in predicates[p], readerRefLocal, loopIncrement, ref rootIdx);
         }
 
         // All predicates passed: compact entryIds[writeIdx] = entryIds[i]; same for originalIndexes.
@@ -198,7 +201,8 @@ public static class DirectScanIlEmitter
         ILGenerator il,
         in ScanPredicateInfo pred,
         LocalBuilder readerRefLocal,
-        Label failLabel)
+        Label failLabel,
+        ref int rootIdx)
     {
         var nextPredicate = il.DefineLabel();
         var foundLabel = il.DefineLabel();
@@ -207,11 +211,11 @@ public static class DirectScanIlEmitter
         il.Emit(OpCodes.Ldloc, readerRefLocal);
         il.Emit(OpCodes.Call, ReaderReset);
 
-        // found = reader.FindNext(_fieldRootPages[ParamIndex])
+        // found = reader.FindNext(_fieldRootPages[rootIdx])
         il.Emit(OpCodes.Ldloc, readerRefLocal);
         il.Emit(OpCodes.Ldarg_0);
         il.Emit(OpCodes.Ldfld, SelfFieldRootPages);
-        EmitLdcI4(il, pred.ParamIndex);
+        EmitLdcI4(il, rootIdx);
         il.Emit(OpCodes.Ldelem_I8);
         il.Emit(OpCodes.Call, ReaderFindNext);
         // stack: found (bool)
@@ -222,6 +226,8 @@ public static class DirectScanIlEmitter
                 // passed = found
                 il.Emit(OpCodes.Brfalse, failLabel);
                 il.Emit(OpCodes.Br, nextPredicate);
+
+                rootIdx++;
                 break;
 
             case ScanCompareOp.NotEqual:
@@ -230,16 +236,20 @@ public static class DirectScanIlEmitter
                 il.Emit(OpCodes.Brtrue, foundLabel);
                 il.Emit(OpCodes.Br, nextPredicate);
                 il.MarkLabel(foundLabel);
-                EmitTypedComparison(il, in pred, readerRefLocal);
+                EmitTypedComparison(il, in pred, readerRefLocal, rootIdx);
                 // stack: comparisonResult (true means EQUAL, so NotEqual fails)
                 il.Emit(OpCodes.Brtrue, failLabel);
+
+                rootIdx++;
                 break;
 
             default:
                 // All others: !found → fail. found → evaluate; comparison must return true.
                 il.Emit(OpCodes.Brfalse, failLabel);
-                EmitTypedComparison(il, in pred, readerRefLocal);
+                EmitTypedComparison(il, in pred, readerRefLocal, rootIdx);
                 il.Emit(OpCodes.Brfalse, failLabel);
+
+                rootIdx++;
                 break;
         }
 
@@ -252,7 +262,8 @@ public static class DirectScanIlEmitter
     private static void EmitTypedComparison(
         ILGenerator il,
         in ScanPredicateInfo pred,
-        LocalBuilder readerRefLocal)
+        LocalBuilder readerRefLocal,
+        int rootIdx)
     {
         // StartsWith / EndsWith iterate ALL terms for the field via the helper. They do
         // their own Reset+FindNext loop, so the outer FindNext result is discarded.
@@ -261,7 +272,7 @@ public static class DirectScanIlEmitter
             il.Emit(OpCodes.Ldloc, readerRefLocal);
             il.Emit(OpCodes.Ldarg_0);
             il.Emit(OpCodes.Ldfld, SelfFieldRootPages);
-            EmitLdcI4(il, pred.ParamIndex);
+            EmitLdcI4(il, rootIdx);
             il.Emit(OpCodes.Ldelem_I8);
             EmitLoadSliceSpan(il, pred.ParamIndex);
             il.Emit(OpCodes.Call, CheckFieldTermStartsWith);
@@ -273,7 +284,7 @@ public static class DirectScanIlEmitter
             il.Emit(OpCodes.Ldloc, readerRefLocal);
             il.Emit(OpCodes.Ldarg_0);
             il.Emit(OpCodes.Ldfld, SelfFieldRootPages);
-            EmitLdcI4(il, pred.ParamIndex);
+            EmitLdcI4(il, rootIdx);
             il.Emit(OpCodes.Ldelem_I8);
             EmitLoadSliceSpan(il, pred.ParamIndex);
             il.Emit(OpCodes.Call, CheckFieldTermEndsWith);
