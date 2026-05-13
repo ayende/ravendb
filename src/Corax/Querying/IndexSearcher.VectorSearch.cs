@@ -104,7 +104,7 @@ public partial class IndexSearcher
                 }
 
                 // Materialize all entry IDs from the bitmap, then shuffle for random access
-                _entryIds = new long[filterCount];
+                _entryIds = new long[checked((int)filterCount)];
                 var iterator = filterResults.GetIterator();
                 Span<long> batch = stackalloc long[256];
                 int totalRead = 0;
