@@ -154,9 +154,9 @@ public static class IlEmitterShared
         typeof(Slice).GetMethod(nameof(Slice.AsReadOnlySpan));
 
     public static readonly MethodInfo SliceStartsWithHelper =
-        typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.SliceStartsWith));
+        typeof(ReadOnlySpan<byte>).GetMethod("StartsWith", [typeof(ReadOnlySpan<byte>)]);
     public static readonly MethodInfo SliceEndsWithHelper =
-        typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.SliceEndsWith));
+        typeof(ReadOnlySpan<byte>).GetMethod("EndsWith", [typeof(ReadOnlySpan<byte>)]);
 
     public static readonly MethodInfo CheckFieldTermStartsWith =
         typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.CheckFieldTermStartsWith));

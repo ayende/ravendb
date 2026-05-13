@@ -35,16 +35,6 @@ public static class CompiledQueryHelper
             resultCounts[opIndex] = ctx.Bitmaps[0].Count;
     }
 
-    // ── Slice helpers retained for ResidualScanIlEmitter callees ──
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool SliceStartsWith(ReadOnlySpan<byte> actual, ReadOnlySpan<byte> prefix)
-        => actual.Length >= prefix.Length && actual.Slice(0, prefix.Length).SequenceEqual(prefix);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool SliceEndsWith(ReadOnlySpan<byte> actual, ReadOnlySpan<byte> suffix)
-        => actual.Length >= suffix.Length && actual.Slice(actual.Length - suffix.Length).SequenceEqual(suffix);
-
     /// <summary>Check StartsWith/EndsWith against ALL terms for a field (multi-value support).
     /// Returns true if ANY term matches.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -53,7 +43,7 @@ public static class CompiledQueryHelper
         reader.Reset();
         while (reader.FindNext(fieldRootPage))
         {
-            if (SliceStartsWith(reader.Current.Decoded(), prefix))
+            if (reader.Current.Decoded().StartsWith(prefix))
                 return true;
         }
         return false;
@@ -65,7 +55,7 @@ public static class CompiledQueryHelper
         reader.Reset();
         while (reader.FindNext(fieldRootPage))
         {
-            if (SliceEndsWith(reader.Current.Decoded(), suffix))
+            if (reader.Current.Decoded().EndsWith(suffix))
                 return true;
         }
         return false;
