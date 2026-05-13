@@ -319,6 +319,9 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         private bool _nonExistingPostingListRead;
         private bool _nullPostingListRead;
 
+        /// <summary>The iterator <paramref name="it"/> is assumed to be already positioned by the caller
+        /// (caller is responsible for Reset + optional Seek). This avoids the SeekAction delegate
+        /// indirection and the closure allocations it required.</summary>
         public SortedIndexReader(LowLevelTransaction llt, IndexSearcher searcher, TDirection it, FieldMetadata metadata, long min, long max, bool nullFirst, bool isForward)
         {
             _termsIt = it;
@@ -326,7 +329,6 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
             _max = max;
             _nullFirst = nullFirst;
             _isForward = isForward;
-            _termsIt.Reset();
             _llt = llt;
             _searcher = searcher;
             _postListIt = default;
@@ -523,7 +525,19 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         // Multi-value fields produce duplicate entry IDs in the sort index
         // (one per value). Track emitted IDs to skip duplicates.
         using var emittedBitmap = new RoaringBitmap(allocator);
-        var reader = GetReader(bitmapMatch.MinEntryId, bitmapMatch.MaxEntryId);
+
+        // Seek optimization: when the WHERE field matches the ORDER BY field, skip walking
+        // tree terms that can't match by seeking the underlying iterator to the boundary value.
+        // The hint value is matched against the sort field at the per-direction branch in GetReader,
+        // where the concrete key type is known.
+        object hintValue = null;
+        if (bitmapMatch is CompiledQueryMatch cm && cm.SortHint is { } hint &&
+            SliceEqualsUtf8(entryCmp.GetSortFieldName(match), hint.FieldName))
+        {
+            hintValue = hint.Value;
+        }
+
+        var reader = GetReader(bitmapMatch.MinEntryId, bitmapMatch.MaxEntryId, hintValue);
 
         while (match._results.Count < maxResults)
         {
@@ -551,31 +565,65 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         reader.Dispose();
         sortedIdsScope.Dispose();
 
-        SortedIndexReader<TDirection> GetReader(long min, long max)
+        SortedIndexReader<TDirection> GetReader(long min, long max, object hint)
         {
             if (typeof(TDirection) == typeof(Lookup<CompactTree.CompactKeyLookup>.ForwardIterator) ||
                 typeof(TDirection) == typeof(Lookup<CompactTree.CompactKeyLookup>.BackwardIterator))
             {
                 var termsTree = match._searcher.GetTermsFor(entryCmp.GetSortFieldName(match));
-                return new SortedIndexReader<TDirection>(llt, match._searcher, termsTree.IterateValues<TDirection>(), match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending);
+                var it = termsTree.IterateValues<TDirection>();
+                it.Reset();
+                if (hint is string strVal)
+                {
+                    var compactKey = llt.AcquireCompactKey();
+                    int byteCount = System.Text.Encoding.UTF8.GetByteCount(strVal);
+                    Span<byte> buffer = byteCount <= 256 ? stackalloc byte[256] : new byte[byteCount];
+                    int written = System.Text.Encoding.UTF8.GetBytes(strVal, buffer);
+                    compactKey.Set(buffer[..written]);
+                    compactKey.ChangeDictionary(termsTree.DictionaryId);
+                    it.Seek(new CompactTree.CompactKeyLookup(compactKey));
+                }
+                return new SortedIndexReader<TDirection>(llt, match._searcher, it, match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending);
             }
 
             if (typeof(TDirection) == typeof(Lookup<Int64LookupKey>.ForwardIterator) ||
                 typeof(TDirection) == typeof(Lookup<Int64LookupKey>.BackwardIterator))
             {
                 var termsTree = match._searcher.GetLongTermsFor(entryCmp.GetSortFieldName(match));
-                return new SortedIndexReader<TDirection>(llt, match._searcher, termsTree.Iterate<TDirection>(), match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending);
+                var it = termsTree.Iterate<TDirection>();
+                it.Reset();
+                if (hint is long longVal)
+                    it.Seek(new Int64LookupKey(longVal));
+                return new SortedIndexReader<TDirection>(llt, match._searcher, it, match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending);
             }
 
             if (typeof(TDirection) == typeof(Lookup<DoubleLookupKey>.ForwardIterator) ||
                 typeof(TDirection) == typeof(Lookup<DoubleLookupKey>.BackwardIterator))
             {
                 var termsTree = match._searcher.GetDoubleTermsFor(entryCmp.GetSortFieldName(match));
-                return new SortedIndexReader<TDirection>(llt, match._searcher, termsTree.Iterate<TDirection>(), match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending);
+                var it = termsTree.Iterate<TDirection>();
+                it.Reset();
+                if (hint is double doubleVal)
+                    it.Seek(new DoubleLookupKey(doubleVal));
+                return new SortedIndexReader<TDirection>(llt, match._searcher, it, match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending);
             }
 
             throw new NotSupportedException(typeof(TDirection).FullName);
         }
+    }
+
+    /// <summary>Compare a Slice's bytes to a string's UTF-8 encoding without allocating.
+    /// Used for sort-hint field-name matching where the slice comes from the index
+    /// and the hint field name comes from the query AST.</summary>
+    private static bool SliceEqualsUtf8(Slice slice, string s)
+    {
+        var sliceSpan = slice.AsReadOnlySpan();
+        int byteCount = System.Text.Encoding.UTF8.GetByteCount(s);
+        if (byteCount != sliceSpan.Length)
+            return false;
+        Span<byte> buffer = byteCount <= 256 ? stackalloc byte[256] : new byte[byteCount];
+        int written = System.Text.Encoding.UTF8.GetBytes(s, buffer);
+        return sliceSpan.SequenceEqual(buffer[..written]);
     }
 
     /// <summary>

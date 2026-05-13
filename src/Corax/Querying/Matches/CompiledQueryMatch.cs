@@ -11,6 +11,9 @@ using Voron.Impl;
 
 namespace Corax.Querying.Matches;
 
+/// <summary>Sort seek hint — value to seek to in the sort field, plus whether the bound is inclusive.</summary>
+public sealed record SortHint(string FieldName, object Value, bool Inclusive);
+
 public class CompiledQueryMatch(
     CompiledPlan compiledPlan,
     int bitmapCount,
@@ -28,7 +31,18 @@ public class CompiledQueryMatch(
     CancellationToken token)
     : IBitmapQueryMatch, IDisposable
 {
-    private readonly QueryIlEmitter.CompiledExecuteDelegate _compiledDelegate = compiledPlan.CompiledDelegate;
+    private readonly QueryIlEmitter.CompiledExecuteDelegate _compiledDelegate =
+        wantTimings ? compiledPlan.CompiledTimedDelegate : compiledPlan.CompiledDelegate;
+
+    /// <summary>Per-entry predicate evaluator for the entry-scan path. Set from the
+    /// CompiledPlan; the predicate-walk + value-type/op dispatch is baked into this
+    /// delegate's IL at plan-compile time. Null when the plan has no entry-scan
+    /// predicates (in which case the entry-scan path is unreachable).</summary>
+    public readonly EntryScanIlEmitter.CompiledEntryPredicate CompiledEntryPredicate = compiledPlan.CompiledEntryPredicate;
+
+    /// <summary>Sort seek hint — set by the plan builder when WHERE field matches ORDER BY field.
+    /// Null when no hint applies.</summary>
+    public SortHint SortHint;
     public readonly IQueryMatch[] ResolvedMatches = resolvedMatches;
     public readonly PostingSource[] PostingSources = postingSources;
     public readonly ITermsProvider[] TermsProviders = termsProviders;
@@ -36,6 +50,24 @@ public class CompiledQueryMatch(
     public readonly double[] DoubleParams = doubleParams;
     public readonly Slice[] SliceParams = sliceParams;
     public readonly long[] FieldRootPages = fieldRootPages;
+
+    /// <summary>Per-execution term counts for OrRange/AndRange ops. Each range op
+    /// stores its index into this array instead of a hardcoded count in the IL.
+    /// Set during resolution — different executions of the same query can have
+    /// different IN term counts without needing different compiled delegates.</summary>
+    public int[] InRangeCounts;
+
+    // Entry scan: predicates + parameters for CompiledQueryHelper.RunEntryScan
+    public ScanPredicateInfo[] ScanPredicateInfos;
+    public long[] ScanLongParams;
+    public double[] ScanDoubleParams;
+    public Slice[] ScanSliceParams;
+    public long[] ScanFieldRootPages;
+
+    // Entry scan telemetry (populated by IL/C# entry scan when it triggers)
+    public long EntryScanEntriesScanned;
+    public long EntryScanEntriesPassed;
+
     private readonly string _explainSource = compiledPlan.ExplainSource;
     public readonly IndexSearcher Searcher = searcher;
     public readonly CancellationToken Token = token;
@@ -72,7 +104,9 @@ public class CompiledQueryMatch(
         }
     }
 
-    public QueryCountConfidence Confidence => _executed ? QueryCountConfidence.High : QueryCountConfidence.Normal;
+    public QueryCountConfidence Confidence => _executed
+        ? (_count < Limit ? QueryCountConfidence.High : QueryCountConfidence.Low)
+        : QueryCountConfidence.Normal;
 
     public bool IsBoosting
     {
@@ -152,7 +186,6 @@ public class CompiledQueryMatch(
         }
     }
 
-    /// <summary>Get execution telemetry for external inspection graph builders.</summary>
     public void GetTelemetry(out long[] timings, out long[] resultCounts, out int entryScanTakenAtOp)
     {
         timings = Timings;
@@ -168,7 +201,13 @@ public class CompiledQueryMatch(
         };
 
         if (EntryScanTakenAtOp >= 0)
+        {
             parameters["EntryScanAt"] = EntryScanTakenAtOp.ToString();
+            if (EntryScanEntriesScanned > 0)
+                parameters["EntryScanScanned"] = EntryScanEntriesScanned.ToString();
+            if (EntryScanEntriesPassed > 0)
+                parameters["EntryScanPassed"] = EntryScanEntriesPassed.ToString();
+        }
 
         if (Timings is { Length: > 0 })
         {
@@ -226,7 +265,7 @@ public class CompiledQueryMatch(
         {
             for (int i = 1; i < bitmapCount; i++)
                 Bitmaps[i].Dispose();
-            ArrayPool<RoaringBitmap>.Shared.Return(Bitmaps, clearArray: true);
+            ArrayPool<RoaringBitmap>.Shared.Return(Bitmaps);
             Bitmaps = null;
         }
     }
