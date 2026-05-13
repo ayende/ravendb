@@ -185,11 +185,10 @@ public unsafe sealed partial class SortingMultiMatch<TInner> : SortingMultiMatch
         if (match._sortingDataTransfer.IncludeDistances)
             sizeToAllocate += take * sizeof(SpatialResult);
         
-        var bufScope = allocator.Allocate(sizeToAllocate, out ByteString bs);
+        using var bufScope = allocator.Allocate(sizeToAllocate, out ByteString bs);
         Span<long> matchesTermIds = new(bs.Ptr, take);
         UnmanagedSpan* termsPtr = (UnmanagedSpan*)(bs.Ptr + take * sizeof(long));
 
-        // Initialize the important infrastructure for the sorting.
         TComparer1 entryComparer = new();
         entryComparer.Init(match, default, 0);
         var pageCache = llt.PageLocator;
@@ -209,8 +208,6 @@ public unsafe sealed partial class SortingMultiMatch<TInner> : SortingMultiMatch
 
             entryComparer.SortBatch(match, llt, pageCache, resultsPtr, matchesTermIds, termsPtr, match._orderMetadata, comp2, comp3);
         }
-
-        bufScope.Dispose();
     }
 
 

@@ -110,16 +110,17 @@ public partial class IndexSearcher
                 const int MaxFilterSampleSize = 8192;
                 var sampleSize = Math.Min(filterCount, MaxFilterSampleSize);
                 _entryIds = new long[sampleSize];
-                var iterator = filterResults.GetIterator();
+                using var iterator = filterResults.GetIterator();
                 Span<long> batch = stackalloc long[QueryPrimitives.EntryScanBatchSize];
                 int totalRead = 0;
                 int read;
                 while ((read = iterator.Fill(ref filterResults, batch)) > 0 && totalRead < _entryIds.Length)
                 {
-                    for (int i = 0; i < read && totalRead < _entryIds.Length; i++)
-                        _entryIds[totalRead++] = batch[i];
+                    int remaining = _entryIds.Length - totalRead;
+                    int copyLen = Math.Min(read, remaining);
+                    batch[..copyLen].CopyTo(_entryIds.AsSpan(totalRead));
+                    totalRead += copyLen;
                 }
-                iterator.Dispose();
 
                 if (totalRead < _entryIds.Length)
                     Array.Resize(ref _entryIds, totalRead);

@@ -320,8 +320,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         private bool _nullPostingListRead;
 
         /// <summary>The iterator <paramref name="it"/> is assumed to be already positioned by the caller
-        /// (caller is responsible for Reset + optional Seek). This avoids the SeekAction delegate
-        /// indirection and the closure allocations it required.</summary>
+        /// (caller is responsible for Reset + optional Seek).</summary>
         public SortedIndexReader(LowLevelTransaction llt, IndexSearcher searcher, TDirection it, FieldMetadata metadata, long min, long max, bool nullFirst, bool isForward)
         {
             _termsIt = it;
@@ -520,10 +519,6 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         var sortedIdsScope = allocator.Allocate(sizeof(long) * SortBatchSize, out ByteString bs);
         Span<long> sortedIdBuffer = new(bs.Ptr, SortBatchSize);
 
-        // Track emitted entry IDs to deduplicate multi-value fields, which produce
-        // multiple entries in the sort index for the same document entry ID.
-        // Multi-value fields produce duplicate entry IDs in the sort index
-        // (one per value). Track emitted IDs to skip duplicates.
         using var emittedBitmap = new RoaringBitmap(allocator);
 
         // Seek optimization: when the WHERE field matches the ORDER BY field, skip walking
@@ -669,17 +664,14 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         if (match._sortingDataTransfer.IncludeDistances)
             sizeToAllocate += batchResults.Length * sizeof(SpatialResult);
         
-        var bufScope = allocator.Allocate(sizeToAllocate, out ByteString bs);
+        using var bufScope = allocator.Allocate(sizeToAllocate, out ByteString bs);
         Span<long> batchTermIds = new(bs.Ptr, batchResults.Length);
         UnmanagedSpan* termsPtr = (UnmanagedSpan*)(bs.Ptr + batchResults.Length * sizeof(long));
 
-        // Initialize the important infrastructure for the sorting.
         TEntryComparer entryComparer = new();
         entryComparer.Init(match);
         
         entryComparer.SortBatch(match, llt, llt.PageLocator, batchResults, batchTermIds, termsPtr);
-
-        bufScope.Dispose();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

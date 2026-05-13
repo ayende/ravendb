@@ -23,7 +23,7 @@ public static class CompiledQueryHelper
     public static void RecordTiming(CompiledQueryMatch ctx, int opIndex, long startTick)
     {
         var timings = ctx.Timings;
-        if (timings != null && opIndex < timings.Length)
+        if (opIndex < timings.Length)
             timings[opIndex] = Stopwatch.GetTimestamp() - startTick;
     }
 
@@ -31,7 +31,7 @@ public static class CompiledQueryHelper
     public static void RecordResultCount(CompiledQueryMatch ctx, int opIndex)
     {
         var resultCounts = ctx.ResultCounts;
-        if (resultCounts != null && opIndex < resultCounts.Length)
+        if (opIndex < resultCounts.Length)
             resultCounts[opIndex] = ctx.Bitmaps[0].Count;
     }
 

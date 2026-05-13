@@ -101,15 +101,15 @@ public sealed class DirectScanMatch : IQueryMatch, IPredicateEvaluationContext, 
 
         int count = 0;
         int remaining = _take > 0 ? (int)Math.Min(matches.Length, _take - _totalMatched) : matches.Length;
-        int batchSize = Math.Min(256, remaining * 4);
-        Span<long> batch = stackalloc long[batchSize];
-        Span<int> indices = stackalloc int[batchSize];
-        Span<bool> passed = stackalloc bool[batchSize];
+        int batchSize = Math.Min(QueryPrimitives.EntryScanBatchSize, Math.Max(1, remaining));
+        Span<long> batch = stackalloc long[QueryPrimitives.EntryScanBatchSize];
+        Span<int> indices = stackalloc int[QueryPrimitives.EntryScanBatchSize];
+        Span<bool> passed = stackalloc bool[QueryPrimitives.EntryScanBatchSize];
 
         while (count < remaining)
         {
             long t0 = Stopwatch.GetTimestamp();
-            int read = _drivingMatch.Fill(batch);
+            int read = _drivingMatch.Fill(batch[..batchSize]);
             _treeScanTicks += Stopwatch.GetTimestamp() - t0;
 
             if (read == 0)
@@ -121,7 +121,6 @@ public sealed class DirectScanMatch : IQueryMatch, IPredicateEvaluationContext, 
 
             if (_residualPredicates == null || _residualPredicates.Length == 0)
             {
-                // No residual predicates — all tree entries are matches
                 for (int i = 0; i < read && count < remaining; i++)
                 {
                     long id = batch[i];
@@ -134,33 +133,27 @@ public sealed class DirectScanMatch : IQueryMatch, IPredicateEvaluationContext, 
             }
             else
             {
-                // Sort batch by entry ID for page locality, track original indices.
-                // sortedIds gets the sorted entry IDs; indices[i] maps back to the
-                // original position in batch (field-value sort order).
-                Span<long> sortedIds = stackalloc long[read];
-                batch.Slice(0, read).CopyTo(sortedIds);
-                for (int i = 0; i < read; i++)
-                    indices[i] = i;
-                sortedIds.Sort(indices.Slice(0, read));
+                Span<long> sortedIds = stackalloc long[QueryPrimitives.EntryScanBatchSize];
+                batch[..read].CopyTo(sortedIds);
+                for (int j = 0; j < read; j++)
+                    indices[j] = j;
+                sortedIds.Sort(indices[..read]);
 
-                passed.Slice(0, read).Clear();
+                passed[..read].Clear();
 
                 long t1 = Stopwatch.GetTimestamp();
 
-                // Batch resolve to container locations for sequential page access
-                Span<long> containerLocs = stackalloc long[read];
-                _searcher.ResolveEntryLocations(sortedIds, containerLocs);
+                Span<long> containerLocs = stackalloc long[QueryPrimitives.EntryScanBatchSize];
+                _searcher.ResolveEntryLocations(sortedIds, containerLocs[..read]);
 
-                Span<UnmanagedSpan> spans = stackalloc UnmanagedSpan[read];
-                Container.GetAll(_llt, containerLocs, spans, -1, _llt.PageLocator);
+                Span<UnmanagedSpan> spans = stackalloc UnmanagedSpan[QueryPrimitives.EntryScanBatchSize];
+                Container.GetAll(_llt, containerLocs[..read], spans, -1, _llt.PageLocator);
 
                 _searcher.InitializeSpecialTermsMarkers();
 
-                // Pack readers/entryIds/origIndexes for entries that have valid locations
-                // and are not already emitted. Invalid/dedup entries are counted but skipped.
                 var readersArr = ArrayPool<EntryTermsReader>.Shared.Rent(read);
-                Span<long> packedIds = stackalloc long[read];
-                Span<int> packedOrigIdx = stackalloc int[read];
+                Span<long> packedIds = stackalloc long[QueryPrimitives.EntryScanBatchSize];
+                Span<int> packedOrigIdx = stackalloc int[QueryPrimitives.EntryScanBatchSize];
                 int packed = 0;
                 try
                 {

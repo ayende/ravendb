@@ -79,7 +79,8 @@ public class CompiledQueryMatch(
     /// <summary>Limit for early-exit during bitmap accumulation (unsorted queries only).
     /// When set, FillFromPostings stops after limit entries and OR branches are
     /// skipped once the bitmap has enough. Set to long.MaxValue when an ORDER BY
-    /// is present (sorting needs the full bitmap for Contains checks).</summary>
+    /// is present (sorting needs the full bitmap for Contains checks).
+    /// Stored as long to avoid casts when comparing with Count (long) in the IL-emitted code.</summary>
     public long Limit = long.MaxValue;
 
     // Telemetry — populated during Execute if timings are requested

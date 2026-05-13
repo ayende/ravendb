@@ -175,10 +175,7 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     /// for best B-tree page locality. Unresolvable entries get -1.</summary>
     public void ResolveEntryLocations(ReadOnlySpan<long> entryIds, Span<long> containerLocations)
     {
-        for (int i = 0; i < entryIds.Length; i++)
-        {
-            containerLocations[i] = _entryIdToLocation.TryGetValue(entryIds[i], out var loc) ? loc : -1;
-        }
+        _entryIdToLocation.GetFor(entryIds, containerLocations, -1);
     }
 
     public EntryTermsReader GetEntryTermsReader(long id, ref Page p, CompactKey key = null)

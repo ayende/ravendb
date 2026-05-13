@@ -38,7 +38,6 @@ namespace Corax.Querying.Matches
         public float BoostFactor;
         public BoostingMatch(Querying.IndexSearcher searcher, in IQueryMatch inner, float boostFactor)
         {
-            // Boosted vector search is not supported.
             PortableExceptions.ThrowIf<NotSupportedException>(inner is VectorSearchMatch, $"Boosting the {nameof(VectorSearchMatch)} is not supported yet.");
             
             _inner = inner;
