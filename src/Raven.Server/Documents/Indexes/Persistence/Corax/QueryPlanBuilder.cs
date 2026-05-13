@@ -882,7 +882,34 @@ internal static partial class QueryPlanBuilder
         {
             // Method expressions like cmpxchg(), now(), today() must be resolved at execution
             // time (not template creation time) because their values can change between executions.
-            return new ParameterBinding { DeferredExpression = me, LiteralType = ParamValueType.String };
+            // Create a closure delegate that captures the AST node and evaluates it with
+            // the QueryBuilderParameters provided at invocation time (boxed as object).
+            return new ParameterBinding
+            {
+                DeferredExpression = (builderParamsObj, qp) =>
+                {
+                    var bp = (QueryBuilderParameters)builderParamsObj;
+                    var resolved = QueryBuilderHelper.EvaluateMethod(
+                        bp.Query.Metadata.Query,
+                        bp.Metadata,
+                        bp.ServerContext,
+                        bp.DocumentsContext.DocumentDatabase.CompareExchangeStorage,
+                        me,
+                        qp,
+                        bp.QueryTime);
+                    if (resolved is ValueExpression ve)
+                    {
+                        if (ve.Value == ValueTokenType.Null)
+                            return null;
+                        var value = ve.GetValue(qp);
+                        if (value == null)
+                            return null;
+                        return value;
+                    }
+                    return null;
+                },
+                LiteralType = ParamValueType.String
+            };
         }
 
         if (expr is not ValueExpression ve)

@@ -261,7 +261,7 @@ internal static partial class QueryPlanBuilder
             {
                 CompiledDelegate = QueryIlEmitter.EmitDelegate(plan, out var explainText, emitTimings: false),
                 CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(plan, out _, emitTimings: true),
-                CompiledEntryPredicate = EntryScanIlEmitter.EmitDelegate(plan.ScanPredicateInfos),
+                CompiledEntryPredicate = ResidualScanIlEmitter.EmitEntryScanDelegate(plan.ScanPredicateInfos),
                 ExplainSource = explainText,
                 Ordering = plan.OperandOrdering,
                 TypeSignature = plan.TypeSignature,
@@ -674,28 +674,13 @@ internal static partial class QueryPlanBuilder
     private static (object Value, ParamValueType Type) ResolveBindingScalar(ParameterBinding binding, BlittableJsonReaderObject queryParameters, QueryBuilderParameters builderParameters = null)
     {
         // Handle deferred method expressions (cmpxchg, now, today) — resolve at execution time
-        if (binding.DeferredExpression is MethodExpression methodExpr)
+        if (binding.DeferredExpression != null)
         {
-            var resolved = QueryBuilderHelper.EvaluateMethod(
-                builderParameters.Query.Metadata.Query,
-                builderParameters.Metadata,
-                builderParameters.ServerContext,
-                builderParameters.DocumentsContext.DocumentDatabase.CompareExchangeStorage,
-                methodExpr,
-                queryParameters,
-                builderParameters.QueryTime);
-
-            // EvaluateMethod returns a ValueExpression — extract its value
-            if (resolved is ValueExpression ve)
-            {
-                if (ve.Value == ValueTokenType.Null)
-                    return (null, ParamValueType.Null);
-                var value = ve.GetValue(queryParameters);
-                if (value == null)
-                    return (null, ParamValueType.Null);
-                var (val, valType) = ResolveParameterValue(value);
-                return (val, ToParamValueType(valType));
-            }
+            var value = binding.DeferredExpression(builderParameters, queryParameters);
+            if (value == null)
+                return (null, ParamValueType.Null);
+            var (val, valType) = ResolveParameterValue(value);
+            return (val, ToParamValueType(valType));
 
             return (null, ParamValueType.Null);
         }

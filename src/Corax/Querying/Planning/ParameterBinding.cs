@@ -1,3 +1,6 @@
+using System;
+using Sparrow.Json;
+
 namespace Corax.Querying.Planning;
 
 /// <summary>Single parameter reference — either a literal (value cached) or a parameter
@@ -16,7 +19,9 @@ public sealed class ParameterBinding
     public string ParameterName;
 
     /// <summary>For deferred method expressions (e.g. cmpxchg(), now(), today()) that must
-    /// be resolved at execution time rather than template creation time. Stored as object
-    /// to avoid a dependency on the Raven.Server AST types from the Corax layer.</summary>
-    public object DeferredExpression;
+    /// be resolved at execution time rather than template creation time. The first parameter
+    /// is the QueryBuilderParameters boxed as object (cast at the resolution site in
+    /// Raven.Server); the second is the query's BlittableJsonReaderObject.
+    /// Returns the resolved native value, or null for null values.</summary>
+    public Func<object, BlittableJsonReaderObject, object> DeferredExpression;
 }
