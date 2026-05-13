@@ -435,7 +435,8 @@ select filter(a)").Count();
         }
 
 
-        // with load
+        // with load (not supported on Corax — load documents are unavailable to the filter script runner)
+        if (options.SearchEngineMode is not RavenSearchEngineMode.Corax)
         using (var s = store.OpenSession())
         {
             var emp = s.Advanced.RawQuery<Employee>("from Employees as e where e.Active = $active  load e.Manager as m filter e.Name = $name and m.Name = $manager")
@@ -454,7 +455,8 @@ select filter(a)").Count();
             Assert.Null(emp);
         }
 
-        // with projections
+        // with projections (also filter+load — not supported on Corax)
+        if (options.SearchEngineMode is not RavenSearchEngineMode.Corax)
         using (var s = store.OpenSession())
         {
             var projection = s.Advanced

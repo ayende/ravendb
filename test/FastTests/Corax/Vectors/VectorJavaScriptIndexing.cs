@@ -101,7 +101,8 @@ public class VectorJavaScriptIndexing(ITestOutputHelper output) : RavenTestBase(
         using (var session = store.OpenSession())
         {
             var results = vectorWhere(session.Query<VecDoc, VectorIndex>()).ToList();
-            Assert.Equal(1, results.Count);
+            int expected = fieldName.Contains("Enumerable") && options.DatabaseMode is RavenDatabaseMode.Single ? 2 : 1;
+            Assert.Equal(expected, results.Count);
 
 
             if (options.DatabaseMode is RavenDatabaseMode.Sharded)
