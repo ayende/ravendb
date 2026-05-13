@@ -276,11 +276,20 @@ public static class QueryPrimitives
                 if (spans[i].Length == 0)
                     continue; // missing entry
 
+<<<<<<< HEAD
                 long entryId = batchSlice[i];
                 var reader = searcher.CreateEntryTermsReader(spans[i]);
                 bool documentMatched = true;
 
                 for (int p = 0; p < predicates.Length; p++)
+=======
+            int read;
+            try
+            {
+                while ((read = iterator.Fill(ref bitmap, batch)) > 0)
+                {
+                for (int i = 0; i < read; i++)
+>>>>>>> RavenDB-25281-full-stack/3-il-emitter
                 {
                     ref var predicate = ref predicates[p];
                     long fieldRootPage = fieldRootPages[p];
