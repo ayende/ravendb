@@ -16,7 +16,7 @@ namespace Corax.Querying;
 public partial class IndexSearcher
 {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public IAggregationProvider TextualAggregation(in FieldMetadata field, bool forward = true, bool streamingEnabled = false, in CancellationToken token = default)
+    public IAggregationProvider TextualAggregation(in FieldMetadata field, bool forward = true, in CancellationToken token = default)
     {
         var compactTree = _fieldsTree?.CompactTreeFor(field.FieldName);
         if (compactTree is null)

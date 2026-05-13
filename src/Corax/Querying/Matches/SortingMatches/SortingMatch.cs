@@ -290,7 +290,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         }
     }
     
-    private ref struct SortedIndexReader<TDirection>
+    internal unsafe struct SortedIndexReader<TDirection> : IDisposable
         where TDirection : struct, ILookupIterator
     {
         private PostingList.Iterator _postListIt;
@@ -319,7 +319,9 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         private bool _nonExistingPostingListRead;
         private bool _nullPostingListRead;
 
-        public SortedIndexReader(LowLevelTransaction llt, IndexSearcher searcher, TDirection it, FieldMetadata metadata, long min, long max, bool nullFirst, bool isForward)
+        public delegate void SeekAction(ref TDirection it);
+
+        public SortedIndexReader(LowLevelTransaction llt, IndexSearcher searcher, TDirection it, FieldMetadata metadata, long min, long max, bool nullFirst, bool isForward, SeekAction seekAction = null)
         {
             _termsIt = it;
             _min = min;
@@ -327,6 +329,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
             _nullFirst = nullFirst;
             _isForward = isForward;
             _termsIt.Reset();
+            seekAction?.Invoke(ref _termsIt);
             _llt = llt;
             _searcher = searcher;
             _postListIt = default;
@@ -523,7 +526,18 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         // Multi-value fields produce duplicate entry IDs in the sort index
         // (one per value). Track emitted IDs to skip duplicates.
         using var emittedBitmap = new RoaringBitmap(allocator);
-        var reader = GetReader(bitmapMatch.MinEntryId, bitmapMatch.MaxEntryId);
+
+        // Seek optimization: when the WHERE field matches the ORDER BY field, skip
+        // walking tree terms that can't match by seeking to the boundary value.
+        SortedIndexReader<TDirection>.SeekAction seekAction = null;
+        if (bitmapMatch is CompiledQueryMatch cm &&
+            cm.TryGetSortHint(out var hintField, out var hintValue, out _) &&
+            hintField == entryCmp.GetSortFieldName(match).ToString())
+        {
+            seekAction = BuildSeekAction(hintValue);
+        }
+
+        var reader = GetReader(bitmapMatch.MinEntryId, bitmapMatch.MaxEntryId, seekAction);
 
         while (match._results.Count < maxResults)
         {
@@ -551,27 +565,59 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         reader.Dispose();
         sortedIdsScope.Dispose();
 
-        SortedIndexReader<TDirection> GetReader(long min, long max)
+        static SortedIndexReader<TDirection>.SeekAction BuildSeekAction(object value)
+        {
+            if (value is long longVal)
+            {
+                if (typeof(TDirection) == typeof(Lookup<Int64LookupKey>.ForwardIterator) ||
+                    typeof(TDirection) == typeof(Lookup<Int64LookupKey>.BackwardIterator))
+                {
+                    return (ref TDirection it) => it.Seek(new Int64LookupKey(longVal));
+                }
+            }
+            else if (value is double doubleVal)
+            {
+                if (typeof(TDirection) == typeof(Lookup<DoubleLookupKey>.ForwardIterator) ||
+                    typeof(TDirection) == typeof(Lookup<DoubleLookupKey>.BackwardIterator))
+                {
+                    return (ref TDirection it) => it.Seek(new DoubleLookupKey(doubleVal));
+                }
+            }
+            // String seeks are handled in GetReader() below where the CompactTree
+            // and its DictionaryId are available for CompactKey construction.
+            return null;
+        }
+
+        SortedIndexReader<TDirection> GetReader(long min, long max, SortedIndexReader<TDirection>.SeekAction seek = null)
         {
             if (typeof(TDirection) == typeof(Lookup<CompactTree.CompactKeyLookup>.ForwardIterator) ||
                 typeof(TDirection) == typeof(Lookup<CompactTree.CompactKeyLookup>.BackwardIterator))
             {
                 var termsTree = match._searcher.GetTermsFor(entryCmp.GetSortFieldName(match));
-                return new SortedIndexReader<TDirection>(llt, match._searcher, termsTree.IterateValues<TDirection>(), match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending);
+                // Build string seek action here where we have the tree's dictionary ID
+                if (seek == null && bitmapMatch is CompiledQueryMatch cm2 &&
+                    cm2.TryGetSortHint(out _, out var seekVal, out _) && seekVal is string strVal)
+                {
+                    var compactKey = llt.AcquireCompactKey();
+                    compactKey.Set(System.Text.Encoding.UTF8.GetBytes(strVal));
+                    compactKey.ChangeDictionary(termsTree.DictionaryId);
+                    seek = (ref TDirection it) => it.Seek(new CompactTree.CompactKeyLookup(compactKey));
+                }
+                return new SortedIndexReader<TDirection>(llt, match._searcher, termsTree.IterateValues<TDirection>(), match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending, seek);
             }
 
             if (typeof(TDirection) == typeof(Lookup<Int64LookupKey>.ForwardIterator) ||
                 typeof(TDirection) == typeof(Lookup<Int64LookupKey>.BackwardIterator))
             {
                 var termsTree = match._searcher.GetLongTermsFor(entryCmp.GetSortFieldName(match));
-                return new SortedIndexReader<TDirection>(llt, match._searcher, termsTree.Iterate<TDirection>(), match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending);
+                return new SortedIndexReader<TDirection>(llt, match._searcher, termsTree.Iterate<TDirection>(), match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending, seek);
             }
 
             if (typeof(TDirection) == typeof(Lookup<DoubleLookupKey>.ForwardIterator) ||
                 typeof(TDirection) == typeof(Lookup<DoubleLookupKey>.BackwardIterator))
             {
                 var termsTree = match._searcher.GetDoubleTermsFor(entryCmp.GetSortFieldName(match));
-                return new SortedIndexReader<TDirection>(llt, match._searcher, termsTree.Iterate<TDirection>(), match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending);
+                return new SortedIndexReader<TDirection>(llt, match._searcher, termsTree.Iterate<TDirection>(), match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending, seek);
             }
 
             throw new NotSupportedException(typeof(TDirection).FullName);

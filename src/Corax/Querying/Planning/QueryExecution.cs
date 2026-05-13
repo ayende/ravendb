@@ -14,7 +14,6 @@ public class QueryExecution
     public ClauseExecution[] Executions;
     public bool IsAllEntries;
     public bool AllNegated;
-    public bool IsOr;
 
     /// <summary>Typed parameter values for clause resolution. Populated during plan building
     /// from resolved query parameters and literal values. Each clause's PackedParam field
@@ -55,4 +54,9 @@ public class QueryExecution
     /// <summary>Metadata for entry scan predicates. Used by the IL emitter to generate
     /// direct comparison calls. Null if no entry scan is possible.</summary>
     public ScanPredicateInfo[] ScanPredicateInfos;
+
+    /// <summary>Per-execution term counts for OrRange/AndRange ops. Each range op's
+    /// ParamIndex2 is an index into this array. The IL reads the count at runtime,
+    /// so the same compiled delegate handles different IN parameter array sizes.</summary>
+    public int[] InRangeCounts;
 }

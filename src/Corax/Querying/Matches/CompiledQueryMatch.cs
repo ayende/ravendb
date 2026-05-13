@@ -28,7 +28,28 @@ public class CompiledQueryMatch(
     CancellationToken token)
     : IBitmapQueryMatch, IDisposable
 {
-    private readonly QueryIlEmitter.CompiledExecuteDelegate _compiledDelegate = compiledPlan.CompiledDelegate;
+    private readonly QueryIlEmitter.CompiledExecuteDelegate _compiledDelegate =
+        wantTimings ? compiledPlan.CompiledTimedDelegate : compiledPlan.CompiledDelegate;
+
+    // Sort seek hint — set by the plan builder when WHERE field matches ORDER BY field
+    private string _seekFieldName;
+    private object _seekValue;
+    private bool _seekInclusive;
+
+    public void SetSortHint(string fieldName, object value, bool inclusive)
+    {
+        _seekFieldName = fieldName;
+        _seekValue = value;
+        _seekInclusive = inclusive;
+    }
+
+    public bool TryGetSortHint(out string fieldName, out object value, out bool inclusive)
+    {
+        fieldName = _seekFieldName;
+        value = _seekValue;
+        inclusive = _seekInclusive;
+        return _seekFieldName != null;
+    }
     public readonly IQueryMatch[] ResolvedMatches = resolvedMatches;
     public readonly PostingSource[] PostingSources = postingSources;
     public readonly ITermsProvider[] TermsProviders = termsProviders;
@@ -36,6 +57,24 @@ public class CompiledQueryMatch(
     public readonly double[] DoubleParams = doubleParams;
     public readonly Slice[] SliceParams = sliceParams;
     public readonly long[] FieldRootPages = fieldRootPages;
+
+    /// <summary>Per-execution term counts for OrRange/AndRange ops. Each range op
+    /// stores its index into this array instead of a hardcoded count in the IL.
+    /// Set during resolution — different executions of the same query can have
+    /// different IN term counts without needing different compiled delegates.</summary>
+    public int[] InRangeCounts;
+
+    // Entry scan: predicates + parameters for CompiledQueryHelper.RunEntryScan
+    public ScanPredicateInfo[] ScanPredicateInfos;
+    public long[] ScanLongParams;
+    public double[] ScanDoubleParams;
+    public Slice[] ScanSliceParams;
+    public long[] ScanFieldRootPages;
+
+    // Entry scan telemetry (populated by IL/C# entry scan when it triggers)
+    public long EntryScanEntriesScanned;
+    public long EntryScanEntriesPassed;
+
     private readonly string _explainSource = compiledPlan.ExplainSource;
     public readonly IndexSearcher Searcher = searcher;
     public readonly CancellationToken Token = token;
@@ -72,7 +111,9 @@ public class CompiledQueryMatch(
         }
     }
 
-    public QueryCountConfidence Confidence => _executed ? QueryCountConfidence.High : QueryCountConfidence.Normal;
+    public QueryCountConfidence Confidence => _executed
+        ? (_count < Limit ? QueryCountConfidence.High : QueryCountConfidence.Low)
+        : QueryCountConfidence.Normal;
 
     public bool IsBoosting
     {
@@ -168,7 +209,13 @@ public class CompiledQueryMatch(
         };
 
         if (EntryScanTakenAtOp >= 0)
+        {
             parameters["EntryScanAt"] = EntryScanTakenAtOp.ToString();
+            if (EntryScanEntriesScanned > 0)
+                parameters["EntryScanScanned"] = EntryScanEntriesScanned.ToString();
+            if (EntryScanEntriesPassed > 0)
+                parameters["EntryScanPassed"] = EntryScanEntriesPassed.ToString();
+        }
 
         if (Timings is { Length: > 0 })
         {
