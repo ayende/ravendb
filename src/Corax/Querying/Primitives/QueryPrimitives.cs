@@ -381,11 +381,12 @@ public static class QueryPrimitives
                 return;
 
             case Planning.PostingSourceKind.Single:
-                bitmap.Add(source.SingleEntryId);
+                if (limit > 0)
+                    bitmap.Add(source.SingleEntryId);
                 return;
 
             case Planning.PostingSourceKind.SmallPostingList:
-                AddSmallPostingListToBitmap(llt, source.SmallPostingListId, ref bitmap);
+                AddSmallPostingListToBitmap(llt, source.SmallPostingListId, ref bitmap, limit);
                 return;
 
             case Planning.PostingSourceKind.PostingList:
@@ -492,7 +493,7 @@ public static class QueryPrimitives
                 tempBitmap.Add(source.SingleEntryId);
                 return;
             case Planning.PostingSourceKind.SmallPostingList:
-                AddSmallPostingListToBitmap(llt, source.SmallPostingListId, ref tempBitmap);
+                AddSmallPostingListToBitmap(llt, source.SmallPostingListId, ref tempBitmap, limit);
                 return;
             default:
                 Debug.Fail($"MaterializeTermSourceIntoBitmap called with unexpected kind: {source.Kind}");
@@ -507,7 +508,8 @@ public static class QueryPrimitives
     private static unsafe void AddSmallPostingListToBitmap(
         LowLevelTransaction llt,
         long smallPostingListId,
-        ref RoaringBitmap bitmap)
+        ref RoaringBitmap bitmap,
+        long limit = long.MaxValue)
     {
         Container.Get(llt, (ContainerEntryId)smallPostingListId, out var item);
         _ = VariableSizeEncoding.Read<int>(item.Address, out var offset);
@@ -517,11 +519,16 @@ public static class QueryPrimitives
         reader.Init(item.Address + offset, item.Length - offset);
         {
             int read;
-            while ((read = reader.Fill(buffer, FillBufferSize)) > 0)
+            long total = 0;
+            while (total < limit && (read = reader.Fill(buffer, FillBufferSize)) > 0)
             {
                 var results = new Span<long>(buffer, read);
                 EntryIdEncodings.DecodeAndDiscardFrequency(results, read);
-                bitmap.AddRange(results);
+                long remaining = limit - total;
+                read = (int)Math.Min(read, remaining);
+                if (read <= 0) break;
+                bitmap.AddRange(results[..read]);
+                total += read;
             }
         }
     }
