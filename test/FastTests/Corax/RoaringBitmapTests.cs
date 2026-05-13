@@ -831,7 +831,6 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
             bitmap.Add(i);
         bitmap.PrepareForReading();
 
-        Assert.Equal(bitmap.Count, bitmap.Count);
         Assert.Equal(1000, bitmap.Count);
         bitmap.Dispose();
     }
