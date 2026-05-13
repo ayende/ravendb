@@ -745,7 +745,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
 
     /// <summary>
     /// Fill the buffer with values from the bitmap, starting from the current iteration state.
-    /// Returns the number of values written. Compatible with Cora's streaming evaluation.
+    /// Returns the number of values written. Compatible with Corax's streaming evaluation.
     /// </summary>
     public int Fill(Span<long> buffer, ref RoaringBitmapIterator iterator)
     {
