@@ -4,6 +4,8 @@ using System.Runtime.CompilerServices;
 using Corax.Querying.Matches;
 using Corax.Querying.Primitives;
 using Corax.Utils;
+using Sparrow;
+using Voron.Data.Containers;
 using Voron.Data.RoaringBitmaps;
 
 namespace Corax.Querying.Planning;
@@ -71,21 +73,25 @@ public static class CompiledQueryHelper
 
     // ── Entry scan iteration loop ───────────────────────────────────────
 
-    /// <summary>Run entry scan: iterate the source bitmap in batches, fetch each entry's
-    /// stored-fields reader, dispatch into the IL-compiled per-entry predicate, and add
-    /// passing entries to the target bitmap. The predicate-walk + value-type/compare-op
-    /// dispatch is baked into <c>ctx.CompiledEntryPredicate</c> at plan-compile time, so
-    /// this loop has no runtime switches.</summary>
+    /// <summary>Run entry scan: iterate the source bitmap in batches, resolve all entries
+    /// in each batch, evaluate the compiled predicate delegate once per batch (compact
+    /// survivors in-place), and add passing entries to the target bitmap. Batching avoids
+    /// the per-entry delegate invocation overhead — the IL-emitted predicate processes
+    /// the entire reader span and compacts entry IDs in a single call.</summary>
     public static unsafe void RunEntryScan(
         CompiledQueryMatch ctx,
         ref RoaringBitmap sourceBitmap,
         ref RoaringBitmap targetBitmap)
     {
         Span<long> buffer = stackalloc long[QueryPrimitives.EntryScanBatchSize];
+        Span<long> containerLocs = stackalloc long[QueryPrimitives.EntryScanBatchSize];
+        Span<UnmanagedSpan> spans = stackalloc UnmanagedSpan[QueryPrimitives.EntryScanBatchSize];
+        var readers = new EntryTermsReader[QueryPrimitives.EntryScanBatchSize];
+
         var iterator = sourceBitmap.GetIterator();
-        Voron.Page lastPage = default;
         var searcher = ctx.Searcher;
         var predicate = ctx.CompiledEntryPredicate;
+        var llt = searcher.Transaction.LowLevelTransaction;
 
         int read;
         try
@@ -94,18 +100,33 @@ public static class CompiledQueryHelper
             {
                 ctx.Token.ThrowIfCancellationRequested();
 
+                var batch = buffer[..read];
+                ctx.EntryScanEntriesScanned += read;
+
+                searcher.ResolveEntryLocations(batch, containerLocs);
+                Container.GetAll(llt, containerLocs[..read], spans, -1, llt.PageLocator);
+                searcher.InitializeSpecialTermsMarkers();
+
+                int validCount = 0;
                 for (int i = 0; i < read; i++)
                 {
-                    long entryId = buffer[i];
-                    ctx.EntryScanEntriesScanned++;
-
-                    var reader = searcher.GetEntryTermsReader(entryId, ref lastPage);
-                    if (predicate(ctx, ref reader))
-                    {
-                        ctx.EntryScanEntriesPassed++;
-                        targetBitmap.Add(entryId);
-                    }
+                    if (containerLocs[i] == -1 || spans[i].Address == null)
+                        continue;
+                    readers[validCount] = new EntryTermsReader(llt,
+                        searcher.NullTermsMarkers, searcher.NonExistingTermsMarkers,
+                        spans[i].Address, spans[i].Length, searcher.DictionaryId,
+                        searcher.VectorFieldsMarkers, null);
+                    buffer[validCount] = buffer[i]; // compact entry IDs in-place
+                    validCount++;
                 }
+
+                if (validCount == 0)
+                    continue;
+
+                int passed = predicate(ctx, readers.AsSpan(0, validCount), buffer[..validCount]);
+                ctx.EntryScanEntriesPassed += passed;
+                for (int i = 0; i < passed; i++)
+                    targetBitmap.Add(buffer[i]);
             }
         }
         finally

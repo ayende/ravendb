@@ -18,7 +18,7 @@ namespace Corax.Querying.Planning;
 /// </summary>
 public static class EntryScanIlEmitter
 {
-    public delegate bool CompiledEntryPredicate(CompiledQueryMatch ctx, ref EntryTermsReader reader);
+    public delegate int CompiledEntryPredicate(CompiledQueryMatch ctx, Span<EntryTermsReader> readers, Span<long> entryIds);
 
     private const BindingFlags AnyInstance =
         BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
@@ -90,8 +90,8 @@ public static class EntryScanIlEmitter
 
         var dm = new DynamicMethod(
             "EntryScanResidual",
-            typeof(bool),
-            [typeof(CompiledQueryMatch), typeof(EntryTermsReader).MakeByRefType()],
+            typeof(int),
+            [typeof(CompiledQueryMatch), typeof(Span<EntryTermsReader>), typeof(Span<long>)],
             typeof(CompiledQueryMatch).Module,
             skipVisibility: true)
         {
@@ -100,24 +100,79 @@ public static class EntryScanIlEmitter
 
         var il = dm.GetILGenerator();
 
-        var passLabel = il.DefineLabel();
+        // Locals
+        var iLocal = il.DeclareLocal(typeof(int));
+        var writeIdxLocal = il.DeclareLocal(typeof(int));
+        var lengthLocal = il.DeclareLocal(typeof(int));
+        var readerRefLocal = il.DeclareLocal(typeof(EntryTermsReader).MakeByRefType());
+
+        var loopIncrement = il.DefineLabel();
         var failLabel = il.DefineLabel();
 
-        // Walk predicates; each emits to either fall through to next or branch to failLabel.
+        // length = readers.Length
+        il.Emit(OpCodes.Ldarga_S, (byte)1);
+        il.Emit(OpCodes.Call, typeof(Span<EntryTermsReader>).GetMethod("get_Length")!);
+        il.Emit(OpCodes.Stloc, lengthLocal);
+
+        // writeIdx = 0
+        il.Emit(OpCodes.Ldc_I4_0);
+        il.Emit(OpCodes.Stloc, writeIdxLocal);
+
+        // i = 0
+        il.Emit(OpCodes.Ldc_I4_0);
+        il.Emit(OpCodes.Stloc, iLocal);
+
+        var loopCheck = il.DefineLabel();
+        var loopBody = il.DefineLabel();
+        il.Emit(OpCodes.Br, loopCheck);
+
+        il.MarkLabel(loopBody);
+
+        // readerRef = ref readers[i]
+        il.Emit(OpCodes.Ldarga_S, (byte)1);
+        il.Emit(OpCodes.Ldloc, iLocal);
+        il.Emit(OpCodes.Call, typeof(Span<EntryTermsReader>).GetMethod("get_Item", [typeof(int)])!);
+        il.Emit(OpCodes.Stloc, readerRefLocal);
+
         int rootIdx = 0;
         for (int p = 0; p < predicates.Length; p++)
         {
-            EmitPredicate(il, in predicates[p], failLabel, ref rootIdx);
+            EmitPredicate(il, in predicates[p], failLabel, ref rootIdx, readerRefLocal);
         }
 
-        // All predicates passed → return true
+        // All predicates passed → compact: entryIds[writeIdx] = entryIds[i]
+        il.Emit(OpCodes.Ldarga_S, (byte)2);
+        il.Emit(OpCodes.Ldloc, writeIdxLocal);
+        il.Emit(OpCodes.Call, typeof(Span<long>).GetMethod("get_Item", [typeof(int)])!);  // ref long (dest)
+        il.Emit(OpCodes.Ldarga_S, (byte)2);
+        il.Emit(OpCodes.Ldloc, iLocal);
+        il.Emit(OpCodes.Call, typeof(Span<long>).GetMethod("get_Item", [typeof(int)])!);  // ref long (src)
+        il.Emit(OpCodes.Ldind_I8);
+        il.Emit(OpCodes.Stind_I8);
+
+        // writeIdx++
+        il.Emit(OpCodes.Ldloc, writeIdxLocal);
         il.Emit(OpCodes.Ldc_I4_1);
-        il.Emit(OpCodes.Br, passLabel);
+        il.Emit(OpCodes.Add);
+        il.Emit(OpCodes.Stloc, writeIdxLocal);
+        il.Emit(OpCodes.Br, loopIncrement);
 
         il.MarkLabel(failLabel);
-        il.Emit(OpCodes.Ldc_I4_0);
+        // fall through to loopIncrement
 
-        il.MarkLabel(passLabel);
+        il.MarkLabel(loopIncrement);
+        il.Emit(OpCodes.Ldloc, iLocal);
+        il.Emit(OpCodes.Ldc_I4_1);
+        il.Emit(OpCodes.Add);
+        il.Emit(OpCodes.Stloc, iLocal);
+
+        il.MarkLabel(loopCheck);
+        il.Emit(OpCodes.Ldloc, iLocal);
+        il.Emit(OpCodes.Ldloc, lengthLocal);
+        il.Emit(OpCodes.Blt, loopBody);
+
+        // return writeIdx
+        il.Emit(OpCodes.Ldloc, writeIdxLocal);
         il.Emit(OpCodes.Ret);
 
         return (CompiledEntryPredicate)dm.CreateDelegate(typeof(CompiledEntryPredicate));
@@ -133,43 +188,37 @@ public static class EntryScanIlEmitter
         ILGenerator il,
         in ScanPredicateInfo pred,
         Label failLabel,
-        ref int rootIdx)
+        ref int rootIdx,
+        LocalBuilder readerRefLocal)
     {
         if (pred.SubPredicates != null)
         {
             if (pred.Group == GroupKind.Or)
             {
-                // OR group: pass if ANY sub passes. Try each sub; if it passes, jump to
-                // groupPassed; if it fails, fall through to next sub. If all fail, jump
-                // to failLabel.
                 var groupPassed = il.DefineLabel();
                 for (int b = 0; b < pred.SubPredicates.Length; b++)
                 {
                     var nextSub = il.DefineLabel();
-                    EmitLeafPredicate(il, in pred.SubPredicates[b], nextSub, rootIdx);
-                    // sub passed → entire OR group passes
+                    EmitLeafPredicate(il, in pred.SubPredicates[b], nextSub, rootIdx, readerRefLocal);
                     il.Emit(OpCodes.Br, groupPassed);
                     il.MarkLabel(nextSub);
                     rootIdx++;
                 }
-                // All subs failed
                 il.Emit(OpCodes.Br, failLabel);
                 il.MarkLabel(groupPassed);
             }
             else
             {
-                // AND group: pass only if ALL subs pass. Emit each sub sequentially with
-                // the outer failLabel as failure target.
                 for (int b = 0; b < pred.SubPredicates.Length; b++)
                 {
-                    EmitLeafPredicate(il, in pred.SubPredicates[b], failLabel, rootIdx);
+                    EmitLeafPredicate(il, in pred.SubPredicates[b], failLabel, rootIdx, readerRefLocal);
                     rootIdx++;
                 }
             }
             return;
         }
 
-        EmitLeafPredicate(il, in pred, failLabel, rootIdx);
+        EmitLeafPredicate(il, in pred, failLabel, rootIdx, readerRefLocal);
         rootIdx++;
     }
 
@@ -182,17 +231,18 @@ public static class EntryScanIlEmitter
         ILGenerator il,
         in ScanPredicateInfo pred,
         Label failLabel,
-        int rootIdx)
+        int rootIdx,
+        LocalBuilder readerRefLocal)
     {
         var nextPredicate = il.DefineLabel();
         var foundLabel = il.DefineLabel();
 
         // reader.Reset()
-        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldloc, readerRefLocal);
         il.Emit(OpCodes.Call, ReaderReset);
 
         // found = reader.FindNext(ctx.ScanFieldRootPages[rootIdx])
-        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldloc, readerRefLocal);
         il.Emit(OpCodes.Ldarg_0);
         il.Emit(OpCodes.Ldfld, CtxScanFieldRootPages);
         EmitLdcI4(il, rootIdx);
@@ -213,13 +263,13 @@ public static class EntryScanIlEmitter
                 il.Emit(OpCodes.Brtrue, foundLabel);
                 il.Emit(OpCodes.Br, nextPredicate);
                 il.MarkLabel(foundLabel);
-                EmitTypedComparison(il, in pred, rootIdx);
+                EmitTypedComparison(il, in pred, rootIdx, readerRefLocal);
                 il.Emit(OpCodes.Brtrue, failLabel);
                 break;
 
             default:
                 il.Emit(OpCodes.Brfalse, failLabel);
-                EmitTypedComparison(il, in pred, rootIdx);
+                EmitTypedComparison(il, in pred, rootIdx, readerRefLocal);
                 il.Emit(OpCodes.Brfalse, failLabel);
                 break;
         }
@@ -231,16 +281,13 @@ public static class EntryScanIlEmitter
     /// Push the result of the predicate comparison (bool) onto the stack. Caller branches.
     /// Argument 1 (<c>ref EntryTermsReader</c>) must be the active reader.
     /// </summary>
-    private static void EmitTypedComparison(ILGenerator il, in ScanPredicateInfo pred, int rootIdx)
+    private static void EmitTypedComparison(ILGenerator il, in ScanPredicateInfo pred, int rootIdx, LocalBuilder readerRefLocal)
     {
-        _ = rootIdx; // only consumed by the multi-value helpers above (none currently used)
+        _ = rootIdx;
 
-        // StartsWith / EndsWith compare against the CURRENT term (matches legacy
-        // EvaluateSinglePredicate; the outer Reset+FindNext has positioned the reader
-        // at the first term for this field).
         if (pred.CompareOp == ScanCompareOp.StartsWith)
         {
-            EmitLoadReaderDecodedSlice(il);
+            EmitLoadReaderDecodedSlice(il, readerRefLocal);
             EmitLoadSliceSpan(il, pred.ParamIndex);
             il.Emit(OpCodes.Call, SliceStartsWithHelper);
             return;
@@ -248,7 +295,7 @@ public static class EntryScanIlEmitter
 
         if (pred.CompareOp == ScanCompareOp.EndsWith)
         {
-            EmitLoadReaderDecodedSlice(il);
+            EmitLoadReaderDecodedSlice(il, readerRefLocal);
             EmitLoadSliceSpan(il, pred.ParamIndex);
             il.Emit(OpCodes.Call, SliceEndsWithHelper);
             return;
@@ -263,11 +310,11 @@ public static class EntryScanIlEmitter
                     var fail = il.DefineLabel();
                     var done = il.DefineLabel();
 
-                    EmitLoadReaderCurrentLong(il);
+                    EmitLoadReaderCurrentLong(il, readerRefLocal);
                     EmitLoadLongParam(il, pred.ParamIndex);
                     il.Emit(OpCodes.Blt, fail);
 
-                    EmitLoadReaderCurrentLong(il);
+                    EmitLoadReaderCurrentLong(il, readerRefLocal);
                     EmitLoadLongParam(il, pred.ParamIndex2);
                     il.Emit(OpCodes.Bgt, fail);
 
@@ -279,7 +326,7 @@ public static class EntryScanIlEmitter
                     break;
                 }
 
-                EmitLoadReaderCurrentLong(il);
+                EmitLoadReaderCurrentLong(il, readerRefLocal);
                 EmitLoadLongParam(il, pred.ParamIndex);
                 EmitNumericCompareOp(il, pred.CompareOp);
                 break;
@@ -292,11 +339,11 @@ public static class EntryScanIlEmitter
                     var fail = il.DefineLabel();
                     var done = il.DefineLabel();
 
-                    EmitLoadReaderCurrentDouble(il);
+                    EmitLoadReaderCurrentDouble(il, readerRefLocal);
                     EmitLoadDoubleParam(il, pred.ParamIndex);
-                    il.Emit(OpCodes.Blt_Un, fail);  // NaN-safe (NaN treated as fail)
+                    il.Emit(OpCodes.Blt_Un, fail);
 
-                    EmitLoadReaderCurrentDouble(il);
+                    EmitLoadReaderCurrentDouble(il, readerRefLocal);
                     EmitLoadDoubleParam(il, pred.ParamIndex2);
                     il.Emit(OpCodes.Bgt_Un, fail);
 
@@ -308,7 +355,7 @@ public static class EntryScanIlEmitter
                     break;
                 }
 
-                EmitLoadReaderCurrentDouble(il);
+                EmitLoadReaderCurrentDouble(il, readerRefLocal);
                 EmitLoadDoubleParam(il, pred.ParamIndex);
                 EmitNumericCompareOp(il, pred.CompareOp);
                 break;
@@ -321,13 +368,13 @@ public static class EntryScanIlEmitter
                     var fail = il.DefineLabel();
                     var done = il.DefineLabel();
 
-                    EmitLoadReaderDecodedSlice(il);
+                    EmitLoadReaderDecodedSlice(il, readerRefLocal);
                     EmitLoadSliceSpan(il, pred.ParamIndex);
                     il.Emit(OpCodes.Call, SpanByteSequenceCompareTo);
                     il.Emit(OpCodes.Ldc_I4_0);
                     il.Emit(OpCodes.Blt, fail);
 
-                    EmitLoadReaderDecodedSlice(il);
+                    EmitLoadReaderDecodedSlice(il, readerRefLocal);
                     EmitLoadSliceSpan(il, pred.ParamIndex2);
                     il.Emit(OpCodes.Call, SpanByteSequenceCompareTo);
                     il.Emit(OpCodes.Ldc_I4_0);
@@ -343,15 +390,13 @@ public static class EntryScanIlEmitter
 
                 if (pred.CompareOp == ScanCompareOp.Equal || pred.CompareOp == ScanCompareOp.NotEqual)
                 {
-                    // Equality uses SequenceEqual; EmitLeafPredicate inverts on NotEqual.
-                    EmitLoadReaderDecodedSlice(il);
+                    EmitLoadReaderDecodedSlice(il, readerRefLocal);
                     EmitLoadSliceSpan(il, pred.ParamIndex);
                     il.Emit(OpCodes.Call, SpanByteSequenceEqual);
                     break;
                 }
 
-                // Ordered comparisons: SequenceCompareTo + compare-to-zero
-                EmitLoadReaderDecodedSlice(il);
+                EmitLoadReaderDecodedSlice(il, readerRefLocal);
                 EmitLoadSliceSpan(il, pred.ParamIndex);
                 il.Emit(OpCodes.Call, SpanByteSequenceCompareTo);
                 il.Emit(OpCodes.Ldc_I4_0);
@@ -365,9 +410,6 @@ public static class EntryScanIlEmitter
         }
     }
 
-    /// <summary>Emit a comparison op against the two values currently on the stack
-    /// (a, b). Equal/NotEqual produce (a == b) — EmitLeafPredicate's NotEqual branch
-    /// inverts the bool externally.</summary>
     private static void EmitNumericCompareOp(ILGenerator il, ScanCompareOp op)
     {
         switch (op)
@@ -380,7 +422,6 @@ public static class EntryScanIlEmitter
                 il.Emit(OpCodes.Cgt);
                 break;
             case ScanCompareOp.GreaterThanOrEqual:
-                // !(a < b)
                 il.Emit(OpCodes.Clt);
                 il.Emit(OpCodes.Ldc_I4_0);
                 il.Emit(OpCodes.Ceq);
@@ -389,7 +430,6 @@ public static class EntryScanIlEmitter
                 il.Emit(OpCodes.Clt);
                 break;
             case ScanCompareOp.LessThanOrEqual:
-                // !(a > b)
                 il.Emit(OpCodes.Cgt);
                 il.Emit(OpCodes.Ldc_I4_0);
                 il.Emit(OpCodes.Ceq);
@@ -402,21 +442,21 @@ public static class EntryScanIlEmitter
         }
     }
 
-    private static void EmitLoadReaderCurrentLong(ILGenerator il)
+    private static void EmitLoadReaderCurrentLong(ILGenerator il, LocalBuilder readerRefLocal)
     {
-        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldloc, readerRefLocal);
         il.Emit(OpCodes.Ldfld, ReaderCurrentLong);
     }
 
-    private static void EmitLoadReaderCurrentDouble(ILGenerator il)
+    private static void EmitLoadReaderCurrentDouble(ILGenerator il, LocalBuilder readerRefLocal)
     {
-        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldloc, readerRefLocal);
         il.Emit(OpCodes.Ldfld, ReaderCurrentDouble);
     }
 
-    private static void EmitLoadReaderDecodedSlice(ILGenerator il)
+    private static void EmitLoadReaderDecodedSlice(ILGenerator il, LocalBuilder readerRefLocal)
     {
-        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldloc, readerRefLocal);
         il.Emit(OpCodes.Ldfld, ReaderCurrent);
         il.Emit(OpCodes.Callvirt, CompactKeyDecoded);
     }
