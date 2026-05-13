@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -34,6 +35,12 @@ public unsafe struct RoaringBitmap : IDisposable
 
     private const int FreeSlotTerminator = -2; // end of free list
     private const int IndexAbsent = -1;        // key not present in index
+
+    [DoesNotReturn]
+    private static void ThrowNegativeNotSupported(long value)
+    {
+        throw new ArgumentOutOfRangeException(nameof(value), value, "RoaringBitmap only supports non-negative values.");
+    }
 
     private ByteStringContext _ctx;
     /// <summary>Packed container entries. May have tombstones (gaps reused via free list).</summary>
@@ -88,7 +95,8 @@ public unsafe struct RoaringBitmap : IDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Add(long value)
     {
-        Debug.Assert(value >= 0, "RoaringBitmap only supports non-negative values.");
+        if (value < 0)
+            ThrowNegativeNotSupported(value);
         long key = value >> ContainerKeyShift;
         ushort low = (ushort)(value & ContainerValueMask);
 
@@ -460,6 +468,8 @@ public unsafe struct RoaringBitmap : IDisposable
                     left.Cardinality = count;
                     break;
                 }
+            default:
+                throw new InvalidOperationException($"Unexpected container type pair: {leftType}, {rightType}");
         }
     }
 
@@ -561,6 +571,8 @@ public unsafe struct RoaringBitmap : IDisposable
                 }
                 break;
             }
+            default:
+                throw new InvalidOperationException($"Unexpected container type pair: {leftType}, {rightType}");
         }
     }
 
@@ -795,6 +807,8 @@ public unsafe struct RoaringBitmap : IDisposable
                     left.Cardinality = count;
                     break;
                 }
+            default:
+                throw new InvalidOperationException($"Unexpected container type pair: {leftType}, {rightType}");
         }
     }
 
@@ -882,7 +896,7 @@ public unsafe struct RoaringBitmap : IDisposable
         EnsureIndexCoversKey(key);
 
         int slot;
-        if (_freeListHead > 0)
+        if (_freeListHead >= 0)
         {
             slot = _freeListHead;
             Debug.Assert(_types.RawItems[slot] == ContainerType.Free, "Expected free entry");
@@ -1048,10 +1062,10 @@ public unsafe struct RoaringBitmap : IDisposable
                         Unsafe.CopyBlockUnaligned(bmpStorage.Ptr, (byte*)scratch, BitmapContainerSizeInBytes);
                         if (entry.Storage.HasValue)
                             _ctx.Release(ref entry.Storage);
-                            entry.Storage = bmpStorage;
-                            entry.Data = bmpStorage.Ptr;
-                            type = ContainerType.Bitmap;
-                            entry.Cardinality = uniqueCount;
+                        entry.Storage = bmpStorage;
+                        entry.Data = bmpStorage.Ptr;
+                        type = ContainerType.Bitmap;
+                        entry.Cardinality = uniqueCount;
                         BitmapContainerAdd(ref entry, value);
                         break;
                     }
@@ -1093,6 +1107,8 @@ public unsafe struct RoaringBitmap : IDisposable
                     ConvertRangeForAdd(ref entry, ref type, value);
                 }
                 break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(type), type, "Unexpected container type in AddToContainer");
         }
     }
 
@@ -1106,7 +1122,9 @@ public unsafe struct RoaringBitmap : IDisposable
             ContainerType.Array => ArrayContainerContains(entry.Data, entry.Cardinality, value),
             ContainerType.Bitmap => BitmapContainerContains(entry.Data, value),
             ContainerType.Range => value < entry.Cardinality,
-            _ => false
+            ContainerType.ArrayUnsorted => throw new InvalidOperationException("Container is still unsorted. Call PrepareForReading() first."),
+            ContainerType.Free => throw new InvalidOperationException("Container is marked Free."),
+            _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unexpected container type")
         };
     }
 
