@@ -1314,17 +1314,17 @@ internal static partial class QueryPlanBuilder
         IndexSearcher indexSearcher, QueryExecution plan, List<long> longs, List<double> doubles,
         List<Voron.Slice> slices, List<long> roots)
     {
-        if (pred.OrBranches != null)
+        if (pred.SubPredicates != null)
         {
             // Each OrBranch corresponds to a subclause of the OrGroup.
             // Pass subclauses positionally to avoid the same field-name ambiguity.
             List<ClauseInfo> subClauses = clause?.OrSubClauses;
             ClauseExecution[] subExecs = exec?.OrSubExecutions;
-            for (int b = 0; b < pred.OrBranches.Length; b++)
+            for (int b = 0; b < pred.SubPredicates.Length; b++)
             {
                 ClauseInfo subClause = (subClauses != null && b < subClauses.Count) ? subClauses[b] : null;
                 ClauseExecution subExec = (subExecs != null && b < subExecs.Length) ? subExecs[b] : null;
-                ExtractParamsFromPredicate(pred.OrBranches[b], subClause, subExec, indexSearcher, plan, longs, doubles, slices, roots);
+                ExtractParamsFromPredicate(pred.SubPredicates[b], subClause, subExec, indexSearcher, plan, longs, doubles, slices, roots);
             }
             return;
         }

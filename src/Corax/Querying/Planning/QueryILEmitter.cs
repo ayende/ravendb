@@ -554,15 +554,15 @@ public static class QueryIlEmitter
         {
             ref var pred = ref predicates[p];
 
-            if (pred.OrBranches is { Length: > 0 })
+            if (pred.SubPredicates is { Length: > 0 })
             {
                 // OR group: succeed on first matching branch
                 var orPassed = il.DefineLabel();
 
-                for (int b = 0; b < pred.OrBranches.Length; b++)
+                for (int b = 0; b < pred.SubPredicates.Length; b++)
                 {
-                    ref var branch = ref pred.OrBranches[b];
-                    var tryNextBranch = (b < pred.OrBranches.Length - 1)
+                    ref var branch = ref pred.SubPredicates[b];
+                    var tryNextBranch = (b < pred.SubPredicates.Length - 1)
                         ? il.DefineLabel()
                         : nextEntry; // last branch fails → entry fails
 
@@ -581,7 +581,7 @@ public static class QueryIlEmitter
                     EmitSingleComparison(il, branch, readerLocal);
                     il.Emit(OpCodes.Brtrue, orPassed); // match → OR succeeds
 
-                    if (b < pred.OrBranches.Length - 1)
+                    if (b < pred.SubPredicates.Length - 1)
                         il.MarkLabel(tryNextBranch);
 
                     fieldRootIndex++;

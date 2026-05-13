@@ -1748,7 +1748,8 @@ internal static partial class QueryPlanBuilder
                 return new ScanPredicateInfo
                 {
                     FieldName = clause.OrSubClauses[0].FieldName,
-                    OrBranches = branches.ToArray()
+                    SubPredicates = branches.ToArray(),
+                    Group = GroupKind.Or
                 };
             }
         }
