@@ -250,8 +250,10 @@ public static class QueryPrimitives
             }
 
             int read;
-            while ((read = iterator.Fill(ref bitmap, batch)) > 0)
+            try
             {
+                while ((read = iterator.Fill(ref bitmap, batch)) > 0)
+                {
                 for (int i = 0; i < read; i++)
                 {
                     if (skip > 0)

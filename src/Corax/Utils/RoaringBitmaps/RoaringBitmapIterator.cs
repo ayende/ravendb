@@ -92,9 +92,11 @@ public unsafe struct RoaringBitmapIterator : IDisposable
             switch (type)
             {
                 case ContainerType.Array:
-                case ContainerType.ArrayUnsorted: // small unsorted containers handled same as Array
                     written = FillFromArray(ref entry, baseValue, buffer, written);
                     break;
+
+                case ContainerType.ArrayUnsorted:
+                    throw new InvalidOperationException("Call PrepareForReading() before iterating.");
 
                 case ContainerType.Bitmap:
                     written = FillFromBitmap(ref entry, baseValue, buffer, written);

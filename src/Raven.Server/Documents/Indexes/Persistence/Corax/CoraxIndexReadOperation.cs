@@ -13,6 +13,7 @@ using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Matches.SortingMatches;
 using Corax.Querying.Matches.SortingMatches.Meta;
+using Corax.Querying.Planning;
 using Corax.Utils;
 using Raven.Client.Documents.Indexes;
 using Raven.Client.Documents.Queries.Explanation;
@@ -38,7 +39,7 @@ using Voron.Impl;
 using Constants = Raven.Client.Constants;
 using CoraxConstants = Corax.Constants;
 using IndexSearcher = Corax.Querying.IndexSearcher;
-using CoraxSpatialResult = global::Corax.Utils.Spatial.SpatialResult;
+using CoraxSpatialResult = Corax.Utils.Spatial.SpatialResult;
 using Sparrow.Server.Logging;
 using Voron.Data.Graphs;
 using IndexFieldType = Raven.Server.Documents.Indexes.Debugging.IndexFieldType;
@@ -47,47 +48,21 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 {
     public class CoraxIndexReadOperation : IndexReadOperationBase
     {
-        // PERF: This is a hack in order to deal with RavenDB-19597. The ArrayPool creates contention under high requests environments.
-        // There are 2 ways to avoid this contention, one is to avoid using it altogether and the other one is separating the pools from
+        // PERF: This is a hack to deal with RavenDB-19597. The ArrayPool creates contention under high-request environments.
+        // There are 2 ways to avoid this contention, one is to avoid using it altogether, and the other one is separating the pools from
         // the actual executing thread. While the correct approach would be to amp-up the usage of shared buffers (which would make) this
-        // hack irrelevant, the complexity it introduces is much greater than what it make sense to be done at the moment. Therefore, 
-        // we are building a quick fix that allow us to avoid the locking convoys and we will defer the real fix to RavenDB-19665. 
-        [ThreadStatic] 
-        private static ArrayPool<long> _queryPool;
-        
-        [ThreadStatic] 
-        private static ArrayPool<float> _queryScorePool;
-
-        [ThreadStatic] 
-        private static ArrayPool<CoraxSpatialResult> _queryDistancePool;
+        // hack irrelevant, the complexity it introduces is much greater than what it makes sense to be done at the moment. Therefore, 
+        // we are building a quick fix that allows us to avoid the locking convoys, and we will defer the real fix to RavenDB-19665. 
 
 
-        public static ArrayPool<long> QueryPool
-        {
-            get
-            {
-                _queryPool ??= ArrayPool<long>.Create();
-                return _queryPool;
-            }
-        }
+        [field: ThreadStatic]
+        public static ArrayPool<long> QueryPool => field ??= ArrayPool<long>.Create();
 
-        private static ArrayPool<float> ScorePool
-        {
-            get
-            {
-                _queryScorePool ??= ArrayPool<float>.Create();
-                return _queryScorePool;
-            }
-        }
+        [field: ThreadStatic]
+        private static ArrayPool<float> ScorePool => field ??= ArrayPool<float>.Create();
 
-        private static ArrayPool<CoraxSpatialResult> DistancePool 
-        {
-            get
-            {
-                _queryDistancePool ??= ArrayPool<CoraxSpatialResult>.Create();
-                return _queryDistancePool;
-            }
-        }
+        [field: ThreadStatic]
+        private static ArrayPool<CoraxSpatialResult> DistancePool => field ??= ArrayPool<CoraxSpatialResult>.Create();
 
         protected readonly IndexSearcher IndexSearcher;
 
@@ -106,7 +81,8 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             _fieldMappings = fieldsMapping;
             IndexSearcher = new IndexSearcher(readTransaction, _fieldMappings)
             {
-                MaxMemoizationSizeInBytes = index.Configuration.MaxMemoizationSize.GetValue(SizeUnit.Bytes),
+                MaxFacetQueryFilterSizeInBytes = index.Configuration.MaxFacetQueryFilterSize.GetValue(SizeUnit.Bytes),
+                PlanCache = (index.IndexPersistence as CoraxIndexPersistence)?.SharedPlanCache ?? new global::Corax.Querying.Planning.PlanCache(),
             };
             
             if (index is {_forTestingPurposes: {CoraxConfiguration: not null}})
@@ -125,22 +101,22 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
         {
             QueryTimingsScope TimingsScope { get; }
             Dictionary<string, CoraxHighlightingTermIndex> Terms { get; }
-            void Initialize(IndexQueryServerSide query, QueryTimingsScope scope);
+            void Initialize(QueryTimingsScope scope);
             void Setup(IndexQueryServerSide query, DocumentsOperationContext context);
 
             Dictionary<string, Dictionary<string, string[]>> Execute(IndexQueryServerSide query, DocumentsOperationContext context, IndexFieldsMapping fieldMappings,
-                ref EntryTermsReader entryReader, FieldsToFetch highlightingFields, Document document, IndexSearcher indexSearcher);
+                ref EntryTermsReader entryReader, Document document, IndexSearcher indexSearcher);
         }
 
         private struct NoHighlighting : ISupportsHighlighting
         {
             public QueryTimingsScope TimingsScope => null;
             public Dictionary<string, CoraxHighlightingTermIndex> Terms => null;
-            public void Initialize(IndexQueryServerSide query, QueryTimingsScope scope) { }
+            public void Initialize(QueryTimingsScope scope) { }
             public void Setup(IndexQueryServerSide query, DocumentsOperationContext context) { }
 
             public Dictionary<string, Dictionary<string, string[]>> Execute(IndexQueryServerSide query, DocumentsOperationContext context,
-                IndexFieldsMapping fieldMappings, ref EntryTermsReader entryReader, FieldsToFetch highlightingFields, Document document, IndexSearcher indexSearcher)
+                IndexFieldsMapping fieldMappings, ref EntryTermsReader entryReader, Document document, IndexSearcher indexSearcher)
                 => null;
         }
 
@@ -152,7 +128,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             public QueryTimingsScope TimingsScope => _timingsScope;
             public Dictionary<string, CoraxHighlightingTermIndex> Terms => _terms;
 
-            public void Initialize(IndexQueryServerSide query, QueryTimingsScope scope)
+            public void Initialize(QueryTimingsScope scope)
             {
                 _timingsScope = scope?.For(nameof(QueryTimingsScope.Names.Highlightings), start: false);
                 _terms = new Dictionary<string, CoraxHighlightingTermIndex>();
@@ -168,7 +144,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                         switch (term.Value.Values)
                         {
                             case string s:
-                                nls = new string[] { s.TrimEnd('*').TrimStart('*') };
+                                nls = [s.TrimEnd('*').TrimStart('*')];
                                 break;
                             case List<string> ls:
                                 nls = new string[ls.Count];
@@ -176,7 +152,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                                     nls[i] = ls[i].TrimEnd('*').TrimStart('*');
                                 break;
                             case Tuple<string, string> t2:
-                                nls = new string[] { t2.Item1.TrimEnd('*').TrimStart('*'), t2.Item2.TrimEnd('*').TrimStart('*') };
+                                nls = [t2.Item1.TrimEnd('*').TrimStart('*'), t2.Item2.TrimEnd('*').TrimStart('*')];
                                 break;
                             case string[] as1:
                                 nls = new string[as1.Length];
@@ -240,7 +216,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             }
 
             public Dictionary<string, Dictionary<string, string[]>> Execute(IndexQueryServerSide query, DocumentsOperationContext context,
-                IndexFieldsMapping fieldMappings, ref EntryTermsReader entryReader, FieldsToFetch highlightingFields, Document document, IndexSearcher indexSearcher)
+                IndexFieldsMapping fieldMappings, ref EntryTermsReader entryReader, Document document, IndexSearcher indexSearcher)
             {
                 using (_timingsScope?.For(nameof(QueryTimingsScope.Names.Fill)))
                 {
@@ -262,12 +238,12 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                         }
 
                         
-                        //We have to get analyzer so dynamic field have priority over normal name
+                        //We have to get analyzer so dynamic field has priority over normal name
                         // We get the field binding to ensure that we are running the analyzer to find the actual tokens.
-                        if (fieldMappings.TryGetByFieldName(allocator, fieldDescription.DynamicFieldName ?? fieldDescription.FieldName, out var fieldBinding) == false)
+                        if (fieldMappings.TryGetByFieldName(allocator, fieldDescription.DynamicFieldName ?? fieldDescription.FieldName, out _) == false)
                             continue;
 
-                        // We will get the actual tokens dictionary for this field. If it exists we get it immediately, if not we create
+                        // We will get the actual tokens dictionary for this field. If it exists, we get it immediately, if not we create
                         if (highlightings.TryGetValue(fieldDescription.FieldName, out var tokensDictionary) == false)
                         {
                             tokensDictionary = new(StringComparer.OrdinalIgnoreCase);
@@ -362,7 +338,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                         if (fragments.Count <= 0) 
                             continue;
                             
-                        if (tokensDictionary.TryGetValue(key, out var existingHighlights))
+                        if (tokensDictionary.TryGetValue(key, out string[] _))
                             throw new NotSupportedInCoraxException("Multiple highlightings for the same field and group key are not supported.");
 
                         tokensDictionary[key] = fragments.ToArray();
@@ -392,8 +368,6 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             private IndexFieldsMapping _fieldsMapping;
             private IQueryResultRetriever _retriever;
 
-            private bool _isMap;
-
             private GrowableHashSet<UnmanagedSpan> _alreadySeenDocumentKeysInPreviousPage;
             private GrowableHashSet<ulong> _alreadySeenProjections;
             public long QueryStart;
@@ -411,7 +385,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 _documentIdReader = documentIdReader;
 
                 QueryStart = _query.Start;
-                _isMap = index.Type.IsMap();
+                index.Type.IsMap();
 
                 _canPerformPaginationBasedOnEntriesIds = searcher.EntryIdPaginationSupportStatus == EntryIdPaginationSupportStatus.Supported;
 
@@ -523,7 +497,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             }
         }
 
-        protected interface ISupportsQueryFilter : IDisposable
+        private interface ISupportsQueryFilter : IDisposable
         {
             FilterResult Apply(ref RetrieverInput input, string key);
         }
@@ -535,19 +509,14 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             public FilterResult Apply(ref RetrieverInput input, string key) => FilterResult.Accepted;
         }
 
-        private readonly struct HasQueryFilter : ISupportsQueryFilter
+        private readonly struct HasQueryFilter([NotNull] QueryFilter filter) : ISupportsQueryFilter
         {
-            private readonly QueryFilter _filter;
-            public HasQueryFilter([NotNull] QueryFilter filter)
-            {
-                _filter = filter;
-            }
             public void Dispose()
             {
-                _filter.Dispose();
+                filter.Dispose();
             }
 
-            public FilterResult Apply(ref RetrieverInput input, string key) => _filter.Apply(ref input, key);
+            public FilterResult Apply(ref RetrieverInput input, string key) => filter.Apply(ref input, key);
         }
 
         protected interface IHasProjection
@@ -574,7 +543,6 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     IndexQueryServerSide query, QueryTimingsScope queryTimings, FieldsToFetch fieldsToFetch,
                     Reference<long> totalResults, Reference<long> skippedResults, Reference<long> scannedDocuments,
                     IQueryResultRetriever retriever, DocumentsOperationContext documentsContext,
-                    Func<string, SpatialField> getSpatialField,
                     QueryTimeScope queryTime, CancellationToken token)
                 where TDistinct : struct, IHasDistinct
                 where THasProjection : struct, IHasProjection
@@ -618,16 +586,22 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
             THasProjection hasProjections = default;
             THighlighting highlightings = default;
-            highlightings.Initialize(query, queryTimings);
+            highlightings.Initialize(queryTimings);
 
             long docsToLoad = pageSize;
             bool runQuery = true;
             while (runQuery)
             {
                 IQueryMatch queryMatch;
+                // Track the original (pre-wrap) match so its bitmap allocations are released
+                // even when SortingMatch / SortingMultiMatch wrap it (those wrappers don't
+                // implement IDisposable themselves).
+                IDisposable innerDisposableMatch;
                 OrderMetadata[] orderByFields;
 
-                CoraxQueryBuilder.Parameters builderParameters;
+                QueryBuilderParameters builderParameters;
+                QueryExecution queryPlan;
+                CompiledPlan compiledPlan = null;
                 using (queryTimings?.For(nameof(QueryTimingsScope.Names.Corax), start: false)?.Start())
                 {
                     IDisposable releaseServerContext = null;
@@ -642,8 +616,9 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                             closeServerTransaction = serverContext.OpenReadTransaction();
                         }
 
-                        builderParameters = new CoraxQueryBuilder.Parameters(IndexSearcher, _allocator, serverContext, documentsContext, query, _index,
-                            query.QueryParameters, QueryBuilderFactories, _fieldMappings, fieldsToFetch, highlightings.Terms, (int)take, deduplicationDisabled: false, indexReadOperation: this, token: token, queryTime: queryTime);
+                        builderParameters = new QueryBuilderParameters(IndexSearcher, _allocator, serverContext, documentsContext, query, _index,
+                            query.QueryParameters, QueryBuilderFactories, _fieldMappings, fieldsToFetch, highlightings.Terms, (int)take, 
+                            deduplicationDisabled: false, indexReadOperation: this, token: token, queryTime: queryTime);
 
                         using (closeServerTransaction)
                         {
@@ -656,42 +631,69 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                                 IndexFieldsMapping = _fieldMappings,
                                 FieldsToFetch = fieldsToFetch,
                                 Allocator = _allocator,
-                                Token = token,
                                 HasDynamics = builderParameters.HasDynamics,
                                 DynamicFields = builderParameters.DynamicFields,
                                 HasBoost = builderParameters.HasBoost
                             };
-                            var plan = QueryPlanBuilder.BuildPlan(planParams);
+                            queryMatch = QueryPlanBuilder.BuildAndCompile(
+                                planParams, builderParameters, out queryPlan, out compiledPlan, highlightings.Terms, wantTimings: queryTimings != null, token);
 
-                            string queryText = query.Metadata.Query.QueryText;
-                            var planCache = IndexSearcher.PlanCache;
-                            var compiledPlan = planCache.Get(queryText, plan.OperandOrdering, plan.TypeSignature);
-                            if (compiledPlan == null)
+                            innerDisposableMatch = queryMatch as IDisposable;
+
+                            // Compound exact match: WHERE f1 = val AND f2 = val → single compound tree lookup.
+                            // Check before ORDER BY — the compound match is faster regardless of sort.
+                            if (queryPlan != null &&
+                                QueryPlanBuilder.TryCreateCompoundExactMatch(queryPlan, planParams, builderParameters, out var compoundExact))
                             {
-                                compiledPlan = new global::Corax.Querying.Planning.CompiledPlan
-                                {
-                                    CompiledDelegate = global::Corax.Querying.Planning.QueryILEmitter.EmitDelegate(plan),
-                                    ExplainSource = plan.ExplainSource ?? global::Corax.Querying.Planning.QueryILEmitter.GenerateExplainSource(plan),
-                                    Ordering = plan.OperandOrdering,
-                                    TypeSignature = plan.TypeSignature
-                                };
-                                planCache.Add(queryText, compiledPlan);
+                                innerDisposableMatch?.Dispose();
+                                innerDisposableMatch = compoundExact as IDisposable;
+                                queryMatch = compoundExact;
                             }
 
-                            var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, IndexSearcher, planParams, builderParameters);
-                            QueryPlanBuilder.ExtractScanParameters(plan, IndexSearcher,
-                                out var longParams, out var doubleParams, out var sliceParams, out var fieldRootPages);
-                            var compiledMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
-                                compiledPlan, plan.BitmapCount, plan.Ops?.Length ?? 0, resolvedMatches,
-                                longParams, doubleParams, sliceParams, fieldRootPages,
-                                IndexSearcher, _allocator, take, token);
-                            queryMatch = compiledMatch;
-
-                            orderByFields = CoraxQueryBuilder.GetSortMetadata(builderParameters, out bool hasEmptySorts);
+                            orderByFields = QueryPlanBuilder.GetSortMetadata(builderParameters, out bool hasEmptySorts);
                             if (orderByFields != null)
                             {
-                                queryMatch = CoraxQueryBuilder.OrderBy(
-                                    builderParameters, queryMatch, orderByFields, hasEmptySorts);
+                                // Compound field optimization: WHERE field1 = 'val' ORDER BY field2
+                                // can be served by a single StartsWith scan on the compound tree.
+                                // Results come back pre-sorted by field2, eliminating the SortingMatch.
+                                if (queryPlan != null &&
+                                    QueryPlanBuilder.TryCreateCompoundFieldMatch(
+                                        queryPlan, orderByFields, planParams, builderParameters, out var compoundMatch))
+                                {
+                                    innerDisposableMatch?.Dispose();
+                                    innerDisposableMatch = compoundMatch as IDisposable;
+                                    queryMatch = QueryPlanBuilder.OrderBy(
+                                        builderParameters, compoundMatch, orderByFields, hasEmptySorts);
+                                }
+                                else if (queryPlan != null &&
+                                    QueryPlanBuilder.TryCreateSimpleFieldDirectScan(
+                                        queryPlan, orderByFields, planParams, builderParameters, out var directMatch))
+                                {
+                                    // Simple field DirectScan: SortedDrivingMatch walks the ITermsProvider
+                                    // in term order (field-value sort order). No SortingMatch needed.
+                                    innerDisposableMatch?.Dispose();
+                                    innerDisposableMatch = directMatch as IDisposable;
+                                    queryMatch = directMatch;
+                                }
+                                else
+                                {
+                                    // Set seek hint if WHERE field matches ORDER BY field (optimization for
+                                    // SortUsingIndexFromBitmap to skip walking irrelevant tree terms).
+                                    if (queryMatch is global::Corax.Querying.Matches.CompiledQueryMatch seekMatch)
+                                        QueryPlanBuilder.TrySetSortSeekHint(seekMatch, queryPlan, orderByFields);
+
+                                    queryMatch = QueryPlanBuilder.OrderBy(
+                                        builderParameters, queryMatch, orderByFields, hasEmptySorts);
+                                }
+                            }
+                            else if (take > 0 && query.Metadata.IsDistinct == false
+                                && query.SkipStatistics
+                                && queryMatch is global::Corax.Querying.Matches.CompiledQueryMatch compiledMatch)
+                            {
+                                // No ORDER BY, no DISTINCT, and client doesn't need exact total —
+                                // enable limit-aware bitmap accumulation. The bitmap may be truncated,
+                                // so Count is a lower bound (Confidence = Low).
+                                compiledMatch.Limit = take;
                             }
                         }
 
@@ -707,7 +709,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 int bufferSize = CoraxBufferSize(IndexSearcher, take, query);
                 var ids = QueryPool.Rent(bufferSize);
                 SortingDataTransfer sortingData = default;
-                using var queryFilter = GetQueryFilter();
+                using var queryFilter = GetQueryFilterInternal();
                 Page page = default;
                 bool willAlwaysIncludeInResults = WillAlwaysIncludeInResults(_index.Type, fieldsToFetch, query);
                 totalResults.Value = 0;
@@ -729,16 +731,15 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     {
                         case SortingMatch sm:
                             sm.SetScoreAndDistanceBuffer(sortingData);
-                            queryMatch = sm;
                             break;
                         case SortingMultiMatch smm:
                             smm.SetSortingDataTransfer(sortingData);
-                            queryMatch = smm;
                             break;
                     }
                 }
 
                 // We don't need to do any processing for the query beyond counting if we are getting a count.
+                var totalResultsBefore = totalResults.Value;
                 while (query.IsCountQuery == false || typeof(TDistinct) == typeof(HasDistinct))
                 {
                     token.ThrowIfCancellationRequested();
@@ -857,13 +858,23 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 
 
                 Done:
-                // Since some primitives are lazily initialized, we must call Inspect after at least one Fill call.
-                queryTimings?.SetQueryPlan(queryMatch.Inspect());
+                if (queryTimings != null)
+                {
+                    var inspectionNode = compiledPlan != null
+                        ? QueryPlanBuilder.BuildInspectionGraph(compiledPlan,
+                            innerDisposableMatch as IQueryMatch ?? queryMatch,
+                            sortingWrapper: ReferenceEquals(queryMatch, innerDisposableMatch) ? null : queryMatch)
+                        : queryMatch.Inspect();
+                    queryTimings.SetQueryPlan(inspectionNode);
+                }
 
-                // Dispose CompiledQueryMatch if directly accessible.
-                // When SortingMatch wraps it, bitmap allocations are released
-                // when the transaction's ByteStringContext is disposed.
-                if (queryMatch is IDisposable disposableMatch)
+                // Dispose the compiled match (and its bitmap allocations) deterministically.
+                // When the bitmap pipeline applies sorting, queryMatch becomes a SortingMatch
+                // / SortingMultiMatch wrapper that does not implement IDisposable; the inner
+                // CompiledQueryMatch was captured into innerDisposableMatch above so it is
+                // released here even when wrapped.
+                innerDisposableMatch?.Dispose();
+                if (ReferenceEquals(queryMatch, innerDisposableMatch) == false && queryMatch is IDisposable disposableMatch)
                     disposableMatch.Dispose();
 
                 QueryPool.Return(ids);
@@ -875,14 +886,15 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 if (queryMatch is not SortingMatch && queryMatch is not SortingMultiMatch)
                     break; // this is only relevant if we are sorting, since we may have filtered items and need to read more, see: RavenDB-20294
 
-                var sortingMatchTotalResults = 0L;
-                if (queryMatch is SortingMatch) 
-                    sortingMatchTotalResults = ((SortingMatch)queryMatch).TotalResults;
+                long sortingMatchTotalResults;
+                if (queryMatch is SortingMatch match) 
+                    sortingMatchTotalResults = match.TotalResults;
                 else 
                     sortingMatchTotalResults = ((SortingMultiMatch)queryMatch).TotalResults;
 
                 if (docsToLoad == 0 ||
                     sortingMatchTotalResults == totalResults.Value ||
+                    totalResults.Value == totalResultsBefore || // no progress this iteration — match exhausted
                     scannedDocuments.Value >= query.FilterLimit)
                 {
                     totalResults.Value = (int)Math.Min(sortingMatchTotalResults, int.MaxValue);
@@ -902,7 +914,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             if (isDistinctCount)
                 totalResults.Value -= skippedResults.Value;
 
-            TQueryFilter GetQueryFilter()
+            TQueryFilter GetQueryFilterInternal()
             {
                 if (typeof(TQueryFilter) == typeof(NoQueryFilter))
                     return (TQueryFilter)(object)new NoQueryFilter();
@@ -941,7 +953,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             return new QueryResult
             {
                 Result = document,
-                Highlightings = highlightings.Execute(query, documentsContext, _fieldMappings, ref entryReader, highlightingFields, document, IndexSearcher),
+                Highlightings = highlightings.Execute(query, documentsContext, _fieldMappings, ref entryReader, document, IndexSearcher),
             };
         }
 
@@ -995,7 +1007,6 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     query, queryTimings, fieldsToFetch,
                     totalResults, skippedResults, scannedDocuments,
                     retriever, documentsContext,
-                    getSpatialField,
                     queryTime, token);
         }
 
@@ -1080,7 +1091,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             Reference<long> skippedResults, Reference<long> scannedDocuments, IQueryResultRetriever retriever,
             DocumentsOperationContext documentsContext, Func<string, SpatialField> getSpatialField, QueryTimeScope queryTime, CancellationToken token)
         {
-            throw new NotImplementedException($"{nameof(Corax)} does not support intersect queries.");
+            throw new NotSupportedException($"{nameof(Corax)} does not support intersect queries.");
         }
 
         public override List<string> Terms(string field, string fromValue, long pageSize, CancellationToken token)
@@ -1150,7 +1161,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             IDisposable closeServerTransaction = null;
             TransactionOperationContext serverContext = null;
             MoreLikeThisQuery moreLikeThisQuery;
-            CoraxQueryBuilder.Parameters builderParameters;
+            QueryBuilderParameters builderParameters;
 
             try
             {
@@ -1163,8 +1174,8 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 using (closeServerTransaction)
                 {
                     builderParameters = new(IndexSearcher, _allocator, serverContext, context, query, _index, query.QueryParameters, QueryBuilderFactories,
-                        _fieldMappings, null, null /* allow highlighting? */, CoraxQueryBuilder.TakeAll, deduplicationDisabled: true, indexReadOperation: this, token: token);
-                    moreLikeThisQuery = CoraxQueryBuilder.BuildMoreLikeThisQuery(builderParameters, query.Metadata.Query.Where);
+                        _fieldMappings, null, null /* allow highlighting? */, global::Corax.Constants.IndexSearcher.TakeAll, deduplicationDisabled: true, indexReadOperation: this, token: token);
+                    moreLikeThisQuery = BuildMoreLikeThisQuery(builderParameters, query.Metadata.Query.Where);
                 }
             }
             finally
@@ -1190,7 +1201,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             }
 
             builderParameters = new(IndexSearcher, _allocator, null, context, query, _index, query.QueryParameters, QueryBuilderFactories,
-                _fieldMappings, null, null /* allow highlighting? */, CoraxQueryBuilder.TakeAll, deduplicationDisabled:true, indexReadOperation: this, token: token);
+                _fieldMappings, null, null /* allow highlighting? */, global::Corax.Constants.IndexSearcher.TakeAll, deduplicationDisabled:true, indexReadOperation: this, token: token);
             using var mlt = new RavenRavenMoreLikeThis(builderParameters, options);
             long? baseDocId = null;
 
@@ -1210,7 +1221,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 mlt.SetStopWords(stopWords);
 
             string[] fieldNames;
-            if (options.Fields != null && options.Fields.Length > 0)
+            if (options.Fields is { Length: > 0 })
                 fieldNames = options.Fields;
             else
             {
@@ -1218,7 +1229,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 var index = 0;
                 foreach (var binding in _fieldMappings)
                 {
-                    if (binding.FieldNameAsString is Client.Constants.Documents.Indexing.Fields.DocumentIdFieldName or Client.Constants.Documents.Indexing.Fields.SourceDocumentIdFieldName or Client.Constants.Documents.Indexing.Fields.ReduceKeyHashFieldName)
+                    if (binding.FieldNameAsString is Constants.Documents.Indexing.Fields.DocumentIdFieldName or Constants.Documents.Indexing.Fields.SourceDocumentIdFieldName or Constants.Documents.Indexing.Fields.ReduceKeyHashFieldName)
                         continue;
                     fieldNames[index++] = binding.FieldNameAsString;
 
@@ -1247,93 +1258,92 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             }
 
             // Materialize into bitmap via OR
-            var mltBitmap = new global::Corax.Utils.RoaringBitmaps.RoaringBitmap(_allocator);
+            Voron.Data.RoaringBitmaps.RoaringBitmap mltBitmapData = new(_allocator);
             try
             {
-                Span<long> fillBuf = stackalloc long[4096];
+                long[] fillBuf = new long[4096];
                 foreach (var termMatch in mltTerms)
                 {
                     int termRead;
                     while ((termRead = termMatch.Fill(fillBuf)) > 0)
-                        mltBitmap.AddRange(fillBuf.Slice(0, termRead));
+                        mltBitmapData.AddRange(fillBuf.AsSpan(0, termRead));
                 }
 
                 // AND with filter query if present
                 if (moreLikeThisQuery.FilterQuery != null && moreLikeThisQuery.FilterQuery is AllEntriesMatch == false)
                 {
-                    var filterBitmap = new global::Corax.Utils.RoaringBitmaps.RoaringBitmap(_allocator);
+                    Voron.Data.RoaringBitmaps.RoaringBitmap filterBitmapData = new(_allocator);
                     try
                     {
                         var filterMatch = moreLikeThisQuery.FilterQuery;
                         int filterRead;
                         while ((filterRead = filterMatch.Fill(fillBuf)) > 0)
-                            filterBitmap.AddRange(fillBuf.Slice(0, filterRead));
-                        mltBitmap.AndWith(ref filterBitmap);
+                            filterBitmapData.AddRange(fillBuf.AsSpan(0, filterRead));
+                        mltBitmapData.AndWith(ref filterBitmapData);
                     }
                     finally
                     {
-                        filterBitmap.Dispose();
+                        filterBitmapData.Dispose();
                     }
                 }
 
-                mltBitmap.PrepareForReading();
-                var mltIterator = mltBitmap.GetIterator();
+                mltBitmapData.PrepareForReading();
+                var mltIterator = mltBitmapData.GetIterator();
 
-            var ravenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            long[] ids = QueryPool.Rent(pageSize);
-            var read = 0;
-            long returnedDocs = 0;
-            long skippedDocs = 0;
-            Page page = default;
-            while ((read = mltIterator.Fill(ref mltBitmap, ids.AsSpan())) != 0)
-            {
-                for (int i = 0; i < read; i++)
+                var ravenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                long[] ids = QueryPool.Rent(pageSize);
+                long returnedDocs = 0;
+                long skippedDocs = 0;
+                Page page = default;
+                int read;
+                while ((read = mltIterator.Fill(ref mltBitmapData, ids.AsSpan())) != 0)
                 {
-                    if (returnedDocs >= query.Limit)
-                        yield break;
-                    
-                    var hit = ids[i];
-                    token.ThrowIfCancellationRequested();
+                    for (int i = 0; i < read; i++)
+                    {
+                        if (returnedDocs >= query.Limit)
+                            yield break;
+                        
+                        var hit = ids[i];
+                        token.ThrowIfCancellationRequested();
 
-                    if (hit == baseDocId)
-                        continue;
-                    
-                    var id = _documentIdReader.GetTermFor(hit);
-                    if (ravenIds.Add(id) == false)
-                        continue;
+                        if (hit == baseDocId)
+                            continue;
+                        
+                        var id = _documentIdReader.GetTermFor(hit);
+                        if (ravenIds.Add(id) == false)
+                            continue;
 
-                    if (skippedDocs < query.Start)
-                    {
-                        skippedDocs++;
-                        continue;
-                    }
-                    
-                    var termsReader = IndexSearcher.GetEntryTermsReader(hit, ref page);
-                    var retrieverInput = new RetrieverInput(IndexSearcher, _fieldMappings, termsReader, id, _index.IndexFieldsPersistence.HasTimeValues);
-                    var result = retriever.Get(ref retrieverInput, token);
-                    
-                    if (result.Document != null)
-                    {
-                        returnedDocs++;
-                        yield return new QueryResult { Result = result.Document };
-                    }
-                    else if (result.List != null)
-                    {
-                        foreach (Document item in result.List)
+                        if (skippedDocs < query.Start)
+                        {
+                            skippedDocs++;
+                            continue;
+                        }
+                        
+                        var termsReader = IndexSearcher.GetEntryTermsReader(hit, ref page);
+                        var retrieverInput = new RetrieverInput(IndexSearcher, _fieldMappings, termsReader, id, _index.IndexFieldsPersistence.HasTimeValues);
+                        var result = retriever.Get(ref retrieverInput, token);
+                        
+                        if (result.Document != null)
                         {
                             returnedDocs++;
-                            yield return new QueryResult { Result = item };
+                            yield return new QueryResult { Result = result.Document };
+                        }
+                        else if (result.List != null)
+                        {
+                            foreach (Document item in result.List)
+                            {
+                                returnedDocs++;
+                                yield return new QueryResult { Result = item };
+                            }
                         }
                     }
                 }
+                QueryPool.Return(ids);
+                mltIterator.Dispose();
             }
-
-            QueryPool.Return(ids);
-            mltIterator.Dispose();
-            } // end try (mltBitmap)
             finally
             {
-                mltBitmap.Dispose();
+                mltBitmapData.Dispose();
             }
         }
 
@@ -1358,10 +1368,14 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             if (take > IndexSearcher.NumberOfEntries)
                 take = CoraxConstants.IndexSearcher.TakeAll;
 
-            IQueryMatch queryMatch;
-            var builderParameters = new CoraxQueryBuilder.Parameters(IndexSearcher, _allocator, null, documentsContext, query, _index, query.QueryParameters, QueryBuilderFactories, _fieldMappings, null, null, -1, deduplicationDisabled: false, indexReadOperation: this, token: token);
-            {
-                var planParams = new QueryPlanBuilder.PlanParameters
+            
+            var builderParameters = new QueryBuilderParameters(IndexSearcher, _allocator, null,
+                documentsContext, query, _index, query.QueryParameters, QueryBuilderFactories, 
+                _fieldMappings, null, null, -1, deduplicationDisabled: false,
+                indexReadOperation: this, token: token);
+            
+            IQueryMatch queryMatch = QueryPlanBuilder.BuildAndCompile(
+                new QueryPlanBuilder.PlanParameters
                 {
                     IndexSearcher = IndexSearcher,
                     Metadata = query.Metadata,
@@ -1369,34 +1383,10 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     Index = _index,
                     IndexFieldsMapping = _fieldMappings,
                     Allocator = _allocator,
-                    Token = token,
                     HasDynamics = builderParameters.HasDynamics,
                     DynamicFields = builderParameters.DynamicFields,
                     HasBoost = builderParameters.HasBoost
-                };
-                var plan = QueryPlanBuilder.BuildPlan(planParams);
-                string queryText = query.Metadata.Query.QueryText;
-                var planCache = IndexSearcher.PlanCache;
-                var compiledPlan = planCache.Get(queryText, plan.OperandOrdering, plan.TypeSignature);
-                if (compiledPlan == null)
-                {
-                    compiledPlan = new global::Corax.Querying.Planning.CompiledPlan
-                    {
-                        CompiledDelegate = global::Corax.Querying.Planning.QueryILEmitter.EmitDelegate(plan),
-                        ExplainSource = plan.ExplainSource ?? global::Corax.Querying.Planning.QueryILEmitter.GenerateExplainSource(plan),
-                        Ordering = plan.OperandOrdering,
-                        TypeSignature = plan.TypeSignature
-                    };
-                    planCache.Add(queryText, compiledPlan);
-                }
-                var resolvedMatches = QueryPlanBuilder.ResolveMatches(plan, IndexSearcher, planParams, builderParameters);
-                QueryPlanBuilder.ExtractScanParameters(plan, IndexSearcher,
-                    out var longParams, out var doubleParams, out var sliceParams, out var fieldRootPages);
-                queryMatch = new global::Corax.Querying.Matches.CompiledQueryMatch(
-                    compiledPlan, plan.BitmapCount, plan.Ops?.Length ?? 0, resolvedMatches,
-                    longParams, doubleParams, sliceParams, fieldRootPages,
-                    IndexSearcher, _allocator, take, token);
-            }
+                }, builderParameters, out _, out _, highlightingTerms: null, wantTimings: false, token);
 
             var ids = QueryPool.Rent(CoraxBufferSize(IndexSearcher, take, query));
             int docsToLoad = CoraxBufferSize(IndexSearcher, pageSize, query);
@@ -1503,6 +1493,99 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
         private static void ThrowExplanationsIsNotImplementedInCorax()
         {
             throw new NotSupportedInCoraxException($"{nameof(Corax)} doesn't support {nameof(Explanations)} yet.");
+        }
+
+        private static MoreLikeThisQuery BuildMoreLikeThisQuery(QueryBuilderParameters builderParameters, QueryExpression whereExpression)
+        {
+            using (CultureHelper.EnsureInvariantCulture())
+            {
+                var indexSearcher = builderParameters.IndexSearcher;
+                var metadata = builderParameters.Metadata;
+                var queryParameters = builderParameters.QueryParameters;
+                var context = builderParameters.DocumentsContext;
+
+                var moreLikeThisExpression = QueryBuilderHelper.FindMoreLikeThisExpression(whereExpression);
+                if (moreLikeThisExpression == null)
+                    throw new InvalidOperationException("Query does not contain MoreLikeThis method expression");
+
+                BlittableJsonReaderObject options = null;
+                if (moreLikeThisExpression.Arguments.Count == 2)
+                {
+                    var value = QueryBuilderHelper.GetValue(metadata.Query, metadata, queryParameters, moreLikeThisExpression.Arguments[1], allowObjectsInParameters: true);
+                    if (value.Type == ValueTokenType.String)
+                        options = ParseJsonStringIntoBlittable(QueryBuilderHelper.GetValueAsString(value.Value), context);
+                    else
+                        options = value.Value as BlittableJsonReaderObject;
+                }
+
+                string baseDocument = null;
+                IQueryMatch baseDocumentQuery = null;
+                var firstArgument = moreLikeThisExpression.Arguments[0];
+                if (firstArgument is BinaryExpression be)
+                {
+                    // moreLikeThis(id() = 'datas/4-A', ...) — build a query from just the
+                    // inner binary expression (not the full WHERE which wraps it in moreLikeThis).
+                    baseDocumentQuery = BuildQueryFromExpression(builderParameters, be);
+                }
+                else
+                {
+                    // Value argument: either a boolean (true → all entries) or a document ID string.
+                    // moreLikeThis(true, ...) → compare against all entries
+                    // moreLikeThis('datas/4-A', ...) → baseDocument is loaded from DocumentsStorage later
+                    var firstArgumentValue = QueryBuilderHelper.GetValueAsString(QueryBuilderHelper.GetValue(metadata.Query, metadata, queryParameters, firstArgument).Value);
+                    if (bool.TryParse(firstArgumentValue, out var firstArgumentBool))
+                    {
+                        baseDocumentQuery = firstArgumentBool
+                            ? indexSearcher.AllEntries()
+                            : indexSearcher.EmptyMatch();
+                    }
+                    else
+                    {
+                        // Document ID as a string — the MoreLikeThis reader loads the document
+                        // and extracts terms from it (not via index lookup).
+                        baseDocument = firstArgumentValue;
+                    }
+                }
+
+                var filterQuery = BuildCompiledQueryMatch(builderParameters);
+
+                return new MoreLikeThisQuery
+                {
+                    BaseDocument = baseDocument,
+                    BaseDocumentQuery = baseDocumentQuery,
+                    FilterQuery = filterQuery,
+                    Options = options
+                };
+            }
+        }
+
+        /// <summary>
+        /// Build a query match from the inner BinaryExpression of a moreLikeThis clause,
+        /// e.g. the <c>id() = 'datas/4-A'</c> part of <c>moreLikeThis(id() = 'datas/4-A', ...)</c>.
+        /// Resolves the expression directly instead of going through the full plan pipeline
+        /// (which would see the moreLikeThis wrapper and produce AllEntries).
+        /// </summary>
+        private static IQueryMatch BuildQueryFromExpression(QueryBuilderParameters builderParameters, QueryExpression expression)
+        {
+            return QueryPlanBuilder.BuildFromSubExpression(builderParameters, expression);
+        }
+
+        private static IQueryMatch BuildCompiledQueryMatch(QueryBuilderParameters builderParameters)
+        {
+            var planParams = new QueryPlanBuilder.PlanParameters
+            {
+                IndexSearcher = builderParameters.IndexSearcher,
+                Metadata = builderParameters.Query.Metadata,
+                QueryParameters = builderParameters.QueryParameters,
+                Index = builderParameters.Index,
+                IndexFieldsMapping = builderParameters.IndexFieldsMapping,
+                Allocator = builderParameters.Allocator,
+                HasDynamics = builderParameters.HasDynamics,
+                DynamicFields = builderParameters.DynamicFields,
+                HasBoost = builderParameters.HasBoost
+            };
+            return QueryPlanBuilder.BuildAndCompile(
+                planParams, builderParameters, out _, out _, highlightingTerms: null, wantTimings: false, builderParameters.Token);
         }
     }
 }
